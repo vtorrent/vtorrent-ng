@@ -101,6 +101,7 @@ async fn main() -> anyhow::Result<()> {
         extra_seeds: cli.seeds.clone(),
         use_dht: !cli.no_dht,
         data_dir: data_dir.clone(),
+        use_overlay: true,
     };
 
     // ── Build the P2P Node ────────────────────────────────────────────────────

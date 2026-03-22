@@ -11,6 +11,7 @@ members = [
     "vtorrent-torrent",
     "vtorrent-rpc",
     "vtorrent-daemon",
+    "vtorrent-overlay",
 ]
 
 [workspace.package]
@@ -30,6 +31,7 @@ hmac = "0.12"
 pbkdf2 = "0.12"
 argon2 = "0.5"
 chacha20poly1305 = "0.10"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
 aes = "0.8"
 cbc = { version = "0.1", features = ["alloc"] }
 totp-rs = { version = "5", features = ["qr", "gen_secret"] }
@@ -60,6 +62,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Database
 rocksdb = "0.22"
+
+# Testing
+tempfile = "3"
 
 # Networking
 libp2p = { version = "0.54", features = ["tcp", "noise", "yamux", "gossipsub", "kad", "identify", "ping"] }

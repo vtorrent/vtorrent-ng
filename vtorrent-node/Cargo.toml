@@ -14,6 +14,7 @@ path = "src/main.rs"
 vtorrent-core     = { path = "../vtorrent-core" }
 vtorrent-wallet   = { path = "../vtorrent-wallet" }
 vtorrent-p2p      = { path = "../vtorrent-p2p" }
+vtorrent-overlay  = { path = "../vtorrent-overlay" }
 vtorrent-snapshot = { path = "../vtorrent-snapshot" }
 # CLI argument parsing
 clap              = { version = "4", features = ["derive"] }

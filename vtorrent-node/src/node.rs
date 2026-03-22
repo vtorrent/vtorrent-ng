@@ -12,6 +12,10 @@ use tokio::time::{interval, Duration};
 
 use std::path::PathBuf;
 
+use vtorrent_overlay::{
+    Overlay, OverlayConfig, OverlayEvent,
+};
+
 use vtorrent_p2p::{
     dht::{discover_peers_via_doh, discover_peers_via_github, DhtBootstrap},
     message::{
@@ -49,6 +53,8 @@ pub struct NodeConfig {
     /// Node data directory (for peer cache, chain data, etc.).
     /// Defaults to `~/.vtorrent` on all platforms.
     pub data_dir: PathBuf,
+    /// Whether to start the overlay NAT traversal layer.
+    pub use_overlay: bool,
 }
 
 impl Default for NodeConfig {
@@ -61,6 +67,7 @@ impl Default for NodeConfig {
             extra_seeds: Vec::new(),
             use_dht: true,
             data_dir: default_data_dir(),
+            use_overlay: true,
         }
     }
 }
@@ -86,6 +93,7 @@ pub struct Node {
     peer_manager: PeerManager,
     staking: Option<StakingEngine>,
     config: NodeConfig,
+    overlay: Option<Overlay>,
 }
 
 impl Node {
@@ -110,6 +118,7 @@ impl Node {
             peer_manager,
             staking,
             config,
+            overlay: None,
         })
     }
 
@@ -147,6 +156,11 @@ impl Node {
         // Start P2P listener
         self.peer_manager.start().await
             .map_err(|e| NodeError::Chain(format!("P2P start failed: {}", e)))?;
+
+        // ── Stage 0.5: Start the overlay NAT traversal layer ─────────────────
+        if self.config.use_overlay {
+            self.start_overlay().await;
+        }
 
         // ── Stage 1: DHT + Cloudflare DoH in parallel (decentralized) ────────
         if self.config.use_dht {
@@ -737,4 +751,67 @@ impl Node {
         serde_json::from_slice(bytes)
             .map_err(|e| NodeError::Chain(format!("TX deserialization failed: {}", e)))
     }
+
+    /// Start the overlay NAT traversal layer.
+    ///
+    /// Binds a UDP socket, discovers our external address via STUN, and begins
+    /// accepting hole-punch requests from other nodes. The overlay runs as a
+    /// background task and emits events that are logged but not yet wired into
+    /// the P2P layer (that wiring is the next integration step).
+    async fn start_overlay(&mut self) {
+        let key_path = self.config.data_dir.join("overlay.key");
+        let overlay_config = OverlayConfig {
+            listen_port: 0, // OS-assigned port; avoids conflicts with P2P port
+            key_file: Some(key_path),
+            ..OverlayConfig::default()
+        };
+
+        match Overlay::start(overlay_config).await {
+            Ok((overlay, mut events)) => {
+                if let Some(ext) = overlay.external_addr {
+                    tracing::info!("Overlay ready — external UDP address: {}", ext);
+                    tracing::info!(
+                        "Overlay node ID: {}",
+                        &overlay.keypair.node_id()[..16]
+                    );
+                }
+
+                // Publish our overlay endpoint to the PEX address book so peers
+                // can learn it via addr messages.
+                if let Some(ep) = overlay.our_endpoint() {
+                    tracing::debug!("Overlay endpoint: {}", ep);
+                }
+
+                self.overlay = Some(overlay);
+
+                // Spawn background task to handle overlay events
+                tokio::spawn(async move {
+                    while let Some(event) = events.recv().await {
+                        match event {
+                            OverlayEvent::PeerConnected(ep) => {
+                                tracing::info!("Overlay: peer connected {}", ep);
+                            }
+                            OverlayEvent::PeerDisconnected(id) => {
+                                tracing::info!("Overlay: peer disconnected {}", &id[..8]);
+                            }
+                            OverlayEvent::ExternalAddrDiscovered(addr) => {
+                                tracing::info!("Overlay: external address confirmed {}", addr);
+                            }
+                            OverlayEvent::DataReceived { from_node_id, payload } => {
+                                tracing::debug!(
+                                    "Overlay: {} bytes from {}",
+                                    payload.len(),
+                                    &from_node_id[..8]
+                                );
+                            }
+                        }
+                    }
+                });
+            }
+            Err(e) => {
+                tracing::warn!("Overlay failed to start (non-fatal): {}", e);
+            }
+        }
+    }
+
 }
