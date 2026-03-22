@@ -8,3 +8,5 @@ pub mod message;
 pub mod peer;
 pub mod peer_manager;
 pub mod codec;
+pub mod dht;
+pub mod pex;

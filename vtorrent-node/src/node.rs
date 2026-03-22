@@ -11,11 +11,13 @@ use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
 
 use vtorrent_p2p::{
+    dht::DhtBootstrap,
     message::{
-        GetBlocksMsg, InvItem, InvMsg, InvType, NetMessage,
+        AddrMsg, GetBlocksMsg, InvItem, InvMsg, InvType, NetMessage,
+        NODE_NETWORK, NODE_TORRENT,
     },
     peer::PeerEvent,
-    peer_manager::{PeerManager, DEFAULT_PORT, DNS_SEEDS, TARGET_OUTBOUND},
+    peer_manager::{PeerManager, DEFAULT_PORT, TARGET_OUTBOUND},
 };
 
 use crate::{
@@ -40,6 +42,8 @@ pub struct NodeConfig {
     pub max_mempool: usize,
     /// Additional seed nodes to connect to.
     pub extra_seeds: Vec<String>,
+    /// Whether to use DHT bootstrap for peer discovery.
+    pub use_dht: bool,
 }
 
 impl Default for NodeConfig {
@@ -50,6 +54,7 @@ impl Default for NodeConfig {
             staking_address: None,
             max_mempool: 10_000,
             extra_seeds: Vec::new(),
+            use_dht: true,
         }
     }
 }
@@ -96,13 +101,30 @@ impl Node {
         self.peer_manager.start().await
             .map_err(|e| NodeError::Chain(format!("P2P start failed: {}", e)))?;
 
-        // Connect to DNS seeds
-        self.connect_to_seeds().await;
+        // Bootstrap peer discovery:
+        // 1. Try DHT first (fully decentralized, no DNS required)
+        // 2. Fall back to extra_seeds if provided
+        if self.config.use_dht {
+            self.bootstrap_via_dht().await;
+        }
+
+        // Connect to any explicitly configured extra seeds
+        if !self.config.extra_seeds.is_empty() {
+            self.connect_to_extra_seeds().await;
+        }
+
+        // If we still have no peers, try legacy DNS seeds as last resort
+        if self.peer_manager.peer_count() == 0 {
+            tracing::warn!("No peers found via DHT/seeds, trying legacy DNS seeds as fallback");
+            self.connect_to_dns_seeds().await;
+        }
 
         // Periodic timers
         let mut sync_ticker = interval(Duration::from_secs(30));
         let mut stake_ticker = interval(Duration::from_secs(TARGET_BLOCK_TIME as u64));
         let mut peer_ticker = interval(Duration::from_secs(60));
+        let mut pex_ticker = interval(Duration::from_secs(600));   // PEX getaddr every 10 min
+        let mut dht_ticker = interval(Duration::from_secs(1800));  // DHT re-announce every 30 min
 
         loop {
             tokio::select! {
@@ -142,12 +164,93 @@ impl Node {
                         mp.size()
                     };
                     tracing::info!(
-                        "Peers: {} | Height: {} | Mempool: {} txs",
+                        "Peers: {} | Height: {} | Mempool: {} txs | AddrBook: {}",
                         self.peer_manager.peer_count(),
                         height,
-                        mp_size
+                        mp_size,
+                        self.peer_manager.addr_book.len()
                     );
                 }
+
+                // PEX: periodically send getaddr and self-announce
+                _ = pex_ticker.tick() => {
+                    self.do_pex_maintenance().await;
+                }
+
+                // DHT: periodically re-announce ourselves
+                _ = dht_ticker.tick() => {
+                    if self.config.use_dht {
+                        self.dht_announce().await;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Bootstrap peer discovery using the BitTorrent DHT network.
+    async fn bootstrap_via_dht(&mut self) {
+        tracing::info!("Starting DHT bootstrap via BitTorrent DHT network...");
+
+        let dht = DhtBootstrap::new();
+        let peers = tokio::task::spawn_blocking(move || {
+            dht.discover_peers()
+        }).await.unwrap_or_default();
+
+        if peers.is_empty() {
+            tracing::warn!("DHT bootstrap returned no peers");
+            return;
+        }
+
+        tracing::info!("DHT bootstrap found {} peer candidates", peers.len());
+
+        // Feed into PEX address book
+        self.peer_manager.add_dht_peers(peers.clone());
+
+        // Attempt to connect to the best candidates immediately
+        let candidates = self.peer_manager.get_peer_candidates(TARGET_OUTBOUND);
+        for addr in candidates {
+            tracing::info!("DHT: Connecting to peer candidate {}", addr);
+            if let Err(e) = self.peer_manager.connect_addr(addr).await {
+                tracing::debug!("DHT: Could not connect to {}: {}", addr, e);
+            }
+        }
+    }
+
+    /// Announce ourselves on the DHT so other nodes can find us.
+    async fn dht_announce(&self) {
+        let port = self.config.listen_addr
+            .split(':')
+            .last()
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(DEFAULT_PORT);
+
+        let dht = DhtBootstrap::new();
+        tokio::task::spawn_blocking(move || {
+            dht.announce(port);
+        });
+    }
+
+    /// Connect to explicitly configured extra seed nodes.
+    async fn connect_to_extra_seeds(&mut self) {
+        for seed in self.config.extra_seeds.clone() {
+            tracing::info!("Connecting to extra seed: {}", seed);
+            if let Err(e) = self.peer_manager.connect(&seed).await {
+                tracing::debug!("Could not connect to {}: {}", seed, e);
+            }
+        }
+    }
+
+    /// Connect to legacy DNS seed nodes (fallback only).
+    async fn connect_to_dns_seeds(&mut self) {
+        use vtorrent_p2p::peer_manager::DNS_SEEDS;
+        let seeds: Vec<String> = DNS_SEEDS.iter()
+            .map(|s| format!("{}:{}", s, DEFAULT_PORT))
+            .collect();
+
+        for seed in seeds {
+            tracing::info!("Connecting to DNS seed (fallback): {}", seed);
+            if let Err(e) = self.peer_manager.connect(&seed).await {
+                tracing::debug!("Could not connect to {}: {}", seed, e);
             }
         }
     }
@@ -178,6 +281,13 @@ impl Node {
                     let msg = NetMessage::new("getblocks", payload);
                     self.peer_manager.broadcast(msg).await;
                 }
+
+                // Immediately request peer's address list (PEX bootstrap)
+                if self.peer_manager.should_getaddr() {
+                    let getaddr = PeerManager::build_getaddr();
+                    self.peer_manager.send_to(peer_addr, getaddr).await;
+                    self.peer_manager.record_getaddr();
+                }
             }
 
             PeerEvent::Message { peer_addr, msg } => {
@@ -198,6 +308,23 @@ impl Node {
         msg: NetMessage,
     ) -> Result<()> {
         match msg.command_str() {
+            // ── PEX: Peer Exchange ────────────────────────────────────────────
+            "addr" => {
+                if let Ok(addr_msg) = serde_json::from_slice::<AddrMsg>(&msg.payload) {
+                    let count = addr_msg.addrs.len();
+                    self.peer_manager.handle_addr_msg(&addr_msg);
+                    tracing::debug!("PEX: Received {} addresses from {}", count, peer_addr);
+                }
+            }
+
+            "getaddr" => {
+                // Respond with our known peer list
+                let response = self.peer_manager.build_addr_response();
+                self.peer_manager.send_to(peer_addr, response).await;
+                tracing::debug!("PEX: Sent addr response to {}", peer_addr);
+            }
+
+            // ── Inventory ─────────────────────────────────────────────────────
             "inv" => {
                 if let Ok(inv) = serde_json::from_slice::<InvMsg>(&msg.payload) {
                     let mut want = Vec::new();
@@ -402,21 +529,6 @@ impl Node {
         Ok(())
     }
 
-    /// Connect to DNS seed nodes.
-    async fn connect_to_seeds(&mut self) {
-        let mut seeds: Vec<String> = DNS_SEEDS.iter()
-            .map(|s| format!("{}:{}", s, DEFAULT_PORT))
-            .collect();
-        seeds.extend(self.config.extra_seeds.clone());
-
-        for seed in seeds {
-            tracing::info!("Connecting to seed: {}", seed);
-            if let Err(e) = self.peer_manager.connect(&seed).await {
-                tracing::debug!("Could not connect to {}: {}", seed, e);
-            }
-        }
-    }
-
     /// Request new blocks from peers if we are behind.
     async fn request_blocks_from_peers(&mut self) {
         let our_height = {
@@ -443,12 +555,57 @@ impl Node {
         }
     }
 
-    /// Maintain peer connections — reconnect if below target.
+    /// Maintain peer connections — reconnect if below target using PEX address book.
     async fn maintain_peers(&mut self) {
         let count = self.peer_manager.peer_count();
         if count < TARGET_OUTBOUND {
-            tracing::debug!("Low peer count ({}), reconnecting to seeds", count);
-            self.connect_to_seeds().await;
+            let needed = TARGET_OUTBOUND - count;
+            tracing::debug!(
+                "Low peer count ({}/{}), trying {} PEX candidates",
+                count, TARGET_OUTBOUND, needed
+            );
+
+            // First try PEX address book candidates
+            let candidates = self.peer_manager.get_peer_candidates(needed * 2);
+            let mut connected = 0;
+            for addr in candidates {
+                if connected >= needed {
+                    break;
+                }
+                if let Err(e) = self.peer_manager.connect_addr(addr).await {
+                    tracing::debug!("Could not connect to PEX candidate {}: {}", addr, e);
+                } else {
+                    connected += 1;
+                }
+            }
+
+            // If still not enough, try DHT again
+            if connected < needed && self.config.use_dht {
+                tracing::debug!("PEX insufficient, re-running DHT bootstrap");
+                self.bootstrap_via_dht().await;
+            }
+        }
+    }
+
+    /// PEX maintenance: send getaddr to peers and self-announce.
+    async fn do_pex_maintenance(&mut self) {
+        let services = NODE_NETWORK | NODE_TORRENT;
+
+        // Broadcast our own address to all peers
+        if self.peer_manager.should_self_announce() {
+            if let Some(announce_msg) = self.peer_manager.build_self_announce(services) {
+                self.peer_manager.broadcast(announce_msg).await;
+                self.peer_manager.record_self_announce();
+                tracing::debug!("PEX: Broadcasted self-announcement");
+            }
+        }
+
+        // Send getaddr to all connected peers
+        if self.peer_manager.should_getaddr() {
+            let getaddr = PeerManager::build_getaddr();
+            self.peer_manager.broadcast(getaddr).await;
+            self.peer_manager.record_getaddr();
+            tracing::debug!("PEX: Sent getaddr to all peers");
         }
     }
 
