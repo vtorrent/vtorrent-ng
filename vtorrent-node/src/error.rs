@@ -31,6 +31,9 @@ pub enum NodeError {
 
     #[error("Storage error: {0}")]
     Storage(String),
+
+    #[error("Atomic swap error: {0}")]
+    AtomicSwap(String),
 }
 
 pub type Result<T> = std::result::Result<T, NodeError>;

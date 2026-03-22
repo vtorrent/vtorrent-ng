@@ -89,6 +89,43 @@ impl Chain {
             .collect()
     }
 
+    /// Get all UTXOs belonging to a specific address.
+    pub fn get_utxos_for_address(&self, address: &str) -> Vec<Utxo> {
+        // Build the expected P2PKH script for this address
+        let script = self.address_to_p2pkh_script(address);
+        self.utxo_set.values()
+            .filter(|u| u.script_pubkey == script)
+            .cloned()
+            .collect()
+    }
+
+    /// Convert a vTorrent address to a P2PKH scriptPubKey for UTXO matching.
+    fn address_to_p2pkh_script(&self, address: &str) -> Vec<u8> {
+        const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+        let mut num: u128 = 0;
+        for c in address.bytes() {
+            if let Some(d) = ALPHABET.iter().position(|&b| b == c) {
+                num = num.saturating_mul(58).saturating_add(d as u128);
+            }
+        }
+        let bytes = num.to_be_bytes();
+        let trim = bytes.iter().position(|&b| b != 0).unwrap_or(15);
+        let trimmed = &bytes[trim..];
+        if trimmed.len() >= 21 {
+            let hash160 = &trimmed[1..21];
+            let mut script = Vec::with_capacity(25);
+            script.push(0x76); // OP_DUP
+            script.push(0xa9); // OP_HASH160
+            script.push(0x14); // push 20 bytes
+            script.extend_from_slice(hash160);
+            script.push(0x88); // OP_EQUALVERIFY
+            script.push(0xac); // OP_CHECKSIG
+            script
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Check if a legacy address has already been claimed.
     pub fn is_claimed(&self, address: &str) -> bool {
         self.claimed_addresses.contains(address)

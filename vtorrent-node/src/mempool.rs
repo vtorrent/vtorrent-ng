@@ -48,9 +48,14 @@ impl Mempool {
         self.transactions.remove(txid);
     }
 
+    /// Get a specific transaction by txid.
+    pub fn get_transaction(&self, txid: &[u8; 32]) -> Option<&Transaction> {
+        self.transactions.get(txid)
+    }
+
     /// Get all transactions in the mempool, sorted by fee (highest first).
-    pub fn get_transactions(&self) -> Vec<&Transaction> {
-        let mut txs: Vec<&Transaction> = self.transactions.values().collect();
+    pub fn get_transactions(&self) -> Vec<Transaction> {
+        let mut txs: Vec<Transaction> = self.transactions.values().cloned().collect();
         txs.sort_by(|a, b| b.total_output().cmp(&a.total_output()));
         txs
     }

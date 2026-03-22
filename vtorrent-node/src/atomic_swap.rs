@@ -1,0 +1,562 @@
+/// Atomic Swap / HTLC Module for vTorrent 2.0
+///
+/// Implements Hash Time-Locked Contracts (HTLCs) for trustless P2P trading.
+///
+/// An atomic swap between two parties (Alice and Bob) works as follows:
+///
+/// 1. Alice generates a random secret `s` and computes `h = SHA256(s)`.
+/// 2. Alice creates an HTLC on the VTR chain:
+///    - Locks her VTR with: "pay to Bob if he reveals `s`, OR refund to Alice after timeout"
+/// 3. Bob sees the HTLC on the VTR chain and creates a matching HTLC on the other chain
+///    (e.g., BTC, LTC) using the same hash `h`:
+///    - Locks his BTC with: "pay to Alice if she reveals `s`, OR refund to Bob after timeout"
+/// 4. Alice claims Bob's BTC by revealing `s` — this also reveals `s` to Bob.
+/// 5. Bob uses `s` to claim Alice's VTR.
+///
+/// If either party fails to act, the timelock ensures funds are returned.
+///
+/// This module implements the VTR side of the swap.
+
+use sha2::{Digest, Sha256};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::{
+    block::{Transaction, TxInput, TxOutput, TxType},
+    error::{NodeError, Result},
+};
+
+/// Default HTLC locktime: 48 hours in seconds.
+pub const DEFAULT_HTLC_LOCKTIME: u32 = 48 * 3600;
+
+/// Minimum HTLC locktime: 1 hour.
+pub const MIN_HTLC_LOCKTIME: u32 = 3600;
+
+/// Maximum HTLC locktime: 7 days.
+pub const MAX_HTLC_LOCKTIME: u32 = 7 * 24 * 3600;
+
+/// An HTLC (Hash Time-Locked Contract) for atomic swaps.
+#[derive(Debug, Clone)]
+pub struct Htlc {
+    /// SHA256 hash of the secret preimage.
+    pub hash_lock: [u8; 32],
+    /// The recipient address (can claim by revealing the preimage).
+    pub recipient: String,
+    /// The refund address (can reclaim after timeout).
+    pub refund_address: String,
+    /// Unix timestamp after which the refund is valid.
+    pub expiry: u32,
+    /// The amount locked in satoshis.
+    pub amount: u64,
+    /// The transaction ID of the HTLC funding transaction (set after broadcast).
+    pub funding_txid: Option<[u8; 32]>,
+}
+
+impl Htlc {
+    /// Create a new HTLC.
+    pub fn new(
+        hash_lock: [u8; 32],
+        recipient: String,
+        refund_address: String,
+        locktime_seconds: u32,
+        amount: u64,
+    ) -> Result<Self> {
+        if locktime_seconds < MIN_HTLC_LOCKTIME {
+            return Err(NodeError::AtomicSwap(format!(
+                "Locktime {} is below minimum {}",
+                locktime_seconds, MIN_HTLC_LOCKTIME
+            )));
+        }
+        if locktime_seconds > MAX_HTLC_LOCKTIME {
+            return Err(NodeError::AtomicSwap(format!(
+                "Locktime {} exceeds maximum {}",
+                locktime_seconds, MAX_HTLC_LOCKTIME
+            )));
+        }
+        if amount == 0 {
+            return Err(NodeError::AtomicSwap("HTLC amount cannot be zero".into()));
+        }
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+
+        Ok(Self {
+            hash_lock,
+            recipient,
+            refund_address,
+            expiry: now + locktime_seconds,
+            amount,
+            funding_txid: None,
+        })
+    }
+
+    /// Build the HTLC script (locking script / scriptPubKey).
+    ///
+    /// Script logic:
+    /// ```text
+    /// OP_IF
+    ///   OP_SHA256 <hash_lock> OP_EQUALVERIFY
+    ///   OP_DUP OP_HASH160 <recipient_hash160> OP_EQUALVERIFY OP_CHECKSIG
+    /// OP_ELSE
+    ///   <expiry> OP_CHECKLOCKTIMEVERIFY OP_DROP
+    ///   OP_DUP OP_HASH160 <refund_hash160> OP_EQUALVERIFY OP_CHECKSIG
+    /// OP_ENDIF
+    /// ```
+    pub fn build_script(&self) -> Vec<u8> {
+        let recipient_hash = address_to_hash160(&self.recipient);
+        let refund_hash = address_to_hash160(&self.refund_address);
+        let expiry_bytes = self.expiry.to_le_bytes();
+
+        let mut script = Vec::new();
+
+        // OP_IF branch (claim with preimage)
+        script.push(0x63); // OP_IF
+        script.push(0xa8); // OP_SHA256
+        script.push(0x20); // push 32 bytes
+        script.extend_from_slice(&self.hash_lock);
+        script.push(0x88); // OP_EQUALVERIFY
+        script.push(0x76); // OP_DUP
+        script.push(0xa9); // OP_HASH160
+        script.push(0x14); // push 20 bytes
+        script.extend_from_slice(&recipient_hash);
+        script.push(0x88); // OP_EQUALVERIFY
+        script.push(0xac); // OP_CHECKSIG
+
+        // OP_ELSE branch (refund after timeout)
+        script.push(0x67); // OP_ELSE
+        script.push(0x04); // push 4 bytes (expiry timestamp)
+        script.extend_from_slice(&expiry_bytes);
+        script.push(0xb1); // OP_CHECKLOCKTIMEVERIFY
+        script.push(0x75); // OP_DROP
+        script.push(0x76); // OP_DUP
+        script.push(0xa9); // OP_HASH160
+        script.push(0x14); // push 20 bytes
+        script.extend_from_slice(&refund_hash);
+        script.push(0x88); // OP_EQUALVERIFY
+        script.push(0xac); // OP_CHECKSIG
+
+        script.push(0x68); // OP_ENDIF
+
+        script
+    }
+
+    /// Build the funding transaction that locks VTR into the HTLC.
+    pub fn build_funding_tx(
+        &self,
+        input_txid: [u8; 32],
+        input_vout: u32,
+        input_value: u64,
+        fee: u64,
+    ) -> Result<Transaction> {
+        if input_value < self.amount + fee {
+            return Err(NodeError::AtomicSwap(format!(
+                "Insufficient input: {} < {} + {} (fee)",
+                input_value, self.amount, fee
+            )));
+        }
+
+        let mut outputs = vec![
+            TxOutput {
+                value: self.amount,
+                script_pubkey: self.build_script(),
+            }
+        ];
+
+        // Change output
+        let change = input_value - self.amount - fee;
+        if change > 0 {
+            outputs.push(TxOutput {
+                value: change,
+                script_pubkey: p2pkh_script(&self.refund_address),
+            });
+        }
+
+        Ok(Transaction {
+            version: 1,
+            tx_type: TxType::AtomicSwap,
+            inputs: vec![TxInput {
+                prev_txid: input_txid,
+                prev_vout: input_vout,
+                script_sig: Vec::new(), // filled in by wallet when signing
+                sequence: u32::MAX - 1, // enable CLTV
+            }],
+            outputs,
+            lock_time: 0,
+            claim_address: Some(self.recipient.clone()),
+            claim_signature: None,
+        })
+    }
+
+    /// Build the claim transaction (recipient reveals the preimage).
+    pub fn build_claim_tx(
+        &self,
+        funding_txid: [u8; 32],
+        preimage: &[u8; 32],
+        recipient_pubkey: &[u8],
+        recipient_sig: &[u8],
+        fee: u64,
+    ) -> Result<Transaction> {
+        // Verify the preimage matches the hash lock
+        let hash = sha256(preimage);
+        if hash != self.hash_lock {
+            return Err(NodeError::AtomicSwap(
+                "Preimage does not match hash lock".into()
+            ));
+        }
+
+        // Build the scriptSig for claiming:
+        // <sig> <pubkey> <preimage> OP_TRUE (OP_1)
+        let mut script_sig = Vec::new();
+        script_sig.push(recipient_sig.len() as u8);
+        script_sig.extend_from_slice(recipient_sig);
+        script_sig.push(recipient_pubkey.len() as u8);
+        script_sig.extend_from_slice(recipient_pubkey);
+        script_sig.push(0x20); // push 32 bytes
+        script_sig.extend_from_slice(preimage);
+        script_sig.push(0x51); // OP_1 (true branch)
+
+        Ok(Transaction {
+            version: 1,
+            tx_type: TxType::AtomicSwap,
+            inputs: vec![TxInput {
+                prev_txid: funding_txid,
+                prev_vout: 0,
+                script_sig,
+                sequence: u32::MAX,
+            }],
+            outputs: vec![TxOutput {
+                value: self.amount.saturating_sub(fee),
+                script_pubkey: p2pkh_script(&self.recipient),
+            }],
+            lock_time: 0,
+            claim_address: Some(self.recipient.clone()),
+            claim_signature: None,
+        })
+    }
+
+    /// Build the refund transaction (initiator reclaims after timeout).
+    pub fn build_refund_tx(
+        &self,
+        funding_txid: [u8; 32],
+        refund_pubkey: &[u8],
+        refund_sig: &[u8],
+        fee: u64,
+    ) -> Result<Transaction> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+
+        if now < self.expiry {
+            return Err(NodeError::AtomicSwap(format!(
+                "HTLC has not expired yet. Expires at {}, current time {}",
+                self.expiry, now
+            )));
+        }
+
+        // Build the scriptSig for refunding:
+        // <sig> <pubkey> OP_FALSE (OP_0)
+        let mut script_sig = Vec::new();
+        script_sig.push(refund_sig.len() as u8);
+        script_sig.extend_from_slice(refund_sig);
+        script_sig.push(refund_pubkey.len() as u8);
+        script_sig.extend_from_slice(refund_pubkey);
+        script_sig.push(0x00); // OP_0 (false branch)
+
+        Ok(Transaction {
+            version: 1,
+            tx_type: TxType::AtomicSwap,
+            inputs: vec![TxInput {
+                prev_txid: funding_txid,
+                prev_vout: 0,
+                script_sig,
+                sequence: u32::MAX - 1,
+            }],
+            outputs: vec![TxOutput {
+                value: self.amount.saturating_sub(fee),
+                script_pubkey: p2pkh_script(&self.refund_address),
+            }],
+            lock_time: self.expiry,
+            claim_address: Some(self.refund_address.clone()),
+            claim_signature: None,
+        })
+    }
+
+    /// Check if the HTLC has expired.
+    pub fn is_expired(&self) -> bool {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+        now >= self.expiry
+    }
+
+    /// Seconds remaining until expiry (0 if already expired).
+    pub fn seconds_until_expiry(&self) -> u32 {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+        self.expiry.saturating_sub(now)
+    }
+}
+
+/// A swap order posted to the P2P DEX order book.
+#[derive(Debug, Clone)]
+pub struct SwapOrder {
+    /// Unique order ID (SHA256 of the order data).
+    pub order_id: [u8; 32],
+    /// The maker's VTR address.
+    pub maker_address: String,
+    /// Amount of VTR the maker is offering.
+    pub vtr_amount: u64,
+    /// The target asset (e.g., "BTC", "LTC").
+    pub target_asset: String,
+    /// Amount of the target asset requested.
+    pub target_amount: u64,
+    /// The HTLC hash lock (set when the maker creates the HTLC).
+    pub hash_lock: Option<[u8; 32]>,
+    /// Order expiry timestamp.
+    pub expiry: u32,
+    /// Order status.
+    pub status: OrderStatus,
+}
+
+/// Status of a swap order.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OrderStatus {
+    /// Order is open and waiting for a taker.
+    Open,
+    /// A taker has been found; HTLC is being set up.
+    Matched,
+    /// The swap is in progress (HTLCs are funded).
+    InProgress,
+    /// The swap completed successfully.
+    Completed,
+    /// The swap was cancelled or timed out.
+    Cancelled,
+}
+
+impl SwapOrder {
+    /// Create a new swap order.
+    pub fn new(
+        maker_address: String,
+        vtr_amount: u64,
+        target_asset: String,
+        target_amount: u64,
+        locktime_seconds: u32,
+    ) -> Self {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+
+        // Compute order ID
+        let mut data = Vec::new();
+        data.extend_from_slice(maker_address.as_bytes());
+        data.extend_from_slice(&vtr_amount.to_le_bytes());
+        data.extend_from_slice(target_asset.as_bytes());
+        data.extend_from_slice(&target_amount.to_le_bytes());
+        data.extend_from_slice(&now.to_le_bytes());
+        let order_id = sha256(&data.try_into().unwrap_or([0u8; 32]));
+
+        Self {
+            order_id,
+            maker_address,
+            vtr_amount,
+            target_asset,
+            target_amount,
+            hash_lock: None,
+            expiry: now + locktime_seconds,
+            status: OrderStatus::Open,
+        }
+    }
+
+    /// Exchange rate: target_amount / vtr_amount.
+    pub fn rate(&self) -> f64 {
+        if self.vtr_amount == 0 {
+            return 0.0;
+        }
+        self.target_amount as f64 / self.vtr_amount as f64
+    }
+}
+
+// ─── Helper functions ────────────────────────────────────────────────────────
+
+/// SHA256 of a 32-byte input.
+fn sha256(data: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    let result = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&result);
+    out
+}
+
+/// Decode a Base58Check address to its 20-byte hash160 payload.
+fn address_to_hash160(address: &str) -> [u8; 20] {
+    const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+    let mut num: u128 = 0;
+    for c in address.bytes() {
+        if let Some(d) = ALPHABET.iter().position(|&b| b == c) {
+            num = num.saturating_mul(58).saturating_add(d as u128);
+        }
+    }
+
+    let bytes = num.to_be_bytes();
+    // The payload is version(1) + hash160(20) + checksum(4) = 25 bytes
+    // In u128 big-endian, hash160 starts at byte 5 (after leading zeros + version)
+    let trim = bytes.iter().position(|&b| b != 0).unwrap_or(15);
+    let trimmed = &bytes[trim..];
+
+    if trimmed.len() >= 21 {
+        let mut out = [0u8; 20];
+        out.copy_from_slice(&trimmed[1..21]);
+        out
+    } else {
+        [0u8; 20]
+    }
+}
+
+/// Build a standard P2PKH scriptPubKey from an address.
+fn p2pkh_script(address: &str) -> Vec<u8> {
+    let hash160 = address_to_hash160(address);
+    let mut script = Vec::with_capacity(25);
+    script.push(0x76); // OP_DUP
+    script.push(0xa9); // OP_HASH160
+    script.push(0x14); // push 20 bytes
+    script.extend_from_slice(&hash160);
+    script.push(0x88); // OP_EQUALVERIFY
+    script.push(0xac); // OP_CHECKSIG
+    script
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_htlc() -> Htlc {
+        let preimage = [42u8; 32];
+        let hash_lock = sha256(&preimage);
+        Htlc::new(
+            hash_lock,
+            "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string(),
+            "VU3QSqAqM7tP3QXZ8sT7v8sQSdAxUZvqdS".to_string(),
+            DEFAULT_HTLC_LOCKTIME,
+            100_000_000, // 1 VTR
+        ).unwrap()
+    }
+
+    #[test]
+    fn test_htlc_creation() {
+        let htlc = make_htlc();
+        assert_eq!(htlc.amount, 100_000_000);
+        assert!(!htlc.is_expired());
+        assert!(htlc.seconds_until_expiry() > 0);
+    }
+
+    #[test]
+    fn test_htlc_script_not_empty() {
+        let htlc = make_htlc();
+        let script = htlc.build_script();
+        assert!(!script.is_empty());
+        assert_eq!(script[0], 0x63); // OP_IF
+        assert_eq!(*script.last().unwrap(), 0x68); // OP_ENDIF
+    }
+
+    #[test]
+    fn test_htlc_script_contains_hash_lock() {
+        let preimage = [42u8; 32];
+        let hash_lock = sha256(&preimage);
+        let htlc = Htlc::new(
+            hash_lock,
+            "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string(),
+            "VU3QSqAqM7tP3QXZ8sT7v8sQSdAxUZvqdS".to_string(),
+            DEFAULT_HTLC_LOCKTIME,
+            100_000_000,
+        ).unwrap();
+        let script = htlc.build_script();
+        // hash_lock should appear in the script
+        let script_hex = hex::encode(&script);
+        let hash_hex = hex::encode(&hash_lock);
+        assert!(script_hex.contains(&hash_hex));
+    }
+
+    #[test]
+    fn test_htlc_wrong_preimage_rejected() {
+        let htlc = make_htlc();
+        let wrong_preimage = [99u8; 32];
+        let result = htlc.build_claim_tx(
+            [0u8; 32],
+            &wrong_preimage,
+            &[0u8; 33],
+            &[0u8; 71],
+            1000,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_htlc_refund_before_expiry_rejected() {
+        let htlc = make_htlc();
+        let result = htlc.build_refund_tx([0u8; 32], &[0u8; 33], &[0u8; 71], 1000);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_htlc_funding_tx_insufficient_input() {
+        let htlc = make_htlc();
+        let result = htlc.build_funding_tx([0u8; 32], 0, 50_000, 1000);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_htlc_funding_tx_valid() {
+        let htlc = make_htlc();
+        let result = htlc.build_funding_tx([1u8; 32], 0, 200_000_000, 10_000);
+        assert!(result.is_ok());
+        let tx = result.unwrap();
+        assert_eq!(tx.tx_type, TxType::AtomicSwap);
+        assert_eq!(tx.outputs[0].value, 100_000_000);
+        assert_eq!(tx.outputs[1].value, 200_000_000 - 100_000_000 - 10_000);
+    }
+
+    #[test]
+    fn test_swap_order_creation() {
+        let order = SwapOrder::new(
+            "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string(),
+            1_000_000_000, // 10 VTR
+            "BTC".to_string(),
+            100_000,       // 0.001 BTC
+            DEFAULT_HTLC_LOCKTIME,
+        );
+        assert_eq!(order.status, OrderStatus::Open);
+        assert!(order.rate() > 0.0);
+        assert!(!order.is_expired());
+    }
+
+    #[test]
+    fn test_swap_order_rate() {
+        let order = SwapOrder::new(
+            "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string(),
+            1_000_000_000, // 10 VTR
+            "BTC".to_string(),
+            1_000_000,     // 0.01 BTC
+            DEFAULT_HTLC_LOCKTIME,
+        );
+        // rate = 1_000_000 / 1_000_000_000 = 0.001
+        assert!((order.rate() - 0.001).abs() < 1e-9);
+    }
+
+    impl SwapOrder {
+        fn is_expired(&self) -> bool {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as u32;
+            now >= self.expiry
+        }
+    }
+}
