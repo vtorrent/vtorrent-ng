@@ -7,7 +7,7 @@ members = [
     "vtorrent-tauri",
     "vtorrent-snapshot",
     "vtorrent-node",
-    "vtorrent-p2p",
+    "vtorrent-p2p", "vtorrent-torrent", "vtorrent-rpc",
 ]
 
 [workspace.package]

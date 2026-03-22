@@ -126,7 +126,17 @@ impl Chain {
         }
     }
 
-    /// Check if a legacy address has already been claimed.
+    /// Get the full UTXO set as a flat list of all UTXOs.
+    pub fn get_utxo_set(&self) -> &std::collections::HashMap<([u8; 32], u32), Utxo> {
+        &self.utxo_set
+    }
+
+    /// Get the genesis block.
+    pub fn genesis_block(&self) -> &Block {
+        let genesis_hash = self.height_index[0];
+        self.blocks.get(&genesis_hash).expect("genesis block always present")
+    }
+
     pub fn is_claimed(&self, address: &str) -> bool {
         self.claimed_addresses.contains(address)
     }

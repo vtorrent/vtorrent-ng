@@ -1,0 +1,88 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "vTorrent",
+  "version": "2.0.0",
+  "identifier": "io.vtorrent.client",
+  "build": {
+    "beforeDevCommand": "cd ../vtorrent-ui && pnpm dev",
+    "devUrl": "http://localhost:3000",
+    "beforeBuildCommand": "cd ../vtorrent-ui && pnpm build",
+    "frontendDist": "../vtorrent-ui/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "vTorrent",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": true,
+        "transparent": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:*"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "Finance",
+    "shortDescription": "vTorrent 2.0 — Decentralized torrent client with built-in VTR wallet and P2P trading",
+    "longDescription": "vTorrent is a next-generation cryptocurrency client that combines a full VTR wallet, incentivized BitTorrent seeding, and peer-to-peer atomic swap trading — all without relying on centralized exchanges.",
+    "copyright": "Copyright © 2024 vTorrent Project",
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": null,
+      "entitlements": null
+    },
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": ""
+    },
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libssl-dev"]
+      },
+      "rpm": {
+        "depends": ["webkit2gtk4.1", "openssl"]
+      },
+      "appimage": {
+        "bundleMediaFramework": true
+      }
+    }
+  },
+  "plugins": {
+    "shell": {
+      "open": false
+    },
+    "fs": {
+      "scope": {
+        "allow": [
+          {
+            "path": "$APPDATA/vtorrent/**"
+          },
+          {
+            "path": "$HOME/.vtorrent/**"
+          }
+        ]
+      }
+    },
+    "dialog": {
+      "open": true,
+      "save": true
+    }
+  }
+}

@@ -1,5 +1,32 @@
 import React, { createContext, useContext, useState, useCallback } from 'react'
 
+// ─── Tauri IPC bridge ─────────────────────────────────────────────────────────
+// In the Tauri desktop app, `invoke` calls the Rust backend directly.
+// In browser dev mode (Vite), we fall back to mock implementations.
+
+type InvokeFn = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>
+
+function getTauriInvoke(): InvokeFn | null {
+  // @ts-ignore — window.__TAURI__ is injected by Tauri at runtime
+  if (typeof window !== 'undefined' && window.__TAURI__) {
+    // @ts-ignore
+    return window.__TAURI__.core?.invoke ?? window.__TAURI__.tauri?.invoke ?? null
+  }
+  return null
+}
+
+const tauriInvoke = getTauriInvoke()
+
+async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  if (tauriInvoke) {
+    return tauriInvoke(cmd, args) as Promise<T>
+  }
+  // Browser dev mode: use mock
+  return mockInvoke<T>(cmd, args)
+}
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
 export interface WalletKey {
   address: string
   label?: string
@@ -37,6 +64,118 @@ export interface ImportResult {
   claimableBalance: number
 }
 
+// ─── Tauri response types (snake_case from Rust) ──────────────────────────────
+
+interface TauriWalletInfo {
+  is_unlocked: boolean
+  has_2fa: boolean
+  address_count: number
+  default_address: string | null
+  wallet_version: number
+}
+
+interface TauriImportResult {
+  keys_found: number
+  addresses: string[]
+  had_encryption: boolean
+  had_2fa: boolean
+  claimable_balance: number
+}
+
+interface TauriAddressInfo {
+  address: string
+  label: string
+  balance: number
+  is_legacy_import: boolean
+}
+
+interface TauriEnable2FAResult {
+  uri: string
+  secret: string
+  qr_data: string
+}
+
+// ─── Mock implementations (browser dev mode only) ────────────────────────────
+
+function mockAddress(): string {
+  return 'V' + Array.from({ length: 33 }, () =>
+    '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'[
+      Math.floor(Math.random() * 58)
+    ]
+  ).join('')
+}
+
+async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  await new Promise(r => setTimeout(r, 400 + Math.random() * 400))
+
+  switch (cmd) {
+    case 'create_wallet': {
+      const addr = mockAddress()
+      return {
+        is_unlocked: true, has_2fa: false, address_count: 1,
+        default_address: addr, wallet_version: 2,
+      } as T
+    }
+    case 'open_wallet': {
+      const addr = mockAddress()
+      return {
+        is_unlocked: true, has_2fa: false, address_count: 1,
+        default_address: addr, wallet_version: 2,
+      } as T
+    }
+    case 'lock_wallet':
+      return undefined as T
+    case 'get_wallet_info':
+      return {
+        is_unlocked: false, has_2fa: false, address_count: 0,
+        default_address: null, wallet_version: 0,
+      } as T
+    case 'import_legacy_wallet': {
+      const addrs = Array.from({ length: 3 }, mockAddress)
+      return {
+        keys_found: addrs.length,
+        addresses: addrs,
+        had_encryption: !!(args?.passphrase),
+        had_2fa: false,
+        claimable_balance: Math.floor(Math.random() * 10_000_000_000),
+      } as T
+    }
+    case 'generate_address': {
+      const addr = mockAddress()
+      return {
+        address: addr,
+        label: (args?.label as string) || 'New Address',
+        balance: 0,
+        is_legacy_import: false,
+      } as T
+    }
+    case 'get_addresses': {
+      return [] as T
+    }
+    case 'enable_2fa': {
+      const secret = 'JBSWY3DPEHPK3PXP'
+      const uri = `otpauth://totp/vTorrent-Wallet?secret=${secret}&issuer=vTorrent`
+      return { uri, secret, qr_data: uri } as T
+    }
+    case 'verify_2fa':
+      return true as T
+    case 'disable_2fa':
+      return undefined as T
+    default:
+      throw new Error(`Unknown mock command: ${cmd}`)
+  }
+}
+
+// ─── Wallet data directory helper ─────────────────────────────────────────────
+
+function getWalletPath(): string {
+  // In Tauri, we use the app data directory. This path is resolved by the backend.
+  // The frontend just passes a relative name; the backend resolves the full path.
+  return 'wallet.vtr'
+}
+
+// ─── Context & Provider ───────────────────────────────────────────────────────
+
 const WalletContext = createContext<WalletContextType | null>(null)
 
 export function WalletProvider({ children }: { children: React.ReactNode }) {
@@ -49,36 +188,36 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   })
 
   const unlock = useCallback(async (passphrase: string, otpCode?: string) => {
-    // In the real Tauri app, this calls the Rust backend via invoke()
-    // For the UI prototype, we simulate a successful unlock
-    await new Promise(r => setTimeout(r, 800)) // simulate async
-    setState(prev => ({ ...prev, isUnlocked: true }))
+    const info = await invoke<TauriWalletInfo>('open_wallet', {
+      walletPath: getWalletPath(),
+      passphrase,
+      otpCode: otpCode ?? null,
+    })
+    setState(prev => ({
+      ...prev,
+      isUnlocked: info.is_unlocked,
+      has2FA: info.has_2fa,
+      defaultAddress: info.default_address,
+      walletVersion: info.wallet_version,
+    }))
   }, [])
 
-  const lock = useCallback(() => {
+  const lock = useCallback(async () => {
+    await invoke('lock_wallet')
     setState(prev => ({ ...prev, isUnlocked: false }))
   }, [])
 
   const createWallet = useCallback(async (passphrase: string) => {
-    await new Promise(r => setTimeout(r, 600))
-    const mockAddress = 'V' + Array.from({ length: 33 }, () =>
-      '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'[
-        Math.floor(Math.random() * 58)
-      ]
-    ).join('')
-
+    const info = await invoke<TauriWalletInfo>('create_wallet', {
+      passphrase,
+      walletPath: getWalletPath(),
+    })
     setState({
-      isUnlocked: true,
-      has2FA: false,
-      keys: [{
-        address: mockAddress,
-        label: 'Primary Address',
-        isLegacyImport: false,
-        balance: 0,
-        createdAt: Date.now(),
-      }],
-      defaultAddress: mockAddress,
-      walletVersion: 1,
+      isUnlocked: info.is_unlocked,
+      has2FA: info.has_2fa,
+      keys: [],
+      defaultAddress: info.default_address,
+      walletVersion: info.wallet_version,
     })
   }, [])
 
@@ -86,75 +225,67 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     walletDatBase64: string,
     passphrase?: string
   ): Promise<ImportResult> => {
-    // Simulate the Rust backend parsing wallet.dat
-    await new Promise(r => setTimeout(r, 1500))
+    const result = await invoke<TauriImportResult>('import_legacy_wallet', {
+      walletDatBase64,
+      passphrase: passphrase ?? null,
+      newWalletPassphrase: passphrase ?? 'vtorrent-imported',
+      newWalletPath: getWalletPath(),
+    })
 
-    const mockAddresses = Array.from({ length: 3 }, (_, i) =>
-      'V' + Array.from({ length: 33 }, () =>
-        '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'[
-          Math.floor(Math.random() * 58)
-        ]
-      ).join('')
-    )
-
-    const mockKeys: WalletKey[] = mockAddresses.map((addr, i) => ({
-      address: addr,
-      label: `Imported Key #${i + 1}`,
-      isLegacyImport: true,
-      legacyAddress: addr,
-      balance: Math.floor(Math.random() * 100000000),
+    // Fetch the full address list from the backend
+    const addrInfos = await invoke<TauriAddressInfo[]>('get_addresses')
+    const keys: WalletKey[] = addrInfos.map(a => ({
+      address: a.address,
+      label: a.label,
+      isLegacyImport: a.is_legacy_import,
+      legacyAddress: a.is_legacy_import ? a.address : undefined,
+      balance: a.balance,
       createdAt: Date.now(),
     }))
 
     setState({
       isUnlocked: true,
       has2FA: false,
-      keys: mockKeys,
-      defaultAddress: mockAddresses[0],
-      walletVersion: 1,
+      keys,
+      defaultAddress: result.addresses[0] ?? null,
+      walletVersion: 2,
     })
 
     return {
-      keysFound: mockKeys.length,
-      addresses: mockAddresses,
-      hadEncryption: !!passphrase,
-      had2FA: false,
-      claimableBalance: mockKeys.reduce((sum, k) => sum + k.balance, 0),
+      keysFound: result.keys_found,
+      addresses: result.addresses,
+      hadEncryption: result.had_encryption,
+      had2FA: result.had_2fa,
+      claimableBalance: result.claimable_balance,
     }
   }, [])
 
   const enable2FA = useCallback(async () => {
-    await new Promise(r => setTimeout(r, 300))
-    const mockSecret = 'JBSWY3DPEHPK3PXP'
-    const uri = `otpauth://totp/vTorrent-Wallet?secret=${mockSecret}&issuer=vTorrent`
+    const result = await invoke<TauriEnable2FAResult>('enable_2fa')
     setState(prev => ({ ...prev, has2FA: true }))
-    return { uri, secret: mockSecret }
+    return { uri: result.uri, secret: result.secret }
   }, [])
 
   const disable2FA = useCallback(async (otpCode: string) => {
-    await new Promise(r => setTimeout(r, 300))
+    await invoke('disable_2fa', { code: otpCode })
     setState(prev => ({ ...prev, has2FA: false }))
   }, [])
 
   const generateAddress = useCallback(async (label?: string) => {
-    await new Promise(r => setTimeout(r, 300))
-    const newAddr = 'V' + Array.from({ length: 33 }, () =>
-      '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'[
-        Math.floor(Math.random() * 58)
-      ]
-    ).join('')
-
+    const info = await invoke<TauriAddressInfo>('generate_address', {
+      label: label ?? null,
+    })
     setState(prev => ({
       ...prev,
       keys: [...prev.keys, {
-        address: newAddr,
-        label: label || `Address #${prev.keys.length + 1}`,
+        address: info.address,
+        label: info.label,
         isLegacyImport: false,
         balance: 0,
         createdAt: Date.now(),
       }]
     }))
-    return newAddr
+    return info.address
   }, [])
 
   const totalBalance = state.keys.reduce((sum, k) => sum + k.balance, 0)

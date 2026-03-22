@@ -9,13 +9,10 @@
 /// JavaScript only receives addresses, balances, and status flags.
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use vtorrent_migrate::extractor::extract_wallet;
-use vtorrent_wallet::{
-    otp::OtpConfig,
-    wallet::Wallet,
-};
+use vtorrent_wallet::wallet::Wallet;
 
 use crate::{
     error::{Result, TauriError},
@@ -234,16 +231,84 @@ pub fn import_legacy_wallet_cmd(
     })
 }
 
+/// The embedded UTXO snapshot binary (2.4 MB, 59,375 entries, sorted for binary search).
+///
+/// Format: 4-byte magic "VTRS" + 4-byte version + 4-byte count +
+///         N * (34-byte null-padded address + 8-byte u64 satoshi balance)
+static UTXO_SNAPSHOT: &[u8] = include_bytes!("../utxo_snapshot.bin");
+
+const SNAPSHOT_MAGIC: &[u8; 4] = b"VTRS";
+const SNAPSHOT_HEADER_SIZE: usize = 12;
+const ADDR_LEN: usize = 34;
+const ENTRY_SIZE: usize = ADDR_LEN + 8; // 42 bytes per entry
+
 /// Look up balances in the embedded UTXO snapshot for a list of legacy addresses.
 ///
-/// In production, this queries the snapshot embedded in the binary at build time.
-/// For now, returns 0 until the snapshot tool is complete.
+/// Uses binary search on the sorted snapshot for O(log n) lookup per address.
+/// The snapshot contains 59,375 legacy vTorrent addresses with their final balances
+/// at block height 1,680,456 (2018-01-10).
 fn lookup_snapshot_balances(addresses: &[String]) -> u64 {
-    // TODO: Replace with actual snapshot lookup once vtorrent-snapshot crate is complete
-    // The snapshot will be a sorted, binary-searchable file of (address, balance) pairs
-    // embedded in the binary via `include_bytes!("../../snapshot/utxo_snapshot.bin")`
-    let _ = addresses;
-    0
+    // Validate magic bytes
+    if UTXO_SNAPSHOT.len() < SNAPSHOT_HEADER_SIZE {
+        return 0;
+    }
+    if &UTXO_SNAPSHOT[0..4] != SNAPSHOT_MAGIC {
+        return 0;
+    }
+
+    let entry_count = u32::from_le_bytes([
+        UTXO_SNAPSHOT[8], UTXO_SNAPSHOT[9], UTXO_SNAPSHOT[10], UTXO_SNAPSHOT[11],
+    ]) as usize;
+
+    let entries_start = SNAPSHOT_HEADER_SIZE;
+    let entries_end = entries_start + entry_count * ENTRY_SIZE;
+    if UTXO_SNAPSHOT.len() < entries_end {
+        return 0;
+    }
+    let entries = &UTXO_SNAPSHOT[entries_start..entries_end];
+
+    let mut total = 0u64;
+    for address in addresses {
+        let addr_bytes = address.as_bytes();
+        if addr_bytes.len() > ADDR_LEN {
+            continue;
+        }
+
+        // Binary search: compare address bytes (null-padded) against sorted entries
+        let mut lo = 0usize;
+        let mut hi = entry_count;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let entry_offset = mid * ENTRY_SIZE;
+            let entry_addr = &entries[entry_offset..entry_offset + ADDR_LEN];
+
+            // Compare: trim null padding from stored address
+            let stored_len = entry_addr.iter().position(|&b| b == 0).unwrap_or(ADDR_LEN);
+            let stored_addr = &entry_addr[..stored_len];
+
+            match stored_addr.cmp(addr_bytes) {
+                std::cmp::Ordering::Equal => {
+                    // Found — read the u64 balance
+                    let bal_offset = entry_offset + ADDR_LEN;
+                    let bal = u64::from_le_bytes([
+                        entries[bal_offset],
+                        entries[bal_offset + 1],
+                        entries[bal_offset + 2],
+                        entries[bal_offset + 3],
+                        entries[bal_offset + 4],
+                        entries[bal_offset + 5],
+                        entries[bal_offset + 6],
+                        entries[bal_offset + 7],
+                    ]);
+                    total = total.saturating_add(bal);
+                    break;
+                }
+                std::cmp::Ordering::Less => lo = mid + 1,
+                std::cmp::Ordering::Greater => hi = mid,
+            }
+        }
+    }
+    total
 }
 
 // ─── Address management commands ─────────────────────────────────────────────

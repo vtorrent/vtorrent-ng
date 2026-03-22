@@ -382,6 +382,66 @@ impl SwapOrder {
     }
 }
 
+// ─── Order Book ─────────────────────────────────────────────────────────────
+
+/// An in-memory order book for the P2P DEX.
+#[derive(Debug, Default)]
+pub struct SwapOrderBook {
+    orders: Vec<SwapOrder>,
+}
+
+impl SwapOrderBook {
+    pub fn new() -> Self {
+        SwapOrderBook { orders: Vec::new() }
+    }
+
+    /// Add a new order to the book.
+    pub fn add_order(&mut self, order: SwapOrder) {
+        self.orders.push(order);
+    }
+
+    /// List all open orders.
+    pub fn list_open_orders(&self) -> Vec<&SwapOrder> {
+        self.orders.iter()
+            .filter(|o| o.status == OrderStatus::Open)
+            .collect()
+    }
+
+    /// Cancel an order by hex-encoded order_id. Returns true if found.
+    pub fn cancel_order(&mut self, id: &str) -> bool {
+        for order in self.orders.iter_mut() {
+            if hex::encode(order.order_id) == id {
+                order.status = OrderStatus::Cancelled;
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// Convenience wrapper for creating a new atomic swap (generates a random preimage).
+pub struct AtomicSwap {
+    pub preimage: [u8; 32],
+    pub hash_lock: [u8; 32],
+}
+
+impl AtomicSwap {
+    pub fn new() -> Self {
+        use rand::RngCore;
+        let mut preimage = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut preimage);
+        let hash_lock = {
+            let mut hasher = Sha256::new();
+            hasher.update(&preimage);
+            let result = hasher.finalize();
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&result);
+            out
+        };
+        AtomicSwap { preimage, hash_lock }
+    }
+}
+
 // ─── Helper functions ────────────────────────────────────────────────────────
 
 /// SHA256 of a 32-byte input.

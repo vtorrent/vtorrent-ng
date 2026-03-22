@@ -1,0 +1,123 @@
+name: Build vTorrent Desktop Client
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ─── Rust tests ─────────────────────────────────────────────────────────────
+  test:
+    name: Rust Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run all workspace tests
+        run: cargo test --workspace --all-features
+
+  # ─── Desktop builds ─────────────────────────────────────────────────────────
+  build-desktop:
+    name: Build (${{ matrix.platform }})
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            artifact: vtorrent_*.deb vtorrent_*.AppImage
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            artifact: vtorrent_*.dmg
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            artifact: vtorrent_*_aarch64.dmg
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: vtorrent_*.exe vtorrent_*.msi
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: vtorrent-ui/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: vtorrent-ui
+        run: pnpm install
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: vtorrent-tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: 'vTorrent ${{ github.ref_name }}'
+          releaseBody: |
+            ## vTorrent ${{ github.ref_name }}
+
+            ### What's New
+            See [CHANGELOG.md](https://github.com/vtorrent/vtorrent-ng/blob/main/CHANGELOG.md)
+
+            ### Downloads
+            | Platform | File |
+            |----------|------|
+            | macOS (Apple Silicon) | `vtorrent_*_aarch64.dmg` |
+            | macOS (Intel) | `vtorrent_*_x64.dmg` |
+            | Windows | `vtorrent_*.msi` or `vtorrent_*.exe` |
+            | Linux (Debian/Ubuntu) | `vtorrent_*.deb` |
+            | Linux (AppImage) | `vtorrent_*.AppImage` |
+
+            ### Verifying Downloads
+            All releases are signed. Verify with:
+            ```bash
+            # macOS/Linux
+            shasum -a 256 vtorrent_*
+            # Windows (PowerShell)
+            Get-FileHash vtorrent_* -Algorithm SHA256
+            ```
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}
