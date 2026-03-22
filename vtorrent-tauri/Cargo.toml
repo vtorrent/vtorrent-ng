@@ -19,6 +19,10 @@ tauri-build = { version = "2", features = [] }
 vtorrent-core    = { path = "../vtorrent-core" }
 vtorrent-migrate = { path = "../vtorrent-migrate" }
 vtorrent-wallet  = { path = "../vtorrent-wallet" }
+vtorrent-node    = { path = "../vtorrent-node" }
+vtorrent-rpc     = { path = "../vtorrent-rpc" }
+vtorrent-torrent = { path = "../vtorrent-torrent" }
+hex = "0.4"
 
 # Tauri v2 framework
 tauri       = { version = "2" }

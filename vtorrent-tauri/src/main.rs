@@ -21,6 +21,18 @@ fn main() {
             commands::enable_2fa,
             commands::verify_2fa,
             commands::disable_2fa,
+            // Node lifecycle
+            commands::start_node,
+            commands::get_node_info,
+            // Transactions
+            commands::get_transactions,
+            commands::send_vtr,
+            // Torrent sessions
+            commands::get_torrent_sessions,
+            // DEX order book
+            commands::get_dex_orders,
+            commands::place_dex_order,
+            commands::cancel_dex_order,
         ])
         .run(tauri::generate_context!())
         .expect("error while running vTorrent application");

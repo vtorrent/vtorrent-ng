@@ -24,6 +24,9 @@ pub enum TauriError {
 
     #[error("IO error: {0}")]
     Io(String),
+
+    #[error("Node error: {0}")]
+    NodeError(String),
 }
 
 impl From<vtorrent_migrate::error::MigrateError> for TauriError {

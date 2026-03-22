@@ -10,6 +10,10 @@ pub struct NodeInfoResponse {
     pub best_block_hash: String,
     pub connections: usize,
     pub syncing: bool,
+    /// Sync progress as a percentage (0.0–100.0). 100.0 means fully synced.
+    pub sync_percent: f64,
+    /// Number of transactions currently in the mempool.
+    pub mempool_size: usize,
     pub uptime_secs: u64,
 }
 
@@ -226,6 +230,23 @@ pub struct ClaimSubmitResponse {
     pub txid: String,
     pub claimed_satoshis: u64,
     pub recipient_address: String,
+}
+
+// ─── Wallet Import ───────────────────────────────────────────────────────────
+
+/// Request body for `POST /api/v1/wallet/import`.
+/// Imports a WIF-encoded private key into the hot wallet for signing.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportWalletRequest {
+    /// WIF-encoded private key.
+    pub wif: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportWalletResponse {
+    /// The derived vTorrent address for this key.
+    pub address: String,
+    pub success: bool,
 }
 
 // ─── Generic ──────────────────────────────────────────────────────────────────

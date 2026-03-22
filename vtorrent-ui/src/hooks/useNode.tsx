@@ -20,6 +20,10 @@ export interface NodeInfo {
   bestBlockHash: string
   connections: number
   syncing: boolean
+  /** Sync progress as a percentage (0.0–100.0). 100.0 means fully synced. */
+  syncPercent: number
+  /** Number of transactions currently in the mempool. */
+  mempoolSize: number
   uptimeSecs: number
 }
 

@@ -52,6 +52,7 @@ interface WalletContextType extends WalletState {
   enable2FA: () => Promise<{ uri: string; secret: string }>
   disable2FA: (otpCode: string) => Promise<void>
   generateAddress: (label?: string) => Promise<string>
+  sendVtr: (toAddress: string, amountSatoshis: number) => Promise<string>
   totalBalance: number
   legacyImportCount: number
 }
@@ -161,6 +162,13 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
       return true as T
     case 'disable_2fa':
       return undefined as T
+    case 'send_vtr': {
+      // Mock: return a fake txid
+      const fakeTxid = Array.from({ length: 64 }, () =>
+        '0123456789abcdef'[Math.floor(Math.random() * 16)]
+      ).join('')
+      return fakeTxid as T
+    }
     default:
       throw new Error(`Unknown mock command: ${cmd}`)
   }
@@ -288,6 +296,14 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     return info.address
   }, [])
 
+  const sendVtr = useCallback(async (toAddress: string, amountSatoshis: number): Promise<string> => {
+    const txid = await invoke<string>('send_vtr', {
+      toAddress,
+      amountSatoshis,
+    })
+    return txid
+  }, [])
+
   const totalBalance = state.keys.reduce((sum, k) => sum + k.balance, 0)
   const legacyImportCount = state.keys.filter(k => k.isLegacyImport).length
 
@@ -301,6 +317,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       enable2FA,
       disable2FA,
       generateAddress,
+      sendVtr,
       totalBalance,
       legacyImportCount,
     }}>

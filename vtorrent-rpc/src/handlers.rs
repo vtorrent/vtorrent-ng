@@ -30,6 +30,31 @@ pub async fn get_node_info(State(state): State<Arc<AppState>>) -> RpcResult<Json
         .map(|h| hex::encode(h))
         .unwrap_or_else(|| "0".repeat(64));
 
+    // Compute sync percentage from best known peer height.
+    let sync_percent = if syncing {
+        let peer_height = *state.best_peer_height.read().await;
+        if peer_height > 0 {
+            ((height as f64 / peer_height as f64) * 100.0).min(99.9)
+        } else {
+            0.0
+        }
+    } else {
+        100.0
+    };
+
+    // Get mempool size without holding the chain lock.
+    drop(chain);
+    let mempool_size = {
+        let mempool = state.mempool.lock().await;
+        mempool.size()
+    };
+    // Re-acquire chain for best_hash (already computed above, just use height).
+    let chain = state.chain.lock().await;
+    let height = chain.best_height() as u64;
+    let best_hash = chain.best_hash()
+        .map(|h| hex::encode(h))
+        .unwrap_or_else(|| "0".repeat(64));
+
     Ok(Json(NodeInfoResponse {
         version: env!("CARGO_PKG_VERSION").to_string(),
         network: "vtorrent-mainnet".to_string(),
@@ -37,6 +62,8 @@ pub async fn get_node_info(State(state): State<Arc<AppState>>) -> RpcResult<Json
         best_block_hash: best_hash,
         connections: peer_count,
         syncing,
+        sync_percent,
+        mempool_size,
         uptime_secs: uptime,
     }))
 }
@@ -146,10 +173,64 @@ pub async fn get_addresses(State(state): State<Arc<AppState>>) -> RpcResult<Json
     Ok(Json(AddressesResponse { addresses }))
 }
 
+/// POST /api/v1/wallet/import
+///
+/// Imports a WIF-encoded private key into the hot wallet.  The key is stored
+/// in memory only (never written to disk) and is cleared on wallet lock or
+/// daemon restart.  The wallet must be unlocked before calling this endpoint.
+pub async fn import_wallet(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ImportWalletRequest>,
+) -> RpcResult<Json<ImportWalletResponse>> {
+    use vtorrent_wallet::tx_builder::pubkey_to_vtorrent_address;
+    use vtorrent_core::keys::PrivateKey;
+    use secp256k1::{Secp256k1, SecretKey};
+
+    if !state.is_wallet_unlocked().await {
+        return Err(RpcError::WalletLocked);
+    }
+    if req.wif.is_empty() {
+        return Err(RpcError::BadRequest("WIF private key is required".into()));
+    }
+
+    // Validate the WIF key and derive the address.
+    let key = PrivateKey::from_wif(&req.wif)
+        .map_err(|e| RpcError::BadRequest(format!("Invalid WIF key: {}", e)))?;
+    let secp = Secp256k1::new();
+    let secret_key = SecretKey::from_slice(key.as_bytes())
+        .map_err(|e| RpcError::BadRequest(format!("Invalid key bytes: {}", e)))?;
+    let pubkey = secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
+    let address = pubkey_to_vtorrent_address(&pubkey.serialize())
+        .map_err(|e| RpcError::Internal(e.to_string()))?;
+
+    // Store the WIF and derived address in AppState.
+    *state.wallet_wif.write().await = Some(req.wif);
+    *state.wallet_change_address.write().await = Some(address.clone());
+
+    tracing::info!("Hot wallet imported: {}", address);
+
+    Ok(Json(ImportWalletResponse {
+        address,
+        success: true,
+    }))
+}
+
+/// POST /api/v1/wallet/send
+///
+/// Builds, signs, and broadcasts a real VTR transaction using the hot wallet
+/// key imported via `/api/v1/wallet/import`.
+///
+/// The transaction is:
+///   1. Built with `TxBuilder` (coin selection, change output, fee calculation)
+///   2. Signed with the imported WIF key
+///   3. Added to the local mempool
+///   4. The txid is returned immediately; propagation to peers happens async
 pub async fn send_vtr(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SendRequest>,
 ) -> RpcResult<Json<SendResponse>> {
+    use vtorrent_wallet::tx_builder::TxBuilder;
+
     if !state.is_wallet_unlocked().await {
         return Err(RpcError::WalletLocked);
     }
@@ -160,15 +241,54 @@ pub async fn send_vtr(
         return Err(RpcError::BadRequest("Recipient address is required".into()));
     }
 
-    let addr_bytes = req.to_address.as_bytes();
-    let preview_len = 8.min(addr_bytes.len());
-    let fake_txid = format!("vtx_{}", hex::encode(&addr_bytes[..preview_len]));
-    let fee = (req.amount_satoshis / 1000).max(1000);
+    // Retrieve the hot wallet WIF key.
+    let wif = state.wallet_wif.read().await.clone()
+        .ok_or_else(|| RpcError::BadRequest(
+            "No wallet key imported. Call POST /api/v1/wallet/import first.".into()
+        ))?;
+
+    // Retrieve the change address.
+    let change_address = state.wallet_change_address.read().await.clone()
+        .ok_or_else(|| RpcError::Internal("Change address not set".into()))?;
+
+    // Collect all UTXOs from the chain that belong to the hot wallet address.
+    let utxos: Vec<vtorrent_node::chain::Utxo> = {
+        let chain = state.chain.lock().await;
+        chain.get_utxos_for_address(&change_address)
+    };
+
+    if utxos.is_empty() {
+        return Err(RpcError::BadRequest(
+            "No UTXOs available for this wallet address. Fund the address first.".into()
+        ));
+    }
+
+    // Build and sign the transaction.
+    let tx = TxBuilder::new()
+        .recipient(&req.to_address, req.amount_satoshis)
+        .change_address(&change_address)
+        .fee_rate(10) // 10 sat/byte — reasonable default
+        .sign_with_wif(&wif)
+        .build(&utxos)
+        .map_err(|e| RpcError::BadRequest(format!("Transaction build failed: {}", e)))?;
+
+    let txid = hex::encode(tx.txid());
+    let fee_satoshis: u64 = utxos.iter().map(|u| u.value).sum::<u64>()
+        .saturating_sub(tx.outputs.iter().map(|o| o.value).sum::<u64>());
+
+    // Add to local mempool.
+    {
+        let mut mempool = state.mempool.lock().await;
+        mempool.add_transaction(tx)
+            .map_err(|e| RpcError::BadRequest(format!("Mempool rejected transaction: {}", e)))?;
+    }
+
+    tracing::info!("Transaction {} submitted to mempool ({} sats to {})", txid, req.amount_satoshis, req.to_address);
 
     Ok(Json(SendResponse {
-        txid: fake_txid,
+        txid,
         amount_satoshis: req.amount_satoshis,
-        fee_satoshis: fee,
+        fee_satoshis,
     }))
 }
 
@@ -195,6 +315,9 @@ pub async fn unlock_wallet(
 }
 
 pub async fn lock_wallet(State(state): State<Arc<AppState>>) -> RpcResult<Json<Value>> {
+    // Clear the hot wallet key on lock for security.
+    *state.wallet_wif.write().await = None;
+    *state.wallet_change_address.write().await = None;
     *state.wallet_unlock_expiry.write().await = None;
     Ok(Json(json!({ "success": true, "message": "Wallet locked" })))
 }
@@ -389,7 +512,6 @@ pub async fn place_dex_order(
     let hash_lock = hex::encode(swap.hash_lock);
     let htlc_address = format!("htlc_{}", &hash_lock[..16]);
 
-    // SwapOrder::new(maker_address, vtr_amount, target_asset, target_amount, locktime_seconds)
     let locktime = if req.expiry_secs > 0 && req.expiry_secs <= u32::MAX as u64 {
         req.expiry_secs as u32
     } else {
@@ -444,10 +566,23 @@ pub async fn check_claim(
     }))
 }
 
+/// POST /api/v1/claim/submit
+///
+/// Verifies ownership of a legacy vTorrent address via WIF signature and
+/// creates a claim transaction that mints the equivalent VTR on the new chain.
+///
+/// This uses `vtorrent-snapshot` to verify the legacy balance and
+/// `vtorrent-wallet::TxBuilder` to build the claim transaction.
 pub async fn submit_claim(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Json(req): Json<ClaimSubmitRequest>,
 ) -> RpcResult<Json<ClaimSubmitResponse>> {
+    use vtorrent_node::genesis::get_legacy_balance;
+    use vtorrent_wallet::tx_builder::{p2pkh_script_pubkey, pubkey_to_vtorrent_address};
+    use vtorrent_core::keys::PrivateKey;
+    use secp256k1::{Secp256k1, SecretKey};
+    use vtorrent_node::block::{Transaction, TxOutput, TxType};
+
     if req.wif_private_key.is_empty() {
         return Err(RpcError::BadRequest("WIF private key is required".into()));
     }
@@ -455,13 +590,75 @@ pub async fn submit_claim(
         return Err(RpcError::BadRequest("Recipient address is required".into()));
     }
 
-    let addr_bytes = req.recipient_address.as_bytes();
-    let preview_len = 8.min(addr_bytes.len());
-    let fake_txid = format!("claim_{}", hex::encode(&addr_bytes[..preview_len]));
+    // 1. Derive the legacy address from the WIF key.
+    let key = PrivateKey::from_wif(&req.wif_private_key)
+        .map_err(|e| RpcError::BadRequest(format!("Invalid WIF key: {}", e)))?;
+    let secp = Secp256k1::new();
+    let secret_key = SecretKey::from_slice(key.as_bytes())
+        .map_err(|e| RpcError::BadRequest(format!("Invalid key bytes: {}", e)))?;
+    let pubkey = secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
+    let derived_address = pubkey_to_vtorrent_address(&pubkey.serialize())
+        .map_err(|e| RpcError::Internal(e.to_string()))?;
+
+    // 2. Look up the claimable balance for this address.
+    let claimable = get_legacy_balance(&derived_address);
+    if claimable == 0 {
+        return Err(RpcError::BadRequest(
+            format!("No claimable balance for address {}", derived_address)
+        ));
+    }
+
+    // 3. Check if already claimed.
+    {
+        let chain = state.chain.lock().await;
+        if chain.is_claimed(&derived_address) {
+            return Err(RpcError::BadRequest(
+                format!("Address {} has already been claimed", derived_address)
+            ));
+        }
+    }
+
+    // 4. Build a claim transaction (coinbase-style with claim_address set).
+    //    The transaction has no inputs (it is a genesis claim) and one output
+    //    to the recipient address.
+    let script_pubkey = p2pkh_script_pubkey(&req.recipient_address)
+        .map_err(|e| RpcError::BadRequest(format!("Invalid recipient address: {}", e)))?;
+
+    // Sign the claim: sign the recipient address bytes with the legacy key.
+    let msg_bytes = req.recipient_address.as_bytes();
+    let msg_hash = vtorrent_core::crypto::sha256d(msg_bytes);
+    let msg = secp256k1::Message::from_digest_slice(&msg_hash)
+        .map_err(|e| RpcError::Internal(e.to_string()))?;
+    let sig = secp.sign_ecdsa(&msg, &secret_key);
+    let sig_bytes = sig.serialize_der().to_vec();
+
+    let tx = Transaction {
+        version: 1,
+        tx_type: TxType::LegacyClaim,
+        inputs: vec![],
+        outputs: vec![TxOutput {
+            value: claimable,
+            script_pubkey,
+        }],
+        lock_time: 0,
+        claim_address: Some(derived_address.clone()),
+        claim_signature: Some(sig_bytes),
+    };
+
+    let txid = hex::encode(tx.txid());
+
+    // 5. Submit to mempool.
+    {
+        let mut mempool = state.mempool.lock().await;
+        mempool.add_transaction(tx)
+            .map_err(|e| RpcError::BadRequest(format!("Mempool rejected claim: {}", e)))?;
+    }
+
+    tracing::info!("Claim transaction {} submitted for {} ({} sats)", txid, derived_address, claimable);
 
     Ok(Json(ClaimSubmitResponse {
-        txid: fake_txid,
-        claimed_satoshis: 0,
+        txid,
+        claimed_satoshis: claimable,
         recipient_address: req.recipient_address,
     }))
 }

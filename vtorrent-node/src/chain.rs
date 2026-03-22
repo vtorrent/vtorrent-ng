@@ -14,7 +14,7 @@ use crate::{
 };
 
 /// A UTXO (unspent transaction output).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Utxo {
     pub txid: [u8; 32],
     pub vout: u32,
@@ -43,10 +43,18 @@ struct BlockJournal {
 }
 
 /// The result of processing a new block.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BlockAcceptance {
     /// Block was appended to the main chain.
-    MainChain { height: u32 },
+    MainChain {
+        height: u32,
+        /// UTXOs created by this block (for persistence).
+        utxos_added: Vec<Utxo>,
+        /// UTXOs spent by this block (for persistence).
+        utxos_removed: Vec<([u8; 32], u32)>,
+        /// Legacy addresses claimed by this block (for persistence).
+        claimed_addresses: Vec<String>,
+    },
     /// Block extended a fork, which then became the new main chain (reorg occurred).
     Reorg { old_tip: [u8; 32], new_tip: [u8; 32], depth: u32 },
     /// Block extended a fork that is still shorter than the main chain.
@@ -261,6 +269,24 @@ impl Chain {
             self.block_heights.insert(block_hash, height);
 
             let journal = self.apply_block_journaled(&block, height)?;
+
+            // Extract UTXO diff from journal for persistence
+            let mut utxos_added: Vec<Utxo> = Vec::new();
+            let mut utxos_removed: Vec<([u8; 32], u32)> = Vec::new();
+            for change in &journal.changes {
+                match change {
+                    UtxoChange::Added { key } => {
+                        if let Some(utxo) = self.utxo_set.get(key) {
+                            utxos_added.push(utxo.clone());
+                        }
+                    }
+                    UtxoChange::Removed { key, .. } => {
+                        utxos_removed.push(*key);
+                    }
+                }
+            }
+            let claimed_addresses = journal.claimed_addresses.clone();
+
             self.journals.push_back(journal);
 
             // Trim old journals beyond max_reorg_depth
@@ -274,7 +300,7 @@ impl Chain {
             tracing::info!("Main chain extended to height {} ({})",
                 height, hex::encode(block_hash));
 
-            Ok(BlockAcceptance::MainChain { height })
+            Ok(BlockAcceptance::MainChain { height, utxos_added, utxos_removed, claimed_addresses })
 
         } else if self.blocks.contains_key(&prev_hash) {
             // ── Fork: block's parent is known but not the main tip ────────
@@ -598,7 +624,7 @@ mod tests {
         let genesis_hash = chain.best_hash().unwrap();
         let block = make_block(genesis_hash, 1);
         let result = chain.add_block(block).unwrap();
-        assert!(matches!(result, BlockAcceptance::MainChain { height: 1 }));
+        assert!(matches!(result, BlockAcceptance::MainChain { height: 1, .. }));
         assert_eq!(chain.best_height(), 1);
     }
 

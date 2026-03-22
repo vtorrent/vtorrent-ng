@@ -5,9 +5,13 @@
 /// a circular crate dependency.
 ///
 /// `vtorrent-node` defines the events; `vtorrent-rpc` subscribes to them and
-/// re-broadcasts them to WebSocket clients.
+/// re-broadcasts them to WebSocket clients.  The daemon also uses `NewBlock`
+/// to persist blocks via `vtorrent-store`.
 use std::sync::Arc;
 use tokio::sync::broadcast;
+
+use crate::block::Block;
+use crate::chain::Utxo;
 
 /// An event emitted by the node.
 #[derive(Debug, Clone)]
@@ -19,6 +23,14 @@ pub enum NodeEvent {
         tx_count: usize,
         timestamp: u32,
         size_bytes: usize,
+        /// Full block (Arc-wrapped so cloning is cheap).
+        block: Arc<Block>,
+        /// UTXOs created by this block (for BlockStore persistence).
+        utxos_added: Vec<Utxo>,
+        /// UTXOs spent by this block: (txid, vout) pairs.
+        utxos_removed: Vec<([u8; 32], u32)>,
+        /// Legacy addresses claimed by this block.
+        claimed_addresses: Vec<String>,
     },
     /// A transaction was confirmed in a block.
     TxConfirmed {

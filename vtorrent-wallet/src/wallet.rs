@@ -211,6 +211,19 @@ impl Wallet {
         self.data.default_address.as_deref()
     }
 
+    /// Get the WIF private key for the default address.
+    ///
+    /// Used by the Tauri `send_vtr` command to sign transactions.
+    /// The wallet must already be unlocked (loaded into memory) — no passphrase
+    /// is required here because the WIF is stored in plaintext in `WalletData`
+    /// after decryption.
+    pub fn get_default_wif(&self) -> Option<&str> {
+        let default_addr = self.data.default_address.as_deref()?;
+        self.data.keys.iter()
+            .find(|k| k.address == default_addr)
+            .map(|k| k.wif.as_str())
+    }
+
     /// Get the number of keys in the wallet.
     pub fn key_count(&self) -> usize {
         self.data.keys.len()

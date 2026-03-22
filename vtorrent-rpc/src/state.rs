@@ -41,6 +41,15 @@ pub struct AppState {
     pub blocks_staked: Arc<RwLock<u64>>,
     /// WebSocket event broadcaster.
     pub events: EventBroadcaster,
+    /// Hot wallet WIF private key (in-memory only, never persisted to disk).
+    ///
+    /// Set via `POST /api/v1/wallet/import` after the wallet is unlocked.
+    /// Cleared on wallet lock or daemon restart.
+    pub wallet_wif: Arc<RwLock<Option<String>>>,
+    /// Derived change address for the hot wallet (from `wallet_wif`).
+    pub wallet_change_address: Arc<RwLock<Option<String>>>,
+    /// Best block height reported by any connected peer (used for sync % calculation).
+    pub best_peer_height: Arc<RwLock<u64>>,
 }
 
 impl AppState {
@@ -70,6 +79,9 @@ impl AppState {
             staking_address: Arc::new(RwLock::new(None)),
             blocks_staked: Arc::new(RwLock::new(0)),
             events: EventBroadcaster::new(1024),
+            wallet_wif: Arc::new(RwLock::new(None)),
+            wallet_change_address: Arc::new(RwLock::new(None)),
+            best_peer_height: Arc::new(RwLock::new(0)),
         }
     }
 
@@ -95,6 +107,9 @@ impl AppState {
             staking_address: Arc::new(RwLock::new(None)),
             blocks_staked: Arc::new(RwLock::new(0)),
             events: EventBroadcaster::new(1024),
+            wallet_wif: Arc::new(RwLock::new(None)),
+            wallet_change_address: Arc::new(RwLock::new(None)),
+            best_peer_height: Arc::new(RwLock::new(0)),
         }
     }
 

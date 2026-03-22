@@ -30,6 +30,9 @@ anyhow = "1"
 hex = "0.4"
 base64 = "0.21"
 
+# Crypto
+secp256k1 = { workspace = true }
+
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

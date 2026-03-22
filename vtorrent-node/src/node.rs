@@ -131,6 +131,35 @@ impl Node {
         })
     }
 
+    /// Create a new node with a pre-loaded chain (e.g. loaded from BlockStore on disk).
+    ///
+    /// This is used by `vtorrent-daemon` when resuming from a persisted chain state
+    /// rather than starting from genesis.
+    pub fn new_with_chain(config: NodeConfig, chain: Chain) -> Result<Self> {
+        let best_height = chain.best_height();
+        let mempool = Mempool::new(config.max_mempool);
+        let peer_manager = PeerManager::new(best_height, &config.listen_addr);
+
+        let staking = if config.staking_enabled {
+            config.staking_address.as_ref().map(|addr| {
+                StakingEngine::new(addr.clone())
+            })
+        } else {
+            None
+        };
+
+        Ok(Self {
+            chain: Arc::new(Mutex::new(chain)),
+            mempool: Arc::new(Mutex::new(mempool)),
+            peer_manager,
+            staking,
+            config,
+            overlay: None,
+            event_tx: None,
+            compact_peers: std::collections::HashMap::new(),
+        })
+    }
+
     /// Returns a clone of the Arc wrapping the chain Mutex.
     /// Used by vtorrent-daemon to share the live chain with the RPC server.
     pub fn chain_arc(&self) -> Arc<Mutex<Chain>> {
@@ -550,9 +579,9 @@ impl Node {
                                 use crate::chain::BlockAcceptance;
                                 let hash = block.hash();
                                 let should_relay = match &acceptance {
-                                    BlockAcceptance::MainChain { height } => {
+                                    BlockAcceptance::MainChain { height, utxos_added, utxos_removed, claimed_addresses } => {
                                         tracing::info!("Accepted block {} at height {}", hex::encode(hash), height);
-                                        // Emit new_block event
+                                        // Emit new_block event (carries full block + UTXO diff for BlockStore persistence)
                                         let size_bytes = serde_json::to_vec(&block).map(|v| v.len()).unwrap_or(0);
                                         self.emit(NodeEvent::NewBlock {
                                             height: *height,
@@ -560,6 +589,10 @@ impl Node {
                                             tx_count: block.transactions.len(),
                                             timestamp: block.header.timestamp,
                                             size_bytes,
+                                            block: std::sync::Arc::new(block.clone()),
+                                            utxos_added: utxos_added.clone(),
+                                            utxos_removed: utxos_removed.clone(),
+                                            claimed_addresses: claimed_addresses.clone(),
                                         });
                                         // Emit tx_confirmed for each transaction in the block
                                         for tx in &block.transactions {
@@ -756,7 +789,7 @@ impl Node {
                                     Ok(acceptance) => {
                                         use crate::chain::BlockAcceptance;
                                         let hash = block.hash();
-                                        if let BlockAcceptance::MainChain { height } = &acceptance {
+                                        if let BlockAcceptance::MainChain { height, utxos_added, utxos_removed, claimed_addresses } = &acceptance {
                                             tracing::info!(
                                                 "cmpctblock: accepted block {} at height {}",
                                                 hex::encode(hash), height
@@ -768,6 +801,10 @@ impl Node {
                                                 tx_count: block.transactions.len(),
                                                 timestamp: block.header.timestamp,
                                                 size_bytes,
+                                                block: std::sync::Arc::new(block.clone()),
+                                                utxos_added: utxos_added.clone(),
+                                                utxos_removed: utxos_removed.clone(),
+                                                claimed_addresses: claimed_addresses.clone(),
                                             });
                                             for tx in &block.transactions {
                                                 self.emit(NodeEvent::TxConfirmed {
@@ -919,14 +956,52 @@ impl Node {
             pending_txs,
         ) {
             let block_hash = block.hash();
-            {
+            let block_arc = std::sync::Arc::new(block.clone());
+            let acceptance = {
                 let mut chain = self.chain.lock().await;
-                chain.add_block(block).map_err(|e| e)?;
+                let result = chain.add_block(block.clone()).map_err(|e| e)?;
                 tracing::info!(
                     "Staked new block {} at height {}",
                     hex::encode(block_hash),
                     chain.best_height()
                 );
+                result
+            };
+
+            // Emit NewBlock event (carries UTXO diff for BlockStore persistence)
+            use crate::chain::BlockAcceptance;
+            if let BlockAcceptance::MainChain { height, utxos_added, utxos_removed, claimed_addresses } = &acceptance {
+                let size_bytes = serde_json::to_vec(&*block_arc).map(|v| v.len()).unwrap_or(0);
+                self.emit(NodeEvent::NewBlock {
+                    height: *height,
+                    hash: block_hash,
+                    tx_count: block_arc.transactions.len(),
+                    timestamp: block_arc.header.timestamp,
+                    size_bytes,
+                    block: block_arc.clone(),
+                    utxos_added: utxos_added.clone(),
+                    utxos_removed: utxos_removed.clone(),
+                    claimed_addresses: claimed_addresses.clone(),
+                });
+                for tx in &block_arc.transactions {
+                    self.emit(NodeEvent::TxConfirmed {
+                        txid: tx.txid(),
+                        block_height: *height,
+                        block_hash,
+                    });
+                }
+                // Emit StakingReward event
+                let reward_sats: u64 = block_arc.transactions.iter()
+                    .filter(|tx| matches!(tx.tx_type, crate::block::TxType::Coinstake))
+                    .flat_map(|tx| tx.outputs.iter())
+                    .map(|o| o.value)
+                    .sum();
+                let staking_addr = staking.address.clone();
+                self.emit(NodeEvent::StakingReward {
+                    block_height: *height,
+                    reward_sats,
+                    address: staking_addr,
+                });
             }
 
             // Announce to peers
@@ -1067,15 +1142,44 @@ impl Node {
 
                 self.overlay = Some(overlay);
 
-                // Spawn background task to handle overlay events
+                // Clone the event sender so the overlay background task can emit
+                // NodeEvents for overlay peer connect/disconnect.
+                let overlay_event_tx = self.event_tx.clone();
+
+                // Spawn background task to handle overlay events and forward them
+                // as NodeEvents to the RPC WebSocket broadcaster.
                 tokio::spawn(async move {
                     while let Some(event) = events.recv().await {
                         match event {
                             OverlayEvent::PeerConnected(ep) => {
-                                tracing::info!("Overlay: peer connected {}", ep);
+                                let ep_str = ep.to_string();
+                                tracing::info!("Overlay: peer connected {}", ep_str);
+                                if let Some(ref tx) = overlay_event_tx {
+                                    // Parse the endpoint string as a SocketAddr; use a
+                                    // dummy loopback address if the overlay endpoint is
+                                    // not a plain IP:port string.
+                                    let addr: std::net::SocketAddr = ep_str
+                                        .parse()
+                                        .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
+                                    let _ = tx.send(std::sync::Arc::new(NodeEvent::PeerConnected {
+                                        addr,
+                                        user_agent: "overlay".to_string(),
+                                        version: 0,
+                                        height: 0,
+                                    }));
+                                }
                             }
                             OverlayEvent::PeerDisconnected(id) => {
-                                tracing::info!("Overlay: peer disconnected {}", &id[..8]);
+                                let short_id = &id[..8.min(id.len())];
+                                tracing::info!("Overlay: peer disconnected {}", short_id);
+                                if let Some(ref tx) = overlay_event_tx {
+                                    let addr: std::net::SocketAddr = id
+                                        .parse()
+                                        .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
+                                    let _ = tx.send(std::sync::Arc::new(NodeEvent::PeerDisconnected {
+                                        addr,
+                                    }));
+                                }
                             }
                             OverlayEvent::ExternalAddrDiscovered(addr) => {
                                 tracing::info!("Overlay: external address confirmed {}", addr);
@@ -1084,7 +1188,7 @@ impl Node {
                                 tracing::debug!(
                                     "Overlay: {} bytes from {}",
                                     payload.len(),
-                                    &from_node_id[..8]
+                                    &from_node_id[..8.min(from_node_id.len())]
                                 );
                             }
                         }

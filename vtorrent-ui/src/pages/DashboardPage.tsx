@@ -1,5 +1,8 @@
 import { useState } from 'react'
-import { Copy, Plus, RefreshCw, TrendingUp, Coins, ArrowUpRight, ArrowDownLeft, Clock, Wifi, WifiOff } from 'lucide-react'
+import {
+  Copy, Plus, RefreshCw, TrendingUp, Coins, ArrowUpRight,
+  ArrowDownLeft, Clock, Wifi, WifiOff, Send, X, CheckCircle, AlertCircle,
+} from 'lucide-react'
 import { useWallet, formatVTR } from '../hooks/useWallet'
 import { useTransactions, useNodeInfo, type TxRecord } from '../hooks/useNode'
 
@@ -29,12 +32,178 @@ function shortTxid(txid: string): string {
   return `${txid.slice(0, 8)}…${txid.slice(-8)}`
 }
 
-// ─── Component ────────────────────────────────────────────────────────────────
+/** Parse a VTR amount string like "1.5" into satoshis (u64). */
+function parseVtrAmount(value: string): number {
+  const n = parseFloat(value)
+  if (isNaN(n) || n <= 0) return 0
+  return Math.round(n * 1_000_000)
+}
+
+// ─── Send VTR Modal ───────────────────────────────────────────────────────────
+
+type SendStatus = 'idle' | 'sending' | 'success' | 'error'
+
+interface SendModalProps {
+  onClose: () => void
+  onSent: () => void
+}
+
+function SendModal({ onClose, onSent }: SendModalProps) {
+  const { sendVtr } = useWallet()
+  const [toAddress, setToAddress] = useState('')
+  const [amount, setAmount] = useState('')
+  const [status, setStatus] = useState<SendStatus>('idle')
+  const [txid, setTxid] = useState('')
+  const [errorMsg, setErrorMsg] = useState('')
+
+  const amountSats = parseVtrAmount(amount)
+  const isValid = toAddress.trim().length > 10 && amountSats > 0
+
+  const handleSend = async () => {
+    if (!isValid) return
+    setStatus('sending')
+    setErrorMsg('')
+    try {
+      const result = await sendVtr(toAddress.trim(), amountSats)
+      setTxid(result)
+      setStatus('success')
+      onSent()
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : String(err))
+      setStatus('error')
+    }
+  }
+
+  return (
+    /* Backdrop */
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      onClick={e => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div className="bg-navy-900 border border-navy-700 rounded-2xl w-full max-w-sm mx-4 shadow-2xl">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-navy-800">
+          <div className="flex items-center gap-2">
+            <Send size={16} className="text-vtorrent-400" />
+            <h2 className="text-sm font-semibold text-white">Send VTR</h2>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-gray-600 hover:text-gray-400 transition-colors"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="px-5 py-4 space-y-4">
+          {status === 'success' ? (
+            <div className="text-center py-4 space-y-3">
+              <CheckCircle size={40} className="text-emerald-400 mx-auto" />
+              <p className="text-sm font-medium text-white">Transaction Sent</p>
+              <p className="text-xs text-gray-500 font-mono break-all">{txid}</p>
+              <button
+                onClick={onClose}
+                className="btn-primary w-full mt-2"
+              >
+                Done
+              </button>
+            </div>
+          ) : (
+            <>
+              {/* Recipient address */}
+              <div>
+                <label className="block text-xs text-gray-500 mb-1.5">Recipient Address</label>
+                <input
+                  type="text"
+                  value={toAddress}
+                  onChange={e => setToAddress(e.target.value)}
+                  placeholder="V…"
+                  className="w-full bg-navy-800 border border-navy-700 rounded-lg px-3 py-2.5 text-sm text-white font-mono placeholder-gray-700 focus:outline-none focus:border-vtorrent-600 transition-colors"
+                  disabled={status === 'sending'}
+                />
+              </div>
+
+              {/* Amount */}
+              <div>
+                <label className="block text-xs text-gray-500 mb-1.5">Amount (VTR)</label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    value={amount}
+                    onChange={e => setAmount(e.target.value)}
+                    placeholder="0.000000"
+                    step="0.000001"
+                    min="0"
+                    className="w-full bg-navy-800 border border-navy-700 rounded-lg px-3 py-2.5 text-sm text-white font-mono placeholder-gray-700 focus:outline-none focus:border-vtorrent-600 transition-colors pr-14"
+                    disabled={status === 'sending'}
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-600 font-medium">
+                    VTR
+                  </span>
+                </div>
+                {amountSats > 0 && (
+                  <p className="text-xs text-gray-600 mt-1">
+                    = {amountSats.toLocaleString()} satoshis
+                  </p>
+                )}
+              </div>
+
+              {/* Error */}
+              {status === 'error' && errorMsg && (
+                <div className="flex items-start gap-2 bg-red-900/20 border border-red-800/30 rounded-lg px-3 py-2.5">
+                  <AlertCircle size={14} className="text-red-400 flex-shrink-0 mt-0.5" />
+                  <p className="text-xs text-red-300">{errorMsg}</p>
+                </div>
+              )}
+
+              {/* Fee notice */}
+              <p className="text-xs text-gray-600">
+                Network fee: ~0.000010 VTR (10 sat/byte)
+              </p>
+
+              {/* Actions */}
+              <div className="flex gap-3 pt-1">
+                <button
+                  onClick={onClose}
+                  className="flex-1 btn-secondary"
+                  disabled={status === 'sending'}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSend}
+                  disabled={!isValid || status === 'sending'}
+                  className="flex-1 btn-primary flex items-center justify-center gap-2"
+                >
+                  {status === 'sending' ? (
+                    <>
+                      <RefreshCw size={13} className="animate-spin" />
+                      Sending…
+                    </>
+                  ) : (
+                    <>
+                      <Send size={13} />
+                      Send
+                    </>
+                  )}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
   const { keys, defaultAddress, totalBalance, legacyImportCount, generateAddress } = useWallet()
   const [copied, setCopied] = useState('')
   const [generatingKey, setGeneratingKey] = useState(false)
+  const [showSendModal, setShowSendModal] = useState(false)
 
   // Live node info (block height, connections, sync status)
   const { data: nodeInfo } = useNodeInfo(10_000)
@@ -59,24 +228,45 @@ export default function DashboardPage() {
 
   return (
     <div className="p-6 space-y-6">
+      {/* Send VTR modal */}
+      {showSendModal && (
+        <SendModal
+          onClose={() => setShowSendModal(false)}
+          onSent={() => {
+            setShowSendModal(false)
+            refreshTxs()
+          }}
+        />
+      )}
+
       {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-white">Dashboard</h1>
           <p className="text-gray-500 text-sm mt-0.5">Your vTorrent wallet overview</p>
         </div>
-        {/* Node connectivity badge */}
-        {nodeInfo ? (
-          <div className="flex items-center gap-1.5 text-xs text-emerald-400">
-            <Wifi size={13} />
-            <span>Block {nodeInfo.blockHeight.toLocaleString()} · {nodeInfo.connections} peers</span>
-          </div>
-        ) : (
-          <div className="flex items-center gap-1.5 text-xs text-gray-600">
-            <WifiOff size={13} />
-            <span>Node offline</span>
-          </div>
-        )}
+        <div className="flex items-center gap-3">
+          {/* Send button */}
+          <button
+            onClick={() => setShowSendModal(true)}
+            className="btn-primary flex items-center gap-1.5 text-xs px-3 py-1.5"
+          >
+            <Send size={12} />
+            Send VTR
+          </button>
+          {/* Node connectivity badge */}
+          {nodeInfo ? (
+            <div className="flex items-center gap-1.5 text-xs text-emerald-400">
+              <Wifi size={13} />
+              <span>Block {nodeInfo.blockHeight.toLocaleString()} · {nodeInfo.connections} peers</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5 text-xs text-gray-600">
+              <WifiOff size={13} />
+              <span>Node offline</span>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Stats row */}
@@ -155,6 +345,14 @@ export default function DashboardPage() {
                 </div>
                 <div className="mt-2 flex items-center justify-between">
                   <span className="font-mono text-xs text-gray-400">{formatVTR(key.balance)}</span>
+                  {/* Quick-send from this address */}
+                  <button
+                    onClick={() => setShowSendModal(true)}
+                    className="text-xs text-vtorrent-600 hover:text-vtorrent-400 transition-colors flex items-center gap-1"
+                  >
+                    <Send size={10} />
+                    Send
+                  </button>
                 </div>
               </div>
             ))}

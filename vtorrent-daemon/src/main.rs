@@ -5,6 +5,10 @@
 ///   2. HTTP JSON-RPC server (localhost:22525 by default)
 ///   3. Graceful shutdown on Ctrl+C / SIGTERM
 ///
+/// Chain persistence is handled via `vtorrent-store` (redb): every new
+/// main-chain block is persisted atomically.  On startup the daemon loads
+/// the persisted chain state from disk before starting the node.
+///
 /// Usage:
 ///   vtorrent-daemon [OPTIONS]
 ///
@@ -18,6 +22,7 @@
 ///   --log-level <LEVEL>       Log level: error|warn|info|debug|trace [default: info]
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
@@ -26,6 +31,7 @@ use vtorrent_node::node::{Node, NodeConfig};
 use vtorrent_node::events as node_events;
 use vtorrent_rpc::{server::start_server, state::AppState};
 use vtorrent_rpc::ws::NodeEvent as RpcNodeEvent;
+use vtorrent_store::store::BlockStore;
 
 // ─── CLI Arguments ────────────────────────────────────────────────────────────
 
@@ -93,6 +99,14 @@ async fn main() -> anyhow::Result<()> {
 
     std::fs::create_dir_all(&data_dir)?;
 
+    // ── Open (or create) the persistent block store ───────────────────────────
+    let chain_db_path = data_dir.join("chain.db");
+    let block_store = Arc::new(
+        BlockStore::open(&chain_db_path)
+            .map_err(|e| anyhow::anyhow!("Failed to open block store at {:?}: {}", chain_db_path, e))?
+    );
+    tracing::info!("Block store opened at {:?}", chain_db_path);
+
     // ── Build NodeConfig ──────────────────────────────────────────────────────
     let staking_enabled = cli.staking_address.is_some();
     let config = NodeConfig {
@@ -107,7 +121,27 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // ── Build the P2P Node ────────────────────────────────────────────────────
-    let mut node = Node::new(config.clone())?;
+    //
+    // If the block store has persisted blocks, load them into the chain first
+    // so the node resumes from the last known tip rather than re-syncing from
+    // genesis on every restart.
+    let mut node = {
+        let store_height = block_store.best_height()
+            .map_err(|e| anyhow::anyhow!("BlockStore::best_height failed: {}", e))?;
+
+        if store_height > 0 {
+            tracing::info!("Resuming from persisted chain at height {}", store_height);
+            // Load persisted chain into memory, then build the node with it.
+            let chain = block_store.load_into_chain()
+                .map_err(|e| anyhow::anyhow!("Failed to load chain from store: {}", e))?;
+            Node::new_with_chain(config.clone(), chain)
+                .map_err(|e| anyhow::anyhow!("Node::new_with_chain failed: {}", e))?
+        } else {
+            tracing::info!("No persisted chain found — starting from genesis");
+            Node::new(config.clone())
+                .map_err(|e| anyhow::anyhow!("Node::new failed: {}", e))?
+        }
+    };
 
     // ── Build RPC AppState ────────────────────────────────────────────────────
     // Share the live chain and mempool Arcs from the node so that RPC
@@ -117,24 +151,54 @@ async fn main() -> anyhow::Result<()> {
     let rpc_state = AppState::new_with_shared(chain_arc, mempool_arc);
     let rpc_addr = cli.rpc_addr.clone();
 
-    // ── Wire node events → RPC WebSocket broadcaster ─────────────────────────
+    // ── Wire node events → RPC WebSocket broadcaster + BlockStore ────────────
     //
     // The node emits `vtorrent_node::events::NodeEvent` values.
     // The RPC WebSocket layer consumes `vtorrent_rpc::ws::NodeEvent` values.
     // We bridge them here in the daemon — the only place that knows about both
     // crates — to avoid a circular dependency.
+    //
+    // Additionally, every `NewBlock` event triggers an atomic `BlockStore::append_block`
+    // call to persist the block to disk.
     {
         let (node_tx, mut node_rx) = node_events::channel(1024);
         node.set_event_sender(node_tx);
 
         let rpc_broadcaster = rpc_state.events.clone();
+        let store_for_bridge = Arc::clone(&block_store);
+        let best_peer_height_ref = Arc::clone(&rpc_state.best_peer_height);
+        let peer_count_ref = Arc::clone(&rpc_state.peer_count);
+        let syncing_ref = Arc::clone(&rpc_state.syncing);
 
         tokio::spawn(async move {
             loop {
                 match node_rx.recv().await {
                     Ok(event) => {
+                        // ── Persist new main-chain blocks ─────────────────────
+                        if let node_events::NodeEvent::NewBlock {
+                            height,
+                            block,
+                            utxos_added,
+                            utxos_removed,
+                            claimed_addresses,
+                            ..
+                        } = &*event {
+                            if let Err(e) = store_for_bridge.append_block(
+                                block,
+                                *height,
+                                utxos_added,
+                                utxos_removed,
+                                claimed_addresses,
+                            ) {
+                                tracing::error!("BlockStore::append_block failed at height {}: {}", height, e);
+                            } else {
+                                tracing::debug!("Persisted block at height {}", height);
+                            }
+                        }
+
+                        // ── Bridge to RPC WebSocket broadcaster ───────────────
                         let rpc_event: Option<RpcNodeEvent> = match &*event {
-                            node_events::NodeEvent::NewBlock { height, hash, tx_count, timestamp, size_bytes } => {
+                            node_events::NodeEvent::NewBlock { height, hash, tx_count, timestamp, size_bytes, .. } => {
                                 Some(RpcNodeEvent::NewBlock {
                                     height: *height,
                                     hash: hex::encode(hash),
@@ -159,6 +223,18 @@ async fn main() -> anyhow::Result<()> {
                                 })
                             }
                             node_events::NodeEvent::PeerConnected { addr, user_agent, version, height } => {
+                                // Update peer count and best known peer height for sync % calculation.
+                                {
+                                    let mut count = peer_count_ref.write().await;
+                                    *count += 1;
+                                }
+                                {
+                                    let mut best = best_peer_height_ref.write().await;
+                                    let h = u64::from(*height);
+                                    if h > *best {
+                                        *best = h;
+                                    }
+                                }
                                 Some(RpcNodeEvent::PeerConnected {
                                     addr: addr.to_string(),
                                     version: *version,
@@ -167,6 +243,16 @@ async fn main() -> anyhow::Result<()> {
                                 })
                             }
                             node_events::NodeEvent::PeerDisconnected { addr } => {
+                                // Decrement peer count.
+                                {
+                                    let mut count = peer_count_ref.write().await;
+                                    *count = count.saturating_sub(1);
+                                    // If no peers remain, mark as syncing until reconnected.
+                                    if *count == 0 {
+                                        let mut syncing = syncing_ref.write().await;
+                                        *syncing = true;
+                                    }
+                                }
                                 Some(RpcNodeEvent::PeerDisconnected {
                                     addr: addr.to_string(),
                                     reason: "disconnected".to_string(),

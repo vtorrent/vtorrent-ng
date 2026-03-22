@@ -1,9 +1,10 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Shield, Download, ArrowLeftRight,
-  Lock, ChevronRight, Wifi, WifiOff
+  Lock, Wifi, WifiOff, RefreshCw, Cpu,
 } from 'lucide-react'
 import { useWallet, formatVTR } from '../hooks/useWallet'
+import { useNodeInfo } from '../hooks/useNode'
 import clsx from 'clsx'
 
 const navItems = [
@@ -17,10 +18,21 @@ export default function Layout() {
   const { lock, totalBalance, has2FA, keys } = useWallet()
   const navigate = useNavigate()
 
+  // Poll node info every 8 seconds for live sidebar status
+  const { data: nodeInfo, loading: nodeLoading } = useNodeInfo(8_000)
+
   const handleLock = () => {
     lock()
     navigate('/')
   }
+
+  // Derive status display values
+  const isOnline = !!nodeInfo
+  const isSyncing = nodeInfo ? nodeInfo.syncing : false
+  const syncPct = nodeInfo?.syncPercent ?? 0
+  const blockHeight = nodeInfo?.blockHeight ?? 0
+  const peerCount = nodeInfo?.connections ?? 0
+  const mempoolCount = nodeInfo?.mempoolSize ?? 0
 
   return (
     <div className="flex h-screen overflow-hidden gradient-bg">
@@ -65,13 +77,81 @@ export default function Layout() {
           ))}
         </nav>
 
-        {/* Status & Lock */}
+        {/* Node Status Panel */}
         <div className="px-4 py-4 border-t border-vtorrent-900/30 space-y-3">
-          {/* Network status */}
-          <div className="flex items-center gap-2">
-            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse-slow" />
-            <span className="text-xs text-gray-400">Syncing chain...</span>
+
+          {/* Online / Offline indicator */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              {nodeLoading && !nodeInfo ? (
+                <RefreshCw size={11} className="text-gray-600 animate-spin" />
+              ) : isOnline ? (
+                <Wifi size={11} className="text-emerald-400" />
+              ) : (
+                <WifiOff size={11} className="text-gray-600" />
+              )}
+              <span className={clsx(
+                'text-xs font-medium',
+                isOnline ? 'text-emerald-400' : 'text-gray-600'
+              )}>
+                {nodeLoading && !nodeInfo ? 'Connecting…' : isOnline ? 'Online' : 'Offline'}
+              </span>
+            </div>
+            {isOnline && (
+              <span className="text-xs text-gray-600">
+                {peerCount} peer{peerCount !== 1 ? 's' : ''}
+              </span>
+            )}
           </div>
+
+          {/* Block height */}
+          {isOnline && (
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-gray-600">Block</span>
+                <span className="text-xs text-gray-400 font-mono">
+                  {blockHeight.toLocaleString()}
+                </span>
+              </div>
+
+              {/* Sync progress bar */}
+              {isSyncing ? (
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs text-amber-400 flex items-center gap-1">
+                      <RefreshCw size={9} className="animate-spin" />
+                      Syncing
+                    </span>
+                    <span className="text-xs text-gray-600">{syncPct.toFixed(1)}%</span>
+                  </div>
+                  <div className="w-full h-1 bg-navy-800 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-vtorrent-500 rounded-full transition-all duration-500"
+                      style={{ width: `${Math.min(syncPct, 100)}%` }}
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5">
+                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse-slow" />
+                  <span className="text-xs text-emerald-400">Fully synced</span>
+                </div>
+              )}
+
+              {/* Mempool */}
+              {mempoolCount > 0 && (
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-600 flex items-center gap-1">
+                    <Cpu size={9} />
+                    Mempool
+                  </span>
+                  <span className="text-xs text-gray-500">
+                    {mempoolCount.toLocaleString()} tx{mempoolCount !== 1 ? 's' : ''}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* 2FA status */}
           {has2FA && (

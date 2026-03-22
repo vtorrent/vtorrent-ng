@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 vtorrent-node     = { path = "../vtorrent-node" }
 vtorrent-rpc      = { path = "../vtorrent-rpc" }
+vtorrent-store    = { path = "../vtorrent-store" }
 
 # Async runtime
 tokio             = { version = "1", features = ["full"] }
