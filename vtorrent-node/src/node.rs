@@ -10,8 +10,10 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
 
+use std::path::PathBuf;
+
 use vtorrent_p2p::{
-    dht::{discover_peers_via_doh, DhtBootstrap},
+    dht::{discover_peers_via_doh, discover_peers_via_github, DhtBootstrap},
     message::{
         AddrMsg, GetBlocksMsg, InvItem, InvMsg, InvType, NetMessage,
         NODE_NETWORK, NODE_TORRENT,
@@ -44,6 +46,9 @@ pub struct NodeConfig {
     pub extra_seeds: Vec<String>,
     /// Whether to use DHT bootstrap for peer discovery.
     pub use_dht: bool,
+    /// Node data directory (for peer cache, chain data, etc.).
+    /// Defaults to `~/.vtorrent` on all platforms.
+    pub data_dir: PathBuf,
 }
 
 impl Default for NodeConfig {
@@ -55,8 +60,23 @@ impl Default for NodeConfig {
             max_mempool: 10_000,
             extra_seeds: Vec::new(),
             use_dht: true,
+            data_dir: default_data_dir(),
         }
     }
+}
+
+/// Returns the default node data directory (`~/.vtorrent`).
+fn default_data_dir() -> PathBuf {
+    dirs_home().join(".vtorrent")
+}
+
+/// Cross-platform home directory lookup.
+fn dirs_home() -> PathBuf {
+    // Try $HOME first, then fall back to current directory
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
 }
 
 /// The vTorrent node.
@@ -93,29 +113,60 @@ impl Node {
         })
     }
 
+    /// Returns the path to the peer address book cache file.
+    fn peers_cache_path(&self) -> PathBuf {
+        self.config.data_dir.join("peers.dat")
+    }
+
     /// Start the node — connects to peers and begins the event loop.
     pub async fn start(&mut self) -> Result<()> {
         tracing::info!("Starting vTorrent node on {}", self.config.listen_addr);
+
+        // Ensure data directory exists
+        if let Err(e) = std::fs::create_dir_all(&self.config.data_dir) {
+            tracing::warn!("Could not create data dir {:?}: {}", self.config.data_dir, e);
+        }
+
+        // ── Stage 0: Load peer cache from previous run (instant warm start) ──
+        let cache_path = self.peers_cache_path();
+        match self.peer_manager.addr_book.load(&cache_path) {
+            Ok(n) if n > 0 => {
+                tracing::info!("Warm start: {} peers loaded from cache", n);
+                // Immediately try cached peers before doing any network bootstrap
+                let candidates = self.peer_manager.get_peer_candidates(TARGET_OUTBOUND);
+                for addr in candidates {
+                    if let Err(e) = self.peer_manager.connect_addr(addr).await {
+                        tracing::debug!("Cache: Could not connect to {}: {}", addr, e);
+                    }
+                }
+            }
+            Ok(_) => tracing::info!("No peer cache found — cold start"),
+            Err(e) => tracing::warn!("Could not load peer cache: {}", e),
+        }
 
         // Start P2P listener
         self.peer_manager.start().await
             .map_err(|e| NodeError::Chain(format!("P2P start failed: {}", e)))?;
 
-        // Bootstrap peer discovery:
-        // 1. Try DHT first (fully decentralized, no DNS required)
-        // 2. Fall back to extra_seeds if provided
+        // ── Stage 1: DHT + Cloudflare DoH in parallel (decentralized) ────────
         if self.config.use_dht {
             self.bootstrap_via_dht().await;
         }
 
-        // Connect to any explicitly configured extra seeds
+        // ── Stage 2: Explicitly configured extra seeds ────────────────────────
         if !self.config.extra_seeds.is_empty() {
             self.connect_to_extra_seeds().await;
         }
 
-        // If we still have no peers, try legacy DNS seeds as last resort
+        // ── Stage 3: GitHub-hosted peer list (if still no peers) ─────────────
         if self.peer_manager.peer_count() == 0 {
-            tracing::warn!("No peers found via DHT/seeds, trying legacy DNS seeds as fallback");
+            tracing::info!("No peers yet — trying GitHub bootstrap peer list...");
+            self.bootstrap_via_github().await;
+        }
+
+        // ── Stage 4: Legacy DNS seeds (absolute last resort) ──────────────────
+        if self.peer_manager.peer_count() == 0 {
+            tracing::warn!("No peers found via any decentralized source, trying legacy DNS seeds");
             self.connect_to_dns_seeds().await;
         }
 
@@ -170,6 +221,11 @@ impl Node {
                         mp_size,
                         self.peer_manager.addr_book.len()
                     );
+                    // Persist address book to disk every minute
+                    let cache_path = self.peers_cache_path();
+                    if let Err(e) = self.peer_manager.addr_book.save(&cache_path) {
+                        tracing::debug!("Could not save peer cache: {}", e);
+                    }
                 }
 
                 // PEX: periodically send getaddr and self-announce
@@ -267,6 +323,35 @@ impl Node {
             tracing::info!("Connecting to extra seed: {}", seed);
             if let Err(e) = self.peer_manager.connect(&seed).await {
                 tracing::debug!("Could not connect to {}: {}", seed, e);
+            }
+        }
+    }
+
+    /// Bootstrap from the GitHub-hosted peer list (Stage 3 fallback).
+    async fn bootstrap_via_github(&mut self) {
+        let port = self.config.listen_addr
+            .split(':')
+            .last()
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(DEFAULT_PORT);
+
+        let peers = tokio::task::spawn_blocking(move || {
+            discover_peers_via_github(port)
+        }).await.unwrap_or_default();
+
+        if peers.is_empty() {
+            tracing::debug!("GitHub bootstrap: no peers returned");
+            return;
+        }
+
+        tracing::info!("GitHub bootstrap: {} peer candidates found", peers.len());
+        self.peer_manager.add_dht_peers(peers);
+
+        let candidates = self.peer_manager.get_peer_candidates(TARGET_OUTBOUND);
+        for addr in candidates {
+            tracing::info!("GitHub: Connecting to peer candidate {}", addr);
+            if let Err(e) = self.peer_manager.connect_addr(addr).await {
+                tracing::debug!("GitHub: Could not connect to {}: {}", addr, e);
             }
         }
     }

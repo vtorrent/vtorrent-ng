@@ -566,6 +566,126 @@ pub fn discover_peers_via_doh(port: u16) -> Vec<std::net::SocketAddr> {
     result
 }
 
+// ─── GitHub-Hosted Peer List Bootstrap ─────────────────────────────────────
+//
+// A plain-text file hosted in the vtorrent/vtorrent-ng GitHub repository
+// (raw.githubusercontent.com) acts as a zero-infrastructure seed list.
+//
+// Format: one "IP:port" socket address per line, lines starting with '#'
+// are treated as comments. Example:
+//
+//   # vTorrent bootstrap peers
+//   # Updated: 2026-03-22
+//   203.0.113.10:22526
+//   198.51.100.42:22526
+//
+// Why this works without infrastructure:
+//   - GitHub raw content is served from Cloudflare CDN (no origin server needed)
+//   - The file lives in the same repo as the source code — no extra hosting
+//   - The URL is baked in at compile time; the file content is updated by
+//     committing a new peers.txt to the repo (zero ops overhead)
+//   - Multiple mirror URLs are tried in order for redundancy
+//
+// This is the LAST bootstrap fallback — only tried if DHT, DoH, and the
+// local peer cache all return nothing.
+
+/// Primary GitHub raw URL for the bootstrap peer list.
+const GITHUB_PEERS_URL: &str =
+    "https://raw.githubusercontent.com/vtorrent/vtorrent-ng/main/bootstrap/peers.txt";
+
+/// Mirror URLs tried in order if the primary is unreachable.
+const GITHUB_PEERS_MIRRORS: &[&str] = &[
+    // jsDelivr CDN mirror of GitHub raw content (different CDN, different ASN)
+    "https://cdn.jsdelivr.net/gh/vtorrent/vtorrent-ng@main/bootstrap/peers.txt",
+    // Statically.io CDN mirror
+    "https://cdn.statically.io/gh/vtorrent/vtorrent-ng/main/bootstrap/peers.txt",
+];
+
+/// Fetch the bootstrap peer list from GitHub (or mirrors) and parse it.
+///
+/// Returns a list of socket addresses ready to connect to.
+/// This is a blocking function — call from `spawn_blocking`.
+pub fn discover_peers_via_github(port: u16) -> Vec<std::net::SocketAddr> {
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .user_agent("vTorrent/2.0 Bootstrap")
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("GitHub bootstrap: failed to build HTTP client: {}", e);
+            return Vec::new();
+        }
+    };
+
+    // Try primary URL then mirrors in order
+    let urls = std::iter::once(GITHUB_PEERS_URL)
+        .chain(GITHUB_PEERS_MIRRORS.iter().copied());
+
+    for url in urls {
+        tracing::debug!("GitHub bootstrap: trying {}", url);
+        match client.get(url).send() {
+            Ok(resp) if resp.status().is_success() => {
+                match resp.text() {
+                    Ok(text) => {
+                        let peers = parse_peers_txt(&text, port);
+                        if !peers.is_empty() {
+                            tracing::info!(
+                                "GitHub bootstrap: found {} peers from {}",
+                                peers.len(), url
+                            );
+                            return peers;
+                        }
+                        tracing::debug!("GitHub bootstrap: {} returned empty peer list", url);
+                    }
+                    Err(e) => tracing::debug!("GitHub bootstrap: failed to read body from {}: {}", url, e),
+                }
+            }
+            Ok(resp) => {
+                tracing::debug!("GitHub bootstrap: {} returned HTTP {}", url, resp.status());
+            }
+            Err(e) => {
+                tracing::debug!("GitHub bootstrap: {} unreachable: {}", url, e);
+            }
+        }
+    }
+
+    tracing::warn!("GitHub bootstrap: all URLs failed or returned no peers");
+    Vec::new()
+}
+
+/// Parse a peers.txt file into socket addresses.
+///
+/// Format: one `IP:port` per line; lines starting with `#` are comments.
+/// Lines with an invalid port are re-parsed using the provided default port.
+fn parse_peers_txt(text: &str, default_port: u16) -> Vec<std::net::SocketAddr> {
+    let mut result = Vec::new();
+
+    for line in text.lines() {
+        let line = line.trim();
+        // Skip comments and blank lines
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // Try to parse as a full socket address first
+        if let Ok(addr) = line.parse::<std::net::SocketAddr>() {
+            if !result.contains(&addr) {
+                result.push(addr);
+            }
+            continue;
+        }
+        // Try as bare IP (no port) — use the default port
+        if let Ok(ip) = line.parse::<std::net::IpAddr>() {
+            let addr = std::net::SocketAddr::new(ip, default_port);
+            if !result.contains(&addr) {
+                result.push(addr);
+            }
+        }
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

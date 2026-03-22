@@ -1,0 +1,24 @@
+# vTorrent Bootstrap Peer List
+# ─────────────────────────────────────────────────────────────────────────────
+# Format: one socket address per line (IP:port or bare IP — default port used)
+# Lines starting with '#' are comments and are ignored.
+#
+# This file is fetched by new nodes during bootstrap when DHT and Cloudflare
+# DoH have not yet found any peers. It is served via:
+#   - https://raw.githubusercontent.com/vtorrent/vtorrent-ng/main/bootstrap/peers.txt
+#   - https://cdn.jsdelivr.net/gh/vtorrent/vtorrent-ng@main/bootstrap/peers.txt  (CDN mirror)
+#   - https://cdn.statically.io/gh/vtorrent/vtorrent-ng/main/bootstrap/peers.txt (CDN mirror)
+#
+# To add a bootstrap node: append its IP:port and open a PR, or push directly
+# to main. The CDN mirrors update within ~10 minutes of a commit.
+#
+# Default P2P port: 22526
+#
+# Last updated: 2026-03-22
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Testnet bootstrap nodes (add VPS IPs here once deployed) ─────────────────
+# Example entries (replace with real IPs before testnet launch):
+# 203.0.113.10:22526
+# 198.51.100.42:22526
+# 192.0.2.77:22526

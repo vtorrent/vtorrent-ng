@@ -316,6 +316,63 @@ impl AddrBook {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    // ── Disk Persistence ────────────────────────────────────────────────────
+    //
+    // The address book is persisted to `peers.dat` in the node data directory.
+    // On startup the saved entries are loaded back, giving the node a warm
+    // start without needing to re-run DHT/DoH bootstrap from scratch.
+    // The file is a simple JSON array of AddrEntry objects — human-readable
+    // and easy to seed manually if needed.
+
+    /// Save the address book to a JSON file.
+    ///
+    /// Only fresh entries (not stale) are persisted to keep the file small.
+    /// Returns the number of entries written.
+    pub fn save(&self, path: &std::path::Path) -> std::io::Result<usize> {
+        let fresh: Vec<&AddrEntry> = self.entries.values()
+            .filter(|e| e.is_fresh())
+            .collect();
+
+        let count = fresh.len();
+        let json = serde_json::to_string_pretty(&fresh)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+        // Write atomically via a temp file
+        let tmp = path.with_extension("dat.tmp");
+        std::fs::write(&tmp, json.as_bytes())?;
+        std::fs::rename(&tmp, path)?;
+
+        tracing::debug!("PEX: Saved {} peer addresses to {}", count, path.display());
+        Ok(count)
+    }
+
+    /// Load the address book from a JSON file.
+    ///
+    /// Silently returns 0 if the file does not exist (first run).
+    /// Stale entries are discarded on load.
+    pub fn load(&mut self, path: &std::path::Path) -> std::io::Result<usize> {
+        if !path.exists() {
+            tracing::debug!("PEX: No peer cache found at {} (first run)", path.display());
+            return Ok(0);
+        }
+
+        let data = std::fs::read(path)?;
+        let entries: Vec<AddrEntry> = serde_json::from_slice(&data)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+        let before = self.entries.len();
+        // add_addrs filters stale entries automatically
+        self.add_addrs(&entries);
+        let added = self.entries.len() - before;
+
+        tracing::info!(
+            "PEX: Loaded {} peer addresses from cache ({} fresh)",
+            entries.len(),
+            added
+        );
+        Ok(added)
+    }
 }
 
 impl Default for AddrBook {
