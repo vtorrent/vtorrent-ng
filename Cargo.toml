@@ -12,6 +12,10 @@ members = [
     "vtorrent-rpc",
     "vtorrent-daemon",
     "vtorrent-overlay",
+    "vtorrent-spv",
+    "vtorrent-script",
+    "vtorrent-onion",
+    "vtorrent-cli",
 ]
 
 [workspace.package]

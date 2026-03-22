@@ -490,24 +490,36 @@ impl Node {
                     Ok(block) => {
                         let mut chain = self.chain.lock().await;
                         match chain.add_block(block.clone()) {
-                            Ok(()) => {
+                            Ok(acceptance) => {
+                                use crate::chain::BlockAcceptance;
                                 let hash = block.hash();
-                                tracing::info!(
-                                    "Accepted block {} at height {}",
-                                    hex::encode(hash),
-                                    chain.best_height()
-                                );
-                                // Relay to other peers
-                                let payload = serde_json::to_vec(&InvMsg {
-                                    items: vec![InvItem {
-                                        inv_type: InvType::Block,
-                                        hash,
-                                    }],
-                                }).unwrap_or_default();
-                                drop(chain);
-                                self.peer_manager.broadcast(
-                                    NetMessage::new("inv", payload)
-                                ).await;
+                                let should_relay = match &acceptance {
+                                    BlockAcceptance::MainChain { height } => {
+                                        tracing::info!("Accepted block {} at height {}", hex::encode(hash), height);
+                                        true
+                                    }
+                                    BlockAcceptance::Reorg { old_tip, new_tip, depth } => {
+                                        tracing::warn!("Reorg depth {}: {} -> {}", depth, hex::encode(old_tip), hex::encode(new_tip));
+                                        true
+                                    }
+                                    BlockAcceptance::Fork { fork_tip } => {
+                                        tracing::debug!("Fork block {} stored", hex::encode(fork_tip));
+                                        false
+                                    }
+                                    BlockAcceptance::Duplicate => false,
+                                };
+                                if should_relay {
+                                    let payload = serde_json::to_vec(&InvMsg {
+                                        items: vec![InvItem {
+                                            inv_type: InvType::Block,
+                                            hash,
+                                        }],
+                                    }).unwrap_or_default();
+                                    drop(chain);
+                                    self.peer_manager.broadcast(
+                                        NetMessage::new("inv", payload)
+                                    ).await;
+                                }
                             }
                             Err(e) => {
                                 tracing::warn!("Rejected block from {}: {}", peer_addr, e);
@@ -638,7 +650,7 @@ impl Node {
             let block_hash = block.hash();
             {
                 let mut chain = self.chain.lock().await;
-                chain.add_block(block)?;
+                chain.add_block(block).map_err(|e| e)?;
                 tracing::info!(
                     "Staked new block {} at height {}",
                     hex::encode(block_hash),

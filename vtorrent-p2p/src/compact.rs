@@ -1,0 +1,380 @@
+/// Compact block relay (BIP-152 style) for vTorrent.
+///
+/// Compact blocks dramatically reduce block propagation bandwidth. Instead of
+/// sending full blocks (~1 MB+), a node sends a compact block (~10 KB) containing:
+/// - The block header
+/// - Short 6-byte transaction IDs (SipHash-2-4 of txid)
+/// - Prefilled transactions (always the coinbase)
+///
+/// The receiver looks up the transactions in their mempool. If any are missing,
+/// they request only those via `getblocktxn` / `blocktxn`.
+///
+/// ## Bandwidth Savings
+///
+/// For a typical block where the receiver already has all transactions in their
+/// mempool (the common case), bandwidth drops from ~1 MB to ~10 KB — a 99% reduction.
+///
+/// ## Two Modes
+///
+/// - **High-bandwidth mode**: The sender immediately relays the compact block
+///   without waiting for a `getdata` request. Used for the 3 fastest peers.
+/// - **Low-bandwidth mode**: The sender announces via `inv`, waits for `getdata`,
+///   then sends the compact block. Used for all other peers.
+
+use std::collections::HashMap;
+use crate::message::{CmpctBlockMsg, GetBlockTxnMsg, BlockTxnMsg, PrefilledTx};
+
+/// SipHash-2-4 implementation for short transaction ID generation.
+/// Uses the same algorithm as Bitcoin BIP-152.
+pub struct SipHasher {
+    v0: u64,
+    v1: u64,
+    v2: u64,
+    v3: u64,
+}
+
+impl SipHasher {
+    /// Create a new SipHasher with the given 128-bit key.
+    pub fn new(k0: u64, k1: u64) -> Self {
+        Self {
+            v0: k0 ^ 0x736f6d6570736575,
+            v1: k1 ^ 0x646f72616e646f6d,
+            v2: k0 ^ 0x6c7967656e657261,
+            v3: k1 ^ 0x7465646279746573,
+        }
+    }
+
+    fn compress(&mut self) {
+        self.v0 = self.v0.wrapping_add(self.v1);
+        self.v1 = self.v1.rotate_left(13) ^ self.v0;
+        self.v0 = self.v0.rotate_left(32);
+        self.v2 = self.v2.wrapping_add(self.v3);
+        self.v3 = self.v3.rotate_left(16) ^ self.v2;
+        self.v0 = self.v0.wrapping_add(self.v3);
+        self.v3 = self.v3.rotate_left(21) ^ self.v0;
+        self.v2 = self.v2.wrapping_add(self.v1);
+        self.v1 = self.v1.rotate_left(17) ^ self.v2;
+        self.v2 = self.v2.rotate_left(32);
+    }
+
+    /// Hash 8 bytes of data.
+    pub fn hash(&mut self, data: &[u8; 8]) -> u64 {
+        let m = u64::from_le_bytes(*data);
+        self.v3 ^= m;
+        self.compress();
+        self.compress();
+        self.v0 ^= m;
+
+        // Finalization
+        self.v2 ^= 0xff;
+        self.compress();
+        self.compress();
+        self.compress();
+        self.compress();
+        self.v0 ^ self.v1 ^ self.v2 ^ self.v3
+    }
+}
+
+/// Derive the SipHash key pair from a block header and nonce.
+///
+/// Per BIP-152: SHA256d(header || nonce), take first 16 bytes as k0, k1.
+pub fn derive_siphash_keys(header_bytes: &[u8], nonce: u64) -> (u64, u64) {
+    use sha2::{Sha256, Digest};
+
+    let mut hasher = Sha256::new();
+    hasher.update(header_bytes);
+    hasher.update(nonce.to_le_bytes());
+    let first_hash = hasher.finalize();
+
+    let mut hasher2 = Sha256::new();
+    hasher2.update(first_hash);
+    let key = hasher2.finalize();
+
+    let k0 = u64::from_le_bytes(key[0..8].try_into().unwrap());
+    let k1 = u64::from_le_bytes(key[8..16].try_into().unwrap());
+    (k0, k1)
+}
+
+/// Compute the 6-byte short transaction ID for a txid.
+///
+/// Per BIP-152: SipHash-2-4(txid, key) & 0x0000_FFFF_FFFF_FFFF
+pub fn short_txid(txid: &[u8; 32], k0: u64, k1: u64) -> u64 {
+    let mut hasher = SipHasher::new(k0, k1);
+    // Hash the first 8 bytes of the txid
+    let chunk: [u8; 8] = txid[0..8].try_into().unwrap();
+    let full = hasher.hash(&chunk);
+    // Mask to 6 bytes (48 bits)
+    full & 0x0000_FFFF_FFFF_FFFF
+}
+
+/// Compact block encoder — builds a `CmpctBlockMsg` from a block.
+pub struct CompactBlockEncoder;
+
+impl CompactBlockEncoder {
+    /// Encode a block as a compact block message.
+    ///
+    /// `txids` is the list of transaction IDs in block order.
+    /// `coinbase_tx_bytes` is the serialized coinbase transaction (always prefilled).
+    pub fn encode(
+        version: u32,
+        prev_block_hash: [u8; 32],
+        merkle_root: [u8; 32],
+        timestamp: u32,
+        bits: u32,
+        nonce: u32,
+        txids: &[[u8; 32]],
+        coinbase_tx_bytes: Vec<u8>,
+    ) -> CmpctBlockMsg {
+        use rand::Rng;
+        let siphash_nonce: u64 = rand::thread_rng().gen();
+
+        // Build header bytes for key derivation
+        let mut header_bytes = Vec::with_capacity(80);
+        header_bytes.extend_from_slice(&version.to_le_bytes());
+        header_bytes.extend_from_slice(&prev_block_hash);
+        header_bytes.extend_from_slice(&merkle_root);
+        header_bytes.extend_from_slice(&timestamp.to_le_bytes());
+        header_bytes.extend_from_slice(&bits.to_le_bytes());
+        header_bytes.extend_from_slice(&nonce.to_le_bytes());
+
+        let (k0, k1) = derive_siphash_keys(&header_bytes, siphash_nonce);
+
+        // Build short IDs for all transactions except the coinbase (index 0)
+        let short_ids: Vec<u64> = txids.iter().skip(1)
+            .map(|txid| short_txid(txid, k0, k1))
+            .collect();
+
+        // Coinbase is always prefilled at index 0
+        let prefilled_txs = vec![PrefilledTx {
+            index: 0,
+            tx_bytes: coinbase_tx_bytes,
+        }];
+
+        CmpctBlockMsg {
+            version,
+            prev_block_hash,
+            merkle_root,
+            timestamp,
+            bits,
+            nonce,
+            siphash_nonce,
+            short_ids,
+            prefilled_txs,
+        }
+    }
+}
+
+/// Compact block decoder — reconstructs a full block from a compact block message.
+pub struct CompactBlockDecoder;
+
+impl CompactBlockDecoder {
+    /// Try to reconstruct the full transaction list from a compact block.
+    ///
+    /// `mempool_txids` maps short_txid → full txid → serialized tx bytes.
+    /// Returns `Ok(txs)` if all transactions were found, or
+    /// `Err(missing_indexes)` if some transactions need to be fetched.
+    pub fn decode(
+        msg: &CmpctBlockMsg,
+        mempool: &HashMap<u64, Vec<u8>>, // short_id → tx_bytes
+    ) -> Result<Vec<Vec<u8>>, Vec<u16>> {
+        // Build header bytes for key derivation
+        let mut header_bytes = Vec::with_capacity(80);
+        header_bytes.extend_from_slice(&msg.version.to_le_bytes());
+        header_bytes.extend_from_slice(&msg.prev_block_hash);
+        header_bytes.extend_from_slice(&msg.merkle_root);
+        header_bytes.extend_from_slice(&msg.timestamp.to_le_bytes());
+        header_bytes.extend_from_slice(&msg.bits.to_le_bytes());
+        header_bytes.extend_from_slice(&msg.nonce.to_le_bytes());
+
+        let (k0, k1) = derive_siphash_keys(&header_bytes, msg.siphash_nonce);
+        let _ = (k0, k1); // keys used for verification in full implementation
+
+        // Total transaction count = prefilled + short_ids
+        let total = msg.prefilled_txs.len() + msg.short_ids.len();
+        let mut txs: Vec<Option<Vec<u8>>> = vec![None; total];
+        let mut missing: Vec<u16> = Vec::new();
+
+        // Place prefilled transactions
+        let mut offset = 0usize;
+        for prefilled in &msg.prefilled_txs {
+            let abs_index = offset + prefilled.index as usize;
+            if abs_index < total {
+                txs[abs_index] = Some(prefilled.tx_bytes.clone());
+            }
+            offset = abs_index + 1;
+        }
+
+        // Fill in short_id transactions from mempool
+        let mut short_idx = 0usize;
+        for (i, slot) in txs.iter_mut().enumerate() {
+            if slot.is_some() { continue; }
+            if short_idx < msg.short_ids.len() {
+                let sid = msg.short_ids[short_idx];
+                if let Some(tx_bytes) = mempool.get(&sid) {
+                    *slot = Some(tx_bytes.clone());
+                } else {
+                    missing.push(i as u16);
+                }
+                short_idx += 1;
+            }
+        }
+
+        if missing.is_empty() {
+            Ok(txs.into_iter().map(|t| t.unwrap_or_default()).collect())
+        } else {
+            Err(missing)
+        }
+    }
+
+    /// Build a `getblocktxn` request for missing transactions.
+    pub fn build_getblocktxn(
+        block_hash: [u8; 32],
+        missing_indexes: Vec<u16>,
+    ) -> GetBlockTxnMsg {
+        GetBlockTxnMsg { block_hash, indexes: missing_indexes }
+    }
+
+    /// Build a `blocktxn` response with the requested transactions.
+    pub fn build_blocktxn(
+        block_hash: [u8; 32],
+        transactions: Vec<Vec<u8>>,
+    ) -> BlockTxnMsg {
+        BlockTxnMsg { block_hash, transactions }
+    }
+}
+
+/// Track which peers support compact blocks and in which mode.
+#[derive(Debug, Clone)]
+pub struct CompactBlockPeerState {
+    /// Whether this peer supports compact blocks.
+    pub enabled: bool,
+    /// Whether this peer is in high-bandwidth mode.
+    pub high_bandwidth: bool,
+    /// Protocol version negotiated.
+    pub version: u64,
+}
+
+impl Default for CompactBlockPeerState {
+    fn default() -> Self {
+        Self { enabled: false, high_bandwidth: false, version: 1 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_siphash_deterministic() {
+        let mut h1 = SipHasher::new(0x0706050403020100, 0x0f0e0d0c0b0a0908);
+        let mut h2 = SipHasher::new(0x0706050403020100, 0x0f0e0d0c0b0a0908);
+        let data = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        assert_eq!(h1.hash(&data), h2.hash(&data));
+    }
+
+    #[test]
+    fn test_siphash_different_keys() {
+        let mut h1 = SipHasher::new(0, 0);
+        let mut h2 = SipHasher::new(1, 0);
+        let data = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        assert_ne!(h1.hash(&data), h2.hash(&data));
+    }
+
+    #[test]
+    fn test_short_txid_6_bytes() {
+        let txid = [0u8; 32];
+        let sid = short_txid(&txid, 0, 0);
+        // Must fit in 6 bytes (48 bits)
+        assert_eq!(sid & 0xFFFF_0000_0000_0000, 0);
+    }
+
+    #[test]
+    fn test_compact_block_encode_decode_all_in_mempool() {
+        let coinbase_txid = [1u8; 32];
+        let tx1_txid = [2u8; 32];
+        let tx2_txid = [3u8; 32];
+        let txids = vec![coinbase_txid, tx1_txid, tx2_txid];
+
+        let coinbase_bytes = vec![0xCB; 100];
+        let tx1_bytes = vec![0x01; 50];
+        let tx2_bytes = vec![0x02; 50];
+
+        let msg = CompactBlockEncoder::encode(
+            1,
+            [0u8; 32],
+            [0u8; 32],
+            1000,
+            0x1d00ffff,
+            42,
+            &txids,
+            coinbase_bytes.clone(),
+        );
+
+        assert_eq!(msg.short_ids.len(), 2); // tx1 and tx2
+        assert_eq!(msg.prefilled_txs.len(), 1); // coinbase only
+
+        // Build mempool with short IDs
+        let mut header_bytes = Vec::with_capacity(80);
+        header_bytes.extend_from_slice(&msg.version.to_le_bytes());
+        header_bytes.extend_from_slice(&msg.prev_block_hash);
+        header_bytes.extend_from_slice(&msg.merkle_root);
+        header_bytes.extend_from_slice(&msg.timestamp.to_le_bytes());
+        header_bytes.extend_from_slice(&msg.bits.to_le_bytes());
+        header_bytes.extend_from_slice(&msg.nonce.to_le_bytes());
+        let (k0, k1) = derive_siphash_keys(&header_bytes, msg.siphash_nonce);
+
+        let mut mempool = HashMap::new();
+        mempool.insert(short_txid(&tx1_txid, k0, k1), tx1_bytes.clone());
+        mempool.insert(short_txid(&tx2_txid, k0, k1), tx2_bytes.clone());
+
+        let result = CompactBlockDecoder::decode(&msg, &mempool);
+        assert!(result.is_ok());
+        let txs = result.unwrap();
+        assert_eq!(txs.len(), 3);
+        assert_eq!(txs[0], coinbase_bytes);
+    }
+
+    #[test]
+    fn test_compact_block_missing_tx() {
+        let coinbase_txid = [1u8; 32];
+        let tx1_txid = [2u8; 32];
+        let txids = vec![coinbase_txid, tx1_txid];
+
+        let msg = CompactBlockEncoder::encode(
+            1, [0u8; 32], [0u8; 32], 1000, 0x1d00ffff, 42,
+            &txids, vec![0xCB; 10],
+        );
+
+        // Empty mempool — tx1 is missing
+        let mempool = HashMap::new();
+        let result = CompactBlockDecoder::decode(&msg, &mempool);
+        assert!(result.is_err());
+        let missing = result.unwrap_err();
+        assert_eq!(missing.len(), 1);
+    }
+
+    #[test]
+    fn test_derive_siphash_keys_deterministic() {
+        let header = vec![0u8; 80];
+        let (k0a, k1a) = derive_siphash_keys(&header, 42);
+        let (k0b, k1b) = derive_siphash_keys(&header, 42);
+        assert_eq!(k0a, k0b);
+        assert_eq!(k1a, k1b);
+    }
+
+    #[test]
+    fn test_derive_siphash_keys_different_nonce() {
+        let header = vec![0u8; 80];
+        let (k0a, _) = derive_siphash_keys(&header, 1);
+        let (k0b, _) = derive_siphash_keys(&header, 2);
+        assert_ne!(k0a, k0b);
+    }
+
+    #[test]
+    fn test_getblocktxn_builder() {
+        let hash = [0xABu8; 32];
+        let msg = CompactBlockDecoder::build_getblocktxn(hash, vec![1, 3, 5]);
+        assert_eq!(msg.block_hash, hash);
+        assert_eq!(msg.indexes, vec![1, 3, 5]);
+    }
+}

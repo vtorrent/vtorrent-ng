@@ -10,3 +10,5 @@ pub mod peer_manager;
 pub mod codec;
 pub mod dht;
 pub mod pex;
+pub mod compact;
+pub mod ban_manager;

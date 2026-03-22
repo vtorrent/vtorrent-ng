@@ -1,0 +1,31 @@
+[package]
+name = "vtorrent-spv"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SPV (Simplified Payment Verification) and Bloom filter support for vTorrent light clients"
+
+[dependencies]
+vtorrent-core  = { path = "../vtorrent-core" }
+vtorrent-node  = { path = "../vtorrent-node" }
+
+# Serialization
+serde          = { version = "1", features = ["derive"] }
+serde_json     = "1"
+bincode        = "1"
+
+# Crypto
+sha2           = "0.10"
+hex            = "0.4"
+
+# Error handling
+thiserror      = "1"
+anyhow         = "1"
+
+# Logging
+tracing        = "0.1"
+
+[dev-dependencies]
+tokio          = { version = "1", features = ["full"] }

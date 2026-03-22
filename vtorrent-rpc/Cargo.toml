@@ -13,7 +13,7 @@ vtorrent-wallet = { path = "../vtorrent-wallet" }
 vtorrent-torrent = { path = "../vtorrent-torrent" }
 
 # HTTP server
-axum = { version = "0.7", features = ["json", "macros"] }
+axum = { version = "0.7", features = ["json", "macros", "ws"] }
 tokio = { version = "1", features = ["full"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }

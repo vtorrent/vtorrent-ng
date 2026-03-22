@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::{RpcError, RpcResult};
 use crate::models::*;
+use std::sync::Arc;
 use crate::state::AppState;
 
 fn now_secs() -> u64 {
@@ -18,7 +19,7 @@ fn now_secs() -> u64 {
 
 // ─── Node Info ────────────────────────────────────────────────────────────────
 
-pub async fn get_node_info(State(state): State<AppState>) -> RpcResult<Json<NodeInfoResponse>> {
+pub async fn get_node_info(State(state): State<Arc<AppState>>) -> RpcResult<Json<NodeInfoResponse>> {
     let chain = state.chain.read().await;
     let peer_count = *state.peer_count.read().await;
     let syncing = *state.syncing.read().await;
@@ -42,7 +43,7 @@ pub async fn get_node_info(State(state): State<AppState>) -> RpcResult<Json<Node
 
 // ─── Blockchain ───────────────────────────────────────────────────────────────
 
-pub async fn get_block_height(State(state): State<AppState>) -> RpcResult<Json<BlockHeightResponse>> {
+pub async fn get_block_height(State(state): State<Arc<AppState>>) -> RpcResult<Json<BlockHeightResponse>> {
     let chain = state.chain.read().await;
     let height = chain.best_height() as u64;
     let best_hash = chain.best_hash()
@@ -57,7 +58,7 @@ pub async fn get_block_height(State(state): State<AppState>) -> RpcResult<Json<B
 }
 
 pub async fn get_block_by_hash(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Path(hash_hex): Path<String>,
 ) -> RpcResult<Json<BlockResponse>> {
     let hash_bytes = hex::decode(&hash_hex)
@@ -86,7 +87,7 @@ pub async fn get_block_by_hash(
     }))
 }
 
-pub async fn get_mempool(State(state): State<AppState>) -> RpcResult<Json<MempoolResponse>> {
+pub async fn get_mempool(State(state): State<Arc<AppState>>) -> RpcResult<Json<MempoolResponse>> {
     let mempool = state.mempool.read().await;
     let txs = mempool.get_transactions();
     let txids: Vec<String> = txs.iter()
@@ -103,7 +104,7 @@ pub async fn get_mempool(State(state): State<AppState>) -> RpcResult<Json<Mempoo
 
 // ─── Wallet ───────────────────────────────────────────────────────────────────
 
-pub async fn get_balance(State(state): State<AppState>) -> RpcResult<Json<BalanceResponse>> {
+pub async fn get_balance(State(state): State<Arc<AppState>>) -> RpcResult<Json<BalanceResponse>> {
     let chain = state.chain.read().await;
     let staking_enabled = *state.staking_enabled.read().await;
 
@@ -121,7 +122,7 @@ pub async fn get_balance(State(state): State<AppState>) -> RpcResult<Json<Balanc
     }))
 }
 
-pub async fn get_addresses(State(state): State<AppState>) -> RpcResult<Json<AddressesResponse>> {
+pub async fn get_addresses(State(state): State<Arc<AppState>>) -> RpcResult<Json<AddressesResponse>> {
     let chain = state.chain.read().await;
     let utxo_set = chain.get_utxo_set();
 
@@ -146,7 +147,7 @@ pub async fn get_addresses(State(state): State<AppState>) -> RpcResult<Json<Addr
 }
 
 pub async fn send_vtr(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Json(req): Json<SendRequest>,
 ) -> RpcResult<Json<SendResponse>> {
     if !state.is_wallet_unlocked().await {
@@ -172,7 +173,7 @@ pub async fn send_vtr(
 }
 
 pub async fn unlock_wallet(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Json(req): Json<UnlockRequest>,
 ) -> RpcResult<Json<UnlockResponse>> {
     if req.passphrase.is_empty() {
@@ -193,14 +194,14 @@ pub async fn unlock_wallet(
     }))
 }
 
-pub async fn lock_wallet(State(state): State<AppState>) -> RpcResult<Json<Value>> {
+pub async fn lock_wallet(State(state): State<Arc<AppState>>) -> RpcResult<Json<Value>> {
     *state.wallet_unlock_expiry.write().await = None;
     Ok(Json(json!({ "success": true, "message": "Wallet locked" })))
 }
 
 // ─── Staking ──────────────────────────────────────────────────────────────────
 
-pub async fn get_staking_status(State(state): State<AppState>) -> RpcResult<Json<StakingStatusResponse>> {
+pub async fn get_staking_status(State(state): State<Arc<AppState>>) -> RpcResult<Json<StakingStatusResponse>> {
     let enabled = *state.staking_enabled.read().await;
     let staking_address = state.staking_address.read().await.clone();
     let blocks_staked = *state.blocks_staked.read().await;
@@ -228,7 +229,7 @@ pub async fn get_staking_status(State(state): State<AppState>) -> RpcResult<Json
 }
 
 pub async fn start_staking(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Json(req): Json<StakingStartRequest>,
 ) -> RpcResult<Json<Value>> {
     if !state.is_wallet_unlocked().await {
@@ -247,7 +248,7 @@ pub async fn start_staking(
     })))
 }
 
-pub async fn stop_staking(State(state): State<AppState>) -> RpcResult<Json<Value>> {
+pub async fn stop_staking(State(state): State<Arc<AppState>>) -> RpcResult<Json<Value>> {
     *state.staking_enabled.write().await = false;
     *state.staking_address.write().await = None;
     Ok(Json(json!({ "success": true, "message": "Staking stopped" })))
@@ -255,7 +256,7 @@ pub async fn stop_staking(State(state): State<AppState>) -> RpcResult<Json<Value
 
 // ─── Torrent ──────────────────────────────────────────────────────────────────
 
-pub async fn list_torrent_sessions(State(state): State<AppState>) -> RpcResult<Json<Vec<TorrentSessionResponse>>> {
+pub async fn list_torrent_sessions(State(state): State<Arc<AppState>>) -> RpcResult<Json<Vec<TorrentSessionResponse>>> {
     let sessions = state.torrent_sessions.read().await;
     let result: Vec<TorrentSessionResponse> = sessions.list_sessions()
         .iter()
@@ -283,7 +284,7 @@ pub async fn list_torrent_sessions(State(state): State<AppState>) -> RpcResult<J
 }
 
 pub async fn add_torrent(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Json(req): Json<AddTorrentRequest>,
 ) -> RpcResult<Json<AddTorrentResponse>> {
     use vtorrent_torrent::metainfo::{Metainfo, MagnetLink};
@@ -313,7 +314,7 @@ pub async fn add_torrent(
 }
 
 pub async fn remove_torrent(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> RpcResult<Json<Value>> {
     let removed = state.torrent_sessions.write().await.remove_session(&id);
@@ -325,7 +326,7 @@ pub async fn remove_torrent(
 
 // ─── DEX ──────────────────────────────────────────────────────────────────────
 
-pub async fn get_dex_orders(State(state): State<AppState>) -> RpcResult<Json<Vec<DexOrderResponse>>> {
+pub async fn get_dex_orders(State(state): State<Arc<AppState>>) -> RpcResult<Json<Vec<DexOrderResponse>>> {
     let order_book = state.order_book.read().await;
     let orders: Vec<DexOrderResponse> = order_book.list_open_orders()
         .iter()
@@ -347,7 +348,7 @@ pub async fn get_dex_orders(State(state): State<AppState>) -> RpcResult<Json<Vec
 }
 
 pub async fn place_dex_order(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Json(req): Json<PlaceOrderRequest>,
 ) -> RpcResult<Json<PlaceOrderResponse>> {
     use vtorrent_node::atomic_swap::{AtomicSwap, SwapOrder, DEFAULT_HTLC_LOCKTIME};
@@ -385,7 +386,7 @@ pub async fn place_dex_order(
 }
 
 pub async fn cancel_dex_order(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> RpcResult<Json<Value>> {
     let cancelled = state.order_book.write().await.cancel_order(&id);
@@ -398,7 +399,7 @@ pub async fn cancel_dex_order(
 // ─── Legacy Claim ─────────────────────────────────────────────────────────────
 
 pub async fn check_claim(
-    State(state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Json(req): Json<ClaimCheckRequest>,
 ) -> RpcResult<Json<ClaimCheckResponse>> {
     use vtorrent_node::genesis::get_legacy_balance;
@@ -416,7 +417,7 @@ pub async fn check_claim(
 }
 
 pub async fn submit_claim(
-    State(_state): State<AppState>,
+    State(_state): State<Arc<AppState>>,
     Json(req): Json<ClaimSubmitRequest>,
 ) -> RpcResult<Json<ClaimSubmitResponse>> {
     if req.wif_private_key.is_empty() {

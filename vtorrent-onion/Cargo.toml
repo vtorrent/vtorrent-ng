@@ -1,0 +1,19 @@
+[package]
+name = "vtorrent-onion"
+version = "0.1.0"
+edition = "2021"
+description = "Tor/I2P transport layer for vTorrent — anonymous P2P routing"
+
+[dependencies]
+tokio       = { workspace = true, features = ["full"] }
+tokio-socks = "0.5"
+reqwest     = { version = "0.12", features = ["blocking", "json", "socks"] }
+serde       = { workspace = true, features = ["derive"] }
+serde_json  = { workspace = true }
+tracing     = { workspace = true }
+hex         = { workspace = true }
+rand        = { workspace = true }
+thiserror   = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }

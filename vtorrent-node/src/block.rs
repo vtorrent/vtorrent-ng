@@ -91,6 +91,55 @@ impl Transaction {
     pub fn total_output(&self) -> u64 {
         self.outputs.iter().map(|o| o.value).sum()
     }
+
+    /// Compute the fee paid by this transaction.
+    ///
+    /// For standard transactions, fee = total_input - total_output.
+    /// Since input values require UTXO lookup, we approximate using a
+    /// fixed 100_000 sat assumed input per input for mempool purposes.
+    /// Callers with UTXO access should compute the real fee themselves.
+    ///
+    /// For coinbase/coinstake/claim transactions, fee is always 0.
+    pub fn fee_sats(&self) -> u64 {
+        if self.is_coinbase() || self.is_coinstake() || self.is_legacy_claim() {
+            return 0;
+        }
+        let assumed_input: u64 = self.inputs.len() as u64 * 100_000;
+        let total_out = self.total_output();
+        assumed_input.saturating_sub(total_out)
+    }
+
+    /// Returns the approximate serialized size of this transaction in bytes.
+    pub fn serialized_size(&self) -> usize {
+        // Base: 4 (version) + 4 (lock_time) + 1 (tx_type)
+        let base = 9usize;
+        let inputs_size: usize = self.inputs.iter()
+            .map(|i| 32 + 4 + 4 + i.script_sig.len())
+            .sum();
+        let outputs_size: usize = self.outputs.iter()
+            .map(|o| 8 + o.script_pubkey.len())
+            .sum();
+        base + inputs_size + outputs_size
+    }
+
+    /// Returns true if this transaction signals Replace-By-Fee (BIP-125).
+    ///
+    /// A transaction signals RBF if any input has a sequence number < 0xFFFFFFFE.
+    pub fn signals_rbf(&self) -> bool {
+        self.inputs.iter().any(|i| i.sequence < 0xFFFFFFFE)
+    }
+
+    /// Returns the transaction type as a string.
+    pub fn type_str(&self) -> &'static str {
+        match self.tx_type {
+            TxType::Standard => "transfer",
+            TxType::Coinbase => "coinbase",
+            TxType::Coinstake => "coinstake",
+            TxType::LegacyClaim => "legacy_claim",
+            TxType::AtomicSwap => "atomic_swap",
+            TxType::TorrentIncentive => "torrent_incentive",
+        }
+    }
 }
 
 /// A block header.

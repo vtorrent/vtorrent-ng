@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use axum::{
     routing::{delete, get, post},
     Router,
@@ -5,12 +6,15 @@ use axum::{
 use tower_http::cors::{Any, CorsLayer};
 use crate::handlers::*;
 use crate::state::AppState;
+use crate::ws::ws_handler;
+use crate::metrics::metrics_handler;
 
 /// Default RPC port — same as legacy vTorrent RPC port + 1.
 pub const DEFAULT_RPC_PORT: u16 = 22525;
 
 /// Build the Axum router with all API routes.
 pub fn build_router(state: AppState) -> Router {
+    let state = Arc::new(state);
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
@@ -44,6 +48,10 @@ pub fn build_router(state: AppState) -> Router {
         // Legacy claim
         .route("/api/v1/claim/check", post(check_claim))
         .route("/api/v1/claim/submit", post(submit_claim))
+        // WebSocket event stream
+        .route("/ws", get(ws_handler))
+        // Prometheus metrics
+        .route("/metrics", get(metrics_handler))
         .layer(cors)
         .with_state(state)
 }

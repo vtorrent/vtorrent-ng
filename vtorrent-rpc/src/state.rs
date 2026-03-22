@@ -5,6 +5,7 @@ use vtorrent_node::mempool::Mempool;
 use vtorrent_node::staking::StakingEngine;
 use vtorrent_node::atomic_swap::SwapOrderBook;
 use vtorrent_torrent::session::SessionManager;
+use crate::ws::EventBroadcaster;
 
 /// Shared application state for the RPC API server.
 ///
@@ -36,6 +37,8 @@ pub struct AppState {
     pub staking_address: Arc<RwLock<Option<String>>>,
     /// Total blocks staked this session.
     pub blocks_staked: Arc<RwLock<u64>>,
+    /// WebSocket event broadcaster.
+    pub events: EventBroadcaster,
 }
 
 impl AppState {
@@ -78,6 +81,7 @@ impl AppState {
             staking_enabled: Arc::new(RwLock::new(false)),
             staking_address: Arc::new(RwLock::new(None)),
             blocks_staked: Arc::new(RwLock::new(0)),
+            events: EventBroadcaster::new(1024),
         }
     }
 
@@ -101,6 +105,7 @@ impl AppState {
             staking_enabled: Arc::new(RwLock::new(false)),
             staking_address: Arc::new(RwLock::new(None)),
             blocks_staked: Arc::new(RwLock::new(0)),
+            events: EventBroadcaster::new(1024),
         }
     }
 

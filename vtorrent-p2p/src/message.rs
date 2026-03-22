@@ -152,6 +152,66 @@ pub struct PeerAddr {
     pub port: u16,
 }
 
+/// Service flag indicating the node supports compact block relay.
+pub const NODE_COMPACT_BLOCKS: u64 = 0x08;
+
+/// `sendcmpct` message — sent after version handshake to negotiate compact block relay.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SendCmpctMsg {
+    /// 1 = high-bandwidth mode, 0 = low-bandwidth mode.
+    pub high_bandwidth: bool,
+    /// Protocol version (must be 1).
+    pub version: u64,
+}
+
+/// `cmpctblock` message — a compact block with short transaction IDs.
+///
+/// Short IDs are 6-byte SipHash-2-4 hashes of the txid, allowing the receiver
+/// to look up transactions in their mempool without downloading them again.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CmpctBlockMsg {
+    /// Block header fields.
+    pub version: u32,
+    pub prev_block_hash: [u8; 32],
+    pub merkle_root: [u8; 32],
+    pub timestamp: u32,
+    pub bits: u32,
+    pub nonce: u32,
+    /// Random nonce used in the SipHash key derivation.
+    pub siphash_nonce: u64,
+    /// Short transaction IDs (6 bytes each, packed into u64 with upper 2 bytes zero).
+    pub short_ids: Vec<u64>,
+    /// Prefilled transactions (always includes the coinbase at index 0).
+    pub prefilled_txs: Vec<PrefilledTx>,
+}
+
+/// A prefilled transaction in a compact block.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrefilledTx {
+    /// Differential index (position in the block's tx list).
+    pub index: u16,
+    /// The full serialized transaction bytes.
+    pub tx_bytes: Vec<u8>,
+}
+
+/// `getblocktxn` message — request missing transactions from a compact block.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetBlockTxnMsg {
+    /// Hash of the compact block we need transactions for.
+    pub block_hash: [u8; 32],
+    /// Sorted list of transaction indices we are missing.
+    pub indexes: Vec<u16>,
+}
+
+/// `blocktxn` message — the requested transactions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockTxnMsg {
+    /// Hash of the block these transactions belong to.
+    pub block_hash: [u8; 32],
+    /// The requested transactions (serialized, in the order requested).
+    pub transactions: Vec<Vec<u8>>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
