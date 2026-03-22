@@ -3,6 +3,10 @@
 /// vTorrent 2.0 uses Proof-of-Stake (PoS) consensus, matching the original
 /// chain's design. Key parameters are preserved from the legacy chain.
 
+use sha2::{Sha256, Digest as Sha2Digest};
+use ripemd::Ripemd160;
+use secp256k1::{Secp256k1, Message, PublicKey, ecdsa::Signature};
+
 use crate::{
     block::{Block, Transaction, TxType},
     error::{NodeError, Result},
@@ -169,11 +173,144 @@ pub fn validate_legacy_claim(
         ));
     }
 
-    // TODO: Verify the ECDSA signature against the legacy address
-    // This requires secp256k1 signature verification against the legacy key format
-    // Implementation deferred to the full node build
+    // ── ECDSA signature verification ─────────────────────────────────────────
+    //
+    // The claim signature is a Bitcoin-style "signed message" proof:
+    //   sig = sign(secp256k1, privkey, hash("vTorrent Signed Message:\n" + txid_hex))
+    //
+    // The public key recovered from the signature must hash (Hash160) to the
+    // same 20-byte payload as the claim_address.
+    let sig_bytes = tx.claim_signature.as_ref()
+        .ok_or_else(|| NodeError::InvalidClaim("Missing claim signature".into()))?;
+
+    verify_claim_signature(claim_addr, sig_bytes, &tx.txid())
+        .map_err(|e| NodeError::InvalidClaim(format!("Signature verification failed: {}", e)))?;
 
     Ok(())
+}
+
+/// Verify a Bitcoin-style signed-message proof for a legacy claim.
+///
+/// Protocol (identical to Bitcoin Core's `verifymessage`):
+/// 1. Compute the message hash:
+///    `hash = SHA256d("vTorrent Signed Message:\n" + len_varint + message)`
+///    where `message` is the hex-encoded txid.
+/// 2. Recover the public key from the compact (65-byte) ECDSA signature.
+/// 3. Derive the P2PKH address from the recovered public key.
+/// 4. Compare the derived address to the claimed legacy address.
+///
+/// The signature must be in compact (65-byte) format:
+///   byte[0]  = recovery flag (27–34)
+///   byte[1..33] = r
+///   byte[33..65] = s
+pub fn verify_claim_signature(
+    claim_address: &str,
+    sig_bytes: &[u8],
+    txid: &[u8; 32],
+) -> std::result::Result<(), String> {
+    if sig_bytes.len() != 65 {
+        return Err(format!("Expected 65-byte compact signature, got {}", sig_bytes.len()));
+    }
+
+    // ── Step 1: Build the signed message hash ────────────────────────────────
+    let txid_hex = hex::encode(txid);
+    let message_hash = bitcoin_signed_message_hash("vTorrent Signed Message", &txid_hex);
+
+    let msg = Message::from_digest(message_hash);
+
+    // ── Step 2: Parse the compact signature and recover the public key ────────
+    let recovery_id_byte = sig_bytes[0];
+    // Bitcoin compact format: recovery_id = (flag - 27) & 3
+    // Compressed flag: (flag - 27) >= 4
+    let rec_id_raw = (recovery_id_byte.wrapping_sub(27)) & 3;
+    let compressed = (recovery_id_byte.wrapping_sub(27)) >= 4;
+
+    let rec_id = secp256k1::ecdsa::RecoveryId::from_i32(rec_id_raw as i32)
+        .map_err(|e| format!("Invalid recovery id: {}", e))?;
+
+    let rec_sig = secp256k1::ecdsa::RecoverableSignature::from_compact(&sig_bytes[1..65], rec_id)
+        .map_err(|e| format!("Invalid recoverable signature: {}", e))?;
+
+    let secp = Secp256k1::verification_only();
+    let recovered_pubkey = secp.recover_ecdsa(&msg, &rec_sig)
+        .map_err(|e| format!("Key recovery failed: {}", e))?;
+
+    // ── Step 3: Derive the address from the recovered public key ─────────────
+    let derived_address = pubkey_to_vtorrent_address(&recovered_pubkey, compressed);
+
+    // ── Step 4: Compare to the claimed address ───────────────────────────────
+    if derived_address != claim_address {
+        return Err(format!(
+            "Address mismatch: signature recovers {} but claim is for {}",
+            derived_address, claim_address
+        ));
+    }
+
+    Ok(())
+}
+
+/// Compute the Bitcoin-style signed message hash.
+///
+/// Format: SHA256d(magic_prefix + varint(len(message)) + message)
+fn bitcoin_signed_message_hash(magic: &str, message: &str) -> [u8; 32] {
+    let magic_bytes = format!("{}\n", magic);
+    let msg_bytes = message.as_bytes();
+
+    // Encode message length as a Bitcoin varint
+    let mut varint = Vec::new();
+    let msg_len = msg_bytes.len() as u64;
+    if msg_len < 0xfd {
+        varint.push(msg_len as u8);
+    } else if msg_len <= 0xffff {
+        varint.push(0xfd);
+        varint.extend_from_slice(&(msg_len as u16).to_le_bytes());
+    } else {
+        varint.push(0xfe);
+        varint.extend_from_slice(&(msg_len as u32).to_le_bytes());
+    }
+
+    let mut preimage = Vec::new();
+    // Magic prefix also uses a varint length
+    let magic_len = magic_bytes.len() as u8;
+    preimage.push(magic_len);
+    preimage.extend_from_slice(magic_bytes.as_bytes());
+    preimage.extend_from_slice(&varint);
+    preimage.extend_from_slice(msg_bytes);
+
+    // SHA256d
+    let first = Sha256::digest(&preimage);
+    let second = Sha256::digest(&first);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&second);
+    out
+}
+
+/// Derive a vTorrent P2PKH address string from a secp256k1 public key.
+///
+/// Uses version byte 70 (0x46) which produces addresses starting with 'V'.
+fn pubkey_to_vtorrent_address(pubkey: &PublicKey, compressed: bool) -> String {
+    let pubkey_bytes = if compressed {
+        pubkey.serialize().to_vec()
+    } else {
+        pubkey.serialize_uncompressed().to_vec()
+    };
+
+    // Hash160 = RIPEMD160(SHA256(pubkey))
+    let sha256_hash = Sha256::digest(&pubkey_bytes);
+    let ripemd_hash = Ripemd160::digest(&sha256_hash);
+
+    // Version byte 70 = vTorrent mainnet P2PKH
+    let version: u8 = 70;
+    let mut payload = Vec::with_capacity(21);
+    payload.push(version);
+    payload.extend_from_slice(&ripemd_hash);
+
+    // Checksum = first 4 bytes of SHA256d(payload)
+    let check1 = Sha256::digest(&payload);
+    let check2 = Sha256::digest(&check1);
+    payload.extend_from_slice(&check2[..4]);
+
+    bs58::encode(payload).into_string()
 }
 
 #[cfg(test)]

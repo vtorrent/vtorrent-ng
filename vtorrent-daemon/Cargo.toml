@@ -1,0 +1,32 @@
+[package]
+name = "vtorrent-daemon"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "vTorrent full node daemon — P2P node + HTTP RPC server + PoS staking"
+
+[[bin]]
+name = "vtorrent-daemon"
+path = "src/main.rs"
+
+[dependencies]
+vtorrent-node     = { path = "../vtorrent-node" }
+vtorrent-rpc      = { path = "../vtorrent-rpc" }
+
+# Async runtime
+tokio             = { version = "1", features = ["full"] }
+
+# CLI argument parsing
+clap              = { version = "4", features = ["derive"] }
+
+# Error handling
+anyhow            = "1"
+
+# Logging
+tracing           = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Encoding
+hex               = "0.4"

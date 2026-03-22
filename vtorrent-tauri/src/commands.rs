@@ -1,4 +1,4 @@
-/// Tauri IPC command handlers.
+/// vTorrent 2.0 Tauri IPC commands.
 ///
 /// Each function decorated with `#[tauri::command]` becomes callable from
 /// the React frontend via:
@@ -10,6 +10,7 @@
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde::Serialize;
+use tauri::State;
 
 use vtorrent_migrate::extractor::extract_wallet;
 use vtorrent_wallet::wallet::Wallet;
@@ -59,8 +60,9 @@ pub struct Enable2FAResult {
 /// Create a new wallet encrypted with the given passphrase.
 ///
 /// Called from: `CreateWalletPage.tsx` → `invoke('create_wallet', { passphrase })`
-pub fn create_wallet_cmd(
-    state: &AppState,
+#[tauri::command]
+pub fn create_wallet(
+    state: State<AppState>,
     passphrase: String,
     wallet_path: String,
 ) -> Result<WalletInfo> {
@@ -96,8 +98,9 @@ pub fn create_wallet_cmd(
 /// Load and unlock an existing wallet.dat file.
 ///
 /// Called from: `WelcomePage.tsx` → `invoke('open_wallet', { walletPath, passphrase, otpCode })`
-pub fn open_wallet_cmd(
-    state: &AppState,
+#[tauri::command]
+pub fn open_wallet(
+    state: State<AppState>,
     wallet_path: String,
     passphrase: String,
     otp_code: Option<String>,
@@ -134,7 +137,8 @@ pub fn open_wallet_cmd(
 /// Lock the wallet (clear keys from memory).
 ///
 /// Called from: `Layout.tsx` → `invoke('lock_wallet')`
-pub fn lock_wallet_cmd(state: &AppState) -> Result<()> {
+#[tauri::command]
+pub fn lock_wallet(state: State<AppState>) -> Result<()> {
     *state.wallet.lock().unwrap() = None;
     Ok(())
 }
@@ -142,7 +146,8 @@ pub fn lock_wallet_cmd(state: &AppState) -> Result<()> {
 /// Get the current wallet status without unlocking.
 ///
 /// Called from: `App.tsx` on startup → `invoke('get_wallet_info')`
-pub fn get_wallet_info_cmd(state: &AppState) -> Result<WalletInfo> {
+#[tauri::command]
+pub fn get_wallet_info(state: State<AppState>) -> Result<WalletInfo> {
     let guard = state.wallet.lock().unwrap();
     match &*guard {
         Some(wallet) => Ok(WalletInfo {
@@ -175,8 +180,9 @@ pub fn get_wallet_info_cmd(state: &AppState) -> Result<WalletInfo> {
 /// - Private keys are extracted in Rust and NEVER sent to JavaScript
 /// - Only addresses and metadata are returned to the frontend
 /// - The extracted keys are immediately imported into the new wallet
-pub fn import_legacy_wallet_cmd(
-    state: &AppState,
+#[tauri::command]
+pub fn import_legacy_wallet(
+    state: State<AppState>,
     wallet_dat_base64: String,
     passphrase: Option<String>,
     new_wallet_passphrase: String,
@@ -215,7 +221,6 @@ pub fn import_legacy_wallet_cmd(
     new_wallet.save(&path).map_err(TauriError::from)?;
 
     // Look up claimable balances from the snapshot
-    // (In production this queries the embedded UTXO snapshot)
     let claimable_balance = lookup_snapshot_balances(&addresses);
 
     // Store the wallet in app state
@@ -245,10 +250,7 @@ const ENTRY_SIZE: usize = ADDR_LEN + 8; // 42 bytes per entry
 /// Look up balances in the embedded UTXO snapshot for a list of legacy addresses.
 ///
 /// Uses binary search on the sorted snapshot for O(log n) lookup per address.
-/// The snapshot contains 59,375 legacy vTorrent addresses with their final balances
-/// at block height 1,680,456 (2018-01-10).
 fn lookup_snapshot_balances(addresses: &[String]) -> u64 {
-    // Validate magic bytes
     if UTXO_SNAPSHOT.len() < SNAPSHOT_HEADER_SIZE {
         return 0;
     }
@@ -274,7 +276,6 @@ fn lookup_snapshot_balances(addresses: &[String]) -> u64 {
             continue;
         }
 
-        // Binary search: compare address bytes (null-padded) against sorted entries
         let mut lo = 0usize;
         let mut hi = entry_count;
         while lo < hi {
@@ -282,13 +283,11 @@ fn lookup_snapshot_balances(addresses: &[String]) -> u64 {
             let entry_offset = mid * ENTRY_SIZE;
             let entry_addr = &entries[entry_offset..entry_offset + ADDR_LEN];
 
-            // Compare: trim null padding from stored address
             let stored_len = entry_addr.iter().position(|&b| b == 0).unwrap_or(ADDR_LEN);
             let stored_addr = &entry_addr[..stored_len];
 
             match stored_addr.cmp(addr_bytes) {
                 std::cmp::Ordering::Equal => {
-                    // Found — read the u64 balance
                     let bal_offset = entry_offset + ADDR_LEN;
                     let bal = u64::from_le_bytes([
                         entries[bal_offset],
@@ -316,8 +315,9 @@ fn lookup_snapshot_balances(addresses: &[String]) -> u64 {
 /// Generate a new receiving address in the current wallet.
 ///
 /// Called from: `DashboardPage.tsx` → `invoke('generate_address', { label })`
-pub fn generate_address_cmd(
-    state: &AppState,
+#[tauri::command]
+pub fn generate_address(
+    state: State<AppState>,
     label: Option<String>,
 ) -> Result<AddressInfo> {
     let mut guard = state.wallet.lock().unwrap();
@@ -338,7 +338,8 @@ pub fn generate_address_cmd(
 /// Get all addresses in the current wallet.
 ///
 /// Called from: `DashboardPage.tsx` → `invoke('get_addresses')`
-pub fn get_addresses_cmd(state: &AppState) -> Result<Vec<AddressInfo>> {
+#[tauri::command]
+pub fn get_addresses(state: State<AppState>) -> Result<Vec<AddressInfo>> {
     let guard = state.wallet.lock().unwrap();
     let wallet = guard.as_ref().ok_or(TauriError::WalletNotInitialized)?;
 
@@ -362,7 +363,8 @@ pub fn get_addresses_cmd(state: &AppState) -> Result<Vec<AddressInfo>> {
 ///
 /// Returns the TOTP URI and base32 secret for QR code display.
 /// Called from: `SecurityCenterPage.tsx` → `invoke('enable_2fa')`
-pub fn enable_2fa_cmd(state: &AppState) -> Result<Enable2FAResult> {
+#[tauri::command]
+pub fn enable_2fa(state: State<AppState>) -> Result<Enable2FAResult> {
     let mut guard = state.wallet.lock().unwrap();
     let wallet = guard.as_mut().ok_or(TauriError::WalletNotInitialized)?;
 
@@ -378,7 +380,8 @@ pub fn enable_2fa_cmd(state: &AppState) -> Result<Enable2FAResult> {
 /// Verify a TOTP code against the wallet's 2FA secret.
 ///
 /// Called from: `SecurityCenterPage.tsx` → `invoke('verify_2fa', { code })`
-pub fn verify_2fa_cmd(state: &AppState, code: String) -> Result<bool> {
+#[tauri::command]
+pub fn verify_2fa(state: State<AppState>, code: String) -> Result<bool> {
     let guard = state.wallet.lock().unwrap();
     let wallet = guard.as_ref().ok_or(TauriError::WalletNotInitialized)?;
 
@@ -389,7 +392,8 @@ pub fn verify_2fa_cmd(state: &AppState, code: String) -> Result<bool> {
 /// Disable 2FA after verifying the current OTP code.
 ///
 /// Called from: `SecurityCenterPage.tsx` → `invoke('disable_2fa', { code })`
-pub fn disable_2fa_cmd(state: &AppState, code: String) -> Result<()> {
+#[tauri::command]
+pub fn disable_2fa(state: State<AppState>, code: String) -> Result<()> {
     let mut guard = state.wallet.lock().unwrap();
     let wallet = guard.as_mut().ok_or(TauriError::WalletNotInitialized)?;
 

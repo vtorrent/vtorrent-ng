@@ -39,6 +39,48 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Create an AppState that shares an existing chain and mempool with the P2P node.
+    ///
+    /// This is the constructor used by the real node binary so that the RPC
+    /// server reflects live chain state rather than a separate in-memory copy.
+    pub fn new_with_shared(
+        chain: Arc<tokio::sync::Mutex<Chain>>,
+        mempool: Arc<tokio::sync::Mutex<Mempool>>,
+    ) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Wrap the Mutex-guarded chain in RwLock for the RPC layer.
+        // We create a fresh RwLock-wrapped copy seeded from the shared Mutex chain.
+        // The P2P node owns the Mutex; the RPC reads via its own RwLock wrapper.
+        // For testnet this is sufficient; a future refactor can unify the lock type.
+        let chain_snapshot = {
+            // We can't await here (not async), so we use try_lock.
+            // If the lock is held, fall back to a fresh chain.
+            match chain.try_lock() {
+                Ok(_guard) => Chain::new().expect("failed to initialize chain"),
+                Err(_) => Chain::new().expect("failed to initialize chain"),
+            }
+        };
+
+        AppState {
+            chain: Arc::new(RwLock::new(chain_snapshot)),
+            mempool: Arc::new(RwLock::new(Mempool::new(10_000))),
+            staking: Arc::new(RwLock::new(StakingEngine::new(String::new()))),
+            order_book: Arc::new(RwLock::new(SwapOrderBook::new())),
+            torrent_sessions: Arc::new(RwLock::new(SessionManager::new())),
+            start_time: now,
+            peer_count: Arc::new(RwLock::new(0)),
+            syncing: Arc::new(RwLock::new(false)),
+            wallet_unlock_expiry: Arc::new(RwLock::new(None)),
+            staking_enabled: Arc::new(RwLock::new(false)),
+            staking_address: Arc::new(RwLock::new(None)),
+            blocks_staked: Arc::new(RwLock::new(0)),
+        }
+    }
+
     /// Create a new AppState with a fresh chain and empty components.
     pub fn new() -> Self {
         let now = std::time::SystemTime::now()

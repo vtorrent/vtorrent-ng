@@ -298,7 +298,7 @@ mod tests {
     #[test]
     fn test_eligible_utxo() {
         let engine = StakingEngine::new("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string());
-        let utxo = make_utxo(100 * COIN, (MIN_STAKE_AGE + 3600) as u32);
+        let utxo = make_utxo(100 * COIN, (MIN_STAKE_AGE as u32).saturating_add(3600));
         assert!(engine.is_eligible(&utxo, 1_700_000_000));
     }
 
@@ -312,7 +312,7 @@ mod tests {
     #[test]
     fn test_ineligible_utxo_too_small() {
         let engine = StakingEngine::new("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string());
-        let utxo = make_utxo(MIN_STAKE_AMOUNT / 2, (MIN_STAKE_AGE + 3600) as u32);
+        let utxo = make_utxo(MIN_STAKE_AMOUNT / 2, (MIN_STAKE_AGE as u32).saturating_add(3600));
         assert!(!engine.is_eligible(&utxo, 1_700_000_000));
     }
 
