@@ -30,6 +30,7 @@ pub fn build_router(state: AppState) -> Router {
         // Wallet
         .route("/api/v1/wallet/balance", get(get_balance))
         .route("/api/v1/wallet/addresses", get(get_addresses))
+        .route("/api/v1/wallet/transactions", get(get_transactions))
         .route("/api/v1/wallet/send", post(send_vtr))
         .route("/api/v1/wallet/unlock", post(unlock_wallet))
         .route("/api/v1/wallet/lock", post(lock_wallet))

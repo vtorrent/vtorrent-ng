@@ -8,6 +8,9 @@ repository.workspace = true
 
 [dependencies]
 vtorrent-core = { path = "../vtorrent-core" }
+vtorrent-node = { path = "../vtorrent-node" }
+ripemd = { workspace = true }
+bs58 = { workspace = true }
 secp256k1 = { workspace = true }
 sha2 = { workspace = true }
 argon2 = { workspace = true }
@@ -19,6 +22,7 @@ base64 = { workspace = true }
 base32 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+bincode = "1"
 thiserror = { workspace = true }
 zeroize = { workspace = true }
 tokio = { workspace = true }

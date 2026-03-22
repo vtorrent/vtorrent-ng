@@ -7,13 +7,16 @@
 /// - Broadcasting messages to all peers
 /// - PEX address book for decentralized peer discovery
 /// - DHT bootstrap integration
+/// - Peer ban management (misbehaviour scoring and IP bans)
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 
 use crate::{
+    ban_manager::{BanManager, Misbehaviour},
     error::{P2pError, Result},
     message::{AddrMsg, NetMessage},
     peer::{run_peer, Peer, PeerCommand, PeerEvent, PeerState},
@@ -56,6 +59,8 @@ pub struct PeerManager {
     event_tx: mpsc::Sender<PeerEvent>,
     /// PEX address book for decentralized peer discovery.
     pub addr_book: AddrBook,
+    /// Ban manager — tracks misbehaviour scores and IP bans.
+    pub ban_manager: BanManager,
 }
 
 impl PeerManager {
@@ -76,6 +81,7 @@ impl PeerManager {
             event_rx,
             event_tx,
             addr_book,
+            ban_manager: BanManager::new(100, Duration::from_secs(24 * 60 * 60)),
         }
     }
 
@@ -115,13 +121,21 @@ impl PeerManager {
     }
 
     /// Connect to a specific peer address.
+    ///
+    /// Returns `Err(P2pError::Banned)` if the peer's IP is currently banned.
     pub async fn connect(&mut self, addr: &str) -> Result<()> {
         if self.peers.len() >= MAX_PEERS {
             return Err(P2pError::TooManyPeers(MAX_PEERS));
         }
 
-        // Record the attempt in the address book
+        // Ban check: reject connections to banned IPs before even opening a socket
         if let Ok(sock_addr) = addr.parse::<SocketAddr>() {
+            let ip = sock_addr.ip();
+            if self.ban_manager.is_banned(ip) {
+                tracing::debug!("Skipping banned peer {}", addr);
+                return Err(P2pError::Banned(ip.to_string()));
+            }
+            // Record the attempt in the address book
             self.addr_book.record_attempt(sock_addr);
         }
 
@@ -159,6 +173,18 @@ impl PeerManager {
         while let Ok(event) = self.event_rx.try_recv() {
             match &event {
                 PeerEvent::HandshakeComplete { peer_addr, version } => {
+                    // Ban check on inbound connections (outbound are checked in connect())
+                    let ip = peer_addr.ip();
+                    if self.ban_manager.is_banned(ip) {
+                        tracing::info!("Dropping inbound connection from banned peer {}", peer_addr);
+                        // Disconnect the peer immediately
+                        if let Some(peer) = self.peers.get(peer_addr) {
+                            let _ = peer.cmd_tx.try_send(PeerCommand::Disconnect);
+                        }
+                        // Don't forward the event to the node
+                        continue;
+                    }
+
                     if let Some(peer) = self.peers.get_mut(peer_addr) {
                         peer.state = PeerState::Connected;
                         peer.best_height = version.start_height;
@@ -183,6 +209,48 @@ impl PeerManager {
         }
 
         events
+    }
+
+    /// Record misbehaviour for a peer and potentially ban them.
+    ///
+    /// Returns `true` if the peer was banned as a result.
+    /// If banned, the peer is also immediately disconnected.
+    pub fn record_misbehaviour(&mut self, addr: SocketAddr, offence: Misbehaviour) -> bool {
+        let ip = addr.ip();
+        let banned = self.ban_manager.record_misbehaviour(ip, offence);
+        if banned {
+            tracing::warn!(
+                "Peer {} banned for misbehaviour ({:?})",
+                addr, offence
+            );
+            // Disconnect the peer if still connected
+            if let Some(peer) = self.peers.get(&addr) {
+                let _ = peer.cmd_tx.try_send(PeerCommand::Disconnect);
+            }
+        }
+        banned
+    }
+
+    /// Manually ban a peer IP with a reason.
+    pub fn ban_peer(&mut self, addr: SocketAddr, reason: String) {
+        let ip = addr.ip();
+        self.ban_manager.ban_ip(ip, reason.clone());
+        tracing::warn!("Manually banned peer {}: {}", addr, reason);
+        // Disconnect if currently connected
+        if let Some(peer) = self.peers.get(&addr) {
+            let _ = peer.cmd_tx.try_send(PeerCommand::Disconnect);
+        }
+    }
+
+    /// Returns `true` if the given address is currently banned.
+    pub fn is_banned(&self, addr: SocketAddr) -> bool {
+        self.ban_manager.is_banned(addr.ip())
+    }
+
+    /// Prune expired bans and decay old misbehaviour scores.
+    /// Should be called periodically (e.g., every hour).
+    pub fn prune_bans(&mut self) {
+        self.ban_manager.prune();
     }
 
     /// Broadcast a message to all connected peers.

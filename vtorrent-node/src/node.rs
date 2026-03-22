@@ -17,9 +17,11 @@ use vtorrent_overlay::{
 };
 
 use vtorrent_p2p::{
+    compact::{CompactBlockDecoder, CompactBlockEncoder, CompactBlockPeerState, derive_siphash_keys, short_txid},
     dht::{discover_peers_via_doh, discover_peers_via_github, DhtBootstrap},
     message::{
-        AddrMsg, GetBlocksMsg, InvItem, InvMsg, InvType, NetMessage,
+        AddrMsg, BlockTxnMsg, CmpctBlockMsg, GetBlocksMsg, GetBlockTxnMsg,
+        InvItem, InvMsg, InvType, NetMessage, SendCmpctMsg,
         NODE_NETWORK, NODE_TORRENT,
     },
     peer::PeerEvent,
@@ -27,10 +29,11 @@ use vtorrent_p2p::{
 };
 
 use crate::{
-    block::{Block, Transaction},
+    block::{Block, BlockHeader, Transaction},
     chain::Chain,
     consensus::TARGET_BLOCK_TIME,
     error::{NodeError, Result},
+    events::{EventSender, NodeEvent},
     mempool::Mempool,
     staking::StakingEngine,
 };
@@ -94,6 +97,10 @@ pub struct Node {
     staking: Option<StakingEngine>,
     config: NodeConfig,
     overlay: Option<Overlay>,
+    /// Optional event sender — when set, the node emits live events to subscribers.
+    event_tx: Option<EventSender>,
+    /// Per-peer compact block relay state (BIP-152).
+    compact_peers: std::collections::HashMap<std::net::SocketAddr, CompactBlockPeerState>,
 }
 
 impl Node {
@@ -119,7 +126,35 @@ impl Node {
             staking,
             config,
             overlay: None,
+            event_tx: None,
+            compact_peers: std::collections::HashMap::new(),
         })
+    }
+
+    /// Returns a clone of the Arc wrapping the chain Mutex.
+    /// Used by vtorrent-daemon to share the live chain with the RPC server.
+    pub fn chain_arc(&self) -> Arc<Mutex<Chain>> {
+        Arc::clone(&self.chain)
+    }
+
+    /// Returns a clone of the Arc wrapping the mempool Mutex.
+    /// Used by vtorrent-daemon to share the live mempool with the RPC server.
+    pub fn mempool_arc(&self) -> Arc<Mutex<Mempool>> {
+        Arc::clone(&self.mempool)
+    }
+
+    /// Attach an event sender so the node can emit live events to subscribers.
+    /// Call this before `start()` — typically done by `vtorrent-daemon` to bridge
+    /// the node event channel to the RPC WebSocket broadcaster.
+    pub fn set_event_sender(&mut self, tx: EventSender) {
+        self.event_tx = Some(tx);
+    }
+
+    /// Emit an event to all subscribers (best-effort; silently drops if no subscribers).
+    fn emit(&self, event: NodeEvent) {
+        if let Some(tx) = &self.event_tx {
+            let _ = tx.send(std::sync::Arc::new(event));
+        }
     }
 
     /// Returns the path to the peer address book cache file.
@@ -393,6 +428,24 @@ impl Node {
                     "Peer {} handshake complete: {} (height {})",
                     peer_addr, version.user_agent, version.start_height
                 );
+                self.emit(NodeEvent::PeerConnected {
+                    addr: peer_addr,
+                    user_agent: version.user_agent.clone(),
+                    version: version.version,
+                    height: version.start_height,
+                });
+                // Negotiate compact block relay (BIP-152)
+                // We use low-bandwidth mode (0) by default; high-bandwidth (1) is for the 3 fastest peers
+                let sendcmpct_payload = serde_json::to_vec(&SendCmpctMsg {
+                    high_bandwidth: false,
+                    version: 1,
+                }).unwrap_or_default();
+                self.peer_manager.send_to(
+                    peer_addr,
+                    NetMessage::new("sendcmpct", sendcmpct_payload)
+                ).await;
+                // Track compact block state for this peer
+                self.compact_peers.insert(peer_addr, CompactBlockPeerState::default());
                 // Ask peer for blocks if they are ahead of us
                 let our_height = {
                     let chain = self.chain.lock().await;
@@ -426,6 +479,9 @@ impl Node {
 
             PeerEvent::Disconnected { peer_addr } => {
                 tracing::info!("Peer {} disconnected", peer_addr);
+                self.emit(NodeEvent::PeerDisconnected { addr: peer_addr });
+                // Clean up compact block state for this peer
+                self.compact_peers.remove(&peer_addr);
             }
         }
         Ok(())
@@ -496,10 +552,32 @@ impl Node {
                                 let should_relay = match &acceptance {
                                     BlockAcceptance::MainChain { height } => {
                                         tracing::info!("Accepted block {} at height {}", hex::encode(hash), height);
+                                        // Emit new_block event
+                                        let size_bytes = serde_json::to_vec(&block).map(|v| v.len()).unwrap_or(0);
+                                        self.emit(NodeEvent::NewBlock {
+                                            height: *height,
+                                            hash,
+                                            tx_count: block.transactions.len(),
+                                            timestamp: block.header.timestamp,
+                                            size_bytes,
+                                        });
+                                        // Emit tx_confirmed for each transaction in the block
+                                        for tx in &block.transactions {
+                                            self.emit(NodeEvent::TxConfirmed {
+                                                txid: tx.txid(),
+                                                block_height: *height,
+                                                block_hash: hash,
+                                            });
+                                        }
                                         true
                                     }
                                     BlockAcceptance::Reorg { old_tip, new_tip, depth } => {
                                         tracing::warn!("Reorg depth {}: {} -> {}", depth, hex::encode(old_tip), hex::encode(new_tip));
+                                        self.emit(NodeEvent::Reorg {
+                                            old_tip: *old_tip,
+                                            new_tip: *new_tip,
+                                            depth: *depth,
+                                        });
                                         true
                                     }
                                     BlockAcceptance::Fork { fork_tip } => {
@@ -539,7 +617,12 @@ impl Node {
                         match mp.add_transaction(tx.clone()) {
                             Ok(()) => {
                                 let txid = tx.txid();
+                                let fee_sats = tx.fee_sats();
                                 tracing::debug!("Accepted tx {}", hex::encode(txid));
+                                self.emit(NodeEvent::TxUnconfirmed {
+                                    txid,
+                                    fee_sats,
+                                });
                                 let payload = serde_json::to_vec(&InvMsg {
                                     items: vec![InvItem {
                                         inv_type: InvType::Transaction,
@@ -596,6 +679,194 @@ impl Node {
                         drop(chain);
                         self.peer_manager.broadcast(NetMessage::new("inv", payload)).await;
                     }
+                }
+            }
+
+            // ── Compact Block Relay (BIP-152) ─────────────────────────────────
+            "sendcmpct" => {
+                if let Ok(msg_data) = serde_json::from_slice::<SendCmpctMsg>(&msg.payload) {
+                    let state = self.compact_peers.entry(peer_addr).or_default();
+                    state.enabled = true;
+                    state.high_bandwidth = msg_data.high_bandwidth;
+                    state.version = msg_data.version;
+                    tracing::debug!(
+                        "Peer {} supports compact blocks (high_bw={}, v={})",
+                        peer_addr, msg_data.high_bandwidth, msg_data.version
+                    );
+                }
+            }
+
+            "cmpctblock" => {
+                if let Ok(cmpct) = serde_json::from_slice::<CmpctBlockMsg>(&msg.payload) {
+                    // Build the header bytes for SipHash key derivation
+                    let mut header_bytes = Vec::with_capacity(80);
+                    header_bytes.extend_from_slice(&cmpct.version.to_le_bytes());
+                    header_bytes.extend_from_slice(&cmpct.prev_block_hash);
+                    header_bytes.extend_from_slice(&cmpct.merkle_root);
+                    header_bytes.extend_from_slice(&cmpct.timestamp.to_le_bytes());
+                    header_bytes.extend_from_slice(&cmpct.bits.to_le_bytes());
+                    header_bytes.extend_from_slice(&cmpct.nonce.to_le_bytes());
+                    let (k0, k1) = derive_siphash_keys(&header_bytes, cmpct.siphash_nonce);
+
+                    // Build a mempool lookup map: short_txid → serialized tx bytes
+                    let mempool_map = {
+                        let mp = self.mempool.lock().await;
+                        let entries = mp.get_entries();
+                        let mut map = std::collections::HashMap::new();
+                        for entry in entries {
+                            let txid = entry.tx.txid();
+                            let sid = short_txid(&txid, k0, k1);
+                            if let Ok(bytes) = serde_json::to_vec(&entry.tx) {
+                                map.insert(sid, bytes);
+                            }
+                        }
+                        map
+                    };
+
+                    match CompactBlockDecoder::decode(&cmpct, &mempool_map) {
+                        Ok(tx_bytes_list) => {
+                            // Reconstruct the full block from the decoded transactions
+                            let mut txs: Vec<Transaction> = Vec::new();
+                            let mut all_ok = true;
+                            for bytes in &tx_bytes_list {
+                                match serde_json::from_slice::<Transaction>(bytes) {
+                                    Ok(tx) => txs.push(tx),
+                                    Err(e) => {
+                                        tracing::warn!("cmpctblock: failed to decode tx from {}: {}", peer_addr, e);
+                                        all_ok = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if all_ok {
+                                let block = Block {
+                                    header: BlockHeader {
+                                        version: cmpct.version,
+                                        prev_block_hash: cmpct.prev_block_hash,
+                                        merkle_root: cmpct.merkle_root,
+                                        timestamp: cmpct.timestamp,
+                                        bits: cmpct.bits,
+                                        nonce: cmpct.nonce,
+                                        stake_modifier: 0, // compact blocks don't carry stake_modifier; resolved from chain
+                                    },
+                                    transactions: txs,
+                                };
+                                let mut chain = self.chain.lock().await;
+                                match chain.add_block(block.clone()) {
+                                    Ok(acceptance) => {
+                                        use crate::chain::BlockAcceptance;
+                                        let hash = block.hash();
+                                        if let BlockAcceptance::MainChain { height } = &acceptance {
+                                            tracing::info!(
+                                                "cmpctblock: accepted block {} at height {}",
+                                                hex::encode(hash), height
+                                            );
+                                            let size_bytes = serde_json::to_vec(&block).map(|v| v.len()).unwrap_or(0);
+                                            self.emit(NodeEvent::NewBlock {
+                                                height: *height,
+                                                hash,
+                                                tx_count: block.transactions.len(),
+                                                timestamp: block.header.timestamp,
+                                                size_bytes,
+                                            });
+                                            for tx in &block.transactions {
+                                                self.emit(NodeEvent::TxConfirmed {
+                                                    txid: tx.txid(),
+                                                    block_height: *height,
+                                                    block_hash: hash,
+                                                });
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("cmpctblock: rejected block from {}: {}", peer_addr, e);
+                                    }
+                                }
+                            }
+                        }
+                        Err(missing_indexes) => {
+                            // Some transactions are missing from our mempool — request them
+                            tracing::debug!(
+                                "cmpctblock: {} missing txs from {}, sending getblocktxn",
+                                missing_indexes.len(), peer_addr
+                            );
+                            let mut header_bytes2 = Vec::with_capacity(80);
+                            header_bytes2.extend_from_slice(&cmpct.version.to_le_bytes());
+                            header_bytes2.extend_from_slice(&cmpct.prev_block_hash);
+                            header_bytes2.extend_from_slice(&cmpct.merkle_root);
+                            header_bytes2.extend_from_slice(&cmpct.timestamp.to_le_bytes());
+                            header_bytes2.extend_from_slice(&cmpct.bits.to_le_bytes());
+                            header_bytes2.extend_from_slice(&cmpct.nonce.to_le_bytes());
+                            // Compute block hash as the hash of the header bytes
+                            let block_hash = {
+                                use sha2::{Sha256, Digest};
+                                let h1 = Sha256::digest(&header_bytes2);
+                                let h2 = Sha256::digest(h1);
+                                let mut arr = [0u8; 32];
+                                arr.copy_from_slice(&h2);
+                                arr
+                            };
+                            let req = CompactBlockDecoder::build_getblocktxn(block_hash, missing_indexes);
+                            let payload = serde_json::to_vec(&req).unwrap_or_default();
+                            self.peer_manager.send_to(
+                                peer_addr,
+                                NetMessage::new("getblocktxn", payload)
+                            ).await;
+                        }
+                    }
+                }
+            }
+
+            "getblocktxn" => {
+                if let Ok(req) = serde_json::from_slice::<GetBlockTxnMsg>(&msg.payload) {
+                    let chain = self.chain.lock().await;
+                    // Find the block by hash
+                    let our_height = chain.best_height();
+                    let mut found_txs: Option<Vec<Vec<u8>>> = None;
+                    'outer: for h in 0..=our_height {
+                        if let Some(block) = chain.get_block_at_height(h) {
+                            if block.hash() == req.block_hash {
+                                let mut txs = Vec::new();
+                                for &idx in &req.indexes {
+                                    let idx = idx as usize;
+                                    if idx < block.transactions.len() {
+                                        if let Ok(bytes) = serde_json::to_vec(&block.transactions[idx]) {
+                                            txs.push(bytes);
+                                        }
+                                    }
+                                }
+                                found_txs = Some(txs);
+                                break 'outer;
+                            }
+                        }
+                    }
+                    if let Some(txs) = found_txs {
+                        let resp = BlockTxnMsg {
+                            block_hash: req.block_hash,
+                            transactions: txs,
+                        };
+                        let payload = serde_json::to_vec(&resp).unwrap_or_default();
+                        drop(chain);
+                        self.peer_manager.send_to(
+                            peer_addr,
+                            NetMessage::new("blocktxn", payload)
+                        ).await;
+                    }
+                }
+            }
+
+            "blocktxn" => {
+                // blocktxn arrives after we sent getblocktxn for a compact block
+                // For now, log it — a full implementation would need to store the
+                // partial compact block state and complete it here.
+                // This is handled by a pending-block cache (future improvement).
+                if let Ok(resp) = serde_json::from_slice::<BlockTxnMsg>(&msg.payload) {
+                    tracing::debug!(
+                        "blocktxn: received {} txs for block {} from {}",
+                        resp.transactions.len(),
+                        hex::encode(resp.block_hash),
+                        peer_addr
+                    );
                 }
             }
 

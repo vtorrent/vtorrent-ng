@@ -1,56 +1,85 @@
 import { useState } from 'react'
 import {
-  ArrowLeftRight, Plus, Clock, CheckCircle, XCircle,
-  AlertTriangle, Zap, Shield, Info
+  Plus, CheckCircle, XCircle,
+  Zap, Info, RefreshCw, AlertCircle
 } from 'lucide-react'
 import { formatVTR } from '../hooks/useWallet'
+import { useDexOrders, cancelDexOrder, type DexOrder } from '../hooks/useNode'
 
-interface Order {
-  id: string
-  type: 'buy' | 'sell'
-  pair: string
-  amount: number
-  price: number
-  total: number
-  maker: string
-  status: 'open' | 'matched' | 'completed' | 'cancelled'
-  createdAt: string
-  expiresIn: string
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Convert a Unix timestamp to a relative expiry string like "23h" or "expired". */
+function expiresIn(expiresAt: number): string {
+  const diff = expiresAt - Math.floor(Date.now() / 1000)
+  if (diff <= 0) return 'expired'
+  if (diff < 3600) return `${Math.floor(diff / 60)}m`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h`
+  return `${Math.floor(diff / 86400)}d`
 }
 
-const mockOrderBook: Order[] = [
-  { id: '1', type: 'sell', pair: 'VTR/BTC', amount: 10000_00000000, price: 0.00000042, total: 0.0042,  maker: 'V3kRm...9xPq', status: 'open', createdAt: '5m ago', expiresIn: '23h' },
-  { id: '2', type: 'sell', pair: 'VTR/BTC', amount: 5000_00000000,  price: 0.00000044, total: 0.0022,  maker: 'V7nBw...4mLs', status: 'open', createdAt: '12m ago', expiresIn: '11h' },
-  { id: '3', type: 'sell', pair: 'VTR/BTC', amount: 25000_00000000, price: 0.00000045, total: 0.01125, maker: 'V9pXz...2qRt', status: 'open', createdAt: '1h ago', expiresIn: '6h' },
-  { id: '4', type: 'buy',  pair: 'VTR/BTC', amount: 8000_00000000,  price: 0.00000040, total: 0.0032,  maker: 'V2mKs...7wNp', status: 'open', createdAt: '3m ago', expiresIn: '47h' },
-  { id: '5', type: 'buy',  pair: 'VTR/BTC', amount: 15000_00000000, price: 0.00000038, total: 0.0057,  maker: 'V6hJq...1vCx', status: 'open', createdAt: '30m ago', expiresIn: '20h' },
-]
+/** Convert a Unix timestamp to a relative "created" string like "5m ago". */
+function createdAgo(createdAt: number): string {
+  const diff = Math.floor(Date.now() / 1000) - createdAt
+  if (diff < 60) return `${diff}s ago`
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+  return `${Math.floor(diff / 86400)}d ago`
+}
 
-const myOrders: Order[] = [
-  { id: '6', type: 'sell', pair: 'VTR/BTC', amount: 2000_00000000, price: 0.00000043, total: 0.00086, maker: 'You', status: 'open', createdAt: '2h ago', expiresIn: '22h' },
-  { id: '7', type: 'buy',  pair: 'VTR/BTC', amount: 5000_00000000, price: 0.00000039, total: 0.00195, maker: 'You', status: 'completed', createdAt: '1d ago', expiresIn: '—' },
-]
+/** Derive order side from offer/request assets. */
+function orderSide(order: DexOrder): 'buy' | 'sell' {
+  // If the maker is offering BTC and requesting VTR → buy order (from VTR perspective)
+  // If the maker is offering VTR and requesting BTC → sell order
+  return order.offerAsset.toUpperCase() === 'VTR' ? 'sell' : 'buy'
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export default function TradePage() {
+  const { data: orders, loading, error, refresh } = useDexOrders(10_000)
   const [tab, setTab] = useState<'orderbook' | 'create' | 'myorders'>('orderbook')
   const [orderType, setOrderType] = useState<'buy' | 'sell'>('buy')
   const [amount, setAmount] = useState('')
   const [price, setPrice] = useState('')
+  const [cancelling, setCancelling] = useState<string | null>(null)
 
   const total = amount && price ? (parseFloat(amount) * parseFloat(price)).toFixed(8) : '0'
 
-  const sells = mockOrderBook.filter(o => o.type === 'sell').sort((a, b) => a.price - b.price)
-  const buys  = mockOrderBook.filter(o => o.type === 'buy').sort((a, b) => b.price - a.price)
+  // Separate open orders into sides
+  const openOrders = orders.filter(o => o.status === 'open')
+  const sells = openOrders.filter(o => orderSide(o) === 'sell').sort((a, b) => a.rate - b.rate)
+  const buys  = openOrders.filter(o => orderSide(o) === 'buy').sort((a, b) => b.rate - a.rate)
   const spread = sells.length && buys.length
-    ? ((sells[0].price - buys[0].price) / sells[0].price * 100).toFixed(2)
+    ? ((sells[0].rate - buys[0].rate) / sells[0].rate * 100).toFixed(2)
     : null
+
+  const handleCancel = async (id: string) => {
+    setCancelling(id)
+    try {
+      await cancelDexOrder(id)
+      refresh()
+    } catch {
+      // best-effort
+    } finally {
+      setCancelling(null)
+    }
+  }
 
   return (
     <div className="p-6 space-y-6">
       {/* Header */}
-      <div>
-        <h1 className="text-xl font-bold text-white">P2P Trade</h1>
-        <p className="text-gray-500 text-sm mt-0.5">Trade VTR directly with other users via atomic swaps. No exchange. No custodian.</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-bold text-white">P2P Trade</h1>
+          <p className="text-gray-500 text-sm mt-0.5">Trade VTR directly with other users via atomic swaps. No exchange. No custodian.</p>
+        </div>
+        <button
+          onClick={refresh}
+          className="p-2 rounded-lg hover:bg-navy-800 text-gray-500 hover:text-gray-300 transition-colors"
+          title="Refresh order book"
+        >
+          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+        </button>
       </div>
 
       {/* How it works banner */}
@@ -85,57 +114,75 @@ export default function TradePage() {
         ))}
       </div>
 
-      {/* Order Book */}
+      {/* Order Book — live data */}
       {tab === 'orderbook' && (
-        <div className="grid grid-cols-2 gap-4">
-          {/* Sell orders (asks) */}
-          <div className="card">
-            <h3 className="text-sm font-semibold text-red-400 mb-3">Sell Orders (Asks)</h3>
-            <div className="space-y-1">
-              <div className="grid grid-cols-3 text-xs text-gray-600 pb-2 border-b border-navy-800">
-                <span>Price (BTC)</span>
-                <span className="text-right">Amount (VTR)</span>
-                <span className="text-right">Expires</span>
-              </div>
-              {sells.map(order => (
-                <div key={order.id} className="grid grid-cols-3 text-xs py-1.5 hover:bg-red-900/10 rounded px-1 cursor-pointer transition-colors group">
-                  <span className="text-red-400 font-mono">{order.price.toFixed(8)}</span>
-                  <span className="text-right text-gray-300 font-mono">{formatVTR(order.amount)}</span>
-                  <span className="text-right text-gray-600">{order.expiresIn}</span>
-                </div>
-              ))}
+        <>
+          {error ? (
+            <div className="flex items-center gap-2 text-xs text-red-400 py-4">
+              <AlertCircle size={13} />
+              Could not load order book — node may be offline.
             </div>
-          </div>
-
-          {/* Buy orders (bids) */}
-          <div className="card">
-            <h3 className="text-sm font-semibold text-emerald-400 mb-3">Buy Orders (Bids)</h3>
-            <div className="space-y-1">
-              <div className="grid grid-cols-3 text-xs text-gray-600 pb-2 border-b border-navy-800">
-                <span>Price (BTC)</span>
-                <span className="text-right">Amount (VTR)</span>
-                <span className="text-right">Expires</span>
-              </div>
-              {buys.map(order => (
-                <div key={order.id} className="grid grid-cols-3 text-xs py-1.5 hover:bg-emerald-900/10 rounded px-1 cursor-pointer transition-colors group">
-                  <span className="text-emerald-400 font-mono">{order.price.toFixed(8)}</span>
-                  <span className="text-right text-gray-300 font-mono">{formatVTR(order.amount)}</span>
-                  <span className="text-right text-gray-600">{order.expiresIn}</span>
-                </div>
-              ))}
+          ) : loading && orders.length === 0 ? (
+            <div className="flex items-center gap-2 text-xs text-gray-600 py-4">
+              <RefreshCw size={12} className="animate-spin" />
+              Loading order book…
             </div>
-          </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-4">
+              {/* Sell orders (asks) */}
+              <div className="card">
+                <h3 className="text-sm font-semibold text-red-400 mb-3">Sell Orders (Asks)</h3>
+                <div className="space-y-1">
+                  <div className="grid grid-cols-3 text-xs text-gray-600 pb-2 border-b border-navy-800">
+                    <span>Rate</span>
+                    <span className="text-right">Amount (VTR)</span>
+                    <span className="text-right">Expires</span>
+                  </div>
+                  {sells.length === 0 ? (
+                    <p className="text-xs text-gray-600 py-3">No sell orders.</p>
+                  ) : sells.map((order: DexOrder) => (
+                    <div key={order.id} className="grid grid-cols-3 text-xs py-1.5 hover:bg-red-900/10 rounded px-1 cursor-pointer transition-colors">
+                      <span className="text-red-400 font-mono">{order.rate.toFixed(8)}</span>
+                      <span className="text-right text-gray-300 font-mono">{formatVTR(order.offerAmountSatoshis)}</span>
+                      <span className="text-right text-gray-600">{expiresIn(order.expiresAt)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
 
-          {spread && (
-            <div className="col-span-2 text-center text-xs text-gray-500">
-              Spread: <span className="text-vtorrent-400 font-mono">{spread}%</span>
-              &nbsp;·&nbsp;
-              Best ask: <span className="text-red-400 font-mono">{sells[0]?.price.toFixed(8)}</span>
-              &nbsp;·&nbsp;
-              Best bid: <span className="text-emerald-400 font-mono">{buys[0]?.price.toFixed(8)}</span>
+              {/* Buy orders (bids) */}
+              <div className="card">
+                <h3 className="text-sm font-semibold text-emerald-400 mb-3">Buy Orders (Bids)</h3>
+                <div className="space-y-1">
+                  <div className="grid grid-cols-3 text-xs text-gray-600 pb-2 border-b border-navy-800">
+                    <span>Rate</span>
+                    <span className="text-right">Amount (VTR)</span>
+                    <span className="text-right">Expires</span>
+                  </div>
+                  {buys.length === 0 ? (
+                    <p className="text-xs text-gray-600 py-3">No buy orders.</p>
+                  ) : buys.map((order: DexOrder) => (
+                    <div key={order.id} className="grid grid-cols-3 text-xs py-1.5 hover:bg-emerald-900/10 rounded px-1 cursor-pointer transition-colors">
+                      <span className="text-emerald-400 font-mono">{order.rate.toFixed(8)}</span>
+                      <span className="text-right text-gray-300 font-mono">{formatVTR(order.requestAmountSatoshis)}</span>
+                      <span className="text-right text-gray-600">{expiresIn(order.expiresAt)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {spread && (
+                <div className="col-span-2 text-center text-xs text-gray-500">
+                  Spread: <span className="text-vtorrent-400 font-mono">{spread}%</span>
+                  &nbsp;·&nbsp;
+                  Best ask: <span className="text-red-400 font-mono">{sells[0]?.rate.toFixed(8)}</span>
+                  &nbsp;·&nbsp;
+                  Best bid: <span className="text-emerald-400 font-mono">{buys[0]?.rate.toFixed(8)}</span>
+                </div>
+              )}
             </div>
           )}
-        </div>
+        </>
       )}
 
       {/* Create Order */}
@@ -211,43 +258,66 @@ export default function TradePage() {
         </div>
       )}
 
-      {/* My Orders */}
+      {/* My Orders — live data filtered by status */}
       {tab === 'myorders' && (
         <div className="card">
           <h3 className="font-semibold text-white text-sm mb-4">My Orders</h3>
-          <div className="space-y-3">
-            {myOrders.map(order => (
-              <div key={order.id} className="flex items-center gap-4 py-3 border-b border-navy-800/60 last:border-0">
-                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                  order.type === 'buy' ? 'bg-emerald-400' : 'bg-red-400'
-                }`} />
-                <div className="flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className={`text-xs font-medium ${order.type === 'buy' ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {order.type.toUpperCase()}
-                    </span>
-                    <span className="text-xs text-gray-400">{formatVTR(order.amount)}</span>
-                    <span className="text-xs text-gray-600">@ {order.price.toFixed(8)} BTC</span>
+          {error ? (
+            <div className="flex items-center gap-2 text-xs text-red-400 py-4">
+              <AlertCircle size={13} />
+              Could not load orders — node may be offline.
+            </div>
+          ) : orders.length === 0 ? (
+            <p className="text-xs text-gray-600 py-4">No orders yet. Create one in the "Create Order" tab.</p>
+          ) : (
+            <div className="space-y-3">
+              {orders.map((order: DexOrder) => {
+                const side = orderSide(order)
+                return (
+                  <div key={order.id} className="flex items-center gap-4 py-3 border-b border-navy-800/60 last:border-0">
+                    <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                      side === 'buy' ? 'bg-emerald-400' : 'bg-red-400'
+                    }`} />
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className={`text-xs font-medium ${side === 'buy' ? 'text-emerald-400' : 'text-red-400'}`}>
+                          {side.toUpperCase()}
+                        </span>
+                        <span className="text-xs text-gray-400">
+                          {formatVTR(side === 'sell' ? order.offerAmountSatoshis : order.requestAmountSatoshis)}
+                        </span>
+                        <span className="text-xs text-gray-600">@ {order.rate.toFixed(8)}</span>
+                      </div>
+                      <p className="text-xs text-gray-600 mt-0.5">{createdAgo(order.createdAt)}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {order.status === 'open' && (
+                        <>
+                          <span className="badge-yellow">Open</span>
+                          <button
+                            onClick={() => handleCancel(order.id)}
+                            disabled={cancelling === order.id}
+                            className="text-xs text-red-400 hover:text-red-300 transition-colors disabled:opacity-50"
+                          >
+                            {cancelling === order.id ? 'Cancelling…' : 'Cancel'}
+                          </button>
+                        </>
+                      )}
+                      {order.status === 'completed' && (
+                        <span className="badge-green flex items-center gap-1"><CheckCircle size={10} /> Completed</span>
+                      )}
+                      {order.status === 'cancelled' && (
+                        <span className="badge-red flex items-center gap-1"><XCircle size={10} /> Cancelled</span>
+                      )}
+                      {order.status === 'matched' && (
+                        <span className="badge-blue">Matched</span>
+                      )}
+                    </div>
                   </div>
-                  <p className="text-xs text-gray-600 mt-0.5">{order.createdAt}</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  {order.status === 'open' && (
-                    <>
-                      <span className="badge-yellow">Open</span>
-                      <button className="text-xs text-red-400 hover:text-red-300 transition-colors">Cancel</button>
-                    </>
-                  )}
-                  {order.status === 'completed' && (
-                    <span className="badge-green"><CheckCircle size={10} /> Completed</span>
-                  )}
-                  {order.status === 'cancelled' && (
-                    <span className="badge-red"><XCircle size={10} /> Cancelled</span>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
+                )
+              })}
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -11,3 +11,4 @@ pub mod error;
 pub mod otp;
 pub mod encryption;
 pub mod wallet;
+pub mod tx_builder;

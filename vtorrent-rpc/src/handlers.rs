@@ -20,7 +20,7 @@ fn now_secs() -> u64 {
 // ─── Node Info ────────────────────────────────────────────────────────────────
 
 pub async fn get_node_info(State(state): State<Arc<AppState>>) -> RpcResult<Json<NodeInfoResponse>> {
-    let chain = state.chain.read().await;
+    let chain = state.chain.lock().await;
     let peer_count = *state.peer_count.read().await;
     let syncing = *state.syncing.read().await;
     let uptime = now_secs().saturating_sub(state.start_time);
@@ -44,7 +44,7 @@ pub async fn get_node_info(State(state): State<Arc<AppState>>) -> RpcResult<Json
 // ─── Blockchain ───────────────────────────────────────────────────────────────
 
 pub async fn get_block_height(State(state): State<Arc<AppState>>) -> RpcResult<Json<BlockHeightResponse>> {
-    let chain = state.chain.read().await;
+    let chain = state.chain.lock().await;
     let height = chain.best_height() as u64;
     let best_hash = chain.best_hash()
         .map(|h| hex::encode(h))
@@ -69,7 +69,7 @@ pub async fn get_block_by_hash(
     let mut hash = [0u8; 32];
     hash.copy_from_slice(&hash_bytes);
 
-    let chain = state.chain.read().await;
+    let chain = state.chain.lock().await;
     let block = chain.get_block(&hash)
         .ok_or_else(|| RpcError::NotFound(format!("Block {} not found", hash_hex)))?;
 
@@ -88,7 +88,7 @@ pub async fn get_block_by_hash(
 }
 
 pub async fn get_mempool(State(state): State<Arc<AppState>>) -> RpcResult<Json<MempoolResponse>> {
-    let mempool = state.mempool.read().await;
+    let mempool = state.mempool.lock().await;
     let txs = mempool.get_transactions();
     let txids: Vec<String> = txs.iter()
         .map(|tx| hex::encode(tx.txid()))
@@ -105,7 +105,7 @@ pub async fn get_mempool(State(state): State<Arc<AppState>>) -> RpcResult<Json<M
 // ─── Wallet ───────────────────────────────────────────────────────────────────
 
 pub async fn get_balance(State(state): State<Arc<AppState>>) -> RpcResult<Json<BalanceResponse>> {
-    let chain = state.chain.read().await;
+    let chain = state.chain.lock().await;
     let staking_enabled = *state.staking_enabled.read().await;
 
     let confirmed: u64 = chain.get_utxo_set().values()
@@ -123,7 +123,7 @@ pub async fn get_balance(State(state): State<Arc<AppState>>) -> RpcResult<Json<B
 }
 
 pub async fn get_addresses(State(state): State<Arc<AppState>>) -> RpcResult<Json<AddressesResponse>> {
-    let chain = state.chain.read().await;
+    let chain = state.chain.lock().await;
     let utxo_set = chain.get_utxo_set();
 
     // Group UTXOs by script_pubkey and sum values
@@ -199,13 +199,41 @@ pub async fn lock_wallet(State(state): State<Arc<AppState>>) -> RpcResult<Json<V
     Ok(Json(json!({ "success": true, "message": "Wallet locked" })))
 }
 
+/// GET /api/v1/wallet/transactions?limit=N
+/// Returns the most recent confirmed transactions from the main chain.
+pub async fn get_transactions(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> RpcResult<Json<Vec<TransactionResponse>>> {
+    let limit = params.get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(50)
+        .min(500);
+
+    let chain = state.chain.lock().await;
+    let txs = chain.get_recent_transactions(limit);
+
+    let result = txs.into_iter().map(|(txid, height, ts, tx_type, amount)| {
+        TransactionResponse {
+            display: format!("{:.6} VTR", amount as f64 / 1_000_000.0),
+            txid,
+            block_height: height,
+            timestamp: ts,
+            tx_type,
+            amount_satoshis: amount,
+        }
+    }).collect();
+
+    Ok(Json(result))
+}
+
 // ─── Staking ──────────────────────────────────────────────────────────────────
 
 pub async fn get_staking_status(State(state): State<Arc<AppState>>) -> RpcResult<Json<StakingStatusResponse>> {
     let enabled = *state.staking_enabled.read().await;
     let staking_address = state.staking_address.read().await.clone();
     let blocks_staked = *state.blocks_staked.read().await;
-    let chain = state.chain.read().await;
+    let chain = state.chain.lock().await;
 
     let total_staking: u64 = chain.get_utxo_set().values()
         .map(|u| u.value)
@@ -404,7 +432,7 @@ pub async fn check_claim(
 ) -> RpcResult<Json<ClaimCheckResponse>> {
     use vtorrent_node::genesis::get_legacy_balance;
 
-    let chain = state.chain.read().await;
+    let chain = state.chain.lock().await;
     let claimable = get_legacy_balance(&req.legacy_address);
     let already_claimed = chain.is_claimed(&req.legacy_address);
 

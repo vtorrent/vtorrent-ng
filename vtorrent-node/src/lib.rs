@@ -9,3 +9,4 @@ pub mod genesis;
 pub mod staking;
 pub mod atomic_swap;
 pub mod node;
+pub mod events;

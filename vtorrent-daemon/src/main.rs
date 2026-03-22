@@ -23,7 +23,9 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 use vtorrent_node::node::{Node, NodeConfig};
+use vtorrent_node::events as node_events;
 use vtorrent_rpc::{server::start_server, state::AppState};
+use vtorrent_rpc::ws::NodeEvent as RpcNodeEvent;
 
 // ─── CLI Arguments ────────────────────────────────────────────────────────────
 
@@ -108,10 +110,99 @@ async fn main() -> anyhow::Result<()> {
     let mut node = Node::new(config.clone())?;
 
     // ── Build RPC AppState ────────────────────────────────────────────────────
-    // The RPC server uses its own in-memory state for now.
-    // A future refactor will wire the shared Arc<Mutex<Chain>> from the node.
-    let rpc_state = AppState::new();
+    // Share the live chain and mempool Arcs from the node so that RPC
+    // responses always reflect the current chain state.
+    let chain_arc = node.chain_arc();
+    let mempool_arc = node.mempool_arc();
+    let rpc_state = AppState::new_with_shared(chain_arc, mempool_arc);
     let rpc_addr = cli.rpc_addr.clone();
+
+    // ── Wire node events → RPC WebSocket broadcaster ─────────────────────────
+    //
+    // The node emits `vtorrent_node::events::NodeEvent` values.
+    // The RPC WebSocket layer consumes `vtorrent_rpc::ws::NodeEvent` values.
+    // We bridge them here in the daemon — the only place that knows about both
+    // crates — to avoid a circular dependency.
+    {
+        let (node_tx, mut node_rx) = node_events::channel(1024);
+        node.set_event_sender(node_tx);
+
+        let rpc_broadcaster = rpc_state.events.clone();
+
+        tokio::spawn(async move {
+            loop {
+                match node_rx.recv().await {
+                    Ok(event) => {
+                        let rpc_event: Option<RpcNodeEvent> = match &*event {
+                            node_events::NodeEvent::NewBlock { height, hash, tx_count, timestamp, size_bytes } => {
+                                Some(RpcNodeEvent::NewBlock {
+                                    height: *height,
+                                    hash: hex::encode(hash),
+                                    tx_count: *tx_count,
+                                    timestamp: *timestamp,
+                                    size_bytes: *size_bytes,
+                                })
+                            }
+                            node_events::NodeEvent::TxConfirmed { txid, block_height, block_hash } => {
+                                Some(RpcNodeEvent::TxConfirmed {
+                                    txid: hex::encode(txid),
+                                    block_height: *block_height,
+                                    block_hash: hex::encode(block_hash),
+                                })
+                            }
+                            node_events::NodeEvent::TxUnconfirmed { txid, fee_sats } => {
+                                Some(RpcNodeEvent::TxUnconfirmed {
+                                    txid: hex::encode(txid),
+                                    fee_sats: *fee_sats,
+                                    fee_rate: 0.0,
+                                    size_bytes: 0,
+                                })
+                            }
+                            node_events::NodeEvent::PeerConnected { addr, user_agent, version, height } => {
+                                Some(RpcNodeEvent::PeerConnected {
+                                    addr: addr.to_string(),
+                                    version: *version,
+                                    user_agent: user_agent.clone(),
+                                    height: *height,
+                                })
+                            }
+                            node_events::NodeEvent::PeerDisconnected { addr } => {
+                                Some(RpcNodeEvent::PeerDisconnected {
+                                    addr: addr.to_string(),
+                                    reason: "disconnected".to_string(),
+                                })
+                            }
+                            node_events::NodeEvent::Reorg { old_tip, new_tip, depth } => {
+                                Some(RpcNodeEvent::Reorg {
+                                    old_tip: hex::encode(old_tip),
+                                    new_tip: hex::encode(new_tip),
+                                    depth: *depth,
+                                })
+                            }
+                            node_events::NodeEvent::StakingReward { block_height, reward_sats, address } => {
+                                Some(RpcNodeEvent::StakingReward {
+                                    block_height: *block_height,
+                                    reward_sats: *reward_sats,
+                                    address: address.clone(),
+                                })
+                            }
+                        };
+
+                        if let Some(ev) = rpc_event {
+                            rpc_broadcaster.broadcast(ev);
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("Event bridge lagged, skipped {} events", n);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        tracing::info!("Node event channel closed — event bridge stopping");
+                        break;
+                    }
+                }
+            }
+        });
+    }
 
     tracing::info!("vTorrent daemon starting:");
     tracing::info!("  P2P listen:      {}", config.listen_addr);

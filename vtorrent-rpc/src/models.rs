@@ -43,6 +43,17 @@ pub struct MempoolResponse {
 
 // ─── Wallet ───────────────────────────────────────────────────────────────────
 
+/// A single confirmed transaction summary for the wallet history endpoint.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TransactionResponse {
+    pub txid: String,
+    pub block_height: u32,
+    pub timestamp: u32,
+    pub tx_type: String,
+    pub amount_satoshis: u64,
+    pub display: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BalanceResponse {
     pub confirmed: u64,

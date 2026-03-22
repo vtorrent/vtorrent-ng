@@ -19,6 +19,9 @@ pub enum P2pError {
 
     #[error("Too many peers (max: {0})")]
     TooManyPeers(usize),
+
+    #[error("Peer is banned: {0}")]
+    Banned(String),
 }
 
 pub type Result<T> = std::result::Result<T, P2pError>;

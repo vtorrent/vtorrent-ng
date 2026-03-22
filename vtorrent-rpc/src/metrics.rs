@@ -54,7 +54,7 @@ async fn collect_metrics(state: &AppState) -> String {
 
     // Block height
     let height = {
-        let chain = state.chain.read().await;
+        let chain = state.chain.lock().await;
         chain.best_height() as u64
     };
     write_gauge(&mut out, "vtorrent_block_height",
@@ -67,7 +67,7 @@ async fn collect_metrics(state: &AppState) -> String {
 
     // Mempool
     let (mempool_size, mempool_bytes) = {
-        let mempool = state.mempool.read().await;
+        let mempool = state.mempool.lock().await;
         let size = mempool.size() as u64;
         // Estimate bytes: average tx is ~250 bytes
         let bytes = size * 250;

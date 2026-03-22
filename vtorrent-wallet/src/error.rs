@@ -46,6 +46,18 @@ pub enum WalletError {
 
     #[error("JSON error: {0}")]
     Json(String),
+
+    #[error("Insufficient funds: available {available} sats, required {required} sats")]
+    InsufficientFunds { available: u64, required: u64 },
+
+    #[error("Signing error: {0}")]
+    Signing(String),
+
+    #[error("Invalid address: {0}")]
+    InvalidAddress(String),
+
+    #[error("Transaction build error: {0}")]
+    BuildError(String),
 }
 
 pub type Result<T> = std::result::Result<T, WalletError>;

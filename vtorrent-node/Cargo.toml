@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 vtorrent-core     = { path = "../vtorrent-core" }
-vtorrent-wallet   = { path = "../vtorrent-wallet" }
+vtorrent-script   = { path = "../vtorrent-script" }
 vtorrent-p2p      = { path = "../vtorrent-p2p" }
 vtorrent-overlay  = { path = "../vtorrent-overlay" }
 vtorrent-snapshot = { path = "../vtorrent-snapshot" }

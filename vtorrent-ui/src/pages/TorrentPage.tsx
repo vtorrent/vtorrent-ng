@@ -1,52 +1,12 @@
 import { useState } from 'react'
 import {
   Upload, Download, Play, Pause, Trash2, Plus,
-  Coins, TrendingUp, HardDrive, Users
+  Coins, TrendingUp, HardDrive, Users, RefreshCw, AlertCircle
 } from 'lucide-react'
 import { formatVTR } from '../hooks/useWallet'
+import { useTorrentSessions, addTorrent, removeTorrent, type TorrentSession } from '../hooks/useNode'
 
-interface TorrentItem {
-  id: string
-  name: string
-  size: number
-  progress: number
-  status: 'downloading' | 'seeding' | 'paused' | 'complete'
-  peers: number
-  seeders: number
-  downloadSpeed: number
-  uploadSpeed: number
-  earned: number
-  infoHash: string
-}
-
-const mockTorrents: TorrentItem[] = [
-  {
-    id: '1',
-    name: 'Ubuntu 24.04 LTS Desktop AMD64.iso',
-    size: 5_368_709_120,
-    progress: 100,
-    status: 'seeding',
-    peers: 14,
-    seeders: 14,
-    downloadSpeed: 0,
-    uploadSpeed: 2_400_000,
-    earned: 45_000_000,
-    infoHash: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
-  },
-  {
-    id: '2',
-    name: 'Debian 12.4 Netinstall AMD64.iso',
-    size: 659_554_304,
-    progress: 67,
-    status: 'downloading',
-    peers: 8,
-    seeders: 22,
-    downloadSpeed: 3_100_000,
-    uploadSpeed: 450_000,
-    earned: 0,
-    infoHash: 'b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3',
-  },
-]
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatSize(bytes: number): string {
   if (bytes >= 1_073_741_824) return (bytes / 1_073_741_824).toFixed(2) + ' GB'
@@ -60,14 +20,44 @@ function formatSpeed(bps: number): string {
   return bps + ' B/s'
 }
 
+// ─── Component ────────────────────────────────────────────────────────────────
+
 export default function TorrentPage() {
-  const [torrents, setTorrents] = useState<TorrentItem[]>(mockTorrents)
+  const { data: sessions, loading, error, refresh } = useTorrentSessions(5_000)
   const [showAdd, setShowAdd] = useState(false)
   const [magnetLink, setMagnetLink] = useState('')
+  const [adding, setAdding] = useState(false)
+  const [addError, setAddError] = useState<string | null>(null)
 
-  const totalEarned = torrents.reduce((sum, t) => sum + t.earned, 0)
-  const totalUpload = torrents.reduce((sum, t) => sum + t.uploadSpeed, 0)
-  const activeSeeders = torrents.filter(t => t.status === 'seeding').length
+  const totalEarned   = sessions.reduce((s, t) => s + t.vtrEarnedSatoshis, 0)
+  const totalUpload   = sessions.reduce((s, t) => s + t.uploadSpeed, 0)
+  const activeSeeders = sessions.filter(t => t.state === 'Seeding').length
+  const totalPeers    = sessions.reduce((s, t) => s + t.peerCount, 0)
+
+  const handleAdd = async () => {
+    if (!magnetLink.trim()) return
+    setAdding(true)
+    setAddError(null)
+    try {
+      await addTorrent(magnetLink.trim(), 'magnet', '')
+      setMagnetLink('')
+      setShowAdd(false)
+      refresh()
+    } catch (e) {
+      setAddError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  const handleRemove = async (id: string) => {
+    try {
+      await removeTorrent(id)
+      refresh()
+    } catch {
+      // best-effort
+    }
+  }
 
   return (
     <div className="p-6 space-y-6">
@@ -77,13 +67,22 @@ export default function TorrentPage() {
           <h1 className="text-xl font-bold text-white">Torrents</h1>
           <p className="text-gray-500 text-sm mt-0.5">Earn VTR by seeding. Pay VTR for faster downloads.</p>
         </div>
-        <button
-          onClick={() => setShowAdd(!showAdd)}
-          className="btn-primary flex items-center gap-2"
-        >
-          <Plus size={16} />
-          Add Torrent
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={refresh}
+            className="p-2 rounded-lg hover:bg-navy-800 text-gray-500 hover:text-gray-300 transition-colors"
+            title="Refresh"
+          >
+            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+          </button>
+          <button
+            onClick={() => setShowAdd(!showAdd)}
+            className="btn-primary flex items-center gap-2"
+          >
+            <Plus size={16} />
+            Add Torrent
+          </button>
+        </div>
       </div>
 
       {/* Stats */}
@@ -114,9 +113,7 @@ export default function TorrentPage() {
             <Users size={14} className="text-purple-400" />
             <p className="text-xs text-gray-500">Connected Peers</p>
           </div>
-          <p className="font-bold text-purple-300">
-            {torrents.reduce((sum, t) => sum + t.peers, 0)}
-          </p>
+          <p className="font-bold text-purple-300">{totalPeers}</p>
         </div>
       </div>
 
@@ -126,7 +123,7 @@ export default function TorrentPage() {
           <h3 className="font-semibold text-white text-sm mb-3">Add Torrent</h3>
           <div className="space-y-3">
             <div>
-              <label className="label">Magnet Link or .torrent URL</label>
+              <label className="label">Magnet Link</label>
               <input
                 type="text"
                 className="input-field font-mono text-sm"
@@ -136,16 +133,22 @@ export default function TorrentPage() {
                 autoFocus
               />
             </div>
+            {addError && (
+              <div className="flex items-center gap-2 text-xs text-red-400">
+                <AlertCircle size={12} />
+                {addError}
+              </div>
+            )}
             <div className="flex gap-3">
-              <button onClick={() => setShowAdd(false)} className="btn-secondary">Cancel</button>
+              <button onClick={() => { setShowAdd(false); setAddError(null) }} className="btn-secondary">
+                Cancel
+              </button>
               <button
-                disabled={!magnetLink}
-                className="btn-primary"
-                onClick={() => {
-                  setShowAdd(false)
-                  setMagnetLink('')
-                }}
+                disabled={!magnetLink || adding}
+                className="btn-primary flex items-center gap-2"
+                onClick={handleAdd}
               >
+                {adding && <RefreshCw size={13} className="animate-spin" />}
                 Add & Start
               </button>
             </div>
@@ -171,79 +174,102 @@ export default function TorrentPage() {
       {/* Torrent list */}
       <div className="card">
         <h2 className="font-semibold text-white text-sm mb-4">Active Torrents</h2>
-        <div className="space-y-4">
-          {torrents.map(torrent => (
-            <div key={torrent.id} className="border border-navy-700/60 rounded-xl p-4">
-              {/* Name and status */}
-              <div className="flex items-start justify-between gap-3 mb-3">
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium text-gray-200 text-sm truncate">{torrent.name}</p>
-                  <p className="text-xs text-gray-600 font-mono mt-0.5 truncate">{torrent.infoHash}</p>
-                </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                    torrent.status === 'seeding'     ? 'bg-emerald-900/40 text-emerald-400' :
-                    torrent.status === 'downloading' ? 'bg-blue-900/40 text-blue-400' :
-                    torrent.status === 'paused'      ? 'bg-yellow-900/40 text-yellow-400' :
-                    'bg-gray-800 text-gray-400'
-                  }`}>
-                    {torrent.status}
-                  </span>
-                </div>
-              </div>
 
-              {/* Progress bar */}
-              <div className="mb-3">
-                <div className="flex justify-between text-xs text-gray-500 mb-1">
-                  <span>{torrent.progress}% — {formatSize(torrent.size * torrent.progress / 100)} / {formatSize(torrent.size)}</span>
-                  <span>{torrent.seeders} seeders · {torrent.peers} peers</span>
-                </div>
-                <div className="h-1.5 bg-navy-800 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all ${
-                      torrent.status === 'seeding' ? 'bg-emerald-500' : 'bg-vtorrent-500'
-                    }`}
-                    style={{ width: `${torrent.progress}%` }}
-                  />
-                </div>
-              </div>
+        {error ? (
+          <div className="flex items-center gap-2 text-xs text-red-400 py-4">
+            <AlertCircle size={13} />
+            Could not load torrent sessions — node may be offline.
+          </div>
+        ) : loading && sessions.length === 0 ? (
+          <div className="flex items-center gap-2 text-xs text-gray-600 py-4">
+            <RefreshCw size={12} className="animate-spin" />
+            Loading sessions…
+          </div>
+        ) : sessions.length === 0 ? (
+          <p className="text-xs text-gray-600 py-4">No active torrents. Add one above to start earning VTR.</p>
+        ) : (
+          <div className="space-y-4">
+            {sessions.map((torrent: TorrentSession) => {
+              const progressPct = Math.round(torrent.progress * 100)
+              return (
+                <div key={torrent.id} className="border border-navy-700/60 rounded-xl p-4">
+                  {/* Name and status */}
+                  <div className="flex items-start justify-between gap-3 mb-3">
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-gray-200 text-sm truncate">{torrent.name}</p>
+                      <p className="text-xs text-gray-600 font-mono mt-0.5 truncate">{torrent.infoHash}</p>
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                        torrent.state === 'Seeding'     ? 'bg-emerald-900/40 text-emerald-400' :
+                        torrent.state === 'Downloading' ? 'bg-blue-900/40 text-blue-400' :
+                        torrent.state === 'Paused'      ? 'bg-yellow-900/40 text-yellow-400' :
+                        'bg-gray-800 text-gray-400'
+                      }`}>
+                        {torrent.state}
+                      </span>
+                    </div>
+                  </div>
 
-              {/* Speed and earnings */}
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-4 text-xs text-gray-500">
-                  {torrent.downloadSpeed > 0 && (
-                    <span className="flex items-center gap-1">
-                      <Download size={11} className="text-blue-400" />
-                      {formatSpeed(torrent.downloadSpeed)}
-                    </span>
-                  )}
-                  {torrent.uploadSpeed > 0 && (
-                    <span className="flex items-center gap-1">
-                      <Upload size={11} className="text-emerald-400" />
-                      {formatSpeed(torrent.uploadSpeed)}
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-3">
-                  {torrent.earned > 0 && (
-                    <span className="flex items-center gap-1 text-xs text-vtorrent-400 font-mono">
-                      <Coins size={11} />
-                      +{formatVTR(torrent.earned)}
-                    </span>
-                  )}
-                  <div className="flex items-center gap-1">
-                    <button className="p-1.5 rounded-lg hover:bg-navy-700 text-gray-500 hover:text-gray-300 transition-colors">
-                      {torrent.status === 'paused' ? <Play size={13} /> : <Pause size={13} />}
-                    </button>
-                    <button className="p-1.5 rounded-lg hover:bg-red-900/20 text-gray-500 hover:text-red-400 transition-colors">
-                      <Trash2 size={13} />
-                    </button>
+                  {/* Progress bar */}
+                  <div className="mb-3">
+                    <div className="flex justify-between text-xs text-gray-500 mb-1">
+                      <span>
+                        {progressPct}% — {formatSize(torrent.downloadedBytes)} / {formatSize(torrent.sizeBytes)}
+                      </span>
+                      <span>{torrent.peerCount} peers</span>
+                    </div>
+                    <div className="h-1.5 bg-navy-800 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all ${
+                          torrent.state === 'Seeding' ? 'bg-emerald-500' : 'bg-vtorrent-500'
+                        }`}
+                        style={{ width: `${progressPct}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Speed and earnings */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-4 text-xs text-gray-500">
+                      {torrent.downloadSpeed > 0 && (
+                        <span className="flex items-center gap-1">
+                          <Download size={11} className="text-blue-400" />
+                          {formatSpeed(torrent.downloadSpeed)}
+                        </span>
+                      )}
+                      {torrent.uploadSpeed > 0 && (
+                        <span className="flex items-center gap-1">
+                          <Upload size={11} className="text-emerald-400" />
+                          {formatSpeed(torrent.uploadSpeed)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3">
+                      {torrent.vtrEarnedSatoshis > 0 && (
+                        <span className="flex items-center gap-1 text-xs text-vtorrent-400 font-mono">
+                          <Coins size={11} />
+                          +{formatVTR(torrent.vtrEarnedSatoshis)}
+                        </span>
+                      )}
+                      <div className="flex items-center gap-1">
+                        <button className="p-1.5 rounded-lg hover:bg-navy-700 text-gray-500 hover:text-gray-300 transition-colors">
+                          {torrent.state === 'Paused' ? <Play size={13} /> : <Pause size={13} />}
+                        </button>
+                        <button
+                          onClick={() => handleRemove(torrent.id)}
+                          className="p-1.5 rounded-lg hover:bg-red-900/20 text-gray-500 hover:text-red-400 transition-colors"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </div>
-            </div>
-          ))}
-        </div>
+              )
+            })}
+          </div>
+        )}
       </div>
     </div>
   )

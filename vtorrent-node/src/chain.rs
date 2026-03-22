@@ -5,6 +5,7 @@
 /// more cumulative work than the current main chain.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use vtorrent_script::{Engine, Script, ScriptEnv};
 use crate::{
     block::{Block, Transaction, TxType},
     consensus::validate_block,
@@ -13,7 +14,7 @@ use crate::{
 };
 
 /// A UTXO (unspent transaction output).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Utxo {
     pub txid: [u8; 32],
     pub vout: u32,
@@ -191,6 +192,39 @@ impl Chain {
 
     pub fn is_claimed(&self, address: &str) -> bool {
         self.claimed_addresses.contains(address)
+    }
+
+    /// Get the most recent `limit` transactions from the main chain (newest first).
+    ///
+    /// Returns a vector of `(txid_hex, block_height, block_timestamp, tx_type_str, total_output_sats)`.
+    pub fn get_recent_transactions(&self, limit: usize) -> Vec<(String, u32, u32, String, u64)> {
+        let mut result = Vec::new();
+        let height = self.best_height();
+        let mut h = height;
+        loop {
+            if result.len() >= limit {
+                break;
+            }
+            let block = match self.get_block_at_height(h) {
+                Some(b) => b,
+                None => break,
+            };
+            let ts = block.header.timestamp;
+            for tx in block.transactions.iter().rev() {
+                if result.len() >= limit {
+                    break;
+                }
+                let txid = hex::encode(tx.txid());
+                let tx_type = format!("{:?}", tx.tx_type);
+                let total_out: u64 = tx.outputs.iter().map(|o| o.value).sum();
+                result.push((txid, h, ts, tx_type, total_out));
+            }
+            if h == 0 {
+                break;
+            }
+            h -= 1;
+        }
+        result
     }
 
     /// Add a new block to the chain, handling forks and reorgs automatically.
@@ -435,9 +469,36 @@ impl Chain {
 
         // Spend inputs (except for coinbase)
         if !tx.is_coinbase() {
+            // Build the sighash for script verification (SHA256d of serialised tx)
+            let tx_hash = tx.txid();
             for input in &tx.inputs {
                 let key = (input.prev_txid, input.prev_vout);
                 if let Some(utxo) = self.utxo_set.remove(&key) {
+                    // ── Script verification ──────────────────────────────────
+                    // Skip for legacy-claim inputs (they use ECDSA message sig,
+                    // not script-sig, verified separately in validate_legacy_claim).
+                    if !tx.is_legacy_claim() {
+                        let env = ScriptEnv {
+                            tx_hash,
+                            block_height: height,
+                            block_time: timestamp,
+                            tx_lock_time: tx.lock_time,
+                        };
+                        let mut engine = Engine::new(env);
+                        let script_sig = Script::from_bytes(input.script_sig.clone())
+                            .map_err(|e| NodeError::InvalidTransaction(
+                                format!("Invalid scriptSig: {}", e)
+                            ))?;
+                        let script_pubkey = Script::from_bytes(utxo.script_pubkey.clone())
+                            .map_err(|e| NodeError::InvalidTransaction(
+                                format!("Invalid scriptPubKey: {}", e)
+                            ))?;
+                        engine.execute(&script_sig, &script_pubkey)
+                            .map_err(|e| NodeError::InvalidTransaction(
+                                format!("Script verification failed for input {}:{}: {}",
+                                    hex::encode(input.prev_txid), input.prev_vout, e)
+                            ))?;
+                    }
                     journal.changes.push(UtxoChange::Removed { key, utxo });
                 } else if !tx.is_legacy_claim() {
                     return Err(NodeError::InvalidTransaction(

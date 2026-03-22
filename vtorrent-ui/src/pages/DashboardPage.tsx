@@ -1,11 +1,46 @@
 import { useState } from 'react'
-import { Copy, Plus, RefreshCw, TrendingUp, Coins, ArrowUpRight, ArrowDownLeft, Clock } from 'lucide-react'
+import { Copy, Plus, RefreshCw, TrendingUp, Coins, ArrowUpRight, ArrowDownLeft, Clock, Wifi, WifiOff } from 'lucide-react'
 import { useWallet, formatVTR } from '../hooks/useWallet'
+import { useTransactions, useNodeInfo, type TxRecord } from '../hooks/useNode'
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Convert a Unix timestamp to a human-readable relative time string. */
+function relativeTime(ts: number): string {
+  const diff = Math.floor(Date.now() / 1000) - ts
+  if (diff < 60) return `${diff}s ago`
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+  return `${Math.floor(diff / 86400)}d ago`
+}
+
+/** Derive a UI-friendly tx type from the Rust TxType debug string. */
+function txKind(txType: string): 'receive' | 'send' | 'stake' | 'other' {
+  const t = txType.toLowerCase()
+  if (t.includes('stake') || t.includes('coinbase') || t.includes('reward')) return 'stake'
+  if (t.includes('send') || t.includes('transfer')) return 'send'
+  if (t.includes('receive') || t.includes('payment')) return 'receive'
+  return 'other'
+}
+
+/** Shorten a txid for display. */
+function shortTxid(txid: string): string {
+  if (txid.length <= 16) return txid
+  return `${txid.slice(0, 8)}…${txid.slice(-8)}`
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
   const { keys, defaultAddress, totalBalance, legacyImportCount, generateAddress } = useWallet()
   const [copied, setCopied] = useState('')
   const [generatingKey, setGeneratingKey] = useState(false)
+
+  // Live node info (block height, connections, sync status)
+  const { data: nodeInfo } = useNodeInfo(10_000)
+
+  // Live transaction history — last 20 confirmed txs
+  const { data: txs, loading: txLoading, error: txError, refresh: refreshTxs } = useTransactions(20)
 
   const copyAddress = (addr: string) => {
     navigator.clipboard.writeText(addr)
@@ -22,19 +57,26 @@ export default function DashboardPage() {
     }
   }
 
-  // Mock recent transactions for UI preview
-  const mockTxs = [
-    { type: 'receive', amount: 1500000000, address: 'V3kRm...9xPq', time: '2h ago', label: 'Seeding reward' },
-    { type: 'send',    amount: 500000000,  address: 'V7nBw...4mLs', time: '1d ago', label: 'P2P trade' },
-    { type: 'stake',   amount: 125000000,  address: 'Stake reward',  time: '2d ago', label: 'PoS reward' },
-  ]
-
   return (
     <div className="p-6 space-y-6">
       {/* Page header */}
-      <div>
-        <h1 className="text-xl font-bold text-white">Dashboard</h1>
-        <p className="text-gray-500 text-sm mt-0.5">Your vTorrent wallet overview</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-bold text-white">Dashboard</h1>
+          <p className="text-gray-500 text-sm mt-0.5">Your vTorrent wallet overview</p>
+        </div>
+        {/* Node connectivity badge */}
+        {nodeInfo ? (
+          <div className="flex items-center gap-1.5 text-xs text-emerald-400">
+            <Wifi size={13} />
+            <span>Block {nodeInfo.blockHeight.toLocaleString()} · {nodeInfo.connections} peers</span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-1.5 text-xs text-gray-600">
+            <WifiOff size={13} />
+            <span>Node offline</span>
+          </div>
+        )}
       </div>
 
       {/* Stats row */}
@@ -119,35 +161,67 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Recent transactions */}
+        {/* Recent transactions — live data */}
         <div className="card">
-          <h2 className="font-semibold text-white text-sm mb-4">Recent Transactions</h2>
-          <div className="space-y-3">
-            {mockTxs.map((tx, i) => (
-              <div key={i} className="flex items-center gap-3 py-2 border-b border-navy-800/60 last:border-0">
-                <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
-                  tx.type === 'receive' ? 'bg-emerald-900/30' :
-                  tx.type === 'send' ? 'bg-red-900/30' : 'bg-vtorrent-900/30'
-                }`}>
-                  {tx.type === 'receive' ? <ArrowDownLeft size={14} className="text-emerald-400" /> :
-                   tx.type === 'send' ? <ArrowUpRight size={14} className="text-red-400" /> :
-                   <TrendingUp size={14} className="text-vtorrent-400" />}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-medium text-gray-300">{tx.label}</p>
-                  <p className="text-xs text-gray-600 truncate">{tx.address}</p>
-                </div>
-                <div className="text-right flex-shrink-0">
-                  <p className={`text-xs font-mono font-medium ${
-                    tx.type === 'receive' || tx.type === 'stake' ? 'text-emerald-400' : 'text-red-400'
-                  }`}>
-                    {tx.type === 'send' ? '-' : '+'}{formatVTR(tx.amount)}
-                  </p>
-                  <p className="text-xs text-gray-600">{tx.time}</p>
-                </div>
-              </div>
-            ))}
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-semibold text-white text-sm">Recent Transactions</h2>
+            <button
+              onClick={refreshTxs}
+              className="text-gray-600 hover:text-vtorrent-400 transition-colors"
+              title="Refresh"
+            >
+              <RefreshCw size={12} />
+            </button>
           </div>
+
+          {txLoading && txs.length === 0 ? (
+            <div className="flex items-center gap-2 text-gray-600 text-xs py-4">
+              <RefreshCw size={12} className="animate-spin" />
+              Loading transactions…
+            </div>
+          ) : txError ? (
+            <div className="text-xs text-red-400 py-4">
+              Could not load transactions — node may be offline.
+            </div>
+          ) : txs.length === 0 ? (
+            <div className="flex items-center gap-2 text-gray-600 text-xs py-4">
+              <Clock size={12} />
+              No confirmed transactions yet.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {txs.map((tx: TxRecord) => {
+                const kind = txKind(tx.txType)
+                return (
+                  <div key={tx.txid} className="flex items-center gap-3 py-2 border-b border-navy-800/60 last:border-0">
+                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                      kind === 'receive' ? 'bg-emerald-900/30' :
+                      kind === 'send'    ? 'bg-red-900/30'     :
+                      kind === 'stake'   ? 'bg-vtorrent-900/30' :
+                      'bg-gray-800/40'
+                    }`}>
+                      {kind === 'receive' ? <ArrowDownLeft size={14} className="text-emerald-400" /> :
+                       kind === 'send'    ? <ArrowUpRight  size={14} className="text-red-400" />     :
+                       kind === 'stake'   ? <TrendingUp    size={14} className="text-vtorrent-400" /> :
+                       <Clock size={14} className="text-gray-500" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium text-gray-300 capitalize">{tx.txType.toLowerCase()}</p>
+                      <p className="text-xs text-gray-600 font-mono truncate">{shortTxid(tx.txid)}</p>
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      <p className={`text-xs font-mono font-medium ${
+                        kind === 'send' ? 'text-red-400' : 'text-emerald-400'
+                      }`}>
+                        {kind === 'send' ? '-' : '+'}{tx.display}
+                      </p>
+                      <p className="text-xs text-gray-600">{relativeTime(tx.timestamp)}</p>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
 
           {/* Claim legacy VTR CTA */}
           {legacyImportCount > 0 && (
