@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
 
 use vtorrent_p2p::{
-    dht::DhtBootstrap,
+    dht::{discover_peers_via_doh, DhtBootstrap},
     message::{
         AddrMsg, GetBlocksMsg, InvItem, InvMsg, InvType, NetMessage,
         NODE_NETWORK, NODE_TORRENT,
@@ -187,31 +187,62 @@ impl Node {
         }
     }
 
-    /// Bootstrap peer discovery using the BitTorrent DHT network.
+    /// Bootstrap peer discovery using the BitTorrent DHT network AND
+    /// Cloudflare DNS-over-HTTPS simultaneously.
+    ///
+    /// Both sources run in parallel (via `spawn_blocking`) and their results
+    /// are merged into the PEX address book before connection attempts begin.
+    /// This ensures we can bootstrap even when UDP (DHT) or plain DNS is blocked.
     async fn bootstrap_via_dht(&mut self) {
-        tracing::info!("Starting DHT bootstrap via BitTorrent DHT network...");
+        tracing::info!("Starting parallel DHT + Cloudflare DoH bootstrap...");
 
-        let dht = DhtBootstrap::new();
-        let peers = tokio::task::spawn_blocking(move || {
+        let port = self.config.listen_addr
+            .split(':')
+            .last()
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(DEFAULT_PORT);
+
+        // Spawn both bootstrap methods concurrently
+        let dht_task = tokio::task::spawn_blocking(move || {
+            let dht = DhtBootstrap::new();
             dht.discover_peers()
-        }).await.unwrap_or_default();
+        });
 
-        if peers.is_empty() {
-            tracing::warn!("DHT bootstrap returned no peers");
-            return;
+        let doh_task = tokio::task::spawn_blocking(move || {
+            discover_peers_via_doh(port)
+        });
+
+        // Wait for both to complete (each has its own internal timeout)
+        let (dht_peers, doh_peers) = tokio::join!(dht_task, doh_task);
+
+        let dht_peers = dht_peers.unwrap_or_default();
+        let doh_peers = doh_peers.unwrap_or_default();
+
+        tracing::info!(
+            "Bootstrap complete: DHT={} candidates, DoH={} candidates",
+            dht_peers.len(),
+            doh_peers.len()
+        );
+
+        // Merge both sources into the PEX address book
+        if !dht_peers.is_empty() {
+            self.peer_manager.add_dht_peers(dht_peers);
+        }
+        if !doh_peers.is_empty() {
+            self.peer_manager.add_dht_peers(doh_peers);
         }
 
-        tracing::info!("DHT bootstrap found {} peer candidates", peers.len());
-
-        // Feed into PEX address book
-        self.peer_manager.add_dht_peers(peers.clone());
+        if self.peer_manager.addr_book.is_empty() {
+            tracing::warn!("Both DHT and DoH bootstrap returned no peers");
+            return;
+        }
 
         // Attempt to connect to the best candidates immediately
         let candidates = self.peer_manager.get_peer_candidates(TARGET_OUTBOUND);
         for addr in candidates {
-            tracing::info!("DHT: Connecting to peer candidate {}", addr);
+            tracing::info!("Bootstrap: Connecting to peer candidate {}", addr);
             if let Err(e) = self.peer_manager.connect_addr(addr).await {
-                tracing::debug!("DHT: Could not connect to {}: {}", addr, e);
+                tracing::debug!("Bootstrap: Could not connect to {}: {}", addr, e);
             }
         }
     }

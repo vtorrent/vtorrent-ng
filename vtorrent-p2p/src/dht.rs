@@ -403,6 +403,169 @@ impl Default for DhtBootstrap {
     }
 }
 
+// ─── Cloudflare DNS-over-HTTPS Bootstrap ─────────────────────────────────────
+//
+// Uses Cloudflare's 1.1.1.1 DoH API (https://cloudflare-dns.com/dns-query) to
+// resolve the vTorrent DNS seed hostnames. This provides a second independent
+// bootstrap path that:
+//   1. Bypasses local/ISP DNS resolvers that may be broken or censored
+//   2. Uses HTTPS with TLS certificate validation (no spoofing)
+//   3. Works even when UDP (required for DHT) is blocked by a firewall
+//
+// The DoH resolver is tried in parallel with the BitTorrent DHT bootstrap.
+// Any peers found are merged into the same PEX address book.
+
+/// Cloudflare DNS-over-HTTPS endpoint.
+const CLOUDFLARE_DOH_URL: &str = "https://cloudflare-dns.com/dns-query";
+
+/// Cloudflare 1.1.1.1 fallback IP (used if DoH itself is unreachable).
+const CLOUDFLARE_FALLBACK_IP: &str = "1.1.1.1";
+
+/// Google 8.8.8.8 DoH endpoint as secondary fallback.
+const GOOGLE_DOH_URL: &str = "https://dns.google/resolve";
+
+/// Resolve a hostname to IPv4 addresses using Cloudflare DNS-over-HTTPS.
+///
+/// Returns a list of resolved IP addresses, or an empty vec on failure.
+/// This is a blocking function — call from `spawn_blocking`.
+pub fn resolve_via_cloudflare_doh(hostname: &str) -> Vec<std::net::IpAddr> {
+    let url = format!(
+        "{}?name={}&type=A",
+        CLOUDFLARE_DOH_URL,
+        urlencoding::encode(hostname)
+    );
+
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .user_agent("vTorrent/2.0 DoH-Bootstrap")
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("DoH: Failed to build HTTP client: {}", e);
+            return Vec::new();
+        }
+    };
+
+    let resp = match client
+        .get(&url)
+        .header("Accept", "application/dns-json")
+        .send()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!("DoH: Cloudflare request failed for {}: {}", hostname, e);
+            // Try Google DoH as secondary fallback
+            return resolve_via_google_doh(hostname);
+        }
+    };
+
+    parse_doh_response(resp, hostname)
+}
+
+/// Resolve a hostname using Google's DNS-over-HTTPS (8.8.8.8) as fallback.
+fn resolve_via_google_doh(hostname: &str) -> Vec<std::net::IpAddr> {
+    let url = format!(
+        "{}?name={}&type=A",
+        GOOGLE_DOH_URL,
+        urlencoding::encode(hostname)
+    );
+
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .user_agent("vTorrent/2.0 DoH-Bootstrap")
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let resp = match client
+        .get(&url)
+        .header("Accept", "application/dns-json")
+        .send()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!("DoH: Google fallback also failed for {}: {}", hostname, e);
+            return Vec::new();
+        }
+    };
+
+    parse_doh_response(resp, hostname)
+}
+
+/// Parse a DNS-over-HTTPS JSON response (RFC 8484 / Cloudflare/Google format).
+///
+/// Expected JSON structure:
+/// ```json
+/// { "Answer": [ { "type": 1, "data": "1.2.3.4" }, ... ] }
+/// ```
+fn parse_doh_response(
+    resp: reqwest::blocking::Response,
+    hostname: &str,
+) -> Vec<std::net::IpAddr> {
+    let json: serde_json::Value = match resp.json() {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::debug!("DoH: Failed to parse JSON for {}: {}", hostname, e);
+            return Vec::new();
+        }
+    };
+
+    let mut addrs = Vec::new();
+    if let Some(answers) = json.get("Answer").and_then(|a| a.as_array()) {
+        for answer in answers {
+            // type 1 = A record (IPv4)
+            if answer.get("type").and_then(|t| t.as_u64()) == Some(1) {
+                if let Some(ip_str) = answer.get("data").and_then(|d| d.as_str()) {
+                    if let Ok(ip) = ip_str.parse::<std::net::IpAddr>() {
+                        addrs.push(ip);
+                        tracing::debug!("DoH: Resolved {} -> {}", hostname, ip);
+                    }
+                }
+            }
+        }
+    }
+
+    if addrs.is_empty() {
+        tracing::debug!("DoH: No A records found for {}", hostname);
+    } else {
+        tracing::info!("DoH: Resolved {} to {} address(es)", hostname, addrs.len());
+    }
+
+    addrs
+}
+
+/// Resolve all vTorrent DNS seed hostnames via Cloudflare DoH and return
+/// a list of socket addresses ready to connect to on the vTorrent P2P port.
+///
+/// This is the public entry point called from the node bootstrap.
+/// It is a blocking function — call from `spawn_blocking`.
+pub fn discover_peers_via_doh(port: u16) -> Vec<std::net::SocketAddr> {
+    use crate::peer_manager::DNS_SEEDS;
+
+    let mut result = Vec::new();
+
+    for &hostname in DNS_SEEDS {
+        let ips = resolve_via_cloudflare_doh(hostname);
+        for ip in ips {
+            let addr = std::net::SocketAddr::new(ip, port);
+            if !result.contains(&addr) {
+                result.push(addr);
+            }
+        }
+    }
+
+    tracing::info!(
+        "DoH bootstrap: resolved {} peer address(es) from {} seed hostnames",
+        result.len(),
+        DNS_SEEDS.len()
+    );
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
