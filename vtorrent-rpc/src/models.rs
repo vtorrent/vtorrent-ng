@@ -249,6 +249,82 @@ pub struct ImportWalletResponse {
     pub success: bool,
 }
 
+// ─── DEX Matching ───────────────────────────────────────────────────────────
+
+/// Request body for `POST /api/v1/dex/match`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MatchOrderRequest {
+    /// Hex-encoded order ID to match.
+    pub order_id: String,
+    /// The taker's VTR address.
+    pub taker_address: String,
+}
+
+/// Response for a successful order match.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MatchOrderResponse {
+    /// Hex-encoded order ID.
+    pub order_id: String,
+    /// The maker's VTR address.
+    pub maker_address: String,
+    /// VTR amount being swapped.
+    pub vtr_amount: u64,
+    /// Target asset (e.g. "BTC").
+    pub target_asset: String,
+    /// Target asset amount.
+    pub target_amount: u64,
+    /// Hex-encoded hash lock for the HTLC.
+    pub hash_lock: String,
+    /// The taker's preimage (hex-encoded). Keep secret until funding your side.
+    pub preimage: String,
+    /// Order expiry timestamp.
+    pub expiry: u32,
+}
+
+// ─── SPV ─────────────────────────────────────────────────────────────────────
+
+/// Response for `GET /api/v1/spv/status`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SpvStatusResponse {
+    /// Number of headers stored in the SPV chain.
+    pub header_count: usize,
+    /// Best chain height (0 if no headers).
+    pub best_height: u32,
+    /// Hex-encoded best chain tip hash (empty string if no headers).
+    pub best_hash: String,
+}
+
+/// A single block header submitted to the SPV chain.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SpvHeaderInput {
+    pub version: u32,
+    /// Hex-encoded previous block hash (64 hex chars).
+    pub prev_hash: String,
+    /// Hex-encoded Merkle root (64 hex chars).
+    pub merkle_root: String,
+    pub timestamp: u32,
+    pub bits: u32,
+    pub nonce: u32,
+    pub height: u32,
+}
+
+/// Request body for `POST /api/v1/spv/headers`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SpvAddHeadersRequest {
+    pub headers: Vec<SpvHeaderInput>,
+}
+
+/// Response for `POST /api/v1/spv/headers`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SpvAddHeadersResponse {
+    /// Number of headers successfully added.
+    pub added: usize,
+    /// New best height after adding headers.
+    pub best_height: u32,
+    /// Hex-encoded new best hash.
+    pub best_hash: String,
+}
+
 // ─── Generic ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize)]

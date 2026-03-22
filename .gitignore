@@ -36,3 +36,4 @@ wallet.dat
 
 # Logs
 *.log
+append_spv.py

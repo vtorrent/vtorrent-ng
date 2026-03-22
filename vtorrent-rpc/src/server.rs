@@ -47,9 +47,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/dex/orders", get(get_dex_orders))
         .route("/api/v1/dex/order", post(place_dex_order))
         .route("/api/v1/dex/order/:id", delete(cancel_dex_order))
+        .route("/api/v1/dex/match", post(match_dex_order))
         // Legacy claim
         .route("/api/v1/claim/check", post(check_claim))
         .route("/api/v1/claim/submit", post(submit_claim))
+        // SPV light client
+        .route("/api/v1/spv/status", get(get_spv_status))
+        .route("/api/v1/spv/headers", post(add_spv_headers))
         // WebSocket event stream
         .route("/ws", get(ws_handler))
         // Prometheus metrics
@@ -192,5 +196,38 @@ mod tests {
             "/api/v1/blockchain/block/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
         ).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_spv_status_empty() {
+        let app = build_router(AppState::new());
+        let (status, body) = get(app, "/api/v1/spv/status").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["header_count"], 0);
+        assert_eq!(body["best_height"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_spv_add_headers() {
+        let app = build_router(AppState::new());
+        // Genesis header: prev_hash = all zeros
+        let (status, body) = post_json(
+            app,
+            "/api/v1/spv/headers",
+            serde_json::json!({
+                "headers": [{
+                    "version": 1,
+                    "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+                    "merkle_root": "0101010101010101010101010101010101010101010101010101010101010101",
+                    "timestamp": 1700000000u32,
+                    "bits": 0x1d00ffffu32,
+                    "nonce": 0u32,
+                    "height": 0u32
+                }]
+            }),
+        ).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["added"], 1);
+        assert_eq!(body["best_height"], 0);
     }
 }

@@ -54,6 +54,10 @@ struct Cli {
     /// Log level: error, warn, info, debug, trace.
     #[arg(long, default_value = "info")]
     log_level: String,
+
+    /// Run in testnet mode (private/RFC1918 addresses accepted in PEX).
+    #[arg(long, default_value_t = false)]
+    testnet: bool,
 }
 
 // ─── Entry Point ──────────────────────────────────────────────────────────────
@@ -95,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
         use_dht: !cli.no_dht,
         data_dir: data_dir.clone(),
         use_overlay: true,
+        testnet: cli.testnet,
     };
 
     let mut node = Node::new(config.clone())?;

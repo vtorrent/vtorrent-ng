@@ -13,7 +13,7 @@
 /// zero centralized infrastructure.
 
 use std::collections::{HashMap, HashSet};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -91,6 +91,28 @@ impl AddrEntry {
     }
 }
 
+/// Returns true if the given IP address is a private/RFC1918/link-local address.
+///
+/// On mainnet these are rejected from the address book because they cannot be
+/// reached from the public internet.  On testnet/local dev they are allowed so
+/// that multiple nodes can be run on the same LAN or loopback interface.
+fn is_private_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_private()        // 10.x, 172.16-31.x, 192.168.x
+                || v4.is_link_local()  // 169.254.x.x
+                || v4.is_loopback()    // 127.x.x.x
+                || v4.is_broadcast()   // 255.255.255.255
+                || v4.is_documentation() // 192.0.2.x, 198.51.100.x, 203.0.113.x
+                || v4.is_unspecified() // 0.0.0.0
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback()       // ::1
+                || v6.is_unspecified() // ::
+        }
+    }
+}
+
 /// The peer address book — stores known peer addresses for future connections.
 pub struct AddrBook {
     /// All known peer addresses, keyed by socket address.
@@ -103,16 +125,33 @@ pub struct AddrBook {
     last_self_announce: Instant,
     /// Last time we sent `getaddr` to peers.
     last_getaddr: Instant,
+    /// When `true`, private/RFC1918 addresses are accepted into the address
+    /// book.  This is intended for testnet and local development environments
+    /// where all nodes may run on the same machine or LAN.  On mainnet
+    /// (`testnet = false`) private addresses are silently discarded.
+    pub testnet: bool,
 }
 
 impl AddrBook {
+    /// Create a new mainnet address book (private addresses are rejected).
     pub fn new() -> Self {
+        Self::with_testnet(false)
+    }
+
+    /// Create a new testnet address book (private addresses are accepted).
+    pub fn new_testnet() -> Self {
+        Self::with_testnet(true)
+    }
+
+    /// Create an address book with an explicit testnet flag.
+    pub fn with_testnet(testnet: bool) -> Self {
         Self {
             entries: HashMap::new(),
             connected: HashSet::new(),
             our_addr: None,
             last_self_announce: Instant::now() - Duration::from_secs(SELF_ANNOUNCE_INTERVAL_SECS),
             last_getaddr: Instant::now() - Duration::from_secs(GETADDR_INTERVAL_SECS),
+            testnet,
         }
     }
 
@@ -142,18 +181,26 @@ impl AddrBook {
     }
 
     /// Add a list of addresses to the book.
+    ///
+    /// On mainnet (`testnet = false`) private/RFC1918 addresses are silently
+    /// discarded because they cannot be reached from the public internet.
+    /// On testnet (`testnet = true`) all routable addresses including private
+    /// ones are accepted, enabling multi-node testing on a single LAN.
     pub fn add_addrs(&mut self, addrs: &[AddrEntry]) {
         for entry in addrs {
             // Skip our own address
             if Some(entry.addr) == self.our_addr {
                 continue;
             }
-            // Skip loopback addresses
+            // Always skip loopback (even on testnet — nodes should use 127.0.0.1
+            // explicitly via `connect` rather than learning it via PEX).
             if entry.addr.ip().is_loopback() {
                 continue;
             }
-            // Skip private addresses for mainnet (allow for testnet/local dev)
-            // TODO: add testnet flag
+            // On mainnet, reject private/RFC1918 addresses.
+            if !self.testnet && is_private_ip(entry.addr.ip()) {
+                continue;
+            }
 
             // Update existing or insert new
             self.entries
@@ -232,11 +279,6 @@ impl AddrBook {
     ///
     /// Returns up to MAX_ADDR_PER_MSG fresh addresses.
     pub fn get_for_sharing(&self) -> AddrMsg {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as u32;
-
         let addrs: Vec<PeerAddr> = self.entries.values()
             .filter(|e| e.is_fresh())
             .take(MAX_ADDR_PER_MSG)
@@ -390,6 +432,10 @@ mod tests {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)), port)
     }
 
+    fn make_private_addr(port: u16) -> SocketAddr {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), port)
+    }
+
     #[test]
     fn test_addr_book_add_and_retrieve() {
         let mut book = AddrBook::new();
@@ -444,7 +490,56 @@ mod tests {
             ],
         };
         book.add_from_addr_msg(&msg);
-        assert_eq!(book.len(), 2);
+        // On mainnet, 10.x.x.x (private) addresses should be rejected
+        assert_eq!(book.len(), 0, "Private addresses should be rejected on mainnet");
+    }
+
+    #[test]
+    fn test_addr_book_from_addr_msg_testnet() {
+        let mut book = AddrBook::new_testnet();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+
+        let msg = AddrMsg {
+            addrs: vec![
+                PeerAddr { timestamp: now, services: NODE_NETWORK, addr: "10.0.0.1".to_string(), port: 22524 },
+                PeerAddr { timestamp: now, services: NODE_NETWORK, addr: "10.0.0.2".to_string(), port: 22524 },
+            ],
+        };
+        book.add_from_addr_msg(&msg);
+        // On testnet, 10.x.x.x (private) addresses should be accepted
+        assert_eq!(book.len(), 2, "Private addresses should be accepted on testnet");
+    }
+
+    #[test]
+    fn test_mainnet_rejects_private_addresses() {
+        let mut book = AddrBook::new(); // mainnet
+        let private = make_private_addr(22524);
+        book.add_dht_peers(&[private]);
+        assert_eq!(book.len(), 0, "Mainnet should reject 192.168.x.x addresses");
+    }
+
+    #[test]
+    fn test_testnet_accepts_private_addresses() {
+        let mut book = AddrBook::new_testnet();
+        let private = make_private_addr(22524);
+        book.add_dht_peers(&[private]);
+        assert_eq!(book.len(), 1, "Testnet should accept 192.168.x.x addresses");
+    }
+
+    #[test]
+    fn test_both_reject_loopback() {
+        let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 22524);
+
+        let mut mainnet = AddrBook::new();
+        mainnet.add_dht_peers(&[loopback]);
+        assert_eq!(mainnet.len(), 0, "Mainnet should reject loopback");
+
+        let mut testnet = AddrBook::new_testnet();
+        testnet.add_dht_peers(&[loopback]);
+        assert_eq!(testnet.len(), 0, "Testnet should also reject loopback (use explicit connect instead)");
     }
 
     #[test]
@@ -468,13 +563,22 @@ mod tests {
     #[test]
     fn test_addr_book_pruning() {
         let mut book = AddrBook::new();
-        // Add more than MAX_ADDR_BOOK_SIZE entries
+        // Add more than MAX_ADDR_BOOK_SIZE entries (all public IPs)
         let addrs: Vec<SocketAddr> = (1u16..=100).map(|i| {
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, (i / 256) as u8, (i % 256) as u8)), 22524)
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 2, (i / 256) as u8, (i % 256) as u8)), 22524)
         }).collect();
         book.add_dht_peers(&addrs);
         // Should not exceed MAX_ADDR_BOOK_SIZE (10,000), but with only 100 entries, all should fit
         assert!(book.len() <= MAX_ADDR_BOOK_SIZE);
         assert_eq!(book.len(), 100);
+    }
+
+    #[test]
+    fn test_with_testnet_constructor() {
+        let mainnet = AddrBook::with_testnet(false);
+        assert!(!mainnet.testnet);
+
+        let testnet = AddrBook::with_testnet(true);
+        assert!(testnet.testnet);
     }
 }

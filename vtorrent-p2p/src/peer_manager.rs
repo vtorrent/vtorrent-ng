@@ -64,10 +64,22 @@ pub struct PeerManager {
 }
 
 impl PeerManager {
-    /// Create a new peer manager.
+    /// Create a new mainnet peer manager (private addresses rejected in PEX).
     pub fn new(best_height: u32, listen_addr: &str) -> Self {
+        Self::with_testnet(best_height, listen_addr, false)
+    }
+
+    /// Create a new testnet peer manager (private/RFC1918 addresses accepted in PEX).
+    ///
+    /// Use this when running multiple nodes on the same LAN or localhost for testing.
+    pub fn new_testnet(best_height: u32, listen_addr: &str) -> Self {
+        Self::with_testnet(best_height, listen_addr, true)
+    }
+
+    /// Create a peer manager with an explicit testnet flag.
+    pub fn with_testnet(best_height: u32, listen_addr: &str, testnet: bool) -> Self {
         let (event_tx, event_rx) = mpsc::channel(1024);
-        let mut addr_book = AddrBook::new();
+        let mut addr_book = AddrBook::with_testnet(testnet);
 
         // Set our own listen address so we don't connect to ourselves
         if let Ok(our_addr) = listen_addr.parse::<SocketAddr>() {
@@ -346,5 +358,13 @@ impl PeerManager {
     /// Mark that we just sent a `getaddr`.
     pub fn record_getaddr(&mut self) {
         self.addr_book.record_getaddr();
+    }
+
+    /// Disconnect a specific peer by sending it a `Disconnect` command.
+    pub async fn disconnect(&mut self, addr: SocketAddr) {
+        if let Some(peer) = self.peers.get_mut(&addr) {
+            let _ = peer.cmd_tx.send(PeerCommand::Disconnect).await;
+            peer.state = PeerState::Disconnecting;
+        }
     }
 }

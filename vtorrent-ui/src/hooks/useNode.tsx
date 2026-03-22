@@ -65,6 +65,29 @@ export interface DexOrder {
   expiresAt: number
 }
 
+export interface StakingStatus {
+  enabled: boolean
+  stakingAddress: string | null
+  eligibleUtxos: number
+  totalStakingSatoshis: number
+  expectedRewardPerDay: number
+  lastStakeTime: number | null
+  blocksStaked: number
+}
+
+export interface ClaimCheckResult {
+  address: string
+  claimableSatoshis: number
+  display: string
+  alreadyClaimed: boolean
+}
+
+export interface ClaimSubmitResult {
+  txid: string
+  claimedSatoshis: number
+  recipientAddress: string
+}
+
 // ─── RPC base URL ─────────────────────────────────────────────────────────────
 
 const RPC_BASE = 'http://127.0.0.1:22525'
@@ -85,6 +108,23 @@ async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
 async function rpcGet<T>(path: string): Promise<T> {
   const res = await fetch(`${RPC_BASE}${path}`)
   if (!res.ok) throw new Error(`RPC ${path} → ${res.status}`)
+  return res.json() as Promise<T>
+}
+
+async function rpcPost<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${RPC_BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    let msg = `RPC POST ${path} → ${res.status}`
+    try {
+      const err = await res.json()
+      if (err.error) msg = err.error
+    } catch { /* ignore */ }
+    throw new Error(msg)
+  }
   return res.json() as Promise<T>
 }
 
@@ -132,6 +172,13 @@ async function fetchDexOrders(): Promise<DexOrder[]> {
     return tauriInvoke<DexOrder[]>('get_dex_orders')
   }
   return camel(await rpcGet<unknown[]>('/api/v1/dex/orders')) as DexOrder[]
+}
+
+async function fetchStakingStatus(): Promise<StakingStatus> {
+  if (isTauri()) {
+    return tauriInvoke<StakingStatus>('get_staking_status')
+  }
+  return camel(await rpcGet<unknown>('/api/v1/staking/status')) as StakingStatus
 }
 
 // ─── Generic polling hook ─────────────────────────────────────────────────────
@@ -191,6 +238,11 @@ export function useTorrentSessions(intervalMs = 5_000) {
 /** Poll DEX order book every 10 s. */
 export function useDexOrders(intervalMs = 10_000) {
   return usePoll<DexOrder[]>(fetchDexOrders, [], intervalMs)
+}
+
+/** Poll staking status every 8 s. */
+export function useStakingStatus(intervalMs = 8_000) {
+  return usePoll<StakingStatus | null>(fetchStakingStatus, null, intervalMs)
 }
 
 // ─── Torrent actions ──────────────────────────────────────────────────────────
@@ -257,4 +309,53 @@ export async function cancelDexOrder(id: string): Promise<void> {
   }
   const res = await fetch(`${RPC_BASE}/api/v1/dex/order/${id}`, { method: 'DELETE' })
   if (!res.ok) throw new Error(`cancel_dex_order → ${res.status}`)
+}
+
+// ─── Staking actions ──────────────────────────────────────────────────────────
+
+/** Start staking on the given address. */
+export async function startStaking(address: string): Promise<void> {
+  if (isTauri()) {
+    return tauriInvoke('start_staking', { address })
+  }
+  await rpcPost('/api/v1/staking/start', { address, passphrase: '' })
+}
+
+/** Stop staking. */
+export async function stopStaking(): Promise<void> {
+  if (isTauri()) {
+    return tauriInvoke('stop_staking')
+  }
+  await rpcPost('/api/v1/staking/stop', {})
+}
+
+// ─── Legacy Claim actions ─────────────────────────────────────────────────────
+
+/** Check the claimable balance for a legacy address. */
+export async function checkLegacyClaim(legacyAddress: string): Promise<ClaimCheckResult> {
+  if (isTauri()) {
+    return tauriInvoke<ClaimCheckResult>('check_legacy_claim', { legacyAddress })
+  }
+  return camel(
+    await rpcPost<unknown>('/api/v1/claim/check', { legacy_address: legacyAddress })
+  ) as ClaimCheckResult
+}
+
+/** Submit a legacy claim transaction. */
+export async function submitLegacyClaim(
+  wifPrivateKey: string,
+  recipientAddress: string,
+): Promise<ClaimSubmitResult> {
+  if (isTauri()) {
+    return tauriInvoke<ClaimSubmitResult>('submit_legacy_claim', {
+      wifPrivateKey,
+      recipientAddress,
+    })
+  }
+  return camel(
+    await rpcPost<unknown>('/api/v1/claim/submit', {
+      wif_private_key: wifPrivateKey,
+      recipient_address: recipientAddress,
+    })
+  ) as ClaimSubmitResult
 }

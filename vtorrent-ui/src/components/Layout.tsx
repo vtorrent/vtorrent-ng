@@ -1,7 +1,7 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Shield, Download, ArrowLeftRight,
-  Lock, Wifi, WifiOff, RefreshCw, Cpu,
+  Lock, Wifi, WifiOff, RefreshCw, Cpu, Zap, Gift,
 } from 'lucide-react'
 import { useWallet, formatVTR } from '../hooks/useWallet'
 import { useNodeInfo } from '../hooks/useNode'
@@ -11,6 +11,8 @@ const navItems = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/torrents',  icon: Download,        label: 'Torrents'  },
   { to: '/trade',     icon: ArrowLeftRight,  label: 'P2P Trade' },
+  { to: '/staking',   icon: Zap,             label: 'Staking'   },
+  { to: '/claim',     icon: Gift,            label: 'Claim VTR' },
   { to: '/security',  icon: Shield,          label: 'Security'  },
 ]
 
@@ -59,7 +61,7 @@ export default function Layout() {
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 px-3 py-3 space-y-1">
+        <nav className="flex-1 px-3 py-3 space-y-1 overflow-y-auto">
           {navItems.map(({ to, icon: Icon, label }) => (
             <NavLink
               key={to}

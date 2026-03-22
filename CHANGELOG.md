@@ -11,8 +11,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **Core Infrastructure**
 - New Rust-based monorepo (`vtorrent-ng`) replacing the legacy C++/Qt codebase
-- Cargo workspace with 8 crates: `vtorrent-core`, `vtorrent-wallet`, `vtorrent-migrate`, `vtorrent-snapshot`, `vtorrent-node`, `vtorrent-p2p`, `vtorrent-torrent`, `vtorrent-rpc`, `vtorrent-tauri`
-- Full test suite: 97 tests, 0 failures
+- Cargo workspace with 13 crates: `vtorrent-core`, `vtorrent-wallet`, `vtorrent-migrate`, `vtorrent-snapshot`, `vtorrent-node`, `vtorrent-p2p`, `vtorrent-torrent`, `vtorrent-rpc`, `vtorrent-tauri`, `vtorrent-overlay`, `vtorrent-spv`, `vtorrent-store`, `vtorrent-daemon`
+- Full test suite: 292 tests, 0 failures
+
+**Overlay / NAT Traversal**
+- `vtorrent-overlay`: Kademlia-style overlay network for NAT traversal and peer relay
+- `EndpointRegistry`: real peer map wired into relay request handler — relays are now only accepted from known connected peers
+- Relay requests from unknown peers are rejected with a structured error response
+
+**SPV (Simplified Payment Verification)**
+- `vtorrent-spv`: lightweight header chain with Bloom filter support for SPV clients
+- SPV integrated into `vtorrent-rpc`: `GET /api/v1/spv/status` and `POST /api/v1/spv/headers` endpoints
+- `AppState` carries a shared `Arc<RwLock<SpvChain>>` for concurrent access
+
+**PEX Testnet Flag**
+- `AddrBook::with_testnet(bool)` constructor — private/RFC1918 addresses accepted on testnet, rejected on mainnet
+- `PeerManager::new_testnet()` and `PeerManager::with_testnet()` constructors
+- `NodeConfig::testnet` field propagated end-to-end from CLI `--testnet` flag through `Node` to `PeerManager`
+- `vtorrent-daemon` and `vtorrent-node` binaries both expose `--testnet` flag
+- Startup log prints `Network: TESTNET` when testnet mode is active
+- 6 new PEX tests covering mainnet/testnet address filtering and loopback rejection
+
+**Desktop UI**
+- `StakingPage.tsx`: full staking dashboard — status cards, start/stop controls, reward history, live polling
+- `LegacyClaimPage.tsx`: 3-step claim wizard (address input → snapshot lookup → sign & broadcast)
+- `useNode.tsx`: `useStakingStatus`, `startStaking`, `stopStaking`, `checkLegacyClaim`, `submitLegacyClaim` hooks
+- `Layout.tsx`: Staking and Claim VTR nav items added; live node status panel with sync progress bar
+- `App.tsx`: `/staking` and `/claim` routes added
 
 **Cryptography & Security**
 - Modern wallet encryption: Argon2id key derivation + ChaCha20-Poly1305 AEAD (replacing old AES-256-CBC + scrypt)

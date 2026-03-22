@@ -417,6 +417,118 @@ impl SwapOrderBook {
         }
         false
     }
+
+    /// Get an order by hex-encoded order_id.
+    pub fn get_order(&self, id: &str) -> Option<&SwapOrder> {
+        self.orders.iter().find(|o| hex::encode(o.order_id) == id)
+    }
+
+    /// Update the status of an order by hex-encoded order_id.
+    pub fn update_order_status(&mut self, id: &str, status: OrderStatus) -> bool {
+        for order in self.orders.iter_mut() {
+            if hex::encode(order.order_id) == id {
+                order.status = status;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Set the hash_lock on a matched order (called after the maker creates the HTLC).
+    pub fn set_hash_lock(&mut self, id: &str, hash_lock: [u8; 32]) -> bool {
+        for order in self.orders.iter_mut() {
+            if hex::encode(order.order_id) == id {
+                order.hash_lock = Some(hash_lock);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Expire all orders whose expiry timestamp has passed.
+    /// Returns the number of orders expired.
+    pub fn expire_orders(&mut self) -> usize {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+        let mut count = 0;
+        for order in self.orders.iter_mut() {
+            if order.status == OrderStatus::Open && now >= order.expiry {
+                order.status = OrderStatus::Cancelled;
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Match an open order with a taker.
+    ///
+    /// Generates a fresh preimage + hash_lock for the HTLC, marks the order as
+    /// `Matched`, and returns a `MatchResult` with all the parameters the taker
+    /// needs to proceed.
+    ///
+    /// Returns `None` if the order is not found or is not in `Open` status.
+    pub fn match_order(
+        &mut self,
+        order_id: &str,
+        taker_address: String,
+    ) -> Option<MatchResult> {
+        // Find the order and verify it is open
+        let order = self.orders.iter_mut().find(|o| {
+            hex::encode(o.order_id) == order_id && o.status == OrderStatus::Open
+        })?;
+
+        // Generate a fresh preimage and hash_lock
+        use rand::RngCore;
+        let mut preimage = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut preimage);
+        let hash_lock = {
+            let mut hasher = Sha256::new();
+            Digest::update(&mut hasher, &preimage);
+            let result = Digest::finalize(hasher);
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&result);
+            out
+        };
+
+        // Update the order
+        order.status = OrderStatus::Matched;
+        order.hash_lock = Some(hash_lock);
+        let matched_order = order.clone();
+
+        Some(MatchResult {
+            order: matched_order,
+            preimage,
+            hash_lock,
+            taker_address,
+        })
+    }
+
+    /// List all orders for a specific maker address.
+    pub fn orders_by_maker(&self, maker_address: &str) -> Vec<&SwapOrder> {
+        self.orders.iter()
+            .filter(|o| o.maker_address == maker_address)
+            .collect()
+    }
+
+    /// Count open orders.
+    pub fn open_order_count(&self) -> usize {
+        self.orders.iter().filter(|o| o.status == OrderStatus::Open).count()
+    }
+}
+
+/// Result of a successful order match.
+#[derive(Debug, Clone)]
+pub struct MatchResult {
+    /// The matched order (clone with status updated to Matched).
+    pub order: SwapOrder,
+    /// The preimage the taker must keep secret until they fund their side.
+    pub preimage: [u8; 32],
+    /// The hash lock the maker will use in the HTLC script.
+    pub hash_lock: [u8; 32],
+    /// The taker's address (for the maker to send to).
+    pub taker_address: String,
 }
 
 /// Convenience wrapper for creating a new atomic swap (generates a random preimage).

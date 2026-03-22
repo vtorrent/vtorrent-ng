@@ -251,7 +251,15 @@ async fn receive_loop(
                 }
             }
             crate::relay::TAG_RELAY_REQUEST => {
-                let peers = std::collections::HashMap::new(); // TODO: wire in real peer map
+                // Build a real peer map from the live EndpointRegistry so the relay
+                // engine can look up target peers by node-id and forward onion-routed
+                // messages to the correct socket address.
+                let all_endpoints = registry.all().await;
+                let peers: std::collections::HashMap<String, std::net::SocketAddr> =
+                    all_endpoints
+                        .into_iter()
+                        .map(|ep| (ep.node_id, ep.addr))
+                        .collect();
                 if let Err(e) = relay.handle_relay_request(from, data, &peers).await {
                     tracing::debug!("RELAY_REQUEST error from {}: {}", from, e);
                 }

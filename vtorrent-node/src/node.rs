@@ -20,8 +20,9 @@ use vtorrent_p2p::{
     compact::{CompactBlockDecoder, CompactBlockEncoder, CompactBlockPeerState, derive_siphash_keys, short_txid},
     dht::{discover_peers_via_doh, discover_peers_via_github, DhtBootstrap},
     message::{
-        AddrMsg, BlockTxnMsg, CmpctBlockMsg, GetBlocksMsg, GetBlockTxnMsg,
-        InvItem, InvMsg, InvType, NetMessage, SendCmpctMsg,
+        AddrMsg, BlockTxnMsg, CmpctBlockMsg, FeeFilterMsg, GetBlocksMsg, GetBlockTxnMsg,
+        GetHeadersMsg, HeaderEntry, HeadersMsg, InvItem, InvMsg, InvType,
+        NetMessage, PingMsg, SendCmpctMsg,
         NODE_NETWORK, NODE_TORRENT,
     },
     peer::PeerEvent,
@@ -58,6 +59,10 @@ pub struct NodeConfig {
     pub data_dir: PathBuf,
     /// Whether to start the overlay NAT traversal layer.
     pub use_overlay: bool,
+    /// When `true`, the node operates on testnet:
+    /// - PEX accepts private/RFC1918 addresses
+    /// - Looser validation rules may apply in future
+    pub testnet: bool,
 }
 
 impl Default for NodeConfig {
@@ -71,6 +76,7 @@ impl Default for NodeConfig {
             use_dht: true,
             data_dir: default_data_dir(),
             use_overlay: true,
+            testnet: false,
         }
     }
 }
@@ -101,6 +107,10 @@ pub struct Node {
     event_tx: Option<EventSender>,
     /// Per-peer compact block relay state (BIP-152).
     compact_peers: std::collections::HashMap<std::net::SocketAddr, CompactBlockPeerState>,
+    /// Per-peer minimum fee rate (from feefilter messages), satoshis per 1000 bytes.
+    peer_fee_filters: std::collections::HashMap<std::net::SocketAddr, u64>,
+    /// Per-peer last-seen ping nonce (for pong matching).
+    peer_ping_nonces: std::collections::HashMap<std::net::SocketAddr, u64>,
 }
 
 impl Node {
@@ -109,7 +119,7 @@ impl Node {
         let chain = Chain::new()?;
         let best_height = chain.best_height();
         let mempool = Mempool::new(config.max_mempool);
-        let peer_manager = PeerManager::new(best_height, &config.listen_addr);
+        let peer_manager = PeerManager::with_testnet(best_height, &config.listen_addr, config.testnet);
 
         let staking = if config.staking_enabled {
             config.staking_address.as_ref().map(|addr| {
@@ -128,6 +138,8 @@ impl Node {
             overlay: None,
             event_tx: None,
             compact_peers: std::collections::HashMap::new(),
+            peer_fee_filters: std::collections::HashMap::new(),
+            peer_ping_nonces: std::collections::HashMap::new(),
         })
     }
 
@@ -138,7 +150,7 @@ impl Node {
     pub fn new_with_chain(config: NodeConfig, chain: Chain) -> Result<Self> {
         let best_height = chain.best_height();
         let mempool = Mempool::new(config.max_mempool);
-        let peer_manager = PeerManager::new(best_height, &config.listen_addr);
+        let peer_manager = PeerManager::with_testnet(best_height, &config.listen_addr, config.testnet);
 
         let staking = if config.staking_enabled {
             config.staking_address.as_ref().map(|addr| {
@@ -157,6 +169,8 @@ impl Node {
             overlay: None,
             event_tx: None,
             compact_peers: std::collections::HashMap::new(),
+            peer_fee_filters: std::collections::HashMap::new(),
+            peer_ping_nonces: std::collections::HashMap::new(),
         })
     }
 
@@ -252,6 +266,7 @@ impl Node {
         let mut sync_ticker = interval(Duration::from_secs(30));
         let mut stake_ticker = interval(Duration::from_secs(TARGET_BLOCK_TIME as u64));
         let mut peer_ticker = interval(Duration::from_secs(60));
+        let mut ping_ticker = interval(Duration::from_secs(120));  // Keepalive ping every 2 min
         let mut pex_ticker = interval(Duration::from_secs(600));   // PEX getaddr every 10 min
         let mut dht_ticker = interval(Duration::from_secs(1800));  // DHT re-announce every 30 min
 
@@ -304,6 +319,11 @@ impl Node {
                     if let Err(e) = self.peer_manager.addr_book.save(&cache_path) {
                         tracing::debug!("Could not save peer cache: {}", e);
                     }
+                }
+
+                // Keepalive: send ping to all connected peers every 2 minutes
+                _ = ping_ticker.tick() => {
+                    self.send_keepalive_pings().await;
                 }
 
                 // PEX: periodically send getaddr and self-announce
@@ -509,8 +529,10 @@ impl Node {
             PeerEvent::Disconnected { peer_addr } => {
                 tracing::info!("Peer {} disconnected", peer_addr);
                 self.emit(NodeEvent::PeerDisconnected { addr: peer_addr });
-                // Clean up compact block state for this peer
+                // Clean up per-peer state
                 self.compact_peers.remove(&peer_addr);
+                self.peer_fee_filters.remove(&peer_addr);
+                self.peer_ping_nonces.remove(&peer_addr);
             }
         }
         Ok(())
@@ -907,6 +929,153 @@ impl Node {
                 }
             }
 
+            // ── Keepalive ─────────────────────────────────────────────────────
+            "ping" => {
+                // peer.rs already handles inbound ping→pong at the peer level;
+                // this arm handles any ping that bubbles up (e.g. from test harness).
+                if let Ok(ping) = serde_json::from_slice::<PingMsg>(&msg.payload) {
+                    let payload = serde_json::to_vec(&PingMsg { nonce: ping.nonce }).unwrap_or_default();
+                    self.peer_manager.send_to(peer_addr, NetMessage::new("pong", payload)).await;
+                }
+            }
+
+            "pong" => {
+                // Validate the nonce matches what we sent
+                if let Ok(pong) = serde_json::from_slice::<PingMsg>(&msg.payload) {
+                    if let Some(&expected) = self.peer_ping_nonces.get(&peer_addr) {
+                        if pong.nonce == expected {
+                            self.peer_ping_nonces.remove(&peer_addr);
+                            tracing::trace!("Pong from {} confirmed (nonce={})", peer_addr, pong.nonce);
+                        } else {
+                            tracing::warn!(
+                                "Pong nonce mismatch from {}: expected {} got {}",
+                                peer_addr, expected, pong.nonce
+                            );
+                        }
+                    }
+                }
+            }
+
+            // ── Fee filter ────────────────────────────────────────────────────
+            "feefilter" => {
+                if let Ok(ff) = serde_json::from_slice::<FeeFilterMsg>(&msg.payload) {
+                    self.peer_fee_filters.insert(peer_addr, ff.feerate);
+                    tracing::debug!(
+                        "feefilter: peer {} min fee rate = {} sat/kB",
+                        peer_addr, ff.feerate
+                    );
+                }
+            }
+
+            // ── Not-found ─────────────────────────────────────────────────────
+            "notfound" => {
+                if let Ok(nf) = serde_json::from_slice::<InvMsg>(&msg.payload) {
+                    for item in &nf.items {
+                        tracing::debug!(
+                            "notfound: peer {} does not have {:?} {}",
+                            peer_addr,
+                            item.inv_type,
+                            hex::encode(item.hash)
+                        );
+                    }
+                }
+            }
+
+            // ── Header sync (getheaders / headers) ────────────────────────────
+            "getheaders" => {
+                if let Ok(req) = serde_json::from_slice::<GetHeadersMsg>(&msg.payload) {
+                    let chain = self.chain.lock().await;
+                    let our_height = chain.best_height();
+
+                    // Find the highest block in the locator that we know
+                    let start_height = req.block_locator_hashes.iter()
+                        .find_map(|hash| {
+                            for h in (0..=our_height).rev() {
+                                if let Some(b) = chain.get_block_at_height(h) {
+                                    if b.hash() == *hash {
+                                        return Some(h + 1);
+                                    }
+                                }
+                            }
+                            None
+                        })
+                        .unwrap_or(1);
+
+                    let mut headers: Vec<HeaderEntry> = Vec::new();
+                    for h in start_height..=our_height.min(start_height + 2000) {
+                        if let Some(block) = chain.get_block_at_height(h) {
+                            let hash = block.hash();
+                            if req.hash_stop != [0u8; 32] && hash == req.hash_stop {
+                                // Serialize header as bytes (bincode matches how hash() works)
+                                let header_bytes = bincode::serialize(&block.header).unwrap_or_default();
+                                headers.push(HeaderEntry { header: header_bytes, tx_count: 0 });
+                                break;
+                            }
+                            let header_bytes = bincode::serialize(&block.header).unwrap_or_default();
+                            headers.push(HeaderEntry { header: header_bytes, tx_count: 0 });
+                        }
+                    }
+
+                    if !headers.is_empty() {
+                        let payload = serde_json::to_vec(&HeadersMsg { headers }).unwrap_or_default();
+                        drop(chain);
+                        self.peer_manager.send_to(
+                            peer_addr,
+                            NetMessage::new("headers", payload)
+                        ).await;
+                    }
+                }
+            }
+
+            "headers" => {
+                if let Ok(resp) = serde_json::from_slice::<HeadersMsg>(&msg.payload) {
+                    let count = resp.headers.len();
+                    if count == 0 {
+                        return Ok(());
+                    }
+                    tracing::debug!("headers: received {} headers from {}", count, peer_addr);
+
+                    // Deserialize each HeaderEntry's bytes into a BlockHeader to get the hash
+                    let decoded: Vec<BlockHeader> = resp.headers.iter()
+                        .filter_map(|h| bincode::deserialize::<BlockHeader>(&h.header).ok())
+                        .collect();
+
+                    // Request the blocks we don't have yet
+                    let want: Vec<InvItem> = {
+                        let chain = self.chain.lock().await;
+                        decoded.iter()
+                            .map(|hdr| hdr.hash())
+                            .filter(|hash| chain.get_block(hash).is_none())
+                            .map(|hash| InvItem { inv_type: InvType::Block, hash })
+                            .collect()
+                    };
+
+                    if !want.is_empty() {
+                        let payload = serde_json::to_vec(&vtorrent_p2p::message::GetDataMsg {
+                            items: want,
+                        }).unwrap_or_default();
+                        self.peer_manager.send_to(
+                            peer_addr,
+                            NetMessage::new("getdata", payload)
+                        ).await;
+                    }
+
+                    // If we got a full batch of 2000, there may be more — send another getheaders
+                    if count == 2000 {
+                        let last_hash = decoded.last().map(|hdr| hdr.hash()).unwrap_or([0u8; 32]);
+                        let payload = serde_json::to_vec(&GetHeadersMsg {
+                            version: 70001,
+                            block_locator_hashes: vec![last_hash],
+                            hash_stop: [0u8; 32],
+                        }).unwrap_or_default();
+                        self.peer_manager.send_to(
+                            peer_addr,
+                            NetMessage::new("getheaders", payload)
+                        ).await;
+                    }
+                }
+            }
+
             cmd => {
                 tracing::trace!("Unhandled message '{}' from {}", cmd, peer_addr);
             }
@@ -1018,6 +1187,9 @@ impl Node {
     }
 
     /// Request new blocks from peers if we are behind.
+    ///
+    /// Uses `getheaders` (up to 2000 headers per round) which is significantly
+    /// faster than the legacy `getblocks` + `inv` approach during IBD.
     async fn request_blocks_from_peers(&mut self) {
         let our_height = {
             let chain = self.chain.lock().await;
@@ -1030,16 +1202,41 @@ impl Node {
                 "Syncing: our height {} < network height {}",
                 our_height, network_height
             );
-            let best_hash = {
+
+            // Build a block locator (exponentially stepped hashes from tip)
+            let locator = {
                 let chain = self.chain.lock().await;
-                chain.best_hash().unwrap_or([0u8; 32])
+                let tip = chain.best_height();
+                let mut hashes = Vec::new();
+                let mut step = 1u32;
+                let mut h = tip;
+                loop {
+                    if let Some(block) = chain.get_block_at_height(h) {
+                        hashes.push(block.hash());
+                    }
+                    if hashes.len() >= 10 {
+                        step *= 2;
+                    }
+                    if h < step {
+                        // Always include genesis
+                        if let Some(genesis) = chain.get_block_at_height(0) {
+                            if hashes.last().copied() != Some(genesis.hash()) {
+                                hashes.push(genesis.hash());
+                            }
+                        }
+                        break;
+                    }
+                    h -= step;
+                }
+                hashes
             };
-            let payload = serde_json::to_vec(&GetBlocksMsg {
+
+            let payload = serde_json::to_vec(&GetHeadersMsg {
                 version: 70001,
-                block_locator_hashes: vec![best_hash],
+                block_locator_hashes: locator,
                 hash_stop: [0u8; 32],
             }).unwrap_or_default();
-            self.peer_manager.broadcast(NetMessage::new("getblocks", payload)).await;
+            self.peer_manager.broadcast(NetMessage::new("getheaders", payload)).await;
         }
     }
 
@@ -1072,6 +1269,36 @@ impl Node {
                 tracing::debug!("PEX insufficient, re-running DHT bootstrap");
                 self.bootstrap_via_dht().await;
             }
+        }
+    }
+
+    /// Send a ping to every connected peer to confirm liveness.
+    ///
+    /// Peers that have an outstanding unanswered ping from the *previous* cycle
+    /// are disconnected (they failed to respond within 2 minutes).
+    async fn send_keepalive_pings(&mut self) {
+        let peers = self.peer_manager.connected_peers();
+        let mut stale: Vec<std::net::SocketAddr> = Vec::new();
+
+        for addr in &peers {
+            if self.peer_ping_nonces.contains_key(addr) {
+                // Peer did not respond to last ping — disconnect it
+                tracing::warn!("Peer {} timed out (no pong), disconnecting", addr);
+                stale.push(*addr);
+            } else {
+                // Send a fresh ping
+                let nonce: u64 = rand::random();
+                self.peer_ping_nonces.insert(*addr, nonce);
+                let payload = serde_json::to_vec(&PingMsg { nonce }).unwrap_or_default();
+                self.peer_manager.send_to(*addr, NetMessage::new("ping", payload)).await;
+            }
+        }
+
+        for addr in stale {
+            self.peer_manager.disconnect(addr).await;
+            self.peer_fee_filters.remove(&addr);
+            self.peer_ping_nonces.remove(&addr);
+            self.compact_peers.remove(&addr);
         }
     }
 

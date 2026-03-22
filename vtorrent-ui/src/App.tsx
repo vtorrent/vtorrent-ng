@@ -7,6 +7,8 @@ import DashboardPage from './pages/DashboardPage'
 import SecurityCenterPage from './pages/SecurityCenterPage'
 import TorrentPage from './pages/TorrentPage'
 import TradePage from './pages/TradePage'
+import StakingPage from './pages/StakingPage'
+import LegacyClaimPage from './pages/LegacyClaimPage'
 import Layout from './components/Layout'
 
 function AppRoutes() {
@@ -36,6 +38,14 @@ function AppRoutes() {
         <Route
           path="/trade"
           element={isUnlocked ? <TradePage /> : <Navigate to="/" replace />}
+        />
+        <Route
+          path="/staking"
+          element={isUnlocked ? <StakingPage /> : <Navigate to="/" replace />}
+        />
+        <Route
+          path="/claim"
+          element={isUnlocked ? <LegacyClaimPage /> : <Navigate to="/" replace />}
         />
       </Route>
 

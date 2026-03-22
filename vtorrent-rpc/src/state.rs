@@ -5,6 +5,7 @@ use vtorrent_node::mempool::Mempool;
 use vtorrent_node::staking::StakingEngine;
 use vtorrent_node::atomic_swap::SwapOrderBook;
 use vtorrent_torrent::session::SessionManager;
+use vtorrent_spv::SpvChain;
 use crate::ws::EventBroadcaster;
 
 /// Shared application state for the RPC API server.
@@ -25,6 +26,8 @@ pub struct AppState {
     pub order_book: Arc<RwLock<SwapOrderBook>>,
     /// The torrent session manager.
     pub torrent_sessions: Arc<RwLock<SessionManager>>,
+    /// SPV header chain for light-client verification.
+    pub spv_chain: Arc<RwLock<SpvChain>>,
     /// Node start time (Unix timestamp).
     pub start_time: u64,
     /// Number of connected P2P peers.
@@ -71,6 +74,7 @@ impl AppState {
             staking: Arc::new(RwLock::new(StakingEngine::new(String::new()))),
             order_book: Arc::new(RwLock::new(SwapOrderBook::new())),
             torrent_sessions: Arc::new(RwLock::new(SessionManager::new())),
+            spv_chain: Arc::new(RwLock::new(SpvChain::new())),
             start_time: now,
             peer_count: Arc::new(RwLock::new(0)),
             syncing: Arc::new(RwLock::new(false)),
@@ -99,6 +103,7 @@ impl AppState {
             staking: Arc::new(RwLock::new(StakingEngine::new(String::new()))),
             order_book: Arc::new(RwLock::new(SwapOrderBook::new())),
             torrent_sessions: Arc::new(RwLock::new(SessionManager::new())),
+            spv_chain: Arc::new(RwLock::new(SpvChain::new())),
             start_time: now,
             peer_count: Arc::new(RwLock::new(0)),
             syncing: Arc::new(RwLock::new(false)),

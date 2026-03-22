@@ -70,6 +70,13 @@ struct Cli {
     /// Log level: error, warn, info, debug, trace.
     #[arg(long, default_value = "info")]
     log_level: String,
+
+    /// Run in testnet mode.
+    ///
+    /// Enables private/RFC1918 address acceptance in PEX, allowing multi-node
+    /// testing on a single machine or LAN without public IP addresses.
+    #[arg(long, default_value_t = false)]
+    testnet: bool,
 }
 
 // ─── Entry Point ──────────────────────────────────────────────────────────────
@@ -118,6 +125,7 @@ async fn main() -> anyhow::Result<()> {
         use_dht: !cli.no_dht,
         data_dir: data_dir.clone(),
         use_overlay: true,
+        testnet: cli.testnet,
     };
 
     // ── Build the P2P Node ────────────────────────────────────────────────────
@@ -295,6 +303,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("  RPC server:      {}", rpc_addr);
     tracing::info!("  Data dir:        {}", data_dir.display());
     tracing::info!("  DHT bootstrap:   {}", if config.use_dht { "enabled" } else { "disabled" });
+    tracing::info!("  Network:         {}", if config.testnet { "TESTNET" } else { "mainnet" });
     tracing::info!("  Staking:         {}", if staking_enabled {
         cli.staking_address.as_deref().unwrap_or("enabled")
     } else {
@@ -302,6 +311,20 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // ── Start services concurrently ───────────────────────────────────────────
+
+    // Periodic DEX order expiry maintenance — runs every 60 seconds.
+    let order_book_for_maintenance = Arc::clone(&rpc_state.order_book);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let expired = order_book_for_maintenance.write().await.expire_orders();
+            if expired > 0 {
+                tracing::info!("DEX maintenance: expired {} stale orders", expired);
+            }
+        }
+    });
+
     let rpc_handle = tokio::spawn(async move {
         tracing::info!("RPC server starting on {}", rpc_addr);
         if let Err(e) = start_server(&rpc_addr, rpc_state).await {

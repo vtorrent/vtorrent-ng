@@ -28,7 +28,12 @@ vtorrent-ng/
 ├── vtorrent-migrate/     # Legacy wallet.dat parser (BerkeleyDB, AES-256-CBC decryption)
 ├── vtorrent-snapshot/    # Legacy blockchain UTXO snapshot extractor
 ├── vtorrent-node/        # Consensus engine, blockchain state, mempool, PoS logic
-├── vtorrent-p2p/         # P2P networking layer (tokio async, custom message codec)
+├── vtorrent-p2p/         # P2P networking layer (tokio async, custom message codec, PEX, DHT)
+├── vtorrent-overlay/     # Kademlia overlay for NAT traversal and peer relay
+├── vtorrent-spv/         # Simplified Payment Verification header chain + Bloom filter
+├── vtorrent-rpc/         # Axum JSON-RPC server (wallet, node, SPV, DEX, torrent endpoints)
+├── vtorrent-store/       # Persistent block store (redb key-value database)
+├── vtorrent-daemon/      # Production daemon binary (P2P + RPC + staking)
 ├── vtorrent-tauri/       # Tauri IPC bridge (Rust backend ↔ React frontend)
 └── vtorrent-ui/          # React + TypeScript + Tailwind CSS desktop UI
 ```
@@ -46,6 +51,9 @@ vtorrent-ng/
 | **2FA** | TOTP (RFC 6238) — compatible with Google Authenticator / Authy |
 | **Consensus** | Proof-of-Stake (5% annual, 6h min stake age) |
 | **P2P Protocol** | Custom binary framing over TCP (Bitcoin-compatible message format) |
+| **Peer Discovery** | PEX (addr/getaddr) + Kademlia DHT + DNS seeds |
+| **NAT Traversal** | Kademlia overlay relay network |
+| **SPV** | Header chain + Bloom filter (BIP-37 compatible) |
 | **DEX** | Atomic Swaps via HTLC (Hash Time-Locked Contracts) |
 | **Torrent** | libtorrent-rasterbar via Rust FFI (planned) |
 
@@ -68,7 +76,19 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-### Run the node
+### Run the full daemon (recommended)
+
+```bash
+cargo run -p vtorrent-daemon -- --rpc-addr 127.0.0.1:22525 --listen 0.0.0.0:22526
+```
+
+**Testnet mode** (allows LAN/localhost multi-node testing):
+
+```bash
+cargo run -p vtorrent-daemon -- --testnet --listen 127.0.0.1:22526 --seed 127.0.0.1:22527
+```
+
+### Run the P2P node only (no RPC)
 
 ```bash
 cargo run -p vtorrent-node
@@ -87,6 +107,30 @@ cd vtorrent-ui
 pnpm install
 pnpm dev
 ```
+
+---
+
+## RPC API
+
+The daemon exposes a JSON-RPC HTTP server on `127.0.0.1:22525` by default.
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/api/v1/node/info` | Node status, height, peer count, sync state |
+| GET | `/api/v1/wallet/info` | Wallet balance, addresses, lock state |
+| POST | `/api/v1/wallet/send` | Send VTR to an address |
+| GET | `/api/v1/mempool` | Pending transactions |
+| GET | `/api/v1/peers` | Connected peer list |
+| GET | `/api/v1/staking/status` | Staking engine status and rewards |
+| POST | `/api/v1/staking/start` | Start staking with a given address |
+| POST | `/api/v1/staking/stop` | Stop staking |
+| GET | `/api/v1/spv/status` | SPV header chain height and tip hash |
+| POST | `/api/v1/spv/headers` | Submit a batch of headers to the SPV chain |
+| GET | `/api/v1/dex/orders` | Open DEX swap orders |
+| POST | `/api/v1/dex/order` | Place a new swap order |
+| DELETE | `/api/v1/dex/order/:id` | Cancel a swap order |
+| POST | `/api/v1/legacy/check` | Look up a legacy address in the genesis snapshot |
+| POST | `/api/v1/legacy/claim` | Sign and broadcast a legacy claim transaction |
 
 ---
 
@@ -110,13 +154,17 @@ Your private keys never leave your machine. The claim process is fully local unt
 | Phase | Status | Description |
 |---|---|---|
 | **Core Crates** | ✅ Complete | Crypto, wallet, migration, snapshot, node, P2P |
-| **UI Shell** | ✅ Complete | Welcome, dashboard, import wizard, security center, torrents, DEX |
+| **UI Shell** | ✅ Complete | Welcome, dashboard, import wizard, security center, torrents, DEX, staking, legacy claim |
 | **Tauri IPC Bridge** | ✅ Complete | Full command layer connecting UI to Rust backend |
 | **Snapshot Tool** | ✅ Complete | Legacy LevelDB chainstate parser and UTXO extractor |
-| **P2P Networking** | 🔄 In Progress | Peer handshake, message codec, peer manager |
-| **PoS Staking** | 🔄 In Progress | Coinstake creation, stake modifier, difficulty adjustment |
+| **P2P Networking** | ✅ Complete | Peer handshake, message codec, peer manager, PEX, DHT, ban manager |
+| **PoS Staking** | ✅ Complete | Coinstake creation, stake modifier, difficulty adjustment, staking UI |
+| **Overlay / NAT** | ✅ Complete | Kademlia overlay, relay handler with real peer map |
+| **SPV Client** | ✅ Complete | Header chain, Bloom filter, RPC endpoints |
+| **Testnet Mode** | ✅ Complete | `--testnet` flag, private address PEX, end-to-end wiring |
+| **Persistent Store** | ✅ Complete | redb block store, warm restart from disk |
 | **BitTorrent Integration** | 📋 Planned | libtorrent-rasterbar FFI, seeding rewards, download payments |
-| **Atomic Swap DEX** | 📋 Planned | HTLC contracts, order book, swap execution |
+| **Atomic Swap DEX** | 📋 Planned | HTLC on-chain execution, order matching engine |
 | **Mainnet Launch** | 📋 Planned | Genesis snapshot, DNS seeds, public release |
 
 ---

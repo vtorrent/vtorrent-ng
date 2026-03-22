@@ -545,11 +545,36 @@ pub async fn cancel_dex_order(
     }
     Ok(Json(json!({ "success": true, "message": format!("Order {} cancelled", id) })))
 }
-
-// ─── Legacy Claim ─────────────────────────────────────────────────────────────
-
-pub async fn check_claim(
+pub async fn match_dex_order(
     State(state): State<Arc<AppState>>,
+    Json(req): Json<MatchOrderRequest>,
+) -> RpcResult<Json<MatchOrderResponse>> {
+    let result = state.order_book.write().await.match_order(
+        &req.order_id,
+        req.taker_address,
+    );
+
+    match result {
+        Some(m) => Ok(Json(MatchOrderResponse {
+            order_id: hex::encode(m.order.order_id),
+            maker_address: m.order.maker_address,
+            vtr_amount: m.order.vtr_amount,
+            target_asset: m.order.target_asset,
+            target_amount: m.order.target_amount,
+            hash_lock: hex::encode(m.hash_lock),
+            preimage: hex::encode(m.preimage),
+            expiry: m.order.expiry,
+        })),
+        None => Err(RpcError::NotFound(format!(
+            "Order {} not found or not open",
+            req.order_id
+        ))),
+    }
+}
+
+// ─── Legacy Claim ──────────────────────────────────────────────────────────────────
+
+pub async fn check_claim( State(state): State<Arc<AppState>>,
     Json(req): Json<ClaimCheckRequest>,
 ) -> RpcResult<Json<ClaimCheckResponse>> {
     use vtorrent_node::genesis::get_legacy_balance;
@@ -660,5 +685,81 @@ pub async fn submit_claim(
         txid,
         claimed_satoshis: claimable,
         recipient_address: req.recipient_address,
+    }))
+}
+
+
+// --- SPV -------------------------------------------------------------------
+
+/// GET /api/v1/spv/status - returns the current SPV header chain status.
+pub async fn get_spv_status(
+    State(state): State<Arc<AppState>>,
+) -> RpcResult<Json<SpvStatusResponse>> {
+    let chain = state.spv_chain.read().await;
+    let best_hash = chain
+        .best_hash()
+        .map(|h| hex::encode(h))
+        .unwrap_or_default();
+    Ok(Json(SpvStatusResponse {
+        header_count: chain.len(),
+        best_height: chain.best_height(),
+        best_hash,
+    }))
+}
+
+/// POST /api/v1/spv/headers - submit a batch of block headers to the SPV chain.
+pub async fn add_spv_headers(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SpvAddHeadersRequest>,
+) -> RpcResult<Json<SpvAddHeadersResponse>> {
+    use vtorrent_spv::SpvHeader;
+
+    let mut headers: Vec<SpvHeader> = Vec::with_capacity(req.headers.len());
+    for h in req.headers {
+        let prev_hash_bytes = hex::decode(&h.prev_hash)
+            .map_err(|_| RpcError::BadRequest(format!("invalid prev_hash hex: {}", h.prev_hash)))?;
+        let merkle_root_bytes = hex::decode(&h.merkle_root)
+            .map_err(|_| RpcError::BadRequest(format!("invalid merkle_root hex: {}", h.merkle_root)))?;
+
+        if prev_hash_bytes.len() != 32 || merkle_root_bytes.len() != 32 {
+            return Err(RpcError::BadRequest(
+                "prev_hash and merkle_root must be 32 bytes (64 hex chars)".into()
+            ));
+        }
+
+        let mut ph = [0u8; 32];
+        let mut mr = [0u8; 32];
+        ph.copy_from_slice(&prev_hash_bytes);
+        mr.copy_from_slice(&merkle_root_bytes);
+
+        headers.push(SpvHeader {
+            version: h.version,
+            prev_hash: ph,
+            merkle_root: mr,
+            timestamp: h.timestamp,
+            bits: h.bits,
+            nonce: h.nonce,
+            height: h.height,
+        });
+    }
+
+    let added = {
+        let mut chain = state.spv_chain.write().await;
+        chain.add_headers(headers)
+            .map_err(|e| RpcError::BadRequest(format!("SPV header validation failed: {}", e)))?
+    };
+
+    let chain = state.spv_chain.read().await;
+    let best_hash = chain
+        .best_hash()
+        .map(|h| hex::encode(h))
+        .unwrap_or_default();
+
+    tracing::info!("SPV: added {} headers, best height now {}", added, chain.best_height());
+
+    Ok(Json(SpvAddHeadersResponse {
+        added,
+        best_height: chain.best_height(),
+        best_hash,
     }))
 }

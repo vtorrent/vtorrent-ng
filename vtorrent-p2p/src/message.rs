@@ -212,6 +212,37 @@ pub struct BlockTxnMsg {
     pub transactions: Vec<Vec<u8>>,
 }
 
+/// `feefilter` — peer announces its minimum acceptable fee rate (satoshis per 1000 bytes).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeeFilterMsg {
+    pub feerate: u64,
+}
+
+/// `getheaders` — request a run of block headers starting from a locator.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetHeadersMsg {
+    pub version: u32,
+    /// Block locator hashes (most recent first).
+    pub block_locator_hashes: Vec<[u8; 32]>,
+    /// Stop hash (all-zeros = send as many as possible, up to 2000).
+    pub hash_stop: [u8; 32],
+}
+
+/// A single block header entry in a `headers` message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeaderEntry {
+    /// Serialised block header bytes.
+    pub header: Vec<u8>,
+    /// Transaction count (always 0 in `headers` messages per protocol spec).
+    pub tx_count: u32,
+}
+
+/// `headers` — response to `getheaders`, up to 2000 block headers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeadersMsg {
+    pub headers: Vec<HeaderEntry>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

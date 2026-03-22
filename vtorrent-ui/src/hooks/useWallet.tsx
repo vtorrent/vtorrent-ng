@@ -169,6 +169,10 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
       ).join('')
       return fakeTxid as T
     }
+    case 'start_node':
+    case 'stop_node':
+      // Mock: no-op in browser dev mode
+      return undefined as T
     default:
       throw new Error(`Unknown mock command: ${cmd}`)
   }
@@ -208,6 +212,16 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       defaultAddress: info.default_address,
       walletVersion: info.wallet_version,
     }))
+    // Start the P2P node in the background after the wallet is unlocked.
+    // Errors are non-fatal — the UI still works without a running node.
+    try {
+      await invoke('start_node', {
+        stakingAddress: info.default_address ?? null,
+        dataDir: null,
+      })
+    } catch (e) {
+      console.warn('start_node failed (may already be running):', e)
+    }
   }, [])
 
   const lock = useCallback(async () => {
@@ -251,13 +265,26 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       createdAt: Date.now(),
     }))
 
+    const defaultAddr = result.addresses[0] ?? null
+
     setState({
       isUnlocked: true,
       has2FA: false,
       keys,
-      defaultAddress: result.addresses[0] ?? null,
+      defaultAddress: defaultAddr,
       walletVersion: 2,
     })
+
+    // Register the imported WIF with the RPC hot wallet so send_vtr works.
+    // Also start the node so the UI gets live data immediately.
+    try {
+      await invoke('start_node', {
+        stakingAddress: defaultAddr,
+        dataDir: null,
+      })
+    } catch (e) {
+      console.warn('start_node failed after import (may already be running):', e)
+    }
 
     return {
       keysFound: result.keys_found,
