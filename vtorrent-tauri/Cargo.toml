@@ -1,0 +1,26 @@
+[package]
+name = "vtorrent-tauri"
+version = "2.0.0"
+edition = "2021"
+description = "vTorrent 2.0 Tauri desktop application backend"
+
+[lib]
+name = "vtorrent_tauri_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "vtorrent-tauri"
+path = "src/main.rs"
+
+[dependencies]
+vtorrent-core    = { path = "../vtorrent-core" }
+vtorrent-migrate = { path = "../vtorrent-migrate" }
+vtorrent-wallet  = { path = "../vtorrent-wallet" }
+
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+base64      = "0.22"
+tokio       = { version = "1", features = ["full"] }
+thiserror   = "1"
+tracing     = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

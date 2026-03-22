@@ -1,0 +1,38 @@
+[package]
+name = "vtorrent-snapshot"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "vTorrent legacy blockchain snapshot extractor"
+
+[[bin]]
+name = "vtorrent-snapshot"
+path = "src/main.rs"
+
+[dependencies]
+vtorrent-core = { path = "../vtorrent-core" }
+
+# LevelDB for reading the legacy Bitcoin-style blockchain
+rusty-leveldb = { version = "1.0", default-features = false }
+
+# Serialization
+serde         = { version = "1", features = ["derive"] }
+serde_json    = "1"
+bincode       = "1"
+
+# Crypto (for snapshot integrity hash)
+sha2          = "0.10"
+hex           = "0.4"
+
+# CLI
+clap          = { version = "4", features = ["derive"] }
+
+# Error handling
+thiserror     = "1"
+anyhow        = "1"
+
+# Logging
+tracing       = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

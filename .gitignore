@@ -1,0 +1,38 @@
+# Rust build artifacts
+/target/
+**/target/
+Cargo.lock
+
+# Node.js / frontend
+vtorrent-ui/node_modules/
+vtorrent-ui/dist/
+vtorrent-ui/.vite/
+
+# Tauri build output
+vtorrent-tauri/target/
+src-tauri/target/
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Editor
+.vscode/
+.idea/
+*.iml
+
+# Wallet and key files — NEVER commit these
+*.dat
+*.wallet
+wallet.dat
+*.key
+*.pem
+
+# Snapshot binary (large file — distribute separately)
+*.snapshot
+*.snap
+
+# Logs
+*.log

@@ -1,0 +1,28 @@
+[package]
+name = "vtorrent-migrate"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+vtorrent-core = { path = "../vtorrent-core" }
+secp256k1 = { workspace = true }
+sha2 = { workspace = true }
+aes = { workspace = true }
+cbc = { workspace = true }
+pbkdf2 = { workspace = true }
+hmac = { workspace = true }
+rand = { workspace = true }
+bs58 = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+zeroize = { workspace = true }
+totp-rs = { workspace = true }
+
+[[bin]]
+name = "vtorrent-migrate"
+path = "src/main.rs"
