@@ -33,6 +33,7 @@
 ///   claim check <address>    Check if a legacy address has a claimable balance
 ///   claim submit <addr> <sig> Submit a legacy balance claim
 ///   metrics                  Show Prometheus metrics summary
+///   peers                    List connected P2P peers
 /// ```
 
 use std::process;
@@ -126,6 +127,8 @@ enum Commands {
     },
     /// Show Prometheus metrics summary.
     Metrics,
+    /// List connected P2P peers.
+    Peers,
 }
 
 #[derive(Subcommand, Debug)]
@@ -447,7 +450,7 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
             }
         },
 
-        Commands::Metrics => {
+         Commands::Metrics => {
             let text = client.get_text("/metrics")?;
             if cli.json {
                 // Parse metrics into JSON for --json mode
@@ -467,7 +470,15 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                 format::print_metrics(&text);
             }
         }
-    }
 
+        Commands::Peers => {
+            let data = client.get("/api/v1/peers")?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&data)?);
+            } else {
+                format::print_peers(&data);
+            }
+        }
+    }
     Ok(())
 }

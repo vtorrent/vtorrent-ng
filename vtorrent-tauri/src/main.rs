@@ -33,6 +33,10 @@ fn main() {
             commands::get_dex_orders,
             commands::place_dex_order,
             commands::cancel_dex_order,
+            // Staking
+            commands::start_staking,
+            commands::stop_staking,
+            commands::get_staking_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running vTorrent application");

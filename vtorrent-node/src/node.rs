@@ -7,7 +7,7 @@
 /// - Mempool (vtorrent-node)
 
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, Duration};
 
 use std::path::PathBuf;
@@ -111,6 +111,11 @@ pub struct Node {
     peer_fee_filters: std::collections::HashMap<std::net::SocketAddr, u64>,
     /// Per-peer last-seen ping nonce (for pong matching).
     peer_ping_nonces: std::collections::HashMap<std::net::SocketAddr, u64>,
+    /// Receiver for locally-submitted transactions (from RPC/wallet).
+    /// When a transaction is placed here, the node broadcasts it to all peers.
+    tx_submit_rx: mpsc::Receiver<Transaction>,
+    /// Sender half — cloned and given to AppState so RPC can inject transactions.
+    tx_submit_tx: mpsc::Sender<Transaction>,
 }
 
 impl Node {
@@ -120,6 +125,7 @@ impl Node {
         let best_height = chain.best_height();
         let mempool = Mempool::new(config.max_mempool);
         let peer_manager = PeerManager::with_testnet(best_height, &config.listen_addr, config.testnet);
+        let (tx_submit_tx, tx_submit_rx) = mpsc::channel(256);
 
         let staking = if config.staking_enabled {
             config.staking_address.as_ref().map(|addr| {
@@ -140,6 +146,8 @@ impl Node {
             compact_peers: std::collections::HashMap::new(),
             peer_fee_filters: std::collections::HashMap::new(),
             peer_ping_nonces: std::collections::HashMap::new(),
+            tx_submit_rx,
+            tx_submit_tx,
         })
     }
 
@@ -151,6 +159,7 @@ impl Node {
         let best_height = chain.best_height();
         let mempool = Mempool::new(config.max_mempool);
         let peer_manager = PeerManager::with_testnet(best_height, &config.listen_addr, config.testnet);
+        let (tx_submit_tx, tx_submit_rx) = mpsc::channel(256);
 
         let staking = if config.staking_enabled {
             config.staking_address.as_ref().map(|addr| {
@@ -171,6 +180,8 @@ impl Node {
             compact_peers: std::collections::HashMap::new(),
             peer_fee_filters: std::collections::HashMap::new(),
             peer_ping_nonces: std::collections::HashMap::new(),
+            tx_submit_rx,
+            tx_submit_tx,
         })
     }
 
@@ -191,6 +202,13 @@ impl Node {
     /// the node event channel to the RPC WebSocket broadcaster.
     pub fn set_event_sender(&mut self, tx: EventSender) {
         self.event_tx = Some(tx);
+    }
+
+    /// Returns a cloned sender that can be used to submit locally-created
+    /// transactions (e.g. from the RPC wallet) into the node's event loop.
+    /// The node will add them to the mempool and broadcast an `inv` to peers.
+    pub fn tx_submit_sender(&self) -> mpsc::Sender<Transaction> {
+        self.tx_submit_tx.clone()
     }
 
     /// Emit an event to all subscribers (best-effort; silently drops if no subscribers).
@@ -335,6 +353,34 @@ impl Node {
                 _ = dht_ticker.tick() => {
                     if self.config.use_dht {
                         self.dht_announce().await;
+                    }
+                }
+                // Locally-submitted transactions from RPC/wallet
+                Some(tx) = self.tx_submit_rx.recv() => {
+                    let txid = tx.txid();
+                    let fee_sats = tx.fee_sats();
+                    let mut mp = self.mempool.lock().await;
+                    match mp.add_transaction(tx) {
+                        Ok(()) => {
+                            self.emit(NodeEvent::TxUnconfirmed { txid, fee_sats });
+                            let payload = serde_json::to_vec(&InvMsg {
+                                items: vec![InvItem {
+                                    inv_type: InvType::Transaction,
+                                    hash: txid,
+                                }],
+                            }).unwrap_or_default();
+                            drop(mp);
+                            self.peer_manager.broadcast(
+                                NetMessage::new("inv", payload)
+                            ).await;
+                            tracing::info!(
+                                "Local tx {} added to mempool and announced to peers",
+                                hex::encode(txid)
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!("Local tx rejected by mempool: {}", e);
+                        }
                     }
                 }
             }
@@ -977,6 +1023,82 @@ impl Node {
                             item.inv_type,
                             hex::encode(item.hash)
                         );
+                    }
+                }
+            }
+
+            // ── getdata: serve blocks and transactions to requesting peers ──────
+            "getdata" => {
+                if let Ok(req) = serde_json::from_slice::<vtorrent_p2p::message::GetDataMsg>(&msg.payload) {
+                    for item in &req.items {
+                        match item.inv_type {
+                            InvType::Block => {
+                                let maybe_block = {
+                                    let chain = self.chain.lock().await;
+                                    chain.get_block(&item.hash).cloned()
+                                };
+                                if let Some(block) = maybe_block {
+                                    match serde_json::to_vec(&block) {
+                                        Ok(payload) => {
+                                            self.peer_manager.send_to(
+                                                peer_addr,
+                                                NetMessage::new("block", payload),
+                                            ).await;
+                                            tracing::debug!(
+                                                "getdata: served block {} to {}",
+                                                hex::encode(item.hash), peer_addr
+                                            );
+                                        }
+                                        Err(e) => tracing::warn!(
+                                            "getdata: failed to serialize block {}: {}",
+                                            hex::encode(item.hash), e
+                                        ),
+                                    }
+                                } else {
+                                    // Block not found — reply with notfound
+                                    let nf = serde_json::to_vec(&InvMsg {
+                                        items: vec![item.clone()],
+                                    }).unwrap_or_default();
+                                    self.peer_manager.send_to(
+                                        peer_addr,
+                                        NetMessage::new("notfound", nf),
+                                    ).await;
+                                }
+                            }
+                            InvType::Transaction => {
+                                let maybe_tx = {
+                                    let mp = self.mempool.lock().await;
+                                    mp.get_transaction(&item.hash).cloned()
+                                };
+                                if let Some(tx) = maybe_tx {
+                                    match serde_json::to_vec(&tx) {
+                                        Ok(payload) => {
+                                            self.peer_manager.send_to(
+                                                peer_addr,
+                                                NetMessage::new("tx", payload),
+                                            ).await;
+                                            tracing::debug!(
+                                                "getdata: served tx {} to {}",
+                                                hex::encode(item.hash), peer_addr
+                                            );
+                                        }
+                                        Err(e) => tracing::warn!(
+                                            "getdata: failed to serialize tx {}: {}",
+                                            hex::encode(item.hash), e
+                                        ),
+                                    }
+                                } else {
+                                    let nf = serde_json::to_vec(&InvMsg {
+                                        items: vec![item.clone()],
+                                    }).unwrap_or_default();
+                                    self.peer_manager.send_to(
+                                        peer_addr,
+                                        NetMessage::new("notfound", nf),
+                                    ).await;
+                                }
+                            }
+                            _ => {}
+                        }
                     }
                 }
             }

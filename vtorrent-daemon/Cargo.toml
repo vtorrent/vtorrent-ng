@@ -15,6 +15,7 @@ path = "src/main.rs"
 vtorrent-node     = { path = "../vtorrent-node" }
 vtorrent-rpc      = { path = "../vtorrent-rpc" }
 vtorrent-store    = { path = "../vtorrent-store" }
+vtorrent-spv      = { path = "../vtorrent-spv" }
 
 # Async runtime
 tokio             = { version = "1", features = ["full"] }
@@ -31,3 +32,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Encoding
 hex               = "0.4"
+
+[dev-dependencies]
+axum             = { version = "0.7", features = ["http1", "http2", "json", "tokio"] }
+tower            = { version = "0.4", features = ["util"] }
+serde_json       = "1"
+tokio            = { version = "1", features = ["full"] }

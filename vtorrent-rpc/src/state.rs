@@ -1,5 +1,6 @@
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
+use vtorrent_node::block::Transaction;
 use vtorrent_node::chain::Chain;
 use vtorrent_node::mempool::Mempool;
 use vtorrent_node::staking::StakingEngine;
@@ -7,6 +8,19 @@ use vtorrent_node::atomic_swap::SwapOrderBook;
 use vtorrent_torrent::session::SessionManager;
 use vtorrent_spv::SpvChain;
 use crate::ws::EventBroadcaster;
+
+/// Snapshot of a connected peer's metadata.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PeerInfo {
+    /// Socket address of the peer (e.g. `"1.2.3.4:22526"`).
+    pub addr: String,
+    /// Peer's self-reported user-agent string.
+    pub user_agent: String,
+    /// Peer's advertised service flags.
+    pub services: u64,
+    /// Peer's best known block height.
+    pub best_height: u32,
+}
 
 /// Shared application state for the RPC API server.
 ///
@@ -53,6 +67,11 @@ pub struct AppState {
     pub wallet_change_address: Arc<RwLock<Option<String>>>,
     /// Best block height reported by any connected peer (used for sync % calculation).
     pub best_peer_height: Arc<RwLock<u64>>,
+    /// Channel for submitting locally-created transactions into the node's event loop.
+    /// `None` when running in standalone/test mode (no live P2P node).
+    pub tx_submit: Option<mpsc::Sender<Transaction>>,
+    /// Live list of connected peers — updated by the daemon event bridge.
+    pub peer_list: Arc<RwLock<Vec<PeerInfo>>>,
 }
 
 impl AppState {
@@ -86,6 +105,8 @@ impl AppState {
             wallet_wif: Arc::new(RwLock::new(None)),
             wallet_change_address: Arc::new(RwLock::new(None)),
             best_peer_height: Arc::new(RwLock::new(0)),
+            tx_submit: None,
+            peer_list: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -115,6 +136,8 @@ impl AppState {
             wallet_wif: Arc::new(RwLock::new(None)),
             wallet_change_address: Arc::new(RwLock::new(None)),
             best_peer_height: Arc::new(RwLock::new(0)),
+            tx_submit: None,
+            peer_list: Arc::new(RwLock::new(Vec::new())),
         }
     }
 

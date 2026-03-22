@@ -54,6 +54,8 @@ pub fn build_router(state: AppState) -> Router {
         // SPV light client
         .route("/api/v1/spv/status", get(get_spv_status))
         .route("/api/v1/spv/headers", post(add_spv_headers))
+        // Peers
+        .route("/api/v1/peers", get(get_peers))
         // WebSocket event stream
         .route("/ws", get(ws_handler))
         // Prometheus metrics
@@ -205,6 +207,15 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["header_count"], 0);
         assert_eq!(body["best_height"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_peers_empty() {
+        let app = build_router(AppState::new());
+        let (status, body) = get(app, "/api/v1/peers").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["peers"].as_array().unwrap().is_empty());
+        assert_eq!(body["count"], 0);
     }
 
     #[tokio::test]

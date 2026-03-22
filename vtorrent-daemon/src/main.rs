@@ -32,6 +32,7 @@ use vtorrent_node::events as node_events;
 use vtorrent_rpc::{server::start_server, state::AppState};
 use vtorrent_rpc::ws::NodeEvent as RpcNodeEvent;
 use vtorrent_store::store::BlockStore;
+use vtorrent_spv::SpvHeader;
 
 // ─── CLI Arguments ────────────────────────────────────────────────────────────
 
@@ -156,7 +157,10 @@ async fn main() -> anyhow::Result<()> {
     // responses always reflect the current chain state.
     let chain_arc = node.chain_arc();
     let mempool_arc = node.mempool_arc();
-    let rpc_state = AppState::new_with_shared(chain_arc, mempool_arc);
+    let tx_submit_sender = node.tx_submit_sender();
+    let mut rpc_state = AppState::new_with_shared(chain_arc, mempool_arc);
+    // Wire the tx broadcast channel so RPC wallet can push txs into the P2P loop.
+    rpc_state.tx_submit = Some(tx_submit_sender);
     let rpc_addr = cli.rpc_addr.clone();
 
     // ── Wire node events → RPC WebSocket broadcaster + BlockStore ────────────
@@ -177,6 +181,8 @@ async fn main() -> anyhow::Result<()> {
         let best_peer_height_ref = Arc::clone(&rpc_state.best_peer_height);
         let peer_count_ref = Arc::clone(&rpc_state.peer_count);
         let syncing_ref = Arc::clone(&rpc_state.syncing);
+        let spv_chain_ref = Arc::clone(&rpc_state.spv_chain);
+        let peer_list_ref = Arc::clone(&rpc_state.peer_list);
 
         tokio::spawn(async move {
             loop {
@@ -201,6 +207,22 @@ async fn main() -> anyhow::Result<()> {
                                 tracing::error!("BlockStore::append_block failed at height {}: {}", height, e);
                             } else {
                                 tracing::debug!("Persisted block at height {}", height);
+                            }
+                            // ── Auto-feed SPV chain ───────────────────────────
+                            let spv_header = SpvHeader {
+                                version: block.header.version,
+                                prev_hash: block.header.prev_block_hash,
+                                merkle_root: block.header.merkle_root,
+                                timestamp: block.header.timestamp,
+                                bits: block.header.bits,
+                                nonce: block.header.nonce,
+                                height: *height,
+                            };
+                            {
+                                let mut spv = spv_chain_ref.write().await;
+                                if let Err(e) = spv.add_header(spv_header) {
+                                    tracing::debug!("SPV chain: could not add header at {}: {}", height, e);
+                                }
                             }
                         }
 
@@ -243,6 +265,19 @@ async fn main() -> anyhow::Result<()> {
                                         *best = h;
                                     }
                                 }
+                                // Update live peer list.
+                                {
+                                    use vtorrent_rpc::state::PeerInfo;
+                                    let mut peers = peer_list_ref.write().await;
+                                    if !peers.iter().any(|p| p.addr == addr.to_string()) {
+                                        peers.push(PeerInfo {
+                                            addr: addr.to_string(),
+                                            user_agent: user_agent.clone(),
+                                            services: 0,
+                                            best_height: *height,
+                                        });
+                                    }
+                                }
                                 Some(RpcNodeEvent::PeerConnected {
                                     addr: addr.to_string(),
                                     version: *version,
@@ -260,6 +295,11 @@ async fn main() -> anyhow::Result<()> {
                                         let mut syncing = syncing_ref.write().await;
                                         *syncing = true;
                                     }
+                                }
+                                // Remove from live peer list.
+                                {
+                                    let mut peers = peer_list_ref.write().await;
+                                    peers.retain(|p| p.addr != addr.to_string());
                                 }
                                 Some(RpcNodeEvent::PeerDisconnected {
                                     addr: addr.to_string(),

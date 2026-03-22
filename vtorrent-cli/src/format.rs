@@ -259,3 +259,30 @@ mod tests {
         print_node_info(&data);
     }
 }
+
+/// Print connected peers in a human-readable table.
+pub fn print_peers(data: &Value) {
+    let count = data["count"].as_u64().unwrap_or(0);
+    let peers = data["peers"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+
+    println!("{}", "Connected Peers".cyan().bold());
+    println!("{}", "─".repeat(72).dimmed());
+
+    if peers.is_empty() {
+        println!("{}", "  No peers connected.".dimmed());
+    } else {
+        println!("{:<36} {:<20} {:>8}  {}", 
+            "Address".bold(), "User Agent".bold(), "Height".bold(), "Services".bold());
+        println!("{}", "─".repeat(72).dimmed());
+        for peer in peers {
+            let addr = peer["addr"].as_str().unwrap_or("unknown");
+            let ua = peer["user_agent"].as_str().unwrap_or("unknown");
+            let height = peer["best_height"].as_u64().unwrap_or(0);
+            let services = peer["services"].as_u64().unwrap_or(0);
+            println!("{:<36} {:<20} {:>8}  {:#018x}", addr, ua, height, services);
+        }
+    }
+
+    println!("{}", "─".repeat(72).dimmed());
+    println!("{} {}", "Total:".cyan().bold(), count.to_string().white().bold());
+}

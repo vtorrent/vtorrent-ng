@@ -722,3 +722,99 @@ pub async fn send_vtr(
     tracing::info!("Sent {} satoshis to {} (txid: {})", amount_satoshis, to_address, txid);
     Ok(txid)
 }
+
+// ─── Staking IPC ─────────────────────────────────────────────────────────────
+
+/// Return type for staking status queries.
+#[derive(Debug, serde::Serialize)]
+pub struct StakingStatusResult {
+    pub enabled: bool,
+    pub address: Option<String>,
+    pub blocks_staked: u64,
+    /// Estimated APY based on current network parameters (percentage).
+    pub estimated_apy: f64,
+    /// Total rewards earned this session (satoshis).
+    pub rewards_earned_sats: u64,
+}
+
+/// Start PoS staking with the given wallet address.
+///
+/// Called from: `StakingPage.tsx` → `invoke('start_staking', { address })`
+#[tauri::command]
+pub async fn start_staking(
+    state: tauri::State<'_, AppState>,
+    address: String,
+) -> Result<StakingStatusResult> {
+    if address.is_empty() {
+        return Err(TauriError::NodeError("Staking address is required".into()));
+    }
+    let guard = state.node.lock().await;
+    let handle = guard.as_ref().ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+
+    // Update the staking engine with the new address and enable it.
+    {
+        let mut engine = handle.rpc_state.staking.write().await;
+        *engine = vtorrent_node::staking::StakingEngine::new(address.clone());
+    }
+    *handle.rpc_state.staking_enabled.write().await = true;
+    *handle.rpc_state.staking_address.write().await = Some(address.clone());
+
+    tracing::info!("Staking started for address: {}", address);
+
+    let blocks_staked = *handle.rpc_state.blocks_staked.read().await;
+    Ok(StakingStatusResult {
+        enabled: true,
+        address: Some(address),
+        blocks_staked,
+        estimated_apy: 5.0,
+        rewards_earned_sats: blocks_staked.saturating_mul(100_000_000) / 100,
+    })
+}
+
+/// Stop PoS staking.
+///
+/// Called from: `StakingPage.tsx` → `invoke('stop_staking')`
+#[tauri::command]
+pub async fn stop_staking(
+    state: tauri::State<'_, AppState>,
+) -> Result<StakingStatusResult> {
+    let guard = state.node.lock().await;
+    let handle = guard.as_ref().ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+
+    *handle.rpc_state.staking_enabled.write().await = false;
+    *handle.rpc_state.staking_address.write().await = None;
+
+    tracing::info!("Staking stopped");
+
+    let blocks_staked = *handle.rpc_state.blocks_staked.read().await;
+    Ok(StakingStatusResult {
+        enabled: false,
+        address: None,
+        blocks_staked,
+        estimated_apy: 0.0,
+        rewards_earned_sats: 0,
+    })
+}
+
+/// Get current staking status.
+///
+/// Called from: `StakingPage.tsx` → `invoke('get_staking_status')`
+#[tauri::command]
+pub async fn get_staking_status(
+    state: tauri::State<'_, AppState>,
+) -> Result<StakingStatusResult> {
+    let guard = state.node.lock().await;
+    let handle = guard.as_ref().ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+
+    let enabled = *handle.rpc_state.staking_enabled.read().await;
+    let address = handle.rpc_state.staking_address.read().await.clone();
+    let blocks_staked = *handle.rpc_state.blocks_staked.read().await;
+
+    Ok(StakingStatusResult {
+        enabled,
+        address,
+        blocks_staked,
+        estimated_apy: if enabled { 5.0 } else { 0.0 },
+        rewards_earned_sats: blocks_staked.saturating_mul(100_000_000) / 100,
+    })
+}

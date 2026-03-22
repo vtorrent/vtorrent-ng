@@ -276,14 +276,18 @@ pub async fn send_vtr(
     let fee_satoshis: u64 = utxos.iter().map(|u| u.value).sum::<u64>()
         .saturating_sub(tx.outputs.iter().map(|o| o.value).sum::<u64>());
 
-    // Add to local mempool.
+    // Add to local mempool and broadcast to P2P network.
     {
         let mut mempool = state.mempool.lock().await;
-        mempool.add_transaction(tx)
+        mempool.add_transaction(tx.clone())
             .map_err(|e| RpcError::BadRequest(format!("Mempool rejected transaction: {}", e)))?;
     }
+    // If a live P2P node is attached, submit the tx for network broadcast.
+    if let Some(ref sender) = state.tx_submit {
+        let _ = sender.try_send(tx);
+    }
 
-    tracing::info!("Transaction {} submitted to mempool ({} sats to {})", txid, req.amount_satoshis, req.to_address);
+    tracing::info!("Transaction {} submitted to mempool and broadcast ({} sats to {})", txid, req.amount_satoshis, req.to_address);
 
     Ok(Json(SendResponse {
         txid,
@@ -762,4 +766,23 @@ pub async fn add_spv_headers(
         best_height: chain.best_height(),
         best_hash,
     }))
+}
+
+// ─── Peers ────────────────────────────────────────────────────────────────────
+
+/// GET /api/v1/peers
+///
+/// Returns the list of currently connected P2P peers with their metadata.
+/// The list is updated live by the daemon event bridge on `PeerConnected` /
+/// `PeerDisconnected` events.
+pub async fn get_peers(State(state): State<Arc<AppState>>) -> RpcResult<Json<PeersResponse>> {
+    let peer_list = state.peer_list.read().await;
+    let peers: Vec<PeerInfoResponse> = peer_list.iter().map(|p| PeerInfoResponse {
+        addr: p.addr.clone(),
+        user_agent: p.user_agent.clone(),
+        services: p.services,
+        best_height: p.best_height,
+    }).collect();
+    let count = peers.len();
+    Ok(Json(PeersResponse { count, peers }))
 }

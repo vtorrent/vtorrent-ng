@@ -332,3 +332,19 @@ pub struct SuccessResponse {
     pub success: bool,
     pub message: String,
 }
+
+// ─── Peers ────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PeerInfoResponse {
+    pub addr: String,
+    pub user_agent: String,
+    pub services: u64,
+    pub best_height: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PeersResponse {
+    pub count: usize,
+    pub peers: Vec<PeerInfoResponse>,
+}
