@@ -51,9 +51,7 @@ impl BlockFilter {
         let n = scripts.len().max(1) as u64;
         let modulus = n.saturating_mul(1u64 << GCS_P);
 
-        let mut hashes: Vec<u64> = scripts.iter()
-            .map(|s| siphash(&key, s) % modulus)
-            .collect();
+        let mut hashes: Vec<u64> = scripts.iter().map(|s| siphash(&key, s) % modulus).collect();
 
         // Deduplicate and sort for GCS encoding
         hashes.sort_unstable();
@@ -62,7 +60,13 @@ impl BlockFilter {
         let n_elements = hashes.len() as u32;
         let filter_bytes = gcs_encode(&hashes, GCS_P);
 
-        Self { block_hash, height, filter_bytes, n_elements, key }
+        Self {
+            block_hash,
+            height,
+            filter_bytes,
+            n_elements,
+            key,
+        }
     }
 
     /// Test whether any of the given scripts match this filter.
@@ -191,7 +195,9 @@ fn gcs_decode(data: &[u8], n: usize, p: u8) -> Vec<u64> {
         let mut q = 0u64;
         while bits.read_bit() == 1 {
             q += 1;
-            if q > 1_000_000 { break; } // safety limit
+            if q > 1_000_000 {
+                break;
+            } // safety limit
         }
 
         // Read p-bit remainder
@@ -224,9 +230,11 @@ fn siphash(key: &[u8; 16], data: &[u8]) -> u64 {
     let blocks = length / 8;
 
     for i in 0..blocks {
-        m = u64::from_le_bytes(data[i*8..(i+1)*8].try_into().unwrap());
+        m = u64::from_le_bytes(data[i * 8..(i + 1) * 8].try_into().unwrap());
         v3 ^= m;
-        for _ in 0..2 { sip_round(&mut v0, &mut v1, &mut v2, &mut v3); }
+        for _ in 0..2 {
+            sip_round(&mut v0, &mut v1, &mut v2, &mut v3);
+        }
         v0 ^= m;
     }
 
@@ -237,29 +245,51 @@ fn siphash(key: &[u8; 16], data: &[u8]) -> u64 {
     }
 
     v3 ^= m;
-    for _ in 0..2 { sip_round(&mut v0, &mut v1, &mut v2, &mut v3); }
+    for _ in 0..2 {
+        sip_round(&mut v0, &mut v1, &mut v2, &mut v3);
+    }
     v0 ^= m;
 
     v2 ^= 0xff;
-    for _ in 0..4 { sip_round(&mut v0, &mut v1, &mut v2, &mut v3); }
+    for _ in 0..4 {
+        sip_round(&mut v0, &mut v1, &mut v2, &mut v3);
+    }
 
     v0 ^ v1 ^ v2 ^ v3
 }
 
 #[inline]
 fn sip_round(v0: &mut u64, v1: &mut u64, v2: &mut u64, v3: &mut u64) {
-    *v0 = v0.wrapping_add(*v1); *v1 = v1.rotate_left(13); *v1 ^= *v0; *v0 = v0.rotate_left(32);
-    *v2 = v2.wrapping_add(*v3); *v3 = v3.rotate_left(16); *v3 ^= *v2;
-    *v0 = v0.wrapping_add(*v3); *v3 = v3.rotate_left(21); *v3 ^= *v0;
-    *v2 = v2.wrapping_add(*v1); *v1 = v1.rotate_left(17); *v1 ^= *v2; *v2 = v2.rotate_left(32);
+    *v0 = v0.wrapping_add(*v1);
+    *v1 = v1.rotate_left(13);
+    *v1 ^= *v0;
+    *v0 = v0.rotate_left(32);
+    *v2 = v2.wrapping_add(*v3);
+    *v3 = v3.rotate_left(16);
+    *v3 ^= *v2;
+    *v0 = v0.wrapping_add(*v3);
+    *v3 = v3.rotate_left(21);
+    *v3 ^= *v0;
+    *v2 = v2.wrapping_add(*v1);
+    *v1 = v1.rotate_left(17);
+    *v1 ^= *v2;
+    *v2 = v2.rotate_left(32);
 }
 
 // ── Bit I/O helpers ───────────────────────────────────────────────────────────
 
-struct BitWriter { buf: Vec<u8>, bit_pos: u8 }
+struct BitWriter {
+    buf: Vec<u8>,
+    bit_pos: u8,
+}
 
 impl BitWriter {
-    fn new() -> Self { Self { buf: vec![0], bit_pos: 0 } }
+    fn new() -> Self {
+        Self {
+            buf: vec![0],
+            bit_pos: 0,
+        }
+    }
 
     fn write_bit(&mut self, bit: u8) {
         if self.bit_pos == 8 {
@@ -271,19 +301,36 @@ impl BitWriter {
         self.bit_pos += 1;
     }
 
-    fn finish(self) -> Vec<u8> { self.buf }
+    fn finish(self) -> Vec<u8> {
+        self.buf
+    }
 }
 
-struct BitReader<'a> { data: &'a [u8], byte_pos: usize, bit_pos: u8 }
+struct BitReader<'a> {
+    data: &'a [u8],
+    byte_pos: usize,
+    bit_pos: u8,
+}
 
 impl<'a> BitReader<'a> {
-    fn new(data: &'a [u8]) -> Self { Self { data, byte_pos: 0, bit_pos: 0 } }
+    fn new(data: &'a [u8]) -> Self {
+        Self {
+            data,
+            byte_pos: 0,
+            bit_pos: 0,
+        }
+    }
 
     fn read_bit(&mut self) -> u8 {
-        if self.byte_pos >= self.data.len() { return 0; }
+        if self.byte_pos >= self.data.len() {
+            return 0;
+        }
         let bit = (self.data[self.byte_pos] >> (7 - self.bit_pos)) & 1;
         self.bit_pos += 1;
-        if self.bit_pos == 8 { self.bit_pos = 0; self.byte_pos += 1; }
+        if self.bit_pos == 8 {
+            self.bit_pos = 0;
+            self.byte_pos += 1;
+        }
         bit
     }
 }
@@ -304,7 +351,7 @@ mod tests {
         let hash = [0xabu8; 20];
         let script = p2pkh_script(&hash);
         let block_hash = [1u8; 32];
-        let filter = BlockFilter::build(block_hash, 100, &[script.clone()]);
+        let filter = BlockFilter::build(block_hash, 100, std::slice::from_ref(&script));
         assert!(filter.match_any(&[script]));
     }
 
@@ -361,11 +408,13 @@ mod tests {
 
     #[test]
     fn test_filter_size_compact() {
-        let scripts: Vec<Vec<u8>> = (0..100u8).map(|i| {
-            let mut h = [0u8; 20];
-            h[0] = i;
-            p2pkh_script(&h)
-        }).collect();
+        let scripts: Vec<Vec<u8>> = (0..100u8)
+            .map(|i| {
+                let mut h = [0u8; 20];
+                h[0] = i;
+                p2pkh_script(&h)
+            })
+            .collect();
         let filter = BlockFilter::build([0u8; 32], 0, &scripts);
         // 100 scripts should produce a filter well under 1 KB
         assert!(filter.size_bytes() < 1024);

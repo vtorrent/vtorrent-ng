@@ -14,7 +14,6 @@
 ///
 /// The relay node simply forwards RELAY_REQUEST packets to the target as
 /// RELAY_FORWARD packets. If it cannot reach the target, it sends RELAY_DECLINE.
-
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -22,7 +21,6 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 
-use crate::endpoint::Endpoint;
 use crate::error::{OverlayError, Result};
 
 pub const TAG_RELAY_REQUEST: u8 = 0x10;
@@ -75,7 +73,10 @@ impl RelayEngine {
         // Check capacity
         if self.sessions.read().await.len() >= self.max_sessions {
             let decline = build_relay_decline(&data[1..33]);
-            self.socket.send_to(&decline, from).await.map_err(OverlayError::Io)?;
+            self.socket
+                .send_to(&decline, from)
+                .await
+                .map_err(OverlayError::Io)?;
             return Ok(());
         }
 
@@ -90,7 +91,10 @@ impl RelayEngine {
                 //  in practice the requester embeds their node ID in the payload)
                 fwd.extend_from_slice(&[0u8; 32]); // source placeholder
                 fwd.extend_from_slice(payload);
-                self.socket.send_to(&fwd, target_addr).await.map_err(OverlayError::Io)?;
+                self.socket
+                    .send_to(&fwd, target_addr)
+                    .await
+                    .map_err(OverlayError::Io)?;
 
                 // Record the session
                 let session = RelaySession {
@@ -99,11 +103,19 @@ impl RelayEngine {
                     requester_addr: from,
                 };
                 self.sessions.write().await.push(session);
-                tracing::debug!("Relaying {} bytes from {} to {}", payload.len(), from, target_addr);
+                tracing::debug!(
+                    "Relaying {} bytes from {} to {}",
+                    payload.len(),
+                    from,
+                    target_addr
+                );
             }
             None => {
                 let decline = build_relay_decline(&data[1..33]);
-                self.socket.send_to(&decline, from).await.map_err(OverlayError::Io)?;
+                self.socket
+                    .send_to(&decline, from)
+                    .await
+                    .map_err(OverlayError::Io)?;
             }
         }
 

@@ -21,14 +21,13 @@
 ///     }
 /// }
 /// ```
-
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::net::UdpSocket;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 use tokio::time::interval;
 
 use crate::crypto::NodeKeypair;
@@ -62,9 +61,9 @@ impl Default for OverlayConfig {
             listen_port: 0,
             key_file: None,
             max_relay_sessions: 20,
-            announce_interval: 600,   // 10 minutes
-            evict_interval: 300,      // 5 minutes
-            max_endpoint_age: 3600,   // 1 hour
+            announce_interval: 600, // 10 minutes
+            evict_interval: 300,    // 5 minutes
+            max_endpoint_age: 3600, // 1 hour
         }
     }
 }
@@ -78,18 +77,21 @@ pub enum OverlayEvent {
     PeerDisconnected(String),
     /// Our external address was discovered via STUN.
     ExternalAddrDiscovered(SocketAddr),
-    /// An encrypted data packet was received from a peer.
-    DataReceived { from_node_id: String, payload: Vec<u8> },
+    /// An authenticated and decrypted application packet was received from a peer.
+    DataReceived {
+        from_node_id: String,
+        payload: Vec<u8>,
+    },
 }
 
 /// The overlay network manager.
+#[derive(Clone)]
 pub struct Overlay {
     pub keypair: NodeKeypair,
     pub external_addr: Option<SocketAddr>,
     pub local_addr: SocketAddr,
     pub registry: EndpointRegistry,
     puncher: Arc<HolePuncher>,
-    relay: Arc<RelayEngine>,
     event_tx: mpsc::Sender<OverlayEvent>,
 }
 
@@ -119,7 +121,10 @@ impl Overlay {
                 Some(addr)
             }
             Err(e) => {
-                tracing::warn!("STUN discovery failed: {} — operating without external address", e);
+                tracing::warn!(
+                    "STUN discovery failed: {} — operating without external address",
+                    e
+                );
                 None
             }
         };
@@ -129,8 +134,7 @@ impl Overlay {
         // Build our own endpoint and register it
         let registry = EndpointRegistry::new();
         if let Some(ext) = external_addr {
-            let our_endpoint = Endpoint::new(keypair.node_id(), ext)
-                .with_lan(local_addr);
+            let our_endpoint = Endpoint::new(keypair.node_id(), ext).with_lan(local_addr);
             registry.upsert(our_endpoint, EndpointSource::Manual).await;
         }
 
@@ -163,7 +167,9 @@ impl Overlay {
 
         // Emit external addr event
         if let Some(addr) = external_addr {
-            let _ = event_tx.send(OverlayEvent::ExternalAddrDiscovered(addr)).await;
+            let _ = event_tx
+                .send(OverlayEvent::ExternalAddrDiscovered(addr))
+                .await;
         }
 
         let overlay = Self {
@@ -172,7 +178,6 @@ impl Overlay {
             local_addr,
             registry,
             puncher,
-            relay,
             event_tx,
         };
 
@@ -204,9 +209,8 @@ impl Overlay {
 
     /// Returns our overlay endpoint (for publishing to DHT/PEX).
     pub fn our_endpoint(&self) -> Option<Endpoint> {
-        self.external_addr.map(|addr| {
-            Endpoint::new(self.keypair.node_id(), addr).with_lan(self.local_addr)
-        })
+        self.external_addr
+            .map(|addr| Endpoint::new(self.keypair.node_id(), addr).with_lan(self.local_addr))
     }
 }
 
@@ -255,24 +259,36 @@ async fn receive_loop(
                 // engine can look up target peers by node-id and forward onion-routed
                 // messages to the correct socket address.
                 let all_endpoints = registry.all().await;
-                let peers: std::collections::HashMap<String, std::net::SocketAddr> =
-                    all_endpoints
-                        .into_iter()
-                        .map(|ep| (ep.node_id, ep.addr))
-                        .collect();
+                let peers: std::collections::HashMap<String, std::net::SocketAddr> = all_endpoints
+                    .into_iter()
+                    .map(|ep| (ep.node_id, ep.addr))
+                    .collect();
                 if let Err(e) = relay.handle_relay_request(from, data, &peers).await {
                     tracing::debug!("RELAY_REQUEST error from {}: {}", from, e);
                 }
             }
             crate::holepunch::TAG_DATA => {
-                // Encrypted data packet — emit to application layer
-                // (decryption happens in the application layer using the session key)
+                // Wire format: [tag | sender node ID (32 bytes) | encrypted payload].
+                // Only emit plaintext after the established session authenticates it.
                 if data.len() > 33 {
                     let node_id = hex::encode(&data[1..33]);
-                    let payload = data[33..].to_vec();
-                    let _ = event_tx
-                        .send(OverlayEvent::DataReceived { from_node_id: node_id, payload })
-                        .await;
+                    match puncher.decrypt_data(&node_id, &data[33..]).await {
+                        Ok(payload) => {
+                            let _ = event_tx
+                                .send(OverlayEvent::DataReceived {
+                                    from_node_id: node_id,
+                                    payload,
+                                })
+                                .await;
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                peer = %node_id,
+                                "Discarding unauthenticated overlay data: {}",
+                                e
+                            );
+                        }
+                    }
                 }
             }
             _ => {
@@ -307,8 +323,8 @@ fn load_or_generate_keypair(key_file: &Option<PathBuf>) -> Result<NodeKeypair> {
         None => Ok(NodeKeypair::generate()),
         Some(path) => {
             if path.exists() {
-                let bytes = std::fs::read(path)
-                    .map_err(|e| OverlayError::KeyFile(e.to_string()))?;
+                let bytes =
+                    std::fs::read(path).map_err(|e| OverlayError::KeyFile(e.to_string()))?;
                 if bytes.len() != 32 {
                     return Err(OverlayError::KeyFile("invalid key file length".into()));
                 }

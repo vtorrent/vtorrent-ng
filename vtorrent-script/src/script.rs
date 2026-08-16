@@ -1,7 +1,7 @@
 //! The `Script` type — a sequence of opcodes and push data.
 
-use serde::{Deserialize, Serialize};
 use crate::error::{Result, ScriptError};
+use serde::{Deserialize, Serialize};
 
 /// Maximum script size in bytes (Bitcoin Script limit).
 pub const MAX_SCRIPT_SIZE: usize = 10_000;
@@ -91,7 +91,10 @@ impl Script {
 
     /// Iterate over the script's items (opcodes and push data).
     pub fn iter(&self) -> ScriptIter<'_> {
-        ScriptIter { data: &self.0, pos: 0 }
+        ScriptIter {
+            data: &self.0,
+            pos: 0,
+        }
     }
 }
 
@@ -137,37 +140,57 @@ impl<'a> Iterator for ScriptIter<'a> {
             0x00 => Some(ScriptItem::PushData(&[])),
             1..=75 => {
                 let len = byte as usize;
-                if self.pos + len > self.data.len() { return None; }
+                if self.pos + len > self.data.len() {
+                    return None;
+                }
                 let data = &self.data[self.pos..self.pos + len];
                 self.pos += len;
                 Some(ScriptItem::PushData(data))
             }
-            0x4c => { // OP_PUSHDATA1
-                if self.pos >= self.data.len() { return None; }
+            0x4c => {
+                // OP_PUSHDATA1
+                if self.pos >= self.data.len() {
+                    return None;
+                }
                 let len = self.data[self.pos] as usize;
                 self.pos += 1;
-                if self.pos + len > self.data.len() { return None; }
+                if self.pos + len > self.data.len() {
+                    return None;
+                }
                 let data = &self.data[self.pos..self.pos + len];
                 self.pos += len;
                 Some(ScriptItem::PushData(data))
             }
-            0x4d => { // OP_PUSHDATA2
-                if self.pos + 2 > self.data.len() { return None; }
-                let len = u16::from_le_bytes([self.data[self.pos], self.data[self.pos+1]]) as usize;
+            0x4d => {
+                // OP_PUSHDATA2
+                if self.pos + 2 > self.data.len() {
+                    return None;
+                }
+                let len =
+                    u16::from_le_bytes([self.data[self.pos], self.data[self.pos + 1]]) as usize;
                 self.pos += 2;
-                if self.pos + len > self.data.len() { return None; }
+                if self.pos + len > self.data.len() {
+                    return None;
+                }
                 let data = &self.data[self.pos..self.pos + len];
                 self.pos += len;
                 Some(ScriptItem::PushData(data))
             }
-            0x4e => { // OP_PUSHDATA4
-                if self.pos + 4 > self.data.len() { return None; }
+            0x4e => {
+                // OP_PUSHDATA4
+                if self.pos + 4 > self.data.len() {
+                    return None;
+                }
                 let len = u32::from_le_bytes([
-                    self.data[self.pos], self.data[self.pos+1],
-                    self.data[self.pos+2], self.data[self.pos+3]
+                    self.data[self.pos],
+                    self.data[self.pos + 1],
+                    self.data[self.pos + 2],
+                    self.data[self.pos + 3],
                 ]) as usize;
                 self.pos += 4;
-                if self.pos + len > self.data.len() { return None; }
+                if self.pos + len > self.data.len() {
+                    return None;
+                }
                 let data = &self.data[self.pos..self.pos + len];
                 self.pos += len;
                 Some(ScriptItem::PushData(data))

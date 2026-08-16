@@ -1,7 +1,7 @@
-use secp256k1::PublicKey;
 use crate::crypto::{checksum, hash160};
 use crate::error::{CoreError, Result};
 use crate::keys::serialize_pubkey;
+use secp256k1::PublicKey;
 
 /// A P2PKH address (Pay-to-Public-Key-Hash).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -21,14 +21,15 @@ impl Address {
     }
 
     /// Decode a Base58Check-encoded address string.
-    pub fn from_str(s: &str) -> Result<Self> {
+    pub fn parse(s: &str) -> Result<Self> {
         let decoded = bs58::decode(s)
             .into_vec()
             .map_err(|_| CoreError::InvalidAddress(s.to_string()))?;
 
         if decoded.len() != 25 {
             return Err(CoreError::InvalidAddress(format!(
-                "Expected 25 bytes, got {}", decoded.len()
+                "Expected 25 bytes, got {}",
+                decoded.len()
             )));
         }
 
@@ -47,7 +48,7 @@ impl Address {
     }
 
     /// Encode the address to a Base58Check string.
-    pub fn to_string(&self) -> String {
+    fn encode(&self) -> String {
         let mut payload = Vec::with_capacity(21);
         payload.push(self.version);
         payload.extend_from_slice(&self.hash);
@@ -70,9 +71,17 @@ impl Address {
     }
 }
 
+impl std::str::FromStr for Address {
+    type Err = CoreError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        Self::parse(s)
+    }
+}
+
 impl std::fmt::Display for Address {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_string())
+        f.write_str(&self.encode())
     }
 }
 
@@ -85,13 +94,15 @@ mod tests {
     fn test_address_roundtrip() {
         // Create a dummy 20-byte hash
         let hash = [
-            0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
-            0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
-            0x89, 0xab, 0xcd, 0xef,
+            0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23,
+            0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
         ];
-        let addr = Address { hash, version: legacy::PUBKEY_ADDRESS_PREFIX };
+        let addr = Address {
+            hash,
+            version: legacy::PUBKEY_ADDRESS_PREFIX,
+        };
         let encoded = addr.to_string();
-        let decoded = Address::from_str(&encoded).expect("Decode failed");
+        let decoded: Address = encoded.parse().expect("Decode failed");
         assert_eq!(addr, decoded);
     }
 
@@ -101,6 +112,10 @@ mod tests {
         let hash = [0u8; 20];
         let addr = Address { hash, version: 70 };
         let encoded = addr.to_string();
-        assert!(encoded.starts_with('V'), "Expected 'V' prefix, got: {}", encoded);
+        assert!(
+            encoded.starts_with('V'),
+            "Expected 'V' prefix, got: {}",
+            encoded
+        );
     }
 }

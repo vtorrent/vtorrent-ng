@@ -3,13 +3,13 @@
 //! Executes a scriptSig + scriptPubKey pair and returns whether the combined
 //! script evaluates to true (i.e., the spending is valid).
 
-use sha2::{Digest, Sha256};
-use ripemd::Ripemd160;
-use secp256k1::{Secp256k1, Message, ecdsa::Signature, PublicKey};
 use crate::{
     error::{Result, ScriptError},
     script::{Script, ScriptItem},
 };
+use ripemd::Ripemd160;
+use secp256k1::{ecdsa::Signature, Message, PublicKey, Secp256k1};
+use sha2::{Digest, Sha256};
 
 /// Maximum stack depth.
 const MAX_STACK_DEPTH: usize = 1000;
@@ -106,133 +106,173 @@ impl Engine {
                 ScriptItem::Opcode(op) => {
                     match op {
                         // ── Flow control ─────────────────────────────────────
-                        0x63 => { // OP_IF
+                        0x63 => {
+                            // OP_IF
                             let val = if executing {
                                 let top = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
                                 is_true(&top)
-                            } else { false };
+                            } else {
+                                false
+                            };
                             if_stack.push(executing);
                             executing = executing && val;
                         }
-                        0x64 => { // OP_NOTIF
+                        0x64 => {
+                            // OP_NOTIF
                             let val = if executing {
                                 let top = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
                                 !is_true(&top)
-                            } else { false };
+                            } else {
+                                false
+                            };
                             if_stack.push(executing);
                             executing = executing && val;
                         }
-                        0x67 => { // OP_ELSE
+                        0x67 => {
+                            // OP_ELSE
                             let parent = if_stack.last().copied().unwrap_or(true);
                             executing = parent && !executing;
                         }
-                        0x68 => { // OP_ENDIF
+                        0x68 => {
+                            // OP_ENDIF
                             executing = if_stack.pop().unwrap_or(true);
                         }
                         0x61 => {} // OP_NOP — do nothing
-                        0x6a => { // OP_RETURN
+                        0x6a => {
+                            // OP_RETURN
                             return Err(ScriptError::OpReturnUnspendable);
                         }
-                        0x69 => { // OP_VERIFY
+                        0x69 => {
+                            // OP_VERIFY
                             if executing {
                                 let top = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
-                                if !is_true(&top) { return Err(ScriptError::VerifyFailed); }
+                                if !is_true(&top) {
+                                    return Err(ScriptError::VerifyFailed);
+                                }
                             }
                         }
 
                         // ── Stack ops ────────────────────────────────────────
-                        0x76 => { // OP_DUP
+                        0x76 => {
+                            // OP_DUP
                             if executing {
                                 let top = self.stack.last().ok_or(ScriptError::EmptyStack)?.clone();
                                 self.stack.push(top);
                             }
                         }
-                        0x75 => { // OP_DROP
-                            if executing { self.stack.pop().ok_or(ScriptError::EmptyStack)?; }
+                        0x75 => {
+                            // OP_DROP
+                            if executing {
+                                self.stack.pop().ok_or(ScriptError::EmptyStack)?;
+                            }
                         }
-                        0x7c => { // OP_SWAP
+                        0x7c => {
+                            // OP_SWAP
                             if executing {
                                 let len = self.stack.len();
-                                if len < 2 { return Err(ScriptError::EmptyStack); }
+                                if len < 2 {
+                                    return Err(ScriptError::EmptyStack);
+                                }
                                 self.stack.swap(len - 1, len - 2);
                             }
                         }
-                        0x79 => { // OP_OVER
+                        0x79 => {
+                            // OP_OVER
                             if executing {
                                 let len = self.stack.len();
-                                if len < 2 { return Err(ScriptError::EmptyStack); }
+                                if len < 2 {
+                                    return Err(ScriptError::EmptyStack);
+                                }
                                 let item = self.stack[len - 2].clone();
                                 self.stack.push(item);
                             }
                         }
-                        0x7b => { // OP_ROT
+                        0x7b => {
+                            // OP_ROT
                             if executing {
                                 let len = self.stack.len();
-                                if len < 3 { return Err(ScriptError::EmptyStack); }
+                                if len < 3 {
+                                    return Err(ScriptError::EmptyStack);
+                                }
                                 let item = self.stack.remove(len - 3);
                                 self.stack.push(item);
                             }
                         }
-                        0x6b => { // OP_TOALTSTACK
+                        0x6b => {
+                            // OP_TOALTSTACK
                             if executing {
                                 let top = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
                                 self.alt_stack.push(top);
                             }
                         }
-                        0x6c => { // OP_FROMALTSTACK
+                        0x6c => {
+                            // OP_FROMALTSTACK
                             if executing {
                                 let top = self.alt_stack.pop().ok_or(ScriptError::EmptyStack)?;
                                 self.stack.push(top);
                             }
                         }
-                        0x6e => { // OP_2DUP
+                        0x6e => {
+                            // OP_2DUP
                             if executing {
                                 let len = self.stack.len();
-                                if len < 2 { return Err(ScriptError::EmptyStack); }
-                                let a = self.stack[len-2].clone();
-                                let b = self.stack[len-1].clone();
+                                if len < 2 {
+                                    return Err(ScriptError::EmptyStack);
+                                }
+                                let a = self.stack[len - 2].clone();
+                                let b = self.stack[len - 1].clone();
                                 self.stack.push(a);
                                 self.stack.push(b);
                             }
                         }
-                        0x6d => { // OP_2DROP
+                        0x6d => {
+                            // OP_2DROP
                             if executing {
                                 self.stack.pop().ok_or(ScriptError::EmptyStack)?;
                                 self.stack.pop().ok_or(ScriptError::EmptyStack)?;
                             }
                         }
-                        0x73 => { // OP_IFDUP
+                        0x73 => {
+                            // OP_IFDUP
                             if executing {
                                 let top = self.stack.last().ok_or(ScriptError::EmptyStack)?.clone();
-                                if is_true(&top) { self.stack.push(top); }
+                                if is_true(&top) {
+                                    self.stack.push(top);
+                                }
                             }
                         }
 
                         // ── Bitwise / equality ───────────────────────────────
-                        0x87 => { // OP_EQUAL
+                        0x87 => {
+                            // OP_EQUAL
                             if executing {
                                 let b = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
                                 let a = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
                                 self.stack.push(bool_to_bytes(a == b));
                             }
                         }
-                        0x88 => { // OP_EQUALVERIFY
+                        0x88 => {
+                            // OP_EQUALVERIFY
                             if executing {
                                 let b = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
                                 let a = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
-                                if a != b { return Err(ScriptError::VerifyFailed); }
+                                if a != b {
+                                    return Err(ScriptError::VerifyFailed);
+                                }
                             }
                         }
 
                         // ── Crypto ───────────────────────────────────────────
-                        0xa8 => { // OP_SHA256
+                        0xa8 => {
+                            // OP_SHA256
                             if executing {
                                 let top = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
                                 let hash = Sha256::digest(&top).to_vec();
                                 self.stack.push(hash);
                             }
                         }
-                        0xa9 => { // OP_HASH160 (RIPEMD160(SHA256(x)))
+                        0xa9 => {
+                            // OP_HASH160 (RIPEMD160(SHA256(x)))
                             if executing {
                                 let top = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
                                 let sha = Sha256::digest(&top);
@@ -240,7 +280,8 @@ impl Engine {
                                 self.stack.push(hash);
                             }
                         }
-                        0xaa => { // OP_HASH256 (SHA256(SHA256(x)))
+                        0xaa => {
+                            // OP_HASH256 (SHA256(SHA256(x)))
                             if executing {
                                 let top = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
                                 let h1 = Sha256::digest(&top);
@@ -248,7 +289,8 @@ impl Engine {
                                 self.stack.push(h2);
                             }
                         }
-                        0xa6 => { // OP_RIPEMD160
+                        0xa6 => {
+                            // OP_RIPEMD160
                             if executing {
                                 let top = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
                                 let hash = Ripemd160::digest(&top).to_vec();
@@ -257,34 +299,41 @@ impl Engine {
                         }
 
                         // ── Signature verification ───────────────────────────
-                        0xac => { // OP_CHECKSIG
+                        0xac => {
+                            // OP_CHECKSIG
                             if executing {
-                                let pubkey_bytes = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
+                                let pubkey_bytes =
+                                    self.stack.pop().ok_or(ScriptError::EmptyStack)?;
                                 let sig_bytes = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
                                 let result = self.check_sig(&sig_bytes, &pubkey_bytes);
                                 self.stack.push(bool_to_bytes(result.is_ok()));
                             }
                         }
-                        0xad => { // OP_CHECKSIGVERIFY
+                        0xad => {
+                            // OP_CHECKSIGVERIFY
                             if executing {
-                                let pubkey_bytes = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
+                                let pubkey_bytes =
+                                    self.stack.pop().ok_or(ScriptError::EmptyStack)?;
                                 let sig_bytes = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
                                 self.check_sig(&sig_bytes, &pubkey_bytes)?;
                             }
                         }
-                        0xae => { // OP_CHECKMULTISIG
+                        0xae => {
+                            // OP_CHECKMULTISIG
                             if executing {
                                 self.exec_checkmultisig(false)?;
                             }
                         }
-                        0xaf => { // OP_CHECKMULTISIGVERIFY
+                        0xaf => {
+                            // OP_CHECKMULTISIGVERIFY
                             if executing {
                                 self.exec_checkmultisig(true)?;
                             }
                         }
 
                         // ── Timelock ─────────────────────────────────────────
-                        0xb1 => { // OP_CHECKLOCKTIMEVERIFY
+                        0xb1 => {
+                            // OP_CHECKLOCKTIMEVERIFY
                             if executing {
                                 let top = self.stack.last().ok_or(ScriptError::EmptyStack)?;
                                 let locktime = bytes_to_int(top) as u32;
@@ -295,21 +344,28 @@ impl Engine {
                         }
 
                         // ── Arithmetic ───────────────────────────────────────
-                        0x93 => { // OP_ADD
+                        0x93 => {
+                            // OP_ADD
                             if executing {
-                                let b = bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
-                                let a = bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let b =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let a =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
                                 self.stack.push(int_to_bytes(a + b));
                             }
                         }
-                        0x94 => { // OP_SUB
+                        0x94 => {
+                            // OP_SUB
                             if executing {
-                                let b = bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
-                                let a = bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let b =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let a =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
                                 self.stack.push(int_to_bytes(a - b));
                             }
                         }
-                        0x91 => { // OP_NOT
+                        0x91 => {
+                            // OP_NOT
                             if executing {
                                 let top = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
                                 self.stack.push(bool_to_bytes(!is_true(&top)));
@@ -318,20 +374,27 @@ impl Engine {
 
                         // ── Small integers ───────────────────────────────────
                         0x00 => {
-                            if executing { self.stack.push(vec![]); } // OP_0 = false
+                            if executing {
+                                self.stack.push(vec![]);
+                            } // OP_0 = false
                         }
-                        0x51..=0x60 => { // OP_1 through OP_16
+                        0x51..=0x60 => {
+                            // OP_1 through OP_16
                             if executing {
                                 let n = op - 0x50;
                                 self.stack.push(vec![n]);
                             }
                         }
-                        0x4f => { // OP_1NEGATE
-                            if executing { self.stack.push(vec![0x81]); }
+                        0x4f => {
+                            // OP_1NEGATE
+                            if executing {
+                                self.stack.push(vec![0x81]);
+                            }
                         }
 
                         // ── Size ─────────────────────────────────────────────
-                        0x82 => { // OP_SIZE
+                        0x82 => {
+                            // OP_SIZE
                             if executing {
                                 let len = self.stack.last().ok_or(ScriptError::EmptyStack)?.len();
                                 self.stack.push(int_to_bytes(len as i64));
@@ -368,15 +431,15 @@ impl Engine {
             sig_bytes
         };
 
-        let sig = Signature::from_der(sig_der)
-            .map_err(|_| ScriptError::InvalidSignature)?;
+        let sig = Signature::from_der(sig_der).map_err(|_| ScriptError::InvalidSignature)?;
 
-        let pubkey = PublicKey::from_slice(pubkey_bytes)
-            .map_err(|_| ScriptError::InvalidPublicKey)?;
+        let pubkey =
+            PublicKey::from_slice(pubkey_bytes).map_err(|_| ScriptError::InvalidPublicKey)?;
 
         let msg = Message::from_digest(self.env.tx_hash);
 
-        self.secp.verify_ecdsa(&msg, &sig, &pubkey)
+        self.secp
+            .verify_ecdsa(&msg, &sig, &pubkey)
             .map_err(|_| ScriptError::SignatureVerification)
     }
 
@@ -432,11 +495,15 @@ impl Engine {
 
 /// Returns true if the byte slice represents a truthy Script value.
 fn is_true(bytes: &[u8]) -> bool {
-    if bytes.is_empty() { return false; }
+    if bytes.is_empty() {
+        return false;
+    }
     // False if all bytes are zero, or if it's negative zero (0x80)
     for (i, &b) in bytes.iter().enumerate() {
         if i == bytes.len() - 1 {
-            if b & 0x7f != 0 { return true; }
+            if b & 0x7f != 0 {
+                return true;
+            }
         } else if b != 0 {
             return true;
         }
@@ -445,11 +512,17 @@ fn is_true(bytes: &[u8]) -> bool {
 }
 
 fn bool_to_bytes(b: bool) -> Vec<u8> {
-    if b { vec![1] } else { vec![] }
+    if b {
+        vec![1]
+    } else {
+        vec![]
+    }
 }
 
 fn bytes_to_int(bytes: &[u8]) -> i64 {
-    if bytes.is_empty() { return 0; }
+    if bytes.is_empty() {
+        return 0;
+    }
     let mut result = 0i64;
     for (i, &b) in bytes.iter().enumerate() {
         result |= (b as i64) << (8 * i);
@@ -463,7 +536,9 @@ fn bytes_to_int(bytes: &[u8]) -> i64 {
 }
 
 fn int_to_bytes(n: i64) -> Vec<u8> {
-    if n == 0 { return vec![]; }
+    if n == 0 {
+        return vec![];
+    }
     let mut abs = n.unsigned_abs();
     let negative = n < 0;
     let mut result = Vec::new();
@@ -488,9 +563,9 @@ fn is_p2sh(script: &Script) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::standard::{build_p2pkh, build_p2ms};
-    use secp256k1::{Secp256k1, SecretKey, Message};
-    use sha2::{Sha256, Digest};
+    use crate::standard::build_p2pkh;
+    use secp256k1::{Message, Secp256k1, SecretKey};
+    use sha2::{Digest, Sha256};
 
     fn make_keypair() -> (SecretKey, secp256k1::PublicKey) {
         let secp = Secp256k1::new();
@@ -529,9 +604,14 @@ mod tests {
         script_sig.push_data(&sig).unwrap();
         script_sig.push_data(&pk_bytes).unwrap();
 
-        let env = ScriptEnv { tx_hash, ..Default::default() };
+        let env = ScriptEnv {
+            tx_hash,
+            ..Default::default()
+        };
         let mut engine = Engine::new(env);
-        engine.execute(&script_sig, &script_pubkey).expect("P2PKH should be valid");
+        engine
+            .execute(&script_sig, &script_pubkey)
+            .expect("P2PKH should be valid");
     }
 
     #[test]
@@ -559,7 +639,10 @@ mod tests {
         script_sig.push_data(&sig).unwrap();
         script_sig.push_data(&pk_bytes).unwrap();
 
-        let env = ScriptEnv { tx_hash, ..Default::default() };
+        let env = ScriptEnv {
+            tx_hash,
+            ..Default::default()
+        };
         let mut engine = Engine::new(env);
         assert!(engine.execute(&script_sig, &script_pubkey).is_err());
     }
@@ -588,7 +671,9 @@ mod tests {
 
         let env = ScriptEnv::default();
         let mut engine = Engine::new(env);
-        engine.execute(&script_sig, &script_pubkey).expect("equal items should succeed");
+        engine
+            .execute(&script_sig, &script_pubkey)
+            .expect("equal items should succeed");
     }
 
     #[test]
@@ -623,12 +708,14 @@ mod tests {
         script_pubkey.push_opcode(0xa9); // OP_HASH160
         script_pubkey.push_data(&pubkey_hash).unwrap();
         script_pubkey.push_opcode(0x88); // OP_EQUALVERIFY
-        // Push true to leave stack non-empty
+                                         // Push true to leave stack non-empty
         script_pubkey.push_opcode(0x51); // OP_1
 
         let env = ScriptEnv::default();
         let mut engine = Engine::new(env);
-        engine.execute(&script_sig, &script_pubkey).expect("hash160 should match");
+        engine
+            .execute(&script_sig, &script_pubkey)
+            .expect("hash160 should match");
     }
 
     #[test]

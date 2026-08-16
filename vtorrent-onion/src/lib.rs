@@ -1,3 +1,4 @@
+pub mod addr;
 /// vtorrent-onion — Tor and I2P transport layer for vTorrent.
 ///
 /// Provides anonymous P2P routing by tunneling vTorrent P2P connections
@@ -32,17 +33,15 @@
 /// // Connect to a .onion address
 /// let stream = transport.connect("abcdef1234567890.onion:22526").await?;
 /// ```
-
 pub mod config;
 pub mod error;
-pub mod tor;
-pub mod i2p;
-pub mod transport;
 pub mod hidden_service;
-pub mod addr;
+pub mod i2p;
+pub mod tor;
+pub mod transport;
 
+pub use addr::OnionAddr;
 pub use config::TransportConfig;
 pub use error::OnionError;
-pub use transport::{OnionTransport, TransportMode};
 pub use hidden_service::HiddenServiceInfo;
-pub use addr::OnionAddr;
+pub use transport::{OnionTransport, TransportMode};

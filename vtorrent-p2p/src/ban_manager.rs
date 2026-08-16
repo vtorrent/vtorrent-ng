@@ -23,7 +23,6 @@
 /// | Bloom filter too large | 10 |
 /// | Stale block (>2h old) | 5 |
 /// | Unknown message type | 1 |
-
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
@@ -65,17 +64,17 @@ impl Misbehaviour {
     /// Returns the penalty score for this offence.
     pub fn score(self) -> u32 {
         match self {
-            Misbehaviour::InvalidBlockHeader  => 20,
-            Misbehaviour::InvalidBlock        => 20,
-            Misbehaviour::InvalidTransaction  => 10,
-            Misbehaviour::DuplicateInv        => 5,
-            Misbehaviour::OversizedMessage    => 20,
-            Misbehaviour::MalformedMessage    => 20,
-            Misbehaviour::InvalidPeerAddr     => 2,
+            Misbehaviour::InvalidBlockHeader => 20,
+            Misbehaviour::InvalidBlock => 20,
+            Misbehaviour::InvalidTransaction => 10,
+            Misbehaviour::DuplicateInv => 5,
+            Misbehaviour::OversizedMessage => 20,
+            Misbehaviour::MalformedMessage => 20,
+            Misbehaviour::InvalidPeerAddr => 2,
             Misbehaviour::BloomFilterTooLarge => 10,
-            Misbehaviour::StaleBlock          => 5,
-            Misbehaviour::UnknownMessage      => 1,
-            Misbehaviour::Custom(n)           => n,
+            Misbehaviour::StaleBlock => 5,
+            Misbehaviour::UnknownMessage => 1,
+            Misbehaviour::Custom(n) => n,
         }
     }
 }
@@ -105,8 +104,6 @@ struct PeerScore {
     score: u32,
     /// Number of offences recorded.
     offence_count: u32,
-    /// When the first offence was recorded.
-    first_seen: Instant,
     /// When the last offence was recorded.
     last_seen: Instant,
 }
@@ -114,7 +111,11 @@ struct PeerScore {
 impl PeerScore {
     fn new() -> Self {
         let now = Instant::now();
-        Self { score: 0, offence_count: 0, first_seen: now, last_seen: now }
+        Self {
+            score: 0,
+            offence_count: 0,
+            last_seen: now,
+        }
     }
 }
 
@@ -163,11 +164,17 @@ impl BanManager {
 
         tracing::debug!(
             "Peer {} misbehaviour: {:?} (+{} pts, total {})",
-            ip, offence, penalty, new_score
+            ip,
+            offence,
+            penalty,
+            new_score
         );
 
         if new_score >= self.ban_threshold {
-            self.ban_ip(ip, format!("Score {} >= threshold {}", new_score, self.ban_threshold));
+            self.ban_ip(
+                ip,
+                format!("Score {} >= threshold {}", new_score, self.ban_threshold),
+            );
             true
         } else {
             false
@@ -177,11 +184,14 @@ impl BanManager {
     /// Manually ban an IP address with a reason.
     pub fn ban_ip(&mut self, ip: IpAddr, reason: String) {
         tracing::warn!("Banning peer {}: {}", ip, reason);
-        self.bans.insert(ip, BanRecord {
-            banned_at: Instant::now(),
-            duration: self.ban_duration,
-            reason,
-        });
+        self.bans.insert(
+            ip,
+            BanRecord {
+                banned_at: Instant::now(),
+                duration: self.ban_duration,
+                reason,
+            },
+        );
         // Reset score after ban
         self.scores.remove(&ip);
     }
@@ -239,7 +249,8 @@ impl BanManager {
 
     /// Returns all currently banned IPs and their ban records.
     pub fn list_bans(&self) -> Vec<(IpAddr, &BanRecord)> {
-        self.bans.iter()
+        self.bans
+            .iter()
             .filter(|(_, ban)| !ban.is_expired())
             .map(|(ip, ban)| (*ip, ban))
             .collect()
@@ -247,9 +258,7 @@ impl BanManager {
 
     /// Returns the misbehaviour score for all tracked peers.
     pub fn list_scores(&self) -> Vec<(IpAddr, u32)> {
-        self.scores.iter()
-            .map(|(ip, s)| (*ip, s.score))
-            .collect()
+        self.scores.iter().map(|(ip, s)| (*ip, s.score)).collect()
     }
 }
 
@@ -302,8 +311,8 @@ mod tests {
     fn test_score_accumulates() {
         let mut mgr = BanManager::new(100, Duration::from_secs(3600));
         mgr.record_misbehaviour(ip(5), Misbehaviour::InvalidTransaction); // +10
-        mgr.record_misbehaviour(ip(5), Misbehaviour::DuplicateInv);       // +5
-        mgr.record_misbehaviour(ip(5), Misbehaviour::UnknownMessage);     // +1
+        mgr.record_misbehaviour(ip(5), Misbehaviour::DuplicateInv); // +5
+        mgr.record_misbehaviour(ip(5), Misbehaviour::UnknownMessage); // +1
         assert_eq!(mgr.score(ip(5)), 16);
     }
 

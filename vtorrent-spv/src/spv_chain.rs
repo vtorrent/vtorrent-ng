@@ -9,11 +9,11 @@
 //! - The chain must be monotonically increasing in height
 //! - The Merkle root in the header is used to verify transaction inclusion proofs
 
+use crate::error::{Result, SpvError};
+use crate::merkle::MerkleProof;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use crate::error::{Result, SpvError};
-use crate::merkle::MerkleProof;
 
 /// A compact block header (80 bytes on the wire, similar to Bitcoin).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -82,11 +82,10 @@ impl SpvChain {
         }
 
         // Validate chain linkage (skip for genesis block at height 0)
-        if header.height > 0 {
-            if !self.headers.contains_key(&header.prev_hash) {
+        if header.height > 0
+            && !self.headers.contains_key(&header.prev_hash) {
                 return Err(SpvError::UnknownParent(hex::encode(header.prev_hash)));
             }
-        }
 
         let height = header.height;
         self.headers.insert(hash, header);
@@ -137,12 +136,10 @@ impl SpvChain {
     /// Verify a Merkle inclusion proof against the header at the given block hash.
     ///
     /// Returns `Ok(())` if the transaction is proven to be in the block.
-    pub fn verify_tx_inclusion(
-        &self,
-        block_hash: &[u8; 32],
-        proof: &MerkleProof,
-    ) -> Result<()> {
-        let header = self.headers.get(block_hash)
+    pub fn verify_tx_inclusion(&self, block_hash: &[u8; 32], proof: &MerkleProof) -> Result<()> {
+        let header = self
+            .headers
+            .get(block_hash)
             .ok_or_else(|| SpvError::UnknownParent(hex::encode(block_hash)))?;
 
         proof.verify(&header.merkle_root)
@@ -172,9 +169,9 @@ impl SpvChain {
 
             // Skip `step - 1` headers
             for _ in 1..step {
-                current = current.and_then(|h| {
-                    self.headers.get(&h).map(|hdr| hdr.prev_hash)
-                }).filter(|h| h != &[0u8; 32]);
+                current = current
+                    .and_then(|h| self.headers.get(&h).map(|hdr| hdr.prev_hash))
+                    .filter(|h| h != &[0u8; 32]);
             }
         }
 
@@ -245,7 +242,13 @@ mod tests {
     fn test_verify_tx_inclusion() {
         use crate::merkle::MerkleTree;
 
-        let txids: Vec<[u8; 32]> = (0..4u8).map(|i| { let mut h = [0u8; 32]; h[0] = i; h }).collect();
+        let txids: Vec<[u8; 32]> = (0..4u8)
+            .map(|i| {
+                let mut h = [0u8; 32];
+                h[0] = i;
+                h
+            })
+            .collect();
         let tree = MerkleTree::build(&txids);
         let merkle_root = tree.root();
 

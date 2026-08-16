@@ -1,12 +1,11 @@
-/// vTorrent Node — the core consensus and blockchain management layer.
-
-pub mod error;
+pub mod atomic_swap;
 pub mod block;
 pub mod chain;
-pub mod mempool;
 pub mod consensus;
-pub mod genesis;
-pub mod staking;
-pub mod atomic_swap;
-pub mod node;
+/// vTorrent Node — the core consensus and blockchain management layer.
+pub mod error;
 pub mod events;
+pub mod genesis;
+pub mod mempool;
+pub mod node;
+pub mod staking;

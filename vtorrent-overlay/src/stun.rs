@@ -5,7 +5,6 @@
 ///
 /// We query multiple STUN servers in parallel and take the first response.
 /// No STUN library dependency — the binding request/response is ~20 bytes.
-
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -37,9 +36,7 @@ const MAPPED_ADDRESS: u16 = 0x0001;
 /// Binds to `bind_addr` (e.g. `0.0.0.0:0`), queries all STUN servers in
 /// parallel, and returns the first successful external address.
 pub async fn discover_external_addr(bind_addr: &str) -> Result<SocketAddr> {
-    let socket = UdpSocket::bind(bind_addr)
-        .await
-        .map_err(OverlayError::Io)?;
+    let socket = UdpSocket::bind(bind_addr).await.map_err(OverlayError::Io)?;
     let socket = std::sync::Arc::new(socket);
 
     // Try all STUN servers concurrently; return first success
@@ -167,7 +164,9 @@ fn parse_xor_mapped_address(data: &[u8]) -> Result<SocketAddr> {
         0x01 => {
             // IPv4
             if data.len() < 8 {
-                return Err(OverlayError::Stun("XOR-MAPPED-ADDRESS IPv4 too short".into()));
+                return Err(OverlayError::Stun(
+                    "XOR-MAPPED-ADDRESS IPv4 too short".into(),
+                ));
             }
             let xip = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
             let ip = xip ^ MAGIC_COOKIE;
@@ -211,7 +210,10 @@ mod tests {
         // Message length (no attributes)
         assert_eq!(u16::from_be_bytes([req[2], req[3]]), 0);
         // Magic cookie
-        assert_eq!(u32::from_be_bytes([req[4], req[5], req[6], req[7]]), MAGIC_COOKIE);
+        assert_eq!(
+            u32::from_be_bytes([req[4], req[5], req[6], req[7]]),
+            MAGIC_COOKIE
+        );
     }
 
     #[test]

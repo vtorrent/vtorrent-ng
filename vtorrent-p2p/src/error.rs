@@ -8,6 +8,9 @@ pub enum P2pError {
     #[error("Connection refused by peer: {0}")]
     ConnectionRefused(String),
 
+    #[error("Anonymous transport error: {0}")]
+    Transport(String),
+
     #[error("Protocol error: {0}")]
     Protocol(String),
 

@@ -2,7 +2,6 @@
 ///
 /// Parses the raw value bytes from the LevelDB chainstate into structured
 /// UTXO records, extracting the amount and output script.
-
 use crate::{
     error::{Result, SnapshotError},
     leveldb_reader::{decode_varint, decompress_amount, RawUtxo},
@@ -111,7 +110,9 @@ fn decode_script(script_type: u64, data: &[u8]) -> Result<Vec<u8>> {
         2 | 3 => {
             // Compressed P2PK: <33-byte-pubkey> OP_CHECKSIG
             if data.len() < 32 {
-                return Err(SnapshotError::BlockParse("P2PK compressed script too short".into()));
+                return Err(SnapshotError::BlockParse(
+                    "P2PK compressed script too short".into(),
+                ));
             }
             let mut script = Vec::with_capacity(35);
             script.push(0x21); // push 33 bytes
@@ -123,7 +124,9 @@ fn decode_script(script_type: u64, data: &[u8]) -> Result<Vec<u8>> {
         4 | 5 => {
             // Uncompressed P2PK: <65-byte-pubkey> OP_CHECKSIG
             if data.len() < 64 {
-                return Err(SnapshotError::BlockParse("P2PK uncompressed script too short".into()));
+                return Err(SnapshotError::BlockParse(
+                    "P2PK uncompressed script too short".into(),
+                ));
             }
             let mut script = Vec::with_capacity(67);
             script.push(0x41); // push 65 bytes
@@ -136,9 +139,11 @@ fn decode_script(script_type: u64, data: &[u8]) -> Result<Vec<u8>> {
             // Raw script: length is (script_type - 6) bytes
             let len = (script_type - 6) as usize;
             if data.len() < len {
-                return Err(SnapshotError::BlockParse(
-                    format!("Raw script too short: need {}, have {}", len, data.len())
-                ));
+                return Err(SnapshotError::BlockParse(format!(
+                    "Raw script too short: need {}, have {}",
+                    len,
+                    data.len()
+                )));
             }
             Ok(data[..len].to_vec())
         }
@@ -148,10 +153,7 @@ fn decode_script(script_type: u64, data: &[u8]) -> Result<Vec<u8>> {
 /// Derive a vTorrent address from a scriptPubKey.
 /// Only handles P2PKH (the most common type in the legacy chain).
 fn script_to_address(script: &[u8]) -> Option<String> {
-    use vtorrent_core::{
-        address::Address,
-        network::legacy,
-    };
+    use vtorrent_core::{address::Address, network::legacy};
 
     // P2PKH: 76 a9 14 <20-byte-hash> 88 ac
     if script.len() == 25
@@ -159,7 +161,8 @@ fn script_to_address(script: &[u8]) -> Option<String> {
         && script[1] == 0xa9  // OP_HASH160
         && script[2] == 0x14  // push 20 bytes
         && script[23] == 0x88 // OP_EQUALVERIFY
-        && script[24] == 0xac // OP_CHECKSIG
+        && script[24] == 0xac
+    // OP_CHECKSIG
     {
         let hash = &script[3..23];
         let addr = Address::from_hash160(hash, legacy::PUBKEY_ADDRESS_PREFIX);
@@ -170,7 +173,8 @@ fn script_to_address(script: &[u8]) -> Option<String> {
     if script.len() == 23
         && script[0] == 0xa9  // OP_HASH160
         && script[1] == 0x14  // push 20 bytes
-        && script[22] == 0x87 // OP_EQUAL
+        && script[22] == 0x87
+    // OP_EQUAL
     {
         let hash = &script[2..22];
         let addr = Address::from_hash160(hash, legacy::SCRIPT_ADDRESS_PREFIX);

@@ -16,7 +16,6 @@
 /// If either party fails to act, the timelock ensures funds are returned.
 ///
 /// This module implements the VTR side of the swap.
-
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -156,12 +155,10 @@ impl Htlc {
             )));
         }
 
-        let mut outputs = vec![
-            TxOutput {
-                value: self.amount,
-                script_pubkey: self.build_script(),
-            }
-        ];
+        let mut outputs = vec![TxOutput {
+            value: self.amount,
+            script_pubkey: self.build_script(),
+        }];
 
         // Change output
         let change = input_value - self.amount - fee;
@@ -201,7 +198,7 @@ impl Htlc {
         let hash = sha256(preimage);
         if hash != self.hash_lock {
             return Err(NodeError::AtomicSwap(
-                "Preimage does not match hash lock".into()
+                "Preimage does not match hash lock".into(),
             ));
         }
 
@@ -315,8 +312,12 @@ pub struct SwapOrder {
     pub target_asset: String,
     /// Amount of the target asset requested.
     pub target_amount: u64,
-    /// The HTLC hash lock (set when the maker creates the HTLC).
+    /// The HTLC hash lock (set when the maker creates the HTLC after matching).
     pub hash_lock: Option<[u8; 32]>,
+    /// The funding transaction ID once the maker's VTR HTLC is in the mempool.
+    pub funding_txid: Option<[u8; 32]>,
+    /// Secret preimage retained locally until the swap claim is executed.
+    pub preimage: Option<[u8; 32]>,
     /// Order expiry timestamp.
     pub expiry: u32,
     /// Order status.
@@ -328,7 +329,9 @@ pub struct SwapOrder {
 pub enum OrderStatus {
     /// Order is open and waiting for a taker.
     Open,
-    /// A taker has been found; HTLC is being set up.
+    /// Maker funding transaction is being built and admitted to the mempool.
+    Funding,
+    /// A taker has been found and the maker HTLC is funded.
     Matched,
     /// The swap is in progress (HTLCs are funded).
     InProgress,
@@ -368,6 +371,8 @@ impl SwapOrder {
             target_asset,
             target_amount,
             hash_lock: None,
+            funding_txid: None,
+            preimage: None,
             expiry: now + locktime_seconds,
             status: OrderStatus::Open,
         }
@@ -402,15 +407,17 @@ impl SwapOrderBook {
 
     /// List all open orders.
     pub fn list_open_orders(&self) -> Vec<&SwapOrder> {
-        self.orders.iter()
+        self.orders
+            .iter()
             .filter(|o| o.status == OrderStatus::Open)
             .collect()
     }
 
-    /// Cancel an order by hex-encoded order_id. Returns true if found.
+    /// Cancel an open order by hex-encoded order_id. Funded or in-progress
+    /// swaps must be settled through their HTLC path rather than cancelled.
     pub fn cancel_order(&mut self, id: &str) -> bool {
         for order in self.orders.iter_mut() {
-            if hex::encode(order.order_id) == id {
+            if hex::encode(order.order_id) == id && order.status == OrderStatus::Open {
                 order.status = OrderStatus::Cancelled;
                 return true;
             }
@@ -462,39 +469,51 @@ impl SwapOrderBook {
         count
     }
 
-    /// Match an open order with a taker.
-    ///
-    /// Generates a fresh preimage + hash_lock for the HTLC, marks the order as
-    /// `Matched`, and returns a `MatchResult` with all the parameters the taker
-    /// needs to proceed.
-    ///
-    /// Returns `None` if the order is not found or is not in `Open` status.
-    pub fn match_order(
+    /// Reserve an open order while the maker's HTLC funding transaction is built.
+    pub fn begin_funding(&mut self, order_id: &str) -> Option<SwapOrder> {
+        let order = self
+            .orders
+            .iter_mut()
+            .find(|o| hex::encode(o.order_id) == order_id && o.status == OrderStatus::Open)?;
+        order.status = OrderStatus::Funding;
+        Some(order.clone())
+    }
+
+    /// Return a funding reservation to the open order book after a local failure.
+    pub fn release_funding(&mut self, order_id: &str) -> bool {
+        let Some(order) = self
+            .orders
+            .iter_mut()
+            .find(|o| hex::encode(o.order_id) == order_id)
+        else {
+            return false;
+        };
+        if order.status != OrderStatus::Funding {
+            return false;
+        }
+        order.status = OrderStatus::Open;
+        true
+    }
+
+    /// Mark a reserved order as funded and matched after its HTLC funding
+    /// transaction has been accepted into the local mempool.
+    pub fn fund_and_match_order(
         &mut self,
         order_id: &str,
         taker_address: String,
+        preimage: [u8; 32],
+        hash_lock: [u8; 32],
+        funding_txid: [u8; 32],
     ) -> Option<MatchResult> {
-        // Find the order and verify it is open
-        let order = self.orders.iter_mut().find(|o| {
-            hex::encode(o.order_id) == order_id && o.status == OrderStatus::Open
-        })?;
+        let order = self
+            .orders
+            .iter_mut()
+            .find(|o| hex::encode(o.order_id) == order_id && o.status == OrderStatus::Funding)?;
 
-        // Generate a fresh preimage and hash_lock
-        use rand::RngCore;
-        let mut preimage = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut preimage);
-        let hash_lock = {
-            let mut hasher = Sha256::new();
-            Digest::update(&mut hasher, &preimage);
-            let result = Digest::finalize(hasher);
-            let mut out = [0u8; 32];
-            out.copy_from_slice(&result);
-            out
-        };
-
-        // Update the order
         order.status = OrderStatus::Matched;
         order.hash_lock = Some(hash_lock);
+        order.preimage = Some(preimage);
+        order.funding_txid = Some(funding_txid);
         let matched_order = order.clone();
 
         Some(MatchResult {
@@ -505,16 +524,34 @@ impl SwapOrderBook {
         })
     }
 
+    /// Legacy in-memory matcher retained for callers without a funding wallet.
+    /// Production RPC flow uses `fund_and_match_order` after on-chain funding.
+    pub fn match_order(&mut self, order_id: &str, taker_address: String) -> Option<MatchResult> {
+        let swap = AtomicSwap::new();
+        self.begin_funding(order_id)?;
+        self.fund_and_match_order(
+            order_id,
+            taker_address,
+            swap.preimage,
+            swap.hash_lock,
+            [0u8; 32],
+        )
+    }
+
     /// List all orders for a specific maker address.
     pub fn orders_by_maker(&self, maker_address: &str) -> Vec<&SwapOrder> {
-        self.orders.iter()
+        self.orders
+            .iter()
             .filter(|o| o.maker_address == maker_address)
             .collect()
     }
 
     /// Count open orders.
     pub fn open_order_count(&self) -> usize {
-        self.orders.iter().filter(|o| o.status == OrderStatus::Open).count()
+        self.orders
+            .iter()
+            .filter(|o| o.status == OrderStatus::Open)
+            .count()
     }
 }
 
@@ -537,6 +574,12 @@ pub struct AtomicSwap {
     pub hash_lock: [u8; 32],
 }
 
+impl Default for AtomicSwap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AtomicSwap {
     pub fn new() -> Self {
         use rand::RngCore;
@@ -544,13 +587,16 @@ impl AtomicSwap {
         rand::thread_rng().fill_bytes(&mut preimage);
         let hash_lock = {
             let mut hasher = Sha256::new();
-            hasher.update(&preimage);
+            hasher.update(preimage);
             let result = hasher.finalize();
             let mut out = [0u8; 32];
             out.copy_from_slice(&result);
             out
         };
-        AtomicSwap { preimage, hash_lock }
+        AtomicSwap {
+            preimage,
+            hash_lock,
+        }
     }
 }
 
@@ -618,7 +664,8 @@ mod tests {
             "VU3QSqAqM7tP3QXZ8sT7v8sQSdAxUZvqdS".to_string(),
             DEFAULT_HTLC_LOCKTIME,
             100_000_000, // 1 VTR
-        ).unwrap()
+        )
+        .unwrap()
     }
 
     #[test]
@@ -648,11 +695,12 @@ mod tests {
             "VU3QSqAqM7tP3QXZ8sT7v8sQSdAxUZvqdS".to_string(),
             DEFAULT_HTLC_LOCKTIME,
             100_000_000,
-        ).unwrap();
+        )
+        .unwrap();
         let script = htlc.build_script();
         // hash_lock should appear in the script
         let script_hex = hex::encode(&script);
-        let hash_hex = hex::encode(&hash_lock);
+        let hash_hex = hex::encode(hash_lock);
         assert!(script_hex.contains(&hash_hex));
     }
 
@@ -660,13 +708,7 @@ mod tests {
     fn test_htlc_wrong_preimage_rejected() {
         let htlc = make_htlc();
         let wrong_preimage = [99u8; 32];
-        let result = htlc.build_claim_tx(
-            [0u8; 32],
-            &wrong_preimage,
-            &[0u8; 33],
-            &[0u8; 71],
-            1000,
-        );
+        let result = htlc.build_claim_tx([0u8; 32], &wrong_preimage, &[0u8; 33], &[0u8; 71], 1000);
         assert!(result.is_err());
     }
 
@@ -701,7 +743,7 @@ mod tests {
             "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string(),
             1_000_000_000, // 10 VTR
             "BTC".to_string(),
-            100_000,       // 0.001 BTC
+            100_000, // 0.001 BTC
             DEFAULT_HTLC_LOCKTIME,
         );
         assert_eq!(order.status, OrderStatus::Open);
@@ -710,12 +752,41 @@ mod tests {
     }
 
     #[test]
+    fn test_funding_reservation_records_htlc_transaction() {
+        let mut book = SwapOrderBook::new();
+        let order = SwapOrder::new(
+            "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string(),
+            1_000_000,
+            "BTC".to_string(),
+            100_000,
+            DEFAULT_HTLC_LOCKTIME,
+        );
+        let order_id = hex::encode(order.order_id);
+        book.add_order(order);
+
+        assert!(book.begin_funding(&order_id).is_some());
+        assert!(!book.cancel_order(&order_id));
+        let matched = book
+            .fund_and_match_order(
+                &order_id,
+                "VU3QSqAqM7tP3QXZ8sT7v8sQSdAxUZvqdS".to_string(),
+                [7u8; 32],
+                [8u8; 32],
+                [9u8; 32],
+            )
+            .expect("funding reservation should complete");
+        assert_eq!(matched.order.status, OrderStatus::Matched);
+        assert_eq!(matched.order.funding_txid, Some([9u8; 32]));
+        assert_eq!(matched.order.hash_lock, Some([8u8; 32]));
+    }
+
+    #[test]
     fn test_swap_order_rate() {
         let order = SwapOrder::new(
             "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string(),
             1_000_000_000, // 10 VTR
             "BTC".to_string(),
-            1_000_000,     // 0.01 BTC
+            1_000_000, // 0.01 BTC
             DEFAULT_HTLC_LOCKTIME,
         );
         // rate = 1_000_000 / 1_000_000_000 = 0.001

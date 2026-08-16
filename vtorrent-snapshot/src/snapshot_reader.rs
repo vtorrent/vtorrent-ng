@@ -4,7 +4,6 @@
 /// This is used by the wallet import wizard to show users their claimable balance.
 ///
 /// In the final client build, the snapshot is embedded via `include_bytes!()`.
-
 use crate::{
     error::{Result, SnapshotError},
     utxo_set::{SnapshotEntry, SnapshotMetadata, UtxoSnapshot},
@@ -21,7 +20,9 @@ pub fn load_binary(path: &std::path::Path) -> Result<UtxoSnapshot> {
 /// Parse a snapshot from raw binary bytes (for use with `include_bytes!()`).
 pub fn parse_binary(data: &[u8]) -> Result<UtxoSnapshot> {
     if data.len() < 4 || &data[..4] != MAGIC {
-        return Err(SnapshotError::Serialization("Invalid snapshot magic bytes".into()));
+        return Err(SnapshotError::Serialization(
+            "Invalid snapshot magic bytes".into(),
+        ));
     }
 
     let mut cursor = 4usize;
@@ -29,9 +30,16 @@ pub fn parse_binary(data: &[u8]) -> Result<UtxoSnapshot> {
     macro_rules! read_u32 {
         () => {{
             if cursor + 4 > data.len() {
-                return Err(SnapshotError::Serialization("Unexpected end of snapshot".into()));
+                return Err(SnapshotError::Serialization(
+                    "Unexpected end of snapshot".into(),
+                ));
             }
-            let v = u32::from_le_bytes([data[cursor], data[cursor+1], data[cursor+2], data[cursor+3]]);
+            let v = u32::from_le_bytes([
+                data[cursor],
+                data[cursor + 1],
+                data[cursor + 2],
+                data[cursor + 3],
+            ]);
             cursor += 4;
             v
         }};
@@ -40,11 +48,19 @@ pub fn parse_binary(data: &[u8]) -> Result<UtxoSnapshot> {
     macro_rules! read_u64 {
         () => {{
             if cursor + 8 > data.len() {
-                return Err(SnapshotError::Serialization("Unexpected end of snapshot".into()));
+                return Err(SnapshotError::Serialization(
+                    "Unexpected end of snapshot".into(),
+                ));
             }
             let v = u64::from_le_bytes([
-                data[cursor], data[cursor+1], data[cursor+2], data[cursor+3],
-                data[cursor+4], data[cursor+5], data[cursor+6], data[cursor+7],
+                data[cursor],
+                data[cursor + 1],
+                data[cursor + 2],
+                data[cursor + 3],
+                data[cursor + 4],
+                data[cursor + 5],
+                data[cursor + 6],
+                data[cursor + 7],
             ]);
             cursor += 8;
             v
@@ -57,7 +73,9 @@ pub fn parse_binary(data: &[u8]) -> Result<UtxoSnapshot> {
 
     // Read 32-byte hash
     if cursor + 32 > data.len() {
-        return Err(SnapshotError::Serialization("Unexpected end of snapshot (hash)".into()));
+        return Err(SnapshotError::Serialization(
+            "Unexpected end of snapshot (hash)".into(),
+        ));
     }
     let entries_hash = hex::encode(&data[cursor..cursor + 32]);
     cursor += 32;
@@ -69,7 +87,9 @@ pub fn parse_binary(data: &[u8]) -> Result<UtxoSnapshot> {
 
     for _ in 0..entry_count {
         if cursor >= data.len() {
-            return Err(SnapshotError::Serialization("Unexpected end of entries".into()));
+            return Err(SnapshotError::Serialization(
+                "Unexpected end of entries".into(),
+            ));
         }
 
         let addr_len = data[cursor] as usize;
@@ -109,7 +129,7 @@ pub fn parse_binary(data: &[u8]) -> Result<UtxoSnapshot> {
 
 /// Verify the integrity of a loaded snapshot by recomputing the entries hash.
 pub fn verify_integrity(snapshot: &UtxoSnapshot) -> Result<()> {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
 
     let mut hasher = Sha256::new();
     for entry in &snapshot.entries {
@@ -131,13 +151,24 @@ pub fn verify_integrity(snapshot: &UtxoSnapshot) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{snapshot_writer::write_binary, utxo_set::{SnapshotEntry, SnapshotMetadata, UtxoSnapshot}};
+    use crate::{
+        snapshot_writer::write_binary,
+        utxo_set::{SnapshotEntry, SnapshotMetadata, UtxoSnapshot},
+    };
 
     fn make_test_snapshot() -> UtxoSnapshot {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let entries = vec![
-            SnapshotEntry { address: "VAddr1".into(), balance: 100_000_000, utxo_count: 1 },
-            SnapshotEntry { address: "VAddr2".into(), balance: 200_000_000, utxo_count: 2 },
+            SnapshotEntry {
+                address: "VAddr1".into(),
+                balance: 100_000_000,
+                utxo_count: 1,
+            },
+            SnapshotEntry {
+                address: "VAddr2".into(),
+                balance: 200_000_000,
+                utxo_count: 2,
+            },
         ];
         let mut hasher = Sha256::new();
         for e in &entries {

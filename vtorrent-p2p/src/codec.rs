@@ -6,14 +6,13 @@
 ///   [4 bytes: payload_length (LE)]
 ///   [4 bytes: checksum (first 4 bytes of SHA256d(payload))]
 ///   [N bytes: payload]
-
 use bytes::{Buf, BufMut, BytesMut};
+use sha2::{Digest, Sha256};
 use tokio_util::codec::{Decoder, Encoder};
-use sha2::{Sha256, Digest};
 
 use crate::{
-    error::{P2pError, Result},
-    message::{NetMessage, NETWORK_MAGIC, MAX_PAYLOAD_SIZE},
+    error::P2pError,
+    message::{NetMessage, MAX_PAYLOAD_SIZE, NETWORK_MAGIC},
 };
 
 /// Header size: magic(4) + command(12) + length(4) + checksum(4) = 24 bytes.
@@ -22,7 +21,7 @@ const HEADER_SIZE: usize = 24;
 /// Compute the 4-byte message checksum (first 4 bytes of SHA256d).
 fn message_checksum(payload: &[u8]) -> [u8; 4] {
     let first = Sha256::digest(payload);
-    let second = Sha256::digest(&first);
+    let second = Sha256::digest(first);
     [second[0], second[1], second[2], second[3]]
 }
 
@@ -33,14 +32,17 @@ impl Decoder for VtrCodec {
     type Item = NetMessage;
     type Error = P2pError;
 
-    fn decode(&mut self, src: &mut BytesMut) -> std::result::Result<Option<Self::Item>, Self::Error> {
+    fn decode(
+        &mut self,
+        src: &mut BytesMut,
+    ) -> std::result::Result<Option<Self::Item>, Self::Error> {
         // Need at least a full header
         if src.len() < HEADER_SIZE {
             return Ok(None);
         }
 
         // Check magic bytes
-        if &src[..4] != &NETWORK_MAGIC {
+        if src[..4] != NETWORK_MAGIC {
             return Err(P2pError::Protocol(format!(
                 "Invalid magic: {:02x}{:02x}{:02x}{:02x}",
                 src[0], src[1], src[2], src[3]
@@ -52,7 +54,8 @@ impl Decoder for VtrCodec {
 
         if payload_len > MAX_PAYLOAD_SIZE as usize {
             return Err(P2pError::Protocol(format!(
-                "Payload too large: {} bytes", payload_len
+                "Payload too large: {} bytes",
+                payload_len
             )));
         }
 
@@ -89,7 +92,11 @@ impl Decoder for VtrCodec {
 impl Encoder<NetMessage> for VtrCodec {
     type Error = P2pError;
 
-    fn encode(&mut self, msg: NetMessage, dst: &mut BytesMut) -> std::result::Result<(), Self::Error> {
+    fn encode(
+        &mut self,
+        msg: NetMessage,
+        dst: &mut BytesMut,
+    ) -> std::result::Result<(), Self::Error> {
         let checksum = message_checksum(&msg.payload);
         let payload_len = msg.payload.len() as u32;
 
@@ -121,8 +128,13 @@ mod tests {
         let mut codec = VtrCodec;
         let mut buf = BytesMut::new();
 
-        codec.encode(original.clone(), &mut buf).expect("Encode failed");
-        let decoded = codec.decode(&mut buf).expect("Decode failed").expect("No message");
+        codec
+            .encode(original.clone(), &mut buf)
+            .expect("Encode failed");
+        let decoded = codec
+            .decode(&mut buf)
+            .expect("Decode failed")
+            .expect("No message");
 
         assert_eq!(decoded.command_str(), "ping");
         assert_eq!(decoded.payload, b"test payload");

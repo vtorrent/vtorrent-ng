@@ -14,14 +14,13 @@
 ///   0x01  PUNCH      — "I am here, please open your NAT"
 ///   0x02  PUNCH_ACK  — "I received your PUNCH, hole is open"
 ///   0x03  DATA       — encrypted application data
-
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::net::UdpSocket;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use tokio::time::{sleep, timeout};
 
 use crate::crypto::{ephemeral_dh, NodeKeypair, SharedKey};
@@ -98,8 +97,8 @@ impl HolePuncher {
     /// Punch to a specific address.
     async fn punch_addr(&self, remote: &Endpoint, addr: SocketAddr) -> Result<()> {
         // Generate ephemeral DH keypair for this session
-        let remote_pubkey_bytes = hex::decode(&remote.node_id)
-            .map_err(|e| OverlayError::Crypto(e.to_string()))?;
+        let remote_pubkey_bytes =
+            hex::decode(&remote.node_id).map_err(|e| OverlayError::Crypto(e.to_string()))?;
         if remote_pubkey_bytes.len() != 32 {
             return Err(OverlayError::Crypto("invalid remote node ID length".into()));
         }
@@ -178,7 +177,10 @@ impl HolePuncher {
         let mut ack = Vec::with_capacity(33);
         ack.push(TAG_PUNCH_ACK);
         ack.extend_from_slice(&our_eph_pub);
-        self.socket.send_to(&ack, from).await.map_err(OverlayError::Io)?;
+        self.socket
+            .send_to(&ack, from)
+            .await
+            .map_err(OverlayError::Io)?;
 
         let node_id = hex::encode(remote_pubkey);
         let shared_key = SharedKey::from_raw(session_key_bytes);
@@ -203,12 +205,16 @@ impl HolePuncher {
             .ok_or_else(|| OverlayError::PeerNotFound(node_id.to_string()))?;
 
         session.send_counter += 1;
-        let ct = session
-            .shared_key
-            .encrypt(session.send_counter, &session.remote_pubkey, payload)?;
+        let ct =
+            session
+                .shared_key
+                .encrypt(session.send_counter, &session.remote_pubkey, payload)?;
 
-        let mut pkt = Vec::with_capacity(1 + ct.len());
+        // Include our static node ID so the receiver can select the correct
+        // established session before authenticating and decrypting the packet.
+        let mut pkt = Vec::with_capacity(1 + 32 + ct.len());
         pkt.push(TAG_DATA);
+        pkt.extend_from_slice(self.local_keypair.public.as_bytes());
         pkt.extend_from_slice(&ct);
 
         self.socket
@@ -216,6 +222,17 @@ impl HolePuncher {
             .await
             .map_err(OverlayError::Io)?;
         Ok(())
+    }
+
+    /// Decrypt application data received from a connected peer.
+    ///
+    /// The packet must be the encrypted payload after the outer `TAG_DATA` byte.
+    pub async fn decrypt_data(&self, node_id: &str, packet: &[u8]) -> Result<Vec<u8>> {
+        let sessions = self.sessions.read().await;
+        let session = sessions
+            .get(node_id)
+            .ok_or_else(|| OverlayError::PeerNotFound(node_id.to_string()))?;
+        session.shared_key.decrypt(&session.remote_pubkey, packet)
     }
 
     /// Returns true if a session exists for the given node ID.

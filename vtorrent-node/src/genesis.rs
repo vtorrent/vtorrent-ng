@@ -12,7 +12,6 @@
 ///   Addresses:     59,375
 ///   UTXOs:         79,586
 ///   Transactions:  3,431,559
-
 use crate::block::{Block, BlockHeader, Transaction, TxOutput, TxType};
 
 /// The genesis block message.
@@ -59435,12 +59434,10 @@ pub fn create_genesis_block() -> Block {
         version: 1,
         tx_type: TxType::Coinbase,
         inputs: vec![],
-        outputs: vec![
-            TxOutput {
-                value: 0,
-                script_pubkey: GENESIS_MESSAGE.as_bytes().to_vec(),
-            }
-        ],
+        outputs: vec![TxOutput {
+            value: 0,
+            script_pubkey: GENESIS_MESSAGE.as_bytes().to_vec(),
+        }],
         lock_time: 0,
         claim_address: None,
         claim_signature: None,
@@ -59483,7 +59480,10 @@ pub fn create_genesis_block() -> Block {
     };
     header.merkle_root = temp_block.compute_merkle_root();
 
-    Block { header, transactions }
+    Block {
+        header,
+        transactions,
+    }
 }
 
 /// Look up the claimable balance for a legacy address in the snapshot.

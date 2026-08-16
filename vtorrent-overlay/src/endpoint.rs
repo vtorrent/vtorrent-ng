@@ -2,7 +2,6 @@
 /// and its reachable network address (UDP socket address).
 ///
 /// This is what gets published to the DHT and exchanged via PEX addr messages.
-
 use std::fmt;
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -95,10 +94,7 @@ mod tests {
     use super::*;
 
     fn make_endpoint() -> Endpoint {
-        Endpoint::new(
-            "a".repeat(64),
-            "1.2.3.4:22526".parse().unwrap(),
-        )
+        Endpoint::new("a".repeat(64), "1.2.3.4:22526".parse().unwrap())
     }
 
     #[test]

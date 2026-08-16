@@ -1,4 +1,4 @@
-/// Network parameters for vTorrent chains.
+//! Network parameters for vTorrent chains.
 
 /// Legacy vTorrent network parameters (original chain, pre-revival).
 /// These are used exclusively for parsing and migrating old wallet.dat files.

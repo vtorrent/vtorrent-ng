@@ -20,16 +20,15 @@
 /// - End-to-end encrypted (WireGuard-equivalent crypto, pure Rust userspace)
 /// - Falls back to TCP relay through a mutual peer when UDP is blocked
 /// - Node identity is a Curve25519 public key (32 bytes)
-
 pub mod crypto;
 pub mod endpoint;
-pub mod stun;
-pub mod holepunch;
-pub mod rendezvous;
-pub mod relay;
-pub mod overlay;
 pub mod error;
+pub mod holepunch;
+pub mod overlay;
+pub mod relay;
+pub mod rendezvous;
+pub mod stun;
 
-pub use overlay::{Overlay, OverlayConfig, OverlayEvent};
 pub use endpoint::Endpoint;
 pub use error::OverlayError;
+pub use overlay::{Overlay, OverlayConfig, OverlayEvent};

@@ -1,7 +1,6 @@
 /// Block and transaction data structures for the vTorrent 2.0 chain.
-
 use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 /// A transaction input.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -66,7 +65,7 @@ impl Transaction {
     pub fn txid(&self) -> [u8; 32] {
         let serialized = bincode::serialize(self).unwrap_or_default();
         let first = Sha256::digest(&serialized);
-        let second = Sha256::digest(&first);
+        let second = Sha256::digest(first);
         let mut hash = [0u8; 32];
         hash.copy_from_slice(&second);
         hash
@@ -113,12 +112,12 @@ impl Transaction {
     pub fn serialized_size(&self) -> usize {
         // Base: 4 (version) + 4 (lock_time) + 1 (tx_type)
         let base = 9usize;
-        let inputs_size: usize = self.inputs.iter()
+        let inputs_size: usize = self
+            .inputs
+            .iter()
             .map(|i| 32 + 4 + 4 + i.script_sig.len())
             .sum();
-        let outputs_size: usize = self.outputs.iter()
-            .map(|o| 8 + o.script_pubkey.len())
-            .sum();
+        let outputs_size: usize = self.outputs.iter().map(|o| 8 + o.script_pubkey.len()).sum();
         base + inputs_size + outputs_size
     }
 
@@ -166,7 +165,7 @@ impl BlockHeader {
     pub fn hash(&self) -> [u8; 32] {
         let serialized = bincode::serialize(self).unwrap_or_default();
         let first = Sha256::digest(&serialized);
-        let second = Sha256::digest(&first);
+        let second = Sha256::digest(first);
         let mut hash = [0u8; 32];
         hash.copy_from_slice(&second);
         hash
@@ -199,12 +198,10 @@ impl Block {
             return [0u8; 32];
         }
 
-        let mut hashes: Vec<[u8; 32]> = self.transactions.iter()
-            .map(|tx| tx.txid())
-            .collect();
+        let mut hashes: Vec<[u8; 32]> = self.transactions.iter().map(|tx| tx.txid()).collect();
 
         while hashes.len() > 1 {
-            if hashes.len() % 2 != 0 {
+            if !hashes.len().is_multiple_of(2) {
                 hashes.push(*hashes.last().unwrap());
             }
             let mut next = Vec::with_capacity(hashes.len() / 2);
@@ -212,8 +209,8 @@ impl Block {
                 let mut combined = [0u8; 64];
                 combined[..32].copy_from_slice(&chunk[0]);
                 combined[32..].copy_from_slice(&chunk[1]);
-                let first = Sha256::digest(&combined);
-                let second = Sha256::digest(&first);
+                let first = Sha256::digest(combined);
+                let second = Sha256::digest(first);
                 let mut hash = [0u8; 32];
                 hash.copy_from_slice(&second);
                 next.push(hash);
@@ -227,7 +224,8 @@ impl Block {
     /// Get the height of this block (stored in the coinbase tx's lock_time for PoW,
     /// or in the coinstake for PoS — simplified here).
     pub fn height(&self) -> u32 {
-        self.transactions.first()
+        self.transactions
+            .first()
             .map(|tx| tx.lock_time)
             .unwrap_or(0)
     }
@@ -243,7 +241,10 @@ mod tests {
             version: 1,
             tx_type: TxType::Coinbase,
             inputs: vec![],
-            outputs: vec![TxOutput { value: 100, script_pubkey: vec![] }],
+            outputs: vec![TxOutput {
+                value: 100,
+                script_pubkey: vec![],
+            }],
             lock_time: 0,
             claim_address: None,
             claim_signature: None,

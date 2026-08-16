@@ -1,10 +1,10 @@
+use crate::error::{Result, TorrentError};
+use crate::incentive::{aggregate_summary, IncentiveSummary, PeerBandwidthAccount};
+use crate::metainfo::Metainfo;
+use crate::tracker::TrackerPeer;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
-use crate::error::{Result, TorrentError};
-use crate::metainfo::Metainfo;
-use crate::incentive::{PeerBandwidthAccount, IncentiveSummary, aggregate_summary};
-use crate::tracker::TrackerPeer;
 
 /// The state of a torrent session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,7 +117,8 @@ impl TorrentSession {
     /// Record bytes downloaded from a peer.
     pub fn record_download(&mut self, peer_address: &str, bytes: u64) {
         self.bytes_downloaded = self.bytes_downloaded.saturating_add(bytes);
-        let account = self.incentive_accounts
+        let account = self
+            .incentive_accounts
             .entry(peer_address.to_string())
             .or_insert_with(|| PeerBandwidthAccount::new(peer_address.to_string()));
         account.record_download(bytes);
@@ -126,7 +127,8 @@ impl TorrentSession {
     /// Record bytes uploaded to a peer.
     pub fn record_upload(&mut self, peer_address: &str, bytes: u64) {
         self.bytes_uploaded = self.bytes_uploaded.saturating_add(bytes);
-        let account = self.incentive_accounts
+        let account = self
+            .incentive_accounts
             .entry(peer_address.to_string())
             .or_insert_with(|| PeerBandwidthAccount::new(peer_address.to_string()));
         account.record_upload(bytes);
@@ -161,7 +163,9 @@ pub struct SessionManager {
 
 impl SessionManager {
     pub fn new() -> Self {
-        SessionManager { sessions: HashMap::new() }
+        SessionManager {
+            sessions: HashMap::new(),
+        }
     }
 
     /// Add a new session and return its ID.
@@ -173,13 +177,15 @@ impl SessionManager {
 
     /// Get a session by ID.
     pub fn get_session(&self, id: &str) -> Result<&TorrentSession> {
-        self.sessions.get(id)
+        self.sessions
+            .get(id)
             .ok_or_else(|| TorrentError::SessionNotFound(id.to_string()))
     }
 
     /// Get a mutable session by ID.
     pub fn get_session_mut(&mut self, id: &str) -> Result<&mut TorrentSession> {
-        self.sessions.get_mut(id)
+        self.sessions
+            .get_mut(id)
             .ok_or_else(|| TorrentError::SessionNotFound(id.to_string()))
     }
 
@@ -191,7 +197,7 @@ impl SessionManager {
     /// List all sessions.
     pub fn list_sessions(&self) -> Vec<&TorrentSession> {
         let mut sessions: Vec<_> = self.sessions.values().collect();
-        sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.created_at));
         sessions
     }
 
@@ -202,7 +208,8 @@ impl SessionManager {
 
     /// Total VTR earned across all sessions (in satoshis).
     pub fn total_earned_satoshis(&self) -> u64 {
-        self.sessions.values()
+        self.sessions
+            .values()
             .map(|s| s.incentive_summary().total_earned_satoshis)
             .sum()
     }
@@ -250,7 +257,8 @@ mod tests {
 
     #[test]
     fn test_session_progress() {
-        let mut session = TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+        let mut session =
+            TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
         assert_eq!(session.progress(), 0.0);
         session.bytes_downloaded = 512 * 1024 * 1024; // 512 MB
         assert!((session.progress() - 50.0).abs() < 0.001);
@@ -261,7 +269,8 @@ mod tests {
     #[test]
     fn test_session_manager_add_get() {
         let mut manager = SessionManager::new();
-        let session = TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+        let session =
+            TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
         let id = manager.add_session(session);
         assert!(manager.get_session(&id).is_ok());
         assert!(manager.get_session("nonexistent").is_err());
@@ -283,11 +292,14 @@ mod tests {
 
     #[test]
     fn test_record_upload_download() {
-        let mut session = TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+        let mut session =
+            TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
         session.record_download("VH6w62jDRYpYHjR2eJjFzXRC4MQvvs93a6", 100 * 1024 * 1024);
         session.record_upload("VH6w62jDRYpYHjR2eJjFzXRC4MQvvs93a6", 50 * 1024 * 1024);
         assert_eq!(session.bytes_downloaded, 100 * 1024 * 1024);
         assert_eq!(session.bytes_uploaded, 50 * 1024 * 1024);
-        assert!(session.incentive_accounts.contains_key("VH6w62jDRYpYHjR2eJjFzXRC4MQvvs93a6"));
+        assert!(session
+            .incentive_accounts
+            .contains_key("VH6w62jDRYpYHjR2eJjFzXRC4MQvvs93a6"));
     }
 }

@@ -13,14 +13,16 @@
 //! and stack semantics. This ensures compatibility with existing tooling and
 //! allows future extension to full Script support.
 
+pub mod engine;
 pub mod error;
 pub mod opcode;
 pub mod script;
-pub mod engine;
 pub mod standard;
 
+pub use engine::{Engine, ScriptEnv};
 pub use error::ScriptError;
 pub use opcode::Opcode;
 pub use script::Script;
-pub use engine::{Engine, ScriptEnv};
-pub use standard::{ScriptType, classify_script, build_p2pkh, build_p2sh, build_p2ms, build_htlc, build_op_return};
+pub use standard::{
+    build_htlc, build_op_return, build_p2ms, build_p2pkh, build_p2sh, classify_script, ScriptType,
+};

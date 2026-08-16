@@ -15,13 +15,13 @@
 //!   each) and validates proof-of-work/proof-of-stake without storing full blocks.
 
 pub mod bloom;
-pub mod merkle;
-pub mod filter;
-pub mod spv_chain;
 pub mod error;
+pub mod filter;
+pub mod merkle;
+pub mod spv_chain;
 
 pub use bloom::BloomFilter;
-pub use merkle::{MerkleProof, MerkleTree};
-pub use filter::{BlockFilter, FilterMatcher};
-pub use spv_chain::{SpvChain, SpvHeader};
 pub use error::SpvError;
+pub use filter::{BlockFilter, FilterMatcher};
+pub use merkle::{MerkleProof, MerkleTree};
+pub use spv_chain::{SpvChain, SpvHeader};

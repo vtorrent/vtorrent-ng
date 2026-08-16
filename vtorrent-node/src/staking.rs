@@ -8,12 +8,11 @@
 ///
 /// The stake kernel check is a simplified version of the PPCoin protocol.
 /// A full implementation would use the stake modifier from the chain.
-
 use crate::{
     block::{Block, BlockHeader, Transaction, TxInput, TxOutput, TxType},
     chain::Utxo,
     consensus::{
-        compute_pos_reward, COIN, MAX_SUPPLY, MIN_STAKE_AGE, MIN_STAKE_AMOUNT, TARGET_BLOCK_TIME,
+        compute_pos_reward, MIN_STAKE_AGE, MIN_STAKE_AMOUNT,
     },
 };
 
@@ -41,7 +40,8 @@ impl StakingEngine {
         pending_txs: Vec<Transaction>,
     ) -> Option<Block> {
         // Filter eligible UTXOs
-        let eligible: Vec<&Utxo> = utxos.iter()
+        let eligible: Vec<&Utxo> = utxos
+            .iter()
             .filter(|u| self.is_eligible(u, timestamp))
             .collect();
 
@@ -54,12 +54,8 @@ impl StakingEngine {
         for utxo in &eligible {
             if let Some(coinstake) = self.try_stake_kernel(utxo, timestamp, height) {
                 // Build the full block
-                let block = self.assemble_block(
-                    prev_hash,
-                    timestamp,
-                    coinstake,
-                    pending_txs.clone(),
-                );
+                let block =
+                    self.assemble_block(prev_hash, timestamp, coinstake, pending_txs.clone());
                 tracing::info!(
                     "Found stake kernel: utxo {}:{} at height {}",
                     hex::encode(utxo.txid),
@@ -94,31 +90,29 @@ impl StakingEngine {
     /// The stake kernel hash must be below the target (proportional to stake amount).
     /// This is a simplified version — a production implementation would use
     /// the full PPCoin stake modifier chain.
-    fn try_stake_kernel(
-        &self,
-        utxo: &Utxo,
-        timestamp: u32,
-        height: u32,
-    ) -> Option<Transaction> {
+    fn try_stake_kernel(&self, utxo: &Utxo, timestamp: u32, height: u32) -> Option<Transaction> {
         use sha2::{Digest, Sha256};
 
         // Compute the stake kernel hash:
         // kernel = SHA256d(txid || vout || timestamp)
         let mut hasher = Sha256::new();
-        hasher.update(&utxo.txid);
+        hasher.update(utxo.txid);
         hasher.update(utxo.vout.to_le_bytes());
         hasher.update(timestamp.to_le_bytes());
         let first = hasher.finalize();
 
         let mut hasher2 = Sha256::new();
-        hasher2.update(&first);
+        hasher2.update(first);
         let kernel_hash = hasher2.finalize();
 
         // Target: proportional to stake value (more coins = easier to stake)
         // target = MAX_U256 * stake_value / (TARGET_BLOCK_TIME * COIN)
         // Simplified: accept if first 4 bytes of kernel < stake_value / 1000
         let kernel_val = u32::from_le_bytes([
-            kernel_hash[0], kernel_hash[1], kernel_hash[2], kernel_hash[3]
+            kernel_hash[0],
+            kernel_hash[1],
+            kernel_hash[2],
+            kernel_hash[3],
         ]);
         let target = (utxo.value / 1000).min(u32::MAX as u64) as u32;
 
@@ -202,7 +196,10 @@ impl StakingEngine {
         };
         header.merkle_root = temp_block.compute_merkle_root();
 
-        Block { header, transactions }
+        Block {
+            header,
+            transactions,
+        }
     }
 
     /// Build the stake script (scriptSig for the coinstake input).
@@ -281,7 +278,7 @@ impl StakingEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chain::Utxo;
+    use crate::{chain::Utxo, consensus::COIN};
 
     fn make_utxo(value: u64, age_seconds: u32) -> Utxo {
         let now = 1_700_000_000u32;
@@ -312,7 +309,10 @@ mod tests {
     #[test]
     fn test_ineligible_utxo_too_small() {
         let engine = StakingEngine::new("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string());
-        let utxo = make_utxo(MIN_STAKE_AMOUNT / 2, (MIN_STAKE_AGE as u32).saturating_add(3600));
+        let utxo = make_utxo(
+            MIN_STAKE_AMOUNT / 2,
+            (MIN_STAKE_AGE as u32).saturating_add(3600),
+        );
         assert!(!engine.is_eligible(&utxo, 1_700_000_000));
     }
 

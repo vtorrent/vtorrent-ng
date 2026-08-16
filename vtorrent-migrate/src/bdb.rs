@@ -1,13 +1,3 @@
-/// Pure-Rust BerkeleyDB B-tree page parser.
-///
-/// BerkeleyDB wallet.dat files use the B-tree access method.
-/// This parser reads the raw page data and extracts all key-value records
-/// without requiring the BerkeleyDB library to be installed.
-///
-/// Reference: BerkeleyDB internal file format documentation and
-/// the bitcoin-wallet tool by Jonas Schnelli.
-
-use std::io::{Cursor, Read};
 use crate::error::{MigrateError, Result};
 use crate::types::RawRecord;
 
@@ -18,8 +8,6 @@ const BDB_MAGIC: u32 = 0x00053162;
 const P_LBTREE: u8 = 5;
 /// BerkeleyDB overflow page type.
 const P_OVERFLOW: u8 = 7;
-/// BerkeleyDB internal B-tree page type.
-const P_IBTREE: u8 = 3;
 
 /// Parse all key-value records from a BerkeleyDB wallet.dat file.
 pub fn parse_wallet(data: &[u8]) -> Result<Vec<RawRecord>> {
@@ -41,7 +29,7 @@ pub fn parse_wallet(data: &[u8]) -> Result<Vec<RawRecord>> {
 
     // Page size is at offset 20 in the metadata page.
     let page_size = u32::from_le_bytes([data[20], data[21], data[22], data[23]]);
-    if page_size < 512 || page_size > 65536 || (page_size & (page_size - 1)) != 0 {
+    if !(512..=65536).contains(&page_size) || (page_size & (page_size - 1)) != 0 {
         return Err(MigrateError::UnsupportedPageSize(page_size));
     }
 
@@ -50,17 +38,18 @@ pub fn parse_wallet(data: &[u8]) -> Result<Vec<RawRecord>> {
     let mut records = Vec::new();
 
     // Collect overflow page data indexed by page number
-    let mut overflow_pages: std::collections::HashMap<u32, Vec<u8>> = std::collections::HashMap::new();
-    
+    let mut overflow_pages: std::collections::HashMap<u32, Vec<u8>> =
+        std::collections::HashMap::new();
+
     // First pass: collect overflow pages
     for page_idx in 0..num_pages {
         let page_start = page_idx * page_size;
         let page = &data[page_start..page_start + page_size];
-        
+
         if page.len() < 26 {
             continue;
         }
-        
+
         let page_type = page[25];
         if page_type == P_OVERFLOW {
             let page_num = u32::from_le_bytes([page[4], page[5], page[6], page[7]]);
@@ -104,10 +93,9 @@ pub fn parse_wallet(data: &[u8]) -> Result<Vec<RawRecord>> {
 
         let mut entry_offsets = Vec::with_capacity(num_entries);
         for i in 0..num_entries {
-            let off = u16::from_le_bytes([
-                page[offsets_start + i * 2],
-                page[offsets_start + i * 2 + 1],
-            ]) as usize;
+            let off =
+                u16::from_le_bytes([page[offsets_start + i * 2], page[offsets_start + i * 2 + 1]])
+                    as usize;
             entry_offsets.push(off);
         }
 
@@ -216,7 +204,7 @@ mod tests {
         let mut data = vec![3u8]; // length = 3
         data.extend_from_slice(b"key");
         data.extend_from_slice(&[0x04; 65]); // fake uncompressed pubkey
-        
+
         let result = decode_record_type(&data);
         assert!(result.is_some());
         let (type_str, rest) = result.unwrap();
@@ -229,7 +217,7 @@ mod tests {
         let mut data = vec![4u8]; // length = 4
         data.extend_from_slice(b"mkey");
         data.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // master key id = 1
-        
+
         let result = decode_record_type(&data);
         assert!(result.is_some());
         let (type_str, _) = result.unwrap();

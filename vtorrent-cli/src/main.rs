@@ -1,3 +1,7 @@
+use anyhow::Result;
+use clap::{Parser, Subcommand};
+use colored::Colorize;
+use serde_json::Value;
 /// vtorrent-cli — Command-line wallet and node control tool for vTorrent.
 ///
 /// Communicates with a running `vtorrent-daemon` via the JSON-RPC API.
@@ -35,12 +39,7 @@
 ///   metrics                  Show Prometheus metrics summary
 ///   peers                    List connected P2P peers
 /// ```
-
 use std::process;
-use clap::{Parser, Subcommand};
-use colored::Colorize;
-use anyhow::{Context, Result};
-use serde_json::Value;
 
 mod client;
 mod format;
@@ -53,11 +52,15 @@ use client::RpcClient;
     name = "vtorrent-cli",
     about = "Command-line wallet and node control tool for vTorrent",
     version,
-    author,
+    author
 )]
 struct Cli {
     /// RPC server URL.
-    #[arg(long, env = "VTORRENT_RPC_URL", default_value = "http://127.0.0.1:22525")]
+    #[arg(
+        long,
+        env = "VTORRENT_RPC_URL",
+        default_value = "http://127.0.0.1:22525"
+    )]
     rpc_url: String,
 
     /// Output raw JSON instead of formatted output.
@@ -241,7 +244,11 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&data)?);
             } else {
                 let height = data["height"].as_u64().unwrap_or(0);
-                println!("{} {}", "Block height:".cyan().bold(), height.to_string().white().bold());
+                println!(
+                    "{} {}",
+                    "Block height:".cyan().bold(),
+                    height.to_string().white().bold()
+                );
             }
         }
 
@@ -281,11 +288,14 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
             }
         }
 
-        Commands::Send { to, amount, passphrase } => {
+        Commands::Send {
+            to,
+            amount,
+            passphrase,
+        } => {
             let amount_sats = (amount * 100_000_000.0) as u64;
             let passphrase = passphrase.clone().unwrap_or_else(|| {
-                rpassword::prompt_password("Wallet passphrase: ")
-                    .unwrap_or_default()
+                rpassword::prompt_password("Wallet passphrase: ").unwrap_or_default()
             });
             let payload = serde_json::json!({
                 "to_address": to,
@@ -306,7 +316,10 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
             }
         }
 
-        Commands::Unlock { passphrase, timeout } => {
+        Commands::Unlock {
+            passphrase,
+            timeout,
+        } => {
             let payload = serde_json::json!({
                 "passphrase": passphrase,
                 "timeout_secs": timeout,
@@ -339,7 +352,11 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                 let payload = serde_json::json!({ "address": address });
                 let data = client.post("/api/v1/staking/start", &payload)?;
                 if data["success"].as_bool().unwrap_or(false) {
-                    println!("{} {}", "Staking started on address:".green().bold(), address.white());
+                    println!(
+                        "{} {}",
+                        "Staking started on address:".green().bold(),
+                        address.white()
+                    );
                 } else {
                     return Err(anyhow::anyhow!("Failed to start staking"));
                 }
@@ -371,12 +388,20 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                     println!("{}", serde_json::to_string_pretty(&data)?);
                 } else {
                     let id = data["session_id"].as_str().unwrap_or("unknown");
-                    println!("{} {}", "Torrent added. Session ID:".green().bold(), id.white());
+                    println!(
+                        "{} {}",
+                        "Torrent added. Session ID:".green().bold(),
+                        id.white()
+                    );
                 }
             }
             TorrentCommands::Remove { id } => {
                 client.delete(&format!("/api/v1/torrent/{}", id))?;
-                println!("{} {}", "Removed torrent session:".yellow().bold(), id.white());
+                println!(
+                    "{} {}",
+                    "Removed torrent session:".yellow().bold(),
+                    id.white()
+                );
             }
         },
 
@@ -389,7 +414,11 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                     format::print_dex_orders(&data);
                 }
             }
-            DexCommands::Buy { pair, amount, price } => {
+            DexCommands::Buy {
+                pair,
+                amount,
+                price,
+            } => {
                 let payload = serde_json::json!({
                     "pair": pair,
                     "side": "buy",
@@ -398,10 +427,18 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                 });
                 let data = client.post("/api/v1/dex/order", &payload)?;
                 let id = data["order_id"].as_str().unwrap_or("unknown");
-                println!("{} {} (ID: {})", "Buy order placed:".green().bold(),
-                    format!("{} {} @ {}", amount, pair, price).white(), id.dimmed());
+                println!(
+                    "{} {} (ID: {})",
+                    "Buy order placed:".green().bold(),
+                    format!("{} {} @ {}", amount, pair, price).white(),
+                    id.dimmed()
+                );
             }
-            DexCommands::Sell { pair, amount, price } => {
+            DexCommands::Sell {
+                pair,
+                amount,
+                price,
+            } => {
                 let payload = serde_json::json!({
                     "pair": pair,
                     "side": "sell",
@@ -410,8 +447,12 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                 });
                 let data = client.post("/api/v1/dex/order", &payload)?;
                 let id = data["order_id"].as_str().unwrap_or("unknown");
-                println!("{} {} (ID: {})", "Sell order placed:".green().bold(),
-                    format!("{} {} @ {}", amount, pair, price).white(), id.dimmed());
+                println!(
+                    "{} {} (ID: {})",
+                    "Sell order placed:".green().bold(),
+                    format!("{} {} @ {}", amount, pair, price).white(),
+                    id.dimmed()
+                );
             }
             DexCommands::Cancel { id } => {
                 client.delete(&format!("/api/v1/dex/order/{}", id))?;
@@ -429,7 +470,11 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                     format::print_claim_check(&data);
                 }
             }
-            ClaimCommands::Submit { address, signature, destination } => {
+            ClaimCommands::Submit {
+                address,
+                signature,
+                destination,
+            } => {
                 let payload = serde_json::json!({
                     "legacy_address": address,
                     "signature": signature,
@@ -441,7 +486,11 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                 } else {
                     if data["success"].as_bool().unwrap_or(false) {
                         let txid = data["txid"].as_str().unwrap_or("unknown");
-                        println!("{} {}", "Claim submitted! TXID:".green().bold(), txid.white());
+                        println!(
+                            "{} {}",
+                            "Claim submitted! TXID:".green().bold(),
+                            txid.white()
+                        );
                     } else {
                         let err = data["error"].as_str().unwrap_or("unknown error");
                         return Err(anyhow::anyhow!("Claim failed: {}", err));
@@ -450,7 +499,7 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
             }
         },
 
-         Commands::Metrics => {
+        Commands::Metrics => {
             let text = client.get_text("/metrics")?;
             if cli.json {
                 // Parse metrics into JSON for --json mode

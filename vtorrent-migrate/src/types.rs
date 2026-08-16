@@ -30,7 +30,7 @@ pub enum RecordType {
 }
 
 impl RecordType {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "key" => Self::Key,
             "ckey" => Self::CKey,

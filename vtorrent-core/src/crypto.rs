@@ -1,5 +1,5 @@
-use sha2::{Digest, Sha256};
 use ripemd::Ripemd160;
+use sha2::{Digest, Sha256};
 
 /// Compute SHA-256 of the input data.
 pub fn sha256(data: &[u8]) -> [u8; 32] {
@@ -42,9 +42,9 @@ mod tests {
     fn test_sha256d_known_vector() {
         // SHA256d of empty string
         let result = sha256d(b"");
-        let expected = hex::decode(
-            "5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c9456"
-        ).unwrap();
+        let expected =
+            hex::decode("5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c9456")
+                .unwrap();
         assert_eq!(&result[..], expected.as_slice());
     }
 

@@ -8,8 +8,8 @@
 //! - `build_htlc()` — Hash Time-Locked Contract (atomic swap) script
 //! - `build_op_return()` — OP_RETURN data carrier output
 
-use crate::script::Script;
 use crate::error::{Result, ScriptError};
+use crate::script::Script;
 
 /// The type of a standard scriptPubKey.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,7 +35,13 @@ pub fn classify_script(script: &Script) -> ScriptType {
     let b = script.as_bytes();
 
     // P2PKH: OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG
-    if b.len() == 25 && b[0] == 0x76 && b[1] == 0xa9 && b[2] == 0x14 && b[23] == 0x88 && b[24] == 0xac {
+    if b.len() == 25
+        && b[0] == 0x76
+        && b[1] == 0xa9
+        && b[2] == 0x14
+        && b[23] == 0x88
+        && b[24] == 0xac
+    {
         return ScriptType::P2PKH;
     }
 
@@ -62,7 +68,7 @@ pub fn classify_script(script: &Script) -> ScriptType {
         if let Some(&last) = b.last() {
             if last == 0xae {
                 let n_byte = b[b.len() - 2];
-                if n_byte >= 0x51 && n_byte <= 0x60 {
+                if (0x51..=0x60).contains(&n_byte) {
                     let n = n_byte - 0x50;
                     if m <= n {
                         return ScriptType::P2MS { m, n };

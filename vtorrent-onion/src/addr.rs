@@ -1,5 +1,5 @@
-use std::fmt;
 use crate::error::{OnionError, Result};
+use std::fmt;
 
 /// An anonymous network address — either a Tor .onion or an I2P .i2p destination.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -23,34 +23,47 @@ impl OnionAddr {
         let (host, port_str) = if let Some(colon) = addr.rfind(':') {
             (&addr[..colon], &addr[colon + 1..])
         } else {
-            return Err(OnionError::InvalidOnionAddr(
-                format!("No port in address: {}", addr)
-            ));
+            return Err(OnionError::InvalidOnionAddr(format!(
+                "No port in address: {}",
+                addr
+            )));
         };
 
-        let port: u16 = port_str.parse().map_err(|_| {
-            OnionError::InvalidOnionAddr(format!("Invalid port: {}", port_str))
-        })?;
+        let port: u16 = port_str
+            .parse()
+            .map_err(|_| OnionError::InvalidOnionAddr(format!("Invalid port: {}", port_str)))?;
 
         let host_lower = host.to_lowercase();
 
         if host_lower.ends_with(".onion") {
             let label = host_lower.trim_end_matches(".onion");
             if label.len() == 56 {
-                Ok(OnionAddr::TorV3 { host: host_lower, port })
+                Ok(OnionAddr::TorV3 {
+                    host: host_lower,
+                    port,
+                })
             } else if label.len() == 16 {
-                Ok(OnionAddr::TorV2 { host: host_lower, port })
+                Ok(OnionAddr::TorV2 {
+                    host: host_lower,
+                    port,
+                })
             } else {
-                Err(OnionError::InvalidOnionAddr(
-                    format!("Invalid .onion address length {}: {}", label.len(), addr)
-                ))
+                Err(OnionError::InvalidOnionAddr(format!(
+                    "Invalid .onion address length {}: {}",
+                    label.len(),
+                    addr
+                )))
             }
         } else if host_lower.ends_with(".i2p") || host_lower.ends_with(".b32.i2p") {
-            Ok(OnionAddr::I2p { dest: host_lower, port })
+            Ok(OnionAddr::I2p {
+                dest: host_lower,
+                port,
+            })
         } else {
-            Err(OnionError::InvalidOnionAddr(
-                format!("Not a .onion or .i2p address: {}", addr)
-            ))
+            Err(OnionError::InvalidOnionAddr(format!(
+                "Not a .onion or .i2p address: {}",
+                addr
+            )))
         }
     }
 

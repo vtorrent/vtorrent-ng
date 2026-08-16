@@ -45,6 +45,82 @@ pub struct MempoolResponse {
     pub txids: Vec<String>,
 }
 
+/// Detailed transaction data for `GET /api/v1/blockchain/tx/:txid`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TransactionLookupResponse {
+    pub txid: String,
+    /// `None` when the transaction is still in the mempool.
+    pub block_hash: Option<String>,
+    /// `None` when the transaction is still in the mempool.
+    pub block_height: Option<u32>,
+    pub version: u32,
+    pub tx_type: String,
+    pub inputs: Vec<TransactionInputResponse>,
+    pub outputs: Vec<TransactionOutputResponse>,
+    pub lock_time: u32,
+    pub claim_address: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TransactionInputResponse {
+    pub prev_txid: String,
+    pub prev_vout: u32,
+    pub script_sig: String,
+    pub sequence: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TransactionOutputResponse {
+    pub value_satoshis: u64,
+    pub script_pubkey: String,
+}
+
+/// Request for `POST /api/v1/blockchain/broadcast`.
+/// `raw_tx` is the hexadecimal bincode serialization of a vTorrent transaction.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BroadcastTransactionRequest {
+    pub raw_tx: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BroadcastTransactionResponse {
+    pub txid: String,
+    pub accepted: bool,
+    /// True when a live node accepted the transaction for P2P relay.
+    pub relayed: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WalletUtxosQuery {
+    /// Optional public address to inspect; defaults to the imported hot-wallet address.
+    pub address: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WalletUtxoResponse {
+    pub txid: String,
+    pub vout: u32,
+    pub value_satoshis: u64,
+    pub script_pubkey: String,
+    pub block_height: u32,
+    pub block_timestamp: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WalletUtxosResponse {
+    pub address: String,
+    pub total_satoshis: u64,
+    pub utxos: Vec<WalletUtxoResponse>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FeeEstimateResponse {
+    pub recommended_sat_per_byte: u64,
+    pub minimum_sat_per_byte: u64,
+    pub median_sat_per_byte: u64,
+    pub mempool_transactions: usize,
+}
+
 // ─── Wallet ───────────────────────────────────────────────────────────────────
 
 /// A single confirmed transaction summary for the wallet history endpoint.
@@ -177,6 +253,8 @@ pub struct DexOrderResponse {
     pub request_asset: String,
     pub rate: f64,
     pub status: String,
+    /// HTLC funding transaction ID once the maker has funded the VTR side.
+    pub funding_txid: Option<String>,
     pub created_at: u64,
     pub expires_at: u64,
 }
@@ -197,8 +275,11 @@ pub struct PlaceOrderRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PlaceOrderResponse {
     pub order_id: String,
+    /// The order is unfunded until a taker supplies the recipient address.
     pub htlc_address: String,
     pub hash_lock: String,
+    pub funding_txid: Option<String>,
+    pub status: String,
 }
 
 // ─── Legacy Claim ─────────────────────────────────────────────────────────────
@@ -275,10 +356,10 @@ pub struct MatchOrderResponse {
     pub target_amount: u64,
     /// Hex-encoded hash lock for the HTLC.
     pub hash_lock: String,
-    /// The taker's preimage (hex-encoded). Keep secret until funding your side.
-    pub preimage: String,
     /// Order expiry timestamp.
     pub expiry: u32,
+    /// vTorrent HTLC funding transaction ID accepted into the local mempool.
+    pub funding_txid: String,
 }
 
 // ─── SPV ─────────────────────────────────────────────────────────────────────

@@ -4,9 +4,9 @@
 //! block without downloading the full block. The proof consists of a path of
 //! sibling hashes from the transaction leaf up to the Merkle root.
 
-use sha2::{Digest, Sha256};
-use serde::{Deserialize, Serialize};
 use crate::error::{Result, SpvError};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// Double-SHA256 hash (the standard hash function for vTorrent/Bitcoin data).
 fn hash256(data: &[u8]) -> [u8; 32] {
@@ -36,7 +36,9 @@ impl MerkleTree {
     /// (standard Bitcoin/vTorrent Merkle tree behaviour).
     pub fn build(txids: &[[u8; 32]]) -> Self {
         if txids.is_empty() {
-            return Self { levels: vec![vec![[0u8; 32]]] };
+            return Self {
+                levels: vec![vec![[0u8; 32]]],
+            };
         }
 
         let mut levels: Vec<Vec<[u8; 32]>> = vec![txids.to_vec()];
@@ -51,7 +53,11 @@ impl MerkleTree {
             let mut i = 0;
             while i < current.len() {
                 let left = current[i];
-                let right = if i + 1 < current.len() { current[i + 1] } else { current[i] };
+                let right = if i + 1 < current.len() {
+                    current[i + 1]
+                } else {
+                    current[i]
+                };
                 next.push(combine(&left, &right));
                 i += 2;
             }
@@ -79,7 +85,7 @@ impl MerkleTree {
         let mut current_index = index;
 
         for level in &self.levels[..self.levels.len() - 1] {
-            let sibling_index = if current_index % 2 == 0 {
+            let sibling_index = if current_index.is_multiple_of(2) {
                 // We are the left child; sibling is to the right
                 (current_index + 1).min(level.len() - 1)
             } else {
@@ -165,8 +171,7 @@ impl MerkleProof {
 
     /// Deserialize a proof from JSON bytes.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        serde_json::from_slice(bytes)
-            .map_err(|e| SpvError::Serialization(e.to_string()))
+        serde_json::from_slice(bytes).map_err(|e| SpvError::Serialization(e.to_string()))
     }
 }
 
@@ -175,12 +180,14 @@ mod tests {
     use super::*;
 
     fn make_txids(n: usize) -> Vec<[u8; 32]> {
-        (0..n).map(|i| {
-            let mut h = [0u8; 32];
-            h[0] = i as u8;
-            h[1] = (i >> 8) as u8;
-            h
-        }).collect()
+        (0..n)
+            .map(|i| {
+                let mut h = [0u8; 32];
+                h[0] = i as u8;
+                h[1] = (i >> 8) as u8;
+                h
+            })
+            .collect()
     }
 
     #[test]
@@ -245,7 +252,9 @@ mod tests {
         let proof = tree.proof(7).unwrap();
         let bytes = proof.to_bytes();
         let proof2 = MerkleProof::from_bytes(&bytes).unwrap();
-        proof2.verify_self().expect("deserialized proof should be valid");
+        proof2
+            .verify_self()
+            .expect("deserialized proof should be valid");
     }
 
     #[test]
@@ -259,6 +268,8 @@ mod tests {
         let txids = make_txids(100);
         let tree = MerkleTree::build(&txids);
         let proof = tree.proof(50).unwrap();
-        proof.verify_self().expect("proof for large tree should be valid");
+        proof
+            .verify_self()
+            .expect("proof for large tree should be valid");
     }
 }

@@ -1,13 +1,13 @@
+use crate::ws::EventBroadcaster;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
+use vtorrent_node::atomic_swap::SwapOrderBook;
 use vtorrent_node::block::Transaction;
 use vtorrent_node::chain::Chain;
 use vtorrent_node::mempool::Mempool;
 use vtorrent_node::staking::StakingEngine;
-use vtorrent_node::atomic_swap::SwapOrderBook;
-use vtorrent_torrent::session::SessionManager;
 use vtorrent_spv::SpvChain;
-use crate::ws::EventBroadcaster;
+use vtorrent_torrent::session::SessionManager;
 
 /// Snapshot of a connected peer's metadata.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -78,10 +78,7 @@ impl AppState {
     /// Create an AppState that shares the live chain and mempool Arcs from the
     /// P2P node.  This is the constructor used by `vtorrent-daemon` so that RPC
     /// responses always reflect the current chain state.
-    pub fn new_with_shared(
-        chain: Arc<Mutex<Chain>>,
-        mempool: Arc<Mutex<Mempool>>,
-    ) -> Self {
+    pub fn new_with_shared(chain: Arc<Mutex<Chain>>, mempool: Arc<Mutex<Mempool>>) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -119,7 +116,9 @@ impl AppState {
             .as_secs();
 
         AppState {
-            chain: Arc::new(Mutex::new(Chain::new().expect("failed to initialize chain"))),
+            chain: Arc::new(Mutex::new(
+                Chain::new().expect("failed to initialize chain"),
+            )),
             mempool: Arc::new(Mutex::new(Mempool::new(10_000))),
             staking: Arc::new(RwLock::new(StakingEngine::new(String::new()))),
             order_book: Arc::new(RwLock::new(SwapOrderBook::new())),

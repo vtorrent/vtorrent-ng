@@ -1,3 +1,5 @@
+use crate::error::{Result, WalletError};
+use serde::{Deserialize, Serialize};
 /// TOTP-based 2FA module for the vTorrent wallet.
 ///
 /// This implements the same TOTP standard (RFC 6238) as the legacy vTorrent
@@ -5,11 +7,8 @@
 ///
 /// Users who had 2FA enabled on their old wallet can use the same secret
 /// (from their Google Authenticator / Authy backup) with the new client.
-
 use totp_rs::{Algorithm, Secret, TOTP};
-use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
-use crate::error::{Result, WalletError};
 
 /// TOTP parameters matching the legacy vTorrent implementation.
 const TOTP_DIGITS: usize = 6;
@@ -83,8 +82,9 @@ impl TotpSecret {
     /// to account for clock drift.
     pub fn verify(&self, code: &str) -> Result<bool> {
         let totp = self.build_totp(None)?;
-        Ok(totp.check_current(code)
-            .map_err(|e| WalletError::EncryptionError(format!("TOTP check error: {}", e)))?)
+        totp
+            .check_current(code)
+            .map_err(|e| WalletError::EncryptionError(format!("TOTP check error: {}", e)))
     }
 
     /// Verify a code and return an error if it is incorrect.

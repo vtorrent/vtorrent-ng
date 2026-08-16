@@ -26,5 +26,5 @@
 pub mod error;
 pub mod store;
 
-pub use store::BlockStore;
 pub use error::StoreError;
+pub use store::BlockStore;

@@ -8,12 +8,12 @@
 /// - PEX address book for decentralized peer discovery
 /// - DHT bootstrap integration
 /// - Peer ban management (misbehaviour scoring and IP bans)
-
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::mpsc;
+use vtorrent_onion::{OnionTransport, TransportConfig, TransportMode};
 
 use crate::{
     ban_manager::{BanManager, Misbehaviour},
@@ -61,6 +61,8 @@ pub struct PeerManager {
     pub addr_book: AddrBook,
     /// Ban manager — tracks misbehaviour scores and IP bans.
     pub ban_manager: BanManager,
+    /// Outbound transport router for clearnet, Tor SOCKS5, and I2P SAM dialing.
+    transport: OnionTransport,
 }
 
 impl PeerManager {
@@ -78,6 +80,21 @@ impl PeerManager {
 
     /// Create a peer manager with an explicit testnet flag.
     pub fn with_testnet(best_height: u32, listen_addr: &str, testnet: bool) -> Self {
+        Self::with_transport_config(
+            best_height,
+            listen_addr,
+            testnet,
+            TransportConfig::default(),
+        )
+    }
+
+    /// Create a peer manager with an explicit anonymous-transport configuration.
+    pub fn with_transport_config(
+        best_height: u32,
+        listen_addr: &str,
+        testnet: bool,
+        transport_config: TransportConfig,
+    ) -> Self {
         let (event_tx, event_rx) = mpsc::channel(1024);
         let mut addr_book = AddrBook::with_testnet(testnet);
 
@@ -94,6 +111,7 @@ impl PeerManager {
             event_tx,
             addr_book,
             ban_manager: BanManager::new(100, Duration::from_secs(24 * 60 * 60)),
+            transport: OnionTransport::new(transport_config),
         }
     }
 
@@ -151,8 +169,18 @@ impl PeerManager {
             self.addr_book.record_attempt(sock_addr);
         }
 
-        let stream = TcpStream::connect(addr).await?;
-        let peer_addr = stream.peer_addr()?;
+        let (stream, transport_mode) = self
+            .transport
+            .connect(addr)
+            .await
+            .map_err(|e| P2pError::Transport(e.to_string()))?;
+        // SOCKS5 and I2P streams report their local proxy endpoint as `peer_addr`.
+        // Retain a deterministic synthetic socket key for anonymous destinations so
+        // the existing peer lifecycle map remains usable without leaking a proxy IP.
+        let peer_addr = match transport_mode {
+            TransportMode::Clearnet => stream.peer_addr()?,
+            TransportMode::Tor | TransportMode::I2p => anonymous_peer_key(addr),
+        };
 
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
         let event_tx = self.event_tx.clone();
@@ -164,16 +192,19 @@ impl PeerManager {
         });
 
         // Register as connecting peer
-        self.peers.insert(peer_addr, Peer {
-            addr: peer_addr,
-            state: PeerState::Connecting,
-            best_height: 0,
-            user_agent: String::new(),
-            services: 0,
-            cmd_tx,
-        });
+        self.peers.insert(
+            peer_addr,
+            Peer {
+                addr: peer_addr,
+                state: PeerState::Connecting,
+                best_height: 0,
+                user_agent: String::new(),
+                services: 0,
+                cmd_tx,
+            },
+        );
 
-        tracing::info!("Connecting to {}", peer_addr);
+        tracing::info!(target = %addr, peer = %peer_addr, transport = ?transport_mode, "Connecting to peer");
         Ok(())
     }
 
@@ -188,7 +219,10 @@ impl PeerManager {
                     // Ban check on inbound connections (outbound are checked in connect())
                     let ip = peer_addr.ip();
                     if self.ban_manager.is_banned(ip) {
-                        tracing::info!("Dropping inbound connection from banned peer {}", peer_addr);
+                        tracing::info!(
+                            "Dropping inbound connection from banned peer {}",
+                            peer_addr
+                        );
                         // Disconnect the peer immediately
                         if let Some(peer) = self.peers.get(peer_addr) {
                             let _ = peer.cmd_tx.try_send(PeerCommand::Disconnect);
@@ -204,7 +238,9 @@ impl PeerManager {
                         peer.services = version.services;
                         tracing::info!(
                             "Peer {} connected: {} (height {})",
-                            peer_addr, version.user_agent, version.start_height
+                            peer_addr,
+                            version.user_agent,
+                            version.start_height
                         );
                     }
                     // Mark as connected in address book
@@ -231,10 +267,7 @@ impl PeerManager {
         let ip = addr.ip();
         let banned = self.ban_manager.record_misbehaviour(ip, offence);
         if banned {
-            tracing::warn!(
-                "Peer {} banned for misbehaviour ({:?})",
-                addr, offence
-            );
+            tracing::warn!("Peer {} banned for misbehaviour ({:?})", addr, offence);
             // Disconnect the peer if still connected
             if let Some(peer) = self.peers.get(&addr) {
                 let _ = peer.cmd_tx.try_send(PeerCommand::Disconnect);
@@ -265,6 +298,37 @@ impl PeerManager {
         self.ban_manager.prune();
     }
 
+    /// Register an already-established non-TCP peer, such as an authenticated
+    /// overlay session. Its command channel is owned by the transport bridge.
+    pub fn register_virtual_peer(
+        &mut self,
+        addr: SocketAddr,
+        user_agent: String,
+        cmd_tx: mpsc::Sender<PeerCommand>,
+    ) -> Result<()> {
+        if self.peers.len() >= MAX_PEERS && !self.peers.contains_key(&addr) {
+            return Err(P2pError::TooManyPeers(MAX_PEERS));
+        }
+        self.peers.insert(
+            addr,
+            Peer {
+                addr,
+                state: PeerState::Connected,
+                best_height: 0,
+                user_agent,
+                services: 0,
+                cmd_tx,
+            },
+        );
+        Ok(())
+    }
+
+    /// Remove a non-TCP peer whose transport has closed.
+    pub fn remove_virtual_peer(&mut self, addr: SocketAddr) {
+        self.peers.remove(&addr);
+        self.addr_book.mark_disconnected(addr);
+    }
+
     /// Broadcast a message to all connected peers.
     pub async fn broadcast(&self, msg: NetMessage) {
         for peer in self.peers.values() {
@@ -285,12 +349,16 @@ impl PeerManager {
 
     /// Get the number of connected peers.
     pub fn peer_count(&self) -> usize {
-        self.peers.values().filter(|p| p.state == PeerState::Connected).count()
+        self.peers
+            .values()
+            .filter(|p| p.state == PeerState::Connected)
+            .count()
     }
 
     /// Get the best known block height across all peers.
     pub fn network_best_height(&self) -> u32 {
-        self.peers.values()
+        self.peers
+            .values()
             .filter(|p| p.state == PeerState::Connected)
             .map(|p| p.best_height)
             .max()
@@ -299,7 +367,8 @@ impl PeerManager {
 
     /// Get a list of all connected peer addresses.
     pub fn connected_peers(&self) -> Vec<SocketAddr> {
-        self.peers.values()
+        self.peers
+            .values()
             .filter(|p| p.state == PeerState::Connected)
             .map(|p| p.addr)
             .collect()
@@ -367,4 +436,25 @@ impl PeerManager {
             peer.state = PeerState::Disconnecting;
         }
     }
+}
+
+/// Produce a deterministic, non-routable key for an anonymous endpoint.
+///
+/// `PeerManager` is keyed by `SocketAddr` because TCP peers expose one naturally.
+/// Tor and I2P do not, so use the benchmarking range 198.18.0.0/15 strictly as an
+/// internal key; this address is never added to PEX address entries.
+fn anonymous_peer_key(addr: &str) -> SocketAddr {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in addr.bytes() {
+        hash ^= byte as u32;
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+
+    let second = 18 + ((hash >> 8) & 1) as u8;
+    let third = (hash >> 16) as u8;
+    let fourth = (hash >> 24) as u8;
+    let port = 1_024 + (hash as u16 % (u16::MAX - 1_024));
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, second, third, fourth)), port)
 }

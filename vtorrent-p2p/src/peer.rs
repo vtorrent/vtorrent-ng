@@ -1,29 +1,33 @@
+use serde_json;
 /// Peer connection handler.
 ///
 /// Manages a single TCP connection to a remote peer, handling the version
 /// handshake, message dispatch, and keepalive pings.
-
 use std::net::SocketAddr;
 use tokio::net::TcpStream;
-use tokio_util::codec::Framed;
 use tokio::sync::mpsc;
-use serde_json;
+use tokio_util::codec::Framed;
 
 use crate::{
     codec::VtrCodec,
-    error::{P2pError, Result},
-    message::{NetMessage, VersionMsg, PingMsg},
+    message::{NetMessage, PingMsg, VersionMsg},
 };
 
 /// Events emitted by a peer connection to the node.
 #[derive(Debug)]
 pub enum PeerEvent {
     /// A new message was received from the peer.
-    Message { peer_addr: SocketAddr, msg: NetMessage },
+    Message {
+        peer_addr: SocketAddr,
+        msg: NetMessage,
+    },
     /// The peer disconnected.
     Disconnected { peer_addr: SocketAddr },
     /// The version handshake completed successfully.
-    HandshakeComplete { peer_addr: SocketAddr, version: VersionMsg },
+    HandshakeComplete {
+        peer_addr: SocketAddr,
+        version: VersionMsg,
+    },
 }
 
 /// Commands sent from the node to a peer connection.
@@ -168,6 +172,8 @@ pub async fn run_peer(
         }
     }
 
-    let _ = event_tx.send(PeerEvent::Disconnected { peer_addr: addr }).await;
+    let _ = event_tx
+        .send(PeerEvent::Disconnected { peer_addr: addr })
+        .await;
     tracing::info!("Peer {} disconnected", addr);
 }

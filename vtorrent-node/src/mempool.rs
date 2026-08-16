@@ -16,12 +16,12 @@
 //!
 //! This follows the spirit of Bitcoin Core's BIP-125 policy.
 
-use std::collections::HashMap;
 use crate::{
     block::Transaction,
     consensus::validate_transaction,
     error::{NodeError, Result},
 };
+use std::collections::HashMap;
 
 /// Minimum fee rate increase (sat/byte) required for an RBF replacement.
 pub const MIN_RBF_FEE_BUMP: u64 = 1;
@@ -49,7 +49,9 @@ pub struct MempoolEntry {
 impl MempoolEntry {
     /// Fee rate in satoshis per byte.
     pub fn fee_rate(&self) -> u64 {
-        if self.size_bytes == 0 { return 0; }
+        if self.size_bytes == 0 {
+            return 0;
+        }
         self.fee_sats / self.size_bytes as u64
     }
 }
@@ -82,14 +84,26 @@ impl Mempool {
     /// - RBF replacement rules
     /// - Eviction of the lowest-fee-rate tx when full (if new tx pays more)
     pub fn add_transaction(&mut self, tx: Transaction) -> Result<()> {
+        let estimated_fee = tx.fee_sats();
+        self.add_transaction_with_fee(tx, estimated_fee)
+    }
+
+    /// Add a transaction using a caller-supplied fee verified from the spent UTXOs.
+    ///
+    /// This is used by local transaction builders that have authoritative input
+    /// values, avoiding the generic transaction fee estimator for custom scripts.
+    pub fn add_transaction_with_fee(&mut self, tx: Transaction, fee_sats: u64) -> Result<()> {
         validate_transaction(&tx)?;
 
         let txid = tx.txid();
 
-        // Compute fee and size
-        let fee_sats = tx.fee_sats();
+        // Compute size and fee rate.
         let size_bytes = tx.serialized_size();
-        let fee_rate = if size_bytes > 0 { fee_sats / size_bytes as u64 } else { 0 };
+        let fee_rate = if size_bytes > 0 {
+            fee_sats / size_bytes as u64
+        } else {
+            0
+        };
         let rbf = tx.signals_rbf();
 
         // Enforce minimum absolute fee
@@ -116,12 +130,14 @@ impl Mempool {
         // Check for RBF replacement: does this tx spend the same inputs as an existing tx?
         let conflicting_txid = self.find_conflict(&tx);
         if let Some(conflict_txid) = conflicting_txid {
-            let conflict = self.entries.get(&conflict_txid)
+            let conflict = self
+                .entries
+                .get(&conflict_txid)
                 .ok_or_else(|| NodeError::Chain("Conflict entry missing".into()))?;
 
             if !rbf {
                 return Err(NodeError::Chain(
-                    "Transaction conflicts with mempool entry; signal RBF to replace".into()
+                    "Transaction conflicts with mempool entry; signal RBF to replace".into(),
                 ));
             }
 
@@ -129,7 +145,9 @@ impl Mempool {
             if fee_rate < conflict.fee_rate() + MIN_RBF_FEE_BUMP {
                 return Err(NodeError::Chain(format!(
                     "RBF replacement fee rate {} sat/byte must exceed {} + {} sat/byte",
-                    fee_rate, conflict.fee_rate(), MIN_RBF_FEE_BUMP
+                    fee_rate,
+                    conflict.fee_rate(),
+                    MIN_RBF_FEE_BUMP
                 )));
             }
 
@@ -158,8 +176,10 @@ impl Mempool {
                 if fee_rate > lowest_rate {
                     tracing::debug!(
                         "Mempool full: evicting {} ({} sat/byte) for {} ({} sat/byte)",
-                        hex::encode(lowest_txid), lowest_rate,
-                        hex::encode(txid), fee_rate
+                        hex::encode(lowest_txid),
+                        lowest_rate,
+                        hex::encode(txid),
+                        fee_rate
                     );
                     self.entries.remove(&lowest_txid);
                     // Raise the dynamic minimum fee rate
@@ -178,17 +198,22 @@ impl Mempool {
             .unwrap_or_default()
             .as_secs();
 
-        self.entries.insert(txid, MempoolEntry {
-            tx,
-            fee_sats,
-            size_bytes,
-            received_at: now,
-            rbf,
-        });
+        self.entries.insert(
+            txid,
+            MempoolEntry {
+                tx,
+                fee_sats,
+                size_bytes,
+                received_at: now,
+                rbf,
+            },
+        );
 
         tracing::debug!(
             "Mempool: added {} ({} sat, {} sat/byte)",
-            hex::encode(txid), fee_sats, fee_rate
+            hex::encode(txid),
+            fee_sats,
+            fee_rate
         );
         Ok(())
     }
@@ -206,14 +231,14 @@ impl Mempool {
     /// Get all transactions sorted by fee rate (highest first) — used by staker.
     pub fn get_transactions(&self) -> Vec<Transaction> {
         let mut entries: Vec<&MempoolEntry> = self.entries.values().collect();
-        entries.sort_by(|a, b| b.fee_rate().cmp(&a.fee_rate()));
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.fee_rate()));
         entries.into_iter().map(|e| e.tx.clone()).collect()
     }
 
     /// Get all mempool entries with their fee metadata.
     pub fn get_entries(&self) -> Vec<&MempoolEntry> {
         let mut entries: Vec<&MempoolEntry> = self.entries.values().collect();
-        entries.sort_by(|a, b| b.fee_rate().cmp(&a.fee_rate()));
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.fee_rate()));
         entries
     }
 
@@ -235,7 +260,9 @@ impl Mempool {
     /// Returns the median fee rate of all mempool transactions (sat/byte).
     pub fn median_fee_rate(&self) -> u64 {
         let mut rates: Vec<u64> = self.entries.values().map(|e| e.fee_rate()).collect();
-        if rates.is_empty() { return self.min_fee_rate; }
+        if rates.is_empty() {
+            return self.min_fee_rate;
+        }
         rates.sort_unstable();
         rates[rates.len() / 2]
     }
@@ -274,7 +301,8 @@ impl Mempool {
 
     /// Find the txid of the entry with the lowest fee rate.
     fn lowest_fee_rate_txid(&self) -> Option<[u8; 32]> {
-        self.entries.iter()
+        self.entries
+            .iter()
             .min_by_key(|(_, e)| e.fee_rate())
             .map(|(txid, _)| *txid)
     }
@@ -335,9 +363,12 @@ mod tests {
     #[test]
     fn test_get_transactions_sorted_by_fee_rate() {
         let mut mp = Mempool::new(100);
-        mp.add_transaction(make_tx(MIN_RELAY_FEE, 10, false)).unwrap();
-        mp.add_transaction(make_tx(MIN_RELAY_FEE * 5, 11, false)).unwrap();
-        mp.add_transaction(make_tx(MIN_RELAY_FEE * 2, 12, false)).unwrap();
+        mp.add_transaction(make_tx(MIN_RELAY_FEE, 10, false))
+            .unwrap();
+        mp.add_transaction(make_tx(MIN_RELAY_FEE * 5, 11, false))
+            .unwrap();
+        mp.add_transaction(make_tx(MIN_RELAY_FEE * 2, 12, false))
+            .unwrap();
         let txs = mp.get_transactions();
         // Highest fee rate first
         let fees: Vec<u64> = txs.iter().map(|t| t.fee_sats()).collect();
@@ -376,9 +407,12 @@ mod tests {
     fn test_mempool_eviction_when_full() {
         let mut mp = Mempool::new(3);
         // Use a small fee so output value stays well above zero (100_000 - 1_000 = 99_000)
-        mp.add_transaction(make_tx(MIN_RELAY_FEE, 40, false)).unwrap();
-        mp.add_transaction(make_tx(MIN_RELAY_FEE, 41, false)).unwrap();
-        mp.add_transaction(make_tx(MIN_RELAY_FEE, 42, false)).unwrap();
+        mp.add_transaction(make_tx(MIN_RELAY_FEE, 40, false))
+            .unwrap();
+        mp.add_transaction(make_tx(MIN_RELAY_FEE, 41, false))
+            .unwrap();
+        mp.add_transaction(make_tx(MIN_RELAY_FEE, 42, false))
+            .unwrap();
         assert_eq!(mp.size(), 3);
 
         // High-fee tx: fee = 50_000, output = 50_000 (still > 0)
@@ -396,8 +430,10 @@ mod tests {
     #[test]
     fn test_total_fees() {
         let mut mp = Mempool::new(100);
-        mp.add_transaction(make_tx(MIN_RELAY_FEE, 50, false)).unwrap();
-        mp.add_transaction(make_tx(MIN_RELAY_FEE * 2, 51, false)).unwrap();
+        mp.add_transaction(make_tx(MIN_RELAY_FEE, 50, false))
+            .unwrap();
+        mp.add_transaction(make_tx(MIN_RELAY_FEE * 2, 51, false))
+            .unwrap();
         assert_eq!(mp.total_fees(), MIN_RELAY_FEE * 3);
     }
 

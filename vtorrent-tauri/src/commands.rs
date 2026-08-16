@@ -7,7 +7,6 @@
 ///
 /// All private key material is handled exclusively in Rust.
 /// JavaScript only receives addresses, balances, and status flags.
-
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde::Serialize;
 use tauri::State;
@@ -73,8 +72,7 @@ pub fn create_wallet(
     }
 
     let path = std::path::PathBuf::from(&wallet_path);
-    let wallet = Wallet::create(&passphrase)
-        .map_err(TauriError::from)?;
+    let wallet = Wallet::create(&passphrase).map_err(TauriError::from)?;
 
     // Save the encrypted wallet to disk
     wallet.save(&path).map_err(TauriError::from)?;
@@ -107,8 +105,7 @@ pub fn open_wallet(
 ) -> Result<WalletInfo> {
     let path = std::path::PathBuf::from(&wallet_path);
 
-    let wallet = Wallet::load(&path, &passphrase)
-        .map_err(TauriError::from)?;
+    let wallet = Wallet::load(&path, &passphrase).map_err(TauriError::from)?;
 
     // Verify 2FA if the wallet has it enabled
     if wallet.has_2fa() {
@@ -194,10 +191,8 @@ pub fn import_legacy_wallet(
         .map_err(|e| TauriError::InvalidInput(format!("Invalid base64: {}", e)))?;
 
     // Extract keys from the legacy wallet.dat using the vtorrent-migrate crate
-    let extraction = extract_wallet(
-        &wallet_bytes,
-        passphrase.as_deref(),
-    ).map_err(TauriError::from)?;
+    let extraction =
+        extract_wallet(&wallet_bytes, passphrase.as_deref()).map_err(TauriError::from)?;
 
     if extraction.keys.is_empty() {
         return Err(TauriError::Migration("No keys found in wallet.dat".into()));
@@ -205,8 +200,7 @@ pub fn import_legacy_wallet(
 
     // Create a new wallet and import the extracted keys
     let path = std::path::PathBuf::from(&new_wallet_path);
-    let mut new_wallet = Wallet::create(&new_wallet_passphrase)
-        .map_err(TauriError::from)?;
+    let mut new_wallet = Wallet::create(&new_wallet_passphrase).map_err(TauriError::from)?;
 
     // Import each extracted key into the new wallet
     let mut addresses = Vec::new();
@@ -259,7 +253,10 @@ fn lookup_snapshot_balances(addresses: &[String]) -> u64 {
     }
 
     let entry_count = u32::from_le_bytes([
-        UTXO_SNAPSHOT[8], UTXO_SNAPSHOT[9], UTXO_SNAPSHOT[10], UTXO_SNAPSHOT[11],
+        UTXO_SNAPSHOT[8],
+        UTXO_SNAPSHOT[9],
+        UTXO_SNAPSHOT[10],
+        UTXO_SNAPSHOT[11],
     ]) as usize;
 
     let entries_start = SNAPSHOT_HEADER_SIZE;
@@ -316,10 +313,7 @@ fn lookup_snapshot_balances(addresses: &[String]) -> u64 {
 ///
 /// Called from: `DashboardPage.tsx` → `invoke('generate_address', { label })`
 #[tauri::command]
-pub fn generate_address(
-    state: State<AppState>,
-    label: Option<String>,
-) -> Result<AddressInfo> {
+pub fn generate_address(state: State<AppState>, label: Option<String>) -> Result<AddressInfo> {
     let mut guard = state.wallet.lock().unwrap();
     let wallet = guard.as_mut().ok_or(TauriError::WalletNotInitialized)?;
 
@@ -468,9 +462,9 @@ pub struct DexOrderResult {
 /// AppState in `AppState::node` so subsequent commands can query it.
 #[tauri::command]
 pub async fn start_node(state: tauri::State<'_, AppState>) -> Result<NodeInfoResult> {
+    use crate::state::NodeHandle;
     use vtorrent_node::node::{Node, NodeConfig};
     use vtorrent_rpc::state::AppState as RpcAppState;
-    use crate::state::NodeHandle;
 
     // If node is already running, just return current info.
     {
@@ -483,21 +477,19 @@ pub async fn start_node(state: tauri::State<'_, AppState>) -> Result<NodeInfoRes
 
     // Create the node with default config.
     let config = NodeConfig::default();
-    let mut node = Node::new(config)
-        .map_err(|e| TauriError::NodeError(e.to_string()))?;
+    let mut node = Node::new(config).map_err(|e| TauriError::NodeError(e.to_string()))?;
 
     // Create the shared RPC AppState using the node's chain and mempool Arcs.
-    let rpc_state = RpcAppState::new_with_shared(
-        node.chain_arc(),
-        node.mempool_arc(),
-    );
+    let rpc_state = RpcAppState::new_with_shared(node.chain_arc(), node.mempool_arc());
 
     // Wire the node's event sender to the RPC broadcaster.
     let (event_tx, _rx) = vtorrent_node::events::channel(1024);
     node.set_event_sender(event_tx);
 
     // Store the NodeHandle before spawning.
-    let handle = NodeHandle { rpc_state: rpc_state.clone() };
+    let handle = NodeHandle {
+        rpc_state: rpc_state.clone(),
+    };
     *state.node.lock().await = Some(handle);
 
     // Spawn the node event loop as a background task.
@@ -555,67 +547,84 @@ pub async fn get_transactions(
     limit: Option<usize>,
 ) -> Result<Vec<TxResult>> {
     let guard = state.node.lock().await;
-    let handle = guard.as_ref().ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
     let chain = handle.rpc_state.chain.lock().await;
     let limit = limit.unwrap_or(50);
     let txs = chain.get_recent_transactions(limit);
     let best = chain.best_height();
-    Ok(txs.into_iter().map(|(txid, height, ts, dir, fee)| TxResult {
-        txid,
-        block_height: height,
-        confirmations: best.saturating_sub(height),
-        timestamp: ts,
-        direction: dir,
-        amount_satoshis: 0, // populated by UTXO diff in a future pass
-        fee_satoshis: fee,
-    }).collect())
+    Ok(txs
+        .into_iter()
+        .map(|(txid, height, ts, dir, fee)| TxResult {
+            txid,
+            block_height: height,
+            confirmations: best.saturating_sub(height),
+            timestamp: ts,
+            direction: dir,
+            amount_satoshis: 0, // populated by UTXO diff in a future pass
+            fee_satoshis: fee,
+        })
+        .collect())
 }
 
 /// Get active torrent sessions.
 ///
 /// Called from: `TorrentPage.tsx` → `invoke('get_torrent_sessions')`
 #[tauri::command]
-pub async fn get_torrent_sessions(
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<TorrentResult>> {
+pub async fn get_torrent_sessions(state: tauri::State<'_, AppState>) -> Result<Vec<TorrentResult>> {
     let guard = state.node.lock().await;
-    let handle = guard.as_ref().ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
     let sessions = handle.rpc_state.torrent_sessions.read().await;
-    Ok(sessions.list_sessions().into_iter().map(|s| TorrentResult {
-        id: s.id.clone(),
-        name: s.metainfo.name.clone(),
-        info_hash: hex::encode(s.metainfo.info_hash),
-        state: format!("{:?}", s.state),
-        progress: s.progress(),
-        download_speed: s.download_speed,
-        upload_speed: s.upload_speed,
-        peers: s.peers.len(),
-        size_bytes: s.metainfo.total_size,
-        downloaded_bytes: s.bytes_downloaded,
-        uploaded_bytes: s.bytes_uploaded,
-        earnings_satoshis: s.incentive_accounts.values().map(|a| a.total_earned_satoshis).sum(),
-    }).collect())
+    Ok(sessions
+        .list_sessions()
+        .into_iter()
+        .map(|s| TorrentResult {
+            id: s.id.clone(),
+            name: s.metainfo.name.clone(),
+            info_hash: hex::encode(s.metainfo.info_hash),
+            state: format!("{:?}", s.state),
+            progress: s.progress(),
+            download_speed: s.download_speed,
+            upload_speed: s.upload_speed,
+            peers: s.peers.len(),
+            size_bytes: s.metainfo.total_size,
+            downloaded_bytes: s.bytes_downloaded,
+            uploaded_bytes: s.bytes_uploaded,
+            earnings_satoshis: s
+                .incentive_accounts
+                .values()
+                .map(|a| a.total_earned_satoshis)
+                .sum(),
+        })
+        .collect())
 }
 
 /// Get the DEX order book.
 ///
 /// Called from: `TradePage.tsx` → `invoke('get_dex_orders')`
 #[tauri::command]
-pub async fn get_dex_orders(
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<DexOrderResult>> {
+pub async fn get_dex_orders(state: tauri::State<'_, AppState>) -> Result<Vec<DexOrderResult>> {
     let guard = state.node.lock().await;
-    let handle = guard.as_ref().ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
     let order_book = handle.rpc_state.order_book.read().await;
-    Ok(order_book.list_open_orders().into_iter().map(|o| DexOrderResult {
-        id: hex::encode(o.order_id),
-        maker_address: o.maker_address.clone(),
-        vtr_amount: o.vtr_amount,
-        target_asset: o.target_asset.clone(),
-        target_amount: o.target_amount,
-        status: format!("{:?}", o.status),
-        expiry: o.expiry,
-    }).collect())
+    Ok(order_book
+        .list_open_orders()
+        .into_iter()
+        .map(|o| DexOrderResult {
+            id: hex::encode(o.order_id),
+            maker_address: o.maker_address.clone(),
+            vtr_amount: o.vtr_amount,
+            target_asset: o.target_asset.clone(),
+            target_amount: o.target_amount,
+            status: format!("{:?}", o.status),
+            expiry: o.expiry,
+        })
+        .collect())
 }
 
 /// Place a DEX order.
@@ -632,11 +641,19 @@ pub async fn place_dex_order(
     use vtorrent_node::atomic_swap::SwapOrder;
 
     let guard = state.node.lock().await;
-    let handle = guard.as_ref().ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
     let mut order_book = handle.rpc_state.order_book.write().await;
 
     // Default locktime: 24 hours.
-    let order = SwapOrder::new(maker_address, vtr_amount, target_asset, target_amount, 86400);
+    let order = SwapOrder::new(
+        maker_address,
+        vtr_amount,
+        target_asset,
+        target_amount,
+        86400,
+    );
     let result = DexOrderResult {
         id: hex::encode(order.order_id),
         maker_address: order.maker_address.clone(),
@@ -654,12 +671,11 @@ pub async fn place_dex_order(
 ///
 /// Called from: `TradePage.tsx` → `invoke('cancel_dex_order', { orderId })`
 #[tauri::command]
-pub async fn cancel_dex_order(
-    state: tauri::State<'_, AppState>,
-    order_id: String,
-) -> Result<bool> {
+pub async fn cancel_dex_order(state: tauri::State<'_, AppState>, order_id: String) -> Result<bool> {
     let guard = state.node.lock().await;
-    let handle = guard.as_ref().ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
     let mut order_book = handle.rpc_state.order_book.write().await;
     Ok(order_book.cancel_order(&order_id))
 }
@@ -677,23 +693,27 @@ pub async fn send_vtr(
     to_address: String,
     amount_satoshis: u64,
 ) -> Result<String> {
-    use vtorrent_wallet::tx_builder::{TxBuilder, p2pkh_script_pubkey};
+    use vtorrent_wallet::tx_builder::TxBuilder;
 
     // Get the WIF and from-address from the unlocked wallet.
     let (wif, from_address) = {
         let guard = state.wallet.lock().unwrap();
         let wallet = guard.as_ref().ok_or(TauriError::WalletNotInitialized)?;
-        let wif = wallet.get_default_wif()
+        let wif = wallet
+            .get_default_wif()
             .ok_or(TauriError::WalletNotInitialized)?
             .to_string();
-        let from = wallet.default_address()
+        let from = wallet
+            .default_address()
             .ok_or(TauriError::WalletNotInitialized)?
             .to_string();
         (wif, from)
     };
 
     let guard = state.node.lock().await;
-    let handle = guard.as_ref().ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
 
     // Collect UTXOs for the sender address.
     let utxos = {
@@ -715,11 +735,17 @@ pub async fn send_vtr(
     // Submit to mempool.
     {
         let mut mempool = handle.rpc_state.mempool.lock().await;
-        mempool.add_transaction(tx)
+        mempool
+            .add_transaction(tx)
             .map_err(|e| TauriError::NodeError(format!("Mempool rejected tx: {}", e)))?;
     }
 
-    tracing::info!("Sent {} satoshis to {} (txid: {})", amount_satoshis, to_address, txid);
+    tracing::info!(
+        "Sent {} satoshis to {} (txid: {})",
+        amount_satoshis,
+        to_address,
+        txid
+    );
     Ok(txid)
 }
 
@@ -749,7 +775,9 @@ pub async fn start_staking(
         return Err(TauriError::NodeError("Staking address is required".into()));
     }
     let guard = state.node.lock().await;
-    let handle = guard.as_ref().ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
 
     // Update the staking engine with the new address and enable it.
     {
@@ -775,11 +803,11 @@ pub async fn start_staking(
 ///
 /// Called from: `StakingPage.tsx` → `invoke('stop_staking')`
 #[tauri::command]
-pub async fn stop_staking(
-    state: tauri::State<'_, AppState>,
-) -> Result<StakingStatusResult> {
+pub async fn stop_staking(state: tauri::State<'_, AppState>) -> Result<StakingStatusResult> {
     let guard = state.node.lock().await;
-    let handle = guard.as_ref().ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
 
     *handle.rpc_state.staking_enabled.write().await = false;
     *handle.rpc_state.staking_address.write().await = None;
@@ -800,11 +828,11 @@ pub async fn stop_staking(
 ///
 /// Called from: `StakingPage.tsx` → `invoke('get_staking_status')`
 #[tauri::command]
-pub async fn get_staking_status(
-    state: tauri::State<'_, AppState>,
-) -> Result<StakingStatusResult> {
+pub async fn get_staking_status(state: tauri::State<'_, AppState>) -> Result<StakingStatusResult> {
     let guard = state.node.lock().await;
-    let handle = guard.as_ref().ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
 
     let enabled = *handle.rpc_state.staking_enabled.read().await;
     let address = handle.rpc_state.staking_address.read().await.clone();

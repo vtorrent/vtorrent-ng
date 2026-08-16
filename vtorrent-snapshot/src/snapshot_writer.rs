@@ -1,14 +1,13 @@
+use crate::{
+    error::{Result, SnapshotError},
+    utxo_set::UtxoSnapshot,
+};
 /// Snapshot writer.
 ///
 /// Serializes the UTXO snapshot to two formats:
 /// 1. A compact binary format (`.bin`) for embedding in the new client binary.
 /// 2. A human-readable JSON format (`.json`) for auditing and community verification.
-
 use std::io::Write;
-use crate::{
-    error::{Result, SnapshotError},
-    utxo_set::UtxoSnapshot,
-};
 
 /// Write the snapshot to a JSON file (for community audit and verification).
 pub fn write_json(snapshot: &UtxoSnapshot, path: &std::path::Path) -> Result<()> {
@@ -95,16 +94,25 @@ pub fn print_summary(snapshot: &UtxoSnapshot) {
     println!("║  Snapshot Height : {:>36} ║", m.snapshot_height);
     println!("║  Total Addresses : {:>36} ║", m.total_addresses);
     println!("║  Total UTXOs     : {:>36} ║", m.total_utxos);
-    println!("║  Total Supply    : {:>30} VTR ║", m.total_supply as f64 / 1e8);
+    println!(
+        "║  Total Supply    : {:>30} VTR ║",
+        m.total_supply as f64 / 1e8
+    );
     println!("║  Created At      : {:>36} ║", m.created_at);
-    println!("║  Best Block      : {:>36} ║", &m.best_block_hash[..16.min(m.best_block_hash.len())]);
-    println!("║  Entries Hash    : {:>36} ║", &m.entries_hash[..16.min(m.entries_hash.len())]);
+    println!(
+        "║  Best Block      : {:>36} ║",
+        &m.best_block_hash[..16.min(m.best_block_hash.len())]
+    );
+    println!(
+        "║  Entries Hash    : {:>36} ║",
+        &m.entries_hash[..16.min(m.entries_hash.len())]
+    );
     println!("╚══════════════════════════════════════════════════════════╝");
 
     // Show top 10 balances
     println!("\nTop 10 Addresses by Balance:");
     let mut top: Vec<_> = snapshot.entries.iter().collect();
-    top.sort_by(|a, b| b.balance.cmp(&a.balance));
+    top.sort_by_key(|entry| std::cmp::Reverse(entry.balance));
     for (i, entry) in top.iter().take(10).enumerate() {
         println!(
             "  {:2}. {} — {:.8} VTR",

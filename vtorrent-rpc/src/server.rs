@@ -1,13 +1,13 @@
-use std::sync::Arc;
+use crate::handlers::*;
+use crate::metrics::metrics_handler;
+use crate::state::AppState;
+use crate::ws::ws_handler;
 use axum::{
     routing::{delete, get, post},
     Router,
 };
+use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
-use crate::handlers::*;
-use crate::state::AppState;
-use crate::ws::ws_handler;
-use crate::metrics::metrics_handler;
 
 /// Default RPC port — same as legacy vTorrent RPC port + 1.
 pub const DEFAULT_RPC_PORT: u16 = 22525;
@@ -25,11 +25,19 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/info", get(get_node_info))
         // Blockchain
         .route("/api/v1/blockchain/height", get(get_block_height))
+        .route(
+            "/api/v1/blockchain/block/height/:height",
+            get(get_block_by_height),
+        )
         .route("/api/v1/blockchain/block/:hash", get(get_block_by_hash))
+        .route("/api/v1/blockchain/tx/:txid", get(get_transaction_by_id))
+        .route("/api/v1/blockchain/broadcast", post(broadcast_transaction))
         .route("/api/v1/mempool", get(get_mempool))
+        .route("/api/v1/fee/estimate", get(get_fee_estimate))
         // Wallet
         .route("/api/v1/wallet/balance", get(get_balance))
         .route("/api/v1/wallet/addresses", get(get_addresses))
+        .route("/api/v1/wallet/utxos", get(get_wallet_utxos))
         .route("/api/v1/wallet/transactions", get(get_transactions))
         .route("/api/v1/wallet/import", post(import_wallet))
         .route("/api/v1/wallet/send", post(send_vtr))
@@ -91,12 +99,19 @@ mod tests {
             .await
             .unwrap();
         let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
         (status, body)
     }
 
-    async fn post_json(app: axum::Router, uri: &str, payload: serde_json::Value) -> (StatusCode, serde_json::Value) {
+    async fn post_json(
+        app: axum::Router,
+        uri: &str,
+        payload: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
         let response = app
             .oneshot(
                 Request::builder()
@@ -109,8 +124,11 @@ mod tests {
             .await
             .unwrap();
         let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
         (status, body)
     }
 
@@ -140,13 +158,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_genesis_block_by_height() {
+        let app = build_router(AppState::new());
+        let (status, body) = get(app, "/api/v1/blockchain/block/height/0").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["height"], 0);
+        assert!(body["hash"].as_str().unwrap().len() == 64);
+    }
+
+    #[tokio::test]
+    async fn test_get_genesis_transaction_by_id() {
+        let state = AppState::new();
+        let txid = {
+            let chain = state.chain.lock().await;
+            hex::encode(chain.genesis_block().transactions[0].txid())
+        };
+        let app = build_router(state);
+        let (status, body) = get(app, &format!("/api/v1/blockchain/tx/{}", txid)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["txid"], txid);
+        assert_eq!(body["block_height"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_raw_transaction_and_lookup() {
+        use vtorrent_node::block::{Transaction, TxInput, TxOutput, TxType};
+
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::Standard,
+            inputs: vec![TxInput {
+                prev_txid: [7u8; 32],
+                prev_vout: 0,
+                script_sig: vec![0x51],
+                sequence: 0xffff_ffff,
+            }],
+            outputs: vec![TxOutput {
+                value: 95_000,
+                script_pubkey: vec![0x51],
+            }],
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        };
+        let txid = hex::encode(tx.txid());
+        let app = build_router(AppState::new());
+        let (status, body) = post_json(
+            app.clone(),
+            "/api/v1/blockchain/broadcast",
+            serde_json::json!({ "raw_tx": hex::encode(bincode::serialize(&tx).unwrap()) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["accepted"], true);
+        assert_eq!(body["relayed"], false);
+
+        let (status, body) = get(app, &format!("/api/v1/blockchain/tx/{}", txid)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["block_hash"], serde_json::Value::Null);
+        assert_eq!(body["tx_type"], "transfer");
+    }
+
+    #[tokio::test]
+    async fn test_fee_estimate_and_wallet_utxos() {
+        let app = build_router(AppState::new());
+        let (status, fee_body) = get(app.clone(), "/api/v1/fee/estimate").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(fee_body["recommended_sat_per_byte"], 1);
+        assert_eq!(fee_body["mempool_transactions"], 0);
+
+        let (status, utxo_body) = get(app, "/api/v1/wallet/utxos?address=VTestAddress").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(utxo_body["total_satoshis"], 0);
+        assert!(utxo_body["utxos"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn test_wallet_lock_unlock() {
         let app = build_router(AppState::new());
         let (status, body) = post_json(
             app,
             "/api/v1/wallet/unlock",
             serde_json::json!({ "passphrase": "testpassphrase", "timeout_secs": 300 }),
-        ).await;
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["success"], true);
     }
@@ -162,7 +257,8 @@ mod tests {
                 "amount_satoshis": 1000000,
                 "passphrase": "test"
             }),
-        ).await;
+        )
+        .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
     }
 

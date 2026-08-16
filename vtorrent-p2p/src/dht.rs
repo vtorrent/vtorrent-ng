@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 /// DHT Bootstrap Module for vTorrent 2.0
 ///
 /// Uses the BitTorrent Kademlia DHT network (BEP-5) to discover vTorrent peers
@@ -8,15 +9,11 @@
 /// Bootstrap nodes are the well-known public BitTorrent DHT routers — these
 /// are maintained by BitTorrent Inc., µTorrent, and Transmission and have
 /// been reliably online for over a decade.
-
 use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
-use std::collections::HashMap;
 
 use rand::Rng;
-use sha2::{Sha256, Digest};
-
-use crate::error::{P2pError, Result};
+use sha2::{Digest, Sha256};
 
 // ─── vTorrent DHT Info-Hash ───────────────────────────────────────────────────
 // This is the "torrent" that vTorrent nodes announce on the BitTorrent DHT.
@@ -31,7 +28,7 @@ pub const DHT_BOOTSTRAP_NODES: &[&str] = &[
     "router.bittorrent.com:6881",
     "router.utorrent.com:6881",
     "dht.transmissionbt.com:6881",
-    "dht.aelitis.com:6881",   // Vuze/Azureus
+    "dht.aelitis.com:6881", // Vuze/Azureus
 ];
 
 /// Timeout for DHT UDP queries.
@@ -122,7 +119,8 @@ impl CompactNode {
     }
 }
 
-/// Encode a byte slice as a bencoded string: "len:data"
+/// Encode a byte slice as a bencoded string: "len:data".
+#[cfg(test)]
 fn bencode_bytes(data: &[u8]) -> Vec<u8> {
     let mut result = format!("{}:", data.len()).into_bytes();
     result.extend_from_slice(data);
@@ -258,7 +256,9 @@ impl DhtBootstrap {
             }
         };
 
-        socket.set_read_timeout(Some(Duration::from_millis(DHT_TIMEOUT_MS))).ok();
+        socket
+            .set_read_timeout(Some(Duration::from_millis(DHT_TIMEOUT_MS)))
+            .ok();
 
         let mut discovered_peers: Vec<SocketAddr> = Vec::new();
         let mut queried_nodes: HashMap<SocketAddr, bool> = HashMap::new();
@@ -279,7 +279,10 @@ impl DhtBootstrap {
 
         while !pending_nodes.is_empty() && discovered_peers.len() < MAX_DHT_PEERS {
             if start.elapsed() > timeout {
-                tracing::debug!("DHT: Bootstrap timeout after {}ms", start.elapsed().as_millis());
+                tracing::debug!(
+                    "DHT: Bootstrap timeout after {}ms",
+                    start.elapsed().as_millis()
+                );
                 break;
             }
 
@@ -306,7 +309,8 @@ impl DhtBootstrap {
                 // Peers found — these are on DHT port; we need to check if they
                 // are running vTorrent by attempting a connection on port 22524
                 for peer in peers {
-                    let vtorrent_addr = SocketAddr::new(peer.addr.ip(), crate::peer_manager::DEFAULT_PORT);
+                    let vtorrent_addr =
+                        SocketAddr::new(peer.addr.ip(), crate::peer_manager::DEFAULT_PORT);
                     if !discovered_peers.contains(&vtorrent_addr) {
                         discovered_peers.push(vtorrent_addr);
                         tracing::debug!("DHT: Found peer candidate: {}", vtorrent_addr);
@@ -345,7 +349,9 @@ impl DhtBootstrap {
             Ok(s) => s,
             Err(_) => return,
         };
-        socket.set_read_timeout(Some(Duration::from_millis(2000))).ok();
+        socket
+            .set_read_timeout(Some(Duration::from_millis(2000)))
+            .ok();
 
         // First do a find_node to get close nodes, then announce to them
         for seed in DHT_BOOTSTRAP_NODES.iter().take(2) {
@@ -378,12 +384,7 @@ impl DhtBootstrap {
 }
 
 /// Build a BEP-5 `announce_peer` message.
-fn build_announce_peer(
-    node_id: &NodeId,
-    info_hash: &NodeId,
-    port: u16,
-    tid: &[u8; 2],
-) -> Vec<u8> {
+fn build_announce_peer(node_id: &NodeId, info_hash: &NodeId, port: u16, tid: &[u8; 2]) -> Vec<u8> {
     let mut msg = Vec::new();
     msg.extend_from_slice(b"d1:ad2:id20:");
     msg.extend_from_slice(node_id.as_bytes());
@@ -417,9 +418,6 @@ impl Default for DhtBootstrap {
 
 /// Cloudflare DNS-over-HTTPS endpoint.
 const CLOUDFLARE_DOH_URL: &str = "https://cloudflare-dns.com/dns-query";
-
-/// Cloudflare 1.1.1.1 fallback IP (used if DoH itself is unreachable).
-const CLOUDFLARE_FALLBACK_IP: &str = "1.1.1.1";
 
 /// Google 8.8.8.8 DoH endpoint as secondary fallback.
 const GOOGLE_DOH_URL: &str = "https://dns.google/resolve";
@@ -501,10 +499,7 @@ fn resolve_via_google_doh(hostname: &str) -> Vec<std::net::IpAddr> {
 /// ```json
 /// { "Answer": [ { "type": 1, "data": "1.2.3.4" }, ... ] }
 /// ```
-fn parse_doh_response(
-    resp: reqwest::blocking::Response,
-    hostname: &str,
-) -> Vec<std::net::IpAddr> {
+fn parse_doh_response(resp: reqwest::blocking::Response, hostname: &str) -> Vec<std::net::IpAddr> {
     let json: serde_json::Value = match resp.json() {
         Ok(v) => v,
         Err(e) => {
@@ -619,28 +614,28 @@ pub fn discover_peers_via_github(port: u16) -> Vec<std::net::SocketAddr> {
     };
 
     // Try primary URL then mirrors in order
-    let urls = std::iter::once(GITHUB_PEERS_URL)
-        .chain(GITHUB_PEERS_MIRRORS.iter().copied());
+    let urls = std::iter::once(GITHUB_PEERS_URL).chain(GITHUB_PEERS_MIRRORS.iter().copied());
 
     for url in urls {
         tracing::debug!("GitHub bootstrap: trying {}", url);
         match client.get(url).send() {
-            Ok(resp) if resp.status().is_success() => {
-                match resp.text() {
-                    Ok(text) => {
-                        let peers = parse_peers_txt(&text, port);
-                        if !peers.is_empty() {
-                            tracing::info!(
-                                "GitHub bootstrap: found {} peers from {}",
-                                peers.len(), url
-                            );
-                            return peers;
-                        }
-                        tracing::debug!("GitHub bootstrap: {} returned empty peer list", url);
+            Ok(resp) if resp.status().is_success() => match resp.text() {
+                Ok(text) => {
+                    let peers = parse_peers_txt(&text, port);
+                    if !peers.is_empty() {
+                        tracing::info!(
+                            "GitHub bootstrap: found {} peers from {}",
+                            peers.len(),
+                            url
+                        );
+                        return peers;
                     }
-                    Err(e) => tracing::debug!("GitHub bootstrap: failed to read body from {}: {}", url, e),
+                    tracing::debug!("GitHub bootstrap: {} returned empty peer list", url);
                 }
-            }
+                Err(e) => {
+                    tracing::debug!("GitHub bootstrap: failed to read body from {}: {}", url, e)
+                }
+            },
             Ok(resp) => {
                 tracing::debug!("GitHub bootstrap: {} returned HTTP {}", url, resp.status());
             }
@@ -724,8 +719,8 @@ mod tests {
     fn test_compact_peer_parse_multiple() {
         // Two peers: 1.2.3.4:1000 and 5.6.7.8:2000
         let data = [
-            1u8, 2, 3, 4, 0x03, 0xE8,  // 1.2.3.4:1000
-            5u8, 6, 7, 8, 0x07, 0xD0,  // 5.6.7.8:2000
+            1u8, 2, 3, 4, 0x03, 0xE8, // 1.2.3.4:1000
+            5u8, 6, 7, 8, 0x07, 0xD0, // 5.6.7.8:2000
         ];
         let peers = CompactPeer::parse_list(&data);
         assert_eq!(peers.len(), 2);

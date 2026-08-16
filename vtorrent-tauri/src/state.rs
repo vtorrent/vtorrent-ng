@@ -4,11 +4,10 @@
 /// The node runs as a background tokio task; the RPC AppState is shared
 /// between the node task and the Tauri command handlers so that all data
 /// (chain, mempool, DEX, torrents, staking) is always consistent.
-
 use std::sync::Mutex;
 use tokio::sync::Mutex as TokioMutex;
-use vtorrent_wallet::wallet::Wallet;
 use vtorrent_rpc::state::AppState as RpcAppState;
+use vtorrent_wallet::wallet::Wallet;
 
 /// Shared handle to the running node's RPC state.
 ///

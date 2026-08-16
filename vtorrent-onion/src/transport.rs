@@ -1,13 +1,3 @@
-/// Top-level transport router.
-///
-/// Routes outbound TCP connections through the appropriate transport:
-/// - `.onion` addresses → Tor SOCKS5
-/// - `.i2p` addresses → I2P SAM bridge
-/// - Clearnet addresses → direct TCP (or Tor if `prefer_onion` is set)
-///
-/// Falls back gracefully if the preferred transport is unavailable.
-
-use tokio::net::TcpStream;
 use crate::{
     addr::{is_anon_addr, OnionAddr},
     config::TransportConfig,
@@ -16,6 +6,15 @@ use crate::{
     i2p::I2pTransport,
     tor::TorTransport,
 };
+/// Top-level transport router.
+///
+/// Routes outbound TCP connections through the appropriate transport:
+/// - `.onion` addresses → Tor SOCKS5
+/// - `.i2p` addresses → I2P SAM bridge
+/// - Clearnet addresses → direct TCP (or Tor if `prefer_onion` is set)
+///
+/// Falls back gracefully if the preferred transport is unavailable.
+use tokio::net::TcpStream;
 
 /// Which transport was used for a connection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,7 +51,7 @@ impl OnionTransport {
             if onion_addr.is_tor() {
                 if !self.config.tor_enabled {
                     return Err(OnionError::NotConfigured(
-                        "Tor is disabled but a .onion address was requested".to_string()
+                        "Tor is disabled but a .onion address was requested".to_string(),
                     ));
                 }
                 let stream = self.tor.connect(addr).await?;
@@ -60,10 +59,13 @@ impl OnionTransport {
             } else if onion_addr.is_i2p() {
                 if !self.config.i2p_enabled {
                     return Err(OnionError::NotConfigured(
-                        "I2P is disabled but a .i2p address was requested".to_string()
+                        "I2P is disabled but a .i2p address was requested".to_string(),
                     ));
                 }
-                let stream = self.i2p.connect(onion_addr.host(), onion_addr.port()).await?;
+                let stream = self
+                    .i2p
+                    .connect(onion_addr.host(), onion_addr.port())
+                    .await?;
                 return Ok((stream, TransportMode::I2p));
             }
         }
@@ -75,7 +77,11 @@ impl OnionTransport {
                 match self.tor.connect(addr).await {
                     Ok(stream) => return Ok((stream, TransportMode::Tor)),
                     Err(e) => {
-                        tracing::warn!("Tor connect to {} failed ({}), falling back to clearnet", addr, e);
+                        tracing::warn!(
+                            "Tor connect to {} failed ({}), falling back to clearnet",
+                            addr,
+                            e
+                        );
                     }
                 }
             }
@@ -109,7 +115,9 @@ impl OnionTransport {
         if !self.config.tor_enabled {
             return Err(OnionError::NotConfigured("Tor is disabled".to_string()));
         }
-        self.tor.create_hidden_service(local_port, virtual_port).await
+        self.tor
+            .create_hidden_service(local_port, virtual_port)
+            .await
     }
 
     /// Create an I2P destination for inbound vTorrent connections.
@@ -164,9 +172,9 @@ mod tests {
             ..Default::default()
         };
         let transport = OnionTransport::new(config);
-        let result = transport.connect(
-            "pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion:22526"
-        ).await;
+        let result = transport
+            .connect("pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion:22526")
+            .await;
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), OnionError::NotConfigured(_)));
     }

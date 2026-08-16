@@ -1,3 +1,8 @@
+use crate::{
+    config::TransportConfig,
+    error::{OnionError, Result},
+    hidden_service::HiddenServiceInfo,
+};
 /// Tor transport implementation.
 ///
 /// Connects to the Tor SOCKS5 proxy (default: 127.0.0.1:9050) to route
@@ -8,15 +13,9 @@
 /// - Checking Tor bootstrap status
 /// - Creating ephemeral hidden services (ADD_ONION)
 /// - Requesting new circuits (SIGNAL NEWNYM)
-
 use std::time::Duration;
-use tokio::net::TcpStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use crate::{
-    config::TransportConfig,
-    error::{OnionError, Result},
-    hidden_service::HiddenServiceInfo,
-};
+use tokio::net::TcpStream;
 
 /// Tor transport — wraps SOCKS5 and control port interactions.
 pub struct TorTransport {
@@ -31,10 +30,9 @@ impl TorTransport {
     /// Check if the Tor SOCKS5 proxy is reachable.
     pub async fn is_available(&self) -> bool {
         let timeout = Duration::from_secs(3);
-        tokio::time::timeout(
-            timeout,
-            TcpStream::connect(&self.config.tor_socks_addr)
-        ).await.is_ok_and(|r| r.is_ok())
+        tokio::time::timeout(timeout, TcpStream::connect(&self.config.tor_socks_addr))
+            .await
+            .is_ok_and(|r| r.is_ok())
     }
 
     /// Connect to `target_addr` through the Tor SOCKS5 proxy.
@@ -49,15 +47,14 @@ impl TorTransport {
         let (host, port) = split_host_port(target_addr)?;
 
         // Connect to SOCKS5 proxy
-        let mut proxy = tokio::time::timeout(
-            timeout,
-            TcpStream::connect(&self.config.tor_socks_addr)
-        ).await
-            .map_err(|_| OnionError::Timeout(self.config.connect_timeout_secs))?
-            .map_err(|e| OnionError::TorUnavailable {
-                addr: self.config.tor_socks_addr.clone(),
-                source: e,
-            })?;
+        let mut proxy =
+            tokio::time::timeout(timeout, TcpStream::connect(&self.config.tor_socks_addr))
+                .await
+                .map_err(|_| OnionError::Timeout(self.config.connect_timeout_secs))?
+                .map_err(|e| OnionError::TorUnavailable {
+                    addr: self.config.tor_socks_addr.clone(),
+                    source: e,
+                })?;
 
         // SOCKS5 handshake
         socks5_connect(&mut proxy, &host, port).await?;
@@ -68,7 +65,9 @@ impl TorTransport {
     /// Get the Tor bootstrap status via the control port.
     /// Returns a percentage (0–100) or None if control port is unavailable.
     pub async fn bootstrap_status(&self) -> Option<u8> {
-        let mut stream = TcpStream::connect(&self.config.tor_control_addr).await.ok()?;
+        let mut stream = TcpStream::connect(&self.config.tor_control_addr)
+            .await
+            .ok()?;
 
         // Authenticate
         let auth_cmd = if self.config.tor_control_password.is_empty() {
@@ -81,10 +80,15 @@ impl TorTransport {
         let mut buf = [0u8; 256];
         let n = stream.read(&mut buf).await.ok()?;
         let resp = std::str::from_utf8(&buf[..n]).ok()?;
-        if !resp.starts_with("250") { return None; }
+        if !resp.starts_with("250") {
+            return None;
+        }
 
         // Query bootstrap status
-        stream.write_all(b"GETINFO status/bootstrap-phase\r\n").await.ok()?;
+        stream
+            .write_all(b"GETINFO status/bootstrap-phase\r\n")
+            .await
+            .ok()?;
         let n = stream.read(&mut buf).await.ok()?;
         let resp = std::str::from_utf8(&buf[..n]).ok()?;
 
@@ -104,10 +108,11 @@ impl TorTransport {
         local_port: u16,
         virtual_port: u16,
     ) -> Result<HiddenServiceInfo> {
-        let mut stream = TcpStream::connect(&self.config.tor_control_addr).await
-            .map_err(|e| OnionError::HiddenServiceError(
-                format!("Control port unavailable: {}", e)
-            ))?;
+        let mut stream = TcpStream::connect(&self.config.tor_control_addr)
+            .await
+            .map_err(|e| {
+                OnionError::HiddenServiceError(format!("Control port unavailable: {}", e))
+            })?;
 
         // Authenticate
         let auth_cmd = if self.config.tor_control_password.is_empty() {
@@ -120,9 +125,10 @@ impl TorTransport {
         let n = stream.read(&mut buf).await?;
         let resp = std::str::from_utf8(&buf[..n]).unwrap_or("");
         if !resp.starts_with("250") {
-            return Err(OnionError::HiddenServiceError(
-                format!("Auth failed: {}", resp.trim())
-            ));
+            return Err(OnionError::HiddenServiceError(format!(
+                "Auth failed: {}",
+                resp.trim()
+            )));
         }
 
         // ADD_ONION command — creates an ephemeral hidden service
@@ -135,18 +141,20 @@ impl TorTransport {
         let resp = std::str::from_utf8(&buf[..n]).unwrap_or("").to_string();
 
         if !resp.contains("250-ServiceID=") {
-            return Err(OnionError::HiddenServiceError(
-                format!("ADD_ONION failed: {}", resp.trim())
-            ));
+            return Err(OnionError::HiddenServiceError(format!(
+                "ADD_ONION failed: {}",
+                resp.trim()
+            )));
         }
 
         // Parse ServiceID
-        let service_id = resp.lines()
+        let service_id = resp
+            .lines()
             .find(|l| l.starts_with("250-ServiceID="))
             .and_then(|l| l.strip_prefix("250-ServiceID="))
-            .ok_or_else(|| OnionError::HiddenServiceError(
-                "Missing ServiceID in response".to_string()
-            ))?
+            .ok_or_else(|| {
+                OnionError::HiddenServiceError("Missing ServiceID in response".to_string())
+            })?
             .trim()
             .to_string();
 
@@ -165,10 +173,11 @@ impl TorTransport {
     /// Request a new Tor circuit (SIGNAL NEWNYM).
     /// This changes the exit node used for subsequent connections.
     pub async fn new_circuit(&self) -> Result<()> {
-        let mut stream = TcpStream::connect(&self.config.tor_control_addr).await
-            .map_err(|e| OnionError::HiddenServiceError(
-                format!("Control port unavailable: {}", e)
-            ))?;
+        let mut stream = TcpStream::connect(&self.config.tor_control_addr)
+            .await
+            .map_err(|e| {
+                OnionError::HiddenServiceError(format!("Control port unavailable: {}", e))
+            })?;
 
         let auth_cmd = if self.config.tor_control_password.is_empty() {
             "AUTHENTICATE\r\n".to_string()
@@ -176,14 +185,40 @@ impl TorTransport {
             format!("AUTHENTICATE \"{}\"\r\n", self.config.tor_control_password)
         };
         stream.write_all(auth_cmd.as_bytes()).await?;
-        let mut buf = [0u8; 256];
-        stream.read(&mut buf).await?;
+        read_control_reply(&mut stream).await?;
 
         stream.write_all(b"SIGNAL NEWNYM\r\n").await?;
-        stream.read(&mut buf).await?;
+        read_control_reply(&mut stream).await?;
 
         Ok(())
     }
+}
+
+/// Read one bounded, line-oriented Tor control-port response.
+async fn read_control_reply(stream: &mut TcpStream) -> Result<()> {
+    const MAX_CONTROL_REPLY: usize = 4096;
+    let mut response = Vec::new();
+    loop {
+        if response.len() >= MAX_CONTROL_REPLY {
+            return Err(OnionError::HiddenServiceError(
+                "Tor control response exceeded maximum length".into(),
+            ));
+        }
+        let mut byte = [0u8; 1];
+        stream.read_exact(&mut byte).await?;
+        response.push(byte[0]);
+        if response.ends_with(b"\r\n") {
+            break;
+        }
+    }
+
+    if !response.starts_with(b"250") {
+        return Err(OnionError::HiddenServiceError(format!(
+            "Tor control command failed: {}",
+            String::from_utf8_lossy(&response).trim(),
+        )));
+    }
+    Ok(())
 }
 
 /// Perform a SOCKS5 handshake and CONNECT request.
@@ -195,9 +230,10 @@ async fn socks5_connect(stream: &mut TcpStream, host: &str, port: u16) -> Result
     let mut buf = [0u8; 2];
     stream.read_exact(&mut buf).await?;
     if buf[0] != 0x05 || buf[1] != 0x00 {
-        return Err(OnionError::Socks5Error(
-            format!("Unexpected greeting response: {:02x} {:02x}", buf[0], buf[1])
-        ));
+        return Err(OnionError::Socks5Error(format!(
+            "Unexpected greeting response: {:02x} {:02x}",
+            buf[0], buf[1]
+        )));
     }
 
     // ── Step 2: CONNECT request ───────────────────────────────────────────
@@ -205,11 +241,11 @@ async fn socks5_connect(stream: &mut TcpStream, host: &str, port: u16) -> Result
     let host_len = host_bytes.len() as u8;
 
     let mut req = vec![
-        0x05,       // SOCKS version
-        0x01,       // CONNECT command
-        0x00,       // reserved
-        0x03,       // address type: domain name
-        host_len,   // domain name length
+        0x05,     // SOCKS version
+        0x01,     // CONNECT command
+        0x00,     // reserved
+        0x03,     // address type: domain name
+        host_len, // domain name length
     ];
     req.extend_from_slice(host_bytes);
     req.push((port >> 8) as u8);
@@ -236,9 +272,10 @@ async fn socks5_connect(stream: &mut TcpStream, host: &str, port: u16) -> Result
             0x08 => "address type not supported",
             _ => "unknown error",
         };
-        return Err(OnionError::Socks5Error(
-            format!("SOCKS5 CONNECT failed: {} (code {})", reason, resp[1])
-        ));
+        return Err(OnionError::Socks5Error(format!(
+            "SOCKS5 CONNECT failed: {} (code {})",
+            reason, resp[1]
+        )));
     }
 
     Ok(())
@@ -246,13 +283,13 @@ async fn socks5_connect(stream: &mut TcpStream, host: &str, port: u16) -> Result
 
 /// Split "host:port" into (host, port).
 fn split_host_port(addr: &str) -> Result<(String, u16)> {
-    let colon = addr.rfind(':').ok_or_else(|| {
-        OnionError::InvalidOnionAddr(format!("No port in address: {}", addr))
-    })?;
+    let colon = addr
+        .rfind(':')
+        .ok_or_else(|| OnionError::InvalidOnionAddr(format!("No port in address: {}", addr)))?;
     let host = addr[..colon].to_string();
-    let port: u16 = addr[colon + 1..].parse().map_err(|_| {
-        OnionError::InvalidOnionAddr(format!("Invalid port in: {}", addr))
-    })?;
+    let port: u16 = addr[colon + 1..]
+        .parse()
+        .map_err(|_| OnionError::InvalidOnionAddr(format!("Invalid port in: {}", addr)))?;
     Ok((host, port))
 }
 

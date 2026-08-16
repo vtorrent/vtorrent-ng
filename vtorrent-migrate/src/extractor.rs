@@ -1,22 +1,21 @@
-/// Main wallet extraction logic.
-///
-/// Ties together the BDB parser, crypter, and key derivation to produce
-/// a clean list of extracted keys and their legacy vTorrent addresses.
-
-use std::collections::HashMap;
-use vtorrent_core::{
-    address::Address,
-    keys::{PrivateKey, serialize_pubkey},
-    network::legacy,
-};
 use crate::{
     bdb::{decode_record_type, parse_wallet},
     crypter::{decrypt_master_key, decrypt_private_key},
     error::{MigrateError, Result},
     types::{
-        CKeyRecord, ExtractedKey, KeyRecord, KeySource, MasterKey,
-        RawRecord, RecordType, WalletExtraction,
+        CKeyRecord, ExtractedKey, KeyRecord, KeySource, MasterKey, RecordType,
+        WalletExtraction,
     },
+};
+/// Main wallet extraction logic.
+///
+/// Ties together the BDB parser, crypter, and key derivation to produce
+/// a clean list of extracted keys and their legacy vTorrent addresses.
+use std::collections::HashMap;
+use vtorrent_core::{
+    address::Address,
+    keys::PrivateKey,
+    network::legacy,
 };
 
 /// Extract all keys from a wallet.dat file.
@@ -27,10 +26,7 @@ use crate::{
 ///
 /// # Returns
 /// A `WalletExtraction` containing all extracted keys and metadata.
-pub fn extract_wallet(
-    wallet_data: &[u8],
-    passphrase: Option<&str>,
-) -> Result<WalletExtraction> {
+pub fn extract_wallet(wallet_data: &[u8], passphrase: Option<&str>) -> Result<WalletExtraction> {
     // Step 1: Parse all raw records from the BerkeleyDB file
     let raw_records = parse_wallet(wallet_data)?;
 
@@ -47,7 +43,7 @@ pub fn extract_wallet(
             continue;
         };
 
-        match RecordType::from_str(&type_str) {
+        match RecordType::parse(&type_str) {
             RecordType::Key => {
                 // Key record: key_data = [type][pubkey], value_data = [privkey_bytes]
                 if let Some(key_rec) = parse_key_record(rest, &record.value_data) {
@@ -242,7 +238,7 @@ fn parse_privkey_value(value_data: &[u8]) -> Option<Vec<u8>> {
     // The value may have a compact-size prefix
     if value_data[0] < 0xfd {
         let len = value_data[0] as usize;
-        if 1 + len <= value_data.len() && len >= 32 {
+        if len < value_data.len() && len >= 32 {
             return Some(value_data[1..1 + len].to_vec());
         }
     }

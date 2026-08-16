@@ -7,11 +7,11 @@ use serde::{Deserialize, Serialize};
 /// - Seeders earn VTR for sharing bandwidth
 /// - Leechers pay VTR for faster downloads from incentivized peers
 /// - The network self-regulates: more VTR reward = more seeders = faster downloads
-pub const VTR_PER_GB_SEEDED: f64 = 1.0;      // 1 VTR per GB uploaded to peers
-pub const VTR_PER_GB_DOWNLOADED: f64 = 0.5;  // 0.5 VTR per GB downloaded from incentivized peers
+pub const VTR_PER_GB_SEEDED: f64 = 1.0; // 1 VTR per GB uploaded to peers
+pub const VTR_PER_GB_DOWNLOADED: f64 = 0.5; // 0.5 VTR per GB downloaded from incentivized peers
 pub const MIN_PAYMENT_BYTES: u64 = 10 * 1024 * 1024; // Minimum 10 MB before payment is triggered
-pub const PAYMENT_INTERVAL_SECS: u64 = 300;  // Payment settled every 5 minutes
-pub const COIN: u64 = 1_000_000;             // 1 VTR = 1,000,000 satoshis
+pub const PAYMENT_INTERVAL_SECS: u64 = 300; // Payment settled every 5 minutes
+pub const COIN: u64 = 1_000_000; // 1 VTR = 1,000,000 satoshis
 
 /// Tracks bandwidth exchanged with a single peer for incentive accounting.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,13 +142,17 @@ pub fn aggregate_summary(accounts: &[PeerBandwidthAccount]) -> IncentiveSummary 
         incentive_peer_count: 0,
     };
     for account in accounts {
-        summary.total_earned_satoshis = summary.total_earned_satoshis
+        summary.total_earned_satoshis = summary
+            .total_earned_satoshis
             .saturating_add(account.total_earned_satoshis);
-        summary.total_paid_satoshis = summary.total_paid_satoshis
+        summary.total_paid_satoshis = summary
+            .total_paid_satoshis
             .saturating_add(account.total_paid_satoshis);
-        summary.total_bytes_uploaded = summary.total_bytes_uploaded
+        summary.total_bytes_uploaded = summary
+            .total_bytes_uploaded
             .saturating_add(account.bytes_uploaded);
-        summary.total_bytes_downloaded = summary.total_bytes_downloaded
+        summary.total_bytes_downloaded = summary
+            .total_bytes_downloaded
             .saturating_add(account.bytes_downloaded);
         if account.incentive_enabled {
             summary.incentive_peer_count += 1;

@@ -11,7 +11,6 @@
 ///
 /// This creates a fully self-sustaining peer discovery mechanism that requires
 /// zero centralized infrastructure.
-
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
@@ -217,7 +216,9 @@ impl AddrBook {
 
         // Prune if over the limit — remove the lowest-quality entries
         if self.entries.len() > MAX_ADDR_BOOK_SIZE {
-            let mut entries: Vec<_> = self.entries.iter()
+            let mut entries: Vec<_> = self
+                .entries
+                .iter()
                 .map(|(addr, e)| (*addr, e.quality_score()))
                 .collect();
             entries.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -230,16 +231,22 @@ impl AddrBook {
 
     /// Add addresses from a DHT discovery result.
     pub fn add_dht_peers(&mut self, addrs: &[SocketAddr]) {
-        let entries: Vec<AddrEntry> = addrs.iter()
+        let entries: Vec<AddrEntry> = addrs
+            .iter()
             .map(|&addr| AddrEntry::new(addr, NODE_NETWORK))
             .collect();
         self.add_addrs(&entries);
-        tracing::info!("PEX: Added {} DHT-discovered peers to address book", addrs.len());
+        tracing::info!(
+            "PEX: Added {} DHT-discovered peers to address book",
+            addrs.len()
+        );
     }
 
     /// Add addresses from a received `addr` message.
     pub fn add_from_addr_msg(&mut self, msg: &AddrMsg) {
-        let entries: Vec<AddrEntry> = msg.addrs.iter()
+        let entries: Vec<AddrEntry> = msg
+            .addrs
+            .iter()
             .filter_map(|pa| {
                 let addr: SocketAddr = format!("{}:{}", pa.addr, pa.port).parse().ok()?;
                 Some(AddrEntry {
@@ -261,25 +268,31 @@ impl AddrBook {
     /// Returns up to `count` addresses sorted by quality score, excluding
     /// already-connected peers and our own address.
     pub fn get_candidates(&self, count: usize) -> Vec<SocketAddr> {
-        let mut candidates: Vec<_> = self.entries.iter()
+        let mut candidates: Vec<_> = self
+            .entries
+            .iter()
             .filter(|(addr, entry)| {
-                !self.connected.contains(*addr)
-                    && Some(**addr) != self.our_addr
-                    && entry.is_fresh()
+                !self.connected.contains(*addr) && Some(**addr) != self.our_addr && entry.is_fresh()
             })
             .map(|(addr, entry)| (*addr, entry.quality_score()))
             .collect();
 
         // Sort by quality score descending
         candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        candidates.iter().take(count).map(|(addr, _)| *addr).collect()
+        candidates
+            .iter()
+            .take(count)
+            .map(|(addr, _)| *addr)
+            .collect()
     }
 
     /// Get all known addresses for sharing with peers (for `addr` response).
     ///
     /// Returns up to MAX_ADDR_PER_MSG fresh addresses.
     pub fn get_for_sharing(&self) -> AddrMsg {
-        let addrs: Vec<PeerAddr> = self.entries.values()
+        let addrs: Vec<PeerAddr> = self
+            .entries
+            .values()
             .filter(|e| e.is_fresh())
             .take(MAX_ADDR_PER_MSG)
             .map(|e| PeerAddr {
@@ -372,13 +385,11 @@ impl AddrBook {
     /// Only fresh entries (not stale) are persisted to keep the file small.
     /// Returns the number of entries written.
     pub fn save(&self, path: &std::path::Path) -> std::io::Result<usize> {
-        let fresh: Vec<&AddrEntry> = self.entries.values()
-            .filter(|e| e.is_fresh())
-            .collect();
+        let fresh: Vec<&AddrEntry> = self.entries.values().filter(|e| e.is_fresh()).collect();
 
         let count = fresh.len();
         let json = serde_json::to_string_pretty(&fresh)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
 
         // Write atomically via a temp file
         let tmp = path.with_extension("dat.tmp");
@@ -454,7 +465,10 @@ mod tests {
         book.add_dht_peers(&[addr]);
         book.mark_connected(addr);
         let candidates = book.get_candidates(10);
-        assert!(candidates.is_empty(), "Connected peers should not be candidates");
+        assert!(
+            candidates.is_empty(),
+            "Connected peers should not be candidates"
+        );
     }
 
     #[test]
@@ -464,7 +478,10 @@ mod tests {
         book.set_our_addr(addr);
         book.add_dht_peers(&[addr]);
         let candidates = book.get_candidates(10);
-        assert!(candidates.is_empty(), "Our own address should not be a candidate");
+        assert!(
+            candidates.is_empty(),
+            "Our own address should not be a candidate"
+        );
     }
 
     #[test]
@@ -485,13 +502,27 @@ mod tests {
 
         let msg = AddrMsg {
             addrs: vec![
-                PeerAddr { timestamp: now, services: NODE_NETWORK, addr: "10.0.0.1".to_string(), port: 22524 },
-                PeerAddr { timestamp: now, services: NODE_NETWORK, addr: "10.0.0.2".to_string(), port: 22524 },
+                PeerAddr {
+                    timestamp: now,
+                    services: NODE_NETWORK,
+                    addr: "10.0.0.1".to_string(),
+                    port: 22524,
+                },
+                PeerAddr {
+                    timestamp: now,
+                    services: NODE_NETWORK,
+                    addr: "10.0.0.2".to_string(),
+                    port: 22524,
+                },
             ],
         };
         book.add_from_addr_msg(&msg);
         // On mainnet, 10.x.x.x (private) addresses should be rejected
-        assert_eq!(book.len(), 0, "Private addresses should be rejected on mainnet");
+        assert_eq!(
+            book.len(),
+            0,
+            "Private addresses should be rejected on mainnet"
+        );
     }
 
     #[test]
@@ -504,13 +535,27 @@ mod tests {
 
         let msg = AddrMsg {
             addrs: vec![
-                PeerAddr { timestamp: now, services: NODE_NETWORK, addr: "10.0.0.1".to_string(), port: 22524 },
-                PeerAddr { timestamp: now, services: NODE_NETWORK, addr: "10.0.0.2".to_string(), port: 22524 },
+                PeerAddr {
+                    timestamp: now,
+                    services: NODE_NETWORK,
+                    addr: "10.0.0.1".to_string(),
+                    port: 22524,
+                },
+                PeerAddr {
+                    timestamp: now,
+                    services: NODE_NETWORK,
+                    addr: "10.0.0.2".to_string(),
+                    port: 22524,
+                },
             ],
         };
         book.add_from_addr_msg(&msg);
         // On testnet, 10.x.x.x (private) addresses should be accepted
-        assert_eq!(book.len(), 2, "Private addresses should be accepted on testnet");
+        assert_eq!(
+            book.len(),
+            2,
+            "Private addresses should be accepted on testnet"
+        );
     }
 
     #[test]
@@ -539,7 +584,11 @@ mod tests {
 
         let mut testnet = AddrBook::new_testnet();
         testnet.add_dht_peers(&[loopback]);
-        assert_eq!(testnet.len(), 0, "Testnet should also reject loopback (use explicit connect instead)");
+        assert_eq!(
+            testnet.len(),
+            0,
+            "Testnet should also reject loopback (use explicit connect instead)"
+        );
     }
 
     #[test]
@@ -564,9 +613,14 @@ mod tests {
     fn test_addr_book_pruning() {
         let mut book = AddrBook::new();
         // Add more than MAX_ADDR_BOOK_SIZE entries (all public IPs)
-        let addrs: Vec<SocketAddr> = (1u16..=100).map(|i| {
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 2, (i / 256) as u8, (i % 256) as u8)), 22524)
-        }).collect();
+        let addrs: Vec<SocketAddr> = (1u16..=100)
+            .map(|i| {
+                SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::new(1, 2, (i / 256) as u8, (i % 256) as u8)),
+                    22524,
+                )
+            })
+            .collect();
         book.add_dht_peers(&addrs);
         // Should not exceed MAX_ADDR_BOOK_SIZE (10,000), but with only 100 entries, all should fit
         assert!(book.len() <= MAX_ADDR_BOOK_SIZE);

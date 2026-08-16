@@ -17,11 +17,10 @@
 /// This module provides the in-memory endpoint registry that aggregates
 /// endpoints from all three sources, and the serialization format used
 /// to embed overlay endpoints in existing P2P messages.
-
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -124,6 +123,11 @@ impl EndpointRegistry {
     /// Number of known endpoints.
     pub async fn len(&self) -> usize {
         self.inner.read().await.len()
+    }
+
+    /// Returns true when no endpoints are currently registered.
+    pub async fn is_empty(&self) -> bool {
+        self.inner.read().await.is_empty()
     }
 }
 

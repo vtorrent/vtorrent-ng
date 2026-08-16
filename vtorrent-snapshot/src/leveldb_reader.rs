@@ -1,3 +1,4 @@
+use crate::error::{Result, SnapshotError};
 /// LevelDB reader for the legacy vTorrent chainstate database.
 ///
 /// The legacy vTorrent client (based on Bitcoin 0.8.x / PPCoin) stores its
@@ -8,9 +9,7 @@
 ///   Value: [height+coinbase: varint] [compressed_amount: varint] [script_type: varint] [script_data]
 ///
 /// This module provides an iterator over all UTXO records in the database.
-
-use rusty_leveldb::{DB, LdbIterator, Options};
-use crate::error::{Result, SnapshotError};
+use rusty_leveldb::{LdbIterator, Options, DB};
 
 /// A raw UTXO record as read from the LevelDB chainstate.
 #[derive(Debug, Clone)]
@@ -31,13 +30,16 @@ pub struct RawUtxo {
 /// # Returns
 /// A vector of all raw UTXO records found in the database.
 pub fn read_all_utxos(chainstate_path: &std::path::Path) -> Result<Vec<RawUtxo>> {
-    let mut opts = Options::default();
-    opts.create_if_missing = false;
+    let opts = Options {
+        create_if_missing: false,
+        ..Options::default()
+    };
 
     let mut db = DB::open(chainstate_path, opts)
         .map_err(|e| SnapshotError::LevelDb(format!("Failed to open chainstate DB: {}", e)))?;
 
-    let mut iter = db.new_iter()
+    let mut iter = db
+        .new_iter()
         .map_err(|e| SnapshotError::LevelDb(format!("Failed to create iterator: {}", e)))?;
 
     let mut utxos = Vec::new();
@@ -72,8 +74,7 @@ pub fn read_all_utxos(chainstate_path: &std::path::Path) -> Result<Vec<RawUtxo>>
                 let mut txid = [0u8; 32];
                 txid.copy_from_slice(&key_buf[txid_start..txid_start + 32]);
 
-                let (vout, _) = decode_varint(&key_buf[vout_start..])
-                    .unwrap_or((0, 0));
+                let (vout, _) = decode_varint(&key_buf[vout_start..]).unwrap_or((0, 0));
 
                 utxos.push(RawUtxo {
                     txid,
@@ -103,20 +104,25 @@ pub fn decode_varint(data: &[u8]) -> Option<(u64, usize)> {
     match data[0] {
         0..=0xfc => Some((data[0] as u64, 1)),
         0xfd => {
-            if data.len() < 3 { return None; }
+            if data.len() < 3 {
+                return None;
+            }
             let v = u16::from_le_bytes([data[1], data[2]]) as u64;
             Some((v, 3))
         }
         0xfe => {
-            if data.len() < 5 { return None; }
+            if data.len() < 5 {
+                return None;
+            }
             let v = u32::from_le_bytes([data[1], data[2], data[3], data[4]]) as u64;
             Some((v, 5))
         }
         0xff => {
-            if data.len() < 9 { return None; }
+            if data.len() < 9 {
+                return None;
+            }
             let v = u64::from_le_bytes([
-                data[1], data[2], data[3], data[4],
-                data[5], data[6], data[7], data[8],
+                data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8],
             ]);
             Some((v, 9))
         }

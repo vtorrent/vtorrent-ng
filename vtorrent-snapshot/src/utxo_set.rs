@@ -1,14 +1,13 @@
+use crate::{
+    block_parser::{parse_utxo_value, ParsedUtxo},
+    error::Result,
+    leveldb_reader::RawUtxo,
+};
 /// UTXO set aggregator.
 ///
 /// Processes all parsed UTXOs and aggregates them by address to produce
 /// the final snapshot: a map of address → total balance.
-
 use std::collections::HashMap;
-use crate::{
-    block_parser::{parse_utxo_value, ParsedUtxo},
-    error::{Result, SnapshotError},
-    leveldb_reader::RawUtxo,
-};
 
 /// An aggregated balance entry for the snapshot.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -150,7 +149,7 @@ pub fn build_snapshot(
 
 /// Compute a SHA-256 hash over the sorted snapshot entries for integrity verification.
 fn compute_entries_hash(entries: &[SnapshotEntry]) -> String {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
 
     let mut hasher = Sha256::new();
     for entry in entries {
@@ -163,7 +162,10 @@ fn compute_entries_hash(entries: &[SnapshotEntry]) -> String {
 /// Look up the balance for a specific address in the snapshot.
 /// Uses binary search on the sorted entries for O(log n) lookup.
 pub fn lookup_balance(snapshot: &UtxoSnapshot, address: &str) -> u64 {
-    match snapshot.entries.binary_search_by(|e| e.address.as_str().cmp(address)) {
+    match snapshot
+        .entries
+        .binary_search_by(|e| e.address.as_str().cmp(address))
+    {
         Ok(idx) => snapshot.entries[idx].balance,
         Err(_) => 0,
     }
@@ -186,8 +188,16 @@ mod tests {
                 best_block_hash: String::new(),
             },
             entries: vec![
-                SnapshotEntry { address: "VAddr1".into(), balance: 100_000_000, utxo_count: 1 },
-                SnapshotEntry { address: "VAddr2".into(), balance: 200_000_000, utxo_count: 2 },
+                SnapshotEntry {
+                    address: "VAddr1".into(),
+                    balance: 100_000_000,
+                    utxo_count: 1,
+                },
+                SnapshotEntry {
+                    address: "VAddr2".into(),
+                    balance: 200_000_000,
+                    utxo_count: 2,
+                },
             ],
         };
 

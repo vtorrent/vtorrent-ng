@@ -1,3 +1,8 @@
+use crate::{
+    encryption::{decrypt_wallet, encrypt_wallet, EncryptedWallet},
+    error::{Result, WalletError},
+    otp::{OtpConfig, TotpSecret},
+};
 /// Main wallet management module.
 ///
 /// Provides the `Wallet` struct which manages:
@@ -6,18 +11,8 @@
 /// - TOTP 2FA enable/disable/verify
 /// - Import from legacy wallet.dat (via vtorrent-migrate)
 /// - Serialization to/from the new encrypted wallet file format
-
 use serde::{Deserialize, Serialize};
-use vtorrent_core::{
-    address::Address,
-    keys::PrivateKey,
-    network::mainnet,
-};
-use crate::{
-    encryption::{decrypt_wallet, encrypt_wallet, EncryptedWallet},
-    error::{Result, WalletError},
-    otp::{OtpConfig, TotpSecret},
-};
+use vtorrent_core::{address::Address, keys::PrivateKey, network::mainnet};
 
 /// The wallet file format version.
 const WALLET_FORMAT_VERSION: u32 = 1;
@@ -91,14 +86,16 @@ impl Wallet {
 
     /// Load and decrypt a wallet from a file path.
     pub fn load(path: &std::path::Path, passphrase: &str) -> Result<Self> {
-        let json = std::fs::read_to_string(path)
-            .map_err(|e| WalletError::Io(e.to_string()))?;
-        let wallet_file: WalletFile = serde_json::from_str(&json)
-            .map_err(|e| WalletError::Serialization(e.to_string()))?;
+        let json = std::fs::read_to_string(path).map_err(|e| WalletError::Io(e.to_string()))?;
+        let wallet_file: WalletFile =
+            serde_json::from_str(&json).map_err(|e| WalletError::Serialization(e.to_string()))?;
         let plaintext = decrypt_wallet(&wallet_file.encrypted, passphrase)?;
         let data: WalletData = serde_json::from_slice(&plaintext)
             .map_err(|e| WalletError::Serialization(e.to_string()))?;
-        Ok(Self { data, passphrase: passphrase.to_string() })
+        Ok(Self {
+            data,
+            passphrase: passphrase.to_string(),
+        })
     }
 
     /// Save the wallet to a file path (encrypts with the stored passphrase).
@@ -114,11 +111,9 @@ impl Wallet {
             .map_err(|e| WalletError::Serialization(e.to_string()))?;
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| WalletError::Io(e.to_string()))?;
+            std::fs::create_dir_all(parent).map_err(|e| WalletError::Io(e.to_string()))?;
         }
-        std::fs::write(path, json)
-            .map_err(|e| WalletError::Io(e.to_string()))?;
+        std::fs::write(path, json).map_err(|e| WalletError::Io(e.to_string()))?;
         Ok(())
     }
 
@@ -219,7 +214,9 @@ impl Wallet {
     /// after decryption.
     pub fn get_default_wif(&self) -> Option<&str> {
         let default_addr = self.data.default_address.as_deref()?;
-        self.data.keys.iter()
+        self.data
+            .keys
+            .iter()
             .find(|k| k.address == default_addr)
             .map(|k| k.wif.as_str())
     }
@@ -242,12 +239,18 @@ impl Wallet {
     /// List all addresses with their labels, balances, and import status.
     /// Returns: Vec<(address, label, balance, is_legacy_import)>
     pub fn list_addresses(&self) -> Vec<(String, String, u64, bool)> {
-        self.data.keys.iter().map(|k| (
-            k.address.clone(),
-            k.label.clone().unwrap_or_else(|| "Address".to_string()),
-            k.balance,
-            k.is_legacy_import,
-        )).collect()
+        self.data
+            .keys
+            .iter()
+            .map(|k| {
+                (
+                    k.address.clone(),
+                    k.label.clone().unwrap_or_else(|| "Address".to_string()),
+                    k.balance,
+                    k.is_legacy_import,
+                )
+            })
+            .collect()
     }
 
     // ─── 2FA / OTP ────────────────────────────────────────────────────────────
@@ -271,13 +274,20 @@ impl Wallet {
 
     /// Check whether 2FA is enabled.
     pub fn has_2fa(&self) -> bool {
-        self.data.otp_config.as_ref().map(|c| c.enabled).unwrap_or(false)
+        self.data
+            .otp_config
+            .as_ref()
+            .map(|c| c.enabled)
+            .unwrap_or(false)
     }
 
     /// Verify an OTP code against the wallet's 2FA secret.
     /// Returns Ok(true) if valid, Ok(false) if invalid, Err if 2FA not enabled.
     pub fn verify_2fa(&self, code: &str) -> Result<bool> {
-        let config = self.data.otp_config.as_ref()
+        let config = self
+            .data
+            .otp_config
+            .as_ref()
             .ok_or(WalletError::OtpNotEnabled)?;
         match config.verify_code(code) {
             Ok(()) => Ok(true),
@@ -303,8 +313,8 @@ impl Wallet {
 
     /// Load a wallet from a JSON string (for testing).
     pub fn from_json_file(json: &str, passphrase: &str, otp_code: Option<&str>) -> Result<Self> {
-        let wallet_file: WalletFile = serde_json::from_str(json)
-            .map_err(|e| WalletError::Serialization(e.to_string()))?;
+        let wallet_file: WalletFile =
+            serde_json::from_str(json).map_err(|e| WalletError::Serialization(e.to_string()))?;
         let plaintext = decrypt_wallet(&wallet_file.encrypted, passphrase)?;
         let data: WalletData = serde_json::from_slice(&plaintext)
             .map_err(|e| WalletError::Serialization(e.to_string()))?;
@@ -317,7 +327,10 @@ impl Wallet {
             }
         }
 
-        Ok(Self { data, passphrase: passphrase.to_string() })
+        Ok(Self {
+            data,
+            passphrase: passphrase.to_string(),
+        })
     }
 }
 
@@ -338,7 +351,11 @@ mod tests {
         // create() auto-generates the first key
         assert_eq!(wallet.key_count(), 1);
         let addr = wallet.default_address().expect("No default address");
-        assert!(addr.starts_with('V'), "Address should start with 'V', got: {}", addr);
+        assert!(
+            addr.starts_with('V'),
+            "Address should start with 'V', got: {}",
+            addr
+        );
     }
 
     #[test]
@@ -348,8 +365,7 @@ mod tests {
         let json = wallet.to_json_file(passphrase).expect("Save failed");
         assert!(!json.is_empty());
 
-        let loaded = Wallet::from_json_file(&json, passphrase, None)
-            .expect("Load failed");
+        let loaded = Wallet::from_json_file(&json, passphrase, None).expect("Load failed");
         assert_eq!(loaded.key_count(), wallet.key_count());
         assert_eq!(loaded.addresses(), wallet.addresses());
     }
@@ -396,8 +412,8 @@ mod tests {
         // Loading with correct OTP code should succeed
         let secret = TotpSecret::from_base32(&base32).expect("Base32 decode failed");
         let code = secret.current_code().expect("Code generation failed");
-        let loaded = Wallet::from_json_file(&json, passphrase, Some(&code))
-            .expect("Load with OTP failed");
+        let loaded =
+            Wallet::from_json_file(&json, passphrase, Some(&code)).expect("Load with OTP failed");
         assert_eq!(loaded.key_count(), wallet.key_count());
     }
 
@@ -407,19 +423,25 @@ mod tests {
         let initial_count = wallet.key_count();
 
         // Generate a key in another wallet and import its WIF
-        let mut other = Wallet::create("other-pass").expect("Create failed");
+        let other = Wallet::create("other-pass").expect("Create failed");
         let other_addr = other.default_address().unwrap().to_string();
         let other_wif = other.data.keys[0].wif.clone();
 
-        let imported_addr = wallet.import_wif(&other_wif, Some(&other_addr))
+        let imported_addr = wallet
+            .import_wif(&other_wif, Some(&other_addr))
             .expect("Import failed");
         assert_eq!(wallet.key_count(), initial_count + 1);
         assert_eq!(imported_addr, other_addr);
 
         // Importing the same key again should be idempotent
-        wallet.import_wif(&other_wif, Some(&other_addr))
+        wallet
+            .import_wif(&other_wif, Some(&other_addr))
             .expect("Re-import failed");
-        assert_eq!(wallet.key_count(), initial_count + 1, "Duplicate import should be ignored");
+        assert_eq!(
+            wallet.key_count(),
+            initial_count + 1,
+            "Duplicate import should be ignored"
+        );
     }
 
     #[test]
@@ -427,7 +449,7 @@ mod tests {
         let wallet = Wallet::create("test-pass").expect("Create failed");
         let list = wallet.list_addresses();
         assert_eq!(list.len(), 1);
-        let (addr, label, balance, is_import) = &list[0];
+        let (addr, _label, balance, is_import) = &list[0];
         assert!(addr.starts_with('V'));
         assert_eq!(*balance, 0);
         assert!(!is_import);

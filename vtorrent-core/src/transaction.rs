@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::utxo::OutPoint;
+use serde::{Deserialize, Serialize};
 
 /// A transaction input.
 #[derive(Debug, Clone, Serialize, Deserialize)]

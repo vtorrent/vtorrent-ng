@@ -1,7 +1,7 @@
-use secp256k1::{Secp256k1, SecretKey, PublicKey};
-use zeroize::{Zeroize, ZeroizeOnDrop};
 use crate::crypto::checksum;
 use crate::error::{CoreError, Result};
+use secp256k1::{PublicKey, Secp256k1, SecretKey};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// A private key with automatic zeroing of memory on drop.
 #[derive(Zeroize, ZeroizeOnDrop)]
@@ -15,7 +15,10 @@ impl PrivateKey {
     pub fn from_bytes(bytes: [u8; 32], compressed: bool) -> Result<Self> {
         // Validate the key is a valid secp256k1 scalar
         SecretKey::from_slice(&bytes).map_err(CoreError::Secp256k1)?;
-        Ok(Self { inner: bytes, compressed })
+        Ok(Self {
+            inner: bytes,
+            compressed,
+        })
     }
 
     /// Decode a WIF-encoded private key.

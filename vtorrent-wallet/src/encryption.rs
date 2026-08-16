@@ -1,3 +1,4 @@
+use crate::error::{Result, WalletError};
 /// Wallet encryption module.
 ///
 /// Uses Argon2id for key derivation and ChaCha20-Poly1305 for authenticated
@@ -8,15 +9,13 @@
 /// 1. Derive a 32-byte key from passphrase using Argon2id(m=65536, t=3, p=4)
 /// 2. Encrypt wallet data with ChaCha20-Poly1305 using a random 96-bit nonce
 /// 3. Store: [version(1)][salt(32)][nonce(12)][ciphertext+tag]
-
-use argon2::{Argon2, Params, Version, Algorithm};
+use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
-    ChaCha20Poly1305, Nonce, Key,
+    ChaCha20Poly1305, Key, Nonce,
 };
-use zeroize::{Zeroize, ZeroizeOnDrop};
 use serde::{Deserialize, Serialize};
-use crate::error::{Result, WalletError};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Current encryption format version.
 const ENCRYPTION_VERSION: u8 = 1;
@@ -100,12 +99,10 @@ pub fn decrypt_wallet(encrypted: &EncryptedWallet, passphrase: &str) -> Result<V
         return Err(WalletError::CorruptedWallet);
     }
 
-    let salt_bytes = hex::decode(&encrypted.salt)
-        .map_err(|_| WalletError::CorruptedWallet)?;
-    let nonce_bytes = hex::decode(&encrypted.nonce)
-        .map_err(|_| WalletError::CorruptedWallet)?;
-    let ciphertext_bytes = hex::decode(&encrypted.ciphertext)
-        .map_err(|_| WalletError::CorruptedWallet)?;
+    let salt_bytes = hex::decode(&encrypted.salt).map_err(|_| WalletError::CorruptedWallet)?;
+    let nonce_bytes = hex::decode(&encrypted.nonce).map_err(|_| WalletError::CorruptedWallet)?;
+    let ciphertext_bytes =
+        hex::decode(&encrypted.ciphertext).map_err(|_| WalletError::CorruptedWallet)?;
 
     if salt_bytes.len() != 32 || nonce_bytes.len() != 12 {
         return Err(WalletError::CorruptedWallet);
@@ -146,7 +143,10 @@ mod tests {
 
         let result = decrypt_wallet(&encrypted, "wrong-passphrase");
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), WalletError::IncorrectPassphrase));
+        assert!(matches!(
+            result.unwrap_err(),
+            WalletError::IncorrectPassphrase
+        ));
     }
 
     #[test]

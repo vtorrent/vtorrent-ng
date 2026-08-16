@@ -2,7 +2,6 @@
 ///
 /// Message framing: [4-byte magic][4-byte command][4-byte payload_len][4-byte checksum][payload]
 /// This is compatible with the Bitcoin P2P message format used in the legacy client.
-
 use serde::{Deserialize, Serialize};
 
 /// Network magic bytes for vTorrent 2.0 mainnet.
@@ -27,7 +26,10 @@ impl NetMessage {
         let bytes = command.as_bytes();
         let len = bytes.len().min(12);
         cmd[..len].copy_from_slice(&bytes[..len]);
-        Self { command: cmd, payload }
+        Self {
+            command: cmd,
+            payload,
+        }
     }
 
     /// Get the command as a string (trimmed of null bytes).

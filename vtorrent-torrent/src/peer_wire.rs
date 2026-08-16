@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::error::{Result, TorrentError};
+use serde::{Deserialize, Serialize};
 
 /// BitTorrent peer wire protocol message types (BEP-3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,7 +28,11 @@ pub enum PeerMessage {
     /// Request — ask for a block within a piece.
     Request { index: u32, begin: u32, length: u32 },
     /// Piece — a block of data within a piece.
-    Piece { index: u32, begin: u32, data: Vec<u8> },
+    Piece {
+        index: u32,
+        begin: u32,
+        data: Vec<u8>,
+    },
     /// Cancel — cancel a previously requested block.
     Cancel { index: u32, begin: u32, length: u32 },
     /// Port — DHT port (BEP-5).
@@ -39,7 +43,11 @@ impl PeerMessage {
     /// Encode the message to bytes for sending over the wire.
     pub fn encode(&self) -> Vec<u8> {
         match self {
-            PeerMessage::Handshake { info_hash, peer_id, reserved } => {
+            PeerMessage::Handshake {
+                info_hash,
+                peer_id,
+                reserved,
+            } => {
                 let mut buf = Vec::with_capacity(68);
                 buf.push(19); // pstrlen
                 buf.extend_from_slice(b"BitTorrent protocol");
@@ -67,7 +75,11 @@ impl PeerMessage {
                 buf.extend_from_slice(bits);
                 buf
             }
-            PeerMessage::Request { index, begin, length } => {
+            PeerMessage::Request {
+                index,
+                begin,
+                length,
+            } => {
                 let mut buf = vec![0, 0, 0, 13, 6];
                 buf.extend_from_slice(&index.to_be_bytes());
                 buf.extend_from_slice(&begin.to_be_bytes());
@@ -83,7 +95,11 @@ impl PeerMessage {
                 buf.extend_from_slice(data);
                 buf
             }
-            PeerMessage::Cancel { index, begin, length } => {
+            PeerMessage::Cancel {
+                index,
+                begin,
+                length,
+            } => {
                 let mut buf = vec![0, 0, 0, 13, 8];
                 buf.extend_from_slice(&index.to_be_bytes());
                 buf.extend_from_slice(&begin.to_be_bytes());
@@ -125,16 +141,22 @@ impl PeerMessage {
             3 => PeerMessage::NotInterested,
             4 => {
                 if payload.len() < 4 {
-                    return Err(TorrentError::PeerWireError("Have: payload too short".into()));
+                    return Err(TorrentError::PeerWireError(
+                        "Have: payload too short".into(),
+                    ));
                 }
                 PeerMessage::Have {
                     index: u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]),
                 }
             }
-            5 => PeerMessage::Bitfield { bits: payload.to_vec() },
+            5 => PeerMessage::Bitfield {
+                bits: payload.to_vec(),
+            },
             6 => {
                 if payload.len() < 12 {
-                    return Err(TorrentError::PeerWireError("Request: payload too short".into()));
+                    return Err(TorrentError::PeerWireError(
+                        "Request: payload too short".into(),
+                    ));
                 }
                 PeerMessage::Request {
                     index: u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]),
@@ -144,7 +166,9 @@ impl PeerMessage {
             }
             7 => {
                 if payload.len() < 8 {
-                    return Err(TorrentError::PeerWireError("Piece: payload too short".into()));
+                    return Err(TorrentError::PeerWireError(
+                        "Piece: payload too short".into(),
+                    ));
                 }
                 PeerMessage::Piece {
                     index: u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]),
@@ -154,7 +178,9 @@ impl PeerMessage {
             }
             8 => {
                 if payload.len() < 12 {
-                    return Err(TorrentError::PeerWireError("Cancel: payload too short".into()));
+                    return Err(TorrentError::PeerWireError(
+                        "Cancel: payload too short".into(),
+                    ));
                 }
                 PeerMessage::Cancel {
                     index: u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]),
@@ -164,13 +190,20 @@ impl PeerMessage {
             }
             9 => {
                 if payload.len() < 2 {
-                    return Err(TorrentError::PeerWireError("Port: payload too short".into()));
+                    return Err(TorrentError::PeerWireError(
+                        "Port: payload too short".into(),
+                    ));
                 }
                 PeerMessage::Port {
                     port: u16::from_be_bytes([payload[0], payload[1]]),
                 }
             }
-            _ => return Err(TorrentError::PeerWireError(format!("Unknown message id: {}", id))),
+            _ => {
+                return Err(TorrentError::PeerWireError(format!(
+                    "Unknown message id: {}",
+                    id
+                )))
+            }
         };
 
         Ok(Some((msg, 4 + length)))
@@ -183,7 +216,9 @@ impl PeerMessage {
             return Ok(None);
         }
         if buf[0] != 19 || &buf[1..20] != b"BitTorrent protocol" {
-            return Err(TorrentError::PeerWireError("Invalid handshake protocol string".into()));
+            return Err(TorrentError::PeerWireError(
+                "Invalid handshake protocol string".into(),
+            ));
         }
         let mut reserved = [0u8; 8];
         reserved.copy_from_slice(&buf[20..28]);
@@ -191,7 +226,14 @@ impl PeerMessage {
         info_hash.copy_from_slice(&buf[28..48]);
         let mut peer_id = [0u8; 20];
         peer_id.copy_from_slice(&buf[48..68]);
-        Ok(Some((PeerMessage::Handshake { info_hash, peer_id, reserved }, 68)))
+        Ok(Some((
+            PeerMessage::Handshake {
+                info_hash,
+                peer_id,
+                reserved,
+            },
+            68,
+        )))
     }
 }
 
@@ -260,19 +302,41 @@ mod tests {
 
     #[test]
     fn test_encode_decode_request() {
-        let msg = PeerMessage::Request { index: 5, begin: 0, length: 16384 };
+        let msg = PeerMessage::Request {
+            index: 5,
+            begin: 0,
+            length: 16384,
+        };
         let encoded = msg.encode();
         let (decoded, _) = PeerMessage::decode(&encoded).unwrap().unwrap();
-        assert_eq!(decoded, PeerMessage::Request { index: 5, begin: 0, length: 16384 });
+        assert_eq!(
+            decoded,
+            PeerMessage::Request {
+                index: 5,
+                begin: 0,
+                length: 16384
+            }
+        );
     }
 
     #[test]
     fn test_encode_decode_piece() {
         let data = vec![0xAB; 16384];
-        let msg = PeerMessage::Piece { index: 3, begin: 0, data: data.clone() };
+        let msg = PeerMessage::Piece {
+            index: 3,
+            begin: 0,
+            data: data.clone(),
+        };
         let encoded = msg.encode();
         let (decoded, _) = PeerMessage::decode(&encoded).unwrap().unwrap();
-        assert_eq!(decoded, PeerMessage::Piece { index: 3, begin: 0, data });
+        assert_eq!(
+            decoded,
+            PeerMessage::Piece {
+                index: 3,
+                begin: 0,
+                data
+            }
+        );
     }
 
     #[test]
@@ -290,12 +354,21 @@ mod tests {
         let info_hash = [0xAA; 20];
         let peer_id = [0xBB; 20];
         let reserved = [0u8; 8];
-        let msg = PeerMessage::Handshake { info_hash, peer_id, reserved };
+        let msg = PeerMessage::Handshake {
+            info_hash,
+            peer_id,
+            reserved,
+        };
         let encoded = msg.encode();
         assert_eq!(encoded.len(), 68);
         let (decoded, consumed) = PeerMessage::decode_handshake(&encoded).unwrap().unwrap();
         assert_eq!(consumed, 68);
-        if let PeerMessage::Handshake { info_hash: ih, peer_id: pid, .. } = decoded {
+        if let PeerMessage::Handshake {
+            info_hash: ih,
+            peer_id: pid,
+            ..
+        } = decoded
+        {
             assert_eq!(ih, [0xAA; 20]);
             assert_eq!(pid, [0xBB; 20]);
         } else {

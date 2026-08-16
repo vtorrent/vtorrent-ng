@@ -1,3 +1,10 @@
+use crate::state::AppState;
+use axum::extract::ws::{Message, WebSocket};
+use axum::{
+    extract::{State, WebSocketUpgrade},
+    response::Response,
+};
+use serde::{Deserialize, Serialize};
 /// WebSocket event subscription endpoint for vTorrent RPC.
 ///
 /// Clients connect to `ws://127.0.0.1:22525/ws` and subscribe to one or more
@@ -29,16 +36,8 @@
 /// | `reorg` | A chain reorganization occurred |
 /// | `staking_reward` | A staking reward was earned |
 /// | `all` | Subscribe to all event types |
-
 use std::sync::Arc;
-use axum::{
-    extract::{State, WebSocketUpgrade},
-    response::Response,
-};
-use axum::extract::ws::{Message, WebSocket};
-use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
-use crate::state::AppState;
 
 /// An event that can be pushed to WebSocket subscribers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,10 +81,7 @@ pub enum NodeEvent {
 
     /// A peer disconnected.
     #[serde(rename = "peer_disconnected")]
-    PeerDisconnected {
-        addr: String,
-        reason: String,
-    },
+    PeerDisconnected { addr: String, reason: String },
 
     /// A chain reorganization occurred.
     #[serde(rename = "reorg")]
@@ -142,10 +138,7 @@ impl EventBroadcaster {
 }
 
 /// WebSocket upgrade handler — upgrades an HTTP connection to a WebSocket.
-pub async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<Arc<AppState>>,
-) -> Response {
+pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> Response {
     ws.on_upgrade(move |socket| handle_ws_connection(socket, state))
 }
 
@@ -177,11 +170,10 @@ async fn handle_ws_connection(mut socket: WebSocket, state: Arc<AppState>) {
                             }
                         } else if let Ok(unsub) = serde_json::from_str::<UnsubscribeMsg>(&text) {
                             subscribed.retain(|s| !unsub.unsubscribe.contains(s));
-                        } else if text == "ping" {
-                            if socket.send(Message::Text("pong".to_string())).await.is_err() {
+                        } else if text == "ping"
+                            && socket.send(Message::Text("pong".to_string())).await.is_err() {
                                 break;
                             }
-                        }
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     _ => {}
@@ -226,13 +218,13 @@ fn should_send(event: &NodeEvent, subscribed: &[String]) -> bool {
         return true;
     }
     let event_type = match event {
-        NodeEvent::NewBlock { .. }        => "new_block",
-        NodeEvent::TxConfirmed { .. }     => "tx_confirmed",
-        NodeEvent::TxUnconfirmed { .. }   => "tx_unconfirmed",
-        NodeEvent::PeerConnected { .. }   => "peer_connected",
-        NodeEvent::PeerDisconnected { .. }=> "peer_disconnected",
-        NodeEvent::Reorg { .. }           => "reorg",
-        NodeEvent::StakingReward { .. }   => "staking_reward",
+        NodeEvent::NewBlock { .. } => "new_block",
+        NodeEvent::TxConfirmed { .. } => "tx_confirmed",
+        NodeEvent::TxUnconfirmed { .. } => "tx_unconfirmed",
+        NodeEvent::PeerConnected { .. } => "peer_connected",
+        NodeEvent::PeerDisconnected { .. } => "peer_disconnected",
+        NodeEvent::Reorg { .. } => "reorg",
+        NodeEvent::StakingReward { .. } => "staking_reward",
     };
     subscribed.iter().any(|s| s == event_type)
 }

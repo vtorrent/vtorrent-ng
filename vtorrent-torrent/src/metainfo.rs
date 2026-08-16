@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
-use sha1::{Sha1, Digest};
 use crate::error::{Result, TorrentError};
+use serde::{Deserialize, Serialize};
+use sha1::{Digest, Sha1};
 
 /// A parsed .torrent file (BEP-3 metainfo).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,7 +67,8 @@ impl Metainfo {
 
         // Extract the info dict
         let info_key = b"info".to_vec();
-        let info_val = dict.get(&info_key)
+        let info_val = dict
+            .get(&info_key)
             .ok_or_else(|| TorrentError::InvalidMetainfo("Missing 'info' key".into()))?;
 
         // Compute info hash by re-encoding the info dict
@@ -91,11 +92,16 @@ impl Metainfo {
         // Determine if single-file or multi-file
         let (files, total_size) = if info_dict.contains_key(&b"files".to_vec()) {
             // Multi-file torrent
-            let files_val = info_dict.get(&b"files".to_vec())
+            let files_val = info_dict
+                .get(&b"files".to_vec())
                 .ok_or_else(|| TorrentError::InvalidMetainfo("Missing 'files'".into()))?;
             let files_list = match files_val {
                 serde_bencode::value::Value::List(l) => l,
-                _ => return Err(TorrentError::InvalidMetainfo("'files' is not a list".into())),
+                _ => {
+                    return Err(TorrentError::InvalidMetainfo(
+                        "'files' is not a list".into(),
+                    ))
+                }
             };
             let mut files = Vec::new();
             let mut total = 0u64;
@@ -107,7 +113,11 @@ impl Metainfo {
                 let length = get_integer(fd, b"length")? as u64;
                 total += length;
                 let path = get_string_list(fd, b"path")?;
-                files.push(TorrentFile { path, length, md5sum: None });
+                files.push(TorrentFile {
+                    path,
+                    length,
+                    md5sum: None,
+                });
             }
             (files, total)
         } else {
@@ -121,34 +131,32 @@ impl Metainfo {
             (vec![file], length)
         };
 
-        let piece_count = ((total_size + piece_length - 1) / piece_length) as u32;
+        let piece_count = total_size.div_ceil(piece_length) as u32;
 
         // Parse announce
-        let announce = dict.get(&b"announce".to_vec())
-            .and_then(|v| match v {
-                serde_bencode::value::Value::Bytes(b) => String::from_utf8(b.clone()).ok(),
-                _ => None,
-            });
+        let announce = dict.get(&b"announce".to_vec()).and_then(|v| match v {
+            serde_bencode::value::Value::Bytes(b) => String::from_utf8(b.clone()).ok(),
+            _ => None,
+        });
 
         // Parse announce-list
         let announce_list = parse_announce_list(dict);
 
         // Parse creation date
-        let created_at = dict.get(&b"creation date".to_vec())
-            .and_then(|v| match v {
-                serde_bencode::value::Value::Int(i) => Some(*i as u64),
-                _ => None,
-            });
+        let created_at = dict.get(&b"creation date".to_vec()).and_then(|v| match v {
+            serde_bencode::value::Value::Int(i) => Some(*i as u64),
+            _ => None,
+        });
 
         // Parse comment
-        let comment = dict.get(&b"comment".to_vec())
-            .and_then(|v| match v {
-                serde_bencode::value::Value::Bytes(b) => String::from_utf8(b.clone()).ok(),
-                _ => None,
-            });
+        let comment = dict.get(&b"comment".to_vec()).and_then(|v| match v {
+            serde_bencode::value::Value::Bytes(b) => String::from_utf8(b.clone()).ok(),
+            _ => None,
+        });
 
         // Parse private flag
-        let is_private = info_dict.get(&b"private".to_vec())
+        let is_private = info_dict
+            .get(&b"private".to_vec())
             .and_then(|v| match v {
                 serde_bencode::value::Value::Int(i) => Some(*i == 1),
                 _ => None,
@@ -190,7 +198,10 @@ impl Metainfo {
     pub fn from_magnet_link(magnet: &MagnetLink) -> Self {
         Metainfo {
             info_hash: magnet.info_hash,
-            name: magnet.display_name.clone().unwrap_or_else(|| hex::encode(magnet.info_hash)),
+            name: magnet
+                .display_name
+                .clone()
+                .unwrap_or_else(|| hex::encode(magnet.info_hash)),
             total_size: magnet.size_hint.unwrap_or(0),
             piece_length: 0,
             piece_count: 0,
@@ -249,12 +260,15 @@ impl MagnetLink {
                                 // Base32-encoded
                                 base32_decode(hash_str)?
                             } else {
-                                return Err(TorrentError::MagnetError(
-                                    format!("Invalid info hash length: {}", hash_str.len())
-                                ));
+                                return Err(TorrentError::MagnetError(format!(
+                                    "Invalid info hash length: {}",
+                                    hash_str.len()
+                                )));
                             };
                             if bytes.len() != 20 {
-                                return Err(TorrentError::MagnetError("Info hash must be 20 bytes".into()));
+                                return Err(TorrentError::MagnetError(
+                                    "Info hash must be 20 bytes".into(),
+                                ));
                             }
                             let mut arr = [0u8; 20];
                             arr.copy_from_slice(&bytes);
@@ -272,7 +286,12 @@ impl MagnetLink {
         let info_hash = info_hash_bytes
             .ok_or_else(|| TorrentError::MagnetError("Missing xt=urn:btih: parameter".into()))?;
 
-        Ok(MagnetLink { info_hash, display_name, trackers, size_hint })
+        Ok(MagnetLink {
+            info_hash,
+            display_name,
+            trackers,
+            size_hint,
+        })
     }
 
     /// Return the info hash as a hex string.
@@ -287,33 +306,42 @@ type BencodeDict = std::collections::HashMap<Vec<u8>, serde_bencode::value::Valu
 
 fn get_string(dict: &BencodeDict, key: &[u8]) -> Result<String> {
     match dict.get(key) {
-        Some(serde_bencode::value::Value::Bytes(b)) => {
-            String::from_utf8(b.clone())
-                .map_err(|_| TorrentError::InvalidMetainfo(format!("Non-UTF8 value for key {:?}", key)))
-        }
-        _ => Err(TorrentError::InvalidMetainfo(format!("Missing or invalid key {:?}", key))),
+        Some(serde_bencode::value::Value::Bytes(b)) => String::from_utf8(b.clone()).map_err(|_| {
+            TorrentError::InvalidMetainfo(format!("Non-UTF8 value for key {:?}", key))
+        }),
+        _ => Err(TorrentError::InvalidMetainfo(format!(
+            "Missing or invalid key {:?}",
+            key
+        ))),
     }
 }
 
 fn get_integer(dict: &BencodeDict, key: &[u8]) -> Result<i64> {
     match dict.get(key) {
         Some(serde_bencode::value::Value::Int(i)) => Ok(*i),
-        _ => Err(TorrentError::InvalidMetainfo(format!("Missing or invalid integer key {:?}", key))),
+        _ => Err(TorrentError::InvalidMetainfo(format!(
+            "Missing or invalid integer key {:?}",
+            key
+        ))),
     }
 }
 
 fn get_string_list(dict: &BencodeDict, key: &[u8]) -> Result<Vec<String>> {
     match dict.get(key) {
-        Some(serde_bencode::value::Value::List(list)) => {
-            list.iter().map(|v| match v {
-                serde_bencode::value::Value::Bytes(b) => {
-                    String::from_utf8(b.clone())
-                        .map_err(|_| TorrentError::InvalidMetainfo("Non-UTF8 path component".into()))
-                }
-                _ => Err(TorrentError::InvalidMetainfo("Path component is not bytes".into())),
-            }).collect()
-        }
-        _ => Err(TorrentError::InvalidMetainfo(format!("Missing or invalid list key {:?}", key))),
+        Some(serde_bencode::value::Value::List(list)) => list
+            .iter()
+            .map(|v| match v {
+                serde_bencode::value::Value::Bytes(b) => String::from_utf8(b.clone())
+                    .map_err(|_| TorrentError::InvalidMetainfo("Non-UTF8 path component".into())),
+                _ => Err(TorrentError::InvalidMetainfo(
+                    "Path component is not bytes".into(),
+                )),
+            })
+            .collect(),
+        _ => Err(TorrentError::InvalidMetainfo(format!(
+            "Missing or invalid list key {:?}",
+            key
+        ))),
     }
 }
 
@@ -322,13 +350,16 @@ fn parse_announce_list(dict: &BencodeDict) -> Vec<Vec<String>> {
     if let Some(serde_bencode::value::Value::List(tiers)) = dict.get(&b"announce-list".to_vec()) {
         for tier in tiers {
             if let serde_bencode::value::Value::List(urls) = tier {
-                let tier_urls: Vec<String> = urls.iter().filter_map(|u| {
-                    if let serde_bencode::value::Value::Bytes(b) = u {
-                        String::from_utf8(b.clone()).ok()
-                    } else {
-                        None
-                    }
-                }).collect();
+                let tier_urls: Vec<String> = urls
+                    .iter()
+                    .filter_map(|u| {
+                        if let serde_bencode::value::Value::Bytes(b) = u {
+                            String::from_utf8(b.clone()).ok()
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
                 if !tier_urls.is_empty() {
                     result.push(tier_urls);
                 }
@@ -347,8 +378,9 @@ fn base32_decode(s: &str) -> Result<Vec<u8>> {
     let mut output = Vec::new();
 
     for c in s.bytes() {
-        let val = ALPHABET.iter().position(|&b| b == c)
-            .ok_or_else(|| TorrentError::MagnetError(format!("Invalid base32 char: {}", c as char)))?;
+        let val = ALPHABET.iter().position(|&b| b == c).ok_or_else(|| {
+            TorrentError::MagnetError(format!("Invalid base32 char: {}", c as char))
+        })?;
         bits = (bits << 5) | val as u64;
         bit_count += 5;
         if bit_count >= 8 {
@@ -368,7 +400,10 @@ mod tests {
     fn test_magnet_parse_hex() {
         let uri = "magnet:?xt=urn:btih:aabbccddaabbccddaabbccddaabbccddaabbccdd&dn=Test+Torrent&tr=udp%3A%2F%2Ftracker.example.com%3A6969";
         let m = MagnetLink::parse(uri).unwrap();
-        assert_eq!(m.info_hash_hex(), "aabbccddaabbccddaabbccddaabbccddaabbccdd");
+        assert_eq!(
+            m.info_hash_hex(),
+            "aabbccddaabbccddaabbccddaabbccddaabbccdd"
+        );
         assert_eq!(m.display_name.as_deref(), Some("Test+Torrent"));
         assert_eq!(m.trackers.len(), 1);
     }

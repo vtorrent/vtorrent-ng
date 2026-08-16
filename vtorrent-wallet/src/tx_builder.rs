@@ -26,11 +26,11 @@
 //!     .unwrap();
 //! ```
 
-use secp256k1::{Secp256k1, SecretKey, Message};
-use sha2::{Sha256, Digest};
+use crate::error::{Result, WalletError};
+use secp256k1::{Message, Secp256k1, SecretKey};
+use sha2::{Digest, Sha256};
 use vtorrent_node::block::{Transaction, TxInput, TxOutput, TxType};
 use vtorrent_node::chain::Utxo;
-use crate::error::{WalletError, Result};
 
 /// Dust threshold: outputs below this value are not economical to spend.
 pub const DUST_SATOSHIS: u64 = 546;
@@ -61,12 +61,10 @@ pub fn select_coins(
     n_outputs: usize,
 ) -> Result<(Vec<Utxo>, u64)> {
     // Filter out dust UTXOs.
-    let mut candidates: Vec<&Utxo> = utxos.iter()
-        .filter(|u| u.value >= DUST_SATOSHIS)
-        .collect();
+    let mut candidates: Vec<&Utxo> = utxos.iter().filter(|u| u.value >= DUST_SATOSHIS).collect();
 
     // Sort by value descending (largest first).
-    candidates.sort_by(|a, b| b.value.cmp(&a.value));
+    candidates.sort_by_key(|utxo| std::cmp::Reverse(utxo.value));
 
     let mut selected: Vec<Utxo> = Vec::new();
     let mut selected_value: u64 = 0;
@@ -77,9 +75,7 @@ pub fn select_coins(
 
         // Estimate fee for the current selection.
         let n_inputs = selected.len();
-        let tx_size = TX_OVERHEAD
-            + n_inputs * P2PKH_INPUT_SIZE
-            + n_outputs * P2PKH_OUTPUT_SIZE;
+        let tx_size = TX_OVERHEAD + n_inputs * P2PKH_INPUT_SIZE + n_outputs * P2PKH_OUTPUT_SIZE;
         let fee = (tx_size as u64) * fee_rate;
 
         if selected_value >= target_sats + fee {
@@ -118,18 +114,20 @@ fn address_to_hash160(address: &str) -> Result<[u8; 20]> {
 
     // Minimum: 1 version byte + 20 hash bytes + 4 checksum bytes = 25 bytes.
     if decoded.len() < 25 {
-        return Err(WalletError::InvalidAddress(
-            format!("Address too short: {}", address)
-        ));
+        return Err(WalletError::InvalidAddress(format!(
+            "Address too short: {}",
+            address
+        )));
     }
 
     // Verify checksum.
     let (payload, check) = decoded.split_at(decoded.len() - 4);
     let expected = double_sha256_checksum(payload);
     if check != expected {
-        return Err(WalletError::InvalidAddress(
-            format!("Address checksum mismatch: {}", address)
-        ));
+        return Err(WalletError::InvalidAddress(format!(
+            "Address checksum mismatch: {}",
+            address
+        )));
     }
 
     // payload[0] is the version byte; payload[1..21] is the hash160.
@@ -140,7 +138,7 @@ fn address_to_hash160(address: &str) -> Result<[u8; 20]> {
 
 fn double_sha256_checksum(data: &[u8]) -> [u8; 4] {
     let h1 = Sha256::digest(data);
-    let h2 = Sha256::digest(&h1);
+    let h2 = Sha256::digest(h1);
     [h2[0], h2[1], h2[2], h2[3]]
 }
 
@@ -151,11 +149,7 @@ fn double_sha256_checksum(data: &[u8]) -> [u8; 4] {
 /// sighash = SHA256d(serialized_tx_with_subscript + SIGHASH_ALL(4LE))
 /// where `subscript` is the previous output's scriptPubKey with the input's
 /// scriptSig replaced by the subscript.
-fn compute_sighash(
-    tx: &Transaction,
-    input_index: usize,
-    subscript: &[u8],
-) -> [u8; 32] {
+fn compute_sighash(tx: &Transaction, input_index: usize, subscript: &[u8]) -> [u8; 32] {
     // Build a copy of the transaction with all scriptSigs cleared except
     // the one at input_index, which is set to the subscript.
     let mut tx_copy = tx.clone();
@@ -174,7 +168,7 @@ fn compute_sighash(
 
     // Double-SHA256.
     let h1 = Sha256::digest(&data);
-    let h2 = Sha256::digest(&h1);
+    let h2 = Sha256::digest(h1);
     let mut hash = [0u8; 32];
     hash.copy_from_slice(&h2);
     hash
@@ -183,8 +177,8 @@ fn compute_sighash(
 /// Build a DER-encoded ECDSA signature + SIGHASH_ALL byte.
 fn sign_input(secret_key_bytes: &[u8; 32], sighash: &[u8; 32]) -> Result<Vec<u8>> {
     let secp = Secp256k1::new();
-    let secret_key = SecretKey::from_slice(secret_key_bytes)
-        .map_err(|e| WalletError::Signing(e.to_string()))?;
+    let secret_key =
+        SecretKey::from_slice(secret_key_bytes).map_err(|e| WalletError::Signing(e.to_string()))?;
     let message = Message::from_digest(*sighash);
     let sig = secp.sign_ecdsa(&message, &secret_key);
     let mut der = sig.serialize_der().to_vec();
@@ -303,24 +297,27 @@ impl TxBuilder {
         let n_outputs = self.recipients.len() + 1; // +1 for change
 
         // Coin selection.
-        let (selected_utxos, fee) = select_coins(
-            available_utxos,
-            total_send,
-            self.fee_rate,
-            n_outputs,
-        )?;
+        let (selected_utxos, fee) =
+            select_coins(available_utxos, total_send, self.fee_rate, n_outputs)?;
 
         let total_input: u64 = selected_utxos.iter().map(|u| u.value).sum();
         let change = total_input.saturating_sub(total_send + fee);
 
         // Build unsigned inputs.
-        let sequence = if self.signal_rbf { 0xFFFFFFFD } else { 0xFFFFFFFF };
-        let inputs: Vec<TxInput> = selected_utxos.iter().map(|u| TxInput {
-            prev_txid: u.txid,
-            prev_vout: u.vout,
-            script_sig: Vec::new(), // filled in during signing
-            sequence,
-        }).collect();
+        let sequence = if self.signal_rbf {
+            0xFFFFFFFD
+        } else {
+            0xFFFFFFFF
+        };
+        let inputs: Vec<TxInput> = selected_utxos
+            .iter()
+            .map(|u| TxInput {
+                prev_txid: u.txid,
+                prev_vout: u.vout,
+                script_sig: Vec::new(), // filled in during signing
+                sequence,
+            })
+            .collect();
 
         // Build outputs.
         let mut outputs: Vec<TxOutput> = Vec::new();
@@ -371,6 +368,48 @@ impl TxBuilder {
     }
 }
 
+/// Sign a pre-built transaction whose inputs spend the supplied P2PKH UTXOs.
+///
+/// This preserves custom outputs and transaction types (such as `AtomicSwap`)
+/// while applying the same SIGHASH_ALL and scriptSig format as `TxBuilder`.
+pub fn sign_custom_transaction(
+    mut tx: Transaction,
+    input_utxos: &[Utxo],
+    wif: &str,
+) -> Result<Transaction> {
+    if tx.inputs.len() != input_utxos.len() {
+        return Err(WalletError::BuildError(
+            "Transaction input count does not match provided UTXOs".into(),
+        ));
+    }
+
+    let key = vtorrent_core::keys::PrivateKey::from_wif(wif)
+        .map_err(|e| WalletError::Signing(e.to_string()))?;
+    let secret_key =
+        SecretKey::from_slice(key.as_bytes()).map_err(|e| WalletError::Signing(e.to_string()))?;
+    let secp = Secp256k1::new();
+    let pubkey = secp256k1::PublicKey::from_secret_key(&secp, &secret_key)
+        .serialize()
+        .to_vec();
+
+    for (input_index, utxo) in input_utxos.iter().enumerate() {
+        let (prev_txid, prev_vout) = {
+            let input = &tx.inputs[input_index];
+            (input.prev_txid, input.prev_vout)
+        };
+        if prev_txid != utxo.txid || prev_vout != utxo.vout {
+            return Err(WalletError::BuildError(
+                "Transaction input does not match its signing UTXO".into(),
+            ));
+        }
+        let sighash = compute_sighash(&tx, input_index, &utxo.script_pubkey);
+        let signature = sign_input(key.as_bytes(), &sighash)?;
+        tx.inputs[input_index].script_sig = build_script_sig(&signature, &pubkey);
+    }
+
+    Ok(tx)
+}
+
 impl Default for TxBuilder {
     fn default() -> Self {
         Self::new()
@@ -382,14 +421,13 @@ impl Default for TxBuilder {
 /// Derive a vTorrent address (version byte 70 → starts with 'V') from a
 /// compressed public key.
 pub fn pubkey_to_vtorrent_address(compressed_pubkey: &[u8]) -> Result<String> {
-    use sha2::Sha256;
-    use ripemd::Ripemd160;
-    use sha2::Digest as _;
     use ripemd::Digest as RipemdDigest;
+    use ripemd::Ripemd160;
+    use sha2::Sha256;
 
     // Hash160 = RIPEMD160(SHA256(pubkey))
     let sha256_hash = Sha256::digest(compressed_pubkey);
-    let hash160 = Ripemd160::digest(&sha256_hash);
+    let hash160 = Ripemd160::digest(sha256_hash);
 
     // Version byte 70 gives addresses starting with 'V'.
     let mut payload = Vec::with_capacity(25);
@@ -408,8 +446,8 @@ pub fn pubkey_to_vtorrent_address(compressed_pubkey: &[u8]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vtorrent_node::chain::Utxo;
     use vtorrent_core::keys::PrivateKey;
+    use vtorrent_node::chain::Utxo;
 
     fn make_utxo(txid_byte: u8, vout: u32, value: u64, script: Vec<u8>) -> Utxo {
         Utxo {
@@ -484,9 +522,7 @@ mod tests {
         let (_, recipient_addr) = random_wif();
 
         let script = p2pkh_script_pubkey(&sender_addr).unwrap();
-        let utxos = vec![
-            make_utxo(1, 0, 10_000_000, script.clone()),
-        ];
+        let utxos = vec![make_utxo(1, 0, 10_000_000, script.clone())];
 
         let tx = TxBuilder::new()
             .recipient(&recipient_addr, 5_000_000)
@@ -501,7 +537,10 @@ mod tests {
 
         // All inputs should have non-empty scriptSigs.
         for input in &tx.inputs {
-            assert!(!input.script_sig.is_empty(), "Input scriptSig should not be empty");
+            assert!(
+                !input.script_sig.is_empty(),
+                "Input scriptSig should not be empty"
+            );
         }
 
         // Total output should be less than total input (fee consumed).
@@ -571,6 +610,34 @@ mod tests {
     }
 
     #[test]
+    fn test_sign_custom_transaction_preserves_atomic_swap_type() {
+        let (wif, sender_addr) = random_wif();
+        let (_, recipient_addr) = random_wif();
+        let utxo = make_utxo(9, 1, 2_000_000, p2pkh_script_pubkey(&sender_addr).unwrap());
+        let custom = Transaction {
+            version: 1,
+            tx_type: TxType::AtomicSwap,
+            inputs: vec![TxInput {
+                prev_txid: utxo.txid,
+                prev_vout: utxo.vout,
+                script_sig: Vec::new(),
+                sequence: u32::MAX - 1,
+            }],
+            outputs: vec![TxOutput {
+                value: 1_990_000,
+                script_pubkey: p2pkh_script_pubkey(&recipient_addr).unwrap(),
+            }],
+            lock_time: 0,
+            claim_address: Some(recipient_addr),
+            claim_signature: None,
+        };
+
+        let signed = sign_custom_transaction(custom, &[utxo], &wif).unwrap();
+        assert_eq!(signed.tx_type, TxType::AtomicSwap);
+        assert!(!signed.inputs[0].script_sig.is_empty());
+    }
+
+    #[test]
     fn test_txid_is_deterministic() {
         let (wif, sender_addr) = random_wif();
         let (_, recipient_addr) = random_wif();
@@ -589,6 +656,10 @@ mod tests {
             .build(&utxos)
             .unwrap();
 
-        assert_eq!(tx1.txid(), tx2.txid(), "Same inputs/outputs should produce same txid");
+        assert_eq!(
+            tx1.txid(),
+            tx2.txid(),
+            "Same inputs/outputs should produce same txid"
+        );
     }
 }

@@ -59,12 +59,12 @@ impl BloomFilter {
         // Optimal filter size: m = -n * ln(p) / (ln(2)^2)
         let ln2_sq = std::f64::consts::LN_2 * std::f64::consts::LN_2;
         let size_bits = (-(n_elements as f64) * false_positive_rate.ln() / ln2_sq) as usize;
-        let size_bytes = ((size_bits + 7) / 8).min(MAX_BLOOM_FILTER_SIZE);
+        let size_bytes = size_bits.div_ceil(8).min(MAX_BLOOM_FILTER_SIZE);
 
         // Optimal hash count: k = m/n * ln(2)
-        let hash_funcs = ((size_bytes * 8) as f64 / n_elements as f64 * std::f64::consts::LN_2)
-            .round() as u32;
-        let hash_funcs = hash_funcs.min(MAX_HASH_FUNCS).max(1);
+        let hash_funcs =
+            ((size_bytes * 8) as f64 / n_elements as f64 * std::f64::consts::LN_2).round() as u32;
+        let hash_funcs = hash_funcs.clamp(1, MAX_HASH_FUNCS);
 
         Self {
             data: vec![0u8; size_bytes],
@@ -81,7 +81,12 @@ impl BloomFilter {
             2 => BloomFlags::PubKeyOnly,
             _ => BloomFlags::None,
         };
-        Self { data, hash_funcs, tweak, flags }
+        Self {
+            data,
+            hash_funcs,
+            tweak,
+            flags,
+        }
     }
 
     /// Insert an item into the filter.
@@ -133,7 +138,12 @@ impl BloomFilter {
 
     /// Serialize to wire format (for `filterload` P2P message).
     pub fn to_wire(&self) -> (Vec<u8>, u32, u32, u8) {
-        (self.data.clone(), self.hash_funcs, self.tweak, self.flags as u8)
+        (
+            self.data.clone(),
+            self.hash_funcs,
+            self.tweak,
+            self.flags as u8,
+        )
     }
 
     /// Returns the filter size in bytes.
@@ -175,9 +185,18 @@ fn murmur3(data: &[u8], seed: u32) -> u32 {
     let tail = &data[nblocks * 4..];
     let mut k1: u32 = 0;
     match tail.len() {
-        3 => { k1 ^= (tail[2] as u32) << 16; k1 ^= (tail[1] as u32) << 8; k1 ^= tail[0] as u32; }
-        2 => { k1 ^= (tail[1] as u32) << 8; k1 ^= tail[0] as u32; }
-        1 => { k1 ^= tail[0] as u32; }
+        3 => {
+            k1 ^= (tail[2] as u32) << 16;
+            k1 ^= (tail[1] as u32) << 8;
+            k1 ^= tail[0] as u32;
+        }
+        2 => {
+            k1 ^= (tail[1] as u32) << 8;
+            k1 ^= tail[0] as u32;
+        }
+        1 => {
+            k1 ^= tail[0] as u32;
+        }
         _ => {}
     }
     if !tail.is_empty() {
@@ -233,7 +252,7 @@ mod tests {
 
     #[test]
     fn test_full_filter() {
-        let mut f = BloomFilter::from_bytes(vec![0xff; 10], 1, 0, 1);
+        let f = BloomFilter::from_bytes(vec![0xff; 10], 1, 0, 1);
         assert!(f.is_full());
         assert!(f.contains(b"anything"));
     }

@@ -1,3 +1,4 @@
+use crate::message::{BlockTxnMsg, CmpctBlockMsg, GetBlockTxnMsg, PrefilledTx};
 /// Compact block relay (BIP-152 style) for vTorrent.
 ///
 /// Compact blocks dramatically reduce block propagation bandwidth. Instead of
@@ -20,9 +21,7 @@
 ///   without waiting for a `getdata` request. Used for the 3 fastest peers.
 /// - **Low-bandwidth mode**: The sender announces via `inv`, waits for `getdata`,
 ///   then sends the compact block. Used for all other peers.
-
 use std::collections::HashMap;
-use crate::message::{CmpctBlockMsg, GetBlockTxnMsg, BlockTxnMsg, PrefilledTx};
 
 /// SipHash-2-4 implementation for short transaction ID generation.
 /// Uses the same algorithm as Bitcoin BIP-152.
@@ -79,7 +78,7 @@ impl SipHasher {
 ///
 /// Per BIP-152: SHA256d(header || nonce), take first 16 bytes as k0, k1.
 pub fn derive_siphash_keys(header_bytes: &[u8], nonce: u64) -> (u64, u64) {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
 
     let mut hasher = Sha256::new();
     hasher.update(header_bytes);
@@ -115,6 +114,7 @@ impl CompactBlockEncoder {
     ///
     /// `txids` is the list of transaction IDs in block order.
     /// `coinbase_tx_bytes` is the serialized coinbase transaction (always prefilled).
+    #[allow(clippy::too_many_arguments)] // Mirrors the six on-wire block-header fields plus tx data.
     pub fn encode(
         version: u32,
         prev_block_hash: [u8; 32],
@@ -140,7 +140,9 @@ impl CompactBlockEncoder {
         let (k0, k1) = derive_siphash_keys(&header_bytes, siphash_nonce);
 
         // Build short IDs for all transactions except the coinbase (index 0)
-        let short_ids: Vec<u64> = txids.iter().skip(1)
+        let short_ids: Vec<u64> = txids
+            .iter()
+            .skip(1)
             .map(|txid| short_txid(txid, k0, k1))
             .collect();
 
@@ -207,7 +209,9 @@ impl CompactBlockDecoder {
         // Fill in short_id transactions from mempool
         let mut short_idx = 0usize;
         for (i, slot) in txs.iter_mut().enumerate() {
-            if slot.is_some() { continue; }
+            if slot.is_some() {
+                continue;
+            }
             if short_idx < msg.short_ids.len() {
                 let sid = msg.short_ids[short_idx];
                 if let Some(tx_bytes) = mempool.get(&sid) {
@@ -227,19 +231,19 @@ impl CompactBlockDecoder {
     }
 
     /// Build a `getblocktxn` request for missing transactions.
-    pub fn build_getblocktxn(
-        block_hash: [u8; 32],
-        missing_indexes: Vec<u16>,
-    ) -> GetBlockTxnMsg {
-        GetBlockTxnMsg { block_hash, indexes: missing_indexes }
+    pub fn build_getblocktxn(block_hash: [u8; 32], missing_indexes: Vec<u16>) -> GetBlockTxnMsg {
+        GetBlockTxnMsg {
+            block_hash,
+            indexes: missing_indexes,
+        }
     }
 
     /// Build a `blocktxn` response with the requested transactions.
-    pub fn build_blocktxn(
-        block_hash: [u8; 32],
-        transactions: Vec<Vec<u8>>,
-    ) -> BlockTxnMsg {
-        BlockTxnMsg { block_hash, transactions }
+    pub fn build_blocktxn(block_hash: [u8; 32], transactions: Vec<Vec<u8>>) -> BlockTxnMsg {
+        BlockTxnMsg {
+            block_hash,
+            transactions,
+        }
     }
 }
 
@@ -256,7 +260,11 @@ pub struct CompactBlockPeerState {
 
 impl Default for CompactBlockPeerState {
     fn default() -> Self {
-        Self { enabled: false, high_bandwidth: false, version: 1 }
+        Self {
+            enabled: false,
+            high_bandwidth: false,
+            version: 1,
+        }
     }
 }
 
@@ -341,8 +349,14 @@ mod tests {
         let txids = vec![coinbase_txid, tx1_txid];
 
         let msg = CompactBlockEncoder::encode(
-            1, [0u8; 32], [0u8; 32], 1000, 0x1d00ffff, 42,
-            &txids, vec![0xCB; 10],
+            1,
+            [0u8; 32],
+            [0u8; 32],
+            1000,
+            0x1d00ffff,
+            42,
+            &txids,
+            vec![0xCB; 10],
         );
 
         // Empty mempool — tx1 is missing

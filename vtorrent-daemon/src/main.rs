@@ -19,20 +19,23 @@
 ///   --staking-address <ADDR>  Enable PoS staking with this address
 ///   --no-dht                  Disable DHT bootstrap (use DNS seeds only)
 ///   --seed <ADDR>             Additional seed node (repeatable)
+///   --tor-proxy <ADDR>        Tor SOCKS5 proxy address [default: 127.0.0.1:9050]
+///   --tor-only                Prefer Tor for clearnet outbound peers
+///   --i2p-sam <ADDR>          Enable I2P through this SAM bridge address
 ///   --log-level <LEVEL>       Log level: error|warn|info|debug|trace [default: info]
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use vtorrent_node::node::{Node, NodeConfig};
 use vtorrent_node::events as node_events;
-use vtorrent_rpc::{server::start_server, state::AppState};
+use vtorrent_node::node::{Node, NodeConfig};
+use vtorrent_onion::TransportConfig;
 use vtorrent_rpc::ws::NodeEvent as RpcNodeEvent;
-use vtorrent_store::store::BlockStore;
+use vtorrent_rpc::{server::start_server, state::AppState};
 use vtorrent_spv::SpvHeader;
+use vtorrent_store::store::BlockStore;
 
 // ─── CLI Arguments ────────────────────────────────────────────────────────────
 
@@ -68,6 +71,18 @@ struct Cli {
     #[arg(long = "seed", value_name = "ADDR")]
     seeds: Vec<String>,
 
+    /// Tor SOCKS5 proxy address. Tor remains optional unless an onion peer is dialed.
+    #[arg(long, value_name = "ADDR")]
+    tor_proxy: Option<String>,
+
+    /// Prefer Tor for outbound clearnet peers when the proxy is available.
+    #[arg(long, default_value_t = false)]
+    tor_only: bool,
+
+    /// Enable I2P using this SAM bridge address (for example, 127.0.0.1:7656).
+    #[arg(long, value_name = "ADDR")]
+    i2p_sam: Option<String>,
+
     /// Log level: error, warn, info, debug, trace.
     #[arg(long, default_value = "info")]
     log_level: String,
@@ -89,8 +104,7 @@ async fn main() -> anyhow::Result<()> {
     // Initialise structured logging
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new(&cli.log_level))
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&cli.log_level)),
         )
         .init();
 
@@ -109,14 +123,22 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Open (or create) the persistent block store ───────────────────────────
     let chain_db_path = data_dir.join("chain.db");
-    let block_store = Arc::new(
-        BlockStore::open(&chain_db_path)
-            .map_err(|e| anyhow::anyhow!("Failed to open block store at {:?}: {}", chain_db_path, e))?
-    );
+    let block_store = Arc::new(BlockStore::open(&chain_db_path).map_err(|e| {
+        anyhow::anyhow!("Failed to open block store at {:?}: {}", chain_db_path, e)
+    })?);
     tracing::info!("Block store opened at {:?}", chain_db_path);
 
     // ── Build NodeConfig ──────────────────────────────────────────────────────
     let staking_enabled = cli.staking_address.is_some();
+    let mut transport = TransportConfig::default();
+    if let Some(proxy) = &cli.tor_proxy {
+        transport.tor_socks_addr = proxy.clone();
+    }
+    transport.prefer_onion = cli.tor_only;
+    if let Some(sam_addr) = &cli.i2p_sam {
+        transport.i2p_enabled = true;
+        transport.i2p_sam_addr = sam_addr.clone();
+    }
     let config = NodeConfig {
         listen_addr: cli.listen.clone(),
         staking_enabled,
@@ -127,6 +149,7 @@ async fn main() -> anyhow::Result<()> {
         data_dir: data_dir.clone(),
         use_overlay: true,
         testnet: cli.testnet,
+        transport,
     };
 
     // ── Build the P2P Node ────────────────────────────────────────────────────
@@ -135,20 +158,21 @@ async fn main() -> anyhow::Result<()> {
     // so the node resumes from the last known tip rather than re-syncing from
     // genesis on every restart.
     let mut node = {
-        let store_height = block_store.best_height()
+        let store_height = block_store
+            .best_height()
             .map_err(|e| anyhow::anyhow!("BlockStore::best_height failed: {}", e))?;
 
         if store_height > 0 {
             tracing::info!("Resuming from persisted chain at height {}", store_height);
             // Load persisted chain into memory, then build the node with it.
-            let chain = block_store.load_into_chain()
+            let chain = block_store
+                .load_into_chain()
                 .map_err(|e| anyhow::anyhow!("Failed to load chain from store: {}", e))?;
             Node::new_with_chain(config.clone(), chain)
                 .map_err(|e| anyhow::anyhow!("Node::new_with_chain failed: {}", e))?
         } else {
             tracing::info!("No persisted chain found — starting from genesis");
-            Node::new(config.clone())
-                .map_err(|e| anyhow::anyhow!("Node::new failed: {}", e))?
+            Node::new(config.clone()).map_err(|e| anyhow::anyhow!("Node::new failed: {}", e))?
         }
     };
 
@@ -196,7 +220,8 @@ async fn main() -> anyhow::Result<()> {
                             utxos_removed,
                             claimed_addresses,
                             ..
-                        } = &*event {
+                        } = &*event
+                        {
                             if let Err(e) = store_for_bridge.append_block(
                                 block,
                                 *height,
@@ -204,7 +229,11 @@ async fn main() -> anyhow::Result<()> {
                                 utxos_removed,
                                 claimed_addresses,
                             ) {
-                                tracing::error!("BlockStore::append_block failed at height {}: {}", height, e);
+                                tracing::error!(
+                                    "BlockStore::append_block failed at height {}: {}",
+                                    height,
+                                    e
+                                );
                             } else {
                                 tracing::debug!("Persisted block at height {}", height);
                             }
@@ -221,29 +250,40 @@ async fn main() -> anyhow::Result<()> {
                             {
                                 let mut spv = spv_chain_ref.write().await;
                                 if let Err(e) = spv.add_header(spv_header) {
-                                    tracing::debug!("SPV chain: could not add header at {}: {}", height, e);
+                                    tracing::debug!(
+                                        "SPV chain: could not add header at {}: {}",
+                                        height,
+                                        e
+                                    );
                                 }
                             }
                         }
 
                         // ── Bridge to RPC WebSocket broadcaster ───────────────
                         let rpc_event: Option<RpcNodeEvent> = match &*event {
-                            node_events::NodeEvent::NewBlock { height, hash, tx_count, timestamp, size_bytes, .. } => {
-                                Some(RpcNodeEvent::NewBlock {
-                                    height: *height,
-                                    hash: hex::encode(hash),
-                                    tx_count: *tx_count,
-                                    timestamp: *timestamp,
-                                    size_bytes: *size_bytes,
-                                })
-                            }
-                            node_events::NodeEvent::TxConfirmed { txid, block_height, block_hash } => {
-                                Some(RpcNodeEvent::TxConfirmed {
-                                    txid: hex::encode(txid),
-                                    block_height: *block_height,
-                                    block_hash: hex::encode(block_hash),
-                                })
-                            }
+                            node_events::NodeEvent::NewBlock {
+                                height,
+                                hash,
+                                tx_count,
+                                timestamp,
+                                size_bytes,
+                                ..
+                            } => Some(RpcNodeEvent::NewBlock {
+                                height: *height,
+                                hash: hex::encode(hash),
+                                tx_count: *tx_count,
+                                timestamp: *timestamp,
+                                size_bytes: *size_bytes,
+                            }),
+                            node_events::NodeEvent::TxConfirmed {
+                                txid,
+                                block_height,
+                                block_hash,
+                            } => Some(RpcNodeEvent::TxConfirmed {
+                                txid: hex::encode(txid),
+                                block_height: *block_height,
+                                block_hash: hex::encode(block_hash),
+                            }),
                             node_events::NodeEvent::TxUnconfirmed { txid, fee_sats } => {
                                 Some(RpcNodeEvent::TxUnconfirmed {
                                     txid: hex::encode(txid),
@@ -252,7 +292,12 @@ async fn main() -> anyhow::Result<()> {
                                     size_bytes: 0,
                                 })
                             }
-                            node_events::NodeEvent::PeerConnected { addr, user_agent, version, height } => {
+                            node_events::NodeEvent::PeerConnected {
+                                addr,
+                                user_agent,
+                                version,
+                                height,
+                            } => {
                                 // Update peer count and best known peer height for sync % calculation.
                                 {
                                     let mut count = peer_count_ref.write().await;
@@ -306,20 +351,24 @@ async fn main() -> anyhow::Result<()> {
                                     reason: "disconnected".to_string(),
                                 })
                             }
-                            node_events::NodeEvent::Reorg { old_tip, new_tip, depth } => {
-                                Some(RpcNodeEvent::Reorg {
-                                    old_tip: hex::encode(old_tip),
-                                    new_tip: hex::encode(new_tip),
-                                    depth: *depth,
-                                })
-                            }
-                            node_events::NodeEvent::StakingReward { block_height, reward_sats, address } => {
-                                Some(RpcNodeEvent::StakingReward {
-                                    block_height: *block_height,
-                                    reward_sats: *reward_sats,
-                                    address: address.clone(),
-                                })
-                            }
+                            node_events::NodeEvent::Reorg {
+                                old_tip,
+                                new_tip,
+                                depth,
+                            } => Some(RpcNodeEvent::Reorg {
+                                old_tip: hex::encode(old_tip),
+                                new_tip: hex::encode(new_tip),
+                                depth: *depth,
+                            }),
+                            node_events::NodeEvent::StakingReward {
+                                block_height,
+                                reward_sats,
+                                address,
+                            } => Some(RpcNodeEvent::StakingReward {
+                                block_height: *block_height,
+                                reward_sats: *reward_sats,
+                                address: address.clone(),
+                            }),
                         };
 
                         if let Some(ev) = rpc_event {
@@ -342,13 +391,26 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("  P2P listen:      {}", config.listen_addr);
     tracing::info!("  RPC server:      {}", rpc_addr);
     tracing::info!("  Data dir:        {}", data_dir.display());
-    tracing::info!("  DHT bootstrap:   {}", if config.use_dht { "enabled" } else { "disabled" });
-    tracing::info!("  Network:         {}", if config.testnet { "TESTNET" } else { "mainnet" });
-    tracing::info!("  Staking:         {}", if staking_enabled {
-        cli.staking_address.as_deref().unwrap_or("enabled")
-    } else {
-        "disabled"
-    });
+    tracing::info!(
+        "  DHT bootstrap:   {}",
+        if config.use_dht {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    tracing::info!(
+        "  Network:         {}",
+        if config.testnet { "TESTNET" } else { "mainnet" }
+    );
+    tracing::info!(
+        "  Staking:         {}",
+        if staking_enabled {
+            cli.staking_address.as_deref().unwrap_or("enabled")
+        } else {
+            "disabled"
+        }
+    );
 
     // ── Start services concurrently ───────────────────────────────────────────
 

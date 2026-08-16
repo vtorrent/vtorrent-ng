@@ -1,3 +1,8 @@
+use crate::error::{MigrateError, Result};
+use crate::types::MasterKey;
+use aes::Aes256;
+use cbc::cipher::{BlockDecryptMut, KeyIvInit};
+use cbc::Decryptor;
 /// Wallet decryption module.
 ///
 /// This implements the exact same key derivation and decryption scheme
@@ -11,14 +16,8 @@
 /// 2. Decrypt the master key using AES-256-CBC with IV from the mkey record.
 /// 3. Use the decrypted master key to decrypt each ckey (encrypted private key)
 ///    using AES-256-CBC with the public key hash as IV.
-
 use sha2::{Digest, Sha512};
-use aes::Aes256;
-use cbc::Decryptor;
-use cbc::cipher::{BlockDecryptMut, KeyIvInit};
 use zeroize::{Zeroize, ZeroizeOnDrop};
-use crate::error::{MigrateError, Result};
-use crate::types::MasterKey;
 
 /// A decrypted master key, zeroized on drop.
 #[derive(Zeroize, ZeroizeOnDrop)]
@@ -28,11 +27,7 @@ pub struct DecryptedMasterKey {
 
 /// Derive the encryption key from a passphrase using the legacy method.
 /// Method 0: Iterated SHA-512 (Bitcoin/vTorrent default).
-pub fn derive_key_method0(
-    passphrase: &[u8],
-    salt: &[u8],
-    iterations: u32,
-) -> [u8; 32] {
+pub fn derive_key_method0(passphrase: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
     // EVP_BytesToKey equivalent: SHA-512 iterated
     // Output: first 32 bytes = AES key, next 16 bytes = IV (we only need key)
     let mut buf = Vec::new();
@@ -42,7 +37,7 @@ pub fn derive_key_method0(
     let mut hash = Sha512::digest(&buf);
 
     for _ in 1..iterations {
-        hash = Sha512::digest(&hash);
+        hash = Sha512::digest(hash);
     }
 
     let mut key = [0u8; 32];
@@ -51,10 +46,7 @@ pub fn derive_key_method0(
 }
 
 /// Decrypt the master key using AES-256-CBC.
-pub fn decrypt_master_key(
-    mkey: &MasterKey,
-    passphrase: &str,
-) -> Result<DecryptedMasterKey> {
+pub fn decrypt_master_key(mkey: &MasterKey, passphrase: &str) -> Result<DecryptedMasterKey> {
     let passphrase_bytes = passphrase.as_bytes();
 
     let derived_key = match mkey.derivation_method {
@@ -76,7 +68,7 @@ pub fn decrypt_master_key(
     // Decrypt using AES-256-CBC
     let mut ciphertext = mkey.encrypted_key.clone();
     // Pad to block boundary if needed
-    while ciphertext.len() % 16 != 0 {
+    while !ciphertext.len().is_multiple_of(16) {
         ciphertext.push(0);
     }
 
@@ -110,7 +102,7 @@ pub fn decrypt_private_key(
 
     let mut ciphertext = encrypted_privkey.to_vec();
     // Ensure block alignment
-    while ciphertext.len() % 16 != 0 {
+    while !ciphertext.len().is_multiple_of(16) {
         ciphertext.push(0);
     }
 
@@ -125,8 +117,7 @@ pub fn decrypt_private_key(
 
     // Validate the decrypted key is a valid secp256k1 scalar
     let key_bytes: [u8; 32] = decrypted[..32].try_into().unwrap();
-    secp256k1::SecretKey::from_slice(&key_bytes)
-        .map_err(|_| MigrateError::IncorrectPassphrase)?;
+    secp256k1::SecretKey::from_slice(&key_bytes).map_err(|_| MigrateError::IncorrectPassphrase)?;
 
     Ok(decrypted[..32].to_vec())
 }

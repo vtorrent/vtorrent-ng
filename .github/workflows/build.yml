@@ -7,6 +7,9 @@ on:
       - 'v*'
   pull_request:
     branches: [main]
+  schedule:
+    # Weekly dependency vulnerability scan (Monday at 03:23 UTC).
+    - cron: '23 3 * * 1'
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,10 +27,37 @@ jobs:
       - name: Run all workspace tests
         run: cargo test --workspace --all-features
 
+  # ─── Rust quality gates ─────────────────────────────────────────────────────
+  quality:
+    name: Rust Format and Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+      - name: Run Clippy with warnings denied
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  # ─── Dependency security ─────────────────────────────────────────────────────
+  security-audit:
+    name: Cargo Audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
   # ─── Desktop builds ─────────────────────────────────────────────────────────
   build-desktop:
     name: Build (${{ matrix.platform }})
-    needs: test
+    needs: [test, quality]
     if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false

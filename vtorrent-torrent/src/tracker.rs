@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::error::{Result, TorrentError};
+use serde::{Deserialize, Serialize};
 
 /// Event type for tracker announces (BEP-3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,18 +112,22 @@ impl HttpTracker {
             url.push_str(&format!("&event={}", event));
         }
 
-        let response = self.client.get(&url)
+        let response = self
+            .client
+            .get(&url)
             .send()
             .await
             .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
 
         if !response.status().is_success() {
-            return Err(TorrentError::TrackerError(
-                format!("HTTP {}", response.status())
-            ));
+            return Err(TorrentError::TrackerError(format!(
+                "HTTP {}",
+                response.status()
+            )));
         }
 
-        let bytes = response.bytes()
+        let bytes = response
+            .bytes()
             .await
             .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
 
@@ -139,8 +143,8 @@ impl Default for HttpTracker {
 
 /// Parse a bencoded tracker response.
 fn parse_tracker_response(data: &[u8]) -> Result<AnnounceResponse> {
-    let value: serde_bencode::value::Value = serde_bencode::from_bytes(data)
-        .map_err(|e| TorrentError::BencodeError(e.to_string()))?;
+    let value: serde_bencode::value::Value =
+        serde_bencode::from_bytes(data).map_err(|e| TorrentError::BencodeError(e.to_string()))?;
 
     let dict = match &value {
         serde_bencode::value::Value::Dict(d) => d,
@@ -148,9 +152,10 @@ fn parse_tracker_response(data: &[u8]) -> Result<AnnounceResponse> {
     };
 
     // Check for failure reason
-    if let Some(serde_bencode::value::Value::Bytes(reason)) = dict.get(&b"failure reason".to_vec()) {
+    if let Some(serde_bencode::value::Value::Bytes(reason)) = dict.get(&b"failure reason".to_vec())
+    {
         return Err(TorrentError::TrackerError(
-            String::from_utf8_lossy(reason).into_owned()
+            String::from_utf8_lossy(reason).into_owned(),
         ));
     }
 
@@ -181,16 +186,19 @@ fn parse_tracker_response(data: &[u8]) -> Result<AnnounceResponse> {
 
     // Parse peers — compact format (6 bytes per peer: 4 IP + 2 port)
     let peers = match dict.get(&b"peers".to_vec()) {
-        Some(serde_bencode::value::Value::Bytes(compact)) => {
-            parse_compact_peers(compact)
-        }
-        Some(serde_bencode::value::Value::List(list)) => {
-            parse_dict_peers(list)
-        }
+        Some(serde_bencode::value::Value::Bytes(compact)) => parse_compact_peers(compact),
+        Some(serde_bencode::value::Value::List(list)) => parse_dict_peers(list),
         _ => Vec::new(),
     };
 
-    Ok(AnnounceResponse { interval, min_interval, complete, incomplete, peers, warning })
+    Ok(AnnounceResponse {
+        interval,
+        min_interval,
+        complete,
+        incomplete,
+        peers,
+        warning,
+    })
 }
 
 /// Parse compact peer format (4 bytes IP + 2 bytes port per peer).
@@ -198,9 +206,19 @@ fn parse_compact_peers(data: &[u8]) -> Vec<TrackerPeer> {
     let mut peers = Vec::new();
     let mut i = 0;
     while i + 6 <= data.len() {
-        let ip = format!("{}.{}.{}.{}", data[i], data[i+1], data[i+2], data[i+3]);
-        let port = u16::from_be_bytes([data[i+4], data[i+5]]);
-        peers.push(TrackerPeer { ip, port, peer_id: None });
+        let ip = format!(
+            "{}.{}.{}.{}",
+            data[i],
+            data[i + 1],
+            data[i + 2],
+            data[i + 3]
+        );
+        let port = u16::from_be_bytes([data[i + 4], data[i + 5]]);
+        peers.push(TrackerPeer {
+            ip,
+            port,
+            peer_id: None,
+        });
         i += 6;
     }
     peers
@@ -221,7 +239,11 @@ fn parse_dict_peers(list: &[serde_bencode::value::Value]) -> Vec<TrackerPeer> {
                 Some(serde_bencode::value::Value::Int(p)) => *p as u16,
                 _ => continue,
             };
-            peers.push(TrackerPeer { ip, port, peer_id: None });
+            peers.push(TrackerPeer {
+                ip,
+                port,
+                peer_id: None,
+            });
         }
     }
     peers

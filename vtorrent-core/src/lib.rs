@@ -6,7 +6,6 @@
 /// - Hash functions (SHA256d, RIPEMD160, Hash160)
 /// - Transaction and UTXO types
 /// - Network constants
-
 pub mod address;
 pub mod crypto;
 pub mod error;

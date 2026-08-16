@@ -3,10 +3,16 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum OnionError {
     #[error("Tor SOCKS5 proxy not available at {addr}: {source}")]
-    TorUnavailable { addr: String, source: std::io::Error },
+    TorUnavailable {
+        addr: String,
+        source: std::io::Error,
+    },
 
     #[error("I2P SAM bridge not available at {addr}: {source}")]
-    I2pUnavailable { addr: String, source: std::io::Error },
+    I2pUnavailable {
+        addr: String,
+        source: std::io::Error,
+    },
 
     #[error("SOCKS5 connection failed: {0}")]
     Socks5Error(String),

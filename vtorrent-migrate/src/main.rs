@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use std::fs;
+use std::path::PathBuf;
 use vtorrent_migrate::extractor::extract_wallet;
 
 fn main() {
@@ -44,7 +44,9 @@ fn main() {
                 json_output = true;
                 i += 1;
             }
-            _ => { i += 1; }
+            _ => {
+                i += 1;
+            }
         }
     }
 
@@ -87,7 +89,9 @@ fn main() {
                     if std::env::var("VTORRENT_SHOW_WIF").is_ok() {
                         println!("    WIF:            {}", key.wif);
                     } else {
-                        println!("    WIF:            [hidden - set VTORRENT_SHOW_WIF=1 to reveal]");
+                        println!(
+                            "    WIF:            [hidden - set VTORRENT_SHOW_WIF=1 to reveal]"
+                        );
                     }
                     println!();
                 }

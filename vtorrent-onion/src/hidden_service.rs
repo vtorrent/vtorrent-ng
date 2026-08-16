@@ -26,6 +26,9 @@ impl HiddenServiceInfo {
 
     /// Returns the host portion of the address (without port).
     pub fn host(&self) -> &str {
-        self.onion_addr.split(':').next().unwrap_or(&self.onion_addr)
+        self.onion_addr
+            .split(':')
+            .next()
+            .unwrap_or(&self.onion_addr)
     }
 }

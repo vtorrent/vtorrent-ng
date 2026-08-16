@@ -1,3 +1,5 @@
+use crate::state::AppState;
+use axum::{extract::State, response::IntoResponse};
 /// Prometheus metrics endpoint for vTorrent.
 ///
 /// Exposes node health and performance metrics at `GET /metrics` in the
@@ -31,10 +33,7 @@
 /// | `vtorrent_torrent_sessions` | Gauge | Number of active torrent sessions |
 /// | `vtorrent_dex_orders` | Gauge | Number of open DEX orders |
 /// | `vtorrent_ws_subscribers` | Gauge | Number of active WebSocket subscribers |
-
 use std::sync::Arc;
-use axum::{extract::State, response::IntoResponse};
-use crate::state::AppState;
 
 /// Prometheus text format content type.
 const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
@@ -57,13 +56,21 @@ async fn collect_metrics(state: &AppState) -> String {
         let chain = state.chain.lock().await;
         chain.best_height() as u64
     };
-    write_gauge(&mut out, "vtorrent_block_height",
-        "Current best chain block height", height);
+    write_gauge(
+        &mut out,
+        "vtorrent_block_height",
+        "Current best chain block height",
+        height,
+    );
 
     // Peer count
     let peer_count = *state.peer_count.read().await as u64;
-    write_gauge(&mut out, "vtorrent_peer_count",
-        "Number of connected P2P peers", peer_count);
+    write_gauge(
+        &mut out,
+        "vtorrent_peer_count",
+        "Number of connected P2P peers",
+        peer_count,
+    );
 
     // Mempool
     let (mempool_size, mempool_bytes) = {
@@ -73,19 +80,35 @@ async fn collect_metrics(state: &AppState) -> String {
         let bytes = size * 250;
         (size, bytes)
     };
-    write_gauge(&mut out, "vtorrent_mempool_size",
-        "Number of unconfirmed transactions in mempool", mempool_size);
-    write_gauge(&mut out, "vtorrent_mempool_bytes",
-        "Total size of mempool transactions in bytes", mempool_bytes);
+    write_gauge(
+        &mut out,
+        "vtorrent_mempool_size",
+        "Number of unconfirmed transactions in mempool",
+        mempool_size,
+    );
+    write_gauge(
+        &mut out,
+        "vtorrent_mempool_bytes",
+        "Total size of mempool transactions in bytes",
+        mempool_bytes,
+    );
 
     // Staking
     let staking_enabled = *state.staking_enabled.read().await;
-    write_gauge(&mut out, "vtorrent_staking_enabled",
-        "1 if staking is active, 0 otherwise", staking_enabled as u64);
+    write_gauge(
+        &mut out,
+        "vtorrent_staking_enabled",
+        "1 if staking is active, 0 otherwise",
+        staking_enabled as u64,
+    );
 
     let blocks_staked = *state.blocks_staked.read().await;
-    write_counter(&mut out, "vtorrent_blocks_staked_total",
-        "Total number of blocks staked this session", blocks_staked);
+    write_counter(
+        &mut out,
+        "vtorrent_blocks_staked_total",
+        "Total number of blocks staked this session",
+        blocks_staked,
+    );
 
     // Uptime
     let now = std::time::SystemTime::now()
@@ -93,34 +116,54 @@ async fn collect_metrics(state: &AppState) -> String {
         .unwrap_or_default()
         .as_secs();
     let uptime = now.saturating_sub(state.start_time);
-    write_gauge(&mut out, "vtorrent_uptime_seconds",
-        "Seconds since the node started", uptime);
+    write_gauge(
+        &mut out,
+        "vtorrent_uptime_seconds",
+        "Seconds since the node started",
+        uptime,
+    );
 
     // Syncing
     let syncing = *state.syncing.read().await;
-    write_gauge(&mut out, "vtorrent_syncing",
-        "1 if node is currently syncing, 0 if fully synced", syncing as u64);
+    write_gauge(
+        &mut out,
+        "vtorrent_syncing",
+        "1 if node is currently syncing, 0 if fully synced",
+        syncing as u64,
+    );
 
     // Torrent sessions
     let torrent_count = {
         let sessions = state.torrent_sessions.read().await;
         sessions.list_sessions().len() as u64
     };
-    write_gauge(&mut out, "vtorrent_torrent_sessions",
-        "Number of active torrent sessions", torrent_count);
+    write_gauge(
+        &mut out,
+        "vtorrent_torrent_sessions",
+        "Number of active torrent sessions",
+        torrent_count,
+    );
 
     // DEX orders
     let dex_order_count = {
         let book = state.order_book.read().await;
         book.list_open_orders().len() as u64
     };
-    write_gauge(&mut out, "vtorrent_dex_orders",
-        "Number of open DEX orders", dex_order_count);
+    write_gauge(
+        &mut out,
+        "vtorrent_dex_orders",
+        "Number of open DEX orders",
+        dex_order_count,
+    );
 
     // WebSocket subscribers
     let ws_subscribers = state.events.sender.receiver_count() as u64;
-    write_gauge(&mut out, "vtorrent_ws_subscribers",
-        "Number of active WebSocket event subscribers", ws_subscribers);
+    write_gauge(
+        &mut out,
+        "vtorrent_ws_subscribers",
+        "Number of active WebSocket event subscribers",
+        ws_subscribers,
+    );
 
     out
 }
@@ -193,8 +236,17 @@ mod tests {
             if line.starts_with("vtorrent_") && !line.starts_with("# ") {
                 // Should be "metric_name value"
                 let parts: Vec<&str> = line.split_whitespace().collect();
-                assert_eq!(parts.len(), 2, "Metric line should have exactly 2 parts: {}", line);
-                assert!(parts[1].parse::<u64>().is_ok(), "Value should be a number: {}", parts[1]);
+                assert_eq!(
+                    parts.len(),
+                    2,
+                    "Metric line should have exactly 2 parts: {}",
+                    line
+                );
+                assert!(
+                    parts[1].parse::<u64>().is_ok(),
+                    "Value should be a number: {}",
+                    parts[1]
+                );
             }
         }
     }
@@ -209,7 +261,10 @@ mod tests {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 let uptime: u64 = parts[1].parse().unwrap();
                 // Uptime should be 0 or very small for a freshly created state
-                assert!(uptime < 60, "Uptime should be less than 60 seconds for a new state");
+                assert!(
+                    uptime < 60,
+                    "Uptime should be less than 60 seconds for a new state"
+                );
             }
         }
     }

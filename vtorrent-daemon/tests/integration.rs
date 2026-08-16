@@ -24,8 +24,7 @@ async fn get(app: axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    let body: serde_json::Value =
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
     (status, body)
 }
 
@@ -49,8 +48,7 @@ async fn post_json(
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    let body: serde_json::Value =
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
     (status, body)
 }
 
@@ -68,7 +66,10 @@ async fn integration_node_info_returns_mainnet() {
         body["network"], "vtorrent-mainnet",
         "network field should be vtorrent-mainnet"
     );
-    assert!(body["block_height"].is_number(), "block_height should be a number");
+    assert!(
+        body["block_height"].is_number(),
+        "block_height should be a number"
+    );
     assert!(body["version"].is_string(), "version should be a string");
 }
 
@@ -130,7 +131,10 @@ async fn integration_send_requires_unlock() {
 async fn integration_staking_disabled_by_default() {
     let (status, body) = get(app(), "/api/v1/staking/status").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["enabled"], false, "staking should be disabled by default");
+    assert_eq!(
+        body["enabled"], false,
+        "staking should be disabled by default"
+    );
     assert_eq!(body["blocks_staked"], 0);
 }
 
@@ -165,7 +169,12 @@ async fn integration_staking_start_stop_roundtrip() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "start staking should return 200; body={}", body);
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "start staking should return 200; body={}",
+        body
+    );
     assert_eq!(body["success"], true);
 
     // Verify status reflects the change.
@@ -180,7 +189,12 @@ async fn integration_staking_start_stop_roundtrip() {
         serde_json::json!({}),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "stop staking should return 200; body={}", body);
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "stop staking should return 200; body={}",
+        body
+    );
     assert_eq!(body["success"], true);
 
     // Verify status reflects the change.
@@ -258,9 +272,16 @@ async fn integration_spv_add_genesis_header() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "adding genesis header should return 200");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "adding genesis header should return 200"
+    );
     assert_eq!(body["added"], 1, "one header should be added");
-    assert_eq!(body["best_height"], 0, "best height should be 0 after genesis");
+    assert_eq!(
+        body["best_height"], 0,
+        "best height should be 0 after genesis"
+    );
 }
 
 // ─── DEX ─────────────────────────────────────────────────────────────────────
@@ -302,7 +323,12 @@ async fn integration_dex_place_and_cancel_order() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "placing a DEX order should return 200; body={}", body);
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "placing a DEX order should return 200; body={}",
+        body
+    );
     let order_id = body["order_id"]
         .as_str()
         .expect("response should have an order_id")
@@ -321,7 +347,7 @@ async fn integration_dex_place_and_cancel_order() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(&format!("/api/v1/dex/order/{}", order_id))
+                .uri(format!("/api/v1/dex/order/{}", order_id))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -374,7 +400,11 @@ async fn integration_claim_check_unknown_address_returns_zero() {
 #[tokio::test]
 async fn integration_unknown_route_returns_404() {
     let (status, _body) = get(app(), "/api/v1/does-not-exist").await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "unknown route should return 404");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "unknown route should return 404"
+    );
 }
 
 #[tokio::test]
@@ -384,5 +414,9 @@ async fn integration_block_not_found_returns_404() {
         "/api/v1/blockchain/block/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "missing block should return 404");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "missing block should return 404"
+    );
 }

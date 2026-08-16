@@ -1,10 +1,10 @@
 //! Core block and UTXO store backed by redb.
 
-use std::path::Path;
+use crate::error::{Result, StoreError};
 use redb::{Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition};
+use std::path::Path;
 use vtorrent_node::block::Block;
 use vtorrent_node::chain::Utxo;
-use crate::error::{Result, StoreError};
 
 // ─── Table definitions ────────────────────────────────────────────────────────
 
@@ -150,7 +150,9 @@ impl BlockStore {
     ) -> Result<()> {
         let current_height = self.best_height()?;
         if current_height == 0 {
-            return Err(StoreError::Corrupted("Cannot roll back genesis block".into()));
+            return Err(StoreError::Corrupted(
+                "Cannot roll back genesis block".into(),
+            ));
         }
         let new_height = current_height - 1;
 
@@ -259,7 +261,9 @@ impl BlockStore {
 
     /// Return all UTXOs whose `script_pubkey` matches the given script.
     pub fn utxos_for_script(&self, script: &[u8]) -> Result<Vec<Utxo>> {
-        Ok(self.all_utxos()?.into_iter()
+        Ok(self
+            .all_utxos()?
+            .into_iter()
             .filter(|u| u.script_pubkey == script)
             .collect())
     }
@@ -323,24 +327,27 @@ impl BlockStore {
         let height = self.best_height()?;
         tracing::info!("Loading chain from store: {} blocks", height + 1);
 
-        let mut chain = Chain::new()
-            .map_err(|e| StoreError::Corrupted(format!("chain init failed: {}", e)))?;
+        let mut chain =
+            Chain::new().map_err(|e| StoreError::Corrupted(format!("chain init failed: {}", e)))?;
 
         // Replay blocks from height 1 (genesis is already in Chain::new()).
         for h in 1..=height {
             if let Some(block) = self.get_block_at_height(h)? {
-                chain.add_block(block)
-                    .map_err(|e| StoreError::Corrupted(
-                        format!("replay failed at height {}: {}", h, e)
-                    ))?;
+                chain.add_block(block).map_err(|e| {
+                    StoreError::Corrupted(format!("replay failed at height {}: {}", h, e))
+                })?;
             } else {
-                return Err(StoreError::Corrupted(
-                    format!("missing block at height {} during load", h)
-                ));
+                return Err(StoreError::Corrupted(format!(
+                    "missing block at height {} during load",
+                    h
+                )));
             }
         }
 
-        tracing::info!("Chain loaded successfully at height {}", chain.best_height());
+        tracing::info!(
+            "Chain loaded successfully at height {}",
+            chain.best_height()
+        );
         Ok(chain)
     }
 
@@ -367,14 +374,17 @@ impl BlockStore {
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    use vtorrent_node::block::{Block, BlockHeader, Transaction, TxType, TxOutput};
+    use vtorrent_node::block::{Block, BlockHeader, Transaction, TxOutput, TxType};
 
     fn make_block(prev_hash: [u8; 32], height: u32) -> Block {
         let coinbase = Transaction {
             version: 1,
             tx_type: TxType::Coinbase,
             inputs: vec![],
-            outputs: vec![TxOutput { value: 5_000_000_000, script_pubkey: vec![0x76, 0xa9] }],
+            outputs: vec![TxOutput {
+                value: 5_000_000_000,
+                script_pubkey: vec![0x76, 0xa9],
+            }],
             lock_time: height,
             claim_address: None,
             claim_signature: None,
@@ -387,7 +397,7 @@ mod tests {
                 merkle_root: merkle,
                 timestamp: 1_700_000_000 + height,
                 bits: 0x1d00ffff,
-                nonce: height as u32,
+                nonce: height,
                 stake_modifier: 0,
             },
             transactions: vec![coinbase],
@@ -425,7 +435,9 @@ mod tests {
         let block_hash = block.hash();
         let utxo = make_utxo(block.transactions[0].txid(), 0, 5_000_000_000, 1);
 
-        store.append_block(&block, 1, &[utxo.clone()], &[], &[]).unwrap();
+        store
+            .append_block(&block, 1, std::slice::from_ref(&utxo), &[], &[])
+            .unwrap();
 
         assert_eq!(store.best_height().unwrap(), 1);
         assert_eq!(store.best_hash().unwrap(), Some(block_hash));
@@ -448,7 +460,9 @@ mod tests {
         let txid = block.transactions[0].txid();
         let utxo = make_utxo(txid, 0, 1_000_000, 1);
 
-        store.append_block(&block, 1, &[utxo.clone()], &[], &[]).unwrap();
+        store
+            .append_block(&block, 1, std::slice::from_ref(&utxo), &[], &[])
+            .unwrap();
 
         assert!(store.has_utxo(&txid, 0).unwrap());
         assert!(!store.has_utxo(&txid, 1).unwrap());
@@ -468,7 +482,9 @@ mod tests {
         store.append_block(&block1, 1, &[utxo], &[], &[]).unwrap();
 
         let block2 = make_block(block1.hash(), 2);
-        store.append_block(&block2, 2, &[], &[(txid1, 0)], &[]).unwrap();
+        store
+            .append_block(&block2, 2, &[], &[(txid1, 0)], &[])
+            .unwrap();
 
         assert!(!store.has_utxo(&txid1, 0).unwrap());
         assert_eq!(store.utxo_count().unwrap(), 0);
@@ -482,7 +498,9 @@ mod tests {
         let block = make_block([0u8; 32], 1);
         let addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7Divf".to_string();
 
-        store.append_block(&block, 1, &[], &[], &[addr.clone()]).unwrap();
+        store
+            .append_block(&block, 1, &[], &[], std::slice::from_ref(&addr))
+            .unwrap();
 
         assert!(store.is_claimed(&addr).unwrap());
         assert!(!store.is_claimed("VUnknownAddress").unwrap());
@@ -500,12 +518,16 @@ mod tests {
         let block1 = make_block([0u8; 32], 1);
         let txid1 = block1.transactions[0].txid();
         let utxo1 = make_utxo(txid1, 0, 5_000_000_000, 1);
-        store.append_block(&block1, 1, &[utxo1.clone()], &[], &[]).unwrap();
+        store
+            .append_block(&block1, 1, std::slice::from_ref(&utxo1), &[], &[])
+            .unwrap();
 
         let block2 = make_block(block1.hash(), 2);
         let txid2 = block2.transactions[0].txid();
         let utxo2 = make_utxo(txid2, 0, 5_000_000_000, 2);
-        store.append_block(&block2, 2, &[utxo2], &[(txid1, 0)], &[]).unwrap();
+        store
+            .append_block(&block2, 2, &[utxo2], &[(txid1, 0)], &[])
+            .unwrap();
 
         assert_eq!(store.best_height().unwrap(), 2);
         assert!(!store.has_utxo(&txid1, 0).unwrap());
@@ -547,8 +569,22 @@ mod tests {
 
         let txid1 = [1u8; 32];
         let txid2 = [2u8; 32];
-        let u1 = Utxo { txid: txid1, vout: 0, value: 1_000_000, script_pubkey: script.clone(), height: 1, timestamp: 1 };
-        let u2 = Utxo { txid: txid2, vout: 0, value: 2_000_000, script_pubkey: other_script.clone(), height: 1, timestamp: 1 };
+        let u1 = Utxo {
+            txid: txid1,
+            vout: 0,
+            value: 1_000_000,
+            script_pubkey: script.clone(),
+            height: 1,
+            timestamp: 1,
+        };
+        let u2 = Utxo {
+            txid: txid2,
+            vout: 0,
+            value: 2_000_000,
+            script_pubkey: other_script.clone(),
+            height: 1,
+            timestamp: 1,
+        };
 
         let block = make_block([0u8; 32], 1);
         store.append_block(&block, 1, &[u1, u2], &[], &[]).unwrap();

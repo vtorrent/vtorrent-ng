@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 vtorrent-core     = { path = "../vtorrent-core" }
+vtorrent-onion    = { path = "../vtorrent-onion" }
 
 # Async runtime + networking
 tokio             = { version = "1", features = ["full"] }

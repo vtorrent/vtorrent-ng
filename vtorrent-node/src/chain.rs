@@ -1,17 +1,16 @@
+use crate::{
+    block::{Block, Transaction},
+    consensus::validate_block,
+    error::{NodeError, Result},
+    genesis::create_genesis_block,
+};
 /// Blockchain state manager.
 ///
 /// Manages the chain of blocks, UTXO set, and processes new blocks.
 /// Supports chain reorganization (reorg) when a competing fork accumulates
 /// more cumulative work than the current main chain.
-
 use std::collections::{HashMap, HashSet, VecDeque};
 use vtorrent_script::{Engine, Script, ScriptEnv};
-use crate::{
-    block::{Block, Transaction, TxType},
-    consensus::validate_block,
-    error::{NodeError, Result},
-    genesis::create_genesis_block,
-};
 
 /// A UTXO (unspent transaction output).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -56,7 +55,11 @@ pub enum BlockAcceptance {
         claimed_addresses: Vec<String>,
     },
     /// Block extended a fork, which then became the new main chain (reorg occurred).
-    Reorg { old_tip: [u8; 32], new_tip: [u8; 32], depth: u32 },
+    Reorg {
+        old_tip: [u8; 32],
+        new_tip: [u8; 32],
+        depth: u32,
+    },
     /// Block extended a fork that is still shorter than the main chain.
     Fork { fork_tip: [u8; 32] },
     /// Block was already known.
@@ -69,6 +72,9 @@ pub struct Chain {
     blocks: HashMap<[u8; 32], Block>,
     /// Block hash at each height on the main chain.
     height_index: Vec<[u8; 32]>,
+    /// Main-chain transaction index: txid → (containing block hash, transaction offset).
+    /// Fork-only transactions are intentionally excluded until their branch becomes active.
+    tx_index: HashMap<[u8; 32], ([u8; 32], usize)>,
     /// UTXO set: (txid, vout) → Utxo.
     utxo_set: HashMap<([u8; 32], u32), Utxo>,
     /// Set of legacy addresses that have already been claimed.
@@ -96,6 +102,7 @@ impl Chain {
         let mut chain = Self {
             blocks: HashMap::new(),
             height_index: Vec::new(),
+            tx_index: HashMap::new(),
             utxo_set: HashMap::new(),
             claimed_addresses: HashSet::new(),
             journals: VecDeque::new(),
@@ -112,9 +119,13 @@ impl Chain {
 
         // Process genesis block outputs into UTXO set
         let journal = chain.apply_block_journaled(&genesis, 0)?;
+        chain.index_block_transactions(genesis_hash, &genesis);
         chain.journals.push_back(journal);
 
-        tracing::info!("Chain initialized with genesis block: {}", hex::encode(genesis_hash));
+        tracing::info!(
+            "Chain initialized with genesis block: {}",
+            hex::encode(genesis_hash)
+        );
         Ok(chain)
     }
 
@@ -135,8 +146,25 @@ impl Chain {
 
     /// Get a block by height (main chain only).
     pub fn get_block_at_height(&self, height: u32) -> Option<&Block> {
-        self.height_index.get(height as usize)
+        self.height_index
+            .get(height as usize)
             .and_then(|hash| self.blocks.get(hash))
+    }
+
+    /// Get the active main-chain block hash at a given height.
+    pub fn block_hash_at_height(&self, height: u32) -> Option<[u8; 32]> {
+        self.height_index.get(height as usize).copied()
+    }
+
+    /// Look up a transaction that is currently part of the active main chain.
+    ///
+    /// Returns the transaction, its containing block hash, and its main-chain height.
+    pub fn get_transaction(&self, txid: &[u8; 32]) -> Option<(&Transaction, [u8; 32], u32)> {
+        let (block_hash, tx_offset) = self.tx_index.get(txid).copied()?;
+        let height = self.block_height(&block_hash)?;
+        let block = self.blocks.get(&block_hash)?;
+        let tx = block.transactions.get(tx_offset)?;
+        Some((tx, block_hash, height))
     }
 
     /// Get the UTXO for a specific output.
@@ -146,7 +174,8 @@ impl Chain {
 
     /// Get all UTXOs for a specific scriptPubKey.
     pub fn get_utxos_for_script(&self, script: &[u8]) -> Vec<&Utxo> {
-        self.utxo_set.values()
+        self.utxo_set
+            .values()
             .filter(|u| u.script_pubkey == script)
             .collect()
     }
@@ -154,7 +183,8 @@ impl Chain {
     /// Get all UTXOs belonging to a specific address.
     pub fn get_utxos_for_address(&self, address: &str) -> Vec<Utxo> {
         let script = self.address_to_p2pkh_script(address);
-        self.utxo_set.values()
+        self.utxo_set
+            .values()
             .filter(|u| u.script_pubkey == script)
             .cloned()
             .collect()
@@ -195,7 +225,9 @@ impl Chain {
     /// Get the genesis block.
     pub fn genesis_block(&self) -> &Block {
         let genesis_hash = self.height_index[0];
-        self.blocks.get(&genesis_hash).expect("genesis block always present")
+        self.blocks
+            .get(&genesis_hash)
+            .expect("genesis block always present")
     }
 
     pub fn is_claimed(&self, address: &str) -> bool {
@@ -258,7 +290,8 @@ impl Chain {
         if prev_hash == main_tip {
             // ── Happy path: extends the main chain ───────────────────────
             let height = self.best_height() + 1;
-            let prev_block = self.get_block_at_height(height - 1)
+            let prev_block = self
+                .get_block_at_height(height - 1)
                 .ok_or_else(|| NodeError::Chain("Previous block not found".into()))?;
 
             validate_block(&block, height - 1, prev_block.header.timestamp)?;
@@ -294,18 +327,29 @@ impl Chain {
                 self.journals.pop_front();
             }
 
+            self.index_block_transactions(block_hash, &block);
             self.blocks.insert(block_hash, block);
             self.height_index.push(block_hash);
 
-            tracing::info!("Main chain extended to height {} ({})",
-                height, hex::encode(block_hash));
+            tracing::info!(
+                "Main chain extended to height {} ({})",
+                height,
+                hex::encode(block_hash)
+            );
 
-            Ok(BlockAcceptance::MainChain { height, utxos_added, utxos_removed, claimed_addresses })
-
+            Ok(BlockAcceptance::MainChain {
+                height,
+                utxos_added,
+                utxos_removed,
+                claimed_addresses,
+            })
         } else if self.blocks.contains_key(&prev_hash) {
             // ── Fork: block's parent is known but not the main tip ────────
             // Use block_heights (covers all blocks, not just main chain)
-            let parent_height = self.block_heights.get(&prev_hash).copied()
+            let parent_height = self
+                .block_heights
+                .get(&prev_hash)
+                .copied()
                 .or_else(|| self.block_height(&prev_hash))
                 .unwrap_or(0);
             let fork_height = parent_height + 1;
@@ -328,29 +372,48 @@ impl Chain {
                 let old_tip = main_tip;
                 self.reorganize_to(block_hash, fork_height)?;
 
-                let depth = (self.best_height() as i64 - fork_height as i64).unsigned_abs() as u32 + 1;
-                tracing::warn!("Chain reorg: old tip {} → new tip {} (depth {})",
-                    hex::encode(old_tip), hex::encode(block_hash), depth);
+                let depth =
+                    (self.best_height() as i64 - fork_height as i64).unsigned_abs() as u32 + 1;
+                tracing::warn!(
+                    "Chain reorg: old tip {} → new tip {} (depth {})",
+                    hex::encode(old_tip),
+                    hex::encode(block_hash),
+                    depth
+                );
 
-                Ok(BlockAcceptance::Reorg { old_tip, new_tip: block_hash, depth })
+                Ok(BlockAcceptance::Reorg {
+                    old_tip,
+                    new_tip: block_hash,
+                    depth,
+                })
             } else {
-                tracing::debug!("Fork block {} at height {} (work {} < main {})",
-                    hex::encode(block_hash), fork_height, fork_work, main_work);
-                Ok(BlockAcceptance::Fork { fork_tip: block_hash })
+                tracing::debug!(
+                    "Fork block {} at height {} (work {} < main {})",
+                    hex::encode(block_hash),
+                    fork_height,
+                    fork_work,
+                    main_work
+                );
+                Ok(BlockAcceptance::Fork {
+                    fork_tip: block_hash,
+                })
             }
-
         } else {
             // Parent not known — orphan block, reject for now
             Err(NodeError::InvalidBlock(format!(
                 "Orphan block {}: parent {} not found",
-                hex::encode(block_hash), hex::encode(prev_hash)
+                hex::encode(block_hash),
+                hex::encode(prev_hash)
             )))
         }
     }
 
     /// Find the height of a block on the main chain by its hash.
     pub fn block_height(&self, hash: &[u8; 32]) -> Option<u32> {
-        self.height_index.iter().position(|h| h == hash).map(|i| i as u32)
+        self.height_index
+            .iter()
+            .position(|h| h == hash)
+            .map(|i| i as u32)
     }
 
     /// Reorganize the main chain to make `new_tip` the best tip.
@@ -378,10 +441,13 @@ impl Chain {
         }
 
         if fork_point == [0u8; 32] {
-            return Err(NodeError::Chain("No common ancestor found during reorg".into()));
+            return Err(NodeError::Chain(
+                "No common ancestor found during reorg".into(),
+            ));
         }
 
-        let fork_height = self.block_height(&fork_point)
+        let fork_height = self
+            .block_height(&fork_point)
             .ok_or_else(|| NodeError::Chain("Fork point not on main chain".into()))?;
 
         tracing::info!("Reorg: fork point at height {}", fork_height);
@@ -397,18 +463,26 @@ impl Chain {
         let mut cursor = new_tip;
         while cursor != fork_point {
             to_apply.push(cursor);
-            cursor = self.parent_map.get(&cursor).copied()
+            cursor = self
+                .parent_map
+                .get(&cursor)
+                .copied()
                 .ok_or_else(|| NodeError::Chain("Missing parent during reorg apply".into()))?;
         }
         to_apply.reverse(); // now in ascending order
 
         for (i, hash) in to_apply.iter().enumerate() {
             let height = fork_height + 1 + i as u32;
-            let block = self.blocks.get(hash)
-                .ok_or_else(|| NodeError::Chain(format!("Missing block {} during reorg", hex::encode(hash))))?
+            let block = self
+                .blocks
+                .get(hash)
+                .ok_or_else(|| {
+                    NodeError::Chain(format!("Missing block {} during reorg", hex::encode(hash)))
+                })?
                 .clone();
 
             let journal = self.apply_block_journaled(&block, height)?;
+            self.index_block_transactions(*hash, &block);
             self.journals.push_back(journal);
             self.height_index.push(*hash);
         }
@@ -427,7 +501,9 @@ impl Chain {
         let genesis = self.height_index[0];
         loop {
             chain.push(tip);
-            if tip == genesis { break; }
+            if tip == genesis {
+                break;
+            }
             match self.parent_map.get(&tip) {
                 Some(&parent) => tip = parent,
                 None => break,
@@ -438,7 +514,9 @@ impl Chain {
 
     /// Roll back the most recent main chain block, restoring the UTXO set.
     fn rollback_one_block(&mut self) -> Result<()> {
-        let journal = self.journals.pop_back()
+        let journal = self
+            .journals
+            .pop_back()
             .ok_or_else(|| NodeError::Chain("No journal to roll back".into()))?;
 
         // Apply changes in reverse
@@ -458,13 +536,37 @@ impl Chain {
             self.claimed_addresses.remove(addr);
         }
 
+        self.remove_block_transactions(journal.block_hash);
+
         // Remove from height index
         self.height_index.pop();
 
-        tracing::debug!("Rolled back block {} at height {}",
-            hex::encode(journal.block_hash), journal.height);
+        tracing::debug!(
+            "Rolled back block {} at height {}",
+            hex::encode(journal.block_hash),
+            journal.height
+        );
 
         Ok(())
+    }
+
+    /// Add all transactions from an active main-chain block to the transaction index.
+    fn index_block_transactions(&mut self, block_hash: [u8; 32], block: &Block) {
+        for (tx_offset, tx) in block.transactions.iter().enumerate() {
+            self.tx_index.insert(tx.txid(), (block_hash, tx_offset));
+        }
+    }
+
+    /// Remove all transactions belonging to a disconnected main-chain block.
+    fn remove_block_transactions(&mut self, block_hash: [u8; 32]) {
+        let txids: Vec<[u8; 32]> = self
+            .blocks
+            .get(&block_hash)
+            .map(|block| block.transactions.iter().map(Transaction::txid).collect())
+            .unwrap_or_default();
+        for txid in txids {
+            self.tx_index.remove(&txid);
+        }
     }
 
     /// Apply a block's transactions to the UTXO set, recording a journal for rollback.
@@ -511,26 +613,33 @@ impl Chain {
                             tx_lock_time: tx.lock_time,
                         };
                         let mut engine = Engine::new(env);
-                        let script_sig = Script::from_bytes(input.script_sig.clone())
-                            .map_err(|e| NodeError::InvalidTransaction(
-                                format!("Invalid scriptSig: {}", e)
-                            ))?;
+                        let script_sig =
+                            Script::from_bytes(input.script_sig.clone()).map_err(|e| {
+                                NodeError::InvalidTransaction(format!("Invalid scriptSig: {}", e))
+                            })?;
                         let script_pubkey = Script::from_bytes(utxo.script_pubkey.clone())
-                            .map_err(|e| NodeError::InvalidTransaction(
-                                format!("Invalid scriptPubKey: {}", e)
-                            ))?;
-                        engine.execute(&script_sig, &script_pubkey)
-                            .map_err(|e| NodeError::InvalidTransaction(
-                                format!("Script verification failed for input {}:{}: {}",
-                                    hex::encode(input.prev_txid), input.prev_vout, e)
-                            ))?;
+                            .map_err(|e| {
+                                NodeError::InvalidTransaction(format!(
+                                    "Invalid scriptPubKey: {}",
+                                    e
+                                ))
+                            })?;
+                        engine.execute(&script_sig, &script_pubkey).map_err(|e| {
+                            NodeError::InvalidTransaction(format!(
+                                "Script verification failed for input {}:{}: {}",
+                                hex::encode(input.prev_txid),
+                                input.prev_vout,
+                                e
+                            ))
+                        })?;
                     }
                     journal.changes.push(UtxoChange::Removed { key, utxo });
                 } else if !tx.is_legacy_claim() {
-                    return Err(NodeError::InvalidTransaction(
-                        format!("Input {}:{} not found in UTXO set",
-                            hex::encode(input.prev_txid), input.prev_vout)
-                    ));
+                    return Err(NodeError::InvalidTransaction(format!(
+                        "Input {}:{} not found in UTXO set",
+                        hex::encode(input.prev_txid),
+                        input.prev_vout
+                    )));
                 }
             }
         }
@@ -549,14 +658,17 @@ impl Chain {
         // Add outputs to UTXO set
         for (vout, output) in tx.outputs.iter().enumerate() {
             let key = (txid, vout as u32);
-            self.utxo_set.insert(key, Utxo {
-                txid,
-                vout: vout as u32,
-                value: output.value,
-                script_pubkey: output.script_pubkey.clone(),
-                height,
-                timestamp,
-            });
+            self.utxo_set.insert(
+                key,
+                Utxo {
+                    txid,
+                    vout: vout as u32,
+                    value: output.value,
+                    script_pubkey: output.script_pubkey.clone(),
+                    height,
+                    timestamp,
+                },
+            );
             journal.changes.push(UtxoChange::Added { key });
         }
 
@@ -587,8 +699,10 @@ mod tests {
             }],
             outputs: vec![TxOutput {
                 value: 1_000_000,
-                script_pubkey: vec![0x76, 0xa9, 0x14, 0xab, 0xcd, 0xef,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x88, 0xac],
+                script_pubkey: vec![
+                    0x76, 0xa9, 0x14, 0xab, 0xcd, 0xef, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0x88, 0xac,
+                ],
             }],
             lock_time: 0,
             claim_address: None,
@@ -624,7 +738,10 @@ mod tests {
         let genesis_hash = chain.best_hash().unwrap();
         let block = make_block(genesis_hash, 1);
         let result = chain.add_block(block).unwrap();
-        assert!(matches!(result, BlockAcceptance::MainChain { height: 1, .. }));
+        assert!(matches!(
+            result,
+            BlockAcceptance::MainChain { height: 1, .. }
+        ));
         assert_eq!(chain.best_height(), 1);
     }
 
@@ -669,6 +786,38 @@ mod tests {
         chain.rollback_one_block().unwrap();
         assert_eq!(chain.best_height(), 0);
         assert_eq!(chain.utxo_set.len(), utxo_count_before);
+    }
+
+    #[test]
+    fn test_transaction_index_tracks_main_chain_and_reorgs() {
+        let mut chain = Chain::new().expect("Chain init failed");
+        let genesis_hash = chain.best_hash().unwrap();
+        let genesis_txid = chain.genesis_block().transactions[0].txid();
+        assert_eq!(chain.get_transaction(&genesis_txid).unwrap().2, 0);
+
+        // Main chain: genesis → A.
+        let block_a = make_block(genesis_hash, 1);
+        let txid_a = block_a.transactions[0].txid();
+        chain.add_block(block_a).unwrap();
+        assert_eq!(chain.get_transaction(&txid_a).unwrap().2, 1);
+
+        // Longer fork: genesis → B → C, with B using a distinct coinbase txid.
+        let mut block_b = make_block(genesis_hash, 1);
+        block_b.header.nonce = 777;
+        block_b.transactions[0].inputs[0].script_sig = vec![1, 42];
+        block_b.header.merkle_root = block_b.compute_merkle_root();
+        let txid_b = block_b.transactions[0].txid();
+        let hash_b = block_b.hash();
+        chain.add_block(block_b).unwrap();
+        assert!(chain.get_transaction(&txid_b).is_none());
+
+        let block_c = make_block(hash_b, 2);
+        let txid_c = block_c.transactions[0].txid();
+        chain.add_block(block_c).unwrap();
+
+        assert!(chain.get_transaction(&txid_a).is_none());
+        assert_eq!(chain.get_transaction(&txid_b).unwrap().2, 1);
+        assert_eq!(chain.get_transaction(&txid_c).unwrap().2, 2);
     }
 
     #[test]

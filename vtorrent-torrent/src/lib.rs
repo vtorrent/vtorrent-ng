@@ -8,8 +8,8 @@
 //! - Upload/download bandwidth accounting per peer
 
 pub mod error;
+pub mod incentive;
 pub mod metainfo;
-pub mod tracker;
 pub mod peer_wire;
 pub mod session;
-pub mod incentive;
+pub mod tracker;

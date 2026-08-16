@@ -1,11 +1,10 @@
+use ripemd::Ripemd160;
+use secp256k1::{Message, PublicKey, Secp256k1};
 /// Consensus rules for the vTorrent 2.0 chain.
 ///
 /// vTorrent 2.0 uses Proof-of-Stake (PoS) consensus, matching the original
 /// chain's design. Key parameters are preserved from the legacy chain.
-
-use sha2::{Sha256, Digest as Sha2Digest};
-use ripemd::Ripemd160;
-use secp256k1::{Secp256k1, Message, PublicKey, ecdsa::Signature};
+use sha2::{Digest as Sha2Digest, Sha256};
 
 use crate::{
     block::{Block, Transaction, TxType},
@@ -52,7 +51,7 @@ pub fn compute_pos_reward(stake_amount: u64, coin_age_seconds: u64) -> u64 {
 }
 
 /// Validate a block against the consensus rules.
-pub fn validate_block(block: &Block, prev_height: u32, prev_timestamp: u32) -> Result<()> {
+pub fn validate_block(block: &Block, _prev_height: u32, prev_timestamp: u32) -> Result<()> {
     // Check block is not empty
     if block.transactions.is_empty() {
         return Err(NodeError::InvalidBlock("Block has no transactions".into()));
@@ -62,7 +61,7 @@ pub fn validate_block(block: &Block, prev_height: u32, prev_timestamp: u32) -> R
     let first_tx = &block.transactions[0];
     if first_tx.tx_type != TxType::Coinbase && first_tx.tx_type != TxType::Coinstake {
         return Err(NodeError::InvalidBlock(
-            "First transaction must be coinbase or coinstake".into()
+            "First transaction must be coinbase or coinstake".into(),
         ));
     }
 
@@ -73,25 +72,23 @@ pub fn validate_block(block: &Block, prev_height: u32, prev_timestamp: u32) -> R
         .as_secs() as u32;
 
     if block.header.timestamp > now + 7200 {
-        return Err(NodeError::InvalidBlock(
-            format!("Block timestamp {} is too far in the future (now: {})",
-                block.header.timestamp, now)
-        ));
+        return Err(NodeError::InvalidBlock(format!(
+            "Block timestamp {} is too far in the future (now: {})",
+            block.header.timestamp, now
+        )));
     }
 
     // Check block timestamp is greater than previous block
     if block.header.timestamp <= prev_timestamp {
         return Err(NodeError::InvalidBlock(
-            "Block timestamp must be greater than previous block".into()
+            "Block timestamp must be greater than previous block".into(),
         ));
     }
 
     // Verify merkle root
     let computed_merkle = block.compute_merkle_root();
     if computed_merkle != block.header.merkle_root {
-        return Err(NodeError::InvalidBlock(
-            "Merkle root mismatch".into()
-        ));
+        return Err(NodeError::InvalidBlock("Merkle root mismatch".into()));
     }
 
     // Validate each transaction
@@ -108,7 +105,7 @@ pub fn validate_transaction(tx: &Transaction) -> Result<()> {
     if tx.is_coinbase() || tx.is_coinstake() {
         if tx.outputs.is_empty() {
             return Err(NodeError::InvalidTransaction(
-                "Coinbase/coinstake must have outputs".into()
+                "Coinbase/coinstake must have outputs".into(),
             ));
         }
         return Ok(());
@@ -116,16 +113,22 @@ pub fn validate_transaction(tx: &Transaction) -> Result<()> {
 
     // Standard transactions must have inputs and outputs
     if tx.inputs.is_empty() {
-        return Err(NodeError::InvalidTransaction("Transaction has no inputs".into()));
+        return Err(NodeError::InvalidTransaction(
+            "Transaction has no inputs".into(),
+        ));
     }
     if tx.outputs.is_empty() {
-        return Err(NodeError::InvalidTransaction("Transaction has no outputs".into()));
+        return Err(NodeError::InvalidTransaction(
+            "Transaction has no outputs".into(),
+        ));
     }
 
     // Check for zero-value outputs
     for output in &tx.outputs {
         if output.value == 0 {
-            return Err(NodeError::InvalidTransaction("Output value cannot be zero".into()));
+            return Err(NodeError::InvalidTransaction(
+                "Output value cannot be zero".into(),
+            ));
         }
     }
 
@@ -148,29 +151,30 @@ pub fn validate_transaction(tx: &Transaction) -> Result<()> {
 /// 1. The legacy address exists in the snapshot.
 /// 2. The signature proves ownership of the legacy private key.
 /// 3. The claimed amount matches the snapshot balance.
-pub fn validate_legacy_claim(
-    tx: &Transaction,
-    snapshot_balance: u64,
-) -> Result<()> {
+pub fn validate_legacy_claim(tx: &Transaction, snapshot_balance: u64) -> Result<()> {
     if !tx.is_legacy_claim() {
         return Err(NodeError::InvalidClaim("Not a claim transaction".into()));
     }
 
-    let claim_addr = tx.claim_address.as_ref()
+    let claim_addr = tx
+        .claim_address
+        .as_ref()
         .ok_or_else(|| NodeError::InvalidClaim("Missing claim address".into()))?;
 
     if snapshot_balance == 0 {
-        return Err(NodeError::InvalidClaim(
-            format!("Address {} has no balance in snapshot", claim_addr)
-        ));
+        return Err(NodeError::InvalidClaim(format!(
+            "Address {} has no balance in snapshot",
+            claim_addr
+        )));
     }
 
     // Verify the claimed amount matches the snapshot
     let claimed_amount = tx.total_output();
     if claimed_amount > snapshot_balance {
-        return Err(NodeError::InvalidClaim(
-            format!("Claimed {} but snapshot shows {}", claimed_amount, snapshot_balance)
-        ));
+        return Err(NodeError::InvalidClaim(format!(
+            "Claimed {} but snapshot shows {}",
+            claimed_amount, snapshot_balance
+        )));
     }
 
     // ── ECDSA signature verification ─────────────────────────────────────────
@@ -180,7 +184,9 @@ pub fn validate_legacy_claim(
     //
     // The public key recovered from the signature must hash (Hash160) to the
     // same 20-byte payload as the claim_address.
-    let sig_bytes = tx.claim_signature.as_ref()
+    let sig_bytes = tx
+        .claim_signature
+        .as_ref()
         .ok_or_else(|| NodeError::InvalidClaim("Missing claim signature".into()))?;
 
     verify_claim_signature(claim_addr, sig_bytes, &tx.txid())
@@ -209,7 +215,10 @@ pub fn verify_claim_signature(
     txid: &[u8; 32],
 ) -> std::result::Result<(), String> {
     if sig_bytes.len() != 65 {
-        return Err(format!("Expected 65-byte compact signature, got {}", sig_bytes.len()));
+        return Err(format!(
+            "Expected 65-byte compact signature, got {}",
+            sig_bytes.len()
+        ));
     }
 
     // ── Step 1: Build the signed message hash ────────────────────────────────
@@ -232,7 +241,8 @@ pub fn verify_claim_signature(
         .map_err(|e| format!("Invalid recoverable signature: {}", e))?;
 
     let secp = Secp256k1::verification_only();
-    let recovered_pubkey = secp.recover_ecdsa(&msg, &rec_sig)
+    let recovered_pubkey = secp
+        .recover_ecdsa(&msg, &rec_sig)
         .map_err(|e| format!("Key recovery failed: {}", e))?;
 
     // ── Step 3: Derive the address from the recovered public key ─────────────
@@ -279,7 +289,7 @@ fn bitcoin_signed_message_hash(magic: &str, message: &str) -> [u8; 32] {
 
     // SHA256d
     let first = Sha256::digest(&preimage);
-    let second = Sha256::digest(&first);
+    let second = Sha256::digest(first);
     let mut out = [0u8; 32];
     out.copy_from_slice(&second);
     out
@@ -297,7 +307,7 @@ fn pubkey_to_vtorrent_address(pubkey: &PublicKey, compressed: bool) -> String {
 
     // Hash160 = RIPEMD160(SHA256(pubkey))
     let sha256_hash = Sha256::digest(&pubkey_bytes);
-    let ripemd_hash = Ripemd160::digest(&sha256_hash);
+    let ripemd_hash = Ripemd160::digest(sha256_hash);
 
     // Version byte 70 = vTorrent mainnet P2PKH
     let version: u8 = 70;
@@ -307,7 +317,7 @@ fn pubkey_to_vtorrent_address(pubkey: &PublicKey, compressed: bool) -> String {
 
     // Checksum = first 4 bytes of SHA256d(payload)
     let check1 = Sha256::digest(&payload);
-    let check2 = Sha256::digest(&check1);
+    let check2 = Sha256::digest(check1);
     payload.extend_from_slice(&check2[..4]);
 
     bs58::encode(payload).into_string()

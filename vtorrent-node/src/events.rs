@@ -39,10 +39,7 @@ pub enum NodeEvent {
         block_hash: [u8; 32],
     },
     /// A new unconfirmed transaction entered the mempool.
-    TxUnconfirmed {
-        txid: [u8; 32],
-        fee_sats: u64,
-    },
+    TxUnconfirmed { txid: [u8; 32], fee_sats: u64 },
     /// A peer completed the handshake and is now connected.
     PeerConnected {
         addr: std::net::SocketAddr,
@@ -51,9 +48,7 @@ pub enum NodeEvent {
         height: u32,
     },
     /// A peer disconnected.
-    PeerDisconnected {
-        addr: std::net::SocketAddr,
-    },
+    PeerDisconnected { addr: std::net::SocketAddr },
     /// A chain reorganisation occurred.
     Reorg {
         old_tip: [u8; 32],

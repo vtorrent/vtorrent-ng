@@ -9,7 +9,6 @@
 ///     --output ./snapshot \
 ///     --height 500000 \
 ///     --block-hash 000000abc123...
-
 use clap::Parser;
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
@@ -55,8 +54,7 @@ fn main() -> anyhow::Result<()> {
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info"))
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
 
@@ -104,7 +102,10 @@ fn main() -> anyhow::Result<()> {
         println!("Step 4/4: Verifying snapshot integrity...");
         verify_integrity(&snapshot)
             .map_err(|e| anyhow::anyhow!("Integrity check failed: {}", e))?;
-        println!("  ✓ Integrity hash verified: {}", &snapshot.metadata.entries_hash[..16]);
+        println!(
+            "  ✓ Integrity hash verified: {}",
+            &snapshot.metadata.entries_hash[..16]
+        );
     }
 
     println!();

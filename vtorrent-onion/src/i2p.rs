@@ -1,3 +1,8 @@
+use crate::{
+    config::TransportConfig,
+    error::{OnionError, Result},
+    hidden_service::HiddenServiceInfo,
+};
 /// I2P transport via the SAM (Simple Anonymous Messaging) bridge protocol.
 ///
 /// The SAM bridge is a local TCP service (default: 127.0.0.1:7656) that
@@ -11,15 +16,9 @@
 /// 3. Create a STREAM session: `SESSION CREATE STYLE=STREAM ID=<id> DESTINATION=TRANSIENT`
 /// 4. Connect to a destination: `STREAM CONNECT ID=<id> DESTINATION=<b32addr>`
 /// 5. The TCP stream is now tunneled through I2P
-
 use std::time::Duration;
-use tokio::net::TcpStream;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use crate::{
-    config::TransportConfig,
-    error::{OnionError, Result},
-    hidden_service::HiddenServiceInfo,
-};
+use tokio::net::TcpStream;
 
 /// I2P SAM transport.
 pub struct I2pTransport {
@@ -34,10 +33,9 @@ impl I2pTransport {
     /// Check if the I2P SAM bridge is reachable.
     pub async fn is_available(&self) -> bool {
         let timeout = Duration::from_secs(3);
-        tokio::time::timeout(
-            timeout,
-            TcpStream::connect(&self.config.i2p_sam_addr)
-        ).await.is_ok_and(|r| r.is_ok())
+        tokio::time::timeout(timeout, TcpStream::connect(&self.config.i2p_sam_addr))
+            .await
+            .is_ok_and(|r| r.is_ok())
     }
 
     /// Connect to an I2P destination through the SAM bridge.
@@ -45,10 +43,8 @@ impl I2pTransport {
         let timeout = Duration::from_secs(self.config.connect_timeout_secs);
 
         // Connect to SAM bridge
-        let stream = tokio::time::timeout(
-            timeout,
-            TcpStream::connect(&self.config.i2p_sam_addr)
-        ).await
+        let stream = tokio::time::timeout(timeout, TcpStream::connect(&self.config.i2p_sam_addr))
+            .await
             .map_err(|_| OnionError::Timeout(self.config.connect_timeout_secs))?
             .map_err(|e| OnionError::I2pUnavailable {
                 addr: self.config.i2p_sam_addr.clone(),
@@ -67,9 +63,10 @@ impl I2pTransport {
 
         let resp = read_sam_line(&mut stream).await?;
         if !resp.contains("RESULT=OK") {
-            return Err(OnionError::SamError(
-                format!("SESSION CREATE failed: {}", resp.trim())
-            ));
+            return Err(OnionError::SamError(format!(
+                "SESSION CREATE failed: {}",
+                resp.trim()
+            )));
         }
 
         // Connect to the destination
@@ -81,9 +78,10 @@ impl I2pTransport {
 
         let resp = read_sam_line(&mut stream).await?;
         if !resp.contains("RESULT=OK") {
-            return Err(OnionError::SamError(
-                format!("STREAM CONNECT failed: {}", resp.trim())
-            ));
+            return Err(OnionError::SamError(format!(
+                "STREAM CONNECT failed: {}",
+                resp.trim()
+            )));
         }
 
         Ok(stream)
@@ -91,7 +89,8 @@ impl I2pTransport {
 
     /// Create an I2P hidden service (server-side destination).
     pub async fn create_destination(&self, local_port: u16) -> Result<HiddenServiceInfo> {
-        let stream = TcpStream::connect(&self.config.i2p_sam_addr).await
+        let stream = TcpStream::connect(&self.config.i2p_sam_addr)
+            .await
             .map_err(|e| OnionError::I2pUnavailable {
                 addr: self.config.i2p_sam_addr.clone(),
                 source: e,
@@ -100,17 +99,21 @@ impl I2pTransport {
         let mut stream = sam_handshake(stream).await?;
 
         // Generate a new destination key pair
-        stream.write_all(b"DEST GENERATE SIGNATURE_TYPE=EdDSA_SHA512_Ed25519\n").await?;
+        stream
+            .write_all(b"DEST GENERATE SIGNATURE_TYPE=EdDSA_SHA512_Ed25519\n")
+            .await?;
         let resp = read_sam_line(&mut stream).await?;
 
         // Parse DEST=<pub> PRIV=<priv>
-        let pub_key = resp.split_whitespace()
+        let pub_key = resp
+            .split_whitespace()
             .find(|s| s.starts_with("PUB="))
             .and_then(|s| s.strip_prefix("PUB="))
             .ok_or_else(|| OnionError::SamError("Missing PUB in DEST GENERATE".to_string()))?
             .to_string();
 
-        let priv_key = resp.split_whitespace()
+        let priv_key = resp
+            .split_whitespace()
             .find(|s| s.starts_with("PRIV="))
             .and_then(|s| s.strip_prefix("PRIV="))
             .ok_or_else(|| OnionError::SamError("Missing PRIV in DEST GENERATE".to_string()))?
@@ -138,9 +141,10 @@ async fn sam_handshake(mut stream: TcpStream) -> Result<TcpStream> {
     stream.write_all(b"HELLO VERSION MIN=3.0 MAX=3.3\n").await?;
     let resp = read_sam_line(&mut stream).await?;
     if !resp.contains("RESULT=OK") {
-        return Err(OnionError::SamError(
-            format!("SAM HELLO failed: {}", resp.trim())
-        ));
+        return Err(OnionError::SamError(format!(
+            "SAM HELLO failed: {}",
+            resp.trim()
+        )));
     }
     Ok(stream)
 }
@@ -202,7 +206,9 @@ mod tests {
         let data = b"hello";
         let encoded = base32_encode(data);
         assert!(!encoded.is_empty());
-        assert!(encoded.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+        assert!(encoded
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
     }
 
     #[tokio::test]

@@ -7,7 +7,6 @@
 /// Wire format for an encrypted packet:
 ///   [4 bytes  nonce counter LE] [N bytes ciphertext+tag]
 /// The full 96-bit nonce is: counter(4) || sender_pubkey[0..8]
-
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Key, Nonce,
@@ -81,7 +80,12 @@ impl Drop for SharedKey {
 
 impl SharedKey {
     /// Encrypt a plaintext payload. Returns ciphertext with 4-byte nonce prefix.
-    pub fn encrypt(&self, counter: u32, sender_pubkey: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>> {
+    pub fn encrypt(
+        &self,
+        counter: u32,
+        sender_pubkey: &[u8; 32],
+        plaintext: &[u8],
+    ) -> Result<Vec<u8>> {
         let cipher = ChaCha20Poly1305::new(Key::from_slice(&self.0));
         let nonce = build_nonce(counter, sender_pubkey);
         let ct = cipher
@@ -158,9 +162,7 @@ mod tests {
         let ct = alice_shared
             .encrypt(1, alice.public.as_bytes(), plaintext)
             .unwrap();
-        let pt = bob_shared
-            .decrypt(alice.public.as_bytes(), &ct)
-            .unwrap();
+        let pt = bob_shared.decrypt(alice.public.as_bytes(), &ct).unwrap();
 
         assert_eq!(pt, plaintext);
     }

@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     Json,
 };
 use serde_json::{json, Value};
@@ -7,8 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::{RpcError, RpcResult};
 use crate::models::*;
-use std::sync::Arc;
 use crate::state::AppState;
+use std::sync::Arc;
 
 fn now_secs() -> u64 {
     SystemTime::now()
@@ -17,17 +17,85 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
+fn parse_hash32(value: &str, field: &str) -> RpcResult<[u8; 32]> {
+    let bytes =
+        hex::decode(value).map_err(|_| RpcError::BadRequest(format!("Invalid {} hex", field)))?;
+    if bytes.len() != 32 {
+        return Err(RpcError::BadRequest(format!("{} must be 32 bytes", field)));
+    }
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&bytes);
+    Ok(hash)
+}
+
+fn block_response(
+    hash: [u8; 32],
+    height: u32,
+    block: &vtorrent_node::block::Block,
+) -> BlockResponse {
+    BlockResponse {
+        hash: hex::encode(hash),
+        height: height as u64,
+        version: block.header.version,
+        prev_hash: hex::encode(block.header.prev_block_hash),
+        merkle_root: hex::encode(block.header.merkle_root),
+        timestamp: block.header.timestamp,
+        bits: block.header.bits,
+        nonce: block.header.nonce,
+        tx_count: block.transactions.len(),
+        size_bytes: bincode::serialized_size(block).unwrap_or(0) as usize,
+    }
+}
+
+fn transaction_lookup_response(
+    txid: [u8; 32],
+    tx: &vtorrent_node::block::Transaction,
+    block_hash: Option<[u8; 32]>,
+    block_height: Option<u32>,
+) -> TransactionLookupResponse {
+    TransactionLookupResponse {
+        txid: hex::encode(txid),
+        block_hash: block_hash.map(hex::encode),
+        block_height,
+        version: tx.version,
+        tx_type: tx.type_str().to_string(),
+        inputs: tx
+            .inputs
+            .iter()
+            .map(|input| TransactionInputResponse {
+                prev_txid: hex::encode(input.prev_txid),
+                prev_vout: input.prev_vout,
+                script_sig: hex::encode(&input.script_sig),
+                sequence: input.sequence,
+            })
+            .collect(),
+        outputs: tx
+            .outputs
+            .iter()
+            .map(|output| TransactionOutputResponse {
+                value_satoshis: output.value,
+                script_pubkey: hex::encode(&output.script_pubkey),
+            })
+            .collect(),
+        lock_time: tx.lock_time,
+        claim_address: tx.claim_address.clone(),
+    }
+}
+
 // ─── Node Info ────────────────────────────────────────────────────────────────
 
-pub async fn get_node_info(State(state): State<Arc<AppState>>) -> RpcResult<Json<NodeInfoResponse>> {
+pub async fn get_node_info(
+    State(state): State<Arc<AppState>>,
+) -> RpcResult<Json<NodeInfoResponse>> {
     let chain = state.chain.lock().await;
     let peer_count = *state.peer_count.read().await;
     let syncing = *state.syncing.read().await;
     let uptime = now_secs().saturating_sub(state.start_time);
 
     let height = chain.best_height() as u64;
-    let best_hash = chain.best_hash()
-        .map(|h| hex::encode(h))
+    let _best_hash = chain
+        .best_hash()
+        .map(hex::encode)
         .unwrap_or_else(|| "0".repeat(64));
 
     // Compute sync percentage from best known peer height.
@@ -51,8 +119,9 @@ pub async fn get_node_info(State(state): State<Arc<AppState>>) -> RpcResult<Json
     // Re-acquire chain for best_hash (already computed above, just use height).
     let chain = state.chain.lock().await;
     let height = chain.best_height() as u64;
-    let best_hash = chain.best_hash()
-        .map(|h| hex::encode(h))
+    let best_hash = chain
+        .best_hash()
+        .map(hex::encode)
         .unwrap_or_else(|| "0".repeat(64));
 
     Ok(Json(NodeInfoResponse {
@@ -70,11 +139,14 @@ pub async fn get_node_info(State(state): State<Arc<AppState>>) -> RpcResult<Json
 
 // ─── Blockchain ───────────────────────────────────────────────────────────────
 
-pub async fn get_block_height(State(state): State<Arc<AppState>>) -> RpcResult<Json<BlockHeightResponse>> {
+pub async fn get_block_height(
+    State(state): State<Arc<AppState>>,
+) -> RpcResult<Json<BlockHeightResponse>> {
     let chain = state.chain.lock().await;
     let height = chain.best_height() as u64;
-    let best_hash = chain.best_hash()
-        .map(|h| hex::encode(h))
+    let best_hash = chain
+        .best_hash()
+        .map(hex::encode)
         .unwrap_or_else(|| "0".repeat(64));
 
     Ok(Json(BlockHeightResponse {
@@ -88,38 +160,104 @@ pub async fn get_block_by_hash(
     State(state): State<Arc<AppState>>,
     Path(hash_hex): Path<String>,
 ) -> RpcResult<Json<BlockResponse>> {
-    let hash_bytes = hex::decode(&hash_hex)
-        .map_err(|_| RpcError::BadRequest("Invalid block hash hex".into()))?;
-    if hash_bytes.len() != 32 {
-        return Err(RpcError::BadRequest("Block hash must be 32 bytes".into()));
-    }
-    let mut hash = [0u8; 32];
-    hash.copy_from_slice(&hash_bytes);
-
+    let hash = parse_hash32(&hash_hex, "block hash")?;
     let chain = state.chain.lock().await;
-    let block = chain.get_block(&hash)
-        .ok_or_else(|| RpcError::NotFound(format!("Block {} not found", hash_hex)))?;
+    let height = chain
+        .block_height(&hash)
+        .ok_or_else(|| RpcError::NotFound(format!("Active-chain block {} not found", hash_hex)))?;
+    let block = chain
+        .get_block(&hash)
+        .ok_or_else(|| RpcError::Internal(format!("Indexed block {} is missing", hash_hex)))?;
+    Ok(Json(block_response(hash, height, block)))
+}
 
-    Ok(Json(BlockResponse {
-        hash: hash_hex,
-        height: chain.best_height() as u64,
-        version: block.header.version,
-        prev_hash: hex::encode(block.header.prev_block_hash),
-        merkle_root: hex::encode(block.header.merkle_root),
-        timestamp: block.header.timestamp,
-        bits: block.header.bits,
-        nonce: block.header.nonce,
-        tx_count: block.transactions.len(),
-        size_bytes: 0,
+/// Get an active-chain block by height.
+pub async fn get_block_by_height(
+    State(state): State<Arc<AppState>>,
+    Path(height): Path<u32>,
+) -> RpcResult<Json<BlockResponse>> {
+    let chain = state.chain.lock().await;
+    let hash = chain
+        .block_hash_at_height(height)
+        .ok_or_else(|| RpcError::NotFound(format!("Block at height {} not found", height)))?;
+    let block = chain.get_block_at_height(height).ok_or_else(|| {
+        RpcError::Internal(format!("Indexed block at height {} is missing", height))
+    })?;
+    Ok(Json(block_response(hash, height, block)))
+}
+
+/// Get a transaction by txid, searching the active chain first and then mempool.
+pub async fn get_transaction_by_id(
+    State(state): State<Arc<AppState>>,
+    Path(txid_hex): Path<String>,
+) -> RpcResult<Json<TransactionLookupResponse>> {
+    let txid = parse_hash32(&txid_hex, "transaction ID")?;
+
+    {
+        let chain = state.chain.lock().await;
+        if let Some((tx, block_hash, height)) = chain.get_transaction(&txid) {
+            return Ok(Json(transaction_lookup_response(
+                txid,
+                tx,
+                Some(block_hash),
+                Some(height),
+            )));
+        }
+    }
+
+    let mempool = state.mempool.lock().await;
+    let tx = mempool
+        .get_transaction(&txid)
+        .ok_or_else(|| RpcError::NotFound(format!("Transaction {} not found", txid_hex)))?;
+    Ok(Json(transaction_lookup_response(txid, tx, None, None)))
+}
+
+/// Submit a raw, signed transaction to the local mempool and live P2P node.
+pub async fn broadcast_transaction(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<BroadcastTransactionRequest>,
+) -> RpcResult<Json<BroadcastTransactionResponse>> {
+    const MAX_RAW_TX_BYTES: usize = 1_000_000;
+
+    if req.raw_tx.is_empty() {
+        return Err(RpcError::BadRequest("raw_tx is required".into()));
+    }
+    let raw = hex::decode(&req.raw_tx)
+        .map_err(|_| RpcError::BadRequest("raw_tx must be hexadecimal".into()))?;
+    if raw.len() > MAX_RAW_TX_BYTES {
+        return Err(RpcError::BadRequest(format!(
+            "raw_tx exceeds the {} byte limit",
+            MAX_RAW_TX_BYTES
+        )));
+    }
+    let tx: vtorrent_node::block::Transaction = bincode::deserialize(&raw)
+        .map_err(|_| RpcError::BadRequest("raw_tx is not a valid vTorrent transaction".into()))?;
+    let txid = tx.txid();
+
+    {
+        let mut mempool = state.mempool.lock().await;
+        mempool
+            .add_transaction(tx.clone())
+            .map_err(|e| RpcError::BadRequest(format!("Mempool rejected transaction: {}", e)))?;
+    }
+
+    let relayed = match &state.tx_submit {
+        Some(sender) => sender.try_send(tx).is_ok(),
+        None => false,
+    };
+    tracing::info!(txid = %hex::encode(txid), relayed, "Raw transaction accepted for broadcast");
+
+    Ok(Json(BroadcastTransactionResponse {
+        txid: hex::encode(txid),
+        accepted: true,
+        relayed,
     }))
 }
 
 pub async fn get_mempool(State(state): State<Arc<AppState>>) -> RpcResult<Json<MempoolResponse>> {
     let mempool = state.mempool.lock().await;
     let txs = mempool.get_transactions();
-    let txids: Vec<String> = txs.iter()
-        .map(|tx| hex::encode(tx.txid()))
-        .collect();
+    let txids: Vec<String> = txs.iter().map(|tx| hex::encode(tx.txid())).collect();
     let count = txids.len();
 
     Ok(Json(MempoolResponse {
@@ -129,15 +267,26 @@ pub async fn get_mempool(State(state): State<Arc<AppState>>) -> RpcResult<Json<M
     }))
 }
 
+/// Return the current fee recommendations derived from the local mempool.
+pub async fn get_fee_estimate(
+    State(state): State<Arc<AppState>>,
+) -> RpcResult<Json<FeeEstimateResponse>> {
+    let mempool = state.mempool.lock().await;
+    Ok(Json(FeeEstimateResponse {
+        recommended_sat_per_byte: mempool.recommended_fee_rate(),
+        minimum_sat_per_byte: mempool.min_fee_rate(),
+        median_sat_per_byte: mempool.median_fee_rate(),
+        mempool_transactions: mempool.size(),
+    }))
+}
+
 // ─── Wallet ───────────────────────────────────────────────────────────────────
 
 pub async fn get_balance(State(state): State<Arc<AppState>>) -> RpcResult<Json<BalanceResponse>> {
     let chain = state.chain.lock().await;
     let staking_enabled = *state.staking_enabled.read().await;
 
-    let confirmed: u64 = chain.get_utxo_set().values()
-        .map(|u| u.value)
-        .sum();
+    let confirmed: u64 = chain.get_utxo_set().values().map(|u| u.value).sum();
 
     let staking = if staking_enabled { confirmed / 10 } else { 0 };
 
@@ -149,16 +298,64 @@ pub async fn get_balance(State(state): State<Arc<AppState>>) -> RpcResult<Json<B
     }))
 }
 
-pub async fn get_addresses(State(state): State<Arc<AppState>>) -> RpcResult<Json<AddressesResponse>> {
+/// List spendable UTXOs for an explicitly requested or imported wallet address.
+pub async fn get_wallet_utxos(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<WalletUtxosQuery>,
+) -> RpcResult<Json<WalletUtxosResponse>> {
+    let address = match query.address.filter(|address| !address.trim().is_empty()) {
+        Some(address) => address,
+        None => state
+            .wallet_change_address
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| {
+                RpcError::BadRequest(
+                    "address query parameter is required when no wallet is imported".into(),
+                )
+            })?,
+    };
+
+    let mut utxos = {
+        let chain = state.chain.lock().await;
+        chain.get_utxos_for_address(&address)
+    };
+    utxos.sort_by_key(|utxo| (utxo.height, utxo.txid, utxo.vout));
+    let total_satoshis = utxos.iter().map(|utxo| utxo.value).sum();
+    let utxos = utxos
+        .into_iter()
+        .map(|utxo| WalletUtxoResponse {
+            txid: hex::encode(utxo.txid),
+            vout: utxo.vout,
+            value_satoshis: utxo.value,
+            script_pubkey: hex::encode(utxo.script_pubkey),
+            block_height: utxo.height,
+            block_timestamp: utxo.timestamp,
+        })
+        .collect();
+
+    Ok(Json(WalletUtxosResponse {
+        address,
+        total_satoshis,
+        utxos,
+    }))
+}
+
+pub async fn get_addresses(
+    State(state): State<Arc<AppState>>,
+) -> RpcResult<Json<AddressesResponse>> {
     let chain = state.chain.lock().await;
     let utxo_set = chain.get_utxo_set();
 
     // Group UTXOs by script_pubkey and sum values
-    let mut script_totals: std::collections::HashMap<Vec<u8>, u64> = std::collections::HashMap::new();
+    let mut script_totals: std::collections::HashMap<Vec<u8>, u64> =
+        std::collections::HashMap::new();
     for utxo in utxo_set.values() {
         *script_totals.entry(utxo.script_pubkey.clone()).or_insert(0) += utxo.value;
     }
-    let addresses: Vec<AddressInfo> = script_totals.iter()
+    let addresses: Vec<AddressInfo> = script_totals
+        .iter()
         .map(|(script, &balance)| {
             let addr = hex::encode(script);
             AddressInfo {
@@ -182,9 +379,9 @@ pub async fn import_wallet(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ImportWalletRequest>,
 ) -> RpcResult<Json<ImportWalletResponse>> {
-    use vtorrent_wallet::tx_builder::pubkey_to_vtorrent_address;
-    use vtorrent_core::keys::PrivateKey;
     use secp256k1::{Secp256k1, SecretKey};
+    use vtorrent_core::keys::PrivateKey;
+    use vtorrent_wallet::tx_builder::pubkey_to_vtorrent_address;
 
     if !state.is_wallet_unlocked().await {
         return Err(RpcError::WalletLocked);
@@ -242,13 +439,18 @@ pub async fn send_vtr(
     }
 
     // Retrieve the hot wallet WIF key.
-    let wif = state.wallet_wif.read().await.clone()
-        .ok_or_else(|| RpcError::BadRequest(
-            "No wallet key imported. Call POST /api/v1/wallet/import first.".into()
-        ))?;
+    let wif = state.wallet_wif.read().await.clone().ok_or_else(|| {
+        RpcError::BadRequest(
+            "No wallet key imported. Call POST /api/v1/wallet/import first.".into(),
+        )
+    })?;
 
     // Retrieve the change address.
-    let change_address = state.wallet_change_address.read().await.clone()
+    let change_address = state
+        .wallet_change_address
+        .read()
+        .await
+        .clone()
         .ok_or_else(|| RpcError::Internal("Change address not set".into()))?;
 
     // Collect all UTXOs from the chain that belong to the hot wallet address.
@@ -259,7 +461,7 @@ pub async fn send_vtr(
 
     if utxos.is_empty() {
         return Err(RpcError::BadRequest(
-            "No UTXOs available for this wallet address. Fund the address first.".into()
+            "No UTXOs available for this wallet address. Fund the address first.".into(),
         ));
     }
 
@@ -273,13 +475,17 @@ pub async fn send_vtr(
         .map_err(|e| RpcError::BadRequest(format!("Transaction build failed: {}", e)))?;
 
     let txid = hex::encode(tx.txid());
-    let fee_satoshis: u64 = utxos.iter().map(|u| u.value).sum::<u64>()
+    let fee_satoshis: u64 = utxos
+        .iter()
+        .map(|u| u.value)
+        .sum::<u64>()
         .saturating_sub(tx.outputs.iter().map(|o| o.value).sum::<u64>());
 
     // Add to local mempool and broadcast to P2P network.
     {
         let mut mempool = state.mempool.lock().await;
-        mempool.add_transaction(tx.clone())
+        mempool
+            .add_transaction(tx.clone())
             .map_err(|e| RpcError::BadRequest(format!("Mempool rejected transaction: {}", e)))?;
     }
     // If a live P2P node is attached, submit the tx for network broadcast.
@@ -287,7 +493,12 @@ pub async fn send_vtr(
         let _ = sender.try_send(tx);
     }
 
-    tracing::info!("Transaction {} submitted to mempool and broadcast ({} sats to {})", txid, req.amount_satoshis, req.to_address);
+    tracing::info!(
+        "Transaction {} submitted to mempool and broadcast ({} sats to {})",
+        txid,
+        req.amount_satoshis,
+        req.to_address
+    );
 
     Ok(Json(SendResponse {
         txid,
@@ -332,7 +543,8 @@ pub async fn get_transactions(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> RpcResult<Json<Vec<TransactionResponse>>> {
-    let limit = params.get("limit")
+    let limit = params
+        .get("limit")
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(50)
         .min(500);
@@ -340,31 +552,32 @@ pub async fn get_transactions(
     let chain = state.chain.lock().await;
     let txs = chain.get_recent_transactions(limit);
 
-    let result = txs.into_iter().map(|(txid, height, ts, tx_type, amount)| {
-        TransactionResponse {
+    let result = txs
+        .into_iter()
+        .map(|(txid, height, ts, tx_type, amount)| TransactionResponse {
             display: format!("{:.6} VTR", amount as f64 / 1_000_000.0),
             txid,
             block_height: height,
             timestamp: ts,
             tx_type,
             amount_satoshis: amount,
-        }
-    }).collect();
+        })
+        .collect();
 
     Ok(Json(result))
 }
 
 // ─── Staking ──────────────────────────────────────────────────────────────────
 
-pub async fn get_staking_status(State(state): State<Arc<AppState>>) -> RpcResult<Json<StakingStatusResponse>> {
+pub async fn get_staking_status(
+    State(state): State<Arc<AppState>>,
+) -> RpcResult<Json<StakingStatusResponse>> {
     let enabled = *state.staking_enabled.read().await;
     let staking_address = state.staking_address.read().await.clone();
     let blocks_staked = *state.blocks_staked.read().await;
     let chain = state.chain.lock().await;
 
-    let total_staking: u64 = chain.get_utxo_set().values()
-        .map(|u| u.value)
-        .sum();
+    let total_staking: u64 = chain.get_utxo_set().values().map(|u| u.value).sum();
 
     let expected_per_day = if enabled {
         total_staking as f64 * 0.05 / 365.0 / 1_000_000.0
@@ -406,14 +619,19 @@ pub async fn start_staking(
 pub async fn stop_staking(State(state): State<Arc<AppState>>) -> RpcResult<Json<Value>> {
     *state.staking_enabled.write().await = false;
     *state.staking_address.write().await = None;
-    Ok(Json(json!({ "success": true, "message": "Staking stopped" })))
+    Ok(Json(
+        json!({ "success": true, "message": "Staking stopped" }),
+    ))
 }
 
 // ─── Torrent ──────────────────────────────────────────────────────────────────
 
-pub async fn list_torrent_sessions(State(state): State<Arc<AppState>>) -> RpcResult<Json<Vec<TorrentSessionResponse>>> {
+pub async fn list_torrent_sessions(
+    State(state): State<Arc<AppState>>,
+) -> RpcResult<Json<Vec<TorrentSessionResponse>>> {
     let sessions = state.torrent_sessions.read().await;
-    let result: Vec<TorrentSessionResponse> = sessions.list_sessions()
+    let result: Vec<TorrentSessionResponse> = sessions
+        .list_sessions()
         .iter()
         .map(|s| {
             let summary = s.incentive_summary();
@@ -442,18 +660,19 @@ pub async fn add_torrent(
     State(state): State<Arc<AppState>>,
     Json(req): Json<AddTorrentRequest>,
 ) -> RpcResult<Json<AddTorrentResponse>> {
-    use vtorrent_torrent::metainfo::{Metainfo, MagnetLink};
+    use base64::Engine as _;
+    use vtorrent_torrent::metainfo::{MagnetLink, Metainfo};
     use vtorrent_torrent::session::TorrentSession;
 
     let metainfo = if req.source_type == "magnet" {
-        let magnet = MagnetLink::parse(&req.source)
-            .map_err(|e| RpcError::BadRequest(e.to_string()))?;
+        let magnet =
+            MagnetLink::parse(&req.source).map_err(|e| RpcError::BadRequest(e.to_string()))?;
         Metainfo::from_magnet_link(&magnet)
     } else {
-        let bytes = base64::decode(&req.source)
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&req.source)
             .map_err(|_| RpcError::BadRequest("Invalid base64 torrent data".into()))?;
-        Metainfo::from_bytes(&bytes)
-            .map_err(|e| RpcError::BadRequest(e.to_string()))?
+        Metainfo::from_bytes(&bytes).map_err(|e| RpcError::BadRequest(e.to_string()))?
     };
 
     let info_hash = hex::encode(metainfo.info_hash);
@@ -476,14 +695,19 @@ pub async fn remove_torrent(
     if removed.is_none() {
         return Err(RpcError::NotFound(format!("Session {} not found", id)));
     }
-    Ok(Json(json!({ "success": true, "message": format!("Session {} removed", id) })))
+    Ok(Json(
+        json!({ "success": true, "message": format!("Session {} removed", id) }),
+    ))
 }
 
 // ─── DEX ──────────────────────────────────────────────────────────────────────
 
-pub async fn get_dex_orders(State(state): State<Arc<AppState>>) -> RpcResult<Json<Vec<DexOrderResponse>>> {
+pub async fn get_dex_orders(
+    State(state): State<Arc<AppState>>,
+) -> RpcResult<Json<Vec<DexOrderResponse>>> {
     let order_book = state.order_book.read().await;
-    let orders: Vec<DexOrderResponse> = order_book.list_open_orders()
+    let orders: Vec<DexOrderResponse> = order_book
+        .list_open_orders()
         .iter()
         .map(|o| DexOrderResponse {
             id: hex::encode(o.order_id),
@@ -494,6 +718,7 @@ pub async fn get_dex_orders(State(state): State<Arc<AppState>>) -> RpcResult<Jso
             request_asset: o.target_asset.clone(),
             rate: o.rate(),
             status: format!("{:?}", o.status),
+            funding_txid: o.funding_txid.map(hex::encode),
             created_at: now_secs(),
             expires_at: o.expiry as u64,
         })
@@ -506,36 +731,59 @@ pub async fn place_dex_order(
     State(state): State<Arc<AppState>>,
     Json(req): Json<PlaceOrderRequest>,
 ) -> RpcResult<Json<PlaceOrderResponse>> {
-    use vtorrent_node::atomic_swap::{AtomicSwap, SwapOrder, DEFAULT_HTLC_LOCKTIME};
+    use vtorrent_node::atomic_swap::{
+        AtomicSwap, SwapOrder, DEFAULT_HTLC_LOCKTIME, MAX_HTLC_LOCKTIME, MIN_HTLC_LOCKTIME,
+    };
 
     if !state.is_wallet_unlocked().await {
         return Err(RpcError::WalletLocked);
     }
+    if req.offer_amount_satoshis == 0 || req.request_amount_satoshis == 0 {
+        return Err(RpcError::BadRequest(
+            "DEX order amounts must be greater than zero".into(),
+        ));
+    }
+    if req.request_asset.trim().is_empty() {
+        return Err(RpcError::BadRequest("Requested asset is required".into()));
+    }
 
-    let swap = AtomicSwap::new();
-    let hash_lock = hex::encode(swap.hash_lock);
-    let htlc_address = format!("htlc_{}", &hash_lock[..16]);
-
-    let locktime = if req.expiry_secs > 0 && req.expiry_secs <= u32::MAX as u64 {
+    let locktime = if req.expiry_secs == 0 {
+        DEFAULT_HTLC_LOCKTIME
+    } else if req.expiry_secs <= u32::MAX as u64 {
         req.expiry_secs as u32
     } else {
-        DEFAULT_HTLC_LOCKTIME
+        return Err(RpcError::BadRequest("DEX order expiry is too large".into()));
     };
+    if !(MIN_HTLC_LOCKTIME..=MAX_HTLC_LOCKTIME).contains(&locktime) {
+        return Err(RpcError::BadRequest(format!(
+            "DEX order expiry must be between {} and {} seconds",
+            MIN_HTLC_LOCKTIME, MAX_HTLC_LOCKTIME
+        )));
+    }
 
-    let order = SwapOrder::new(
+    // Generate the swap secret now, but do not fund until a taker specifies the
+    // recipient address. Funding at order placement would make the HTLC claimable
+    // by an unknown party and is therefore unsafe.
+    let swap = AtomicSwap::new();
+    let hash_lock = hex::encode(swap.hash_lock);
+    let mut order = SwapOrder::new(
         req.maker_address,
         req.offer_amount_satoshis,
         req.request_asset,
         req.request_amount_satoshis,
         locktime,
     );
+    order.hash_lock = Some(swap.hash_lock);
+    order.preimage = Some(swap.preimage);
     let order_id = hex::encode(order.order_id);
     state.order_book.write().await.add_order(order);
 
     Ok(Json(PlaceOrderResponse {
         order_id,
-        htlc_address,
+        htlc_address: "pending-match".to_string(),
         hash_lock,
+        funding_txid: None,
+        status: "Open".to_string(),
     }))
 }
 
@@ -547,38 +795,178 @@ pub async fn cancel_dex_order(
     if !cancelled {
         return Err(RpcError::NotFound(format!("Order {} not found", id)));
     }
-    Ok(Json(json!({ "success": true, "message": format!("Order {} cancelled", id) })))
+    Ok(Json(
+        json!({ "success": true, "message": format!("Order {} cancelled", id) }),
+    ))
 }
 pub async fn match_dex_order(
     State(state): State<Arc<AppState>>,
     Json(req): Json<MatchOrderRequest>,
 ) -> RpcResult<Json<MatchOrderResponse>> {
-    let result = state.order_book.write().await.match_order(
-        &req.order_id,
-        req.taker_address,
+    use vtorrent_node::atomic_swap::{AtomicSwap, Htlc, MIN_HTLC_LOCKTIME};
+    use vtorrent_wallet::tx_builder::sign_custom_transaction;
+
+    if !state.is_wallet_unlocked().await {
+        return Err(RpcError::WalletLocked);
+    }
+    if req.taker_address.trim().is_empty() {
+        return Err(RpcError::BadRequest("Taker address is required".into()));
+    }
+    // Validate before any order state changes; the HTLC recipient must be a real
+    // P2PKH-capable VTR address.
+    vtorrent_wallet::tx_builder::p2pkh_script_pubkey(&req.taker_address)
+        .map_err(|e| RpcError::BadRequest(format!("Invalid taker address: {}", e)))?;
+
+    let wif = state.wallet_wif.read().await.clone().ok_or_else(|| {
+        RpcError::BadRequest(
+            "No wallet key imported. Call POST /api/v1/wallet/import first.".into(),
+        )
+    })?;
+    let wallet_address = state
+        .wallet_change_address
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| RpcError::Internal("Change address not set".into()))?;
+
+    let order = {
+        let order_book = state.order_book.read().await;
+        order_book
+            .get_order(&req.order_id)
+            .filter(|order| matches!(order.status, vtorrent_node::atomic_swap::OrderStatus::Open))
+            .cloned()
+            .ok_or_else(|| {
+                RpcError::NotFound(format!("Order {} not found or not open", req.order_id))
+            })?
+    };
+    if order.maker_address != wallet_address {
+        return Err(RpcError::Unauthorized(
+            "Only the maker's imported wallet may fund this order".into(),
+        ));
+    }
+
+    let now = now_secs() as u32;
+    let remaining_locktime = order.expiry.saturating_sub(now);
+    if remaining_locktime < MIN_HTLC_LOCKTIME {
+        return Err(RpcError::BadRequest(
+            "DEX order is too close to expiry to fund safely".into(),
+        ));
+    }
+    let (preimage, hash_lock) = match (order.preimage, order.hash_lock) {
+        (Some(preimage), Some(hash_lock)) => (preimage, hash_lock),
+        _ => {
+            let swap = AtomicSwap::new();
+            (swap.preimage, swap.hash_lock)
+        }
+    };
+    let htlc = Htlc::new(
+        hash_lock,
+        req.taker_address.clone(),
+        order.maker_address.clone(),
+        remaining_locktime,
+        order.vtr_amount,
+    )
+    .map_err(|e| RpcError::BadRequest(format!("Unable to construct HTLC: {}", e)))?;
+
+    // Use a verified wallet UTXO large enough to fund this single-input HTLC.
+    // A fixed 10,000-satoshi fee is intentionally conservative for the custom
+    // script size and is recorded as an authoritative local mempool fee.
+    const FUNDING_FEE_SATOSHIS: u64 = 10_000;
+    let funding_utxo = {
+        let chain = state.chain.lock().await;
+        chain
+            .get_utxos_for_address(&wallet_address)
+            .into_iter()
+            .filter(|utxo| utxo.value >= order.vtr_amount.saturating_add(FUNDING_FEE_SATOSHIS))
+            .max_by_key(|utxo| utxo.value)
+            .ok_or_else(|| {
+                RpcError::BadRequest("No single wallet UTXO can fund this HTLC".into())
+            })?
+    };
+    let unsigned_funding = htlc
+        .build_funding_tx(
+            funding_utxo.txid,
+            funding_utxo.vout,
+            funding_utxo.value,
+            FUNDING_FEE_SATOSHIS,
+        )
+        .map_err(|e| {
+            RpcError::BadRequest(format!("Unable to build HTLC funding transaction: {}", e))
+        })?;
+    let funding_tx = sign_custom_transaction(unsigned_funding, std::slice::from_ref(&funding_utxo), &wif)
+        .map_err(|e| {
+            RpcError::BadRequest(format!("Unable to sign HTLC funding transaction: {}", e))
+        })?;
+    let funding_txid = funding_tx.txid();
+
+    // Reserve the order immediately before mempool admission so a second taker
+    // cannot create a competing funding transaction for the same order.
+    let reserved = state.order_book.write().await.begin_funding(&req.order_id);
+    if reserved.is_none() {
+        return Err(RpcError::NotFound(format!(
+            "Order {} is no longer open",
+            req.order_id
+        )));
+    }
+
+    let admission = {
+        let mut mempool = state.mempool.lock().await;
+        mempool.add_transaction_with_fee(funding_tx.clone(), FUNDING_FEE_SATOSHIS)
+    };
+    if let Err(e) = admission {
+        state
+            .order_book
+            .write()
+            .await
+            .release_funding(&req.order_id);
+        return Err(RpcError::BadRequest(format!(
+            "Mempool rejected HTLC funding transaction: {}",
+            e
+        )));
+    }
+
+    let matched = state
+        .order_book
+        .write()
+        .await
+        .fund_and_match_order(
+            &req.order_id,
+            req.taker_address,
+            preimage,
+            hash_lock,
+            funding_txid,
+        )
+        .ok_or_else(|| {
+            RpcError::Internal("Funding reservation disappeared before order completion".into())
+        })?;
+
+    let relayed = match &state.tx_submit {
+        Some(sender) => sender.try_send(funding_tx).is_ok(),
+        None => false,
+    };
+    tracing::info!(
+        order_id = %req.order_id,
+        funding_txid = %hex::encode(funding_txid),
+        relayed,
+        "DEX maker HTLC funding transaction accepted"
     );
 
-    match result {
-        Some(m) => Ok(Json(MatchOrderResponse {
-            order_id: hex::encode(m.order.order_id),
-            maker_address: m.order.maker_address,
-            vtr_amount: m.order.vtr_amount,
-            target_asset: m.order.target_asset,
-            target_amount: m.order.target_amount,
-            hash_lock: hex::encode(m.hash_lock),
-            preimage: hex::encode(m.preimage),
-            expiry: m.order.expiry,
-        })),
-        None => Err(RpcError::NotFound(format!(
-            "Order {} not found or not open",
-            req.order_id
-        ))),
-    }
+    Ok(Json(MatchOrderResponse {
+        order_id: hex::encode(matched.order.order_id),
+        maker_address: matched.order.maker_address,
+        vtr_amount: matched.order.vtr_amount,
+        target_asset: matched.order.target_asset,
+        target_amount: matched.order.target_amount,
+        hash_lock: hex::encode(matched.hash_lock),
+        expiry: matched.order.expiry,
+        funding_txid: hex::encode(funding_txid),
+    }))
 }
 
 // ─── Legacy Claim ──────────────────────────────────────────────────────────────────
 
-pub async fn check_claim( State(state): State<Arc<AppState>>,
+pub async fn check_claim(
+    State(state): State<Arc<AppState>>,
     Json(req): Json<ClaimCheckRequest>,
 ) -> RpcResult<Json<ClaimCheckResponse>> {
     use vtorrent_node::genesis::get_legacy_balance;
@@ -606,11 +994,11 @@ pub async fn submit_claim(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ClaimSubmitRequest>,
 ) -> RpcResult<Json<ClaimSubmitResponse>> {
+    use secp256k1::{Secp256k1, SecretKey};
+    use vtorrent_core::keys::PrivateKey;
+    use vtorrent_node::block::{Transaction, TxOutput, TxType};
     use vtorrent_node::genesis::get_legacy_balance;
     use vtorrent_wallet::tx_builder::{p2pkh_script_pubkey, pubkey_to_vtorrent_address};
-    use vtorrent_core::keys::PrivateKey;
-    use secp256k1::{Secp256k1, SecretKey};
-    use vtorrent_node::block::{Transaction, TxOutput, TxType};
 
     if req.wif_private_key.is_empty() {
         return Err(RpcError::BadRequest("WIF private key is required".into()));
@@ -632,18 +1020,20 @@ pub async fn submit_claim(
     // 2. Look up the claimable balance for this address.
     let claimable = get_legacy_balance(&derived_address);
     if claimable == 0 {
-        return Err(RpcError::BadRequest(
-            format!("No claimable balance for address {}", derived_address)
-        ));
+        return Err(RpcError::BadRequest(format!(
+            "No claimable balance for address {}",
+            derived_address
+        )));
     }
 
     // 3. Check if already claimed.
     {
         let chain = state.chain.lock().await;
         if chain.is_claimed(&derived_address) {
-            return Err(RpcError::BadRequest(
-                format!("Address {} has already been claimed", derived_address)
-            ));
+            return Err(RpcError::BadRequest(format!(
+                "Address {} has already been claimed",
+                derived_address
+            )));
         }
     }
 
@@ -679,11 +1069,17 @@ pub async fn submit_claim(
     // 5. Submit to mempool.
     {
         let mut mempool = state.mempool.lock().await;
-        mempool.add_transaction(tx)
+        mempool
+            .add_transaction(tx)
             .map_err(|e| RpcError::BadRequest(format!("Mempool rejected claim: {}", e)))?;
     }
 
-    tracing::info!("Claim transaction {} submitted for {} ({} sats)", txid, derived_address, claimable);
+    tracing::info!(
+        "Claim transaction {} submitted for {} ({} sats)",
+        txid,
+        derived_address,
+        claimable
+    );
 
     Ok(Json(ClaimSubmitResponse {
         txid,
@@ -691,7 +1087,6 @@ pub async fn submit_claim(
         recipient_address: req.recipient_address,
     }))
 }
-
 
 // --- SPV -------------------------------------------------------------------
 
@@ -702,7 +1097,7 @@ pub async fn get_spv_status(
     let chain = state.spv_chain.read().await;
     let best_hash = chain
         .best_hash()
-        .map(|h| hex::encode(h))
+        .map(hex::encode)
         .unwrap_or_default();
     Ok(Json(SpvStatusResponse {
         header_count: chain.len(),
@@ -722,12 +1117,13 @@ pub async fn add_spv_headers(
     for h in req.headers {
         let prev_hash_bytes = hex::decode(&h.prev_hash)
             .map_err(|_| RpcError::BadRequest(format!("invalid prev_hash hex: {}", h.prev_hash)))?;
-        let merkle_root_bytes = hex::decode(&h.merkle_root)
-            .map_err(|_| RpcError::BadRequest(format!("invalid merkle_root hex: {}", h.merkle_root)))?;
+        let merkle_root_bytes = hex::decode(&h.merkle_root).map_err(|_| {
+            RpcError::BadRequest(format!("invalid merkle_root hex: {}", h.merkle_root))
+        })?;
 
         if prev_hash_bytes.len() != 32 || merkle_root_bytes.len() != 32 {
             return Err(RpcError::BadRequest(
-                "prev_hash and merkle_root must be 32 bytes (64 hex chars)".into()
+                "prev_hash and merkle_root must be 32 bytes (64 hex chars)".into(),
             ));
         }
 
@@ -749,17 +1145,22 @@ pub async fn add_spv_headers(
 
     let added = {
         let mut chain = state.spv_chain.write().await;
-        chain.add_headers(headers)
+        chain
+            .add_headers(headers)
             .map_err(|e| RpcError::BadRequest(format!("SPV header validation failed: {}", e)))?
     };
 
     let chain = state.spv_chain.read().await;
     let best_hash = chain
         .best_hash()
-        .map(|h| hex::encode(h))
+        .map(hex::encode)
         .unwrap_or_default();
 
-    tracing::info!("SPV: added {} headers, best height now {}", added, chain.best_height());
+    tracing::info!(
+        "SPV: added {} headers, best height now {}",
+        added,
+        chain.best_height()
+    );
 
     Ok(Json(SpvAddHeadersResponse {
         added,
@@ -777,12 +1178,15 @@ pub async fn add_spv_headers(
 /// `PeerDisconnected` events.
 pub async fn get_peers(State(state): State<Arc<AppState>>) -> RpcResult<Json<PeersResponse>> {
     let peer_list = state.peer_list.read().await;
-    let peers: Vec<PeerInfoResponse> = peer_list.iter().map(|p| PeerInfoResponse {
-        addr: p.addr.clone(),
-        user_agent: p.user_agent.clone(),
-        services: p.services,
-        best_height: p.best_height,
-    }).collect();
+    let peers: Vec<PeerInfoResponse> = peer_list
+        .iter()
+        .map(|p| PeerInfoResponse {
+            addr: p.addr.clone(),
+            user_agent: p.user_agent.clone(),
+            services: p.services,
+            best_height: p.best_height,
+        })
+        .collect();
     let count = peers.len();
     Ok(Json(PeersResponse { count, peers }))
 }

@@ -5,27 +5,30 @@
 /// - P2P peer manager (vtorrent-p2p)
 /// - PoS staking engine (vtorrent-node::staking)
 /// - Mempool (vtorrent-node)
-
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, Duration};
 
 use std::path::PathBuf;
 
-use vtorrent_overlay::{
-    Overlay, OverlayConfig, OverlayEvent,
-};
+use vtorrent_onion::TransportConfig;
+use vtorrent_overlay::{Overlay, OverlayConfig, OverlayEvent};
 
 use vtorrent_p2p::{
-    compact::{CompactBlockDecoder, CompactBlockEncoder, CompactBlockPeerState, derive_siphash_keys, short_txid},
+    compact::{
+        derive_siphash_keys, short_txid, CompactBlockDecoder,
+        CompactBlockPeerState,
+    },
     dht::{discover_peers_via_doh, discover_peers_via_github, DhtBootstrap},
     message::{
-        AddrMsg, BlockTxnMsg, CmpctBlockMsg, FeeFilterMsg, GetBlocksMsg, GetBlockTxnMsg,
-        GetHeadersMsg, HeaderEntry, HeadersMsg, InvItem, InvMsg, InvType,
-        NetMessage, PingMsg, SendCmpctMsg,
-        NODE_NETWORK, NODE_TORRENT,
+        AddrMsg, BlockTxnMsg, CmpctBlockMsg, FeeFilterMsg, GetBlockTxnMsg, GetBlocksMsg,
+        GetHeadersMsg, HeaderEntry, HeadersMsg, InvItem, InvMsg, InvType, NetMessage, PingMsg,
+        SendCmpctMsg, VersionMsg, MAX_PAYLOAD_SIZE, NODE_NETWORK, NODE_TORRENT,
     },
-    peer::PeerEvent,
+    peer::{PeerCommand, PeerEvent},
     peer_manager::{PeerManager, DEFAULT_PORT, TARGET_OUTBOUND},
 };
 
@@ -38,6 +41,13 @@ use crate::{
     mempool::Mempool,
     staking::StakingEngine,
 };
+
+/// Authenticated overlay notifications queued for the node event loop.
+enum OverlayIngress {
+    PeerConnected { node_id: String },
+    PeerDisconnected { node_id: String },
+    Message { node_id: String, msg: NetMessage },
+}
 
 /// Node configuration.
 #[derive(Debug, Clone)]
@@ -63,6 +73,8 @@ pub struct NodeConfig {
     /// - PEX accepts private/RFC1918 addresses
     /// - Looser validation rules may apply in future
     pub testnet: bool,
+    /// Outbound routing policy for clearnet, Tor SOCKS5, and I2P SAM peers.
+    pub transport: TransportConfig,
 }
 
 impl Default for NodeConfig {
@@ -77,6 +89,7 @@ impl Default for NodeConfig {
             data_dir: default_data_dir(),
             use_overlay: true,
             testnet: false,
+            transport: TransportConfig::default(),
         }
     }
 }
@@ -103,6 +116,13 @@ pub struct Node {
     staking: Option<StakingEngine>,
     config: NodeConfig,
     overlay: Option<Overlay>,
+    /// Authenticated overlay events awaiting centralized P2P dispatch.
+    overlay_rx: mpsc::Receiver<OverlayIngress>,
+    overlay_tx: mpsc::Sender<OverlayIngress>,
+    /// Overlay peer identity by its internal virtual socket key.
+    overlay_peers: HashMap<std::net::SocketAddr, String>,
+    /// Virtual peers that have completed the P2P version/verack exchange.
+    overlay_handshaken: HashSet<std::net::SocketAddr>,
     /// Optional event sender — when set, the node emits live events to subscribers.
     event_tx: Option<EventSender>,
     /// Per-peer compact block relay state (BIP-152).
@@ -118,19 +138,85 @@ pub struct Node {
     tx_submit_tx: mpsc::Sender<Transaction>,
 }
 
+/// Encode a P2P message for transport inside the encrypted overlay payload.
+///
+/// Envelope: fixed 12-byte command, little-endian payload length, then payload.
+fn encode_overlay_message(msg: &NetMessage) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(16 + msg.payload.len());
+    bytes.extend_from_slice(&msg.command);
+    bytes.extend_from_slice(&(msg.payload.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&msg.payload);
+    bytes
+}
+
+/// Decode and validate an encrypted overlay payload before P2P dispatch.
+fn decode_overlay_message(bytes: &[u8]) -> Result<NetMessage> {
+    if bytes.len() < 16 {
+        return Err(NodeError::Chain(
+            "Overlay message is shorter than its envelope".into(),
+        ));
+    }
+
+    let mut command = [0u8; 12];
+    command.copy_from_slice(&bytes[..12]);
+    let command_len = command.iter().position(|byte| *byte == 0).unwrap_or(12);
+    std::str::from_utf8(&command[..command_len])
+        .map_err(|_| NodeError::Chain("Overlay message command is not UTF-8".into()))?;
+    if command_len == 0 || command[command_len..].iter().any(|byte| *byte != 0) {
+        return Err(NodeError::Chain(
+            "Overlay message command is malformed".into(),
+        ));
+    }
+
+    let payload_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    if payload_len > MAX_PAYLOAD_SIZE as usize || bytes.len() != 16 + payload_len {
+        return Err(NodeError::Chain(
+            "Overlay message payload length is invalid".into(),
+        ));
+    }
+
+    Ok(NetMessage {
+        command,
+        payload: bytes[16..].to_vec(),
+    })
+}
+
+/// Derive a stable private virtual address from an overlay node ID.
+fn overlay_peer_addr(node_id: &str) -> Result<std::net::SocketAddr> {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    let bytes = hex::decode(node_id)
+        .map_err(|_| NodeError::Chain("Overlay node ID is not hexadecimal".into()))?;
+    if bytes.len() != 32 {
+        return Err(NodeError::Chain("Overlay node ID must be 32 bytes".into()));
+    }
+    let port = 1_024 + (u16::from_le_bytes([bytes[2], bytes[3]]) % (u16::MAX - 1_024));
+    Ok(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::new(198, 18 + (bytes[0] & 1), bytes[1], bytes[4])),
+        port,
+    ))
+}
+
 impl Node {
     /// Create a new node.
     pub fn new(config: NodeConfig) -> Result<Self> {
         let chain = Chain::new()?;
         let best_height = chain.best_height();
         let mempool = Mempool::new(config.max_mempool);
-        let peer_manager = PeerManager::with_testnet(best_height, &config.listen_addr, config.testnet);
+        let peer_manager = PeerManager::with_transport_config(
+            best_height,
+            &config.listen_addr,
+            config.testnet,
+            config.transport.clone(),
+        );
         let (tx_submit_tx, tx_submit_rx) = mpsc::channel(256);
+        let (overlay_tx, overlay_rx) = mpsc::channel(256);
 
         let staking = if config.staking_enabled {
-            config.staking_address.as_ref().map(|addr| {
-                StakingEngine::new(addr.clone())
-            })
+            config
+                .staking_address
+                .as_ref()
+                .map(|addr| StakingEngine::new(addr.clone()))
         } else {
             None
         };
@@ -142,6 +228,10 @@ impl Node {
             staking,
             config,
             overlay: None,
+            overlay_rx,
+            overlay_tx,
+            overlay_peers: HashMap::new(),
+            overlay_handshaken: HashSet::new(),
             event_tx: None,
             compact_peers: std::collections::HashMap::new(),
             peer_fee_filters: std::collections::HashMap::new(),
@@ -158,13 +248,20 @@ impl Node {
     pub fn new_with_chain(config: NodeConfig, chain: Chain) -> Result<Self> {
         let best_height = chain.best_height();
         let mempool = Mempool::new(config.max_mempool);
-        let peer_manager = PeerManager::with_testnet(best_height, &config.listen_addr, config.testnet);
+        let peer_manager = PeerManager::with_transport_config(
+            best_height,
+            &config.listen_addr,
+            config.testnet,
+            config.transport.clone(),
+        );
         let (tx_submit_tx, tx_submit_rx) = mpsc::channel(256);
+        let (overlay_tx, overlay_rx) = mpsc::channel(256);
 
         let staking = if config.staking_enabled {
-            config.staking_address.as_ref().map(|addr| {
-                StakingEngine::new(addr.clone())
-            })
+            config
+                .staking_address
+                .as_ref()
+                .map(|addr| StakingEngine::new(addr.clone()))
         } else {
             None
         };
@@ -176,6 +273,10 @@ impl Node {
             staking,
             config,
             overlay: None,
+            overlay_rx,
+            overlay_tx,
+            overlay_peers: HashMap::new(),
+            overlay_handshaken: HashSet::new(),
             event_tx: None,
             compact_peers: std::collections::HashMap::new(),
             peer_fee_filters: std::collections::HashMap::new(),
@@ -229,7 +330,11 @@ impl Node {
 
         // Ensure data directory exists
         if let Err(e) = std::fs::create_dir_all(&self.config.data_dir) {
-            tracing::warn!("Could not create data dir {:?}: {}", self.config.data_dir, e);
+            tracing::warn!(
+                "Could not create data dir {:?}: {}",
+                self.config.data_dir,
+                e
+            );
         }
 
         // ── Stage 0: Load peer cache from previous run (instant warm start) ──
@@ -250,7 +355,9 @@ impl Node {
         }
 
         // Start P2P listener
-        self.peer_manager.start().await
+        self.peer_manager
+            .start()
+            .await
             .map_err(|e| NodeError::Chain(format!("P2P start failed: {}", e)))?;
 
         // ── Stage 0.5: Start the overlay NAT traversal layer ─────────────────
@@ -282,11 +389,11 @@ impl Node {
 
         // Periodic timers
         let mut sync_ticker = interval(Duration::from_secs(30));
-        let mut stake_ticker = interval(Duration::from_secs(TARGET_BLOCK_TIME as u64));
+        let mut stake_ticker = interval(Duration::from_secs(TARGET_BLOCK_TIME));
         let mut peer_ticker = interval(Duration::from_secs(60));
-        let mut ping_ticker = interval(Duration::from_secs(120));  // Keepalive ping every 2 min
-        let mut pex_ticker = interval(Duration::from_secs(600));   // PEX getaddr every 10 min
-        let mut dht_ticker = interval(Duration::from_secs(1800));  // DHT re-announce every 30 min
+        let mut ping_ticker = interval(Duration::from_secs(120)); // Keepalive ping every 2 min
+        let mut pex_ticker = interval(Duration::from_secs(600)); // PEX getaddr every 10 min
+        let mut dht_ticker = interval(Duration::from_secs(1800)); // DHT re-announce every 30 min
 
         loop {
             tokio::select! {
@@ -297,6 +404,13 @@ impl Node {
                         if let Err(e) = self.handle_peer_event(event).await {
                             tracing::warn!("Peer event error: {}", e);
                         }
+                    }
+                }
+
+                // Authenticated overlay payloads share the same protocol handler as TCP peers.
+                Some(ingress) = self.overlay_rx.recv() => {
+                    if let Err(e) = self.handle_overlay_ingress(ingress).await {
+                        tracing::warn!("Overlay peer event error: {}", e);
                     }
                 }
 
@@ -360,9 +474,17 @@ impl Node {
                     let txid = tx.txid();
                     let fee_sats = tx.fee_sats();
                     let mut mp = self.mempool.lock().await;
-                    match mp.add_transaction(tx) {
+                    let already_admitted = mp.get_transaction(&txid).is_some();
+                    let admission = if already_admitted {
+                        Ok(())
+                    } else {
+                        mp.add_transaction(tx)
+                    };
+                    match admission {
                         Ok(()) => {
-                            self.emit(NodeEvent::TxUnconfirmed { txid, fee_sats });
+                            if !already_admitted {
+                                self.emit(NodeEvent::TxUnconfirmed { txid, fee_sats });
+                            }
                             let payload = serde_json::to_vec(&InvMsg {
                                 items: vec![InvItem {
                                     inv_type: InvType::Transaction,
@@ -374,7 +496,8 @@ impl Node {
                                 NetMessage::new("inv", payload)
                             ).await;
                             tracing::info!(
-                                "Local tx {} added to mempool and announced to peers",
+                                already_admitted,
+                                "Local tx {} announced to peers",
                                 hex::encode(txid)
                             );
                         }
@@ -396,9 +519,11 @@ impl Node {
     async fn bootstrap_via_dht(&mut self) {
         tracing::info!("Starting parallel DHT + Cloudflare DoH bootstrap...");
 
-        let port = self.config.listen_addr
+        let port = self
+            .config
+            .listen_addr
             .split(':')
-            .last()
+            .next_back()
             .and_then(|p| p.parse::<u16>().ok())
             .unwrap_or(DEFAULT_PORT);
 
@@ -408,9 +533,7 @@ impl Node {
             dht.discover_peers()
         });
 
-        let doh_task = tokio::task::spawn_blocking(move || {
-            discover_peers_via_doh(port)
-        });
+        let doh_task = tokio::task::spawn_blocking(move || discover_peers_via_doh(port));
 
         // Wait for both to complete (each has its own internal timeout)
         let (dht_peers, doh_peers) = tokio::join!(dht_task, doh_task);
@@ -449,9 +572,11 @@ impl Node {
 
     /// Announce ourselves on the DHT so other nodes can find us.
     async fn dht_announce(&self) {
-        let port = self.config.listen_addr
+        let port = self
+            .config
+            .listen_addr
             .split(':')
-            .last()
+            .next_back()
             .and_then(|p| p.parse::<u16>().ok())
             .unwrap_or(DEFAULT_PORT);
 
@@ -473,15 +598,17 @@ impl Node {
 
     /// Bootstrap from the GitHub-hosted peer list (Stage 3 fallback).
     async fn bootstrap_via_github(&mut self) {
-        let port = self.config.listen_addr
+        let port = self
+            .config
+            .listen_addr
             .split(':')
-            .last()
+            .next_back()
             .and_then(|p| p.parse::<u16>().ok())
             .unwrap_or(DEFAULT_PORT);
 
-        let peers = tokio::task::spawn_blocking(move || {
-            discover_peers_via_github(port)
-        }).await.unwrap_or_default();
+        let peers = tokio::task::spawn_blocking(move || discover_peers_via_github(port))
+            .await
+            .unwrap_or_default();
 
         if peers.is_empty() {
             tracing::debug!("GitHub bootstrap: no peers returned");
@@ -503,7 +630,8 @@ impl Node {
     /// Connect to legacy DNS seed nodes (fallback only).
     async fn connect_to_dns_seeds(&mut self) {
         use vtorrent_p2p::peer_manager::DNS_SEEDS;
-        let seeds: Vec<String> = DNS_SEEDS.iter()
+        let seeds: Vec<String> = DNS_SEEDS
+            .iter()
             .map(|s| format!("{}:{}", s, DEFAULT_PORT))
             .collect();
 
@@ -521,7 +649,9 @@ impl Node {
             PeerEvent::HandshakeComplete { peer_addr, version } => {
                 tracing::info!(
                     "Peer {} handshake complete: {} (height {})",
-                    peer_addr, version.user_agent, version.start_height
+                    peer_addr,
+                    version.user_agent,
+                    version.start_height
                 );
                 self.emit(NodeEvent::PeerConnected {
                     addr: peer_addr,
@@ -534,13 +664,14 @@ impl Node {
                 let sendcmpct_payload = serde_json::to_vec(&SendCmpctMsg {
                     high_bandwidth: false,
                     version: 1,
-                }).unwrap_or_default();
-                self.peer_manager.send_to(
-                    peer_addr,
-                    NetMessage::new("sendcmpct", sendcmpct_payload)
-                ).await;
+                })
+                .unwrap_or_default();
+                self.peer_manager
+                    .send_to(peer_addr, NetMessage::new("sendcmpct", sendcmpct_payload))
+                    .await;
                 // Track compact block state for this peer
-                self.compact_peers.insert(peer_addr, CompactBlockPeerState::default());
+                self.compact_peers
+                    .insert(peer_addr, CompactBlockPeerState::default());
                 // Ask peer for blocks if they are ahead of us
                 let our_height = {
                     let chain = self.chain.lock().await;
@@ -555,7 +686,8 @@ impl Node {
                         version: 70001,
                         block_locator_hashes: vec![best_hash],
                         hash_stop: [0u8; 32],
-                    }).unwrap_or_default();
+                    })
+                    .unwrap_or_default();
                     let msg = NetMessage::new("getblocks", payload);
                     self.peer_manager.broadcast(msg).await;
                 }
@@ -579,6 +711,110 @@ impl Node {
                 self.compact_peers.remove(&peer_addr);
                 self.peer_fee_filters.remove(&peer_addr);
                 self.peer_ping_nonces.remove(&peer_addr);
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle an authenticated overlay event through the same P2P command path
+    /// used for TCP peers. Overlay sessions retain their own encryption and send
+    /// bridge, while protocol semantics stay centralized in `handle_message`.
+    async fn handle_overlay_ingress(&mut self, ingress: OverlayIngress) -> Result<()> {
+        match ingress {
+            OverlayIngress::PeerConnected { node_id } => {
+                let peer_addr = overlay_peer_addr(&node_id)?;
+                let overlay = self.overlay.clone().ok_or_else(|| {
+                    NodeError::Chain("Received overlay peer event before overlay startup".into())
+                })?;
+                let (cmd_tx, mut cmd_rx) = mpsc::channel(64);
+                let relay_node_id = node_id.clone();
+
+                tokio::spawn(async move {
+                    while let Some(command) = cmd_rx.recv().await {
+                        match command {
+                            PeerCommand::Send(msg) => {
+                                let packet = encode_overlay_message(&msg);
+                                if let Err(e) = overlay.send(&relay_node_id, &packet).await {
+                                    tracing::debug!(peer = %relay_node_id, "Overlay send failed: {}", e);
+                                    break;
+                                }
+                            }
+                            PeerCommand::Disconnect => break,
+                        }
+                    }
+                });
+
+                self.peer_manager
+                    .register_virtual_peer(
+                        peer_addr,
+                        format!("/vTorrent-overlay:{}/", &node_id[..8]),
+                        cmd_tx,
+                    )
+                    .map_err(|e| {
+                        NodeError::Chain(format!("Overlay peer registration failed: {}", e))
+                    })?;
+                self.overlay_peers.insert(peer_addr, node_id);
+                self.overlay_handshaken.remove(&peer_addr);
+
+                let best_height = {
+                    let chain = self.chain.lock().await;
+                    chain.best_height()
+                };
+                let version = VersionMsg::new(best_height, &self.config.listen_addr);
+                let payload = serde_json::to_vec(&version).map_err(|e| {
+                    NodeError::Chain(format!("Overlay version serialization failed: {}", e))
+                })?;
+                self.peer_manager
+                    .send_to(peer_addr, NetMessage::new("version", payload))
+                    .await;
+            }
+            OverlayIngress::PeerDisconnected { node_id } => {
+                if let Some(peer_addr) = self
+                    .overlay_peers
+                    .iter()
+                    .find_map(|(addr, known_id)| (known_id == &node_id).then_some(*addr))
+                {
+                    self.peer_manager.remove_virtual_peer(peer_addr);
+                    self.overlay_peers.remove(&peer_addr);
+                    self.overlay_handshaken.remove(&peer_addr);
+                    self.compact_peers.remove(&peer_addr);
+                    self.peer_fee_filters.remove(&peer_addr);
+                    self.peer_ping_nonces.remove(&peer_addr);
+                    self.emit(NodeEvent::PeerDisconnected { addr: peer_addr });
+                }
+            }
+            OverlayIngress::Message { node_id, msg } => {
+                let peer_addr = overlay_peer_addr(&node_id)?;
+                if self.overlay_peers.get(&peer_addr) != Some(&node_id) {
+                    tracing::debug!(peer = %node_id, "Ignoring message from unknown overlay peer");
+                    return Ok(());
+                }
+
+                match msg.command_str() {
+                    "version" => {
+                        let version: VersionMsg =
+                            serde_json::from_slice(&msg.payload).map_err(|e| {
+                                NodeError::Chain(format!("Invalid overlay version message: {}", e))
+                            })?;
+                        self.peer_manager
+                            .send_to(peer_addr, NetMessage::new("verack", Vec::new()))
+                            .await;
+                        if self.overlay_handshaken.insert(peer_addr) {
+                            self.handle_peer_event(PeerEvent::HandshakeComplete {
+                                peer_addr,
+                                version,
+                            })
+                            .await?;
+                        }
+                    }
+                    "verack" => {
+                        tracing::trace!(peer = %node_id, "Overlay peer acknowledged version");
+                    }
+                    _ if !self.overlay_handshaken.contains(&peer_addr) => {
+                        tracing::debug!(peer = %node_id, command = msg.command_str(), "Ignoring pre-handshake overlay message");
+                    }
+                    _ => self.handle_message(peer_addr, msg).await?,
+                }
             }
         }
         Ok(())
@@ -629,10 +865,12 @@ impl Node {
                         }
                     }
                     if !want.is_empty() {
-                        let payload = serde_json::to_vec(&vtorrent_p2p::message::GetDataMsg {
-                            items: want,
-                        }).unwrap_or_default();
-                        self.peer_manager.broadcast(NetMessage::new("getdata", payload)).await;
+                        let payload =
+                            serde_json::to_vec(&vtorrent_p2p::message::GetDataMsg { items: want })
+                                .unwrap_or_default();
+                        self.peer_manager
+                            .broadcast(NetMessage::new("getdata", payload))
+                            .await;
                     }
                 }
             }
@@ -647,10 +885,21 @@ impl Node {
                                 use crate::chain::BlockAcceptance;
                                 let hash = block.hash();
                                 let should_relay = match &acceptance {
-                                    BlockAcceptance::MainChain { height, utxos_added, utxos_removed, claimed_addresses } => {
-                                        tracing::info!("Accepted block {} at height {}", hex::encode(hash), height);
+                                    BlockAcceptance::MainChain {
+                                        height,
+                                        utxos_added,
+                                        utxos_removed,
+                                        claimed_addresses,
+                                    } => {
+                                        tracing::info!(
+                                            "Accepted block {} at height {}",
+                                            hex::encode(hash),
+                                            height
+                                        );
                                         // Emit new_block event (carries full block + UTXO diff for BlockStore persistence)
-                                        let size_bytes = serde_json::to_vec(&block).map(|v| v.len()).unwrap_or(0);
+                                        let size_bytes = serde_json::to_vec(&block)
+                                            .map(|v| v.len())
+                                            .unwrap_or(0);
                                         self.emit(NodeEvent::NewBlock {
                                             height: *height,
                                             hash,
@@ -672,8 +921,17 @@ impl Node {
                                         }
                                         true
                                     }
-                                    BlockAcceptance::Reorg { old_tip, new_tip, depth } => {
-                                        tracing::warn!("Reorg depth {}: {} -> {}", depth, hex::encode(old_tip), hex::encode(new_tip));
+                                    BlockAcceptance::Reorg {
+                                        old_tip,
+                                        new_tip,
+                                        depth,
+                                    } => {
+                                        tracing::warn!(
+                                            "Reorg depth {}: {} -> {}",
+                                            depth,
+                                            hex::encode(old_tip),
+                                            hex::encode(new_tip)
+                                        );
                                         self.emit(NodeEvent::Reorg {
                                             old_tip: *old_tip,
                                             new_tip: *new_tip,
@@ -682,7 +940,10 @@ impl Node {
                                         true
                                     }
                                     BlockAcceptance::Fork { fork_tip } => {
-                                        tracing::debug!("Fork block {} stored", hex::encode(fork_tip));
+                                        tracing::debug!(
+                                            "Fork block {} stored",
+                                            hex::encode(fork_tip)
+                                        );
                                         false
                                     }
                                     BlockAcceptance::Duplicate => false,
@@ -693,11 +954,12 @@ impl Node {
                                             inv_type: InvType::Block,
                                             hash,
                                         }],
-                                    }).unwrap_or_default();
+                                    })
+                                    .unwrap_or_default();
                                     drop(chain);
-                                    self.peer_manager.broadcast(
-                                        NetMessage::new("inv", payload)
-                                    ).await;
+                                    self.peer_manager
+                                        .broadcast(NetMessage::new("inv", payload))
+                                        .await;
                                 }
                             }
                             Err(e) => {
@@ -711,40 +973,36 @@ impl Node {
                 }
             }
 
-            "tx" => {
-                match self.deserialize_tx(&msg.payload) {
-                    Ok(tx) => {
-                        let mut mp = self.mempool.lock().await;
-                        match mp.add_transaction(tx.clone()) {
-                            Ok(()) => {
-                                let txid = tx.txid();
-                                let fee_sats = tx.fee_sats();
-                                tracing::debug!("Accepted tx {}", hex::encode(txid));
-                                self.emit(NodeEvent::TxUnconfirmed {
-                                    txid,
-                                    fee_sats,
-                                });
-                                let payload = serde_json::to_vec(&InvMsg {
-                                    items: vec![InvItem {
-                                        inv_type: InvType::Transaction,
-                                        hash: txid,
-                                    }],
-                                }).unwrap_or_default();
-                                drop(mp);
-                                self.peer_manager.broadcast(
-                                    NetMessage::new("inv", payload)
-                                ).await;
-                            }
-                            Err(e) => {
-                                tracing::debug!("Rejected tx: {}", e);
-                            }
+            "tx" => match self.deserialize_tx(&msg.payload) {
+                Ok(tx) => {
+                    let mut mp = self.mempool.lock().await;
+                    match mp.add_transaction(tx.clone()) {
+                        Ok(()) => {
+                            let txid = tx.txid();
+                            let fee_sats = tx.fee_sats();
+                            tracing::debug!("Accepted tx {}", hex::encode(txid));
+                            self.emit(NodeEvent::TxUnconfirmed { txid, fee_sats });
+                            let payload = serde_json::to_vec(&InvMsg {
+                                items: vec![InvItem {
+                                    inv_type: InvType::Transaction,
+                                    hash: txid,
+                                }],
+                            })
+                            .unwrap_or_default();
+                            drop(mp);
+                            self.peer_manager
+                                .broadcast(NetMessage::new("inv", payload))
+                                .await;
+                        }
+                        Err(e) => {
+                            tracing::debug!("Rejected tx: {}", e);
                         }
                     }
-                    Err(e) => {
-                        tracing::warn!("Failed to deserialize tx from {}: {}", peer_addr, e);
-                    }
                 }
-            }
+                Err(e) => {
+                    tracing::warn!("Failed to deserialize tx from {}: {}", peer_addr, e);
+                }
+            },
 
             "getblocks" => {
                 if let Ok(req) = serde_json::from_slice::<GetBlocksMsg>(&msg.payload) {
@@ -752,7 +1010,9 @@ impl Node {
                     let our_height = chain.best_height();
 
                     // Find the peer's best known block height
-                    let start_height = req.block_locator_hashes.iter()
+                    let start_height = req
+                        .block_locator_hashes
+                        .iter()
                         .find_map(|hash| {
                             for h in 0..=our_height {
                                 if let Some(b) = chain.get_block_at_height(h) {
@@ -778,7 +1038,9 @@ impl Node {
                     if !items.is_empty() {
                         let payload = serde_json::to_vec(&InvMsg { items }).unwrap_or_default();
                         drop(chain);
-                        self.peer_manager.broadcast(NetMessage::new("inv", payload)).await;
+                        self.peer_manager
+                            .broadcast(NetMessage::new("inv", payload))
+                            .await;
                     }
                 }
             }
@@ -792,7 +1054,9 @@ impl Node {
                     state.version = msg_data.version;
                     tracing::debug!(
                         "Peer {} supports compact blocks (high_bw={}, v={})",
-                        peer_addr, msg_data.high_bandwidth, msg_data.version
+                        peer_addr,
+                        msg_data.high_bandwidth,
+                        msg_data.version
                     );
                 }
             }
@@ -833,7 +1097,11 @@ impl Node {
                                 match serde_json::from_slice::<Transaction>(bytes) {
                                     Ok(tx) => txs.push(tx),
                                     Err(e) => {
-                                        tracing::warn!("cmpctblock: failed to decode tx from {}: {}", peer_addr, e);
+                                        tracing::warn!(
+                                            "cmpctblock: failed to decode tx from {}: {}",
+                                            peer_addr,
+                                            e
+                                        );
                                         all_ok = false;
                                         break;
                                     }
@@ -857,12 +1125,21 @@ impl Node {
                                     Ok(acceptance) => {
                                         use crate::chain::BlockAcceptance;
                                         let hash = block.hash();
-                                        if let BlockAcceptance::MainChain { height, utxos_added, utxos_removed, claimed_addresses } = &acceptance {
+                                        if let BlockAcceptance::MainChain {
+                                            height,
+                                            utxos_added,
+                                            utxos_removed,
+                                            claimed_addresses,
+                                        } = &acceptance
+                                        {
                                             tracing::info!(
                                                 "cmpctblock: accepted block {} at height {}",
-                                                hex::encode(hash), height
+                                                hex::encode(hash),
+                                                height
                                             );
-                                            let size_bytes = serde_json::to_vec(&block).map(|v| v.len()).unwrap_or(0);
+                                            let size_bytes = serde_json::to_vec(&block)
+                                                .map(|v| v.len())
+                                                .unwrap_or(0);
                                             self.emit(NodeEvent::NewBlock {
                                                 height: *height,
                                                 hash,
@@ -884,7 +1161,11 @@ impl Node {
                                         }
                                     }
                                     Err(e) => {
-                                        tracing::warn!("cmpctblock: rejected block from {}: {}", peer_addr, e);
+                                        tracing::warn!(
+                                            "cmpctblock: rejected block from {}: {}",
+                                            peer_addr,
+                                            e
+                                        );
                                     }
                                 }
                             }
@@ -893,7 +1174,8 @@ impl Node {
                             // Some transactions are missing from our mempool — request them
                             tracing::debug!(
                                 "cmpctblock: {} missing txs from {}, sending getblocktxn",
-                                missing_indexes.len(), peer_addr
+                                missing_indexes.len(),
+                                peer_addr
                             );
                             let mut header_bytes2 = Vec::with_capacity(80);
                             header_bytes2.extend_from_slice(&cmpct.version.to_le_bytes());
@@ -904,19 +1186,19 @@ impl Node {
                             header_bytes2.extend_from_slice(&cmpct.nonce.to_le_bytes());
                             // Compute block hash as the hash of the header bytes
                             let block_hash = {
-                                use sha2::{Sha256, Digest};
+                                use sha2::{Digest, Sha256};
                                 let h1 = Sha256::digest(&header_bytes2);
                                 let h2 = Sha256::digest(h1);
                                 let mut arr = [0u8; 32];
                                 arr.copy_from_slice(&h2);
                                 arr
                             };
-                            let req = CompactBlockDecoder::build_getblocktxn(block_hash, missing_indexes);
+                            let req =
+                                CompactBlockDecoder::build_getblocktxn(block_hash, missing_indexes);
                             let payload = serde_json::to_vec(&req).unwrap_or_default();
-                            self.peer_manager.send_to(
-                                peer_addr,
-                                NetMessage::new("getblocktxn", payload)
-                            ).await;
+                            self.peer_manager
+                                .send_to(peer_addr, NetMessage::new("getblocktxn", payload))
+                                .await;
                         }
                     }
                 }
@@ -935,7 +1217,9 @@ impl Node {
                                 for &idx in &req.indexes {
                                     let idx = idx as usize;
                                     if idx < block.transactions.len() {
-                                        if let Ok(bytes) = serde_json::to_vec(&block.transactions[idx]) {
+                                        if let Ok(bytes) =
+                                            serde_json::to_vec(&block.transactions[idx])
+                                        {
                                             txs.push(bytes);
                                         }
                                     }
@@ -952,10 +1236,9 @@ impl Node {
                         };
                         let payload = serde_json::to_vec(&resp).unwrap_or_default();
                         drop(chain);
-                        self.peer_manager.send_to(
-                            peer_addr,
-                            NetMessage::new("blocktxn", payload)
-                        ).await;
+                        self.peer_manager
+                            .send_to(peer_addr, NetMessage::new("blocktxn", payload))
+                            .await;
                     }
                 }
             }
@@ -980,8 +1263,11 @@ impl Node {
                 // peer.rs already handles inbound ping→pong at the peer level;
                 // this arm handles any ping that bubbles up (e.g. from test harness).
                 if let Ok(ping) = serde_json::from_slice::<PingMsg>(&msg.payload) {
-                    let payload = serde_json::to_vec(&PingMsg { nonce: ping.nonce }).unwrap_or_default();
-                    self.peer_manager.send_to(peer_addr, NetMessage::new("pong", payload)).await;
+                    let payload =
+                        serde_json::to_vec(&PingMsg { nonce: ping.nonce }).unwrap_or_default();
+                    self.peer_manager
+                        .send_to(peer_addr, NetMessage::new("pong", payload))
+                        .await;
                 }
             }
 
@@ -991,11 +1277,17 @@ impl Node {
                     if let Some(&expected) = self.peer_ping_nonces.get(&peer_addr) {
                         if pong.nonce == expected {
                             self.peer_ping_nonces.remove(&peer_addr);
-                            tracing::trace!("Pong from {} confirmed (nonce={})", peer_addr, pong.nonce);
+                            tracing::trace!(
+                                "Pong from {} confirmed (nonce={})",
+                                peer_addr,
+                                pong.nonce
+                            );
                         } else {
                             tracing::warn!(
                                 "Pong nonce mismatch from {}: expected {} got {}",
-                                peer_addr, expected, pong.nonce
+                                peer_addr,
+                                expected,
+                                pong.nonce
                             );
                         }
                     }
@@ -1008,7 +1300,8 @@ impl Node {
                     self.peer_fee_filters.insert(peer_addr, ff.feerate);
                     tracing::debug!(
                         "feefilter: peer {} min fee rate = {} sat/kB",
-                        peer_addr, ff.feerate
+                        peer_addr,
+                        ff.feerate
                     );
                 }
             }
@@ -1029,7 +1322,9 @@ impl Node {
 
             // ── getdata: serve blocks and transactions to requesting peers ──────
             "getdata" => {
-                if let Ok(req) = serde_json::from_slice::<vtorrent_p2p::message::GetDataMsg>(&msg.payload) {
+                if let Ok(req) =
+                    serde_json::from_slice::<vtorrent_p2p::message::GetDataMsg>(&msg.payload)
+                {
                     for item in &req.items {
                         match item.inv_type {
                             InvType::Block => {
@@ -1040,29 +1335,33 @@ impl Node {
                                 if let Some(block) = maybe_block {
                                     match serde_json::to_vec(&block) {
                                         Ok(payload) => {
-                                            self.peer_manager.send_to(
-                                                peer_addr,
-                                                NetMessage::new("block", payload),
-                                            ).await;
+                                            self.peer_manager
+                                                .send_to(
+                                                    peer_addr,
+                                                    NetMessage::new("block", payload),
+                                                )
+                                                .await;
                                             tracing::debug!(
                                                 "getdata: served block {} to {}",
-                                                hex::encode(item.hash), peer_addr
+                                                hex::encode(item.hash),
+                                                peer_addr
                                             );
                                         }
                                         Err(e) => tracing::warn!(
                                             "getdata: failed to serialize block {}: {}",
-                                            hex::encode(item.hash), e
+                                            hex::encode(item.hash),
+                                            e
                                         ),
                                     }
                                 } else {
                                     // Block not found — reply with notfound
                                     let nf = serde_json::to_vec(&InvMsg {
                                         items: vec![item.clone()],
-                                    }).unwrap_or_default();
-                                    self.peer_manager.send_to(
-                                        peer_addr,
-                                        NetMessage::new("notfound", nf),
-                                    ).await;
+                                    })
+                                    .unwrap_or_default();
+                                    self.peer_manager
+                                        .send_to(peer_addr, NetMessage::new("notfound", nf))
+                                        .await;
                                 }
                             }
                             InvType::Transaction => {
@@ -1073,28 +1372,29 @@ impl Node {
                                 if let Some(tx) = maybe_tx {
                                     match serde_json::to_vec(&tx) {
                                         Ok(payload) => {
-                                            self.peer_manager.send_to(
-                                                peer_addr,
-                                                NetMessage::new("tx", payload),
-                                            ).await;
+                                            self.peer_manager
+                                                .send_to(peer_addr, NetMessage::new("tx", payload))
+                                                .await;
                                             tracing::debug!(
                                                 "getdata: served tx {} to {}",
-                                                hex::encode(item.hash), peer_addr
+                                                hex::encode(item.hash),
+                                                peer_addr
                                             );
                                         }
                                         Err(e) => tracing::warn!(
                                             "getdata: failed to serialize tx {}: {}",
-                                            hex::encode(item.hash), e
+                                            hex::encode(item.hash),
+                                            e
                                         ),
                                     }
                                 } else {
                                     let nf = serde_json::to_vec(&InvMsg {
                                         items: vec![item.clone()],
-                                    }).unwrap_or_default();
-                                    self.peer_manager.send_to(
-                                        peer_addr,
-                                        NetMessage::new("notfound", nf),
-                                    ).await;
+                                    })
+                                    .unwrap_or_default();
+                                    self.peer_manager
+                                        .send_to(peer_addr, NetMessage::new("notfound", nf))
+                                        .await;
                                 }
                             }
                             _ => {}
@@ -1110,7 +1410,9 @@ impl Node {
                     let our_height = chain.best_height();
 
                     // Find the highest block in the locator that we know
-                    let start_height = req.block_locator_hashes.iter()
+                    let start_height = req
+                        .block_locator_hashes
+                        .iter()
                         .find_map(|hash| {
                             for h in (0..=our_height).rev() {
                                 if let Some(b) = chain.get_block_at_height(h) {
@@ -1129,22 +1431,30 @@ impl Node {
                             let hash = block.hash();
                             if req.hash_stop != [0u8; 32] && hash == req.hash_stop {
                                 // Serialize header as bytes (bincode matches how hash() works)
-                                let header_bytes = bincode::serialize(&block.header).unwrap_or_default();
-                                headers.push(HeaderEntry { header: header_bytes, tx_count: 0 });
+                                let header_bytes =
+                                    bincode::serialize(&block.header).unwrap_or_default();
+                                headers.push(HeaderEntry {
+                                    header: header_bytes,
+                                    tx_count: 0,
+                                });
                                 break;
                             }
-                            let header_bytes = bincode::serialize(&block.header).unwrap_or_default();
-                            headers.push(HeaderEntry { header: header_bytes, tx_count: 0 });
+                            let header_bytes =
+                                bincode::serialize(&block.header).unwrap_or_default();
+                            headers.push(HeaderEntry {
+                                header: header_bytes,
+                                tx_count: 0,
+                            });
                         }
                     }
 
                     if !headers.is_empty() {
-                        let payload = serde_json::to_vec(&HeadersMsg { headers }).unwrap_or_default();
+                        let payload =
+                            serde_json::to_vec(&HeadersMsg { headers }).unwrap_or_default();
                         drop(chain);
-                        self.peer_manager.send_to(
-                            peer_addr,
-                            NetMessage::new("headers", payload)
-                        ).await;
+                        self.peer_manager
+                            .send_to(peer_addr, NetMessage::new("headers", payload))
+                            .await;
                     }
                 }
             }
@@ -1158,28 +1468,33 @@ impl Node {
                     tracing::debug!("headers: received {} headers from {}", count, peer_addr);
 
                     // Deserialize each HeaderEntry's bytes into a BlockHeader to get the hash
-                    let decoded: Vec<BlockHeader> = resp.headers.iter()
+                    let decoded: Vec<BlockHeader> = resp
+                        .headers
+                        .iter()
                         .filter_map(|h| bincode::deserialize::<BlockHeader>(&h.header).ok())
                         .collect();
 
                     // Request the blocks we don't have yet
                     let want: Vec<InvItem> = {
                         let chain = self.chain.lock().await;
-                        decoded.iter()
+                        decoded
+                            .iter()
                             .map(|hdr| hdr.hash())
                             .filter(|hash| chain.get_block(hash).is_none())
-                            .map(|hash| InvItem { inv_type: InvType::Block, hash })
+                            .map(|hash| InvItem {
+                                inv_type: InvType::Block,
+                                hash,
+                            })
                             .collect()
                     };
 
                     if !want.is_empty() {
-                        let payload = serde_json::to_vec(&vtorrent_p2p::message::GetDataMsg {
-                            items: want,
-                        }).unwrap_or_default();
-                        self.peer_manager.send_to(
-                            peer_addr,
-                            NetMessage::new("getdata", payload)
-                        ).await;
+                        let payload =
+                            serde_json::to_vec(&vtorrent_p2p::message::GetDataMsg { items: want })
+                                .unwrap_or_default();
+                        self.peer_manager
+                            .send_to(peer_addr, NetMessage::new("getdata", payload))
+                            .await;
                     }
 
                     // If we got a full batch of 2000, there may be more — send another getheaders
@@ -1189,11 +1504,11 @@ impl Node {
                             version: 70001,
                             block_locator_hashes: vec![last_hash],
                             hash_stop: [0u8; 32],
-                        }).unwrap_or_default();
-                        self.peer_manager.send_to(
-                            peer_addr,
-                            NetMessage::new("getheaders", payload)
-                        ).await;
+                        })
+                        .unwrap_or_default();
+                        self.peer_manager
+                            .send_to(peer_addr, NetMessage::new("getheaders", payload))
+                            .await;
                     }
                 }
             }
@@ -1207,14 +1522,17 @@ impl Node {
 
     /// Attempt to produce a new PoS block.
     async fn attempt_stake(&mut self) -> Result<()> {
-        let staking = self.staking.as_ref()
+        let staking = self
+            .staking
+            .as_ref()
             .ok_or_else(|| NodeError::Chain("Staking not enabled".into()))?;
 
         let (best_height, best_hash, best_timestamp, stake_utxos) = {
             let chain = self.chain.lock().await;
             let best_height = chain.best_height();
             let best_hash = chain.best_hash().unwrap_or([0u8; 32]);
-            let best_timestamp = chain.get_block_at_height(best_height)
+            let best_timestamp = chain
+                .get_block_at_height(best_height)
                 .map(|b| b.header.timestamp)
                 .unwrap_or(0);
             let utxos = chain.get_utxos_for_address(&staking.address);
@@ -1239,18 +1557,14 @@ impl Node {
             mempool.get_transactions()
         };
 
-        if let Some(block) = staking.build_stake_block(
-            best_hash,
-            best_height + 1,
-            now,
-            stake_utxos,
-            pending_txs,
-        ) {
+        if let Some(block) =
+            staking.build_stake_block(best_hash, best_height + 1, now, stake_utxos, pending_txs)
+        {
             let block_hash = block.hash();
             let block_arc = std::sync::Arc::new(block.clone());
             let acceptance = {
                 let mut chain = self.chain.lock().await;
-                let result = chain.add_block(block.clone()).map_err(|e| e)?;
+                let result = chain.add_block(block.clone())?;
                 tracing::info!(
                     "Staked new block {} at height {}",
                     hex::encode(block_hash),
@@ -1261,8 +1575,16 @@ impl Node {
 
             // Emit NewBlock event (carries UTXO diff for BlockStore persistence)
             use crate::chain::BlockAcceptance;
-            if let BlockAcceptance::MainChain { height, utxos_added, utxos_removed, claimed_addresses } = &acceptance {
-                let size_bytes = serde_json::to_vec(&*block_arc).map(|v| v.len()).unwrap_or(0);
+            if let BlockAcceptance::MainChain {
+                height,
+                utxos_added,
+                utxos_removed,
+                claimed_addresses,
+            } = &acceptance
+            {
+                let size_bytes = serde_json::to_vec(&*block_arc)
+                    .map(|v| v.len())
+                    .unwrap_or(0);
                 self.emit(NodeEvent::NewBlock {
                     height: *height,
                     hash: block_hash,
@@ -1282,7 +1604,9 @@ impl Node {
                     });
                 }
                 // Emit StakingReward event
-                let reward_sats: u64 = block_arc.transactions.iter()
+                let reward_sats: u64 = block_arc
+                    .transactions
+                    .iter()
                     .filter(|tx| matches!(tx.tx_type, crate::block::TxType::Coinstake))
                     .flat_map(|tx| tx.outputs.iter())
                     .map(|o| o.value)
@@ -1301,8 +1625,11 @@ impl Node {
                     inv_type: InvType::Block,
                     hash: block_hash,
                 }],
-            }).unwrap_or_default();
-            self.peer_manager.broadcast(NetMessage::new("inv", payload)).await;
+            })
+            .unwrap_or_default();
+            self.peer_manager
+                .broadcast(NetMessage::new("inv", payload))
+                .await;
         }
 
         Ok(())
@@ -1322,7 +1649,8 @@ impl Node {
         if network_height > our_height {
             tracing::info!(
                 "Syncing: our height {} < network height {}",
-                our_height, network_height
+                our_height,
+                network_height
             );
 
             // Build a block locator (exponentially stepped hashes from tip)
@@ -1357,8 +1685,11 @@ impl Node {
                 version: 70001,
                 block_locator_hashes: locator,
                 hash_stop: [0u8; 32],
-            }).unwrap_or_default();
-            self.peer_manager.broadcast(NetMessage::new("getheaders", payload)).await;
+            })
+            .unwrap_or_default();
+            self.peer_manager
+                .broadcast(NetMessage::new("getheaders", payload))
+                .await;
         }
     }
 
@@ -1369,7 +1700,9 @@ impl Node {
             let needed = TARGET_OUTBOUND - count;
             tracing::debug!(
                 "Low peer count ({}/{}), trying {} PEX candidates",
-                count, TARGET_OUTBOUND, needed
+                count,
+                TARGET_OUTBOUND,
+                needed
             );
 
             // First try PEX address book candidates
@@ -1412,7 +1745,9 @@ impl Node {
                 let nonce: u64 = rand::random();
                 self.peer_ping_nonces.insert(*addr, nonce);
                 let payload = serde_json::to_vec(&PingMsg { nonce }).unwrap_or_default();
-                self.peer_manager.send_to(*addr, NetMessage::new("ping", payload)).await;
+                self.peer_manager
+                    .send_to(*addr, NetMessage::new("ping", payload))
+                    .await;
             }
         }
 
@@ -1462,9 +1797,9 @@ impl Node {
     /// Start the overlay NAT traversal layer.
     ///
     /// Binds a UDP socket, discovers our external address via STUN, and begins
-    /// accepting hole-punch requests from other nodes. The overlay runs as a
-    /// background task and emits events that are logged but not yet wired into
-    /// the P2P layer (that wiring is the next integration step).
+    /// accepting hole-punch requests from other nodes. Authenticated overlay
+    /// payloads are decoded and routed through the same P2P message handler as
+    /// TCP-delivered traffic.
     async fn start_overlay(&mut self) {
         let key_path = self.config.data_dir.join("overlay.key");
         let overlay_config = OverlayConfig {
@@ -1477,10 +1812,7 @@ impl Node {
             Ok((overlay, mut events)) => {
                 if let Some(ext) = overlay.external_addr {
                     tracing::info!("Overlay ready — external UDP address: {}", ext);
-                    tracing::info!(
-                        "Overlay node ID: {}",
-                        &overlay.keypair.node_id()[..16]
-                    );
+                    tracing::info!("Overlay node ID: {}", &overlay.keypair.node_id()[..16]);
                 }
 
                 // Publish our overlay endpoint to the PEX address book so peers
@@ -1491,55 +1823,48 @@ impl Node {
 
                 self.overlay = Some(overlay);
 
-                // Clone the event sender so the overlay background task can emit
-                // NodeEvents for overlay peer connect/disconnect.
-                let overlay_event_tx = self.event_tx.clone();
+                let overlay_ingress_tx = self.overlay_tx.clone();
 
-                // Spawn background task to handle overlay events and forward them
-                // as NodeEvents to the RPC WebSocket broadcaster.
+                // Convert authenticated overlay events into virtual P2P peer events.
+                // The node event loop owns protocol state and handles them alongside
+                // TCP peers, preserving a single validation and dispatch path.
                 tokio::spawn(async move {
                     while let Some(event) = events.recv().await {
-                        match event {
-                            OverlayEvent::PeerConnected(ep) => {
-                                let ep_str = ep.to_string();
-                                tracing::info!("Overlay: peer connected {}", ep_str);
-                                if let Some(ref tx) = overlay_event_tx {
-                                    // Parse the endpoint string as a SocketAddr; use a
-                                    // dummy loopback address if the overlay endpoint is
-                                    // not a plain IP:port string.
-                                    let addr: std::net::SocketAddr = ep_str
-                                        .parse()
-                                        .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
-                                    let _ = tx.send(std::sync::Arc::new(NodeEvent::PeerConnected {
-                                        addr,
-                                        user_agent: "overlay".to_string(),
-                                        version: 0,
-                                        height: 0,
-                                    }));
+                        let ingress = match event {
+                            OverlayEvent::PeerConnected(endpoint) => {
+                                tracing::info!(peer = %endpoint.node_id, "Overlay: peer connected");
+                                OverlayIngress::PeerConnected {
+                                    node_id: endpoint.node_id,
                                 }
                             }
-                            OverlayEvent::PeerDisconnected(id) => {
-                                let short_id = &id[..8.min(id.len())];
-                                tracing::info!("Overlay: peer disconnected {}", short_id);
-                                if let Some(ref tx) = overlay_event_tx {
-                                    let addr: std::net::SocketAddr = id
-                                        .parse()
-                                        .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
-                                    let _ = tx.send(std::sync::Arc::new(NodeEvent::PeerDisconnected {
-                                        addr,
-                                    }));
-                                }
+                            OverlayEvent::PeerDisconnected(node_id) => {
+                                tracing::info!(peer = %node_id, "Overlay: peer disconnected");
+                                OverlayIngress::PeerDisconnected { node_id }
                             }
                             OverlayEvent::ExternalAddrDiscovered(addr) => {
                                 tracing::info!("Overlay: external address confirmed {}", addr);
+                                continue;
                             }
-                            OverlayEvent::DataReceived { from_node_id, payload } => {
-                                tracing::debug!(
-                                    "Overlay: {} bytes from {}",
-                                    payload.len(),
-                                    &from_node_id[..8.min(from_node_id.len())]
-                                );
-                            }
+                            OverlayEvent::DataReceived {
+                                from_node_id,
+                                payload,
+                            } => match decode_overlay_message(&payload) {
+                                Ok(msg) => OverlayIngress::Message {
+                                    node_id: from_node_id,
+                                    msg,
+                                },
+                                Err(e) => {
+                                    tracing::debug!(
+                                        "Discarding malformed overlay P2P envelope: {}",
+                                        e
+                                    );
+                                    continue;
+                                }
+                            },
+                        };
+                        if overlay_ingress_tx.send(ingress).await.is_err() {
+                            tracing::debug!("Overlay ingress channel closed");
+                            break;
                         }
                     }
                 });
@@ -1549,5 +1874,36 @@ impl Node {
             }
         }
     }
+}
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlay_message_roundtrip_preserves_command_and_payload() {
+        let message = NetMessage::new("ping", vec![1, 2, 3, 4]);
+        let encoded = encode_overlay_message(&message);
+        let decoded = decode_overlay_message(&encoded).expect("valid overlay envelope");
+        assert_eq!(decoded.command_str(), "ping");
+        assert_eq!(decoded.payload, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn overlay_message_rejects_invalid_envelopes() {
+        assert!(decode_overlay_message(&[0; 15]).is_err());
+
+        let mut malformed = encode_overlay_message(&NetMessage::new("ping", vec![1]));
+        malformed[12..16].copy_from_slice(&(2u32).to_le_bytes());
+        assert!(decode_overlay_message(&malformed).is_err());
+    }
+
+    #[test]
+    fn overlay_peer_address_is_stable_and_private() {
+        let node_id = "11".repeat(32);
+        let first = overlay_peer_addr(&node_id).expect("valid node id");
+        let second = overlay_peer_addr(&node_id).expect("valid node id");
+        assert_eq!(first, second);
+        assert_eq!(first.ip().to_string().split('.').next(), Some("198"));
+    }
 }

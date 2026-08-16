@@ -12,14 +12,17 @@
 ///   --staking-address <ADDR>  Enable PoS staking with this address
 ///   --no-dht                  Disable DHT bootstrap (use DNS seeds only)
 ///   --seed <ADDR>             Additional seed node (repeatable)
+///   --tor-proxy <ADDR>        Tor SOCKS5 proxy address [default: 127.0.0.1:9050]
+///   --tor-only                 Prefer Tor for clearnet outbound peers
+///   --i2p-sam <ADDR>           Enable I2P through this SAM bridge address
 ///   --log-level <LEVEL>       Log level: error|warn|info|debug|trace [default: info]
-
 use std::path::PathBuf;
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 use vtorrent_node::node::{Node, NodeConfig};
+use vtorrent_onion::TransportConfig;
 
 // ─── CLI Arguments ────────────────────────────────────────────────────────────
 
@@ -51,6 +54,18 @@ struct Cli {
     #[arg(long = "seed", value_name = "ADDR")]
     seeds: Vec<String>,
 
+    /// Tor SOCKS5 proxy address. Tor remains optional unless an onion peer is dialed.
+    #[arg(long, value_name = "ADDR")]
+    tor_proxy: Option<String>,
+
+    /// Prefer Tor for outbound clearnet peers when the proxy is available.
+    #[arg(long, default_value_t = false)]
+    tor_only: bool,
+
+    /// Enable I2P using this SAM bridge address (for example, 127.0.0.1:7656).
+    #[arg(long, value_name = "ADDR")]
+    i2p_sam: Option<String>,
+
     /// Log level: error, warn, info, debug, trace.
     #[arg(long, default_value = "info")]
     log_level: String,
@@ -68,8 +83,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new(&cli.log_level))
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&cli.log_level)),
         )
         .init();
 
@@ -90,6 +104,15 @@ async fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&data_dir)?;
 
     let staking_enabled = cli.staking_address.is_some();
+    let mut transport = TransportConfig::default();
+    if let Some(proxy) = &cli.tor_proxy {
+        transport.tor_socks_addr = proxy.clone();
+    }
+    transport.prefer_onion = cli.tor_only;
+    if let Some(sam_addr) = &cli.i2p_sam {
+        transport.i2p_enabled = true;
+        transport.i2p_sam_addr = sam_addr.clone();
+    }
     let config = NodeConfig {
         listen_addr: cli.listen.clone(),
         staking_enabled,
@@ -100,15 +123,28 @@ async fn main() -> anyhow::Result<()> {
         data_dir: data_dir.clone(),
         use_overlay: true,
         testnet: cli.testnet,
+        transport,
     };
 
     let mut node = Node::new(config.clone())?;
 
     tracing::info!("P2P node starting on {}", config.listen_addr);
     tracing::info!("Data dir: {}", data_dir.display());
-    tracing::info!("DHT: {} | Staking: {}",
+    tracing::info!(
+        "DHT: {} | Staking: {}",
         if config.use_dht { "on" } else { "off" },
-        if staking_enabled { cli.staking_address.as_deref().unwrap_or("on") } else { "off" }
+        if staking_enabled {
+            cli.staking_address.as_deref().unwrap_or("on")
+        } else {
+            "off"
+        }
+    );
+    tracing::info!(
+        tor_proxy = %config.transport.tor_socks_addr,
+        tor_preferred = config.transport.prefer_onion,
+        i2p_enabled = config.transport.i2p_enabled,
+        i2p_sam = %config.transport.i2p_sam_addr,
+        "Outbound anonymous transport configured"
     );
 
     tokio::select! {
@@ -129,13 +165,16 @@ async fn main() -> anyhow::Result<()> {
 async fn shutdown_signal() {
     use tokio::signal;
     let ctrl_c = async {
-        signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
     };
     #[cfg(unix)]
     let terminate = async {
         signal::unix::signal(signal::unix::SignalKind::terminate())
             .expect("failed to install SIGTERM handler")
-            .recv().await;
+            .recv()
+            .await;
     };
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
