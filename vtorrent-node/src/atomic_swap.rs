@@ -614,27 +614,9 @@ fn sha256(data: &[u8; 32]) -> [u8; 32] {
 
 /// Decode a Base58Check address to its 20-byte hash160 payload.
 fn address_to_hash160(address: &str) -> [u8; 20] {
-    const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-
-    let mut num: u128 = 0;
-    for c in address.bytes() {
-        if let Some(d) = ALPHABET.iter().position(|&b| b == c) {
-            num = num.saturating_mul(58).saturating_add(d as u128);
-        }
-    }
-
-    let bytes = num.to_be_bytes();
-    // The payload is version(1) + hash160(20) + checksum(4) = 25 bytes
-    // In u128 big-endian, hash160 starts at byte 5 (after leading zeros + version)
-    let trim = bytes.iter().position(|&b| b != 0).unwrap_or(15);
-    let trimmed = &bytes[trim..];
-
-    if trimmed.len() >= 21 {
-        let mut out = [0u8; 20];
-        out.copy_from_slice(&trimmed[1..21]);
-        out
-    } else {
-        [0u8; 20]
+    match vtorrent_core::address::Address::parse(address) {
+        Ok(addr) => addr.hash,
+        Err(_) => [0u8; 20],
     }
 }
 

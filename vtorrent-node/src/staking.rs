@@ -213,63 +213,24 @@ impl StakingEngine {
     /// Convert a vTorrent address to a P2PKH scriptPubKey.
     /// Decodes the Base58Check address and builds the standard script.
     fn address_to_script(&self, address: &str) -> Vec<u8> {
-        // Decode base58check
-        let decoded = self.base58check_decode(address);
-        if decoded.len() < 21 {
+        let Ok(addr) = vtorrent_core::address::Address::parse(address) else {
             // Fallback: OP_RETURN with address bytes
             let mut script = vec![0x6a];
             let addr_bytes = address.as_bytes();
             script.push(addr_bytes.len() as u8);
             script.extend_from_slice(addr_bytes);
             return script;
-        }
+        };
 
         // Standard P2PKH: OP_DUP OP_HASH160 <20-byte-hash> OP_EQUALVERIFY OP_CHECKSIG
-        let hash160 = &decoded[1..21];
         let mut script = Vec::with_capacity(25);
         script.push(0x76); // OP_DUP
         script.push(0xa9); // OP_HASH160
         script.push(0x14); // push 20 bytes
-        script.extend_from_slice(hash160);
+        script.extend_from_slice(&addr.hash);
         script.push(0x88); // OP_EQUALVERIFY
         script.push(0xac); // OP_CHECKSIG
         script
-    }
-
-    /// Decode a Base58Check-encoded address.
-    fn base58check_decode(&self, address: &str) -> Vec<u8> {
-        const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-
-        let mut num: u128 = 0;
-        let mut leading_zeros = 0usize;
-
-        for (i, c) in address.bytes().enumerate() {
-            let digit = ALPHABET.iter().position(|&b| b == c);
-            match digit {
-                Some(d) => {
-                    num = num.saturating_mul(58).saturating_add(d as u128);
-                    if i == 0 && d == 0 {
-                        leading_zeros += 1;
-                    }
-                }
-                None => return Vec::new(),
-            }
-        }
-
-        let mut bytes = num.to_be_bytes().to_vec();
-        // Trim leading zero bytes from the big-endian encoding
-        let trim = bytes.iter().position(|&b| b != 0).unwrap_or(bytes.len());
-        bytes = bytes[trim..].to_vec();
-
-        // Re-add leading zero bytes
-        let mut result = vec![0u8; leading_zeros];
-        result.extend_from_slice(&bytes);
-
-        // Verify checksum (last 4 bytes)
-        if result.len() < 4 {
-            return Vec::new();
-        }
-        result[..result.len() - 4].to_vec()
     }
 }
 
@@ -331,5 +292,15 @@ mod tests {
         let script = engine.address_to_script("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT");
         // May be 25 (P2PKH) or fallback OP_RETURN — just check it's non-empty
         assert!(!script.is_empty());
+    }
+
+    #[test]
+    fn test_address_to_script_p2pkh() {
+        let engine = StakingEngine::new("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string());
+        let script = engine.address_to_script("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT");
+        // Standard P2PKH: OP_DUP OP_HASH160 <20-byte-hash> OP_EQUALVERIFY OP_CHECKSIG
+        assert_eq!(script.len(), 25);
+        assert_eq!(&script[..3], &[0x76, 0xa9, 0x14]);
+        assert_eq!(&script[23..], &[0x88, 0xac]);
     }
 }

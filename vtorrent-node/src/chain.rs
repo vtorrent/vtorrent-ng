@@ -192,29 +192,17 @@ impl Chain {
 
     /// Convert a vTorrent address to a P2PKH scriptPubKey for UTXO matching.
     fn address_to_p2pkh_script(&self, address: &str) -> Vec<u8> {
-        const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-        let mut num: u128 = 0;
-        for c in address.bytes() {
-            if let Some(d) = ALPHABET.iter().position(|&b| b == c) {
-                num = num.saturating_mul(58).saturating_add(d as u128);
-            }
-        }
-        let bytes = num.to_be_bytes();
-        let trim = bytes.iter().position(|&b| b != 0).unwrap_or(15);
-        let trimmed = &bytes[trim..];
-        if trimmed.len() >= 21 {
-            let hash160 = &trimmed[1..21];
-            let mut script = Vec::with_capacity(25);
-            script.push(0x76); // OP_DUP
-            script.push(0xa9); // OP_HASH160
-            script.push(0x14); // push 20 bytes
-            script.extend_from_slice(hash160);
-            script.push(0x88); // OP_EQUALVERIFY
-            script.push(0xac); // OP_CHECKSIG
-            script
-        } else {
-            Vec::new()
-        }
+        let Ok(addr) = vtorrent_core::address::Address::parse(address) else {
+            return Vec::new();
+        };
+        let mut script = Vec::with_capacity(25);
+        script.push(0x76); // OP_DUP
+        script.push(0xa9); // OP_HASH160
+        script.push(0x14); // push 20 bytes
+        script.extend_from_slice(&addr.hash);
+        script.push(0x88); // OP_EQUALVERIFY
+        script.push(0xac); // OP_CHECKSIG
+        script
     }
 
     /// Get the full UTXO set.
@@ -894,5 +882,15 @@ mod tests {
         assert!(matches!(result, BlockAcceptance::Reorg { .. }));
         assert_eq!(chain.best_height(), 2);
         assert_ne!(chain.best_hash(), Some(tip_a));
+    }
+
+    #[test]
+    fn test_address_to_p2pkh_script() {
+        let chain = Chain::new().expect("Chain init failed");
+        let script = chain.address_to_p2pkh_script("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT");
+        // Standard P2PKH: OP_DUP OP_HASH160 <20-byte-hash> OP_EQUALVERIFY OP_CHECKSIG
+        assert_eq!(script.len(), 25);
+        assert_eq!(&script[..3], &[0x76, 0xa9, 0x14]);
+        assert_eq!(&script[23..], &[0x88, 0xac]);
     }
 }
