@@ -8,6 +8,8 @@ use vtorrent_node::mempool::Mempool;
 use vtorrent_node::staking::StakingEngine;
 use vtorrent_spv::SpvChain;
 use vtorrent_torrent::session::SessionManager;
+use vtorrent_wallet::encryption::EncryptedWallet;
+use vtorrent_wallet::otp::TotpSecret;
 
 /// Snapshot of a connected peer's metadata.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -60,9 +62,16 @@ pub struct AppState {
     pub events: EventBroadcaster,
     /// Hot wallet WIF private key (in-memory only, never persisted to disk).
     ///
-    /// Set via `POST /api/v1/wallet/import` after the wallet is unlocked.
-    /// Cleared on wallet lock or daemon restart.
+    /// Populated by `POST /api/v1/wallet/unlock` after the passphrase (and TOTP,
+    /// if enabled) have been verified against `wallet_encrypted`. Cleared on
+    /// wallet lock or daemon restart.
     pub wallet_wif: Arc<RwLock<Option<String>>>,
+    /// The imported hot-wallet WIF encrypted with the wallet passphrase
+    /// (Argon2id + ChaCha20-Poly1305). Set on import; used to verify the
+    /// passphrase on unlock and send. Never persisted to disk.
+    pub wallet_encrypted: Arc<RwLock<Option<EncryptedWallet>>>,
+    /// TOTP secret for the hot wallet's 2FA (optional, set on import).
+    pub wallet_totp_secret: Arc<RwLock<Option<TotpSecret>>>,
     /// Derived change address for the hot wallet (from `wallet_wif`).
     pub wallet_change_address: Arc<RwLock<Option<String>>>,
     /// Best block height reported by any connected peer (used for sync % calculation).
@@ -103,6 +112,8 @@ impl AppState {
             blocks_staked: Arc::new(RwLock::new(0)),
             events: EventBroadcaster::new(1024),
             wallet_wif: Arc::new(RwLock::new(None)),
+            wallet_encrypted: Arc::new(RwLock::new(None)),
+            wallet_totp_secret: Arc::new(RwLock::new(None)),
             wallet_change_address: Arc::new(RwLock::new(None)),
             best_peer_height: Arc::new(RwLock::new(0)),
             tx_submit: None,
@@ -137,6 +148,8 @@ impl AppState {
             blocks_staked: Arc::new(RwLock::new(0)),
             events: EventBroadcaster::new(1024),
             wallet_wif: Arc::new(RwLock::new(None)),
+            wallet_encrypted: Arc::new(RwLock::new(None)),
+            wallet_totp_secret: Arc::new(RwLock::new(None)),
             wallet_change_address: Arc::new(RwLock::new(None)),
             best_peer_height: Arc::new(RwLock::new(0)),
             tx_submit: None,

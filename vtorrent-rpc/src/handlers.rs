@@ -370,11 +370,41 @@ pub async fn get_addresses(
     Ok(Json(AddressesResponse { addresses }))
 }
 
+/// Verify the hot wallet passphrase (and TOTP code if 2FA is enabled) and
+/// return the decrypted WIF. Fails if no wallet has been imported or the
+/// credentials are incorrect.
+async fn verify_wallet_auth(
+    state: &AppState,
+    passphrase: &str,
+    otp_code: Option<&str>,
+) -> RpcResult<String> {
+    let encrypted = state.wallet_encrypted.read().await.clone().ok_or_else(|| {
+        RpcError::BadRequest("No wallet imported. Call POST /api/v1/wallet/import first.".into())
+    })?;
+
+    let plaintext = vtorrent_wallet::encryption::decrypt_wallet(&encrypted, passphrase)
+        .map_err(|_| RpcError::Unauthorized("Incorrect passphrase".into()))?;
+    let wif = String::from_utf8(plaintext)
+        .map_err(|_| RpcError::Internal("Wallet decryption produced invalid data".into()))?;
+
+    if let Some(secret) = state.wallet_totp_secret.read().await.as_ref() {
+        let code = otp_code
+            .filter(|c| !c.is_empty())
+            .ok_or_else(|| RpcError::Unauthorized("TOTP code required".into()))?;
+        secret
+            .verify_or_error(code)
+            .map_err(|_| RpcError::Unauthorized("Invalid TOTP code".into()))?;
+    }
+
+    Ok(wif)
+}
+
 /// POST /api/v1/wallet/import
 ///
-/// Imports a WIF-encoded private key into the hot wallet.  The key is stored
-/// in memory only (never written to disk) and is cleared on wallet lock or
-/// daemon restart.  The wallet must be unlocked before calling this endpoint.
+/// Imports a WIF-encoded private key into the hot wallet.  The key is
+/// encrypted with the provided passphrase (Argon2id + ChaCha20-Poly1305) and
+/// kept in memory only — it is never written to disk.  The wallet starts
+/// locked; call `/api/v1/wallet/unlock` with the same passphrase to use it.
 pub async fn import_wallet(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ImportWalletRequest>,
@@ -383,11 +413,11 @@ pub async fn import_wallet(
     use vtorrent_core::keys::PrivateKey;
     use vtorrent_wallet::tx_builder::pubkey_to_vtorrent_address;
 
-    if !state.is_wallet_unlocked().await {
-        return Err(RpcError::WalletLocked);
-    }
     if req.wif.is_empty() {
         return Err(RpcError::BadRequest("WIF private key is required".into()));
+    }
+    if req.passphrase.is_empty() {
+        return Err(RpcError::BadRequest("Passphrase is required".into()));
     }
 
     // Validate the WIF key and derive the address.
@@ -400,9 +430,22 @@ pub async fn import_wallet(
     let address = pubkey_to_vtorrent_address(&pubkey.serialize())
         .map_err(|e| RpcError::Internal(e.to_string()))?;
 
-    // Store the WIF and derived address in AppState.
-    *state.wallet_wif.write().await = Some(req.wif);
+    // Encrypt the WIF with the passphrase so unlock/send can verify it.
+    let encrypted =
+        vtorrent_wallet::encryption::encrypt_wallet(req.wif.as_bytes(), &req.passphrase)
+            .map_err(|e| RpcError::Internal(format!("Wallet encryption failed: {}", e)))?;
+
+    *state.wallet_encrypted.write().await = Some(encrypted);
     *state.wallet_change_address.write().await = Some(address.clone());
+    *state.wallet_totp_secret.write().await = req
+        .otp_secret
+        .as_deref()
+        .map(vtorrent_wallet::otp::TotpSecret::from_base32)
+        .transpose()
+        .map_err(|e| RpcError::BadRequest(format!("Invalid TOTP secret: {}", e)))?;
+    // The wallet starts locked; the WIF is only decrypted into memory on unlock.
+    *state.wallet_wif.write().await = None;
+    *state.wallet_unlock_expiry.write().await = None;
 
     tracing::info!("Hot wallet imported: {}", address);
 
@@ -438,12 +481,8 @@ pub async fn send_vtr(
         return Err(RpcError::BadRequest("Recipient address is required".into()));
     }
 
-    // Retrieve the hot wallet WIF key.
-    let wif = state.wallet_wif.read().await.clone().ok_or_else(|| {
-        RpcError::BadRequest(
-            "No wallet key imported. Call POST /api/v1/wallet/import first.".into(),
-        )
-    })?;
+    // Re-verify the passphrase (and TOTP if 2FA is enabled) before signing.
+    let wif = verify_wallet_auth(&state, &req.passphrase, req.otp_code.as_deref()).await?;
 
     // Retrieve the change address.
     let change_address = state
@@ -514,6 +553,11 @@ pub async fn unlock_wallet(
     if req.passphrase.is_empty() {
         return Err(RpcError::BadRequest("Passphrase is required".into()));
     }
+
+    // Verify the passphrase (and TOTP if 2FA is enabled) and decrypt the WIF
+    // into memory. The wallet stays locked unless the credentials are correct.
+    let wif = verify_wallet_auth(&state, &req.passphrase, req.otp_code.as_deref()).await?;
+    *state.wallet_wif.write().await = Some(wif);
 
     let expires_at = if req.timeout_secs == 0 {
         Some(0u64)

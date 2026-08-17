@@ -94,9 +94,32 @@ async fn integration_mempool_empty_on_fresh_node() {
 // ─── Wallet ───────────────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn integration_wallet_unlock_succeeds_with_any_passphrase() {
+async fn integration_wallet_import_unlock_flow() {
+    let router = build_router(AppState::new());
+    // Import with a passphrase (wallet starts locked).
+    let (status, _) = post_json(
+        router.clone(),
+        "/api/v1/wallet/import",
+        serde_json::json!({
+            "wif": "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS",
+            "passphrase": "hunter2"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "wallet import should succeed");
+
+    // Wrong passphrase is rejected.
+    let (status, _) = post_json(
+        router.clone(),
+        "/api/v1/wallet/unlock",
+        serde_json::json!({ "passphrase": "wrong", "timeout_secs": 60 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Correct passphrase unlocks.
     let (status, body) = post_json(
-        app(),
+        router,
         "/api/v1/wallet/unlock",
         serde_json::json!({ "passphrase": "hunter2", "timeout_secs": 60 }),
     )
@@ -150,7 +173,17 @@ async fn integration_staking_start_stop_roundtrip() {
     // unlock and start staking through the *same* router instance.
     let router = build_router(AppState::new());
 
-    // Unlock wallet first — start_staking requires an unlocked wallet.
+    // Import a wallet, then unlock it — start_staking requires an unlocked wallet.
+    let (status, _) = post_json(
+        router.clone(),
+        "/api/v1/wallet/import",
+        serde_json::json!({
+            "wif": "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS",
+            "passphrase": "test"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "wallet import should succeed");
     let (status, _) = post_json(
         router.clone(),
         "/api/v1/wallet/unlock",
@@ -296,15 +329,25 @@ async fn integration_dex_orders_empty_on_fresh_node() {
 #[tokio::test]
 async fn integration_dex_place_and_cancel_order() {
     let state = AppState::new();
-    // Unlock wallet first — place_dex_order requires an unlocked wallet.
+    // Import a wallet, then unlock it — place_dex_order requires an unlocked wallet.
     {
+        let (status, _) = post_json(
+            build_router(state.clone()),
+            "/api/v1/wallet/import",
+            serde_json::json!({
+                "wif": "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS",
+                "passphrase": "test"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "wallet import should succeed");
         let (status, _) = post_json(
             build_router(state.clone()),
             "/api/v1/wallet/unlock",
             serde_json::json!({ "passphrase": "test", "timeout_secs": 300 }),
         )
         .await;
-        assert_eq!(status, StatusCode::OK);
+        assert_eq!(status, StatusCode::OK, "wallet unlock should succeed");
     }
     let router = build_router(state);
 

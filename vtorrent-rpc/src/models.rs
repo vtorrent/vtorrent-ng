@@ -322,6 +322,12 @@ pub struct ClaimSubmitResponse {
 pub struct ImportWalletRequest {
     /// WIF-encoded private key.
     pub wif: String,
+    /// Passphrase used to encrypt the imported key. Required to unlock the
+    /// wallet and to sign transactions afterwards.
+    pub passphrase: String,
+    /// Optional Base32-encoded TOTP secret. When set, unlock and send require
+    /// a valid TOTP code in addition to the passphrase.
+    pub otp_secret: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

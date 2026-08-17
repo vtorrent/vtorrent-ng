@@ -282,6 +282,28 @@ mod tests {
     #[tokio::test]
     async fn test_wallet_lock_unlock() {
         let app = build_router(AppState::new());
+        // Import a wallet with a passphrase (wallet starts locked).
+        let (status, _) = post_json(
+            app.clone(),
+            "/api/v1/wallet/import",
+            serde_json::json!({
+                "wif": "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS",
+                "passphrase": "testpassphrase"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // Unlock with the wrong passphrase is rejected.
+        let (status, _) = post_json(
+            app.clone(),
+            "/api/v1/wallet/unlock",
+            serde_json::json!({ "passphrase": "wrong", "timeout_secs": 300 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // Unlock with the correct passphrase succeeds.
         let (status, body) = post_json(
             app,
             "/api/v1/wallet/unlock",
@@ -306,6 +328,84 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_send_rejects_wrong_passphrase() {
+        let app = build_router(AppState::new());
+        let (status, _) = post_json(
+            app.clone(),
+            "/api/v1/wallet/import",
+            serde_json::json!({
+                "wif": "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS",
+                "passphrase": "correct-passphrase"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = post_json(
+            app.clone(),
+            "/api/v1/wallet/unlock",
+            serde_json::json!({ "passphrase": "correct-passphrase", "timeout_secs": 300 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // Sending with the wrong passphrase is rejected even though unlocked.
+        let (status, _) = post_json(
+            app,
+            "/api/v1/wallet/send",
+            serde_json::json!({
+                "to_address": "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT",
+                "amount_satoshis": 1000000,
+                "passphrase": "wrong-passphrase"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_unlock_requires_totp_when_enabled() {
+        let app = build_router(AppState::new());
+        let (status, _) = post_json(
+            app.clone(),
+            "/api/v1/wallet/import",
+            serde_json::json!({
+                "wif": "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS",
+                "passphrase": "testpassphrase",
+                "otp_secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // Unlock without a TOTP code is rejected.
+        let (status, _) = post_json(
+            app.clone(),
+            "/api/v1/wallet/unlock",
+            serde_json::json!({ "passphrase": "testpassphrase", "timeout_secs": 300 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // Unlock with the correct passphrase and a valid TOTP code succeeds.
+        let secret =
+            vtorrent_wallet::otp::TotpSecret::from_base32("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
+                .unwrap();
+        let code = secret.current_code().unwrap();
+        let (status, body) = post_json(
+            app,
+            "/api/v1/wallet/unlock",
+            serde_json::json!({
+                "passphrase": "testpassphrase",
+                "otp_code": code,
+                "timeout_secs": 300
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["success"], true);
     }
 
     #[tokio::test]
@@ -423,7 +523,28 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
-        // Correct key accepted.
+        // Correct key accepted: import then unlock.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/wallet/import")
+                    .header("content-type", "application/json")
+                    .header("x-api-key", "s3cret")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "wif": "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS",
+                            "passphrase": "test"
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
         let response = app
             .oneshot(
                 Request::builder()
@@ -447,6 +568,16 @@ mod tests {
     #[tokio::test]
     async fn test_api_key_disabled_by_default() {
         let app = build_router(AppState::new());
+        let (status, _) = post_json(
+            app.clone(),
+            "/api/v1/wallet/import",
+            serde_json::json!({
+                "wif": "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS",
+                "passphrase": "test"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
         let (status, body) = post_json(
             app,
             "/api/v1/wallet/unlock",
