@@ -39,6 +39,9 @@ struct BlockJournal {
     height: u32,
     changes: Vec<UtxoChange>,
     claimed_addresses: Vec<String>,
+    /// Net value minted by this block (outputs created minus UTXO-set inputs
+    /// spent). Used to track total supply and enforce the MAX_SUPPLY cap.
+    supply_delta: u64,
 }
 
 /// The result of processing a new block.
@@ -91,6 +94,9 @@ pub struct Chain {
     parent_map: HashMap<[u8; 32], [u8; 32]>,
     /// Height of every known block (main chain + forks).
     block_heights: HashMap<[u8; 32], u32>,
+    /// Total coin supply on the main chain (satoshis), tracked incrementally
+    /// as blocks are applied and rolled back. Bounded by `MAX_SUPPLY`.
+    total_supply: u64,
 }
 
 impl Chain {
@@ -110,6 +116,7 @@ impl Chain {
             cumulative_work: HashMap::new(),
             parent_map: HashMap::new(),
             block_heights: HashMap::new(),
+            total_supply: 0,
         };
 
         chain.blocks.insert(genesis_hash, genesis.clone());
@@ -137,6 +144,11 @@ impl Chain {
     /// Get the best block hash.
     pub fn best_hash(&self) -> Option<[u8; 32]> {
         self.height_index.last().copied()
+    }
+
+    /// Get the total coin supply on the main chain (satoshis).
+    pub fn total_supply(&self) -> u64 {
+        self.total_supply
     }
 
     /// Get a block by hash.
@@ -530,6 +542,9 @@ impl Chain {
             self.claimed_addresses.remove(addr);
         }
 
+        // Restore total supply.
+        self.total_supply = self.total_supply.saturating_sub(journal.supply_delta);
+
         self.remove_block_transactions(journal.block_hash);
 
         // Remove from height index
@@ -570,11 +585,25 @@ impl Chain {
             height,
             changes: Vec::new(),
             claimed_addresses: Vec::new(),
+            supply_delta: 0,
         };
 
         for tx in &block.transactions {
             self.apply_transaction_journaled(tx, height, block.header.timestamp, &mut journal)?;
         }
+
+        // Enforce the maximum supply cap: a block may not mint value that would
+        // push the total coin supply past MAX_SUPPLY.
+        let new_supply = self.total_supply.saturating_add(journal.supply_delta);
+        if new_supply > crate::consensus::MAX_SUPPLY {
+            return Err(NodeError::InvalidBlock(format!(
+                "Block would exceed maximum supply: {} + {} > {}",
+                self.total_supply,
+                journal.supply_delta,
+                crate::consensus::MAX_SUPPLY
+            )));
+        }
+        self.total_supply = new_supply;
 
         Ok(journal)
     }
@@ -711,6 +740,15 @@ impl Chain {
             }
         }
 
+        // Net supply change: value created by this transaction (outputs minus
+        // UTXO-set inputs spent). Standard transactions are value-conserving
+        // (checked above), so only coinbase/coinstake rewards and legacy
+        // claims contribute. Fees are captured by the block's reward output.
+        let total_output = tx.total_output();
+        journal.supply_delta = journal
+            .supply_delta
+            .saturating_add(total_output.saturating_sub(total_input));
+
         Ok(())
     }
 
@@ -769,6 +807,50 @@ mod tests {
         let chain = Chain::new().expect("Chain init failed");
         assert_eq!(chain.best_height(), 0);
         assert!(chain.best_hash().is_some());
+        // Genesis embeds the legacy snapshot (~11.59M VTR).
+        assert_eq!(
+            chain.total_supply(),
+            crate::genesis::LEGACY_TOTAL_SUPPLY_SATOSHIS
+        );
+    }
+
+    #[test]
+    fn test_total_supply_tracks_minted_value() {
+        let mut chain = Chain::new().expect("Chain init failed");
+        let genesis_hash = chain.best_hash().unwrap();
+        let base = chain.total_supply();
+
+        // A 1M-satoshi coinbase block mints value into the supply.
+        let block = make_block(genesis_hash, 1);
+        chain.add_block(block).unwrap();
+        assert_eq!(chain.total_supply(), base + 1_000_000);
+
+        // Rolling the block back restores the supply.
+        chain.rollback_one_block().unwrap();
+        assert_eq!(chain.total_supply(), base);
+    }
+
+    #[test]
+    fn test_block_exceeding_max_supply_rejected() {
+        let mut chain = Chain::new().expect("Chain init failed");
+        let genesis_hash = chain.best_hash().unwrap();
+
+        // A block minting 10M VTR would push total supply over the 20M cap
+        // (genesis already embeds ~11.59M VTR).
+        let mut block = make_block(genesis_hash, 1);
+        block.transactions[0].outputs[0].value = 10_000_000 * crate::consensus::COIN;
+        block.header.merkle_root = block.compute_merkle_root();
+        let result = chain.add_block(block);
+        assert!(
+            result.is_err(),
+            "block exceeding MAX_SUPPLY must be rejected"
+        );
+        assert_eq!(chain.best_height(), 0);
+
+        // A block minting a small amount is still accepted.
+        let block = make_block(genesis_hash, 1);
+        chain.add_block(block).unwrap();
+        assert_eq!(chain.best_height(), 1);
     }
 
     #[test]
