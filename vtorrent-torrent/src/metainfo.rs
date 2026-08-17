@@ -71,14 +71,18 @@ impl Metainfo {
             .get(&info_key)
             .ok_or_else(|| TorrentError::InvalidMetainfo("Missing 'info' key".into()))?;
 
-        // Compute info hash by re-encoding the info dict
-        let info_bytes = serde_bencode::to_bytes(info_val)
-            .map_err(|e| TorrentError::BencodeError(e.to_string()))?;
-        let mut hasher = Sha1::new();
-        hasher.update(&info_bytes);
-        let hash_result = hasher.finalize();
-        let mut info_hash = [0u8; 20];
-        info_hash.copy_from_slice(&hash_result);
+        // Compute info hash from the exact bytes of the info dict as they
+        // appear in the file (BEP-3). Re-encoding the parsed value would
+        // normalize non-canonical encodings and produce a wrong hash.
+        let info_hash = {
+            let span = find_info_span(data)?;
+            let mut hasher = Sha1::new();
+            hasher.update(&data[span]);
+            let hash_result = hasher.finalize();
+            let mut arr = [0u8; 20];
+            arr.copy_from_slice(&hash_result);
+            arr
+        };
 
         // Parse the info dict
         let info_dict = match info_val {
@@ -369,6 +373,111 @@ fn parse_announce_list(dict: &BencodeDict) -> Vec<Vec<String>> {
     result
 }
 
+/// Locate the raw byte span of the top-level `info` dictionary value.
+///
+/// Walks the top-level dict of a bencoded metainfo file and returns the
+/// byte range of the value for the `info` key, so the info hash can be
+/// computed over the exact bytes as they appear in the file (BEP-3).
+fn find_info_span(data: &[u8]) -> Result<std::ops::Range<usize>> {
+    let mut pos = 0usize;
+    if data.get(pos) != Some(&b'd') {
+        return Err(TorrentError::InvalidMetainfo("Root is not a dict".into()));
+    }
+    pos += 1;
+    loop {
+        match data.get(pos) {
+            Some(b'e') => break,
+            None => {
+                return Err(TorrentError::InvalidMetainfo(
+                    "Truncated top-level dict".into(),
+                ))
+            }
+            Some(_) => {
+                let key_start = pos;
+                skip_string(data, &mut pos)?;
+                let val_start = pos;
+                skip_value(data, &mut pos)?;
+                let key = &data[key_start..val_start];
+                let colon = key
+                    .iter()
+                    .position(|&b| b == b':')
+                    .ok_or_else(|| TorrentError::InvalidMetainfo("Invalid dict key".into()))?;
+                if &key[colon + 1..] == b"info" {
+                    return Ok(val_start..pos);
+                }
+            }
+        }
+    }
+    Err(TorrentError::InvalidMetainfo("Missing 'info' key".into()))
+}
+
+/// Skip a length-prefixed bencode string, advancing `pos` past it.
+fn skip_string(data: &[u8], pos: &mut usize) -> Result<()> {
+    let colon = data[*pos..]
+        .iter()
+        .position(|&b| b == b':')
+        .ok_or_else(|| TorrentError::InvalidMetainfo("Unterminated string length".into()))?;
+    let len_str = std::str::from_utf8(&data[*pos..*pos + colon])
+        .map_err(|_| TorrentError::InvalidMetainfo("Invalid string length".into()))?;
+    let len: usize = len_str
+        .parse()
+        .map_err(|_| TorrentError::InvalidMetainfo("Invalid string length".into()))?;
+    *pos += colon + 1;
+    let end = (*pos)
+        .checked_add(len)
+        .ok_or_else(|| TorrentError::InvalidMetainfo("String length overflow".into()))?;
+    if end > data.len() {
+        return Err(TorrentError::InvalidMetainfo(
+            "String exceeds input length".into(),
+        ));
+    }
+    *pos = end;
+    Ok(())
+}
+
+/// Skip any bencode value (int, string, list, or dict), advancing `pos`.
+fn skip_value(data: &[u8], pos: &mut usize) -> Result<()> {
+    let Some(&c) = data.get(*pos) else {
+        return Err(TorrentError::InvalidMetainfo("Truncated value".into()));
+    };
+    match c {
+        b'i' => {
+            let rel = data[*pos..]
+                .iter()
+                .position(|&b| b == b'e')
+                .ok_or_else(|| TorrentError::InvalidMetainfo("Unterminated integer".into()))?;
+            *pos += rel + 1;
+            Ok(())
+        }
+        b'l' | b'd' => {
+            *pos += 1;
+            loop {
+                match data.get(*pos) {
+                    Some(b'e') => {
+                        *pos += 1;
+                        return Ok(());
+                    }
+                    None => {
+                        return Err(TorrentError::InvalidMetainfo(
+                            "Truncated list or dict".into(),
+                        ))
+                    }
+                    Some(_) => {
+                        if c == b'd' {
+                            skip_string(data, pos)?;
+                        }
+                        skip_value(data, pos)?;
+                    }
+                }
+            }
+        }
+        b'0'..=b'9' => skip_string(data, pos),
+        _ => Err(TorrentError::InvalidMetainfo(
+            "Invalid bencode value".into(),
+        )),
+    }
+}
+
 /// Decode a Base32-encoded string (RFC 4648, no padding).
 fn base32_decode(s: &str) -> Result<Vec<u8>> {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -446,5 +555,49 @@ mod tests {
         };
         let encoded = meta.info_hash_urlencoded();
         assert!(encoded.starts_with("%00%FF"));
+    }
+
+    #[test]
+    fn test_info_hash_hashes_raw_bytes() {
+        // The info dict uses a non-canonical integer ("i01e"). BEP-3 requires
+        // hashing the exact bytes as they appear in the file; re-encoding the
+        // parsed value would normalize it to "i1e" and produce a wrong hash.
+        let torrent: &[u8] =
+            b"d4:infod6:lengthi01e4:name8:test.iso12:piece lengthi32768e6:pieces20:aaaaaaaaaaaaaaaaaaaaee";
+        let meta = Metainfo::from_bytes(torrent).unwrap();
+        assert_eq!(
+            meta.info_hash_hex(),
+            "8da789bdef65cc39dd28008f1e2017e5124ee9db"
+        );
+    }
+
+    #[test]
+    fn test_info_hash_multi_file() {
+        let torrent: &[u8] = b"d8:announce26:http://tracker.example.com4:infod5:filesld6:lengthi40000e4:pathl3:dir9:file1.txteed6:lengthi60000e4:pathl3:dir9:file2.txteee6:lengthi100000e4:name8:test.dir12:piece lengthi32768e6:pieces20:aaaaaaaaaaaaaaaaaaaaee";
+        let meta = Metainfo::from_bytes(torrent).unwrap();
+        assert_eq!(meta.name, "test.dir");
+        assert_eq!(meta.total_size, 100_000);
+        assert_eq!(meta.files.len(), 2);
+        assert_eq!(meta.files[0].path, vec!["dir", "file1.txt"]);
+        assert_eq!(meta.files[1].path, vec!["dir", "file2.txt"]);
+        assert_eq!(
+            meta.info_hash_hex(),
+            "b9c14f71a1ac4237b202bea4f459e940572c5844"
+        );
+    }
+
+    #[test]
+    fn test_info_hash_single_file() {
+        let torrent: &[u8] =
+            b"d8:announce26:http://tracker.example.com4:infod6:lengthi100000e4:name8:test.iso12:piece lengthi32768e6:pieces20:aaaaaaaaaaaaaaaaaaaaee";
+        let meta = Metainfo::from_bytes(torrent).unwrap();
+        assert_eq!(meta.name, "test.iso");
+        assert_eq!(meta.total_size, 100_000);
+        assert_eq!(meta.piece_length, 32_768);
+        assert_eq!(meta.piece_count, 4);
+        assert_eq!(
+            meta.info_hash_hex(),
+            "f3b9571348b58f6948b753f309ab07b3994ab5cf"
+        );
     }
 }
