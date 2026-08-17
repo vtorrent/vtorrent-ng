@@ -23,7 +23,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 use tokio::time::{sleep, timeout};
 
-use crate::crypto::{ephemeral_dh, NodeKeypair, SharedKey};
+use crate::crypto::{EphemeralKeypair, NodeKeypair, SharedKey};
 use crate::endpoint::Endpoint;
 use crate::error::{OverlayError, Result};
 
@@ -44,6 +44,7 @@ pub struct PeerSession {
     pub remote_addr: SocketAddr,
     pub shared_key: SharedKey,
     pub remote_pubkey: [u8; 32],
+    pub local_pubkey: [u8; 32],
     pub send_counter: u32,
 }
 
@@ -96,14 +97,17 @@ impl HolePuncher {
 
     /// Punch to a specific address.
     async fn punch_addr(&self, remote: &Endpoint, addr: SocketAddr) -> Result<()> {
-        // Generate ephemeral DH keypair for this session
+        // Decode the remote node's long-term static public key.
         let remote_pubkey_bytes =
             hex::decode(&remote.node_id).map_err(|e| OverlayError::Crypto(e.to_string()))?;
         if remote_pubkey_bytes.len() != 32 {
             return Err(OverlayError::Crypto("invalid remote node ID length".into()));
         }
         let remote_pubkey: [u8; 32] = remote_pubkey_bytes.try_into().unwrap();
-        let (eph_pub, session_key_bytes) = ephemeral_dh(&remote_pubkey);
+
+        // Generate an ephemeral keypair for this session.
+        let eph = EphemeralKeypair::generate();
+        let eph_pub = eph.public_bytes();
 
         // Build PUNCH packet: [TAG_PUNCH | local_node_id(32) | eph_pub(32)]
         let local_pub = self.local_keypair.public.as_bytes();
@@ -124,13 +128,14 @@ impl HolePuncher {
             }
         });
 
-        // Wait for PUNCH_ACK
+        // Wait for PUNCH_ACK carrying the responder's ephemeral public key.
         let mut buf = [0u8; 512];
         let result = timeout(PUNCH_TIMEOUT, async {
             loop {
                 let (n, from) = self.socket.recv_from(&mut buf).await?;
-                if from == addr && n >= 1 && buf[0] == TAG_PUNCH_ACK {
-                    return Ok::<(), std::io::Error>(());
+                if from == addr && n >= 33 && buf[0] == TAG_PUNCH_ACK {
+                    let responder_eph: [u8; 32] = buf[1..33].try_into().unwrap();
+                    return Ok::<[u8; 32], std::io::Error>(responder_eph);
                 }
             }
         })
@@ -139,14 +144,17 @@ impl HolePuncher {
         send_task.abort();
 
         match result {
-            Ok(Ok(())) => {
-                // Store the session
+            Ok(Ok(responder_eph)) => {
+                // Derive the session key from our ephemeral secret and the
+                // responder's ephemeral public key.
+                let session_key_bytes = eph.shared_key(&responder_eph);
                 let shared_key = SharedKey::from_raw(session_key_bytes);
                 let session = PeerSession {
                     remote_endpoint: remote.clone(),
                     remote_addr: addr,
                     shared_key,
                     remote_pubkey,
+                    local_pubkey: *local_pub,
                     send_counter: 0,
                 };
                 self.sessions
@@ -170,8 +178,11 @@ impl HolePuncher {
         let remote_pubkey: [u8; 32] = data[1..33].try_into().unwrap();
         let remote_eph_pub: [u8; 32] = data[33..65].try_into().unwrap();
 
-        // Derive session key from our static secret + their ephemeral public key
-        let (our_eph_pub, session_key_bytes) = ephemeral_dh(&remote_eph_pub);
+        // Generate our own ephemeral keypair and derive the session key from
+        // our ephemeral secret + the initiator's ephemeral public key.
+        let eph = EphemeralKeypair::generate();
+        let our_eph_pub = eph.public_bytes();
+        let session_key_bytes = eph.shared_key(&remote_eph_pub);
 
         // Send PUNCH_ACK: [TAG_PUNCH_ACK | our_eph_pub(32)]
         let mut ack = Vec::with_capacity(33);
@@ -189,6 +200,7 @@ impl HolePuncher {
             remote_addr: from,
             shared_key,
             remote_pubkey,
+            local_pubkey: *self.local_keypair.public.as_bytes(),
             send_counter: 0,
         };
         self.sessions.write().await.insert(node_id, session);
@@ -208,7 +220,7 @@ impl HolePuncher {
         let ct =
             session
                 .shared_key
-                .encrypt(session.send_counter, &session.remote_pubkey, payload)?;
+                .encrypt(session.send_counter, &session.local_pubkey, payload)?;
 
         // Include our static node ID so the receiver can select the correct
         // established session before authenticating and decrypting the packet.

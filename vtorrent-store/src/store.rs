@@ -396,8 +396,8 @@ mod tests {
                 prev_block_hash: prev_hash,
                 merkle_root: merkle,
                 timestamp: 1_700_000_000 + height,
-                bits: 0x1d00ffff,
-                nonce: height,
+                bits: vtorrent_node::genesis::GENESIS_BITS,
+                nonce: height, // PoW-style: non-zero nonce for a coinbase block
                 stake_modifier: 0,
             },
             transactions: vec![coinbase],

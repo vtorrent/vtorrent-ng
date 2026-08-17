@@ -18,10 +18,7 @@ use vtorrent_onion::TransportConfig;
 use vtorrent_overlay::{Overlay, OverlayConfig, OverlayEvent};
 
 use vtorrent_p2p::{
-    compact::{
-        derive_siphash_keys, short_txid, CompactBlockDecoder,
-        CompactBlockPeerState,
-    },
+    compact::{derive_siphash_keys, short_txid, CompactBlockDecoder, CompactBlockPeerState},
     dht::{discover_peers_via_doh, discover_peers_via_github, DhtBootstrap},
     message::{
         AddrMsg, BlockTxnMsg, CmpctBlockMsg, FeeFilterMsg, GetBlockTxnMsg, GetBlocksMsg,

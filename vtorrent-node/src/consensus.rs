@@ -51,18 +51,74 @@ pub fn compute_pos_reward(stake_amount: u64, coin_age_seconds: u64) -> u64 {
 }
 
 /// Validate a block against the consensus rules.
-pub fn validate_block(block: &Block, _prev_height: u32, prev_timestamp: u32) -> Result<()> {
+pub fn validate_block(
+    block: &Block,
+    prev_height: u32,
+    prev_timestamp: u32,
+    prev_bits: u32,
+) -> Result<()> {
     // Check block is not empty
     if block.transactions.is_empty() {
         return Err(NodeError::InvalidBlock("Block has no transactions".into()));
     }
 
-    // Check first transaction is coinbase or coinstake
+    // Check block size is within the consensus limit
+    let block_size: usize = block
+        .transactions
+        .iter()
+        .map(|tx| tx.serialized_size())
+        .sum();
+    if block_size > MAX_BLOCK_SIZE {
+        return Err(NodeError::InvalidBlock(format!(
+            "Block size {} exceeds maximum {}",
+            block_size, MAX_BLOCK_SIZE
+        )));
+    }
+
+    // The block height is encoded in the first transaction's lock_time and
+    // must be exactly one more than the parent's height.
+    if block.height() != prev_height + 1 {
+        return Err(NodeError::InvalidBlock(format!(
+            "Block height {} does not follow parent height {}",
+            block.height(),
+            prev_height
+        )));
+    }
+
+    // Difficulty must never become easier than the parent block's difficulty.
+    // (This chain uses a fixed, non-retargeting difficulty; a block that lowers
+    // the target would let anyone mine cheap blocks.)
+    if block.header.bits != prev_bits {
+        return Err(NodeError::InvalidBlock(format!(
+            "Block difficulty {} does not match parent difficulty {}",
+            block.header.bits, prev_bits
+        )));
+    }
+
+    // PoS blocks must use the consensus stake kernel: nonce 0 and the first
+    // transaction must be a coinstake. PoW blocks must have a non-zero nonce.
     let first_tx = &block.transactions[0];
-    if first_tx.tx_type != TxType::Coinbase && first_tx.tx_type != TxType::Coinstake {
+    if block.header.is_pos() {
+        if first_tx.tx_type != TxType::Coinstake {
+            return Err(NodeError::InvalidBlock(
+                "PoS block must begin with a coinstake transaction".into(),
+            ));
+        }
+    } else if first_tx.tx_type != TxType::Coinbase {
         return Err(NodeError::InvalidBlock(
-            "First transaction must be coinbase or coinstake".into(),
+            "PoW block must begin with a coinbase transaction".into(),
         ));
+    }
+
+    // Exactly one coinbase/coinstake transaction is allowed per block.
+    // Any additional coinbase/coinstake transaction would mint value without
+    // spending inputs, so it must be rejected.
+    for tx in block.transactions.iter().skip(1) {
+        if tx.is_coinbase() || tx.is_coinstake() {
+            return Err(NodeError::InvalidBlock(
+                "Block contains more than one coinbase/coinstake transaction".into(),
+            ));
+        }
     }
 
     // Check block timestamp is not too far in the future (2 hours tolerance)
@@ -179,17 +235,19 @@ pub fn validate_legacy_claim(tx: &Transaction, snapshot_balance: u64) -> Result<
 
     // ── ECDSA signature verification ─────────────────────────────────────────
     //
-    // The claim signature is a Bitcoin-style "signed message" proof:
-    //   sig = sign(secp256k1, privkey, hash("vTorrent Signed Message:\n" + txid_hex))
+    // The claim signature is a compact (recoverable) ECDSA proof that the
+    // signer controls the private key whose Hash160 matches claim_address:
+    //   sig = sign_recoverable(privkey, sha256d("vTorrent Signed Message\n" + claim_address))
     //
-    // The public key recovered from the signature must hash (Hash160) to the
-    // same 20-byte payload as the claim_address.
+    // Signing the claim address (rather than the txid) avoids a circular
+    // dependency: the txid includes the signature field, so a signature over
+    // the txid could never be constructed.
     let sig_bytes = tx
         .claim_signature
         .as_ref()
         .ok_or_else(|| NodeError::InvalidClaim("Missing claim signature".into()))?;
 
-    verify_claim_signature(claim_addr, sig_bytes, &tx.txid())
+    verify_claim_signature(claim_addr, sig_bytes)
         .map_err(|e| NodeError::InvalidClaim(format!("Signature verification failed: {}", e)))?;
 
     Ok(())
@@ -197,10 +255,9 @@ pub fn validate_legacy_claim(tx: &Transaction, snapshot_balance: u64) -> Result<
 
 /// Verify a Bitcoin-style signed-message proof for a legacy claim.
 ///
-/// Protocol (identical to Bitcoin Core's `verifymessage`):
+/// Protocol:
 /// 1. Compute the message hash:
-///    `hash = SHA256d("vTorrent Signed Message:\n" + len_varint + message)`
-///    where `message` is the hex-encoded txid.
+///    `hash = SHA256d("vTorrent Signed Message\n" + len_varint + claim_address)`
 /// 2. Recover the public key from the compact (65-byte) ECDSA signature.
 /// 3. Derive the P2PKH address from the recovered public key.
 /// 4. Compare the derived address to the claimed legacy address.
@@ -212,7 +269,6 @@ pub fn validate_legacy_claim(tx: &Transaction, snapshot_balance: u64) -> Result<
 pub fn verify_claim_signature(
     claim_address: &str,
     sig_bytes: &[u8],
-    txid: &[u8; 32],
 ) -> std::result::Result<(), String> {
     if sig_bytes.len() != 65 {
         return Err(format!(
@@ -222,8 +278,7 @@ pub fn verify_claim_signature(
     }
 
     // ── Step 1: Build the signed message hash ────────────────────────────────
-    let txid_hex = hex::encode(txid);
-    let message_hash = bitcoin_signed_message_hash("vTorrent Signed Message", &txid_hex);
+    let message_hash = claim_message_hash(claim_address);
 
     let msg = Message::from_digest(message_hash);
 
@@ -257,6 +312,15 @@ pub fn verify_claim_signature(
     }
 
     Ok(())
+}
+
+/// Compute the message hash a legacy claim signature must be created over.
+///
+/// The signed message is the claim address itself (not the txid, which would
+/// be circular since the txid embeds the signature). Both the claim RPC
+/// (`submit_claim`) and chain validation use this helper so they stay in sync.
+pub fn claim_message_hash(claim_address: &str) -> [u8; 32] {
+    bitcoin_signed_message_hash("vTorrent Signed Message", claim_address)
 }
 
 /// Compute the Bitcoin-style signed message hash.
@@ -326,6 +390,8 @@ fn pubkey_to_vtorrent_address(pubkey: &PublicKey, compressed: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::block::TxOutput;
+    use secp256k1::SecretKey;
 
     #[test]
     fn test_pos_reward_calculation() {
@@ -368,5 +434,152 @@ mod tests {
         };
         let result = validate_transaction(&tx);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_claim_signature_round_trip() {
+        let secp = Secp256k1::new();
+        let secret_key = SecretKey::from_slice(&[7u8; 32]).unwrap();
+        let pubkey = PublicKey::from_secret_key(&secp, &secret_key);
+        let claim_address = pubkey_to_vtorrent_address(&pubkey, true);
+
+        let msg = Message::from_digest(claim_message_hash(&claim_address));
+        let rec_sig = secp.sign_ecdsa_recoverable(&msg, &secret_key);
+        let (rec_id, sig64) = rec_sig.serialize_compact();
+        let mut sig_bytes = vec![27 + rec_id.to_i32() as u8 + 4];
+        sig_bytes.extend_from_slice(&sig64);
+
+        assert!(verify_claim_signature(&claim_address, &sig_bytes).is_ok());
+        assert!(verify_claim_signature("invalid_address", &sig_bytes).is_err());
+        assert!(verify_claim_signature(&claim_address, &sig_bytes[..5]).is_err());
+    }
+
+    #[test]
+    fn test_validate_legacy_claim_snapshot_bound() {
+        let secp = Secp256k1::new();
+        let secret_key = SecretKey::from_slice(&[9u8; 32]).unwrap();
+        let pubkey = PublicKey::from_secret_key(&secp, &secret_key);
+        let claim_address = pubkey_to_vtorrent_address(&pubkey, true);
+
+        let msg = Message::from_digest(claim_message_hash(&claim_address));
+        let rec_sig = secp.sign_ecdsa_recoverable(&msg, &secret_key);
+        let (rec_id, sig64) = rec_sig.serialize_compact();
+        let mut sig_bytes = vec![27 + rec_id.to_i32() as u8 + 4];
+        sig_bytes.extend_from_slice(&sig64);
+
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::LegacyClaim,
+            inputs: vec![],
+            outputs: vec![TxOutput {
+                value: 500 * COIN,
+                script_pubkey: vec![0x76, 0xa9, 0x14],
+            }],
+            lock_time: 0,
+            claim_address: Some(claim_address.clone()),
+            claim_signature: Some(sig_bytes),
+        };
+
+        assert!(validate_legacy_claim(&tx, 1000 * COIN).is_ok());
+        assert!(validate_legacy_claim(&tx, 100 * COIN).is_err());
+
+        let bad_tx = Transaction {
+            claim_signature: None,
+            ..tx.clone()
+        };
+        assert!(validate_legacy_claim(&bad_tx, 1000 * COIN).is_err());
+    }
+
+    fn make_test_block(first_tx: Transaction, bits: u32, nonce: u32) -> Block {
+        let mut block = Block {
+            header: crate::block::BlockHeader {
+                version: 1,
+                prev_block_hash: [0u8; 32],
+                merkle_root: [0u8; 32],
+                timestamp: 1_700_000_001,
+                bits,
+                nonce,
+                stake_modifier: 0,
+            },
+            transactions: vec![first_tx],
+        };
+        block.header.merkle_root = block.compute_merkle_root();
+        block
+    }
+
+    #[test]
+    fn test_validate_block_rejects_difficulty_change() {
+        let coinbase = Transaction {
+            version: 1,
+            tx_type: TxType::Coinbase,
+            inputs: vec![],
+            outputs: vec![TxOutput {
+                value: COIN,
+                script_pubkey: vec![0x51],
+            }],
+            lock_time: 1,
+            claim_address: None,
+            claim_signature: None,
+        };
+        let block = make_test_block(coinbase, 0x1e0fffff, 42);
+        // Matching parent difficulty passes
+        assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0fffff).is_ok());
+        // Lower (easier) difficulty rejected
+        assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0ffffe).is_err());
+    }
+
+    #[test]
+    fn test_validate_block_rejects_wrong_height() {
+        let coinbase = Transaction {
+            version: 1,
+            tx_type: TxType::Coinbase,
+            inputs: vec![],
+            outputs: vec![TxOutput {
+                value: COIN,
+                script_pubkey: vec![0x51],
+            }],
+            lock_time: 5, // wrong height
+            claim_address: None,
+            claim_signature: None,
+        };
+        let block = make_test_block(coinbase, 0x1e0fffff, 42);
+        assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0fffff).is_err());
+    }
+
+    #[test]
+    fn test_validate_block_pos_requires_coinstake_first() {
+        // PoS block (nonce 0) with a coinbase first tx must be rejected.
+        let coinbase = Transaction {
+            version: 1,
+            tx_type: TxType::Coinbase,
+            inputs: vec![],
+            outputs: vec![TxOutput {
+                value: COIN,
+                script_pubkey: vec![0x51],
+            }],
+            lock_time: 1,
+            claim_address: None,
+            claim_signature: None,
+        };
+        let block = make_test_block(coinbase, 0x1e0fffff, 0);
+        assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0fffff).is_err());
+    }
+
+    #[test]
+    fn test_validate_block_rejects_oversized_block() {
+        let coinbase = Transaction {
+            version: 1,
+            tx_type: TxType::Coinbase,
+            inputs: vec![],
+            outputs: vec![TxOutput {
+                value: COIN,
+                script_pubkey: vec![0x51; MAX_BLOCK_SIZE],
+            }],
+            lock_time: 1,
+            claim_address: None,
+            claim_signature: None,
+        };
+        let block = make_test_block(coinbase, 0x1e0fffff, 42);
+        assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0fffff).is_err());
     }
 }

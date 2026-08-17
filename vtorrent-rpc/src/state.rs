@@ -72,6 +72,9 @@ pub struct AppState {
     pub tx_submit: Option<mpsc::Sender<Transaction>>,
     /// Live list of connected peers — updated by the daemon event bridge.
     pub peer_list: Arc<RwLock<Vec<PeerInfo>>>,
+    /// Optional RPC API key. When set, sensitive endpoints require the
+    /// `X-API-Key` header to match (constant-time compared).
+    pub rpc_api_key: Option<String>,
 }
 
 impl AppState {
@@ -104,6 +107,7 @@ impl AppState {
             best_peer_height: Arc::new(RwLock::new(0)),
             tx_submit: None,
             peer_list: Arc::new(RwLock::new(Vec::new())),
+            rpc_api_key: None,
         }
     }
 
@@ -137,6 +141,7 @@ impl AppState {
             best_peer_height: Arc::new(RwLock::new(0)),
             tx_submit: None,
             peer_list: Arc::new(RwLock::new(Vec::new())),
+            rpc_api_key: None,
         }
     }
 

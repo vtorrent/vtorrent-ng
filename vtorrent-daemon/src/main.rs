@@ -93,6 +93,14 @@ struct Cli {
     /// testing on a single machine or LAN without public IP addresses.
     #[arg(long, default_value_t = false)]
     testnet: bool,
+
+    /// Optional API key required for sensitive RPC endpoints.
+    ///
+    /// When set, wallet, staking, torrent, DEX, claim and broadcast endpoints
+    /// reject requests that do not include the matching `X-API-Key` header.
+    /// Read-only info endpoints remain open.
+    #[arg(long, env = "VTORRENT_RPC_API_KEY")]
+    rpc_api_key: Option<String>,
 }
 
 // ─── Entry Point ──────────────────────────────────────────────────────────────
@@ -185,6 +193,7 @@ async fn main() -> anyhow::Result<()> {
     let mut rpc_state = AppState::new_with_shared(chain_arc, mempool_arc);
     // Wire the tx broadcast channel so RPC wallet can push txs into the P2P loop.
     rpc_state.tx_submit = Some(tx_submit_sender);
+    rpc_state.rpc_api_key = cli.rpc_api_key.clone();
     let rpc_addr = cli.rpc_addr.clone();
 
     // ── Wire node events → RPC WebSocket broadcaster + BlockStore ────────────

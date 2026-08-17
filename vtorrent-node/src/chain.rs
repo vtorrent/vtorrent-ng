@@ -1,8 +1,8 @@
 use crate::{
     block::{Block, Transaction},
-    consensus::validate_block,
+    consensus::{compute_pos_reward, validate_block, validate_legacy_claim},
     error::{NodeError, Result},
-    genesis::create_genesis_block,
+    genesis::{create_genesis_block, get_legacy_balance},
 };
 /// Blockchain state manager.
 ///
@@ -294,7 +294,12 @@ impl Chain {
                 .get_block_at_height(height - 1)
                 .ok_or_else(|| NodeError::Chain("Previous block not found".into()))?;
 
-            validate_block(&block, height - 1, prev_block.header.timestamp)?;
+            validate_block(
+                &block,
+                height - 1,
+                prev_block.header.timestamp,
+                prev_block.header.bits,
+            )?;
 
             let parent_work = self.cumulative_work.get(&prev_hash).copied().unwrap_or(0);
             self.cumulative_work.insert(block_hash, parent_work + 1);
@@ -354,9 +359,10 @@ impl Chain {
                 .unwrap_or(0);
             let fork_height = parent_height + 1;
             let parent_timestamp = self.blocks.get(&prev_hash).unwrap().header.timestamp;
+            let parent_bits = self.blocks.get(&prev_hash).unwrap().header.bits;
 
             // Validate against the fork parent
-            validate_block(&block, parent_height, parent_timestamp)?;
+            validate_block(&block, parent_height, parent_timestamp, parent_bits)?;
 
             let parent_work = self.cumulative_work.get(&prev_hash).copied().unwrap_or(0);
             let fork_work = parent_work + 1;
@@ -596,12 +602,19 @@ impl Chain {
         let txid = tx.txid();
 
         // Spend inputs (except for coinbase)
+        let mut total_input: u64 = 0;
+        // For coinstake: the staked UTXO that satisfies the kernel check.
+        let mut stake_input: Option<Utxo> = None;
         if !tx.is_coinbase() {
             // Build the sighash for script verification (SHA256d of serialised tx)
             let tx_hash = tx.txid();
-            for input in &tx.inputs {
+            for (input_index, input) in tx.inputs.iter().enumerate() {
                 let key = (input.prev_txid, input.prev_vout);
                 if let Some(utxo) = self.utxo_set.remove(&key) {
+                    total_input = total_input.saturating_add(utxo.value);
+                    if tx.is_coinstake() && input_index == 0 {
+                        stake_input = Some(utxo.clone());
+                    }
                     // ── Script verification ──────────────────────────────────
                     // Skip for legacy-claim inputs (they use ECDSA message sig,
                     // not script-sig, verified separately in validate_legacy_claim).
@@ -644,12 +657,18 @@ impl Chain {
             }
         }
 
-        // Track claimed legacy addresses
+        // Track claimed legacy addresses. The genesis distribution tx is also a
+        // LegacyClaim but carries no per-address signature (`claim_address` is
+        // None), so only signed, address-bearing claims are validated here.
         if tx.is_legacy_claim() {
             if let Some(addr) = &tx.claim_address {
                 if self.claimed_addresses.contains(addr) {
                     return Err(NodeError::ClaimAlreadyProcessed(addr.clone()));
                 }
+                let snapshot_balance = get_legacy_balance(addr);
+                validate_legacy_claim(tx, snapshot_balance).map_err(|e| {
+                    NodeError::InvalidTransaction(format!("Invalid legacy claim: {}", e))
+                })?;
                 self.claimed_addresses.insert(addr.clone());
                 journal.claimed_addresses.push(addr.clone());
             }
@@ -670,6 +689,38 @@ impl Chain {
                 },
             );
             journal.changes.push(UtxoChange::Added { key });
+        }
+
+        // Value conservation: a standard transaction must not create value.
+        // Coinbase/coinstake mint the block reward (no inputs), and legacy
+        // claims are funded by the snapshot (validated separately), so both
+        // are exempt here.
+        if !tx.is_coinbase() && !tx.is_coinstake() && !tx.is_legacy_claim() {
+            let total_output = tx.total_output();
+            if total_output > total_input {
+                return Err(NodeError::InvalidTransaction(format!(
+                    "Transaction creates value: inputs {} < outputs {}",
+                    total_input, total_output
+                )));
+            }
+        }
+
+        // Coinstake reward cap: the block reward minted by a coinstake is
+        // bounded by the PoS formula for the staked amount and coin age.
+        // Without this, a block could mint an unbounded reward.
+        if tx.is_coinstake() {
+            let staked = stake_input.ok_or_else(|| {
+                NodeError::InvalidTransaction("Coinstake must spend a stake input".into())
+            })?;
+            let coin_age = timestamp.saturating_sub(staked.timestamp);
+            let max_reward = compute_pos_reward(staked.value, coin_age as u64);
+            let minted = tx.total_output().saturating_sub(staked.value);
+            if minted > max_reward {
+                return Err(NodeError::InvalidTransaction(format!(
+                    "Coinstake mints {} above the allowed reward {}",
+                    minted, max_reward
+                )));
+            }
         }
 
         Ok(())
@@ -704,7 +755,7 @@ mod tests {
                     0, 0, 0, 0, 0x88, 0xac,
                 ],
             }],
-            lock_time: 0,
+            lock_time: height, // height is encoded in the first tx's lock_time
             claim_address: None,
             claim_signature: None,
         }];
@@ -715,8 +766,8 @@ mod tests {
                 prev_block_hash: prev_hash,
                 merkle_root: [0u8; 32],
                 timestamp: 1_700_000_000 + height,
-                bits: 0x1e0ffff0,
-                nonce: 0,
+                bits: crate::genesis::GENESIS_BITS,
+                nonce: height, // PoW-style: non-zero nonce for a coinbase block
                 stake_modifier: 0u64,
             },
             transactions,
@@ -832,7 +883,7 @@ mod tests {
 
         // Fork: genesis → B (different nonce)
         let mut block_b = make_block(genesis_hash, 1);
-        block_b.header.nonce = 1;
+        block_b.header.nonce = 999;
         chain.add_block(block_b.clone()).unwrap();
         let hash_b = block_b.hash();
 

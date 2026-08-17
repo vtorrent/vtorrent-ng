@@ -893,10 +893,11 @@ pub async fn match_dex_order(
         .map_err(|e| {
             RpcError::BadRequest(format!("Unable to build HTLC funding transaction: {}", e))
         })?;
-    let funding_tx = sign_custom_transaction(unsigned_funding, std::slice::from_ref(&funding_utxo), &wif)
-        .map_err(|e| {
-            RpcError::BadRequest(format!("Unable to sign HTLC funding transaction: {}", e))
-        })?;
+    let funding_tx =
+        sign_custom_transaction(unsigned_funding, std::slice::from_ref(&funding_utxo), &wif)
+            .map_err(|e| {
+                RpcError::BadRequest(format!("Unable to sign HTLC funding transaction: {}", e))
+            })?;
     let funding_txid = funding_tx.txid();
 
     // Reserve the order immediately before mempool admission so a second taker
@@ -1043,13 +1044,16 @@ pub async fn submit_claim(
     let script_pubkey = p2pkh_script_pubkey(&req.recipient_address)
         .map_err(|e| RpcError::BadRequest(format!("Invalid recipient address: {}", e)))?;
 
-    // Sign the claim: sign the recipient address bytes with the legacy key.
-    let msg_bytes = req.recipient_address.as_bytes();
-    let msg_hash = vtorrent_core::crypto::sha256d(msg_bytes);
-    let msg = secp256k1::Message::from_digest_slice(&msg_hash)
-        .map_err(|e| RpcError::Internal(e.to_string()))?;
-    let sig = secp.sign_ecdsa(&msg, &secret_key);
-    let sig_bytes = sig.serialize_der().to_vec();
+    // Sign the claim: a compact (recoverable) ECDSA signature over the claim
+    // address. Signing the address (rather than the txid) avoids a circular
+    // dependency, and the recoverable format lets validation derive the address
+    // from the signature alone.
+    let msg_hash = vtorrent_node::consensus::claim_message_hash(&derived_address);
+    let msg = secp256k1::Message::from_digest(msg_hash);
+    let rec_sig = secp.sign_ecdsa_recoverable(&msg, &secret_key);
+    let (rec_id, sig64) = rec_sig.serialize_compact();
+    let mut sig_bytes = vec![27 + rec_id.to_i32() as u8 + 4]; // compressed flag
+    sig_bytes.extend_from_slice(&sig64);
 
     let tx = Transaction {
         version: 1,
@@ -1095,10 +1099,7 @@ pub async fn get_spv_status(
     State(state): State<Arc<AppState>>,
 ) -> RpcResult<Json<SpvStatusResponse>> {
     let chain = state.spv_chain.read().await;
-    let best_hash = chain
-        .best_hash()
-        .map(hex::encode)
-        .unwrap_or_default();
+    let best_hash = chain.best_hash().map(hex::encode).unwrap_or_default();
     Ok(Json(SpvStatusResponse {
         header_count: chain.len(),
         best_height: chain.best_height(),
@@ -1151,10 +1152,7 @@ pub async fn add_spv_headers(
     };
 
     let chain = state.spv_chain.read().await;
-    let best_hash = chain
-        .best_hash()
-        .map(hex::encode)
-        .unwrap_or_default();
+    let best_hash = chain.best_hash().map(hex::encode).unwrap_or_default();
 
     tracing::info!(
         "SPV: added {} headers, best height now {}",

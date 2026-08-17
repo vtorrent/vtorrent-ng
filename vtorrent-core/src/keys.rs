@@ -49,6 +49,15 @@ impl PrivateKey {
             key_bytes
         };
 
+        // The key material must be exactly 32 bytes (33 with the compression
+        // flag). Reject anything else rather than panicking on copy_from_slice.
+        if raw.len() != 32 {
+            return Err(CoreError::InvalidWif(format!(
+                "Invalid key length {}",
+                raw.len()
+            )));
+        }
+
         let mut bytes = [0u8; 32];
         bytes.copy_from_slice(raw);
         Self::from_bytes(bytes, compressed)

@@ -3,6 +3,9 @@ use crate::metrics::metrics_handler;
 use crate::state::AppState;
 use crate::ws::ws_handler;
 use axum::{
+    extract::{Request, State},
+    middleware::{self, Next},
+    response::Response,
     routing::{delete, get, post},
     Router,
 };
@@ -12,6 +15,41 @@ use tower_http::cors::{Any, CorsLayer};
 /// Default RPC port — same as legacy vTorrent RPC port + 1.
 pub const DEFAULT_RPC_PORT: u16 = 22525;
 
+/// Constant-time string comparison to avoid timing side-channels on the API key.
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.as_bytes().iter().zip(b.as_bytes()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Reject requests without a valid `X-API-Key` header when a key is configured.
+///
+/// When `AppState::rpc_api_key` is `None` (auth disabled), requests pass
+/// through unchanged — this keeps the standalone/test mode and the read-only
+/// info endpoints working without a key.
+async fn require_api_key(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Result<Response, axum::http::StatusCode> {
+    if let Some(expected) = &state.rpc_api_key {
+        let provided = request
+            .headers()
+            .get("x-api-key")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !constant_time_eq(provided, expected) {
+            return Err(axum::http::StatusCode::UNAUTHORIZED);
+        }
+    }
+    Ok(next.run(request).await)
+}
+
 /// Build the Axum router with all API routes.
 pub fn build_router(state: AppState) -> Router {
     let state = Arc::new(state);
@@ -20,10 +58,31 @@ pub fn build_router(state: AppState) -> Router {
         .allow_methods(Any)
         .allow_headers(Any);
 
+    let auth = middleware::from_fn_with_state(Arc::clone(&state), require_api_key);
+
+    // Routes that manage funds, keys, or broadcast to the network require the
+    // API key when one is configured.
+    let protected = Router::new()
+        .route("/api/v1/wallet/import", post(import_wallet))
+        .route("/api/v1/wallet/send", post(send_vtr))
+        .route("/api/v1/wallet/unlock", post(unlock_wallet))
+        .route("/api/v1/wallet/lock", post(lock_wallet))
+        .route("/api/v1/staking/start", post(start_staking))
+        .route("/api/v1/staking/stop", post(stop_staking))
+        .route("/api/v1/torrent/add", post(add_torrent))
+        .route("/api/v1/torrent/:id", delete(remove_torrent))
+        .route("/api/v1/dex/order", post(place_dex_order))
+        .route("/api/v1/dex/order/:id", delete(cancel_dex_order))
+        .route("/api/v1/dex/match", post(match_dex_order))
+        .route("/api/v1/blockchain/broadcast", post(broadcast_transaction))
+        .route("/api/v1/claim/submit", post(submit_claim))
+        .route("/api/v1/spv/headers", post(add_spv_headers))
+        .layer(auth);
+
     Router::new()
         // Node info
         .route("/api/v1/info", get(get_node_info))
-        // Blockchain
+        // Blockchain (read-only)
         .route("/api/v1/blockchain/height", get(get_block_height))
         .route(
             "/api/v1/blockchain/block/height/:height",
@@ -31,43 +90,30 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/v1/blockchain/block/:hash", get(get_block_by_hash))
         .route("/api/v1/blockchain/tx/:txid", get(get_transaction_by_id))
-        .route("/api/v1/blockchain/broadcast", post(broadcast_transaction))
         .route("/api/v1/mempool", get(get_mempool))
         .route("/api/v1/fee/estimate", get(get_fee_estimate))
-        // Wallet
+        // Wallet (read-only)
         .route("/api/v1/wallet/balance", get(get_balance))
         .route("/api/v1/wallet/addresses", get(get_addresses))
         .route("/api/v1/wallet/utxos", get(get_wallet_utxos))
         .route("/api/v1/wallet/transactions", get(get_transactions))
-        .route("/api/v1/wallet/import", post(import_wallet))
-        .route("/api/v1/wallet/send", post(send_vtr))
-        .route("/api/v1/wallet/unlock", post(unlock_wallet))
-        .route("/api/v1/wallet/lock", post(lock_wallet))
-        // Staking
+        // Staking (read-only)
         .route("/api/v1/staking/status", get(get_staking_status))
-        .route("/api/v1/staking/start", post(start_staking))
-        .route("/api/v1/staking/stop", post(stop_staking))
         // Torrent
         .route("/api/v1/torrent/sessions", get(list_torrent_sessions))
-        .route("/api/v1/torrent/add", post(add_torrent))
-        .route("/api/v1/torrent/:id", delete(remove_torrent))
         // DEX
         .route("/api/v1/dex/orders", get(get_dex_orders))
-        .route("/api/v1/dex/order", post(place_dex_order))
-        .route("/api/v1/dex/order/:id", delete(cancel_dex_order))
-        .route("/api/v1/dex/match", post(match_dex_order))
         // Legacy claim
         .route("/api/v1/claim/check", post(check_claim))
-        .route("/api/v1/claim/submit", post(submit_claim))
         // SPV light client
         .route("/api/v1/spv/status", get(get_spv_status))
-        .route("/api/v1/spv/headers", post(add_spv_headers))
         // Peers
         .route("/api/v1/peers", get(get_peers))
         // WebSocket event stream
         .route("/ws", get(ws_handler))
         // Prometheus metrics
         .route("/metrics", get(metrics_handler))
+        .merge(protected)
         .layer(cors)
         .with_state(state)
 }
@@ -336,5 +382,78 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["added"], 1);
         assert_eq!(body["best_height"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_api_key_protects_sensitive_endpoints() {
+        let mut state = AppState::new();
+        state.rpc_api_key = Some("s3cret".into());
+        let app = build_router(state);
+
+        // Without the key: sensitive endpoint rejected, read-only endpoint open.
+        let (status, _) = post_json(
+            app.clone(),
+            "/api/v1/wallet/unlock",
+            serde_json::json!({ "passphrase": "test", "timeout_secs": 300 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        let (status, _) = get(app.clone(), "/api/v1/info").await;
+        assert_eq!(status, StatusCode::OK);
+
+        // Wrong key rejected.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/wallet/unlock")
+                    .header("content-type", "application/json")
+                    .header("x-api-key", "wrong")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "passphrase": "test", "timeout_secs": 300
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        // Correct key accepted.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/wallet/unlock")
+                    .header("content-type", "application/json")
+                    .header("x-api-key", "s3cret")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "passphrase": "test", "timeout_secs": 300
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_api_key_disabled_by_default() {
+        let app = build_router(AppState::new());
+        let (status, body) = post_json(
+            app,
+            "/api/v1/wallet/unlock",
+            serde_json::json!({ "passphrase": "test", "timeout_secs": 300 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["success"], true);
     }
 }

@@ -11,9 +11,7 @@
 use crate::{
     block::{Block, BlockHeader, Transaction, TxInput, TxOutput, TxType},
     chain::Utxo,
-    consensus::{
-        compute_pos_reward, MIN_STAKE_AGE, MIN_STAKE_AMOUNT,
-    },
+    consensus::{compute_pos_reward, MIN_STAKE_AGE, MIN_STAKE_AMOUNT},
 };
 
 /// The staking engine.

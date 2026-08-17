@@ -121,20 +121,43 @@ fn build_nonce(counter: u32, sender_pubkey: &[u8; 32]) -> Nonce {
     Nonce::from(n)
 }
 
-/// Perform an ephemeral X25519 DH for one-shot key agreement (used during
-/// the hole-punch handshake before the long-term session key is established).
-pub fn ephemeral_dh(remote_public_bytes: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
-    let eph_secret = EphemeralSecret::random_from_rng(OsRng);
-    let eph_public = PublicKey::from(&eph_secret);
-    let remote_public = PublicKey::from(*remote_public_bytes);
-    let shared = eph_secret.diffie_hellman(&remote_public);
+/// An ephemeral X25519 keypair used for one-shot key agreement during the
+/// hole-punch handshake.
+///
+/// Both peers generate an ephemeral keypair, exchange public keys, and derive
+/// the same session key via `DH(own_ephemeral_secret, peer_ephemeral_public)`.
+pub struct EphemeralKeypair {
+    secret: EphemeralSecret,
+    public: [u8; 32],
+}
 
-    let mut hasher = Sha256::new();
-    hasher.update(shared.as_bytes());
-    hasher.update(b"vtorrent-overlay-eph-v1");
-    let session_key: [u8; 32] = hasher.finalize().into();
+impl EphemeralKeypair {
+    /// Generate a fresh ephemeral keypair.
+    pub fn generate() -> Self {
+        let secret = EphemeralSecret::random_from_rng(OsRng);
+        let public = PublicKey::from(&secret);
+        Self {
+            secret,
+            public: *public.as_bytes(),
+        }
+    }
 
-    (*eph_public.as_bytes(), session_key)
+    /// The ephemeral public key to send to the peer.
+    pub fn public_bytes(&self) -> [u8; 32] {
+        self.public
+    }
+
+    /// Derive the session key from our ephemeral secret and the peer's
+    /// ephemeral public key. Consumes the keypair (single-use).
+    pub fn shared_key(self, remote_public: &[u8; 32]) -> [u8; 32] {
+        let remote = PublicKey::from(*remote_public);
+        let shared = self.secret.diffie_hellman(&remote);
+
+        let mut hasher = Sha256::new();
+        hasher.update(shared.as_bytes());
+        hasher.update(b"vtorrent-overlay-eph-v1");
+        hasher.finalize().into()
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -194,9 +217,14 @@ mod tests {
 
     #[test]
     fn test_ephemeral_dh_produces_32_bytes() {
-        let remote = NodeKeypair::generate();
-        let (eph_pub, session_key) = ephemeral_dh(remote.public.as_bytes());
-        assert_eq!(eph_pub.len(), 32);
-        assert_eq!(session_key.len(), 32);
+        let a = EphemeralKeypair::generate();
+        let b = EphemeralKeypair::generate();
+        let a_pub = a.public_bytes();
+        let b_pub = b.public_bytes();
+        let ka = a.shared_key(&b_pub);
+        let kb = b.shared_key(&a_pub);
+        assert_eq!(ka.len(), 32);
+        assert_eq!(kb.len(), 32);
+        assert_eq!(ka, kb);
     }
 }

@@ -22,7 +22,7 @@ vtorrent-onion    = { path = "../vtorrent-onion" }
 tokio             = { version = "1", features = ["full"] }
 
 # CLI argument parsing
-clap              = { version = "4", features = ["derive"] }
+clap              = { version = "4", features = ["derive", "env"] }
 
 # Error handling
 anyhow            = "1"

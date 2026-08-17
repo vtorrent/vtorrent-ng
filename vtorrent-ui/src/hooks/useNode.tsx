@@ -92,6 +92,28 @@ export interface ClaimSubmitResult {
 
 const RPC_BASE = 'http://127.0.0.1:22525'
 
+/**
+ * Optional RPC API key for browser (non-Tauri) mode.
+ *
+ * When the daemon is started with `--rpc-api-key`, sensitive endpoints require
+ * the matching `X-API-Key` header. In the browser fallback there is no secure
+ * way to store the key, so it is read from `localStorage` (set on the settings
+ * screen or in devtools). Tauri IPC mode never sends the key.
+ */
+function getRpcApiKey(): string | null {
+  if (isTauri()) return null
+  try {
+    return window.localStorage.getItem('vtorrent.rpc_api_key')
+  } catch {
+    return null
+  }
+}
+
+function authHeaders(): Record<string, string> {
+  const key = getRpcApiKey()
+  return key ? { 'X-API-Key': key } : {}
+}
+
 // ─── Tauri detection ──────────────────────────────────────────────────────────
 
 function isTauri(): boolean {
@@ -106,7 +128,7 @@ async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
 // ─── Generic fetch helper ─────────────────────────────────────────────────────
 
 async function rpcGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${RPC_BASE}${path}`)
+  const res = await fetch(`${RPC_BASE}${path}`, { headers: authHeaders() })
   if (!res.ok) throw new Error(`RPC ${path} → ${res.status}`)
   return res.json() as Promise<T>
 }
@@ -114,7 +136,7 @@ async function rpcGet<T>(path: string): Promise<T> {
 async function rpcPost<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${RPC_BASE}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body),
   })
   if (!res.ok) {

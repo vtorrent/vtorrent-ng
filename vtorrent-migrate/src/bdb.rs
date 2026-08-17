@@ -50,9 +50,9 @@ pub fn parse_wallet(data: &[u8]) -> Result<Vec<RawRecord>> {
             continue;
         }
 
-        let page_type = page[25];
+        let page_type = page[17];
         if page_type == P_OVERFLOW {
-            let page_num = u32::from_le_bytes([page[4], page[5], page[6], page[7]]);
+            let page_num = u32::from_le_bytes([page[0], page[1], page[2], page[3]]);
             // Overflow data starts at offset 26, length is at offset 16
             let data_len = u32::from_le_bytes([page[16], page[17], page[18], page[19]]) as usize;
             let available = page_size.saturating_sub(26);
@@ -72,13 +72,13 @@ pub fn parse_wallet(data: &[u8]) -> Result<Vec<RawRecord>> {
             continue;
         }
 
-        let page_type = page[25];
+        let page_type = page[17];
         if page_type != P_LBTREE {
             continue;
         }
 
-        // Number of entries on this page (at offset 20)
-        let num_entries = u16::from_le_bytes([page[20], page[21]]) as usize;
+        // Number of entries on this page (at offset 12)
+        let num_entries = u16::from_le_bytes([page[12], page[13]]) as usize;
         if num_entries == 0 {
             continue;
         }

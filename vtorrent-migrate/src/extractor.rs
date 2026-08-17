@@ -3,8 +3,7 @@ use crate::{
     crypter::{decrypt_master_key, decrypt_private_key},
     error::{MigrateError, Result},
     types::{
-        CKeyRecord, ExtractedKey, KeyRecord, KeySource, MasterKey, RecordType,
-        WalletExtraction,
+        CKeyRecord, ExtractedKey, KeyRecord, KeySource, MasterKey, RecordType, WalletExtraction,
     },
 };
 /// Main wallet extraction logic.
@@ -12,11 +11,7 @@ use crate::{
 /// Ties together the BDB parser, crypter, and key derivation to produce
 /// a clean list of extracted keys and their legacy vTorrent addresses.
 use std::collections::HashMap;
-use vtorrent_core::{
-    address::Address,
-    keys::PrivateKey,
-    network::legacy,
-};
+use vtorrent_core::{address::Address, keys::PrivateKey, network::legacy};
 
 /// Extract all keys from a wallet.dat file.
 ///

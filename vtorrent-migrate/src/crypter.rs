@@ -25,11 +25,12 @@ pub struct DecryptedMasterKey {
     pub key: [u8; 32],
 }
 
-/// Derive the encryption key from a passphrase using the legacy method.
+/// Derive the encryption key and IV from a passphrase using the legacy method.
 /// Method 0: Iterated SHA-512 (Bitcoin/vTorrent default).
-pub fn derive_key_method0(passphrase: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
-    // EVP_BytesToKey equivalent: SHA-512 iterated
-    // Output: first 32 bytes = AES key, next 16 bytes = IV (we only need key)
+///
+/// EVP_BytesToKey equivalent: SHA-512 iterated. The first 32 bytes of the
+/// final digest are the AES key and the next 16 bytes are the IV.
+pub fn derive_key_method0(passphrase: &[u8], salt: &[u8], iterations: u32) -> [u8; 48] {
     let mut buf = Vec::new();
     buf.extend_from_slice(passphrase);
     buf.extend_from_slice(salt);
@@ -40,9 +41,9 @@ pub fn derive_key_method0(passphrase: &[u8], salt: &[u8], iterations: u32) -> [u
         hash = Sha512::digest(hash);
     }
 
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&hash[..32]);
-    key
+    let mut out = [0u8; 48];
+    out.copy_from_slice(&hash[..48]);
+    out
 }
 
 /// Decrypt the master key using AES-256-CBC.
@@ -57,13 +58,10 @@ pub fn decrypt_master_key(mkey: &MasterKey, passphrase: &str) -> Result<Decrypte
         }
     };
 
-    // The IV for master key decryption is derived from the passphrase + salt as well
-    // (second 16 bytes of the SHA-512 output)
-    let mut buf = Vec::new();
-    buf.extend_from_slice(passphrase_bytes);
-    buf.extend_from_slice(&mkey.salt);
-    let hash = Sha512::digest(&buf);
-    let iv: [u8; 16] = hash[32..48].try_into().unwrap();
+    // The IV for master key decryption is the second 16 bytes of the same
+    // iterated SHA-512 output used for the key (EVP_BytesToKey semantics).
+    let key: [u8; 32] = derived_key[..32].try_into().unwrap();
+    let iv: [u8; 16] = derived_key[32..48].try_into().unwrap();
 
     // Decrypt using AES-256-CBC
     let mut ciphertext = mkey.encrypted_key.clone();
@@ -72,7 +70,7 @@ pub fn decrypt_master_key(mkey: &MasterKey, passphrase: &str) -> Result<Decrypte
         ciphertext.push(0);
     }
 
-    let decryptor = Decryptor::<Aes256>::new(&derived_key.into(), &iv.into());
+    let decryptor = Decryptor::<Aes256>::new(&key.into(), &iv.into());
     let decrypted = decryptor
         .decrypt_padded_mut::<cbc::cipher::block_padding::NoPadding>(&mut ciphertext)
         .map_err(|_| MigrateError::IncorrectPassphrase)?;
