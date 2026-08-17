@@ -193,6 +193,7 @@ pub struct StakingStatusResponse {
     pub staking_address: Option<String>,
     pub eligible_utxos: usize,
     pub total_staking_satoshis: u64,
+    /// Expected staking reward per day, in satoshis (divide by COIN for VTR).
     pub expected_reward_per_day: f64,
     pub last_stake_time: Option<u32>,
     pub blocks_staked: u64,

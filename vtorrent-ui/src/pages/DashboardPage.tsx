@@ -36,7 +36,7 @@ function shortTxid(txid: string): string {
 function parseVtrAmount(value: string): number {
   const n = parseFloat(value)
   if (isNaN(n) || n <= 0) return 0
-  return Math.round(n * 1_000_000)
+  return Math.round(n * 100_000_000)
 }
 
 // ─── Send VTR Modal ───────────────────────────────────────────────────────────

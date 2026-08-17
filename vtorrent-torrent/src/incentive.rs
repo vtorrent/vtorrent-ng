@@ -11,7 +11,7 @@ pub const VTR_PER_GB_SEEDED: f64 = 1.0; // 1 VTR per GB uploaded to peers
 pub const VTR_PER_GB_DOWNLOADED: f64 = 0.5; // 0.5 VTR per GB downloaded from incentivized peers
 pub const MIN_PAYMENT_BYTES: u64 = 10 * 1024 * 1024; // Minimum 10 MB before payment is triggered
 pub const PAYMENT_INTERVAL_SECS: u64 = 300; // Payment settled every 5 minutes
-pub const COIN: u64 = 1_000_000; // 1 VTR = 1,000,000 satoshis
+pub const COIN: u64 = 100_000_000; // 1 VTR = 100,000,000 satoshis
 
 /// Tracks bandwidth exchanged with a single peer for incentive accounting.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,7 +186,7 @@ mod tests {
         // Simulate uploading 1 GB
         account.record_upload(1024 * 1024 * 1024);
         let earned = account.calculate_earned();
-        // Should earn 1 VTR = 1,000,000 satoshis
+        // Should earn 1 VTR = 100,000,000 satoshis
         assert_eq!(earned, COIN);
     }
 
@@ -240,8 +240,8 @@ mod tests {
     #[test]
     fn test_summary_display() {
         let summary = IncentiveSummary {
-            total_earned_satoshis: 1_500_000,
-            total_paid_satoshis: 500_000,
+            total_earned_satoshis: 150_000_000,
+            total_paid_satoshis: 50_000_000,
             total_bytes_uploaded: 2 * 1024 * 1024 * 1024,
             total_bytes_downloaded: 512 * 1024 * 1024,
             incentive_peer_count: 5,

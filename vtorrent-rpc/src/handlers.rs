@@ -294,7 +294,7 @@ pub async fn get_balance(State(state): State<Arc<AppState>>) -> RpcResult<Json<B
         confirmed,
         unconfirmed: 0,
         staking,
-        display: format!("{:.6} VTR", confirmed as f64 / 1_000_000.0),
+        display: format!("{:.6} VTR", confirmed as f64 / 100_000_000.0),
     }))
 }
 
@@ -555,7 +555,7 @@ pub async fn get_transactions(
     let result = txs
         .into_iter()
         .map(|(txid, height, ts, tx_type, amount)| TransactionResponse {
-            display: format!("{:.6} VTR", amount as f64 / 1_000_000.0),
+            display: format!("{:.6} VTR", amount as f64 / 100_000_000.0),
             txid,
             block_height: height,
             timestamp: ts,
@@ -580,7 +580,7 @@ pub async fn get_staking_status(
     let total_staking: u64 = chain.get_utxo_set().values().map(|u| u.value).sum();
 
     let expected_per_day = if enabled {
-        total_staking as f64 * 0.05 / 365.0 / 1_000_000.0
+        total_staking as f64 * 0.05 / 365.0
     } else {
         0.0
     };
@@ -979,7 +979,7 @@ pub async fn check_claim(
     Ok(Json(ClaimCheckResponse {
         address: req.legacy_address.clone(),
         claimable_satoshis: claimable,
-        display: format!("{:.6} VTR", claimable as f64 / 1_000_000.0),
+        display: format!("{:.6} VTR", claimable as f64 / 100_000_000.0),
         already_claimed,
     }))
 }
