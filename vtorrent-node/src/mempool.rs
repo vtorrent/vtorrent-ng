@@ -60,6 +60,9 @@ impl MempoolEntry {
 pub struct Mempool {
     /// Transactions indexed by txid.
     entries: HashMap<[u8; 32], MempoolEntry>,
+    /// Spent-input index: (prev_txid, prev_vout) → owning txid. Keeps conflict
+    /// detection O(1) instead of scanning every entry on each insertion.
+    spent_inputs: HashMap<([u8; 32], u32), [u8; 32]>,
     /// Maximum number of transactions in the mempool.
     max_size: usize,
     /// Minimum fee rate (sat/byte) to enter the mempool.
@@ -71,6 +74,7 @@ impl Mempool {
     pub fn new(max_size: usize) -> Self {
         Self {
             entries: HashMap::new(),
+            spent_inputs: HashMap::new(),
             max_size,
             min_fee_rate: 1, // 1 sat/byte minimum by default
         }
@@ -166,7 +170,7 @@ impl Mempool {
                 conflict.fee_rate(),
                 fee_rate
             );
-            self.entries.remove(&conflict_txid);
+            self.remove_entry(&conflict_txid);
         }
 
         // If mempool is full, try to evict the lowest-fee-rate entry
@@ -181,7 +185,7 @@ impl Mempool {
                         hex::encode(txid),
                         fee_rate
                     );
-                    self.entries.remove(&lowest_txid);
+                    self.remove_entry(&lowest_txid);
                     // Raise the dynamic minimum fee rate
                     self.min_fee_rate = lowest_rate + 1;
                 } else {
@@ -208,6 +212,12 @@ impl Mempool {
                 rbf,
             },
         );
+        // Index the spent inputs for O(1) conflict detection.
+        let entry = &self.entries[&txid];
+        for input in &entry.tx.inputs {
+            self.spent_inputs
+                .insert((input.prev_txid, input.prev_vout), txid);
+        }
 
         tracing::debug!(
             "Mempool: added {} ({} sat, {} sat/byte)",
@@ -220,7 +230,7 @@ impl Mempool {
 
     /// Remove a transaction from the mempool (after inclusion in a block).
     pub fn remove_transaction(&mut self, txid: &[u8; 32]) {
-        self.entries.remove(txid);
+        self.remove_entry(txid);
     }
 
     /// Get a specific transaction by txid.
@@ -283,17 +293,21 @@ impl Mempool {
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
+    /// Remove an entry from both the tx map and the spent-input index.
+    fn remove_entry(&mut self, txid: &[u8; 32]) {
+        if let Some(entry) = self.entries.remove(txid) {
+            for input in &entry.tx.inputs {
+                self.spent_inputs
+                    .remove(&(input.prev_txid, input.prev_vout));
+            }
+        }
+    }
+
     /// Find a mempool transaction that spends the same input as `tx`.
     fn find_conflict(&self, tx: &Transaction) -> Option<[u8; 32]> {
         for input in &tx.inputs {
-            for (txid, entry) in &self.entries {
-                for existing_input in &entry.tx.inputs {
-                    if existing_input.prev_txid == input.prev_txid
-                        && existing_input.prev_vout == input.prev_vout
-                    {
-                        return Some(*txid);
-                    }
-                }
+            if let Some(txid) = self.spent_inputs.get(&(input.prev_txid, input.prev_vout)) {
+                return Some(*txid);
             }
         }
         None
@@ -445,5 +459,33 @@ mod tests {
         mp.add_transaction(tx).unwrap();
         mp.remove_transaction(&txid);
         assert_eq!(mp.size(), 0);
+    }
+
+    #[test]
+    fn test_conflict_detection_scales_without_full_rescan() {
+        let mut mp = Mempool::new(10_000);
+        // Fill the mempool with distinct transactions.
+        for i in 0..5_000u64 {
+            let mut tx = make_tx(MIN_RELAY_FEE, 100, false);
+            let mut prev = [0u8; 32];
+            prev[..8].copy_from_slice(&i.to_le_bytes());
+            tx.inputs[0].prev_txid = prev;
+            mp.add_transaction(tx).unwrap();
+        }
+        assert_eq!(mp.size(), 5_000);
+
+        // A transaction spending one of those inputs must be detected as a
+        // conflict. This is O(1) with the spent-input index.
+        let mut conflicting = make_tx(MIN_RELAY_FEE * 10, 100, false);
+        let mut prev = [0u8; 32];
+        prev[..8].copy_from_slice(&42u64.to_le_bytes());
+        conflicting.inputs[0].prev_txid = prev;
+        let conflict = mp.find_conflict(&conflicting);
+        assert!(conflict.is_some(), "conflicting input must be detected");
+
+        // After removing the owner, the same input is no longer conflicted.
+        let owner_txid = conflict.unwrap();
+        mp.remove_transaction(&owner_txid);
+        assert_eq!(mp.find_conflict(&conflicting), None);
     }
 }

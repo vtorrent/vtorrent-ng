@@ -46,6 +46,21 @@ enum OverlayIngress {
     Message { node_id: String, msg: NetMessage },
 }
 
+/// Maximum number of messages a single peer may send within one rate-limit
+/// window before it is banned. Protects the node's event loop from flood DoS.
+pub const MAX_MSGS_PER_WINDOW: u64 = 500;
+
+/// Rate-limit window length in seconds.
+pub const MSG_WINDOW_SECS: u64 = 10;
+
+/// Current Unix timestamp in seconds.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 /// Node configuration.
 #[derive(Debug, Clone)]
 pub struct NodeConfig {
@@ -128,6 +143,8 @@ pub struct Node {
     peer_fee_filters: std::collections::HashMap<std::net::SocketAddr, u64>,
     /// Per-peer last-seen ping nonce (for pong matching).
     peer_ping_nonces: std::collections::HashMap<std::net::SocketAddr, u64>,
+    /// Per-peer message counts for flood rate limiting: (count, window start).
+    peer_msg_counts: std::collections::HashMap<std::net::SocketAddr, (u64, u64)>,
     /// Receiver for locally-submitted transactions (from RPC/wallet).
     /// When a transaction is placed here, the node broadcasts it to all peers.
     tx_submit_rx: mpsc::Receiver<Transaction>,
@@ -233,6 +250,7 @@ impl Node {
             compact_peers: std::collections::HashMap::new(),
             peer_fee_filters: std::collections::HashMap::new(),
             peer_ping_nonces: std::collections::HashMap::new(),
+            peer_msg_counts: std::collections::HashMap::new(),
             tx_submit_rx,
             tx_submit_tx,
         })
@@ -278,6 +296,7 @@ impl Node {
             compact_peers: std::collections::HashMap::new(),
             peer_fee_filters: std::collections::HashMap::new(),
             peer_ping_nonces: std::collections::HashMap::new(),
+            peer_msg_counts: std::collections::HashMap::new(),
             tx_submit_rx,
             tx_submit_tx,
         })
@@ -708,6 +727,7 @@ impl Node {
                 self.compact_peers.remove(&peer_addr);
                 self.peer_fee_filters.remove(&peer_addr);
                 self.peer_ping_nonces.remove(&peer_addr);
+                self.peer_msg_counts.remove(&peer_addr);
             }
         }
         Ok(())
@@ -823,6 +843,29 @@ impl Node {
         peer_addr: std::net::SocketAddr,
         msg: NetMessage,
     ) -> Result<()> {
+        use vtorrent_p2p::ban_manager::Misbehaviour;
+
+        // Per-peer flood rate limiting: a peer that exceeds the message budget
+        // within a window is banned and disconnected.
+        let now = now_secs();
+        let (count, window_start) = self.peer_msg_counts.entry(peer_addr).or_insert((0, now));
+        if now.saturating_sub(*window_start) >= MSG_WINDOW_SECS {
+            *count = 0;
+            *window_start = now;
+        }
+        *count += 1;
+        if *count > MAX_MSGS_PER_WINDOW {
+            tracing::warn!(
+                "Peer {} exceeded {} messages/{}s; banning",
+                peer_addr,
+                MAX_MSGS_PER_WINDOW,
+                MSG_WINDOW_SECS
+            );
+            self.peer_manager
+                .record_misbehaviour(peer_addr, Misbehaviour::Custom(100));
+            return Ok(());
+        }
+
         match msg.command_str() {
             // ── PEX: Peer Exchange ────────────────────────────────────────────
             "addr" => {
@@ -830,6 +873,9 @@ impl Node {
                     let count = addr_msg.addrs.len();
                     self.peer_manager.handle_addr_msg(&addr_msg);
                     tracing::debug!("PEX: Received {} addresses from {}", count, peer_addr);
+                } else {
+                    self.peer_manager
+                        .record_misbehaviour(peer_addr, Misbehaviour::MalformedMessage);
                 }
             }
 
@@ -961,11 +1007,15 @@ impl Node {
                             }
                             Err(e) => {
                                 tracing::warn!("Rejected block from {}: {}", peer_addr, e);
+                                self.peer_manager
+                                    .record_misbehaviour(peer_addr, Misbehaviour::InvalidBlock);
                             }
                         }
                     }
                     Err(e) => {
                         tracing::warn!("Failed to deserialize block from {}: {}", peer_addr, e);
+                        self.peer_manager
+                            .record_misbehaviour(peer_addr, Misbehaviour::MalformedMessage);
                     }
                 }
             }
@@ -993,11 +1043,15 @@ impl Node {
                         }
                         Err(e) => {
                             tracing::debug!("Rejected tx: {}", e);
+                            self.peer_manager
+                                .record_misbehaviour(peer_addr, Misbehaviour::InvalidTransaction);
                         }
                     }
                 }
                 Err(e) => {
                     tracing::warn!("Failed to deserialize tx from {}: {}", peer_addr, e);
+                    self.peer_manager
+                        .record_misbehaviour(peer_addr, Misbehaviour::MalformedMessage);
                 }
             },
 
@@ -1512,6 +1566,8 @@ impl Node {
 
             cmd => {
                 tracing::trace!("Unhandled message '{}' from {}", cmd, peer_addr);
+                self.peer_manager
+                    .record_misbehaviour(peer_addr, Misbehaviour::UnknownMessage);
             }
         }
         Ok(())
@@ -1902,5 +1958,78 @@ mod tests {
         let second = overlay_peer_addr(&node_id).expect("valid node id");
         assert_eq!(first, second);
         assert_eq!(first.ip().to_string().split('.').next(), Some("198"));
+    }
+
+    fn test_node() -> Node {
+        Node::new(NodeConfig {
+            listen_addr: "127.0.0.1:0".to_string(),
+            use_overlay: false,
+            use_dht: false,
+            ..NodeConfig::default()
+        })
+        .expect("node init failed")
+    }
+
+    #[tokio::test]
+    async fn invalid_tx_from_peer_records_misbehaviour() {
+        use crate::block::{Transaction, TxType};
+        use vtorrent_p2p::ban_manager::Misbehaviour;
+
+        let mut node = test_node();
+        let peer_addr: std::net::SocketAddr = "127.0.0.1:12345".parse().unwrap();
+
+        // An empty transaction fails consensus validation.
+        let bad_tx = Transaction {
+            version: 1,
+            tx_type: TxType::Standard,
+            inputs: vec![],
+            outputs: vec![],
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        };
+        let msg = NetMessage::new("tx", serde_json::to_vec(&bad_tx).unwrap());
+        node.handle_message(peer_addr, msg).await.unwrap();
+
+        assert_eq!(
+            node.peer_manager.ban_manager.score(peer_addr.ip()),
+            Misbehaviour::InvalidTransaction.score()
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_message_records_misbehaviour() {
+        use vtorrent_p2p::ban_manager::Misbehaviour;
+
+        let mut node = test_node();
+        let peer_addr: std::net::SocketAddr = "127.0.0.1:12346".parse().unwrap();
+
+        // A "tx" message whose payload is not a valid transaction.
+        let msg = NetMessage::new("tx", b"not-a-transaction".to_vec());
+        node.handle_message(peer_addr, msg).await.unwrap();
+
+        assert_eq!(
+            node.peer_manager.ban_manager.score(peer_addr.ip()),
+            Misbehaviour::MalformedMessage.score()
+        );
+    }
+
+    #[tokio::test]
+    async fn message_flood_triggers_ban() {
+        let mut node = test_node();
+        let peer_addr: std::net::SocketAddr = "127.0.0.1:12347".parse().unwrap();
+
+        // A legitimate, penalty-free message ("getaddr") sent faster than the
+        // per-peer rate limit should trigger a ban.
+        for _ in 0..=MAX_MSGS_PER_WINDOW {
+            node.handle_message(peer_addr, NetMessage::new("getaddr", vec![]))
+                .await
+                .unwrap();
+        }
+
+        assert!(
+            node.peer_manager.is_banned(peer_addr),
+            "flooding peer should be banned"
+        );
     }
 }
