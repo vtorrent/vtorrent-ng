@@ -16,8 +16,9 @@ pub fn derive_address(seed: &[u8; 64], index: u32) -> Result<String> {
     let derived = xpriv
         .derive_priv(&secp, &path)
         .map_err(|e| BtcError::KeyDerivation(e.to_string()))?;
-    let pubkey = CompressedPublicKey::from_slice(&derived.private_key.public_key(&secp).serialize())
-        .map_err(|e| BtcError::KeyDerivation(e.to_string()))?;
+    let pubkey =
+        CompressedPublicKey::from_slice(&derived.private_key.public_key(&secp).serialize())
+            .map_err(|e| BtcError::KeyDerivation(e.to_string()))?;
     let address = Address::p2wpkh(&pubkey, Network::Bitcoin);
     Ok(address.to_string())
 }

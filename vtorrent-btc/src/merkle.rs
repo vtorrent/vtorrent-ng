@@ -27,7 +27,7 @@ pub fn verify_inclusion(
     let mut current = *txid;
     let mut idx = index;
     for sibling in siblings {
-        current = if idx % 2 == 0 {
+        current = if idx.is_multiple_of(2) {
             combine(&current, sibling)
         } else {
             combine(sibling, &current)

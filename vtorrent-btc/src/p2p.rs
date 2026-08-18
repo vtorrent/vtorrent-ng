@@ -83,7 +83,8 @@ impl BtcPeer {
             .map_err(|e| BtcError::P2p(e.to_string()))?;
         let mut full = header.to_vec();
         full.extend_from_slice(&payload);
-        let raw: RawNetworkMessage = deserialize(&full).map_err(|e| BtcError::P2p(e.to_string()))?;
+        let raw: RawNetworkMessage =
+            deserialize(&full).map_err(|e| BtcError::P2p(e.to_string()))?;
         Ok(raw.payload().clone())
     }
 }

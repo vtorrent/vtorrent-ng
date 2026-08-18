@@ -1,13 +1,13 @@
 use crate::ws::EventBroadcaster;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
+use vtorrent_btc::wallet::BtcWallet;
 use vtorrent_node::atomic_swap::SwapOrderBook;
 use vtorrent_node::block::Transaction;
 use vtorrent_node::chain::Chain;
 use vtorrent_node::mempool::Mempool;
 use vtorrent_node::staking::StakingEngine;
 use vtorrent_spv::SpvChain;
-use vtorrent_btc::wallet::BtcWallet;
 use vtorrent_torrent::session::SessionManager;
 use vtorrent_wallet::encryption::EncryptedWallet;
 use vtorrent_wallet::otp::TotpSecret;

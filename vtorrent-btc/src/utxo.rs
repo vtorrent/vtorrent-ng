@@ -29,7 +29,11 @@ impl UtxoSet {
     }
 
     pub fn add(&mut self, utxo: Utxo) {
-        if !self.utxos.iter().any(|u| u.txid == utxo.txid && u.vout == utxo.vout) {
+        if !self
+            .utxos
+            .iter()
+            .any(|u| u.txid == utxo.txid && u.vout == utxo.vout)
+        {
             self.utxos.push(utxo);
         }
     }

@@ -7,9 +7,7 @@ use bitcoin::consensus::encode::serialize;
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::sighash::SighashCache;
 use bitcoin::transaction::Version;
-use bitcoin::{
-    Address, Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness,
-};
+use bitcoin::{Address, Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness};
 use std::str::FromStr;
 
 /// Build and sign a P2WPKH transaction spending `inputs` to `destination`,
@@ -46,8 +44,8 @@ pub fn build_and_sign(
 
     let mut tx_inputs = Vec::with_capacity(inputs.len());
     for u in inputs {
-        let txid = bitcoin::Txid::from_str(&u.txid)
-            .map_err(|e| BtcError::Bitcoin(e.to_string()))?;
+        let txid =
+            bitcoin::Txid::from_str(&u.txid).map_err(|e| BtcError::Bitcoin(e.to_string()))?;
         tx_inputs.push(TxIn {
             previous_output: OutPoint { txid, vout: u.vout },
             script_sig: ScriptBuf::new(),
