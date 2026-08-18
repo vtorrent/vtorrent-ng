@@ -390,12 +390,12 @@ async fn fetch_metadata_from_peer(conn: &mut PeerConnection) -> Option<Metainfo>
         match conn.recv().await {
             Ok(PeerMessage::Extended { id: 0, payload }) => {
                 if let Ok(Value::Dict(d)) = serde_bencode::from_bytes::<Value>(&payload) {
-                    if let Some(Value::Dict(m)) = d.get(&b"m".to_vec()) {
+                    if let Some(Value::Dict(m)) = d.get(b"m".as_slice()) {
                         if let Some(Value::Int(id)) = m.get(&b"ut_metadata".to_vec()) {
                             ut_metadata_id = Some(*id as u8);
                         }
                     }
-                    if let Some(Value::Int(sz)) = d.get(&b"metadata_size".to_vec()) {
+                    if let Some(Value::Int(sz)) = d.get(b"metadata_size".as_slice()) {
                         metadata_size = *sz as u64;
                     }
                 }

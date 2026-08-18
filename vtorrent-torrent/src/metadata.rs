@@ -6,10 +6,7 @@ use serde_bencode::value::Value;
 /// Build the extension handshake dict: `{ "m": { "ut_metadata": id }, "metadata_size": n }`.
 pub fn build_extension_handshake(ut_metadata_id: u8, metadata_size: u64) -> Vec<u8> {
     let mut m = std::collections::HashMap::new();
-    m.insert(
-        b"ut_metadata".to_vec(),
-        Value::Int(ut_metadata_id as i64),
-    );
+    m.insert(b"ut_metadata".to_vec(), Value::Int(ut_metadata_id as i64));
     let mut dict = std::collections::HashMap::new();
     dict.insert(b"m".to_vec(), Value::Dict(m));
     dict.insert(b"metadata_size".to_vec(), Value::Int(metadata_size as i64));
@@ -42,11 +39,11 @@ pub fn parse_data(payload: &[u8]) -> Result<(u32, u64, Vec<u8>)> {
         Value::Dict(d) => d,
         _ => return Err(TorrentError::PeerWireError("ut_metadata not a dict".into())),
     };
-    let piece = match dict.get(&b"piece".to_vec()) {
+    let piece = match dict.get(b"piece".as_slice()) {
         Some(Value::Int(i)) => *i as u32,
         _ => return Err(TorrentError::PeerWireError("missing piece".into())),
     };
-    let total_size = match dict.get(&b"total_size".to_vec()) {
+    let total_size = match dict.get(b"total_size".as_slice()) {
         Some(Value::Int(i)) => *i as u64,
         _ => return Err(TorrentError::PeerWireError("missing total_size".into())),
     };
@@ -131,8 +128,8 @@ mod tests {
         let bytes = build_extension_handshake(3, 1024);
         let value: Value = serde_bencode::from_bytes(&bytes).unwrap();
         if let Value::Dict(d) = value {
-            assert!(d.contains_key(&b"m".to_vec()));
-            assert!(d.contains_key(&b"metadata_size".to_vec()));
+            assert!(d.contains_key(b"m".as_slice()));
+            assert!(d.contains_key(b"metadata_size".as_slice()));
         } else {
             panic!("expected dict");
         }
@@ -144,8 +141,8 @@ mod tests {
         assert_eq!(bytes[0], 3);
         let value: Value = serde_bencode::from_bytes(&bytes[1..]).unwrap();
         if let Value::Dict(d) = value {
-            assert_eq!(d.get(&b"msg_type".to_vec()), Some(&Value::Int(0)));
-            assert_eq!(d.get(&b"piece".to_vec()), Some(&Value::Int(0)));
+            assert_eq!(d.get(b"msg_type".as_slice()), Some(&Value::Int(0)));
+            assert_eq!(d.get(b"piece".as_slice()), Some(&Value::Int(0)));
         } else {
             panic!("expected dict");
         }

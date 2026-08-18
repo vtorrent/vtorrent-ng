@@ -209,7 +209,7 @@ impl PeerMessage {
                 }
             }
             20 => {
-                if payload.len() < 1 {
+                if payload.is_empty() {
                     return Err(TorrentError::PeerWireError(
                         "Extended: payload too short".into(),
                     ));
