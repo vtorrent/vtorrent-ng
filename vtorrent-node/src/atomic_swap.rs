@@ -341,6 +341,51 @@ pub enum OrderStatus {
     Cancelled,
 }
 
+/// Status of a cross-chain swap across both chains.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SwapStatus {
+    /// The maker's VTR HTLC is being funded.
+    Funding,
+    /// The maker's VTR HTLC is funded.
+    VtrFunded,
+    /// The taker's BTC HTLC is funded.
+    BtcFunded,
+    /// The swap completed (both sides claimed).
+    Claimed,
+    /// The swap was refunded after expiry.
+    Refunded,
+}
+
+/// Tracks a swap's lifecycle across the VTR and BTC chains.
+#[derive(Debug, Clone)]
+pub struct SwapState {
+    /// The order this swap belongs to.
+    pub order_id: [u8; 32],
+    /// The hash lock shared by both HTLCs.
+    pub hash_lock: [u8; 32],
+    /// The secret preimage (held by the maker until the taker claims VTR).
+    pub preimage: Option<[u8; 32]>,
+    /// The maker's VTR HTLC funding txid.
+    pub vtr_funding_txid: Option<[u8; 32]>,
+    /// The taker's BTC HTLC funding txid.
+    pub btc_funding_txid: Option<[u8; 32]>,
+    /// Current status.
+    pub status: SwapStatus,
+}
+
+impl SwapState {
+    pub fn new(order_id: [u8; 32], hash_lock: [u8; 32]) -> Self {
+        Self {
+            order_id,
+            hash_lock,
+            preimage: None,
+            vtr_funding_txid: None,
+            btc_funding_txid: None,
+            status: SwapStatus::Funding,
+        }
+    }
+}
+
 impl SwapOrder {
     /// Create a new swap order.
     pub fn new(
@@ -773,6 +818,23 @@ mod tests {
         );
         // rate = 1_000_000 / 1_000_000_000 = 0.001
         assert!((order.rate() - 0.001).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_swap_state_transitions() {
+        let mut state = SwapState::new([1u8; 32], [2u8; 32]);
+        assert_eq!(state.status, SwapStatus::Funding);
+
+        state.vtr_funding_txid = Some([3u8; 32]);
+        state.status = SwapStatus::VtrFunded;
+        assert_eq!(state.status, SwapStatus::VtrFunded);
+
+        state.btc_funding_txid = Some([4u8; 32]);
+        state.status = SwapStatus::BtcFunded;
+        assert_eq!(state.status, SwapStatus::BtcFunded);
+
+        state.status = SwapStatus::Claimed;
+        assert_eq!(state.status, SwapStatus::Claimed);
     }
 
     impl SwapOrder {
