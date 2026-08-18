@@ -11,3 +11,4 @@ pub mod merkle;
 pub mod p2p;
 pub mod tx;
 pub mod utxo;
+pub mod wallet;
