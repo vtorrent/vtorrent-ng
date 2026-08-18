@@ -35,6 +35,7 @@ base64 = "0.21"
 
 # Crypto
 secp256k1 = { workspace = true }
+sha2 = { workspace = true }
 
 # Logging
 tracing = "0.1"

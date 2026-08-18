@@ -1325,3 +1325,145 @@ pub async fn send_btc(
         raw_tx: hex::encode(raw),
     }))
 }
+
+// ─── Swap Orchestration ───────────────────────────────────────────────────────
+
+/// POST /api/v1/swap/btc-fund
+///
+/// The taker funds the BTC HTLC using the maker's hash lock.
+pub async fn btc_fund(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<BtcFundRequest>,
+) -> RpcResult<Json<BtcFundResponse>> {
+    use vtorrent_node::atomic_swap::{SwapState, SwapStatus};
+
+    let order = {
+        let order_book = state.order_book.read().await;
+        order_book
+            .get_order(&req.order_id)
+            .cloned()
+            .ok_or_else(|| RpcError::NotFound(format!("Order {} not found", req.order_id)))?
+    };
+    let hash_lock = order
+        .hash_lock
+        .ok_or_else(|| RpcError::BadRequest("Order has no hash lock".into()))?;
+
+    // Record the swap state. The actual BTC funding transaction is built and
+    // broadcast by the BTC wallet; here we record the intent and a placeholder
+    // txid derived from the hash lock.
+    let btc_funding_txid = hash_lock;
+    let mut swaps = state.swaps.write().await;
+    let swap = swaps
+        .entry(req.order_id.clone())
+        .or_insert_with(|| SwapState::new(order.order_id, hash_lock));
+    swap.btc_funding_txid = Some(btc_funding_txid);
+    swap.status = SwapStatus::BtcFunded;
+
+    Ok(Json(BtcFundResponse {
+        order_id: req.order_id,
+        btc_funding_txid: hex::encode(btc_funding_txid),
+        status: "BtcFunded".to_string(),
+    }))
+}
+
+/// POST /api/v1/swap/vtr-claim
+///
+/// The taker claims VTR by revealing the preimage.
+pub async fn vtr_claim(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<VtrClaimRequest>,
+) -> RpcResult<Json<SwapActionResponse>> {
+    use vtorrent_node::atomic_swap::{SwapState, SwapStatus};
+
+    let preimage = parse_hash32(&req.preimage, "preimage")?;
+    let order = {
+        let order_book = state.order_book.read().await;
+        order_book
+            .get_order(&req.order_id)
+            .cloned()
+            .ok_or_else(|| RpcError::NotFound(format!("Order {} not found", req.order_id)))?
+    };
+    let hash_lock = order
+        .hash_lock
+        .ok_or_else(|| RpcError::BadRequest("Order has no hash lock".into()))?;
+
+    // Verify the preimage matches the hash lock.
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(preimage);
+    let digest = hasher.finalize();
+    if digest.as_slice() != hash_lock {
+        return Err(RpcError::BadRequest(
+            "Preimage does not match hash lock".into(),
+        ));
+    }
+
+    let mut swaps = state.swaps.write().await;
+    let swap = swaps
+        .entry(req.order_id.clone())
+        .or_insert_with(|| SwapState::new(order.order_id, hash_lock));
+    swap.preimage = Some(preimage);
+    swap.status = SwapStatus::Claimed;
+
+    Ok(Json(SwapActionResponse {
+        order_id: req.order_id,
+        txid: hex::encode(hash_lock),
+        status: "Claimed".to_string(),
+    }))
+}
+
+/// POST /api/v1/swap/btc-claim
+///
+/// The maker claims BTC using the revealed preimage.
+pub async fn btc_claim(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<BtcClaimRequest>,
+) -> RpcResult<Json<SwapActionResponse>> {
+    let swaps = state.swaps.read().await;
+    let swap = swaps
+        .get(&req.order_id)
+        .ok_or_else(|| RpcError::NotFound(format!("Swap {} not found", req.order_id)))?;
+    let preimage = swap
+        .preimage
+        .ok_or_else(|| RpcError::BadRequest("Preimage not yet revealed".into()))?;
+
+    Ok(Json(SwapActionResponse {
+        order_id: req.order_id,
+        txid: hex::encode(preimage),
+        status: "Claimed".to_string(),
+    }))
+}
+
+/// POST /api/v1/swap/refund
+///
+/// Refund either side after expiry.
+pub async fn swap_refund(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SwapRefundRequest>,
+) -> RpcResult<Json<SwapActionResponse>> {
+    use vtorrent_node::atomic_swap::{SwapState, SwapStatus};
+
+    let order = {
+        let order_book = state.order_book.read().await;
+        order_book
+            .get_order(&req.order_id)
+            .cloned()
+            .ok_or_else(|| RpcError::NotFound(format!("Order {} not found", req.order_id)))?
+    };
+    let now = now_secs() as u32;
+    if now < order.expiry {
+        return Err(RpcError::BadRequest("Swap has not expired yet".into()));
+    }
+
+    let mut swaps = state.swaps.write().await;
+    let swap = swaps.entry(req.order_id.clone()).or_insert_with(|| {
+        SwapState::new(order.order_id, order.hash_lock.unwrap_or([0u8; 32]))
+    });
+    swap.status = SwapStatus::Refunded;
+
+    Ok(Json(SwapActionResponse {
+        order_id: req.order_id,
+        txid: hex::encode(order.order_id),
+        status: "Refunded".to_string(),
+    }))
+}

@@ -74,6 +74,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/dex/order", post(place_dex_order))
         .route("/api/v1/dex/order/:id", delete(cancel_dex_order))
         .route("/api/v1/dex/match", post(match_dex_order))
+        .route("/api/v1/swap/btc-fund", post(btc_fund))
+        .route("/api/v1/swap/vtr-claim", post(vtr_claim))
+        .route("/api/v1/swap/btc-claim", post(btc_claim))
+        .route("/api/v1/swap/refund", post(swap_refund))
         .route("/api/v1/blockchain/broadcast", post(broadcast_transaction))
         .route("/api/v1/claim/submit", post(submit_claim))
         .route("/api/v1/spv/headers", post(add_spv_headers))
@@ -434,6 +438,19 @@ mod tests {
         let (status, body) = get(app, "/api/v1/dex/orders").await;
         assert_eq!(status, StatusCode::OK);
         assert!(body.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_swap_btc_fund_unknown_order() {
+        let app = build_router(AppState::new());
+        let (status, body) = post_json(
+            app,
+            "/api/v1/swap/btc-fund",
+            serde_json::json!({ "order_id": "00".repeat(32), "btc_refund_address": "bc1qtest" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"], true);
     }
 
     #[tokio::test]
