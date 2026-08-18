@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **Core Infrastructure**
 - New Rust-based monorepo (`vtorrent-ng`) replacing the legacy C++/Qt codebase
-- Cargo workspace with 13 crates: `vtorrent-core`, `vtorrent-wallet`, `vtorrent-migrate`, `vtorrent-snapshot`, `vtorrent-node`, `vtorrent-p2p`, `vtorrent-torrent`, `vtorrent-rpc`, `vtorrent-tauri`, `vtorrent-overlay`, `vtorrent-spv`, `vtorrent-store`, `vtorrent-daemon`
-- Full test suite: 341 tests, 0 failures
+- Cargo workspace with 17 crates: `vtorrent-core`, `vtorrent-wallet`, `vtorrent-migrate`, `vtorrent-snapshot`, `vtorrent-node`, `vtorrent-p2p`, `vtorrent-torrent`, `vtorrent-rpc`, `vtorrent-tauri`, `vtorrent-overlay`, `vtorrent-spv`, `vtorrent-store`, `vtorrent-daemon`, `vtorrent-script`, `vtorrent-onion`, `vtorrent-cli`, `vtorrent-btc`
+- Full test suite: 395 tests, 0 failures
 
 **Overlay / NAT Traversal**
 - `vtorrent-overlay`: Kademlia-style overlay network for NAT traversal and peer relay
@@ -74,11 +74,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **BitTorrent Integration**
 - Native BitTorrent client built into the wallet (`vtorrent-torrent` crate)
-- `.torrent` file parsing (BEP-3 metainfo format)
-- Magnet link support
-- HTTP tracker announce/scrape (BEP-15)
-- Peer wire protocol (BEP-3)
-- **VTR incentive system**: earn VTR for seeding, pay VTR for priority download slots
+- `.torrent` file parsing (BEP-3 metainfo format), including piece-hash extraction
+- Magnet link support, including BEP-9 `ut_metadata` / BEP-10 extension-protocol metadata fetch from peers
+- HTTP tracker announce (BEP-3)
+- Peer wire protocol (BEP-3) with a download/upload engine: tracker announce, peer connect, handshake, piece request, SHA1 verification, disk write, and seeding
+- **VTR incentive system**: earn VTR for seeding, pay VTR for priority download slots, with a periodic settlement loop
 - Configurable seeding rate: VTR per GB uploaded
 - Configurable download priority: VTR per GB downloaded
 
@@ -87,6 +87,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `OP_IF/OP_ELSE` script builder for cross-chain swaps
 - Funding, claim, and refund transaction builders
 - P2P order book with `SwapOrder` and `OrderStatus` types
+- Built-in Bitcoin SPV wallet (`vtorrent-btc`): BIP39 mnemonic + BIP84 SegWit keys, header-chain sync, merkle proofs, UTXO tracking, and transaction building
+- Bitcoin-side P2WSH HTLC primitives and a live header-sync + Bloom-filter UTXO scan
+- Two-sided swap orchestration: BTC funding, VTR claim, BTC claim, and refund endpoints with an expiry sweep
+- P2P order gossip via a `dexorder` message with flooding and deduplication
 - No exchange required — trade VTR directly peer-to-peer
 
 **HTTP RPC API**
@@ -146,6 +150,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI jobs install GTK/WebKit system libraries so the workspace (including `vtorrent-tauri`) compiles
 - Audit job generates `Cargo.lock` (gitignored) and grants `checks: write` so `rustsec/audit-check` can post its results
 - Frontend: `@tauri-apps/api` dependency added (fixes `tsc`), eslint + typescript-eslint + react-hooks configured, `pnpm lint` passes clean
+- Tauri build paths corrected for the crate-root config layout; desktop app compiles and bundles deb + rpm
 
 ### Security
 
