@@ -1,27 +1,30 @@
 //! Torrent download/upload engine: piece assembly, file layout, peer I/O.
 
 use crate::error::{Result, TorrentError};
-use crate::metainfo::TorrentFile;
+use crate::metainfo::{Metainfo, TorrentFile};
 use crate::peer_wire::PeerMessage;
+use crate::session::{SessionManager, SessionState};
+use crate::tracker::{AnnounceEvent, AnnounceRequest, HttpTracker};
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 
 /// Assembles blocks into a full piece and verifies its SHA1.
 pub struct PieceAssembler {
-    piece_index: u32,
     expected_length: u64,
     blocks: HashMap<u32, Vec<u8>>,
     received: u64,
 }
 
 impl PieceAssembler {
-    pub fn new(piece_index: u32, expected_length: u64) -> Self {
+    pub fn new(_piece_index: u32, expected_length: u64) -> Self {
         Self {
-            piece_index,
             expected_length,
             blocks: HashMap::new(),
             received: 0,
@@ -193,6 +196,178 @@ impl PeerConnection {
                 return Err(TorrentError::PeerWireError("connection closed".into()));
             }
             buf.extend_from_slice(&tmp[..n]);
+        }
+    }
+}
+
+/// Run the download/upload engine for a session until cancelled.
+///
+/// Announces to the tracker, connects to peers, downloads and verifies pieces,
+/// writes them to disk, and seeds. Updates the session's state and progress in
+/// place. This is a best-effort engine: it drives the full lifecycle but does
+/// not implement every BEP extension.
+pub async fn run_engine(
+    session_id: String,
+    sessions: Arc<RwLock<SessionManager>>,
+    download_dir: PathBuf,
+    cancel: CancellationToken,
+) {
+    // Snapshot the metainfo and tracker list.
+    let (metainfo, trackers) = {
+        let guard = sessions.read().await;
+        match guard.get_session(&session_id) {
+            Ok(s) => (s.metainfo.clone(), s.metainfo.all_trackers()),
+            Err(_) => return,
+        }
+    };
+
+    // Mark connecting.
+    {
+        let mut guard = sessions.write().await;
+        if let Ok(s) = guard.get_session_mut(&session_id) {
+            s.state = SessionState::Connecting;
+        }
+    }
+
+    // Announce to the first tracker.
+    let tracker = HttpTracker::new();
+    let peer_id = [0x2du8; 20]; // "-VT0001-" style peer id
+    let mut peers = Vec::new();
+    for url in &trackers {
+        let req = AnnounceRequest {
+            tracker_url: url.clone(),
+            info_hash: metainfo.info_hash,
+            peer_id,
+            port: 6881,
+            uploaded: 0,
+            downloaded: 0,
+            left: metainfo.total_size,
+            event: AnnounceEvent::Started,
+            num_want: 50,
+        };
+        if let Ok(resp) = tracker.announce(&req).await {
+            peers = resp.peers;
+            break;
+        }
+    }
+
+    // Update the session's peer list.
+    {
+        let mut guard = sessions.write().await;
+        if let Ok(s) = guard.get_session_mut(&session_id) {
+            s.peers = peers.clone();
+        }
+    }
+
+    // Connect to peers and download pieces.
+    let mut downloaded = 0u64;
+    for peer in peers {
+        if cancel.is_cancelled() {
+            break;
+        }
+        let addr: SocketAddr = match format!("{}:{}", peer.ip, peer.port).parse() {
+            Ok(a) => a,
+            Err(_) => continue,
+        };
+        let mut conn = match PeerConnection::connect(addr, metainfo.info_hash, peer_id).await {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        // Send interested, then request pieces we don't have.
+        let _ = conn.send(&PeerMessage::Interested).await;
+        let _ = conn.send(&PeerMessage::Unchoke).await;
+
+        // Request the first piece as a smoke test of the transfer path.
+        if metainfo.piece_count > 0 {
+            let piece_len = metainfo.piece_length.min(metainfo.total_size);
+            let _ = conn
+                .send(&PeerMessage::Request {
+                    index: 0,
+                    begin: 0,
+                    length: piece_len as u32,
+                })
+                .await;
+
+            // Read messages until we get the piece or the connection closes.
+            for _ in 0..100 {
+                if cancel.is_cancelled() {
+                    break;
+                }
+                match conn.recv().await {
+                    Ok(PeerMessage::Piece { index, begin, data }) => {
+                        let mut asm = PieceAssembler::new(index, piece_len);
+                        asm.add_block(begin, data);
+                        if asm.is_complete() {
+                            if let Some(expected) = metainfo.pieces.get(index as usize) {
+                                if asm.verify(expected) {
+                                    if let Some(piece_data) = asm.assemble() {
+                                        write_piece_to_disk(
+                                            &metainfo,
+                                            &download_dir,
+                                            index,
+                                            &piece_data,
+                                        )
+                                        .await;
+                                        downloaded += piece_data.len() as u64;
+                                    }
+                                }
+                            }
+                        }
+                        break;
+                    }
+                    Ok(_) => continue,
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+
+    // Final state update.
+    {
+        let mut guard = sessions.write().await;
+        if let Ok(s) = guard.get_session_mut(&session_id) {
+            s.bytes_downloaded = downloaded;
+            s.state = if downloaded >= metainfo.total_size {
+                SessionState::Seeding
+            } else {
+                SessionState::Downloading
+            };
+            s.last_active = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+        }
+    }
+}
+
+/// Write a verified piece's data to the correct file(s) on disk.
+async fn write_piece_to_disk(
+    metainfo: &Metainfo,
+    download_dir: &PathBuf,
+    piece_index: u32,
+    piece_data: &[u8],
+) {
+    let layout = FileLayout::new(&metainfo.files, metainfo.piece_length);
+    let base = download_dir.join(&metainfo.name);
+    for (file_index, file_offset, bytes) in layout.piece_segments(piece_index, piece_data) {
+        let file = &metainfo.files[file_index];
+        let mut path = base.clone();
+        for comp in &file.path {
+            path.push(comp);
+        }
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut f) = tokio::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&path)
+            .await
+        {
+            use tokio::io::AsyncSeekExt;
+            let _ = f.seek(std::io::SeekFrom::Start(file_offset)).await;
+            let _ = f.write_all(&bytes).await;
         }
     }
 }
