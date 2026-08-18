@@ -37,6 +37,8 @@ pub enum PeerMessage {
     Cancel { index: u32, begin: u32, length: u32 },
     /// Port — DHT port (BEP-5).
     Port { port: u16 },
+    /// Extension protocol message (BEP-10).
+    Extended { id: u8, payload: Vec<u8> },
 }
 
 impl PeerMessage {
@@ -109,6 +111,14 @@ impl PeerMessage {
             PeerMessage::Port { port } => {
                 let mut buf = vec![0, 0, 0, 3, 9];
                 buf.extend_from_slice(&port.to_be_bytes());
+                buf
+            }
+            PeerMessage::Extended { id, payload } => {
+                let len = (2 + payload.len()) as u32;
+                let mut buf = len.to_be_bytes().to_vec();
+                buf.push(20);
+                buf.push(*id);
+                buf.extend_from_slice(payload);
                 buf
             }
         }
@@ -196,6 +206,17 @@ impl PeerMessage {
                 }
                 PeerMessage::Port {
                     port: u16::from_be_bytes([payload[0], payload[1]]),
+                }
+            }
+            20 => {
+                if payload.len() < 1 {
+                    return Err(TorrentError::PeerWireError(
+                        "Extended: payload too short".into(),
+                    ));
+                }
+                PeerMessage::Extended {
+                    id: payload[0],
+                    payload: payload[1..].to_vec(),
                 }
             }
             _ => {
@@ -381,5 +402,23 @@ mod tests {
         // Only 3 bytes — not enough for length prefix
         let buf = vec![0u8, 0, 0];
         assert!(PeerMessage::decode(&buf).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_encode_decode_extended() {
+        let msg = PeerMessage::Extended {
+            id: 1,
+            payload: vec![0xAB, 0xCD],
+        };
+        let encoded = msg.encode();
+        assert_eq!(encoded[0..5], [0, 0, 0, 4, 20]);
+        let (decoded, _) = PeerMessage::decode(&encoded).unwrap().unwrap();
+        assert_eq!(
+            decoded,
+            PeerMessage::Extended {
+                id: 1,
+                payload: vec![0xAB, 0xCD]
+            }
+        );
     }
 }
