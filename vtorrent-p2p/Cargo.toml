@@ -36,5 +36,5 @@ tracing           = "0.1"
 futures           = "0.3"
 
 # HTTP client for Cloudflare DNS-over-HTTPS bootstrap
-reqwest           = { version = "0.11", features = ["blocking", "json"] }
+reqwest           = { version = "0.12", features = ["blocking", "json"] }
 urlencoding       = "2"

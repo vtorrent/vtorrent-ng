@@ -305,8 +305,8 @@ impl Wallet {
     /// Enable HD on this wallet by generating a BIP39 mnemonic.
     /// Returns the mnemonic phrase so the caller can display it for backup.
     pub fn enable_hd(&mut self) -> Result<String> {
-        if self.data.hd.is_some() {
-            return Ok(self.data.hd.as_ref().unwrap().mnemonic.clone());
+        if let Some(hd) = &self.data.hd {
+            return Ok(hd.mnemonic.clone());
         }
         let mnemonic = crate::hd::Mnemonic::generate()?;
         let phrase = mnemonic.phrase().to_string();

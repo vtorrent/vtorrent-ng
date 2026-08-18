@@ -16,7 +16,7 @@ path = "src/main.rs"
 clap = { version = "4", features = ["derive", "env"] }
 
 # HTTP client for RPC calls
-reqwest = { version = "0.11", features = ["json", "blocking"] }
+reqwest = { version = "0.12", features = ["json", "blocking"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
