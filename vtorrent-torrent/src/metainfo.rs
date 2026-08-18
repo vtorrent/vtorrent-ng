@@ -15,6 +15,8 @@ pub struct Metainfo {
     pub piece_length: u64,
     /// Number of pieces.
     pub piece_count: u32,
+    /// The 20-byte SHA1 hash of each piece (BEP-3 `pieces` string).
+    pub pieces: Vec<[u8; 20]>,
     /// Announce URL of the primary tracker.
     pub announce: Option<String>,
     /// List of tracker tiers (BEP-12 announce-list).
@@ -137,6 +139,25 @@ impl Metainfo {
 
         let piece_count = total_size.div_ceil(piece_length) as u32;
 
+        // Parse the piece hashes (BEP-3 `pieces` string: 20 bytes per piece).
+        let pieces = match info_dict.get(&b"pieces".to_vec()) {
+            Some(serde_bencode::value::Value::Bytes(b)) => {
+                if b.len() % 20 != 0 {
+                    return Err(TorrentError::InvalidMetainfo(
+                        "pieces string length is not a multiple of 20".into(),
+                    ));
+                }
+                let mut hashes = Vec::with_capacity(b.len() / 20);
+                for chunk in b.chunks_exact(20) {
+                    let mut h = [0u8; 20];
+                    h.copy_from_slice(chunk);
+                    hashes.push(h);
+                }
+                hashes
+            }
+            _ => Vec::new(),
+        };
+
         // Parse announce
         let announce = dict.get(&b"announce".to_vec()).and_then(|v| match v {
             serde_bencode::value::Value::Bytes(b) => String::from_utf8(b.clone()).ok(),
@@ -173,6 +194,7 @@ impl Metainfo {
             total_size,
             piece_length,
             piece_count,
+            pieces,
             announce,
             announce_list,
             files,
@@ -209,6 +231,7 @@ impl Metainfo {
             total_size: magnet.size_hint.unwrap_or(0),
             piece_length: 0,
             piece_count: 0,
+            pieces: Vec::new(),
             announce: magnet.trackers.first().cloned(),
             announce_list: vec![magnet.trackers.clone()],
             files: Vec::new(),
@@ -546,6 +569,7 @@ mod tests {
             total_size: 0,
             piece_length: 262144,
             piece_count: 0,
+            pieces: Vec::new(),
             announce: None,
             announce_list: vec![],
             files: vec![],
@@ -599,5 +623,27 @@ mod tests {
             meta.info_hash_hex(),
             "f3b9571348b58f6948b753f309ab07b3994ab5cf"
         );
+    }
+
+    #[test]
+    fn test_piece_hashes_parsed() {
+        // Build a minimal single-file torrent with 2 pieces of 4 bytes each.
+        // pieces string = 2 * 20 bytes of SHA1 hashes.
+        let mut pieces = Vec::new();
+        pieces.extend_from_slice(&[0x11u8; 20]);
+        pieces.extend_from_slice(&[0x22u8; 20]);
+
+        // Construct the bencode bytes directly (the pieces value is raw bytes).
+        let mut bencode = Vec::new();
+        bencode.extend_from_slice(b"d4:infod6:lengthi8e4:name4:test12:piece lengthi4e6:pieces");
+        bencode.extend_from_slice(format!("{}:", pieces.len()).as_bytes());
+        bencode.extend_from_slice(&pieces);
+        bencode.extend_from_slice(b"e8:announce15:http://tracker/ee");
+
+        let meta = Metainfo::from_bytes(&bencode).unwrap();
+        assert_eq!(meta.piece_count, 2);
+        assert_eq!(meta.pieces.len(), 2);
+        assert_eq!(meta.pieces[0], [0x11u8; 20]);
+        assert_eq!(meta.pieces[1], [0x22u8; 20]);
     }
 }

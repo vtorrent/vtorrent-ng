@@ -242,6 +242,7 @@ mod tests {
             total_size: 1024 * 1024 * 1024, // 1 GB
             piece_length: 262144,
             piece_count: 4096,
+            pieces: Vec::new(),
             announce: Some("http://tracker.example.com/announce".into()),
             announce_list: vec![],
             files: vec![TorrentFile {
