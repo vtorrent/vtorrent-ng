@@ -324,6 +324,52 @@ pub struct SwapOrder {
     pub status: OrderStatus,
 }
 
+/// A public, serializable view of a swap order for P2P gossip.
+///
+/// Excludes the secret preimage and the private funding txid, which must never
+/// leave the maker's node.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OrderAnnouncement {
+    pub order_id: [u8; 32],
+    pub maker_address: String,
+    pub vtr_amount: u64,
+    pub target_asset: String,
+    pub target_amount: u64,
+    pub hash_lock: Option<[u8; 32]>,
+    pub expiry: u32,
+}
+
+impl OrderAnnouncement {
+    /// Build a public announcement from a full order.
+    pub fn from_order(order: &SwapOrder) -> Self {
+        Self {
+            order_id: order.order_id,
+            maker_address: order.maker_address.clone(),
+            vtr_amount: order.vtr_amount,
+            target_asset: order.target_asset.clone(),
+            target_amount: order.target_amount,
+            hash_lock: order.hash_lock,
+            expiry: order.expiry,
+        }
+    }
+
+    /// Reconstruct a `SwapOrder` from an announcement (no preimage/funding).
+    pub fn to_order(&self) -> SwapOrder {
+        SwapOrder {
+            order_id: self.order_id,
+            maker_address: self.maker_address.clone(),
+            vtr_amount: self.vtr_amount,
+            target_asset: self.target_asset.clone(),
+            target_amount: self.target_amount,
+            hash_lock: self.hash_lock,
+            funding_txid: None,
+            preimage: None,
+            expiry: self.expiry,
+            status: OrderStatus::Open,
+        }
+    }
+}
+
 /// Status of a swap order.
 #[derive(Debug, Clone, PartialEq)]
 pub enum OrderStatus {
@@ -835,6 +881,43 @@ mod tests {
 
         state.status = SwapStatus::Claimed;
         assert_eq!(state.status, SwapStatus::Claimed);
+    }
+
+    #[test]
+    fn test_order_announcement_roundtrip() {
+        let order = SwapOrder::new(
+            "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string(),
+            1_000_000_000,
+            "BTC".to_string(),
+            100_000,
+            DEFAULT_HTLC_LOCKTIME,
+        );
+        let ann = OrderAnnouncement::from_order(&order);
+        let json = serde_json::to_string(&ann).unwrap();
+        let back: OrderAnnouncement = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.order_id, ann.order_id);
+        assert_eq!(back.maker_address, ann.maker_address);
+        assert_eq!(back.vtr_amount, ann.vtr_amount);
+        assert_eq!(back.target_asset, ann.target_asset);
+        assert_eq!(back.target_amount, ann.target_amount);
+        assert_eq!(back.expiry, ann.expiry);
+    }
+
+    #[test]
+    fn test_order_announcement_excludes_preimage() {
+        let mut order = SwapOrder::new(
+            "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string(),
+            1_000_000_000,
+            "BTC".to_string(),
+            100_000,
+            DEFAULT_HTLC_LOCKTIME,
+        );
+        order.preimage = Some([7u8; 32]);
+        order.funding_txid = Some([9u8; 32]);
+        let ann = OrderAnnouncement::from_order(&order);
+        let json = serde_json::to_string(&ann).unwrap();
+        assert!(!json.contains("preimage"));
+        assert!(!json.contains("funding_txid"));
     }
 
     impl SwapOrder {
