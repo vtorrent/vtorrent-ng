@@ -196,6 +196,10 @@ async fn main() -> anyhow::Result<()> {
     rpc_state.rpc_api_key = cli.rpc_api_key.clone();
     let rpc_addr = cli.rpc_addr.clone();
 
+    // Share the DEX order book between the node (for gossip) and RPC (for the
+    // order-book API), so received orders are visible to both.
+    node.set_order_book(Arc::clone(&rpc_state.order_book));
+
     // ── Wire node events → RPC WebSocket broadcaster + BlockStore ────────────
     //
     // The node emits `vtorrent_node::events::NodeEvent` values.
