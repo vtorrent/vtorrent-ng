@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **Core Infrastructure**
 - New Rust-based monorepo (`vtorrent-ng`) replacing the legacy C++/Qt codebase
 - Cargo workspace with 13 crates: `vtorrent-core`, `vtorrent-wallet`, `vtorrent-migrate`, `vtorrent-snapshot`, `vtorrent-node`, `vtorrent-p2p`, `vtorrent-torrent`, `vtorrent-rpc`, `vtorrent-tauri`, `vtorrent-overlay`, `vtorrent-spv`, `vtorrent-store`, `vtorrent-daemon`
-- Full test suite: 292 tests, 0 failures
+- Full test suite: 341 tests, 0 failures
 
 **Overlay / NAT Traversal**
 - `vtorrent-overlay`: Kademlia-style overlay network for NAT traversal and peer relay
@@ -122,6 +122,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dependency on OpenSSL (replaced by `ring` and `aes` crates)
 - Dependency on Boost (replaced by Rust standard library and Tokio)
 - Centralized exchange dependency (replaced by built-in atomic swap DEX)
+
+### Fixed
+
+**Wallet Security**
+- Passphrase and TOTP are enforced on wallet unlock and every send — the RPC layer re-verifies the passphrase and, when 2FA is enabled, the 6-digit TOTP code before signing; wrong credentials return HTTP 401
+- Wallet import encrypts the WIF with the passphrase (Argon2id + ChaCha20-Poly1305) and stores the TOTP secret; the wallet starts locked until the passphrase is verified
+
+**Consensus**
+- Block validation enforces the 20,000,000 VTR maximum supply — blocks that would mint beyond the cap are rejected; the chain tracks cumulative supply with rollback support
+
+**DoS Hardening**
+- Ban manager wired into the P2P message handler — invalid transactions/blocks, malformed payloads, and unknown commands score peers and trigger bans
+- Per-peer message rate limiting (500 msgs / 10 s) bans flooders, protecting the node event loop
+- Mempool conflict detection switched from an O(n²) scan to a spent-input index, making it O(1) per input
+
+**Correctness**
+- 8-decimal denomination (`COIN = 100,000,000`) applied consistently across RPC, CLI, and UI
+- Torrent info hash computed from the raw info-dict bytes (BEP-3), not the re-serialized struct
+- Address decoding uses full-width base58 instead of `u128`, fixing addresses with large values
+
+**CI & Tooling**
+- CI jobs install GTK/WebKit system libraries so the workspace (including `vtorrent-tauri`) compiles
+- Audit job generates `Cargo.lock` (gitignored) and grants `checks: write` so `rustsec/audit-check` can post its results
+- Frontend: `@tauri-apps/api` dependency added (fixes `tsc`), eslint + typescript-eslint + react-hooks configured, `pnpm lint` passes clean
 
 ### Security
 
