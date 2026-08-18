@@ -201,6 +201,11 @@ impl SessionManager {
         sessions
     }
 
+    /// Iterate over all sessions mutably.
+    pub fn sessions_mut(&mut self) -> impl Iterator<Item = &mut TorrentSession> {
+        self.sessions.values_mut()
+    }
+
     /// Count sessions by state.
     pub fn count_by_state(&self, state: SessionState) -> usize {
         self.sessions.values().filter(|s| s.state == state).count()

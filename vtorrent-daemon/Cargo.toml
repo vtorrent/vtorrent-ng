@@ -18,6 +18,7 @@ vtorrent-store    = { path = "../vtorrent-store" }
 vtorrent-spv      = { path = "../vtorrent-spv" }
 vtorrent-onion    = { path = "../vtorrent-onion" }
 vtorrent-btc      = { path = "../vtorrent-btc" }
+vtorrent-torrent  = { path = "../vtorrent-torrent" }
 
 # Async runtime
 tokio             = { version = "1", features = ["full"] }

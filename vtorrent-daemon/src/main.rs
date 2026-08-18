@@ -464,6 +464,34 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Periodic torrent incentive settlement — runs every 5 minutes.
+    let torrent_sessions_for_settlement = Arc::clone(&rpc_state.torrent_sessions);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
+            vtorrent_torrent::incentive::PAYMENT_INTERVAL_SECS,
+        ));
+        loop {
+            interval.tick().await;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let mut guard = torrent_sessions_for_settlement.write().await;
+            let mut settled = 0;
+            for session in guard.sessions_mut() {
+                for account in session.incentive_accounts.values_mut() {
+                    if account.needs_settlement(now) {
+                        account.settle(now);
+                        settled += 1;
+                    }
+                }
+            }
+            if settled > 0 {
+                tracing::info!("Torrent incentive: settled {} peer accounts", settled);
+            }
+        }
+    });
+
     // Bitcoin SPV sync — resolves DNS seeds and syncs headers in a loop.
     let btc_wallet = Arc::clone(&rpc_state.btc_wallet);
     tokio::spawn(async move {
