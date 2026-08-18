@@ -48,9 +48,8 @@ pub struct AppState {
     /// Directory where downloaded torrent data is written.
     pub download_dir: Arc<RwLock<std::path::PathBuf>>,
     /// Cancellation tokens for active torrent engine tasks, keyed by session id.
-    pub torrent_cancels: Arc<
-        RwLock<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>,
-    >,
+    pub torrent_cancels:
+        Arc<RwLock<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>>,
     /// SPV header chain for light-client verification.
     pub spv_chain: Arc<RwLock<SpvChain>>,
     /// Bitcoin SPV wallet (optional — created when a seed is available).

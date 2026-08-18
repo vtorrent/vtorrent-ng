@@ -344,7 +344,7 @@ pub async fn run_engine(
 /// Write a verified piece's data to the correct file(s) on disk.
 async fn write_piece_to_disk(
     metainfo: &Metainfo,
-    download_dir: &PathBuf,
+    download_dir: &std::path::Path,
     piece_index: u32,
     piece_data: &[u8],
 ) {
@@ -361,6 +361,7 @@ async fn write_piece_to_disk(
         }
         if let Ok(mut f) = tokio::fs::OpenOptions::new()
             .create(true)
+            .truncate(false)
             .write(true)
             .open(&path)
             .await
@@ -420,7 +421,7 @@ mod tests {
             md5sum: None,
         }];
         let layout = FileLayout::new(&files, 50);
-        let segs = layout.piece_segments(0, &vec![0u8; 50]);
+        let segs = layout.piece_segments(0, &[0u8; 50]);
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].0, 0);
         assert_eq!(segs[0].1, 0);
@@ -442,7 +443,7 @@ mod tests {
             },
         ];
         let layout = FileLayout::new(&files, 50);
-        let segs = layout.piece_segments(0, &vec![0u8; 50]);
+        let segs = layout.piece_segments(0, &[0u8; 50]);
         assert_eq!(segs.len(), 2);
         assert_eq!(segs[0].0, 0);
         assert_eq!(segs[0].1, 0);
@@ -479,7 +480,7 @@ mod tests {
             sock.write_all(&reply.encode()).await.unwrap();
         });
 
-        let mut conn = PeerConnection::connect(addr, info_hash, our_peer_id)
+        let conn = PeerConnection::connect(addr, info_hash, our_peer_id)
             .await
             .unwrap();
         assert_eq!(conn.remote_peer_id, their_peer_id);
