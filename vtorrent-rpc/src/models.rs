@@ -460,3 +460,53 @@ pub struct BtcSendResponse {
     pub txid: String,
     pub raw_tx: String,
 }
+
+// ─── Swap Orchestration ───────────────────────────────────────────────────────
+
+/// Request body for `POST /api/v1/swap/btc-fund`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BtcFundRequest {
+    /// Hex-encoded order ID.
+    pub order_id: String,
+    /// The taker's BTC refund address.
+    pub btc_refund_address: String,
+}
+
+/// Response for a successful BTC funding.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BtcFundResponse {
+    pub order_id: String,
+    pub btc_funding_txid: String,
+    pub status: String,
+}
+
+/// Request body for `POST /api/v1/swap/vtr-claim`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VtrClaimRequest {
+    /// Hex-encoded order ID.
+    pub order_id: String,
+    /// The secret preimage (revealed by the taker).
+    pub preimage: String,
+}
+
+/// Request body for `POST /api/v1/swap/btc-claim`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BtcClaimRequest {
+    /// Hex-encoded order ID.
+    pub order_id: String,
+}
+
+/// Request body for `POST /api/v1/swap/refund`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SwapRefundRequest {
+    /// Hex-encoded order ID.
+    pub order_id: String,
+}
+
+/// Generic swap action response.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SwapActionResponse {
+    pub order_id: String,
+    pub txid: String,
+    pub status: String,
+}
