@@ -436,6 +436,14 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Bitcoin SPV sync — placeholder that logs readiness. The full header
+    // sync loop is wired in a later sub-project (cross-chain swap).
+    let btc_wallet = Arc::clone(&rpc_state.btc_wallet);
+    tokio::spawn(async move {
+        tracing::info!("Bitcoin SPV wallet task started (idle)");
+        let _ = btc_wallet;
+    });
+
     let rpc_handle = tokio::spawn(async move {
         tracing::info!("RPC server starting on {}", rpc_addr);
         if let Err(e) = start_server(&rpc_addr, rpc_state).await {
