@@ -335,6 +335,16 @@ impl Node {
         self.order_book = Some(order_book);
     }
 
+    /// Broadcast a new order announcement to all connected peers.
+    pub async fn broadcast_order(&mut self, order: &crate::atomic_swap::SwapOrder) {
+        let ann = OrderAnnouncement::from_order(order);
+        self.seen_orders.insert(order.order_id);
+        let payload = serde_json::to_vec(&ann).unwrap_or_default();
+        self.peer_manager
+            .broadcast(NetMessage::new("dexorder", payload))
+            .await;
+    }
+
     /// Returns a cloned sender that can be used to submit locally-created
     /// transactions (e.g. from the RPC wallet) into the node's event loop.
     /// The node will add them to the mempool and broadcast an `inv` to peers.
@@ -1578,6 +1588,31 @@ impl Node {
                 }
             }
 
+            // ── DEX order gossip ─────────────────────────────────────────────
+            "dexorder" => {
+                if let Ok(ann) = serde_json::from_slice::<OrderAnnouncement>(&msg.payload) {
+                    let order_id = ann.order_id;
+                    if self.seen_orders.insert(order_id) {
+                        if let Some(book) = &self.order_book {
+                            book.write().await.add_order(ann.to_order());
+                        }
+                        // Re-broadcast to all peers except the sender.
+                        let payload = serde_json::to_vec(&ann).unwrap_or_default();
+                        for peer in self.peer_manager.connected_peers() {
+                            if peer != peer_addr {
+                                self.peer_manager
+                                    .send_to(peer, NetMessage::new("dexorder", payload.clone()))
+                                    .await;
+                            }
+                        }
+                        tracing::debug!("DEX gossip: received order {}", hex::encode(order_id));
+                    }
+                } else {
+                    self.peer_manager
+                        .record_misbehaviour(peer_addr, Misbehaviour::MalformedMessage);
+                }
+            }
+
             cmd => {
                 tracing::trace!("Unhandled message '{}' from {}", cmd, peer_addr);
                 self.peer_manager
@@ -2045,5 +2080,33 @@ mod tests {
             node.peer_manager.is_banned(peer_addr),
             "flooding peer should be banned"
         );
+    }
+
+    #[tokio::test]
+    async fn test_dexorder_gossip_adds_to_book() {
+        use crate::atomic_swap::{OrderAnnouncement, SwapOrder, SwapOrderBook};
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let mut node = test_node();
+        let book = Arc::new(RwLock::new(SwapOrderBook::new()));
+        node.set_order_book(book.clone());
+
+        let order = SwapOrder::new(
+            "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string(),
+            1_000_000_000,
+            "BTC".to_string(),
+            100_000,
+            48 * 3600,
+        );
+        let ann = OrderAnnouncement::from_order(&order);
+        let payload = serde_json::to_vec(&ann).unwrap();
+        let peer_addr: std::net::SocketAddr = "127.0.0.1:12348".parse().unwrap();
+
+        node.handle_message(peer_addr, NetMessage::new("dexorder", payload))
+            .await
+            .unwrap();
+
+        assert_eq!(book.read().await.open_order_count(), 1);
     }
 }
