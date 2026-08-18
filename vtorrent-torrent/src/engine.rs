@@ -15,6 +15,9 @@ use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
+/// BEP-10 extension bit: reserved[5] bit 0x10.
+const EXTENSION_RESERVED: [u8; 8] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00];
+
 /// Assembles blocks into a full piece and verifies its SHA1.
 pub struct PieceAssembler {
     expected_length: u64,
@@ -146,7 +149,7 @@ impl PeerConnection {
         let handshake = PeerMessage::Handshake {
             info_hash,
             peer_id: our_peer_id,
-            reserved: [0u8; 8],
+            reserved: EXTENSION_RESERVED,
         };
         stream
             .write_all(&handshake.encode())
