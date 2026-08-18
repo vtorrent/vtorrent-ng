@@ -1,7 +1,7 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Shield, Download, ArrowLeftRight,
-  Lock, Wifi, WifiOff, RefreshCw, Cpu, Zap, Gift,
+  Lock, Wifi, WifiOff, RefreshCw, Cpu, Zap, Gift, Bitcoin,
 } from 'lucide-react'
 import { useWallet, formatVTR } from '../hooks/useWallet'
 import { useNodeInfo } from '../hooks/useNode'
@@ -13,6 +13,7 @@ const navItems = [
   { to: '/trade',     icon: ArrowLeftRight,  label: 'P2P Trade' },
   { to: '/staking',   icon: Zap,             label: 'Staking'   },
   { to: '/claim',     icon: Gift,            label: 'Claim VTR' },
+  { to: '/btc',       icon: Bitcoin,         label: 'Bitcoin'  },
   { to: '/security',  icon: Shield,          label: 'Security'  },
 ]
 

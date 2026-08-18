@@ -9,6 +9,7 @@ import TorrentPage from './pages/TorrentPage'
 import TradePage from './pages/TradePage'
 import StakingPage from './pages/StakingPage'
 import LegacyClaimPage from './pages/LegacyClaimPage'
+import BtcWalletPage from './pages/BtcWalletPage'
 import Layout from './components/Layout'
 
 function AppRoutes() {
@@ -46,6 +47,10 @@ function AppRoutes() {
         <Route
           path="/claim"
           element={isUnlocked ? <LegacyClaimPage /> : <Navigate to="/" replace />}
+        />
+        <Route
+          path="/btc"
+          element={isUnlocked ? <BtcWalletPage /> : <Navigate to="/" replace />}
         />
       </Route>
 
