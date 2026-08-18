@@ -305,14 +305,12 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
             let data = client.post("/api/v1/wallet/send", &payload)?;
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&data)?);
+            } else if data["success"].as_bool().unwrap_or(false) {
+                let txid = data["txid"].as_str().unwrap_or("unknown");
+                println!("{} {}", "Sent! TXID:".green().bold(), txid.white());
             } else {
-                if data["success"].as_bool().unwrap_or(false) {
-                    let txid = data["txid"].as_str().unwrap_or("unknown");
-                    println!("{} {}", "Sent! TXID:".green().bold(), txid.white());
-                } else {
-                    let err = data["error"].as_str().unwrap_or("unknown error");
-                    return Err(anyhow::anyhow!("Send failed: {}", err));
-                }
+                let err = data["error"].as_str().unwrap_or("unknown error");
+                return Err(anyhow::anyhow!("Send failed: {}", err));
             }
         }
 
@@ -483,18 +481,16 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                 let data = client.post("/api/v1/claim/submit", &payload)?;
                 if cli.json {
                     println!("{}", serde_json::to_string_pretty(&data)?);
+                } else if data["success"].as_bool().unwrap_or(false) {
+                    let txid = data["txid"].as_str().unwrap_or("unknown");
+                    println!(
+                        "{} {}",
+                        "Claim submitted! TXID:".green().bold(),
+                        txid.white()
+                    );
                 } else {
-                    if data["success"].as_bool().unwrap_or(false) {
-                        let txid = data["txid"].as_str().unwrap_or("unknown");
-                        println!(
-                            "{} {}",
-                            "Claim submitted! TXID:".green().bold(),
-                            txid.white()
-                        );
-                    } else {
-                        let err = data["error"].as_str().unwrap_or("unknown error");
-                        return Err(anyhow::anyhow!("Claim failed: {}", err));
-                    }
+                    let err = data["error"].as_str().unwrap_or("unknown error");
+                    return Err(anyhow::anyhow!("Claim failed: {}", err));
                 }
             }
         },

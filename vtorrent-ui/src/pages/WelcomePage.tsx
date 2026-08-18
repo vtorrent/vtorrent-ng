@@ -19,8 +19,8 @@ export default function WelcomePage() {
     try {
       await unlock(passphrase, otpCode || undefined)
       navigate('/dashboard')
-    } catch (err: any) {
-      setError(err.message || 'Incorrect passphrase or OTP code')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Incorrect passphrase or OTP code')
     } finally {
       setLoading(false)
     }

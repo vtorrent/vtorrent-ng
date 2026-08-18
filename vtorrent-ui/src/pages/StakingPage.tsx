@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import {
   Zap, ZapOff, RefreshCw, TrendingUp, Coins,
-  CheckCircle, AlertCircle, Info, Clock,
+  CheckCircle, AlertCircle, Info,
 } from 'lucide-react'
 import { formatVTR, useWallet } from '../hooks/useWallet'
 import { useStakingStatus, startStaking, stopStaking } from '../hooks/useNode'

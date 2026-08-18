@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Shield, Smartphone, Key, CheckCircle, AlertTriangle, QrCode, Copy } from 'lucide-react'
+import { Shield, Smartphone, Key, CheckCircle, AlertTriangle, Copy } from 'lucide-react'
 import { useWallet } from '../hooks/useWallet'
 import QRCode from 'qrcode.react'
 
@@ -26,8 +26,8 @@ export default function SecurityCenterPage() {
       setTotpUri(uri)
       setTotpSecret(secret)
       setTwoFAStep('setup')
-    } catch (err: any) {
-      setError(err.message)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to enable 2FA')
     } finally {
       setLoading(false)
     }
@@ -41,8 +41,8 @@ export default function SecurityCenterPage() {
       // In real app, verify the code against the TOTP secret before confirming
       if (verifyCode.length !== 6) throw new Error('Enter a 6-digit code')
       setTwoFAStep('done')
-    } catch (err: any) {
-      setError(err.message)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Verification failed')
     } finally {
       setLoading(false)
     }
@@ -56,8 +56,8 @@ export default function SecurityCenterPage() {
       await disable2FA(disableCode)
       setShowDisable(false)
       setDisableCode('')
-    } catch (err: any) {
-      setError(err.message)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to disable 2FA')
     } finally {
       setLoading(false)
     }

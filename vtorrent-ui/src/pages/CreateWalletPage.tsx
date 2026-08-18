@@ -36,8 +36,8 @@ export default function CreateWalletPage() {
     try {
       await createWallet(passphrase)
       navigate('/dashboard')
-    } catch (err: any) {
-      setError(err.message || 'Failed to create wallet')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create wallet')
     } finally {
       setLoading(false)
     }

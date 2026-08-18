@@ -117,7 +117,7 @@ function authHeaders(): Record<string, string> {
 // ─── Tauri detection ──────────────────────────────────────────────────────────
 
 function isTauri(): boolean {
-  return typeof (window as any).__TAURI_INTERNALS__ !== 'undefined'
+  return typeof (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ !== 'undefined'
 }
 
 async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -247,7 +247,6 @@ export function useNodeInfo(intervalMs = 10_000) {
 
 /** Poll recent transactions every 15 s. */
 export function useTransactions(limit = 20, intervalMs = 15_000) {
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const fetcher = useCallback(() => fetchTransactions(limit), [limit])
   return usePoll<TxRecord[]>(fetcher, [], intervalMs)
 }

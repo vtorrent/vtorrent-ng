@@ -7,9 +7,9 @@ import React, { createContext, useContext, useState, useCallback } from 'react'
 type InvokeFn = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>
 
 function getTauriInvoke(): InvokeFn | null {
-  // @ts-ignore — window.__TAURI__ is injected by Tauri at runtime
+  // @ts-expect-error — window.__TAURI__ is injected by Tauri at runtime
   if (typeof window !== 'undefined' && window.__TAURI__) {
-    // @ts-ignore
+    // @ts-expect-error — window.__TAURI__ is injected by Tauri at runtime
     return window.__TAURI__.core?.invoke ?? window.__TAURI__.tauri?.invoke ?? null
   }
   return null

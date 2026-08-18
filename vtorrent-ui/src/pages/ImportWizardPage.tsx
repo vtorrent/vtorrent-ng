@@ -19,7 +19,7 @@ export default function ImportWizardPage() {
   const [error, setError] = useState('')
   const [result, setResult] = useState<ImportResult | null>(null)
 
-  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelect = useCallback((e: { target: { files: FileList | null } }) => {
     const file = e.target.files?.[0]
     if (!file) return
     setWalletFile(file)
@@ -38,9 +38,9 @@ export default function ImportWizardPage() {
 
   const handleFileDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
-    const file = e.dataTransfer.files[0]
-    if (file) {
-      const syntheticEvent = { target: { files: [file] } } as any
+    const files = e.dataTransfer.files
+    if (files.length > 0) {
+      const syntheticEvent = { target: { files } }
       handleFileSelect(syntheticEvent)
     }
   }, [handleFileSelect])
@@ -52,8 +52,8 @@ export default function ImportWizardPage() {
       const importResult = await importLegacyWallet(walletBase64, passphrase || undefined)
       setResult(importResult)
       setStep('result')
-    } catch (err: any) {
-      setError(err.message || 'Import failed')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Import failed')
       setStep('passphrase')
     }
   }
