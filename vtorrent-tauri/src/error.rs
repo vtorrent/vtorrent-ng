@@ -27,6 +27,9 @@ pub enum TauriError {
 
     #[error("Node error: {0}")]
     NodeError(String),
+
+    #[error("Torrent error: {0}")]
+    Torrent(String),
 }
 
 impl From<vtorrent_migrate::error::MigrateError> for TauriError {

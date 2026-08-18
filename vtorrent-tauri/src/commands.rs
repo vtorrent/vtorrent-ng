@@ -9,6 +9,7 @@
 /// JavaScript only receives addresses, balances, and status flags.
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde::Serialize;
+use std::sync::Arc;
 use tauri::State;
 
 use vtorrent_migrate::extractor::extract_wallet;
@@ -442,6 +443,13 @@ pub struct TorrentResult {
     pub earnings_satoshis: u64,
 }
 
+#[derive(Debug, Serialize)]
+pub struct AddTorrentResult {
+    pub session_id: String,
+    pub info_hash: String,
+    pub name: String,
+}
+
 /// Response type for a single DEX order.
 #[derive(Debug, Serialize)]
 pub struct DexOrderResult {
@@ -600,6 +608,86 @@ pub async fn get_torrent_sessions(state: tauri::State<'_, AppState>) -> Result<V
                 .sum(),
         })
         .collect())
+}
+
+/// Add a torrent (magnet link or base64 .torrent file).
+///
+/// Called from: `TorrentPage.tsx` → `invoke('add_torrent', { source, sourceType, walletAddress })`
+#[tauri::command]
+pub async fn add_torrent(
+    state: tauri::State<'_, AppState>,
+    source: String,
+    source_type: String,
+    wallet_address: String,
+) -> Result<AddTorrentResult> {
+    use vtorrent_torrent::metainfo::{MagnetLink, Metainfo};
+    use vtorrent_torrent::session::TorrentSession;
+
+    let metainfo = if source_type == "magnet" {
+        let magnet = MagnetLink::parse(&source).map_err(|e| TauriError::Torrent(e.to_string()))?;
+        Metainfo::from_magnet_link(&magnet)
+    } else {
+        let bytes = B64.decode(&source).map_err(|e| TauriError::Torrent(e.to_string()))?;
+        Metainfo::from_bytes(&bytes).map_err(|e| TauriError::Torrent(e.to_string()))?
+    };
+
+    let info_hash = hex::encode(metainfo.info_hash);
+    let name = metainfo.name.clone();
+    let session = TorrentSession::new(metainfo, wallet_address);
+
+    let guard = state.node.lock().await;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    let session_id = handle
+        .rpc_state
+        .torrent_sessions
+        .write()
+        .await
+        .add_session(session);
+
+    // Spawn the download engine for this session.
+    let cancel = tokio_util::sync::CancellationToken::new();
+    handle
+        .rpc_state
+        .torrent_cancels
+        .write()
+        .await
+        .insert(session_id.clone(), cancel.clone());
+    let sessions = Arc::clone(&handle.rpc_state.torrent_sessions);
+    let download_dir = handle.rpc_state.download_dir.read().await.clone();
+    let sid = session_id.clone();
+    tokio::spawn(async move {
+        vtorrent_torrent::engine::run_engine(sid, sessions, download_dir, cancel).await;
+    });
+
+    Ok(AddTorrentResult {
+        session_id,
+        info_hash,
+        name,
+    })
+}
+
+/// Remove a torrent session.
+///
+/// Called from: `TorrentPage.tsx` → `invoke('remove_torrent', { id })`
+#[tauri::command]
+pub async fn remove_torrent(state: tauri::State<'_, AppState>, id: String) -> Result<()> {
+    let guard = state.node.lock().await;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    if let Some(cancel) = handle.rpc_state.torrent_cancels.write().await.remove(&id) {
+        cancel.cancel();
+    }
+    handle
+        .rpc_state
+        .torrent_sessions
+        .write()
+        .await
+        .remove_session(&id)
+        .ok_or_else(|| TauriError::Torrent(format!("Session {} not found", id)))?;
+    Ok(())
 }
 
 /// Get the DEX order book.

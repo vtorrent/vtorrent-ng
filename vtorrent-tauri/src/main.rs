@@ -29,6 +29,8 @@ fn main() {
             commands::send_vtr,
             // Torrent sessions
             commands::get_torrent_sessions,
+            commands::add_torrent,
+            commands::remove_torrent,
             // DEX order book
             commands::get_dex_orders,
             commands::place_dex_order,
