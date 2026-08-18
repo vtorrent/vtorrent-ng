@@ -4,9 +4,9 @@
   "version": "2.0.0",
   "identifier": "io.vtorrent.client",
   "build": {
-    "beforeDevCommand": "cd ../vtorrent-ui && pnpm dev",
+    "beforeDevCommand": "cd vtorrent-ui && pnpm dev",
     "devUrl": "http://localhost:3000",
-    "beforeBuildCommand": "cd ../vtorrent-ui && pnpm build",
+    "beforeBuildCommand": "cd vtorrent-ui && pnpm build",
     "frontendDist": "../vtorrent-ui/dist"
   },
   "app": {
