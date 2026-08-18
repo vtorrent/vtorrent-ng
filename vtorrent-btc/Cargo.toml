@@ -1,0 +1,22 @@
+[package]
+name = "vtorrent-btc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bitcoin SPV wallet for vTorrent: BIP84 keys, header sync, and transaction building"
+
+[dependencies]
+vtorrent-wallet = { path = "../vtorrent-wallet" }
+
+bitcoin = { workspace = true }
+bip39 = { workspace = true }
+secp256k1 = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

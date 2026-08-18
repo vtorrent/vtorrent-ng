@@ -17,6 +17,7 @@ members = [
     "vtorrent-onion",
     "vtorrent-cli",
     "vtorrent-store",
+    "vtorrent-btc",
 ]
 
 [workspace.package]
