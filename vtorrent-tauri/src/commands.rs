@@ -627,7 +627,9 @@ pub async fn add_torrent(
         let magnet = MagnetLink::parse(&source).map_err(|e| TauriError::Torrent(e.to_string()))?;
         Metainfo::from_magnet_link(&magnet)
     } else {
-        let bytes = B64.decode(&source).map_err(|e| TauriError::Torrent(e.to_string()))?;
+        let bytes = B64
+            .decode(&source)
+            .map_err(|e| TauriError::Torrent(e.to_string()))?;
         Metainfo::from_bytes(&bytes).map_err(|e| TauriError::Torrent(e.to_string()))?
     };
 
