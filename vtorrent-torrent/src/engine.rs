@@ -69,6 +69,59 @@ impl PieceAssembler {
     }
 }
 
+/// Maps piece data to (file index, file offset, bytes) segments for disk writes.
+pub struct FileLayout {
+    ranges: Vec<(usize, u64, u64)>,
+    piece_length: u64,
+}
+
+impl FileLayout {
+    pub fn new(files: &[TorrentFile], piece_length: u64) -> Self {
+        let mut ranges = Vec::new();
+        let mut offset = 0u64;
+        for (i, f) in files.iter().enumerate() {
+            ranges.push((i, offset, f.length));
+            offset += f.length;
+        }
+        Self {
+            ranges,
+            piece_length,
+        }
+    }
+
+    /// Map a piece's data to (file_index, file_offset, bytes) segments.
+    pub fn piece_segments(
+        &self,
+        piece_index: u32,
+        piece_data: &[u8],
+    ) -> Vec<(usize, u64, Vec<u8>)> {
+        let piece_start = piece_index as u64 * self.piece_length;
+        let piece_end = piece_start + piece_data.len() as u64;
+        let mut segments = Vec::new();
+        let mut data_offset = 0usize;
+        for (file_index, file_start, file_len) in &self.ranges {
+            let file_end = file_start + file_len;
+            if file_end <= piece_start {
+                continue;
+            }
+            if *file_start >= piece_end {
+                break;
+            }
+            let seg_start = piece_start.max(*file_start);
+            let seg_end = piece_end.min(file_end);
+            if seg_end <= seg_start {
+                continue;
+            }
+            let len = (seg_end - seg_start) as usize;
+            let file_offset = seg_start - file_start;
+            let slice = piece_data[data_offset..data_offset + len].to_vec();
+            segments.push((*file_index, file_offset, slice));
+            data_offset += len;
+        }
+        segments
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,5 +160,45 @@ mod tests {
         let mut asm = PieceAssembler::new(0, 4);
         asm.add_block(0, b"test".to_vec());
         assert!(!asm.verify(&[0u8; 20]));
+    }
+
+    #[test]
+    fn test_file_layout_single_file() {
+        let files = vec![TorrentFile {
+            path: vec!["a.bin".to_string()],
+            length: 100,
+            md5sum: None,
+        }];
+        let layout = FileLayout::new(&files, 50);
+        let segs = layout.piece_segments(0, &vec![0u8; 50]);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].0, 0);
+        assert_eq!(segs[0].1, 0);
+        assert_eq!(segs[0].2.len(), 50);
+    }
+
+    #[test]
+    fn test_file_layout_multi_file_boundary() {
+        let files = vec![
+            TorrentFile {
+                path: vec!["a.bin".to_string()],
+                length: 30,
+                md5sum: None,
+            },
+            TorrentFile {
+                path: vec!["b.bin".to_string()],
+                length: 70,
+                md5sum: None,
+            },
+        ];
+        let layout = FileLayout::new(&files, 50);
+        let segs = layout.piece_segments(0, &vec![0u8; 50]);
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].0, 0);
+        assert_eq!(segs[0].1, 0);
+        assert_eq!(segs[0].2.len(), 30);
+        assert_eq!(segs[1].0, 1);
+        assert_eq!(segs[1].1, 0);
+        assert_eq!(segs[1].2.len(), 20);
     }
 }
