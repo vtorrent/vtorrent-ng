@@ -9,7 +9,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::time::{interval, Duration};
 
 use std::path::PathBuf;
@@ -30,6 +30,7 @@ use vtorrent_p2p::{
 };
 
 use crate::{
+    atomic_swap::{OrderAnnouncement, SwapOrderBook},
     block::{Block, BlockHeader, Transaction},
     chain::Chain,
     consensus::TARGET_BLOCK_TIME,
@@ -145,6 +146,10 @@ pub struct Node {
     peer_ping_nonces: std::collections::HashMap<std::net::SocketAddr, u64>,
     /// Per-peer message counts for flood rate limiting: (count, window start).
     peer_msg_counts: std::collections::HashMap<std::net::SocketAddr, (u64, u64)>,
+    /// Shared DEX order book (set by the daemon; used for gossip).
+    order_book: Option<Arc<RwLock<SwapOrderBook>>>,
+    /// Order IDs already seen via gossip, for deduplication.
+    seen_orders: HashSet<[u8; 32]>,
     /// Receiver for locally-submitted transactions (from RPC/wallet).
     /// When a transaction is placed here, the node broadcasts it to all peers.
     tx_submit_rx: mpsc::Receiver<Transaction>,
@@ -251,6 +256,8 @@ impl Node {
             peer_fee_filters: std::collections::HashMap::new(),
             peer_ping_nonces: std::collections::HashMap::new(),
             peer_msg_counts: std::collections::HashMap::new(),
+            order_book: None,
+            seen_orders: HashSet::new(),
             tx_submit_rx,
             tx_submit_tx,
         })
@@ -297,6 +304,8 @@ impl Node {
             peer_fee_filters: std::collections::HashMap::new(),
             peer_ping_nonces: std::collections::HashMap::new(),
             peer_msg_counts: std::collections::HashMap::new(),
+            order_book: None,
+            seen_orders: HashSet::new(),
             tx_submit_rx,
             tx_submit_tx,
         })
@@ -319,6 +328,11 @@ impl Node {
     /// the node event channel to the RPC WebSocket broadcaster.
     pub fn set_event_sender(&mut self, tx: EventSender) {
         self.event_tx = Some(tx);
+    }
+
+    /// Attach the shared DEX order book so the node can gossip orders.
+    pub fn set_order_book(&mut self, order_book: Arc<RwLock<SwapOrderBook>>) {
+        self.order_book = Some(order_book);
     }
 
     /// Returns a cloned sender that can be used to submit locally-created
