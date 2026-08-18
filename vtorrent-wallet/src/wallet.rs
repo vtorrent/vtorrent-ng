@@ -43,6 +43,9 @@ pub struct WalletData {
     pub keys: Vec<WalletKeyEntry>,
     pub default_address: Option<String>,
     pub otp_config: Option<OtpConfig>,
+    /// Optional HD account (BIP39 mnemonic) used as the shared seed.
+    #[serde(default)]
+    pub hd: Option<crate::hd::HdAccount>,
     pub created_at: u64,
     pub last_modified: u64,
 }
@@ -74,6 +77,7 @@ impl Wallet {
                 keys: Vec::new(),
                 default_address: None,
                 otp_config: None,
+                hd: None,
                 created_at: now,
                 last_modified: now,
             },
@@ -296,6 +300,35 @@ impl Wallet {
         }
     }
 
+    // ─── HD / seed ────────────────────────────────────────────────────────────
+
+    /// Enable HD on this wallet by generating a BIP39 mnemonic.
+    /// Returns the mnemonic phrase so the caller can display it for backup.
+    pub fn enable_hd(&mut self) -> Result<String> {
+        if self.data.hd.is_some() {
+            return Ok(self.data.hd.as_ref().unwrap().mnemonic.clone());
+        }
+        let mnemonic = crate::hd::Mnemonic::generate()?;
+        let phrase = mnemonic.phrase().to_string();
+        self.data.hd = Some(crate::hd::HdAccount {
+            mnemonic: phrase.clone(),
+            word_count: 24,
+            created_at: unix_now(),
+        });
+        self.data.last_modified = unix_now();
+        Ok(phrase)
+    }
+
+    /// Whether this wallet has an HD account (mnemonic) set.
+    pub fn has_hd(&self) -> bool {
+        self.data.hd.is_some()
+    }
+
+    /// Get the mnemonic phrase, if HD is enabled.
+    pub fn mnemonic(&self) -> Option<&str> {
+        self.data.hd.as_ref().map(|h| h.mnemonic.as_str())
+    }
+
     // ─── Serialization helpers ────────────────────────────────────────────────
 
     /// Serialize the wallet to an in-memory JSON string (for testing).
@@ -453,5 +486,16 @@ mod tests {
         assert!(addr.starts_with('V'));
         assert_eq!(*balance, 0);
         assert!(!is_import);
+    }
+
+    #[test]
+    fn test_enable_hd() {
+        let mut wallet = Wallet::create("test-pass").expect("Create failed");
+        assert!(wallet.data.hd.is_none());
+
+        let mnemonic = wallet.enable_hd().expect("enable_hd failed");
+        assert_eq!(mnemonic.split_whitespace().count(), 24);
+        assert!(wallet.data.hd.is_some());
+        assert!(wallet.has_hd());
     }
 }
