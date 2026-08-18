@@ -61,6 +61,7 @@ bincode = "1"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 
 # Error handling
 thiserror = "1"
