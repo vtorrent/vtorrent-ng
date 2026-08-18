@@ -5,6 +5,7 @@ use crate::metainfo::{Metainfo, TorrentFile};
 use crate::peer_wire::PeerMessage;
 use crate::session::{SessionManager, SessionState};
 use crate::tracker::{AnnounceEvent, AnnounceRequest, HttpTracker};
+use serde_bencode::value::Value;
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -262,6 +263,30 @@ pub async fn run_engine(
         }
     }
 
+    // If this is a magnet link (no pieces), fetch the info dict from a peer.
+    let mut metainfo = metainfo;
+    if metainfo.pieces.is_empty() {
+        for peer in &peers {
+            let addr: SocketAddr = match format!("{}:{}", peer.ip, peer.port).parse() {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            if let Ok(mut conn) = PeerConnection::connect(addr, metainfo.info_hash, peer_id).await {
+                if let Some(full) = fetch_metadata_from_peer(&mut conn).await {
+                    metainfo = full;
+                    break;
+                }
+            }
+        }
+        // Persist the fetched metainfo back into the session.
+        {
+            let mut guard = sessions.write().await;
+            if let Ok(s) = guard.get_session_mut(&session_id) {
+                s.metainfo = metainfo.clone();
+            }
+        }
+    }
+
     // Connect to peers and download pieces.
     let mut downloaded = 0u64;
     for peer in peers {
@@ -342,6 +367,80 @@ pub async fn run_engine(
                 .as_secs();
         }
     }
+}
+
+/// Fetch the info dict from a peer via BEP-9 `ut_metadata`, returning the
+/// parsed `Metainfo`. Returns `None` if the peer does not support extensions.
+async fn fetch_metadata_from_peer(conn: &mut PeerConnection) -> Option<Metainfo> {
+    use crate::metadata;
+
+    // Send the extension handshake (id 0) advertising ut_metadata id 1.
+    let handshake = metadata::build_extension_handshake(1, 0);
+    let _ = conn
+        .send(&PeerMessage::Extended {
+            id: 0,
+            payload: handshake,
+        })
+        .await;
+
+    // Read the peer's extension handshake to learn its ut_metadata id and size.
+    let mut ut_metadata_id = None;
+    let mut metadata_size = 0u64;
+    for _ in 0..10 {
+        match conn.recv().await {
+            Ok(PeerMessage::Extended { id: 0, payload }) => {
+                if let Ok(Value::Dict(d)) = serde_bencode::from_bytes::<Value>(&payload) {
+                    if let Some(Value::Dict(m)) = d.get(&b"m".to_vec()) {
+                        if let Some(Value::Int(id)) = m.get(&b"ut_metadata".to_vec()) {
+                            ut_metadata_id = Some(*id as u8);
+                        }
+                    }
+                    if let Some(Value::Int(sz)) = d.get(&b"metadata_size".to_vec()) {
+                        metadata_size = *sz as u64;
+                    }
+                }
+                break;
+            }
+            Ok(_) => continue,
+            Err(_) => return None,
+        }
+    }
+    let ut_metadata_id = ut_metadata_id?;
+    if metadata_size == 0 {
+        return None;
+    }
+
+    // Request the metadata in 16 KiB pieces.
+    const PIECE_LEN: u64 = 16 * 1024;
+    let piece_count = metadata_size.div_ceil(PIECE_LEN);
+    let mut pieces: std::collections::HashMap<u32, Vec<u8>> = std::collections::HashMap::new();
+
+    for piece in 0..piece_count as u32 {
+        let req = metadata::build_request(ut_metadata_id, piece);
+        let _ = conn
+            .send(&PeerMessage::Extended {
+                id: ut_metadata_id,
+                payload: req,
+            })
+            .await;
+
+        // Read until we get the data for this piece.
+        for _ in 0..20 {
+            match conn.recv().await {
+                Ok(PeerMessage::Extended { id, payload }) if id == ut_metadata_id => {
+                    if let Ok((p, _total, data)) = metadata::parse_data(&payload) {
+                        pieces.insert(p, data);
+                    }
+                    break;
+                }
+                Ok(_) => continue,
+                Err(_) => return None,
+            }
+        }
+    }
+
+    let info_dict = metadata::reassemble_metadata(&pieces, metadata_size).ok()?;
+    Metainfo::from_bytes(&info_dict).ok()
 }
 
 /// Write a verified piece's data to the correct file(s) on disk.
