@@ -25,7 +25,11 @@ jobs:
 
       - name: Install Linux dependencies
         run: |
-          sudo apt-get update
+          for i in 1 2 3; do
+            sudo apt-get update -o Acquire::Retries=3 && break
+            echo "apt-get update failed (attempt $i), retrying..."
+            sleep 10
+          done
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
             libssl-dev \
@@ -48,7 +52,11 @@ jobs:
 
       - name: Install Linux dependencies
         run: |
-          sudo apt-get update
+          for i in 1 2 3; do
+            sudo apt-get update -o Acquire::Retries=3 && break
+            echo "apt-get update failed (attempt $i), retrying..."
+            sleep 10
+          done
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
             libssl-dev \
