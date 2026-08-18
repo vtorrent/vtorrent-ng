@@ -436,12 +436,36 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Bitcoin SPV sync — placeholder that logs readiness. The full header
-    // sync loop is wired in a later sub-project (cross-chain swap).
+    // Bitcoin SPV sync — resolves DNS seeds and syncs headers in a loop.
     let btc_wallet = Arc::clone(&rpc_state.btc_wallet);
     tokio::spawn(async move {
-        tracing::info!("Bitcoin SPV wallet task started (idle)");
-        let _ = btc_wallet;
+        tracing::info!("Bitcoin SPV sync task started");
+        loop {
+            let has_wallet = btc_wallet.read().await.is_some();
+            if !has_wallet {
+                tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+                continue;
+            }
+            match vtorrent_btc::sync::resolve_seeds().await {
+                Ok(addrs) => {
+                    for addr in addrs {
+                        match vtorrent_btc::p2p::BtcPeer::connect(addr).await {
+                            Ok(mut peer) => {
+                                if let Some(w) = btc_wallet.write().await.as_mut() {
+                                    match w.sync(&mut peer).await {
+                                        Ok(n) => tracing::info!("BTC sync: {} headers", n),
+                                        Err(e) => tracing::warn!("BTC sync error: {}", e),
+                                    }
+                                }
+                            }
+                            Err(e) => tracing::warn!("BTC peer {} failed: {}", addr, e),
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!("BTC seed resolution failed: {}", e),
+            }
+            tokio::time::sleep(tokio::time::Duration::from_secs(300)).await;
+        }
     });
 
     let rpc_handle = tokio::spawn(async move {
