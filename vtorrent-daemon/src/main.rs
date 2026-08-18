@@ -425,6 +425,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Periodic DEX order expiry maintenance — runs every 60 seconds.
     let order_book_for_maintenance = Arc::clone(&rpc_state.order_book);
+    let swaps_for_maintenance = Arc::clone(&rpc_state.swaps);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
         loop {
@@ -432,6 +433,26 @@ async fn main() -> anyhow::Result<()> {
             let expired = order_book_for_maintenance.write().await.expire_orders();
             if expired > 0 {
                 tracing::info!("DEX maintenance: expired {} stale orders", expired);
+            }
+            // Sweep expired swaps to Refunded.
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as u32;
+            let mut swaps = swaps_for_maintenance.write().await;
+            let mut swept = 0;
+            for (id, swap) in swaps.iter_mut() {
+                if swap.status == vtorrent_node::atomic_swap::SwapStatus::BtcFunded {
+                    if let Some(order) = order_book_for_maintenance.read().await.get_order(id) {
+                        if now >= order.expiry {
+                            swap.status = vtorrent_node::atomic_swap::SwapStatus::Refunded;
+                            swept += 1;
+                        }
+                    }
+                }
+            }
+            if swept > 0 {
+                tracing::info!("Swap maintenance: refunded {} expired swaps", swept);
             }
         }
     });
