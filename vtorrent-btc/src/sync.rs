@@ -3,6 +3,7 @@
 use crate::error::{BtcError, Result};
 use crate::headers::HeaderChain;
 use crate::p2p::BtcPeer;
+use crate::utxo::{Utxo, UtxoSet};
 use bitcoin::consensus::encode::serialize;
 use bitcoin::hashes::Hash;
 use bitcoin::p2p::message::NetworkMessage;
@@ -37,12 +38,21 @@ pub async fn resolve_seeds() -> Result<Vec<SocketAddr>> {
 /// A Bitcoin SPV sync engine.
 pub struct BtcSync {
     headers: Arc<Mutex<HeaderChain>>,
+    utxos: Arc<Mutex<UtxoSet>>,
     addresses: Vec<String>,
 }
 
 impl BtcSync {
-    pub fn new(headers: Arc<Mutex<HeaderChain>>, addresses: Vec<String>) -> Self {
-        Self { headers, addresses }
+    pub fn new(
+        headers: Arc<Mutex<HeaderChain>>,
+        utxos: Arc<Mutex<UtxoSet>>,
+        addresses: Vec<String>,
+    ) -> Self {
+        Self {
+            headers,
+            utxos,
+            addresses,
+        }
     }
 
     /// Build a BIP37 Bloom filter from the wallet's addresses.
@@ -109,6 +119,30 @@ impl BtcSync {
         }
         Ok(added)
     }
+
+    /// Extract matched txids from a merkleblock, verifying the merkle root.
+    pub fn extract_matched_txids(
+        &self,
+        block: &bitcoin::merkle_tree::MerkleBlock,
+    ) -> Result<Vec<bitcoin::Txid>> {
+        let mut matches = Vec::new();
+        let mut indexes = Vec::new();
+        block
+            .extract_matches(&mut matches, &mut indexes)
+            .map_err(|e| BtcError::Sync(e.to_string()))?;
+        Ok(matches)
+    }
+
+    /// Record a confirmed output into the UTXO set.
+    pub fn record_utxo(&self, txid: &str, vout: u32, value: u64, address: &str, height: u32) {
+        self.utxos.lock().unwrap().add(Utxo {
+            txid: txid.to_string(),
+            vout,
+            value,
+            address: address.to_string(),
+            height,
+        });
+    }
 }
 
 #[cfg(test)]
@@ -119,6 +153,7 @@ mod tests {
     fn test_build_filter_nonempty() {
         let sync = BtcSync::new(
             Arc::new(Mutex::new(HeaderChain::new())),
+            Arc::new(Mutex::new(UtxoSet::new())),
             vec!["bc1qtest".to_string()],
         );
         let filter = sync.build_filter();
@@ -127,7 +162,11 @@ mod tests {
 
     #[test]
     fn test_build_getheaders_empty_locator() {
-        let sync = BtcSync::new(Arc::new(Mutex::new(HeaderChain::new())), vec![]);
+        let sync = BtcSync::new(
+            Arc::new(Mutex::new(HeaderChain::new())),
+            Arc::new(Mutex::new(UtxoSet::new())),
+            vec![],
+        );
         let msg = sync.build_getheaders();
         assert!(msg.locator_hashes.is_empty());
     }
@@ -136,9 +175,22 @@ mod tests {
     fn test_build_filterload() {
         let sync = BtcSync::new(
             Arc::new(Mutex::new(HeaderChain::new())),
+            Arc::new(Mutex::new(UtxoSet::new())),
             vec!["bc1qtest".to_string()],
         );
         let fl = sync.build_filterload();
         assert!(!fl.filter.is_empty());
+    }
+
+    #[test]
+    fn test_record_utxo() {
+        let utxos = Arc::new(Mutex::new(UtxoSet::new()));
+        let sync = BtcSync::new(
+            Arc::new(Mutex::new(HeaderChain::new())),
+            utxos.clone(),
+            vec![],
+        );
+        sync.record_utxo("11".repeat(32).as_str(), 0, 5000, "bc1qtest", 100);
+        assert_eq!(utxos.lock().unwrap().total(), 5000);
     }
 }

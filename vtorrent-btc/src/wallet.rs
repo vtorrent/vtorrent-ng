@@ -81,7 +81,11 @@ impl BtcWallet {
 
     /// Run a sync pass against a peer, updating headers and the synced flag.
     pub async fn sync(&mut self, peer: &mut crate::p2p::BtcPeer) -> Result<usize> {
-        let sync = crate::sync::BtcSync::new(self.headers.clone(), vec![self.current_address()?]);
+        let sync = crate::sync::BtcSync::new(
+            self.headers.clone(),
+            self.utxos.clone(),
+            vec![self.current_address()?],
+        );
         let added = sync.sync_once(peer).await?;
         if added > 0 {
             self.synced = true;
