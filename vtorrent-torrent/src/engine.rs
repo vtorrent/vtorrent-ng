@@ -122,6 +122,81 @@ impl FileLayout {
     }
 }
 
+/// A single peer connection: handshake + message read/write.
+pub struct PeerConnection {
+    stream: TcpStream,
+    /// The remote peer's ID (from the handshake).
+    pub remote_peer_id: [u8; 20],
+}
+
+impl PeerConnection {
+    /// Connect to a peer and perform the handshake.
+    pub async fn connect(
+        addr: SocketAddr,
+        info_hash: [u8; 20],
+        our_peer_id: [u8; 20],
+    ) -> Result<Self> {
+        let mut stream = TcpStream::connect(addr)
+            .await
+            .map_err(|e| TorrentError::PeerWireError(e.to_string()))?;
+
+        let handshake = PeerMessage::Handshake {
+            info_hash,
+            peer_id: our_peer_id,
+            reserved: [0u8; 8],
+        };
+        stream
+            .write_all(&handshake.encode())
+            .await
+            .map_err(|e| TorrentError::PeerWireError(e.to_string()))?;
+
+        let mut buf = [0u8; 68];
+        stream
+            .read_exact(&mut buf)
+            .await
+            .map_err(|e| TorrentError::PeerWireError(e.to_string()))?;
+        let (hs, _) = PeerMessage::decode_handshake(&buf)?
+            .ok_or_else(|| TorrentError::PeerWireError("incomplete handshake".into()))?;
+        let remote_peer_id = match hs {
+            PeerMessage::Handshake { peer_id, .. } => peer_id,
+            _ => return Err(TorrentError::PeerWireError("expected handshake".into())),
+        };
+
+        Ok(Self {
+            stream,
+            remote_peer_id,
+        })
+    }
+
+    /// Send a message.
+    pub async fn send(&mut self, msg: &PeerMessage) -> Result<()> {
+        self.stream
+            .write_all(&msg.encode())
+            .await
+            .map_err(|e| TorrentError::PeerWireError(e.to_string()))
+    }
+
+    /// Receive one message (blocking until a full message arrives).
+    pub async fn recv(&mut self) -> Result<PeerMessage> {
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 4096];
+        loop {
+            if let Some((msg, _)) = PeerMessage::decode(&buf)? {
+                return Ok(msg);
+            }
+            let n = self
+                .stream
+                .read(&mut tmp)
+                .await
+                .map_err(|e| TorrentError::PeerWireError(e.to_string()))?;
+            if n == 0 {
+                return Err(TorrentError::PeerWireError("connection closed".into()));
+            }
+            buf.extend_from_slice(&tmp[..n]);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,5 +275,40 @@ mod tests {
         assert_eq!(segs[1].0, 1);
         assert_eq!(segs[1].1, 0);
         assert_eq!(segs[1].2.len(), 20);
+    }
+
+    #[tokio::test]
+    async fn test_peer_connection_handshake() {
+        use tokio::net::TcpListener;
+
+        let info_hash = [0xAA; 20];
+        let our_peer_id = [0x11; 20];
+        let their_peer_id = [0x22; 20];
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 68];
+            sock.read_exact(&mut buf).await.unwrap();
+            let (hs, _) = PeerMessage::decode_handshake(&buf).unwrap().unwrap();
+            if let PeerMessage::Handshake { info_hash: ih, .. } = hs {
+                assert_eq!(ih, info_hash);
+            }
+            let reply = PeerMessage::Handshake {
+                info_hash,
+                peer_id: their_peer_id,
+                reserved: [0u8; 8],
+            };
+            sock.write_all(&reply.encode()).await.unwrap();
+        });
+
+        let mut conn = PeerConnection::connect(addr, info_hash, our_peer_id)
+            .await
+            .unwrap();
+        assert_eq!(conn.remote_peer_id, their_peer_id);
+
+        server.await.unwrap();
     }
 }
