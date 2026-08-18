@@ -724,6 +724,20 @@ pub async fn add_torrent(
     let session = TorrentSession::new(metainfo, req.wallet_address);
     let session_id = state.torrent_sessions.write().await.add_session(session);
 
+    // Spawn the download engine for this session.
+    let cancel = tokio_util::sync::CancellationToken::new();
+    state
+        .torrent_cancels
+        .write()
+        .await
+        .insert(session_id.clone(), cancel.clone());
+    let sessions = Arc::clone(&state.torrent_sessions);
+    let download_dir = state.download_dir.read().await.clone();
+    let sid = session_id.clone();
+    tokio::spawn(async move {
+        vtorrent_torrent::engine::run_engine(sid, sessions, download_dir, cancel).await;
+    });
+
     Ok(Json(AddTorrentResponse {
         session_id,
         info_hash,
@@ -735,6 +749,9 @@ pub async fn remove_torrent(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> RpcResult<Json<Value>> {
+    if let Some(cancel) = state.torrent_cancels.write().await.remove(&id) {
+        cancel.cancel();
+    }
     let removed = state.torrent_sessions.write().await.remove_session(&id);
     if removed.is_none() {
         return Err(RpcError::NotFound(format!("Session {} not found", id)));

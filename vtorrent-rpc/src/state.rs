@@ -45,6 +45,12 @@ pub struct AppState {
     pub swaps: Arc<RwLock<std::collections::HashMap<String, SwapState>>>,
     /// The torrent session manager.
     pub torrent_sessions: Arc<RwLock<SessionManager>>,
+    /// Directory where downloaded torrent data is written.
+    pub download_dir: Arc<RwLock<std::path::PathBuf>>,
+    /// Cancellation tokens for active torrent engine tasks, keyed by session id.
+    pub torrent_cancels: Arc<
+        RwLock<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>,
+    >,
     /// SPV header chain for light-client verification.
     pub spv_chain: Arc<RwLock<SpvChain>>,
     /// Bitcoin SPV wallet (optional — created when a seed is available).
@@ -108,6 +114,8 @@ impl AppState {
             order_book: Arc::new(RwLock::new(SwapOrderBook::new())),
             swaps: Arc::new(RwLock::new(std::collections::HashMap::new())),
             torrent_sessions: Arc::new(RwLock::new(SessionManager::new())),
+            download_dir: Arc::new(RwLock::new(std::path::PathBuf::from("downloads"))),
+            torrent_cancels: Arc::new(RwLock::new(std::collections::HashMap::new())),
             spv_chain: Arc::new(RwLock::new(SpvChain::new())),
             btc_wallet: Arc::new(RwLock::new(None)),
             start_time: now,
@@ -146,6 +154,8 @@ impl AppState {
             order_book: Arc::new(RwLock::new(SwapOrderBook::new())),
             swaps: Arc::new(RwLock::new(std::collections::HashMap::new())),
             torrent_sessions: Arc::new(RwLock::new(SessionManager::new())),
+            download_dir: Arc::new(RwLock::new(std::path::PathBuf::from("downloads"))),
+            torrent_cancels: Arc::new(RwLock::new(std::collections::HashMap::new())),
             spv_chain: Arc::new(RwLock::new(SpvChain::new())),
             btc_wallet: Arc::new(RwLock::new(None)),
             start_time: now,
