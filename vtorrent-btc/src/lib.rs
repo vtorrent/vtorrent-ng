@@ -8,4 +8,5 @@ pub mod error;
 pub mod headers;
 pub mod keys;
 pub mod merkle;
+pub mod tx;
 pub mod utxo;
