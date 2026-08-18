@@ -7,6 +7,7 @@ use vtorrent_node::chain::Chain;
 use vtorrent_node::mempool::Mempool;
 use vtorrent_node::staking::StakingEngine;
 use vtorrent_spv::SpvChain;
+use vtorrent_btc::wallet::BtcWallet;
 use vtorrent_torrent::session::SessionManager;
 use vtorrent_wallet::encryption::EncryptedWallet;
 use vtorrent_wallet::otp::TotpSecret;
@@ -44,6 +45,8 @@ pub struct AppState {
     pub torrent_sessions: Arc<RwLock<SessionManager>>,
     /// SPV header chain for light-client verification.
     pub spv_chain: Arc<RwLock<SpvChain>>,
+    /// Bitcoin SPV wallet (optional — created when a seed is available).
+    pub btc_wallet: Arc<RwLock<Option<BtcWallet>>>,
     /// Node start time (Unix timestamp).
     pub start_time: u64,
     /// Number of connected P2P peers.
@@ -103,6 +106,7 @@ impl AppState {
             order_book: Arc::new(RwLock::new(SwapOrderBook::new())),
             torrent_sessions: Arc::new(RwLock::new(SessionManager::new())),
             spv_chain: Arc::new(RwLock::new(SpvChain::new())),
+            btc_wallet: Arc::new(RwLock::new(None)),
             start_time: now,
             peer_count: Arc::new(RwLock::new(0)),
             syncing: Arc::new(RwLock::new(false)),
@@ -139,6 +143,7 @@ impl AppState {
             order_book: Arc::new(RwLock::new(SwapOrderBook::new())),
             torrent_sessions: Arc::new(RwLock::new(SessionManager::new())),
             spv_chain: Arc::new(RwLock::new(SpvChain::new())),
+            btc_wallet: Arc::new(RwLock::new(None)),
             start_time: now,
             peer_count: Arc::new(RwLock::new(0)),
             syncing: Arc::new(RwLock::new(false)),

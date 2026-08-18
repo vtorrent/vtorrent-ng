@@ -12,6 +12,7 @@ vtorrent-node    = { path = "../vtorrent-node" }
 vtorrent-wallet  = { path = "../vtorrent-wallet" }
 vtorrent-torrent = { path = "../vtorrent-torrent" }
 vtorrent-spv     = { path = "../vtorrent-spv" }
+vtorrent-btc     = { path = "../vtorrent-btc" }
 
 # HTTP server
 axum = { version = "0.7", features = ["json", "macros", "ws"] }

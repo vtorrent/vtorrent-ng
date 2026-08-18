@@ -68,3 +68,9 @@ impl From<vtorrent_wallet::error::WalletError> for RpcError {
         }
     }
 }
+
+impl From<vtorrent_btc::error::BtcError> for RpcError {
+    fn from(e: vtorrent_btc::error::BtcError) -> Self {
+        RpcError::Internal(e.to_string())
+    }
+}

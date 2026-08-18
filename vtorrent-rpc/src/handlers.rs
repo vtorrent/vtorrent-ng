@@ -1232,3 +1232,96 @@ pub async fn get_peers(State(state): State<Arc<AppState>>) -> RpcResult<Json<Pee
     let count = peers.len();
     Ok(Json(PeersResponse { count, peers }))
 }
+
+// ─── Bitcoin wallet ────────────────────────────────────────────────────────────
+
+fn utxo_select(
+    utxos: &[vtorrent_btc::utxo::Utxo],
+    amount: u64,
+    fee: u64,
+) -> Option<Vec<vtorrent_btc::utxo::Utxo>> {
+    let mut sorted: Vec<vtorrent_btc::utxo::Utxo> = utxos.to_vec();
+    sorted.sort_by(|a, b| b.value.cmp(&a.value));
+    let mut selected = Vec::new();
+    let mut sum = 0u64;
+    for u in sorted {
+        sum += u.value;
+        selected.push(u);
+        if sum >= amount + fee {
+            return Some(selected);
+        }
+    }
+    None
+}
+
+/// GET /api/v1/btc/status
+pub async fn get_btc_status(
+    State(state): State<Arc<AppState>>,
+) -> RpcResult<Json<BtcStatusResponse>> {
+    let btc = state.btc_wallet.read().await;
+    match &*btc {
+        None => Ok(Json(BtcStatusResponse {
+            initialized: false,
+            balance_satoshis: 0,
+            address: None,
+            best_height: 0,
+            synced: false,
+        })),
+        Some(w) => Ok(Json(BtcStatusResponse {
+            initialized: true,
+            balance_satoshis: w.balance(),
+            address: w.current_address().ok(),
+            best_height: w.best_height(),
+            synced: w.best_height() > 0,
+        })),
+    }
+}
+
+/// GET /api/v1/btc/address
+pub async fn get_btc_address(State(state): State<Arc<AppState>>) -> RpcResult<Json<Value>> {
+    let mut btc = state.btc_wallet.write().await;
+    match &mut *btc {
+        None => Err(RpcError::BadRequest("BTC wallet not initialized".into())),
+        Some(w) => {
+            let address = w
+                .next_address()
+                .map_err(|e| RpcError::Internal(e.to_string()))?;
+            Ok(Json(json!({ "address": address })))
+        }
+    }
+}
+
+/// POST /api/v1/btc/send
+pub async fn send_btc(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<BtcSendRequest>,
+) -> RpcResult<Json<BtcSendResponse>> {
+    let btc = state.btc_wallet.read().await;
+    let w = btc
+        .as_ref()
+        .ok_or_else(|| RpcError::BadRequest("BTC wallet not initialized".into()))?;
+    let fee = req.fee_satoshis.unwrap_or(1_000);
+    let utxos = w.list_utxos();
+    let selected = utxo_select(&utxos, req.amount_satoshis, fee)
+        .ok_or_else(|| RpcError::BadRequest("Insufficient BTC funds".into()))?;
+    let change = w
+        .current_address()
+        .map_err(|e| RpcError::Internal(e.to_string()))?;
+    let wif = w
+        .derive_wif(0)
+        .map_err(|e| RpcError::Internal(e.to_string()))?;
+    let raw = vtorrent_btc::tx::build_and_sign(
+        &selected,
+        &req.to_address,
+        req.amount_satoshis,
+        fee,
+        &change,
+        &wif,
+    )
+    .map_err(|e| RpcError::BadRequest(e.to_string()))?;
+    let txid = hex::encode(vtorrent_btc::tx::txid_of(&raw));
+    Ok(Json(BtcSendResponse {
+        txid,
+        raw_tx: hex::encode(raw),
+    }))
+}

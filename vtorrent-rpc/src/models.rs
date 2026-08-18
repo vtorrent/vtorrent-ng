@@ -436,3 +436,27 @@ pub struct PeersResponse {
     pub count: usize,
     pub peers: Vec<PeerInfoResponse>,
 }
+
+// ─── Bitcoin wallet ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BtcStatusResponse {
+    pub initialized: bool,
+    pub balance_satoshis: u64,
+    pub address: Option<String>,
+    pub best_height: u32,
+    pub synced: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BtcSendRequest {
+    pub to_address: String,
+    pub amount_satoshis: u64,
+    pub fee_satoshis: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BtcSendResponse {
+    pub txid: String,
+    pub raw_tx: String,
+}

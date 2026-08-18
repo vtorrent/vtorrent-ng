@@ -77,6 +77,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/blockchain/broadcast", post(broadcast_transaction))
         .route("/api/v1/claim/submit", post(submit_claim))
         .route("/api/v1/spv/headers", post(add_spv_headers))
+        .route("/api/v1/btc/send", post(send_btc))
         .layer(auth);
 
     Router::new()
@@ -103,6 +104,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/torrent/sessions", get(list_torrent_sessions))
         // DEX
         .route("/api/v1/dex/orders", get(get_dex_orders))
+        // Bitcoin wallet
+        .route("/api/v1/btc/status", get(get_btc_status))
+        .route("/api/v1/btc/address", get(get_btc_address))
         // Legacy claim
         .route("/api/v1/claim/check", post(check_claim))
         // SPV light client
@@ -449,6 +453,15 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["header_count"], 0);
         assert_eq!(body["best_height"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_btc_status_uninitialized() {
+        let app = build_router(AppState::new());
+        let (status, body) = get(app, "/api/v1/btc/status").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["initialized"], false);
+        assert_eq!(body["balance_satoshis"], 0);
     }
 
     #[tokio::test]
