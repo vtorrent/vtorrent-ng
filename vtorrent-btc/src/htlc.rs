@@ -9,9 +9,7 @@ use bitcoin::opcodes::all::{
 };
 use bitcoin::script::Builder;
 use bitcoin::transaction::Version;
-use bitcoin::{
-    Address, Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness,
-};
+use bitcoin::{Address, Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness};
 use std::str::FromStr;
 
 /// Default HTLC locktime: 48 hours in seconds.
@@ -164,7 +162,9 @@ impl BtcHtlc {
     ) -> Result<Transaction> {
         let hash: [u8; 32] = sha256::Hash::hash(preimage).to_byte_array();
         if hash != self.hash_lock {
-            return Err(BtcError::Bitcoin("preimage does not match hash lock".into()));
+            return Err(BtcError::Bitcoin(
+                "preimage does not match hash lock".into(),
+            ));
         }
         let recipient = Address::from_str(&self.recipient)
             .map_err(|e| BtcError::InvalidAddress(e.to_string()))?
@@ -292,7 +292,9 @@ mod tests {
     #[test]
     fn test_funding_tx_valid() {
         let htlc = make_htlc();
-        let tx = htlc.build_funding_tx([1u8; 32], 0, 200_000, 10_000, ADDR).unwrap();
+        let tx = htlc
+            .build_funding_tx([1u8; 32], 0, 200_000, 10_000, ADDR)
+            .unwrap();
         assert_eq!(tx.output[0].value, Amount::from_sat(100_000));
         assert_eq!(tx.output[1].value, Amount::from_sat(90_000));
     }
