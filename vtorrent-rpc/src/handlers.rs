@@ -1272,7 +1272,7 @@ pub async fn get_btc_status(
             balance_satoshis: w.balance(),
             address: w.current_address().ok(),
             best_height: w.best_height(),
-            synced: w.best_height() > 0,
+            synced: w.synced(),
         })),
     }
 }
