@@ -82,10 +82,9 @@ impl SpvChain {
         }
 
         // Validate chain linkage (skip for genesis block at height 0)
-        if header.height > 0
-            && !self.headers.contains_key(&header.prev_hash) {
-                return Err(SpvError::UnknownParent(hex::encode(header.prev_hash)));
-            }
+        if header.height > 0 && !self.headers.contains_key(&header.prev_hash) {
+            return Err(SpvError::UnknownParent(hex::encode(header.prev_hash)));
+        }
 
         let height = header.height;
         self.headers.insert(hash, header);

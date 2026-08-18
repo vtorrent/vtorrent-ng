@@ -388,8 +388,7 @@ impl AddrBook {
         let fresh: Vec<&AddrEntry> = self.entries.values().filter(|e| e.is_fresh()).collect();
 
         let count = fresh.len();
-        let json = serde_json::to_string_pretty(&fresh)
-            .map_err(std::io::Error::other)?;
+        let json = serde_json::to_string_pretty(&fresh).map_err(std::io::Error::other)?;
 
         // Write atomically via a temp file
         let tmp = path.with_extension("dat.tmp");

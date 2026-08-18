@@ -82,8 +82,7 @@ impl TotpSecret {
     /// to account for clock drift.
     pub fn verify(&self, code: &str) -> Result<bool> {
         let totp = self.build_totp(None)?;
-        totp
-            .check_current(code)
+        totp.check_current(code)
             .map_err(|e| WalletError::EncryptionError(format!("TOTP check error: {}", e)))
     }
 
