@@ -5,3 +5,5 @@
 //! and a minimal Bitcoin P2P client.
 
 pub mod error;
+pub mod headers;
+pub mod keys;
