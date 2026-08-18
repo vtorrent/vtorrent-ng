@@ -22,10 +22,11 @@ vtorrent-wallet  = { path = "../vtorrent-wallet" }
 vtorrent-node    = { path = "../vtorrent-node" }
 vtorrent-rpc     = { path = "../vtorrent-rpc" }
 vtorrent-torrent = { path = "../vtorrent-torrent" }
+vtorrent-btc     = { path = "../vtorrent-btc" }
 hex = "0.4"
 
 # Tauri v2 framework
-tauri       = { version = "2" }
+tauri       = { version = "2", features = [] }
 
 serde       = { version = "1", features = ["derive"] }
 serde_json  = "1"

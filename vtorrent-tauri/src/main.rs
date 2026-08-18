@@ -37,6 +37,8 @@ fn main() {
             commands::start_staking,
             commands::stop_staking,
             commands::get_staking_status,
+            // Bitcoin wallet
+            commands::get_btc_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running vTorrent application");

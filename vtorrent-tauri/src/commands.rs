@@ -846,3 +846,42 @@ pub async fn get_staking_status(state: tauri::State<'_, AppState>) -> Result<Sta
         rewards_earned_sats: blocks_staked.saturating_mul(100_000_000) / 100,
     })
 }
+
+// ─── Bitcoin wallet commands ─────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct BtcStatus {
+    pub initialized: bool,
+    pub balance_satoshis: u64,
+    pub address: Option<String>,
+    pub best_height: u32,
+}
+
+/// Get the BTC wallet status.
+#[tauri::command]
+pub fn get_btc_status(state: State<AppState>) -> Result<BtcStatus> {
+    let wallet = state.wallet.lock().map_err(|_| TauriError::WalletLocked)?;
+    let wallet = wallet.as_ref().ok_or(TauriError::WalletNotInitialized)?;
+    if !wallet.has_hd() {
+        return Ok(BtcStatus {
+            initialized: false,
+            balance_satoshis: 0,
+            address: None,
+            best_height: 0,
+        });
+    }
+    let mnemonic = wallet.mnemonic().ok_or(TauriError::WalletNotInitialized)?;
+    let seed = vtorrent_wallet::hd::Mnemonic::from_phrase(mnemonic)
+        .map_err(TauriError::from)?
+        .to_seed();
+    let mut btc = vtorrent_btc::wallet::BtcWallet::new(seed);
+    let address = btc
+        .next_address()
+        .map_err(|e| TauriError::Wallet(e.to_string()))?;
+    Ok(BtcStatus {
+        initialized: true,
+        balance_satoshis: btc.balance(),
+        address: Some(address),
+        best_height: btc.best_height(),
+    })
+}
