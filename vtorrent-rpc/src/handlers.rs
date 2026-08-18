@@ -1456,9 +1456,9 @@ pub async fn swap_refund(
     }
 
     let mut swaps = state.swaps.write().await;
-    let swap = swaps.entry(req.order_id.clone()).or_insert_with(|| {
-        SwapState::new(order.order_id, order.hash_lock.unwrap_or([0u8; 32]))
-    });
+    let swap = swaps
+        .entry(req.order_id.clone())
+        .or_insert_with(|| SwapState::new(order.order_id, order.hash_lock.unwrap_or([0u8; 32])));
     swap.status = SwapStatus::Refunded;
 
     Ok(Json(SwapActionResponse {
