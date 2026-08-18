@@ -12,6 +12,7 @@ pub struct BtcWallet {
     headers: Arc<Mutex<HeaderChain>>,
     utxos: Arc<Mutex<UtxoSet>>,
     next_index: u32,
+    synced: bool,
 }
 
 impl BtcWallet {
@@ -22,6 +23,7 @@ impl BtcWallet {
             headers: Arc::new(Mutex::new(HeaderChain::new())),
             utxos: Arc::new(Mutex::new(UtxoSet::new())),
             next_index: 0,
+            synced: false,
         }
     }
 
@@ -66,6 +68,26 @@ impl BtcWallet {
     pub fn add_utxo(&self, utxo: Utxo) {
         self.utxos.lock().unwrap().add(utxo);
     }
+
+    /// Whether the header chain has synced at least once.
+    pub fn synced(&self) -> bool {
+        self.synced
+    }
+
+    /// Mark the wallet as synced.
+    pub fn mark_synced(&mut self) {
+        self.synced = true;
+    }
+
+    /// Run a sync pass against a peer, updating headers and the synced flag.
+    pub async fn sync(&mut self, peer: &mut crate::p2p::BtcPeer) -> Result<usize> {
+        let sync = crate::sync::BtcSync::new(self.headers.clone(), vec![self.current_address()?]);
+        let added = sync.sync_once(peer).await?;
+        if added > 0 {
+            self.synced = true;
+        }
+        Ok(added)
+    }
 }
 
 #[cfg(test)]
@@ -98,5 +120,11 @@ mod tests {
     fn test_best_height_default_zero() {
         let w = BtcWallet::new([7u8; 64]);
         assert_eq!(w.best_height(), 0);
+    }
+
+    #[test]
+    fn test_synced_default_false() {
+        let w = BtcWallet::new([7u8; 64]);
+        assert!(!w.synced());
     }
 }
