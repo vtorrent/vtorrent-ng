@@ -9,6 +9,8 @@ repository.workspace = true
 [dependencies]
 vtorrent-core = { path = "../vtorrent-core" }
 vtorrent-node = { path = "../vtorrent-node" }
+bitcoin = { workspace = true }
+bip39 = { workspace = true }
 ripemd = { workspace = true }
 bs58 = { workspace = true }
 secp256k1 = { workspace = true }

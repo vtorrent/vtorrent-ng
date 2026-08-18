@@ -8,6 +8,7 @@ pub mod encryption;
 /// - ChaCha20-Poly1305 authenticated encryption for wallet storage
 /// - Legacy wallet.dat migration support
 pub mod error;
+pub mod hd;
 pub mod otp;
 pub mod tx_builder;
 pub mod wallet;

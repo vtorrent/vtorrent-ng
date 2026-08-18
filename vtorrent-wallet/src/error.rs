@@ -58,6 +58,12 @@ pub enum WalletError {
 
     #[error("Transaction build error: {0}")]
     BuildError(String),
+
+    #[error("HD derivation error: {0}")]
+    HdError(String),
+
+    #[error("Mnemonic error: {0}")]
+    MnemonicError(String),
 }
 
 pub type Result<T> = std::result::Result<T, WalletError>;
