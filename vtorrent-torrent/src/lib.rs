@@ -10,6 +10,7 @@
 pub mod engine;
 pub mod error;
 pub mod incentive;
+pub mod metadata;
 pub mod metainfo;
 pub mod peer_wire;
 pub mod session;
