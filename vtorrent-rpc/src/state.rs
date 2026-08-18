@@ -2,7 +2,7 @@ use crate::ws::EventBroadcaster;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use vtorrent_btc::wallet::BtcWallet;
-use vtorrent_node::atomic_swap::SwapOrderBook;
+use vtorrent_node::atomic_swap::{SwapOrderBook, SwapState};
 use vtorrent_node::block::Transaction;
 use vtorrent_node::chain::Chain;
 use vtorrent_node::mempool::Mempool;
@@ -41,6 +41,8 @@ pub struct AppState {
     pub staking: Arc<RwLock<StakingEngine>>,
     /// The DEX order book.
     pub order_book: Arc<RwLock<SwapOrderBook>>,
+    /// Active cross-chain swaps keyed by hex order_id.
+    pub swaps: Arc<RwLock<std::collections::HashMap<String, SwapState>>>,
     /// The torrent session manager.
     pub torrent_sessions: Arc<RwLock<SessionManager>>,
     /// SPV header chain for light-client verification.
@@ -104,6 +106,7 @@ impl AppState {
             mempool,
             staking: Arc::new(RwLock::new(StakingEngine::new(String::new()))),
             order_book: Arc::new(RwLock::new(SwapOrderBook::new())),
+            swaps: Arc::new(RwLock::new(std::collections::HashMap::new())),
             torrent_sessions: Arc::new(RwLock::new(SessionManager::new())),
             spv_chain: Arc::new(RwLock::new(SpvChain::new())),
             btc_wallet: Arc::new(RwLock::new(None)),
@@ -141,6 +144,7 @@ impl AppState {
             mempool: Arc::new(Mutex::new(Mempool::new(10_000))),
             staking: Arc::new(RwLock::new(StakingEngine::new(String::new()))),
             order_book: Arc::new(RwLock::new(SwapOrderBook::new())),
+            swaps: Arc::new(RwLock::new(std::collections::HashMap::new())),
             torrent_sessions: Arc::new(RwLock::new(SessionManager::new())),
             spv_chain: Arc::new(RwLock::new(SpvChain::new())),
             btc_wallet: Arc::new(RwLock::new(None)),
