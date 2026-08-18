@@ -20,6 +20,12 @@ pub enum BtcError {
     #[error("P2P error: {0}")]
     P2p(String),
 
+    #[error("DNS error: {0}")]
+    Dns(String),
+
+    #[error("Sync error: {0}")]
+    Sync(String),
+
     #[error("Wallet error: {0}")]
     Wallet(#[from] vtorrent_wallet::error::WalletError),
 }
