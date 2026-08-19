@@ -142,19 +142,6 @@ fn build_get_peers_query(node_id: &NodeId, info_hash: &NodeId, tid: &[u8; 2]) ->
     msg
 }
 
-/// Build a BEP-5 `find_node` query message.
-fn build_find_node_query(node_id: &NodeId, target: &NodeId, tid: &[u8; 2]) -> Vec<u8> {
-    let mut msg = Vec::new();
-    msg.extend_from_slice(b"d1:ad2:id20:");
-    msg.extend_from_slice(node_id.as_bytes());
-    msg.extend_from_slice(b"6:target20:");
-    msg.extend_from_slice(target.as_bytes());
-    msg.extend_from_slice(b"e1:q9:find_node1:t2:");
-    msg.extend_from_slice(tid);
-    msg.extend_from_slice(b"1:y1:qe");
-    msg
-}
-
 /// Parse a bencoded response to extract `values` (peers) or `nodes` (DHT nodes).
 ///
 /// This is a minimal bencode parser focused on extracting the fields we care about.
@@ -182,6 +169,19 @@ fn parse_dht_response(data: &[u8]) -> (Vec<CompactPeer>, Vec<CompactNode>) {
     }
 
     (peers, nodes)
+}
+
+/// Extract the `token` field from a BEP-5 `get_peers` response.
+///
+/// The token is required by `announce_peer`; it is returned by the node's own
+/// `get_peers` response and must be echoed back verbatim.
+fn parse_token(data: &[u8]) -> Option<Vec<u8>> {
+    if let Some(pos) = find_bytes(data, b"5:token") {
+        let after = &data[pos + 7..];
+        parse_bencode_string(after)
+    } else {
+        None
+    }
 }
 
 /// Find a byte pattern in a slice, returning the position if found.
@@ -241,12 +241,12 @@ impl DhtBootstrap {
     /// Discover vTorrent peers via the BitTorrent DHT network.
     ///
     /// This function:
-    /// 1. Sends `find_node` queries to the well-known bootstrap nodes
-    /// 2. Sends `get_peers` queries for the vTorrent info-hash
-    /// 3. Collects peer addresses from responses
+    /// 1. Sends `get_peers` queries for the vTorrent info-hash to the bootstrap nodes
+    /// 2. Recursively queries closer nodes returned in `nodes` responses
+    /// 3. Collects peer addresses from `values` responses
     /// 4. Returns a list of potential vTorrent peer socket addresses
     ///
-    /// The returned addresses are on the vTorrent P2P port (22524), not the DHT port.
+    /// The returned addresses are on the vTorrent P2P port (22526), not the DHT port.
     pub fn discover_peers(&self) -> Vec<SocketAddr> {
         let socket = match UdpSocket::bind("0.0.0.0:0") {
             Ok(s) => s,
@@ -307,7 +307,7 @@ impl DhtBootstrap {
                 let (peers, nodes) = parse_dht_response(&buf[..len]);
 
                 // Peers found — these are on DHT port; we need to check if they
-                // are running vTorrent by attempting a connection on port 22524
+                // are running vTorrent by attempting a connection on port 22526
                 for peer in peers {
                     let vtorrent_addr =
                         SocketAddr::new(peer.addr.ip(), crate::peer_manager::DEFAULT_PORT);
@@ -342,8 +342,9 @@ impl DhtBootstrap {
 
     /// Announce ourselves on the BitTorrent DHT so other vTorrent nodes can find us.
     ///
-    /// This sends `announce_peer` messages to the closest DHT nodes we know about.
-    /// Should be called periodically (every 30 minutes) to stay visible in the DHT.
+    /// This sends `get_peers` to obtain a valid token, then `announce_peer` with
+    /// that token to the closest DHT nodes. Should be called periodically
+    /// (every 30 minutes) to stay visible in the DHT.
     pub fn announce(&self, our_port: u16) {
         let socket = match UdpSocket::bind("0.0.0.0:0") {
             Ok(s) => s,
@@ -353,23 +354,26 @@ impl DhtBootstrap {
             .set_read_timeout(Some(Duration::from_millis(2000)))
             .ok();
 
-        // First do a find_node to get close nodes, then announce to them
-        for seed in DHT_BOOTSTRAP_NODES.iter().take(2) {
+        // Query each bootstrap node with get_peers to obtain a valid token and
+        // the closest nodes, then announce to those nodes with the token.
+        for seed in DHT_BOOTSTRAP_NODES {
             if let Ok(mut addrs) = std::net::ToSocketAddrs::to_socket_addrs(seed) {
                 if let Some(addr) = addrs.next() {
                     let tid = [0x61u8, 0x61u8]; // "aa"
-                    let query = build_find_node_query(&self.node_id, &self.infohash, &tid);
+                    let query = build_get_peers_query(&self.node_id, &self.infohash, &tid);
                     let _ = socket.send_to(&query, addr);
 
                     let mut buf = [0u8; 65536];
                     if let Ok((len, _)) = socket.recv_from(&mut buf) {
+                        let token = parse_token(&buf[..len]).unwrap_or_default();
                         let (_, nodes) = parse_dht_response(&buf[..len]);
                         for node in nodes.iter().take(8) {
-                            // Build announce_peer message
+                            // Build announce_peer message with the real token.
                             let announce = build_announce_peer(
                                 &self.node_id,
                                 &self.infohash,
                                 our_port,
+                                &token,
                                 &[0x62u8, 0x62u8],
                             );
                             let _ = socket.send_to(&announce, node.addr);
@@ -384,7 +388,13 @@ impl DhtBootstrap {
 }
 
 /// Build a BEP-5 `announce_peer` message.
-fn build_announce_peer(node_id: &NodeId, info_hash: &NodeId, port: u16, tid: &[u8; 2]) -> Vec<u8> {
+fn build_announce_peer(
+    node_id: &NodeId,
+    info_hash: &NodeId,
+    port: u16,
+    token: &[u8],
+    tid: &[u8; 2],
+) -> Vec<u8> {
     let mut msg = Vec::new();
     msg.extend_from_slice(b"d1:ad2:id20:");
     msg.extend_from_slice(node_id.as_bytes());
@@ -392,7 +402,10 @@ fn build_announce_peer(node_id: &NodeId, info_hash: &NodeId, port: u16, tid: &[u
     msg.extend_from_slice(info_hash.as_bytes());
     msg.extend_from_slice(b"4:porti");
     msg.extend_from_slice(port.to_string().as_bytes());
-    msg.extend_from_slice(b"e5:token0:e1:q13:announce_peer1:t2:");
+    msg.extend_from_slice(b"e5:token");
+    msg.extend_from_slice(format!("{}:", token.len()).as_bytes());
+    msg.extend_from_slice(token);
+    msg.extend_from_slice(b"1:q13:announce_peer1:t2:");
     msg.extend_from_slice(tid);
     msg.extend_from_slice(b"1:y1:qe");
     msg
