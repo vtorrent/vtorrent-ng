@@ -74,14 +74,21 @@ pub fn build_and_sign(
     let pubkey_bytes = pubkey.to_bytes();
 
     // Sign each input (P2WPKH), collecting witnesses before mutating the tx.
+    // Each input's sighash uses that input's own scriptPubKey (derived from
+    // the UTXO's address), not the destination's.
     let mut witnesses = Vec::with_capacity(inputs.len());
     {
         let mut cache = SighashCache::new(&tx);
         for (i, u) in inputs.iter().enumerate() {
+            let input_script = Address::from_str(&u.address)
+                .map_err(|e| BtcError::InvalidAddress(e.to_string()))?
+                .require_network(bitcoin::Network::Bitcoin)
+                .map_err(|e| BtcError::InvalidAddress(e.to_string()))?
+                .script_pubkey();
             let sighash = cache
                 .p2wpkh_signature_hash(
                     i,
-                    &dest.script_pubkey(),
+                    &input_script,
                     Amount::from_sat(u.value),
                     bitcoin::EcdsaSighashType::All,
                 )
@@ -117,7 +124,7 @@ mod tests {
             txid: "11".repeat(32),
             vout: 0,
             value: 100_000,
-            address: "bc1qtest".to_string(),
+            address: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
             height: 100,
         }];
         let raw = build_and_sign(
@@ -139,7 +146,7 @@ mod tests {
             txid: "11".repeat(32),
             vout: 0,
             value: 10_000,
-            address: "bc1qtest".to_string(),
+            address: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
             height: 100,
         }];
         let result = build_and_sign(

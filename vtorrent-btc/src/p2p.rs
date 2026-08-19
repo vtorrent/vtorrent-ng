@@ -9,6 +9,10 @@ use bitcoin::p2p::ServiceFlags;
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::time::{timeout, Duration};
+
+/// Timeout for the version handshake.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A single connection to a Bitcoin peer.
 pub struct BtcPeer {
@@ -47,14 +51,37 @@ impl BtcPeer {
             .await
             .map_err(|e| BtcError::P2p(e.to_string()))?;
 
-        // Read the verack (ignore the peer's version for now).
-        let mut buf = [0u8; 24];
-        stream
-            .read_exact(&mut buf)
+        // Complete the version handshake: read the peer's version, reply with
+        // verack, then wait for the peer's verack.
+        let mut peer = Self { stream };
+        match timeout(HANDSHAKE_TIMEOUT, peer.recv())
             .await
-            .map_err(|e| BtcError::P2p(e.to_string()))?;
+            .map_err(|_| BtcError::P2p("handshake timed out".into()))??
+        {
+            NetworkMessage::Version(_) => {}
+            NetworkMessage::Verack => {}
+            other => {
+                return Err(BtcError::P2p(format!(
+                    "expected version message, got {:?}",
+                    other
+                )))
+            }
+        }
+        peer.send(NetworkMessage::Verack).await?;
+        match timeout(HANDSHAKE_TIMEOUT, peer.recv())
+            .await
+            .map_err(|_| BtcError::P2p("handshake timed out".into()))??
+        {
+            NetworkMessage::Verack => {}
+            other => {
+                return Err(BtcError::P2p(format!(
+                    "expected verack message, got {:?}",
+                    other
+                )))
+            }
+        }
 
-        Ok(Self { stream })
+        Ok(peer)
     }
 
     /// Send a raw network message.
@@ -75,7 +102,7 @@ impl BtcPeer {
             .read_exact(&mut header)
             .await
             .map_err(|e| BtcError::P2p(e.to_string()))?;
-        let len = u32::from_le_bytes([header[20], header[21], header[22], header[23]]) as usize;
+        let len = u32::from_le_bytes([header[16], header[17], header[18], header[19]]) as usize;
         let mut payload = vec![0u8; len];
         self.stream
             .read_exact(&mut payload)

@@ -213,7 +213,10 @@ impl BtcHtlc {
                     vout: 0,
                 },
                 script_sig: ScriptBuf::new(),
-                sequence: Sequence::MAX,
+                // BIP-65 rule 4: OP_CLTV fails when the input's nSequence is
+                // MAX (0xffffffff). Use a non-final sequence so the CLTV
+                // branch can be satisfied.
+                sequence: Sequence::ENABLE_LOCKTIME_NO_RBF,
                 witness: Witness::new(),
             }],
             output: vec![TxOut {

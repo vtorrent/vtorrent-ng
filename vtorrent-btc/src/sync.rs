@@ -10,6 +10,7 @@ use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::p2p::message_blockdata::GetHeadersMessage;
 use bitcoin::p2p::message_bloom::FilterLoad;
 use std::net::SocketAddr;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use vtorrent_spv::BloomFilter;
 
@@ -56,10 +57,18 @@ impl BtcSync {
     }
 
     /// Build a BIP37 Bloom filter from the wallet's addresses.
+    ///
+    /// BIP37 matches against the serialized scriptPubKey of each output, so
+    /// the filter must contain the actual script bytes (e.g. `OP_0 <20-byte
+    /// pubkey hash>` for P2WPKH), not the bech32 string.
     pub fn build_filter(&self) -> BloomFilter {
         let mut filter = BloomFilter::new(self.addresses.len().max(1), 0.001, 0);
         for addr in &self.addresses {
-            filter.insert(addr.as_bytes());
+            if let Ok(a) = bitcoin::Address::from_str(addr) {
+                if let Ok(a) = a.require_network(bitcoin::Network::Bitcoin) {
+                    filter.insert_script(&a.script_pubkey().to_bytes());
+                }
+            }
         }
         filter
     }
@@ -154,7 +163,7 @@ mod tests {
         let sync = BtcSync::new(
             Arc::new(Mutex::new(HeaderChain::new())),
             Arc::new(Mutex::new(UtxoSet::new())),
-            vec!["bc1qtest".to_string()],
+            vec!["bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string()],
         );
         let filter = sync.build_filter();
         assert!(!filter.is_empty());
@@ -176,7 +185,7 @@ mod tests {
         let sync = BtcSync::new(
             Arc::new(Mutex::new(HeaderChain::new())),
             Arc::new(Mutex::new(UtxoSet::new())),
-            vec!["bc1qtest".to_string()],
+            vec!["bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string()],
         );
         let fl = sync.build_filterload();
         assert!(!fl.filter.is_empty());
@@ -190,7 +199,13 @@ mod tests {
             utxos.clone(),
             vec![],
         );
-        sync.record_utxo("11".repeat(32).as_str(), 0, 5000, "bc1qtest", 100);
+        sync.record_utxo(
+            "11".repeat(32).as_str(),
+            0,
+            5000,
+            "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+            100,
+        );
         assert_eq!(utxos.lock().unwrap().total(), 5000);
     }
 }
