@@ -9,6 +9,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::p2p::message_blockdata::{GetHeadersMessage, Inventory};
 use bitcoin::p2p::message_bloom::FilterLoad;
+use bitcoin::p2p::message_filter::GetCFilters;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -336,6 +337,113 @@ impl BtcSync {
                 }
             }
         }
+    }
+
+    /// Scan blocks from `start_height` to the tip using BIP-158 compact block
+    /// filters (the modern, privacy-preserving alternative to BIP-37).
+    ///
+    /// For each block, download its `cfilter` and test whether any watched
+    /// scriptPubKey matches. Only matching blocks are downloaded in full, so
+    /// the full node never learns which addresses the client is watching.
+    /// Returns the number of blocks scanned.
+    pub async fn scan_utxos_bip158(&self, peer: &mut BtcPeer, start_height: u32) -> Result<usize> {
+        use bitcoin::bip158::BlockFilter;
+
+        let hashes: Vec<[u8; 32]> = self.headers.lock().unwrap().hashes_from(start_height);
+        if hashes.is_empty() {
+            return Ok(0);
+        }
+
+        // The watched scriptPubKeys (BIP-158 matches against the full script).
+        let watched: Vec<Vec<u8>> = self
+            .addresses
+            .iter()
+            .filter_map(|addr| {
+                bitcoin::Address::from_str(addr)
+                    .ok()?
+                    .require_network(self.network)
+                    .ok()
+                    .map(|a| a.script_pubkey().to_bytes())
+            })
+            .collect();
+        if watched.is_empty() {
+            return Ok(0);
+        }
+
+        // BIP-158 basic filter type is 0x00.
+        const FILTER_TYPE_BASIC: u8 = 0x00;
+
+        // Request the full range of filters in one `getcfilters` message. The
+        // peer replies with one `cfilter` per block, in ascending height order.
+        let stop_hash = bitcoin::BlockHash::from_byte_array(*hashes.last().unwrap());
+        peer.send(NetworkMessage::GetCFilters(GetCFilters {
+            filter_type: FILTER_TYPE_BASIC,
+            start_height,
+            stop_hash,
+        }))
+        .await?;
+
+        let mut scanned = 0usize;
+        for hash in hashes {
+            // Read the next cfilter response (in order). The peer's blockfilter
+            // index can lag behind the tip, so it may send fewer filters than
+            // requested; time out rather than block forever.
+            let filter = loop {
+                match tokio::time::timeout(std::time::Duration::from_secs(10), peer.recv()).await {
+                    Err(_) => return Ok(scanned),
+                    Ok(Err(e)) => return Err(e),
+                    Ok(Ok(NetworkMessage::CFilter(cf))) => break cf,
+                    Ok(Ok(NetworkMessage::Ping(nonce))) => {
+                        peer.send(NetworkMessage::Pong(nonce)).await?;
+                    }
+                    Ok(Ok(_)) => continue,
+                }
+            };
+
+            // The cfilter response carries the authoritative block hash, which
+            // is the SipHash key for the filter. Use it (not our header-chain
+            // hash) so the match is keyed correctly.
+            let block_hash = filter.block_hash;
+            let bf = BlockFilter::new(&filter.filter);
+            let matched = bf
+                .match_any(&block_hash, watched.iter().map(|s| s.as_slice()))
+                .map_err(|e| BtcError::Sync(e.to_string()))?;
+            tracing::debug!(
+                "BTC BIP-158: block {} (cfilter hash {}) filter {} bytes, matched={}",
+                hex::encode(hash),
+                hex::encode(filter.block_hash.to_byte_array()),
+                filter.filter.len(),
+                matched
+            );
+
+            if matched {
+                // Download the full block and record matching outputs.
+                peer.send(NetworkMessage::GetData(vec![Inventory::WitnessBlock(
+                    block_hash,
+                )]))
+                .await?;
+                let block = loop {
+                    match peer.recv().await? {
+                        NetworkMessage::Block(b) => break b,
+                        NetworkMessage::Ping(nonce) => {
+                            peer.send(NetworkMessage::Pong(nonce)).await?;
+                        }
+                        _ => continue,
+                    }
+                };
+                let height = {
+                    let chain = self.headers.lock().unwrap();
+                    chain.get(&hash).map(|h| h.height)
+                };
+                if let Some(height) = height {
+                    for tx in &block.txdata {
+                        self.record_matching_outputs(tx, height);
+                    }
+                }
+            }
+            scanned += 1;
+        }
+        Ok(scanned)
     }
 }
 

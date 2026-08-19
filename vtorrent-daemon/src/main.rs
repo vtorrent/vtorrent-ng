@@ -631,12 +631,14 @@ async fn main() -> anyhow::Result<()> {
                                 Ok(n) => tracing::info!("BTC sync: {} headers", n),
                                 Err(e) => tracing::warn!("BTC sync error: {}", e),
                             }
-                            // After header sync, scan for wallet UTXOs
-                            // from the last checkpoint to the tip.
+                            // After header sync, scan for wallet UTXOs from the
+                            // last checkpoint to the tip. Use BIP-158 compact
+                            // block filters (BIP-37 is disabled by most
+                            // mainnet nodes).
                             let start = w.last_scanned_height();
-                            match w.scan_utxos(&mut peer, start).await {
+                            match w.scan_utxos_bip158(&mut peer, start).await {
                                 Ok(n) => {
-                                    tracing::info!("BTC UTXO scan: {} blocks", n);
+                                    tracing::info!("BTC UTXO scan (BIP-158): {} blocks", n);
                                     let tip = w.best_height();
                                     w.set_last_scanned_height(tip);
                                 }
