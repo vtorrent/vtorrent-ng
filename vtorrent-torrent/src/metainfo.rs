@@ -94,6 +94,11 @@ impl Metainfo {
 
         let name = get_string(info_dict, b"name")?;
         let piece_length = get_integer(info_dict, b"piece length")? as u64;
+        if piece_length == 0 {
+            return Err(TorrentError::InvalidMetainfo(
+                "'piece length' cannot be zero".into(),
+            ));
+        }
 
         // Determine if single-file or multi-file
         let (files, total_size) = if info_dict.contains_key(&b"files".to_vec()) {
@@ -645,5 +650,22 @@ mod tests {
         assert_eq!(meta.pieces.len(), 2);
         assert_eq!(meta.pieces[0], [0x11u8; 20]);
         assert_eq!(meta.pieces[1], [0x22u8; 20]);
+    }
+
+    #[test]
+    fn test_zero_piece_length_rejected() {
+        // A malicious torrent with "piece length" = 0 must be rejected instead
+        // of dividing by zero when computing the piece count.
+        let mut pieces = Vec::new();
+        pieces.extend_from_slice(&[0x11u8; 20]);
+
+        let mut bencode = Vec::new();
+        bencode.extend_from_slice(b"d4:infod6:lengthi8e4:name4:test12:piece lengthi0e6:pieces");
+        bencode.extend_from_slice(format!("{}:", pieces.len()).as_bytes());
+        bencode.extend_from_slice(&pieces);
+        bencode.extend_from_slice(b"e8:announce15:http://tracker/ee");
+
+        let result = Metainfo::from_bytes(&bencode);
+        assert!(result.is_err(), "zero piece length must be rejected");
     }
 }
