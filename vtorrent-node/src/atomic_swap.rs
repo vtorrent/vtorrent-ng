@@ -446,14 +446,14 @@ impl SwapOrder {
             .unwrap_or_default()
             .as_secs() as u32;
 
-        // Compute order ID
+        // Compute order ID as SHA256 of the order's identifying fields.
         let mut data = Vec::new();
         data.extend_from_slice(maker_address.as_bytes());
         data.extend_from_slice(&vtr_amount.to_le_bytes());
         data.extend_from_slice(target_asset.as_bytes());
         data.extend_from_slice(&target_amount.to_le_bytes());
         data.extend_from_slice(&now.to_le_bytes());
-        let order_id = sha256(&data.try_into().unwrap_or([0u8; 32]));
+        let order_id = sha256_bytes(&data);
 
         Self {
             order_id,
@@ -695,6 +695,16 @@ impl AtomicSwap {
 
 /// SHA256 of a 32-byte input.
 fn sha256(data: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    let result = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&result);
+    out
+}
+
+/// SHA256 of an arbitrary-length input.
+fn sha256_bytes(data: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(data);
     let result = hasher.finalize();
