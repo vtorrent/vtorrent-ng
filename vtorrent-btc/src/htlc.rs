@@ -292,7 +292,11 @@ impl BtcHtlc {
     }
 
     /// Sign the claim transaction with the recipient's key, revealing the
-    /// preimage. The witness is `<sig> <preimage> <witness_script>`.
+    /// preimage.
+    ///
+    /// The witness is `<sig> <pubkey> <preimage> <1> <witness_script>`:
+    /// the `1` selects the OP_IF branch, the preimage satisfies OP_SHA256,
+    /// and the pubkey satisfies the OP_DUP OP_HASH160 ... OP_CHECKSIG check.
     pub fn sign_claim_tx(
         &self,
         mut tx: Transaction,
@@ -302,6 +306,7 @@ impl BtcHtlc {
         let key = bitcoin::PrivateKey::from_wif(recipient_wif)
             .map_err(|e| BtcError::Bitcoin(e.to_string()))?;
         let secp = Secp256k1::new();
+        let pubkey = key.public_key(&secp);
         let witness_script = self.build_script()?;
         let sighash = {
             let mut cache = SighashCache::new(&tx);
@@ -321,18 +326,23 @@ impl BtcHtlc {
 
         let mut witness = Witness::new();
         witness.push(sig_bytes);
+        witness.push(pubkey.to_bytes());
         witness.push(preimage);
+        witness.push(vec![1]); // OP_IF branch selector (minimal true)
         witness.push(witness_script.as_bytes());
         tx.input[0].witness = witness;
         Ok(tx)
     }
 
-    /// Sign the refund transaction with the refund key. The witness is
-    /// `<sig> <empty> <witness_script>` (the OP_ELSE branch).
+    /// Sign the refund transaction with the refund key.
+    ///
+    /// The witness is `<sig> <pubkey> <0> <witness_script>`: the empty element
+    /// selects the OP_ELSE branch and the pubkey satisfies the OP_CHECKSIG.
     pub fn sign_refund_tx(&self, mut tx: Transaction, refund_wif: &str) -> Result<Transaction> {
         let key = bitcoin::PrivateKey::from_wif(refund_wif)
             .map_err(|e| BtcError::Bitcoin(e.to_string()))?;
         let secp = Secp256k1::new();
+        let pubkey = key.public_key(&secp);
         let witness_script = self.build_script()?;
         let sighash = {
             let mut cache = SighashCache::new(&tx);
@@ -352,7 +362,8 @@ impl BtcHtlc {
 
         let mut witness = Witness::new();
         witness.push(sig_bytes);
-        witness.push(vec![]);
+        witness.push(pubkey.to_bytes());
+        witness.push(vec![]); // OP_ELSE branch selector (minimal false)
         witness.push(witness_script.as_bytes());
         tx.input[0].witness = witness;
         Ok(tx)

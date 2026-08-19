@@ -1141,14 +1141,21 @@ pub async fn btc_claim(
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
     let rpc = &handle.rpc_state;
 
-    let (preimage, btc_funding_txid, maker_btc_address, btc_amount, btc_expiry) = {
+    let (preimage, btc_funding_txid, maker_btc_address, btc_amount, btc_expiry, refund_address) = {
         let swaps = rpc.swaps.read().await;
         let swap = swaps
             .get(&order_id)
             .ok_or_else(|| TauriError::NotFound(format!("Swap {} not found", order_id)))?;
-        let preimage = swap
-            .preimage
-            .ok_or_else(|| TauriError::InvalidInput("Preimage not yet revealed".into()))?;
+        let preimage = match swap.preimage {
+            Some(p) => p,
+            None => {
+                let order_book = rpc.order_book.read().await;
+                order_book
+                    .get_order(&order_id)
+                    .and_then(|o| o.preimage)
+                    .ok_or_else(|| TauriError::InvalidInput("Preimage not available".into()))?
+            }
+        };
         let btc_funding_txid = swap
             .btc_funding_txid
             .ok_or_else(|| TauriError::InvalidInput("BTC funding txid not recorded".into()))?;
@@ -1156,12 +1163,16 @@ pub async fn btc_claim(
             .maker_btc_address
             .clone()
             .ok_or_else(|| TauriError::InvalidInput("Maker BTC address not recorded".into()))?;
+        let refund_address = swap.taker_btc_refund_address.clone().ok_or_else(|| {
+            TauriError::InvalidInput("Taker BTC refund address not recorded".into())
+        })?;
         (
             preimage,
             btc_funding_txid,
             maker_btc_address,
             swap.btc_amount,
             swap.btc_expiry,
+            refund_address,
         )
     };
 
@@ -1176,7 +1187,7 @@ pub async fn btc_claim(
             out
         },
         recipient: maker_btc_address.clone(),
-        refund_address: String::new(),
+        refund_address,
         expiry: btc_expiry,
         amount: btc_amount,
         network: bitcoin::Network::Bitcoin,

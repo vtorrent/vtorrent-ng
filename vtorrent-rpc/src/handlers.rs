@@ -1552,14 +1552,24 @@ pub async fn btc_claim(
 ) -> RpcResult<Json<SwapActionResponse>> {
     use vtorrent_node::atomic_swap::SwapStatus;
 
-    let (preimage, btc_funding_txid, maker_btc_address, btc_amount, btc_expiry) = {
+    let (preimage, btc_funding_txid, maker_btc_address, btc_amount, btc_expiry, refund_address) = {
         let swaps = state.swaps.read().await;
         let swap = swaps
             .get(&req.order_id)
             .ok_or_else(|| RpcError::NotFound(format!("Swap {} not found", req.order_id)))?;
-        let preimage = swap
-            .preimage
-            .ok_or_else(|| RpcError::BadRequest("Preimage not yet revealed".into()))?;
+        // The maker generated the preimage at order placement and holds it in
+        // the order book. The swap state's preimage is only populated when the
+        // taker reveals it via vtr_claim, so fall back to the order's preimage.
+        let preimage = match swap.preimage {
+            Some(p) => p,
+            None => {
+                let order_book = state.order_book.read().await;
+                order_book
+                    .get_order(&req.order_id)
+                    .and_then(|o| o.preimage)
+                    .ok_or_else(|| RpcError::BadRequest("Preimage not available".into()))?
+            }
+        };
         let btc_funding_txid = swap
             .btc_funding_txid
             .ok_or_else(|| RpcError::BadRequest("BTC funding txid not recorded".into()))?;
@@ -1567,12 +1577,19 @@ pub async fn btc_claim(
             .maker_btc_address
             .clone()
             .ok_or_else(|| RpcError::BadRequest("Maker BTC address not recorded".into()))?;
+        // The witness script embeds the taker's refund address, so it must be
+        // reconstructed exactly as it was funded.
+        let refund_address = swap
+            .taker_btc_refund_address
+            .clone()
+            .ok_or_else(|| RpcError::BadRequest("Taker BTC refund address not recorded".into()))?;
         (
             preimage,
             btc_funding_txid,
             maker_btc_address,
             swap.btc_amount,
             swap.btc_expiry,
+            refund_address,
         )
     };
 
@@ -1589,7 +1606,7 @@ pub async fn btc_claim(
             out
         },
         recipient: maker_btc_address.clone(),
-        refund_address: String::new(),
+        refund_address,
         expiry: btc_expiry,
         amount: btc_amount,
         network: btc_network,

@@ -60,6 +60,19 @@ impl BtcWallet {
         crate::keys::derive_wif(&self.seed, index, self.network)
     }
 
+    /// Derive a gap of addresses (indices 0..=gap) for scanning.
+    ///
+    /// The wallet must watch a range of derived addresses, not just the
+    /// current one, so funds sent to any previously-issued address are still
+    /// discovered.
+    pub fn watch_addresses(&self, gap: u32) -> Result<Vec<String>> {
+        let mut addrs = Vec::with_capacity(gap as usize + 1);
+        for i in 0..=gap {
+            addrs.push(derive_address(&self.seed, i, self.network)?);
+        }
+        Ok(addrs)
+    }
+
     /// Total confirmed balance in satoshis.
     pub fn balance(&self) -> u64 {
         self.utxos.lock().unwrap().total()
@@ -100,7 +113,7 @@ impl BtcWallet {
         let sync = crate::sync::BtcSync::new(
             self.headers.clone(),
             self.utxos.clone(),
-            vec![self.current_address()?],
+            self.watch_addresses(self.next_index)?,
             self.network,
         );
         let added = sync.sync_once(peer).await?;
@@ -121,7 +134,7 @@ impl BtcWallet {
         let sync = crate::sync::BtcSync::new(
             self.headers.clone(),
             self.utxos.clone(),
-            vec![self.current_address()?],
+            self.watch_addresses(self.next_index)?,
             self.network,
         );
         sync.scan_utxos(peer, start_height).await
