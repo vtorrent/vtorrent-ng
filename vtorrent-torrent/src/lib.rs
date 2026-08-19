@@ -13,5 +13,6 @@ pub mod incentive;
 pub mod metadata;
 pub mod metainfo;
 pub mod peer_wire;
+pub mod scheduler;
 pub mod session;
 pub mod tracker;
