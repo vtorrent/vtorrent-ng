@@ -423,6 +423,64 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
     let _ = conn.send(&PeerMessage::Bitfield { bits: vec![] }).await;
     let _ = conn.send(&PeerMessage::Interested).await;
 
+    // Exchange VTR addresses via the ut_vtr extension (BEP-10).
+    let mut peer_vtr_address: Option<String> = None;
+    {
+        let handshake = crate::metadata::build_ut_vtr_handshake(1);
+        let _ = conn
+            .send(&PeerMessage::Extended {
+                id: 0,
+                payload: handshake,
+            })
+            .await;
+        // Read the peer's extension handshake to learn its ut_vtr id.
+        let mut ut_vtr_id = None;
+        for _ in 0..10 {
+            match conn.recv().await {
+                Ok(PeerMessage::Extended { id: 0, payload }) => {
+                    if let Ok(Value::Dict(d)) = serde_bencode::from_bytes::<Value>(&payload) {
+                        if let Some(Value::Dict(m)) = d.get(b"m".as_slice()) {
+                            if let Some(Value::Int(id)) = m.get(b"ut_vtr".as_slice()) {
+                                ut_vtr_id = Some(*id as u8);
+                            }
+                        }
+                    }
+                    break;
+                }
+                Ok(_) => continue,
+                Err(_) => break,
+            }
+        }
+        if let Some(id) = ut_vtr_id {
+            // Send our address, then read the peer's address.
+            let our_addr = {
+                let guard = sessions.read().await;
+                guard
+                    .get_session(&session_id)
+                    .map(|s| s.wallet_address.clone())
+                    .unwrap_or_default()
+            };
+            let _ = conn
+                .send(&PeerMessage::Extended {
+                    id,
+                    payload: crate::metadata::build_ut_vtr_address(id, &our_addr),
+                })
+                .await;
+            for _ in 0..10 {
+                match conn.recv().await {
+                    Ok(PeerMessage::Extended { id: rid, payload }) if rid == id => {
+                        if let Ok(addr) = crate::metadata::parse_ut_vtr_address(&payload) {
+                            peer_vtr_address = Some(addr);
+                        }
+                        break;
+                    }
+                    Ok(_) => continue,
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+
     // Track in-flight blocks for this peer.
     let mut in_flight: usize = 0;
     // Track partial piece assembly across multiple blocks.
@@ -492,6 +550,14 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                                 if let Ok(s) = guard.get_session_mut(&session_id) {
                                     s.bytes_downloaded =
                                         s.bytes_downloaded.saturating_add(piece_data.len() as u64);
+                                    // Record bandwidth for incentive accounting.
+                                    let peer_key = peer_vtr_address.clone().unwrap_or_else(|| {
+                                        conn.remote_peer_id
+                                            .iter()
+                                            .map(|b| format!("{:02x}", b))
+                                            .collect()
+                                    });
+                                    s.record_download(&peer_key, piece_data.len() as u64);
                                 }
                             }
                         }
