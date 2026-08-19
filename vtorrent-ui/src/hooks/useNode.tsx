@@ -297,6 +297,7 @@ export async function removeTorrent(id: string): Promise<void> {
 
 export async function placeDexOrder(req: {
   makerAddress: string
+  makerBtcAddress?: string
   offerAmountSatoshis: number
   offerAsset: string
   requestAmountSatoshis: number
@@ -312,6 +313,7 @@ export async function placeDexOrder(req: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       maker_address: req.makerAddress,
+      maker_btc_address: req.makerBtcAddress ?? null,
       offer_amount_satoshis: req.offerAmountSatoshis,
       offer_asset: req.offerAsset,
       request_amount_satoshis: req.requestAmountSatoshis,

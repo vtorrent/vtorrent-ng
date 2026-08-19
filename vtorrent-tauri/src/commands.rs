@@ -740,11 +740,12 @@ pub async fn get_dex_orders(state: tauri::State<'_, AppState>) -> Result<Vec<Dex
 
 /// Place a DEX order.
 ///
-/// Called from: `TradePage.tsx` → `invoke('place_dex_order', { makerAddress, vtrAmount, targetAsset, targetAmount })`
+/// Called from: `TradePage.tsx` → `invoke('place_dex_order', { makerAddress, makerBtcAddress, vtrAmount, targetAsset, targetAmount })`
 #[tauri::command]
 pub async fn place_dex_order(
     state: tauri::State<'_, AppState>,
     maker_address: String,
+    maker_btc_address: Option<String>,
     vtr_amount: u64,
     target_asset: String,
     target_amount: u64,
@@ -758,13 +759,14 @@ pub async fn place_dex_order(
     let mut order_book = handle.rpc_state.order_book.write().await;
 
     // Default locktime: 24 hours.
-    let order = SwapOrder::new(
+    let mut order = SwapOrder::new(
         maker_address,
         vtr_amount,
         target_asset,
         target_amount,
         86400,
     );
+    order.maker_btc_address = maker_btc_address;
     let result = DexOrderResult {
         id: hex::encode(order.order_id),
         maker_address: order.maker_address.clone(),
