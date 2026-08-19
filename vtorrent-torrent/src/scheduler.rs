@@ -110,6 +110,29 @@ impl PieceTracker {
     pub fn remaining(&self) -> usize {
         self.have.iter().filter(|&&h| !h).count()
     }
+
+    /// Serialize the `have` bitfield to bytes (one bit per piece, MSB-first).
+    pub fn serialize_have_bitfield(&self) -> Vec<u8> {
+        let mut bytes = vec![0u8; self.have.len().div_ceil(8)];
+        for (i, &h) in self.have.iter().enumerate() {
+            if h {
+                bytes[i / 8] |= 0x80 >> (i % 8);
+            }
+        }
+        bytes
+    }
+
+    /// Load a `have` bitfield from bytes.
+    pub fn load_have_bitfield(&mut self, bytes: &[u8]) {
+        for (i, byte) in bytes.iter().enumerate() {
+            for bit in 0..8 {
+                let idx = i * 8 + bit;
+                if idx < self.have.len() && (byte & (0x80 >> bit)) != 0 {
+                    self.have[idx] = true;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -156,5 +179,23 @@ mod tests {
         tracker.mark_have(1);
         assert!(tracker.is_complete());
         assert_eq!(tracker.remaining(), 0);
+    }
+
+    #[test]
+    fn test_resume_bitfield_roundtrip() {
+        let mut tracker = PieceTracker::new(16);
+        tracker.mark_have(0);
+        tracker.mark_have(5);
+        tracker.mark_have(15);
+
+        let bytes = tracker.serialize_have_bitfield();
+        let mut restored = PieceTracker::new(16);
+        restored.load_have_bitfield(&bytes);
+
+        assert!(restored.have[0]);
+        assert!(restored.have[5]);
+        assert!(restored.have[15]);
+        assert!(!restored.have[1]);
+        assert_eq!(restored.remaining(), 13);
     }
 }
