@@ -314,13 +314,15 @@ pub async fn run_engine(
         peer_tasks.push(tokio::spawn(async move {
             run_peer_task(
                 addr,
-                metainfo,
-                peer_id,
-                scheduler,
-                download_dir,
-                sessions,
-                session_id,
-                cancel,
+                PeerTaskContext {
+                    metainfo,
+                    peer_id,
+                    scheduler,
+                    download_dir,
+                    sessions,
+                    session_id,
+                    cancel,
+                },
             )
             .await;
         }));
@@ -357,10 +359,8 @@ pub async fn run_engine(
     }
 }
 
-/// Drive a single peer connection: exchange bitfields, request blocks, and
-/// write verified pieces to disk, coordinated through the shared scheduler.
-async fn run_peer_task(
-    addr: SocketAddr,
+/// Shared context passed to each per-peer task.
+struct PeerTaskContext {
     metainfo: Metainfo,
     peer_id: [u8; 20],
     scheduler: Arc<StdMutex<SchedulerState>>,
@@ -368,7 +368,21 @@ async fn run_peer_task(
     sessions: Arc<RwLock<SessionManager>>,
     session_id: String,
     cancel: CancellationToken,
-) {
+}
+
+/// Drive a single peer connection: exchange bitfields, request blocks, and
+/// write verified pieces to disk, coordinated through the shared scheduler.
+async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
+    let PeerTaskContext {
+        metainfo,
+        peer_id,
+        scheduler,
+        download_dir,
+        sessions,
+        session_id,
+        cancel,
+    } = ctx;
+
     let mut conn = match PeerConnection::connect(addr, metainfo.info_hash, peer_id).await {
         Ok(c) => c,
         Err(_) => return,
@@ -445,9 +459,8 @@ async fn run_peer_task(
                                 // Update session progress.
                                 let mut guard = sessions.write().await;
                                 if let Ok(s) = guard.get_session_mut(&session_id) {
-                                    s.bytes_downloaded = s
-                                        .bytes_downloaded
-                                        .saturating_add(piece_data.len() as u64);
+                                    s.bytes_downloaded =
+                                        s.bytes_downloaded.saturating_add(piece_data.len() as u64);
                                 }
                             }
                         }
