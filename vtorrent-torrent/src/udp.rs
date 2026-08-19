@@ -143,6 +143,111 @@ fn parse_compact_peers(data: &[u8]) -> Vec<TrackerPeer> {
     peers
 }
 
+use std::net::SocketAddr;
+use tokio::net::UdpSocket;
+
+/// A UDP tracker client (BEP-15).
+pub struct UdpTracker {
+    addr: SocketAddr,
+}
+
+impl UdpTracker {
+    pub fn new(addr: SocketAddr) -> Self {
+        Self { addr }
+    }
+
+    /// Perform a connect handshake, returning the connection id.
+    async fn connect(&self, socket: &UdpSocket) -> Result<u64> {
+        let transaction_id = rand_transaction_id();
+        let req = encode_connect(transaction_id);
+        socket
+            .send_to(&req, self.addr)
+            .await
+            .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
+
+        let mut buf = [0u8; 2048];
+        let (n, _) = socket
+            .recv_from(&mut buf)
+            .await
+            .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
+        decode_connect_response(&buf[..n])
+    }
+
+    /// Announce to the tracker, returning the discovered peers.
+    pub async fn announce(
+        &self,
+        info_hash: &[u8; 20],
+        peer_id: &[u8; 20],
+        downloaded: u64,
+        left: u64,
+        uploaded: u64,
+        event: AnnounceEvent,
+        port: u16,
+    ) -> Result<Vec<TrackerPeer>> {
+        let socket = UdpSocket::bind("0.0.0.0:0")
+            .await
+            .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
+        let connection_id = self.connect(&socket).await?;
+
+        let transaction_id = rand_transaction_id();
+        let req = encode_announce(
+            connection_id,
+            transaction_id,
+            info_hash,
+            peer_id,
+            downloaded,
+            left,
+            uploaded,
+            event,
+            port,
+        );
+        socket
+            .send_to(&req, self.addr)
+            .await
+            .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
+
+        let mut buf = [0u8; 4096];
+        let (n, _) = socket
+            .recv_from(&mut buf)
+            .await
+            .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
+        let (_interval, _leechers, _seeders, peers) = decode_announce_response(&buf[..n])?;
+        Ok(peers)
+    }
+
+    /// Scrape the tracker for a single info hash.
+    pub async fn scrape(&self, info_hash: &[u8; 20]) -> Result<(u32, u32, u32)> {
+        let socket = UdpSocket::bind("0.0.0.0:0")
+            .await
+            .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
+        let connection_id = self.connect(&socket).await?;
+
+        let transaction_id = rand_transaction_id();
+        let req = encode_scrape(connection_id, transaction_id, info_hash);
+        socket
+            .send_to(&req, self.addr)
+            .await
+            .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
+
+        let mut buf = [0u8; 2048];
+        let (n, _) = socket
+            .recv_from(&mut buf)
+            .await
+            .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
+        decode_scrape_response(&buf[..n])
+    }
+}
+
+/// Generate a random transaction id.
+fn rand_transaction_id() -> u32 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    nanos ^ (std::process::id() as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,5 +328,51 @@ mod tests {
         assert_eq!(seeders, 10);
         assert_eq!(completed, 20);
         assert_eq!(leechers, 5);
+    }
+
+    #[tokio::test]
+    async fn test_udp_tracker_connect_and_announce() {
+        use tokio::net::UdpSocket;
+
+        // Bind a mock UDP tracker.
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = server.local_addr().unwrap();
+
+        let server_task = tokio::spawn(async move {
+            let mut buf = [0u8; 1024];
+            // First: connect request.
+            let (n, client_addr) = server.recv_from(&mut buf).await.unwrap();
+            let tx_id = u32::from_be_bytes([buf[12], buf[13], buf[14], buf[15]]);
+            let mut resp = Vec::new();
+            resp.extend_from_slice(&ACTION_CONNECT.to_be_bytes());
+            resp.extend_from_slice(&tx_id.to_be_bytes());
+            resp.extend_from_slice(&0xCAFE_BABEu64.to_be_bytes());
+            server.send_to(&resp, client_addr).await.unwrap();
+
+            // Second: announce request.
+            let (n2, client_addr2) = server.recv_from(&mut buf).await.unwrap();
+            let tx_id2 = u32::from_be_bytes([buf[12], buf[13], buf[14], buf[15]]);
+            let mut resp2 = Vec::new();
+            resp2.extend_from_slice(&ACTION_ANNOUNCE.to_be_bytes());
+            resp2.extend_from_slice(&tx_id2.to_be_bytes());
+            resp2.extend_from_slice(&1800u32.to_be_bytes());
+            resp2.extend_from_slice(&0u32.to_be_bytes());
+            resp2.extend_from_slice(&1u32.to_be_bytes());
+            resp2.extend_from_slice(&[10, 0, 0, 1, 0x1A, 0xE1]);
+            server.send_to(&resp2, client_addr2).await.unwrap();
+            let _ = n;
+            let _ = n2;
+        });
+
+        let tracker = UdpTracker::new(server_addr);
+        let peers = tracker
+            .announce(&[0xAA; 20], &[0xBB; 20], 0, 100, 0, AnnounceEvent::Started, 6881)
+            .await
+            .unwrap();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].ip, "10.0.0.1");
+        assert_eq!(peers[0].port, 6881);
+
+        server_task.await.unwrap();
     }
 }
