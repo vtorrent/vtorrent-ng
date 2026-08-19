@@ -111,6 +111,11 @@ impl PieceTracker {
         self.have.iter().filter(|&&h| !h).count()
     }
 
+    /// Number of pieces downloaded.
+    pub fn have_count(&self) -> usize {
+        self.have.iter().filter(|&&h| h).count()
+    }
+
     /// Serialize the `have` bitfield to bytes (one bit per piece, MSB-first).
     pub fn serialize_have_bitfield(&self) -> Vec<u8> {
         let mut bytes = vec![0u8; self.have.len().div_ceil(8)];

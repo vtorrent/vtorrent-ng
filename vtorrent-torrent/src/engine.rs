@@ -3,6 +3,7 @@
 use crate::error::{Result, TorrentError};
 use crate::metainfo::{Metainfo, TorrentFile};
 use crate::peer_wire::PeerMessage;
+use crate::scheduler::SchedulerState;
 use crate::session::{SessionManager, SessionState};
 use crate::tracker::{AnnounceEvent, AnnounceRequest, HttpTracker};
 use serde_bencode::value::Value;
@@ -10,7 +11,7 @@ use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
@@ -287,69 +288,56 @@ pub async fn run_engine(
         }
     }
 
-    // Connect to peers and download pieces.
-    let mut downloaded = 0u64;
-    for peer in peers {
-        if cancel.is_cancelled() {
-            break;
+    // Build the shared scheduler state and load any resume bitfield.
+    let scheduler = Arc::new(StdMutex::new(SchedulerState::new(metainfo.piece_count)));
+    {
+        let mut sched = scheduler.lock().unwrap();
+        let resume_path = download_dir.join(format!("{}.vtorrent", metainfo.name));
+        if let Ok(bytes) = std::fs::read(&resume_path) {
+            sched.tracker.load_have_bitfield(&bytes);
         }
+    }
+
+    // Spawn one task per peer.
+    let mut peer_tasks = Vec::new();
+    for peer in peers {
         let addr: SocketAddr = match format!("{}:{}", peer.ip, peer.port).parse() {
             Ok(a) => a,
             Err(_) => continue,
         };
-        let mut conn = match PeerConnection::connect(addr, metainfo.info_hash, peer_id).await {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        // Send interested, then request pieces we don't have.
-        let _ = conn.send(&PeerMessage::Interested).await;
-        let _ = conn.send(&PeerMessage::Unchoke).await;
-
-        // Request the first piece as a smoke test of the transfer path.
-        if metainfo.piece_count > 0 {
-            let piece_len = metainfo.piece_length.min(metainfo.total_size);
-            let _ = conn
-                .send(&PeerMessage::Request {
-                    index: 0,
-                    begin: 0,
-                    length: piece_len as u32,
-                })
-                .await;
-
-            // Read messages until we get the piece or the connection closes.
-            for _ in 0..100 {
-                if cancel.is_cancelled() {
-                    break;
-                }
-                match conn.recv().await {
-                    Ok(PeerMessage::Piece { index, begin, data }) => {
-                        let mut asm = PieceAssembler::new(index, piece_len);
-                        asm.add_block(begin, data);
-                        if asm.is_complete() {
-                            if let Some(expected) = metainfo.pieces.get(index as usize) {
-                                if asm.verify(expected) {
-                                    if let Some(piece_data) = asm.assemble() {
-                                        write_piece_to_disk(
-                                            &metainfo,
-                                            &download_dir,
-                                            index,
-                                            &piece_data,
-                                        )
-                                        .await;
-                                        downloaded += piece_data.len() as u64;
-                                    }
-                                }
-                            }
-                        }
-                        break;
-                    }
-                    Ok(_) => continue,
-                    Err(_) => break,
-                }
-            }
-        }
+        let scheduler = Arc::clone(&scheduler);
+        let metainfo = metainfo.clone();
+        let download_dir = download_dir.clone();
+        let cancel = cancel.clone();
+        let sessions = Arc::clone(&sessions);
+        let session_id = session_id.clone();
+        peer_tasks.push(tokio::spawn(async move {
+            run_peer_task(
+                addr,
+                metainfo,
+                peer_id,
+                scheduler,
+                download_dir,
+                sessions,
+                session_id,
+                cancel,
+            )
+            .await;
+        }));
     }
+
+    // Wait for all peer tasks to finish (or cancellation).
+    for task in peer_tasks {
+        let _ = task.await;
+    }
+
+    // Persist the resume bitfield and update final state.
+    let downloaded = {
+        let sched = scheduler.lock().unwrap();
+        let resume_path = download_dir.join(format!("{}.vtorrent", metainfo.name));
+        let _ = std::fs::write(&resume_path, sched.tracker.serialize_have_bitfield());
+        sched.tracker.have_count() as u64 * metainfo.piece_length
+    };
 
     // Final state update.
     {
@@ -367,6 +355,122 @@ pub async fn run_engine(
                 .as_secs();
         }
     }
+}
+
+/// Drive a single peer connection: exchange bitfields, request blocks, and
+/// write verified pieces to disk, coordinated through the shared scheduler.
+async fn run_peer_task(
+    addr: SocketAddr,
+    metainfo: Metainfo,
+    peer_id: [u8; 20],
+    scheduler: Arc<StdMutex<SchedulerState>>,
+    download_dir: PathBuf,
+    sessions: Arc<RwLock<SessionManager>>,
+    session_id: String,
+    cancel: CancellationToken,
+) {
+    let mut conn = match PeerConnection::connect(addr, metainfo.info_hash, peer_id).await {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    // Send our (empty) bitfield and interested.
+    let _ = conn.send(&PeerMessage::Bitfield { bits: vec![] }).await;
+    let _ = conn.send(&PeerMessage::Interested).await;
+
+    // Track in-flight blocks for this peer.
+    let mut in_flight: usize = 0;
+    // Track partial piece assembly across multiple blocks.
+    let mut assemblers: std::collections::HashMap<u32, PieceAssembler> =
+        std::collections::HashMap::new();
+
+    loop {
+        if cancel.is_cancelled() {
+            break;
+        }
+
+        // Request blocks while we have pipeline capacity and pieces to fetch.
+        while in_flight < scheduler.lock().unwrap().max_pipelined_blocks {
+            let piece_len = |index: u32| piece_length(&metainfo, index);
+            let (piece, begin, len) = {
+                let mut sched = scheduler.lock().unwrap();
+                match sched.next_block(&piece_len) {
+                    Some(b) => b,
+                    None => break,
+                }
+            };
+            let _ = conn
+                .send(&PeerMessage::Request {
+                    index: piece,
+                    begin,
+                    length: len,
+                })
+                .await;
+            in_flight += 1;
+        }
+
+        // Read one message.
+        match conn.recv().await {
+            Ok(PeerMessage::Bitfield { bits }) => {
+                scheduler
+                    .lock()
+                    .unwrap()
+                    .tracker
+                    .set_peer_bitfield(conn.remote_peer_id, &bits);
+            }
+            Ok(PeerMessage::Have { index }) => {
+                scheduler
+                    .lock()
+                    .unwrap()
+                    .tracker
+                    .set_peer_have(conn.remote_peer_id, index);
+            }
+            Ok(PeerMessage::Choke) => {
+                // Wait for unchoke; just continue.
+            }
+            Ok(PeerMessage::Piece { index, begin, data }) => {
+                in_flight = in_flight.saturating_sub(1);
+                let piece_len = piece_length(&metainfo, index);
+                let asm = assemblers
+                    .entry(index)
+                    .or_insert_with(|| PieceAssembler::new(index, piece_len));
+                asm.add_block(begin, data);
+                if asm.is_complete() {
+                    if let Some(expected) = metainfo.pieces.get(index as usize) {
+                        if asm.verify(expected) {
+                            if let Some(piece_data) = asm.assemble() {
+                                write_piece_to_disk(&metainfo, &download_dir, index, &piece_data)
+                                    .await;
+                                scheduler.lock().unwrap().tracker.mark_have(index);
+                                // Update session progress.
+                                let mut guard = sessions.write().await;
+                                if let Ok(s) = guard.get_session_mut(&session_id) {
+                                    s.bytes_downloaded = s
+                                        .bytes_downloaded
+                                        .saturating_add(piece_data.len() as u64);
+                                }
+                            }
+                        }
+                    }
+                    assemblers.remove(&index);
+                }
+            }
+            Ok(_) => continue,
+            Err(_) => break,
+        }
+
+        // Stop when complete.
+        if scheduler.lock().unwrap().tracker.is_complete() {
+            break;
+        }
+    }
+}
+
+/// The length of a piece (the last piece may be shorter).
+fn piece_length(metainfo: &Metainfo, index: u32) -> u64 {
+    let start = index as u64 * metainfo.piece_length;
+    let remaining = metainfo.total_size.saturating_sub(start);
+    remaining.min(metainfo.piece_length)
 }
 
 /// Fetch the info dict from a peer via BEP-9 `ut_metadata`, returning the
