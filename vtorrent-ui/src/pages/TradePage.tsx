@@ -1,10 +1,13 @@
 import { useState } from 'react'
 import {
   Plus, CheckCircle, XCircle,
-  Zap, Info, RefreshCw, AlertCircle
+  Zap, Info, RefreshCw, AlertCircle, ArrowRightLeft
 } from 'lucide-react'
 import { formatVTR } from '../hooks/useWallet'
-import { useDexOrders, cancelDexOrder, type DexOrder } from '../hooks/useNode'
+import {
+  useDexOrders, cancelDexOrder, matchDexOrder, btcFund, vtrClaim, btcClaim, swapRefund,
+  type DexOrder,
+} from '../hooks/useNode'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -37,11 +40,20 @@ function orderSide(order: DexOrder): 'buy' | 'sell' {
 
 export default function TradePage() {
   const { data: orders, loading, error, refresh } = useDexOrders(10_000)
-  const [tab, setTab] = useState<'orderbook' | 'create' | 'myorders'>('orderbook')
+  const [tab, setTab] = useState<'orderbook' | 'create' | 'myorders' | 'swap'>('orderbook')
   const [orderType, setOrderType] = useState<'buy' | 'sell'>('buy')
   const [amount, setAmount] = useState('')
   const [price, setPrice] = useState('')
   const [cancelling, setCancelling] = useState<string | null>(null)
+
+  // Swap lifecycle state
+  const [swapOrderId, setSwapOrderId] = useState('')
+  const [takerAddress, setTakerAddress] = useState('')
+  const [btcRefundAddress, setBtcRefundAddress] = useState('')
+  const [preimage, setPreimage] = useState('')
+  const [swapBusy, setSwapBusy] = useState(false)
+  const [swapResult, setSwapResult] = useState<string | null>(null)
+  const [swapError, setSwapError] = useState<string | null>(null)
 
   const total = amount && price ? (parseFloat(amount) * parseFloat(price)).toFixed(8) : '0'
 
@@ -62,6 +74,21 @@ export default function TradePage() {
       // best-effort
     } finally {
       setCancelling(null)
+    }
+  }
+
+  const runSwap = async (action: () => Promise<unknown>, success: string) => {
+    setSwapBusy(true)
+    setSwapError(null)
+    setSwapResult(null)
+    try {
+      await action()
+      setSwapResult(success)
+      refresh()
+    } catch (e) {
+      setSwapError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSwapBusy(false)
     }
   }
 
@@ -99,7 +126,7 @@ export default function TradePage() {
 
       {/* Tabs */}
       <div className="flex gap-1 bg-navy-900/60 rounded-xl p-1 w-fit">
-        {(['orderbook', 'create', 'myorders'] as const).map(t => (
+        {(['orderbook', 'create', 'myorders', 'swap'] as const).map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -109,7 +136,7 @@ export default function TradePage() {
                 : 'text-gray-500 hover:text-gray-300'
             }`}
           >
-            {t === 'orderbook' ? 'Order Book' : t === 'create' ? 'Create Order' : 'My Orders'}
+            {t === 'orderbook' ? 'Order Book' : t === 'create' ? 'Create Order' : t === 'myorders' ? 'My Orders' : 'Swap'}
           </button>
         ))}
       </div>
@@ -318,6 +345,127 @@ export default function TradePage() {
               })}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Swap lifecycle */}
+      {tab === 'swap' && (
+        <div className="max-w-md card">
+          <h3 className="font-semibold text-white text-sm mb-4 flex items-center gap-2">
+            <ArrowRightLeft size={16} className="text-vtorrent-400" />
+            Swap Lifecycle
+          </h3>
+          <p className="text-xs text-gray-500 mb-4">
+            Drive an atomic swap through its stages: match (fund VTR), fund BTC, claim VTR, claim BTC, or refund after expiry.
+          </p>
+
+          <div className="space-y-4">
+            <div>
+              <label className="label">Order ID</label>
+              <input
+                className="input-field font-mono"
+                placeholder="Hex order ID"
+                value={swapOrderId}
+                onChange={e => setSwapOrderId(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="label">Taker VTR Address</label>
+              <input
+                className="input-field font-mono"
+                placeholder="V…"
+                value={takerAddress}
+                onChange={e => setTakerAddress(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="label">BTC Refund Address</label>
+              <input
+                className="input-field font-mono"
+                placeholder="bc1q…"
+                value={btcRefundAddress}
+                onChange={e => setBtcRefundAddress(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="label">Preimage (hex, for claim)</label>
+              <input
+                className="input-field font-mono"
+                placeholder="64 hex chars"
+                value={preimage}
+                onChange={e => setPreimage(e.target.value)}
+              />
+            </div>
+
+            {swapError && (
+              <div className="flex gap-2 bg-red-900/20 border border-red-800/40 rounded-lg p-3">
+                <AlertCircle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
+                <p className="text-red-300 text-sm">{swapError}</p>
+              </div>
+            )}
+            {swapResult && (
+              <div className="flex gap-2 bg-emerald-900/20 border border-emerald-800/40 rounded-lg p-3">
+                <CheckCircle size={16} className="text-emerald-400 flex-shrink-0 mt-0.5" />
+                <p className="text-emerald-300 text-sm">{swapResult}</p>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                disabled={swapBusy || !swapOrderId || !takerAddress}
+                onClick={() => runSwap(
+                  () => matchDexOrder({ orderId: swapOrderId, takerAddress, passphrase: '' }),
+                  'Order matched — VTR HTLC funded'
+                )}
+                className="btn-primary text-xs disabled:opacity-50"
+              >
+                Match (Fund VTR)
+              </button>
+              <button
+                disabled={swapBusy || !swapOrderId || !btcRefundAddress}
+                onClick={() => runSwap(
+                  () => btcFund({ orderId: swapOrderId, btcRefundAddress }),
+                  'BTC HTLC funded'
+                )}
+                className="btn-primary text-xs disabled:opacity-50"
+              >
+                Fund BTC
+              </button>
+              <button
+                disabled={swapBusy || !swapOrderId || !preimage}
+                onClick={() => runSwap(
+                  () => vtrClaim({ orderId: swapOrderId, preimage }),
+                  'VTR claimed'
+                )}
+                className="btn-primary text-xs disabled:opacity-50"
+              >
+                Claim VTR
+              </button>
+              <button
+                disabled={swapBusy || !swapOrderId}
+                onClick={() => runSwap(
+                  () => btcClaim(swapOrderId),
+                  'BTC claimed'
+                )}
+                className="btn-primary text-xs disabled:opacity-50"
+              >
+                Claim BTC
+              </button>
+              <button
+                disabled={swapBusy || !swapOrderId}
+                onClick={() => runSwap(
+                  () => swapRefund(swapOrderId),
+                  'Swap refunded'
+                )}
+                className="btn-secondary text-xs disabled:opacity-50 col-span-2"
+              >
+                Refund
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

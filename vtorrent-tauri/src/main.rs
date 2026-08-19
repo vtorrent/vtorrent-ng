@@ -35,6 +35,12 @@ fn main() {
             commands::get_dex_orders,
             commands::place_dex_order,
             commands::cancel_dex_order,
+            // Swap lifecycle
+            commands::match_dex_order,
+            commands::btc_fund,
+            commands::vtr_claim,
+            commands::btc_claim,
+            commands::swap_refund,
             // Staking
             commands::start_staking,
             commands::stop_staking,

@@ -332,6 +332,97 @@ export async function cancelDexOrder(id: string): Promise<void> {
   if (!res.ok) throw new Error(`cancel_dex_order → ${res.status}`)
 }
 
+// ─── Swap lifecycle actions ───────────────────────────────────────────────────
+
+export interface MatchOrderResult {
+  orderId: string
+  makerAddress: string
+  vtrAmount: number
+  targetAsset: string
+  targetAmount: number
+  hashLock: string
+  expiry: number
+  fundingTxid: string
+}
+
+export interface SwapActionResult {
+  orderId: string
+  txid: string
+  status: string
+}
+
+/** Match an order as the taker, funding the maker's VTR HTLC. */
+export async function matchDexOrder(req: {
+  orderId: string
+  takerAddress: string
+  passphrase: string
+  otpCode?: string
+}): Promise<MatchOrderResult> {
+  if (isTauri()) {
+    return tauriInvoke<MatchOrderResult>('match_dex_order', req)
+  }
+  return camel(
+    await rpcPost<unknown>('/api/v1/dex/match', {
+      order_id: req.orderId,
+      taker_address: req.takerAddress,
+      passphrase: req.passphrase,
+      otp_code: req.otpCode ?? null,
+    })
+  ) as MatchOrderResult
+}
+
+/** Fund the BTC side of the HTLC as the taker. */
+export async function btcFund(req: {
+  orderId: string
+  btcRefundAddress: string
+}): Promise<SwapActionResult> {
+  if (isTauri()) {
+    return tauriInvoke<SwapActionResult>('btc_fund', req)
+  }
+  return camel(
+    await rpcPost<unknown>('/api/v1/swap/btc-fund', {
+      order_id: req.orderId,
+      btc_refund_address: req.btcRefundAddress,
+    })
+  ) as SwapActionResult
+}
+
+/** Claim VTR by revealing the preimage (taker). */
+export async function vtrClaim(req: {
+  orderId: string
+  preimage: string
+}): Promise<SwapActionResult> {
+  if (isTauri()) {
+    return tauriInvoke<SwapActionResult>('vtr_claim', req)
+  }
+  return camel(
+    await rpcPost<unknown>('/api/v1/swap/vtr-claim', {
+      order_id: req.orderId,
+      preimage: req.preimage,
+    })
+  ) as SwapActionResult
+}
+
+/** Claim BTC using the revealed preimage (maker). */
+export async function btcClaim(orderId: string): Promise<SwapActionResult> {
+  if (isTauri()) {
+    return tauriInvoke<SwapActionResult>('btc_claim', { orderId })
+  }
+  return camel(
+    await rpcPost<unknown>('/api/v1/swap/btc-claim', { order_id: orderId })
+  ) as SwapActionResult
+}
+
+/** Refund either side after expiry. */
+export async function swapRefund(orderId: string): Promise<SwapActionResult> {
+  if (isTauri()) {
+    return tauriInvoke<SwapActionResult>('swap_refund', { orderId })
+  }
+  return camel(
+    await rpcPost<unknown>('/api/v1/swap/refund', { order_id: orderId })
+  ) as SwapActionResult
+}
+
 // ─── Staking actions ──────────────────────────────────────────────────────────
 
 /** Start staking on the given address. */

@@ -30,6 +30,15 @@ pub enum TauriError {
 
     #[error("Torrent error: {0}")]
     Torrent(String),
+
+    #[error("Not found: {0}")]
+    NotFound(String),
+
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
+    #[error("Internal error: {0}")]
+    Internal(String),
 }
 
 impl From<vtorrent_migrate::error::MigrateError> for TauriError {
