@@ -135,6 +135,70 @@ impl PieceTracker {
     }
 }
 
+/// Shared scheduler state, coordinated across per-peer tasks.
+#[derive(Debug)]
+pub struct SchedulerState {
+    pub tracker: PieceTracker,
+    /// Block size for requests (16 KiB).
+    pub block_size: u32,
+    /// Maximum blocks in flight per peer (pipelining).
+    pub max_pipelined_blocks: usize,
+    /// Endgame threshold: when this many pieces remain, request from all peers.
+    pub endgame_threshold: usize,
+    /// Blocks currently in flight: piece index -> set of begin offsets.
+    requested_blocks: HashMap<u32, Vec<u32>>,
+}
+
+impl SchedulerState {
+    pub fn new(piece_count: u32) -> Self {
+        Self {
+            tracker: PieceTracker::new(piece_count),
+            block_size: 16 * 1024,
+            max_pipelined_blocks: 5,
+            endgame_threshold: 3,
+            requested_blocks: HashMap::new(),
+        }
+    }
+
+    /// Whether endgame mode is active (few pieces remain).
+    pub fn in_endgame(&self) -> bool {
+        self.tracker.remaining() <= self.endgame_threshold
+    }
+
+    /// Select the next block to request: (piece, begin, length).
+    ///
+    /// Picks the rarest piece we don't have, then the next unrequested block
+    /// within that piece. `piece_len` maps a piece index to its byte length.
+    /// Returns `None` when no block is available.
+    pub fn next_block(&mut self, piece_len: &dyn Fn(u32) -> u64) -> Option<(u32, u32, u32)> {
+        let piece = self.tracker.next_piece()?;
+        let len = piece_len(piece);
+        let block_size = self.block_size as u64;
+        let total_blocks = len.div_ceil(block_size);
+        let requested = self.requested_blocks.entry(piece).or_default();
+        for block in 0..total_blocks {
+            let begin = (block * block_size) as u32;
+            if requested.contains(&begin) {
+                continue;
+            }
+            let block_len = (len - block * block_size).min(block_size) as u32;
+            requested.push(begin);
+            return Some((piece, begin, block_len));
+        }
+        // All blocks of this piece are requested; mark the piece requested so
+        // next_piece skips it, and try the next piece.
+        self.tracker.mark_requested(piece);
+        None
+    }
+
+    /// Mark a block as no longer in flight (e.g. on cancel or completion).
+    pub fn clear_block(&mut self, piece: u32, begin: u32) {
+        if let Some(blocks) = self.requested_blocks.get_mut(&piece) {
+            blocks.retain(|&b| b != begin);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +261,38 @@ mod tests {
         assert!(restored.have[15]);
         assert!(!restored.have[1]);
         assert_eq!(restored.remaining(), 13);
+    }
+
+    #[test]
+    fn test_scheduler_state_endgame() {
+        let mut state = SchedulerState::new(4);
+        state.tracker.set_peer_bitfield([1u8; 20], &[0xF0]);
+        state.tracker.mark_have(0);
+        state.tracker.mark_have(1);
+        state.tracker.mark_have(2);
+        // Only piece 3 remains; endgame should be active.
+        assert!(state.in_endgame());
+        assert_eq!(state.tracker.remaining(), 1);
+    }
+
+    #[test]
+    fn test_next_block_iterates_within_piece() {
+        // A piece of 40 KiB with 16 KiB blocks has 3 blocks (0, 16384, 32768).
+        let mut state = SchedulerState::new(1);
+        state.tracker.set_peer_bitfield([1u8; 20], &[0x80]);
+        let piece_len = |_index: u32| 40 * 1024u64;
+        let (piece, begin, len) = state.next_block(&piece_len).unwrap();
+        assert_eq!(piece, 0);
+        assert_eq!(begin, 0);
+        assert_eq!(len, 16 * 1024);
+
+        let (_, begin2, _) = state.next_block(&piece_len).unwrap();
+        assert_eq!(begin2, 16 * 1024);
+
+        let (_, begin3, _) = state.next_block(&piece_len).unwrap();
+        assert_eq!(begin3, 32 * 1024);
+
+        // All blocks requested; no more.
+        assert!(state.next_block(&piece_len).is_none());
     }
 }
