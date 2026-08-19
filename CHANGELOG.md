@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **Core Infrastructure**
 - New Rust-based monorepo (`vtorrent-ng`) replacing the legacy C++/Qt codebase
 - Cargo workspace with 17 crates: `vtorrent-core`, `vtorrent-wallet`, `vtorrent-migrate`, `vtorrent-snapshot`, `vtorrent-node`, `vtorrent-p2p`, `vtorrent-torrent`, `vtorrent-rpc`, `vtorrent-tauri`, `vtorrent-overlay`, `vtorrent-spv`, `vtorrent-store`, `vtorrent-daemon`, `vtorrent-script`, `vtorrent-onion`, `vtorrent-cli`, `vtorrent-btc`
-- Full test suite: 431 tests, 0 failures
+- Full test suite: 424 tests, 0 failures
 
 **Overlay / NAT Traversal**
 - `vtorrent-overlay`: Kademlia-style overlay network for NAT traversal and peer relay
@@ -153,18 +153,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PoS coinstake inputs are signed and the stake kernel is validated in the chain
 - Legacy claims no longer double-count the snapshot supply; `validate_transaction` accepts no-input legacy claims
 - Bitcoin SPV client: correct message length parsing, per-input sighash, full version handshake, and BIP-65 refund sequences
-- Bitcoin SPV client advertises `NODE_BLOOM` and inserts the 20-byte hash160 (not the full script) into the bloom filter, so merkleblock scans actually match wallet addresses
+- Bitcoin SPV header sync no longer sends `filterload` (modern mainnet nodes disable BIP-37 and disconnect peers that send one)
 - Torrent metainfo rejects zero piece length
 
 **Atomic Swap / DEX**
-- Bitcoin SPV UTXO scan (BIP37 merkleblock) wired into the daemon sync loop
+- Bitcoin SPV UTXO scan via BIP-158 compact block filters (the modern, privacy-preserving alternative to BIP-37, which most mainnet nodes disable)
 - Real BTC-side HTLC settlement: funding, claim, and refund transactions are built, signed, and broadcast
-- Real VTR-side HTLC settlement: `vtr_claim` builds, signs, and broadcasts the claim transaction (the taker supplies their WIF)
+- Real VTR-side HTLC settlement: `vtr_claim` and `swap_refund` build, sign, and broadcast the claim/refund transactions
 - Swap lifecycle UI (match / fund BTC / claim VTR / claim BTC / refund) in the Trade page
 - `--btc-seed` / `VTORRENT_BTC_SEED` initializes the BTC SPV wallet in the daemon
 - `--btc-regtest` / `--btc-peer` run the BTC SPV wallet against a local Bitcoin Core regtest node
-- Regtest mode (`--regtest`) with a faucet endpoint (`POST /api/v1/faucet`) for local end-to-end testing
-- Verified end-to-end against live Bitcoin Core regtest: BTC fund/claim and VTR fund/claim all land in their respective mempools
+- Regtest mode (`--regtest`) with a faucet endpoint (`POST /api/v1/faucet`) and mock clock (`POST /api/v1/debug/mocktime`) for local end-to-end testing
+- Verified end-to-end: BTC fund/claim/refund and VTR fund/claim/refund all land in their respective mempools; BTC header sync verified against live mainnet
 
 **CI & Tooling**
 - CI jobs install GTK/WebKit system libraries so the workspace (including `vtorrent-tauri`) compiles
