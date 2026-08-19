@@ -464,6 +464,37 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Payment channel: the torrent engine emits PaymentDue events; this task
+    // builds and broadcasts the actual VTR transactions.
+    let (payment_sender, mut payment_receiver) =
+        vtorrent_torrent::payment::PaymentSender::channel();
+    let payment_wif = Arc::clone(&rpc_state.wallet_wif);
+    let payment_change = Arc::clone(&rpc_state.wallet_change_address);
+    let payment_chain = Arc::clone(&rpc_state.chain);
+    let payment_mempool = Arc::clone(&rpc_state.mempool);
+    let payment_tx_submit = rpc_state.tx_submit.clone();
+    tokio::spawn(async move {
+        while let Some(payment) = payment_receiver.recv().await {
+            let result = build_incentive_payment(
+                &payment_wif,
+                &payment_change,
+                &payment_chain,
+                &payment_mempool,
+                &payment_tx_submit,
+                &payment,
+            )
+            .await;
+            match result {
+                Ok(txid) => tracing::info!(
+                    "Incentive payment {} sent to {}",
+                    txid,
+                    payment.peer_address
+                ),
+                Err(e) => tracing::warn!("Incentive payment failed: {}", e),
+            }
+        }
+    });
+
     // Periodic torrent incentive settlement — runs every 5 minutes.
     let torrent_sessions_for_settlement = Arc::clone(&rpc_state.torrent_sessions);
     tokio::spawn(async move {
@@ -481,7 +512,13 @@ async fn main() -> anyhow::Result<()> {
             for session in guard.sessions_mut() {
                 for account in session.incentive_accounts.values_mut() {
                     if account.needs_settlement(now) {
-                        account.settle(now);
+                        let (_earned, owed) = account.settle(now);
+                        if owed > 0 && !account.peer_address.is_empty() {
+                            let _ = payment_sender.emit(vtorrent_torrent::payment::PaymentDue {
+                                peer_address: account.peer_address.clone(),
+                                amount_satoshis: owed,
+                            });
+                        }
                         settled += 1;
                     }
                 }
@@ -556,6 +593,57 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Wait for Ctrl+C or SIGTERM.
+/// Build and broadcast a VTR payment for an incentive settlement.
+async fn build_incentive_payment(
+    wallet_wif: &Arc<tokio::sync::RwLock<Option<String>>>,
+    wallet_change_address: &Arc<tokio::sync::RwLock<Option<String>>>,
+    chain: &Arc<tokio::sync::Mutex<vtorrent_node::chain::Chain>>,
+    mempool: &Arc<tokio::sync::Mutex<vtorrent_node::mempool::Mempool>>,
+    tx_submit: &Option<tokio::sync::mpsc::Sender<vtorrent_node::block::Transaction>>,
+    payment: &vtorrent_torrent::payment::PaymentDue,
+) -> anyhow::Result<String> {
+    use vtorrent_wallet::tx_builder::TxBuilder;
+
+    let wif = wallet_wif
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("wallet not unlocked"))?;
+    let change_address = wallet_change_address
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("change address not set"))?;
+
+    let utxos: Vec<vtorrent_node::chain::Utxo> = {
+        let chain = chain.lock().await;
+        chain.get_utxos_for_address(&change_address)
+    };
+    if utxos.is_empty() {
+        return Err(anyhow::anyhow!("no UTXOs available"));
+    }
+
+    let tx = TxBuilder::new()
+        .recipient(&payment.peer_address, payment.amount_satoshis)
+        .change_address(&change_address)
+        .fee_rate(10)
+        .sign_with_wif(&wif)
+        .build(&utxos)
+        .map_err(|e| anyhow::anyhow!("tx build failed: {}", e))?;
+
+    let txid = hex::encode(tx.txid());
+    {
+        let mut mempool = mempool.lock().await;
+        mempool
+            .add_transaction(tx.clone())
+            .map_err(|e| anyhow::anyhow!("mempool rejected: {}", e))?;
+    }
+    if let Some(ref sender) = tx_submit {
+        let _ = sender.try_send(tx);
+    }
+    Ok(txid)
+}
+
 async fn shutdown_signal() {
     use tokio::signal;
 
