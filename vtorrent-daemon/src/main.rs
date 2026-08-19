@@ -109,6 +109,14 @@ struct Cli {
     /// Read-only info endpoints remain open.
     #[arg(long, env = "VTORRENT_RPC_API_KEY")]
     rpc_api_key: Option<String>,
+
+    /// 64-byte hex-encoded BIP39 seed for the Bitcoin SPV wallet.
+    ///
+    /// Required for cross-chain atomic swaps: the BTC side of an HTLC is
+    /// funded, claimed, and refunded with keys derived from this seed. Without
+    /// it the BTC wallet stays uninitialized and swap settlement is disabled.
+    #[arg(long, env = "VTORRENT_BTC_SEED")]
+    btc_seed: Option<String>,
 }
 
 // ─── Entry Point ──────────────────────────────────────────────────────────────
@@ -207,6 +215,17 @@ async fn main() -> anyhow::Result<()> {
 
     // Set the torrent download directory under the data dir.
     *rpc_state.download_dir.write().await = data_dir.join("downloads");
+
+    // Initialize the Bitcoin SPV wallet from the seed, if provided.
+    if let Some(seed_hex) = &cli.btc_seed {
+        let seed_bytes = hex::decode(seed_hex)
+            .map_err(|e| anyhow::anyhow!("Invalid --btc-seed (expected 64-byte hex): {}", e))?;
+        let seed: [u8; 64] = seed_bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("--btc-seed must be exactly 64 bytes (128 hex chars)"))?;
+        *rpc_state.btc_wallet.write().await = Some(vtorrent_btc::wallet::BtcWallet::new(seed));
+        tracing::info!("Bitcoin SPV wallet initialized from --btc-seed");
+    }
 
     // Share the DEX order book between the node (for gossip) and RPC (for the
     // order-book API), so received orders are visible to both.

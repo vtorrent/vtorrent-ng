@@ -95,6 +95,11 @@ impl BtcPeer {
         Ok(())
     }
 
+    /// Broadcast a transaction to the network.
+    pub async fn broadcast_tx(&mut self, tx: &bitcoin::Transaction) -> Result<()> {
+        self.send(NetworkMessage::Tx(tx.clone())).await
+    }
+
     /// Read one raw network message.
     pub async fn recv(&mut self) -> Result<NetworkMessage> {
         let mut header = [0u8; 24];

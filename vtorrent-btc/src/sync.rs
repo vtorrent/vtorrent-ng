@@ -37,6 +37,26 @@ pub async fn resolve_seeds() -> Result<Vec<SocketAddr>> {
     Ok(addrs)
 }
 
+/// Broadcast a raw transaction to the Bitcoin network via the first reachable
+/// seed peer. Returns the txid on success.
+pub async fn broadcast_tx(raw: &[u8]) -> Result<[u8; 32]> {
+    let tx: bitcoin::Transaction = bitcoin::consensus::encode::deserialize(raw)
+        .map_err(|e| BtcError::Bitcoin(e.to_string()))?;
+    let txid = tx.compute_txid().to_byte_array();
+    let addrs = resolve_seeds().await?;
+    let mut last_err = None;
+    for addr in addrs {
+        match crate::p2p::BtcPeer::connect(addr).await {
+            Ok(mut peer) => match peer.broadcast_tx(&tx).await {
+                Ok(()) => return Ok(txid),
+                Err(e) => last_err = Some(e),
+            },
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| BtcError::P2p("no reachable peers".into())))
+}
+
 /// A Bitcoin SPV sync engine.
 pub struct BtcSync {
     headers: Arc<Mutex<HeaderChain>>,

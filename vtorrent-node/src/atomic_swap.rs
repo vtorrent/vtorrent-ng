@@ -306,6 +306,8 @@ pub struct SwapOrder {
     pub order_id: [u8; 32],
     /// The maker's VTR address.
     pub maker_address: String,
+    /// The maker's BTC address (where they receive BTC when claiming).
+    pub maker_btc_address: Option<String>,
     /// Amount of VTR the maker is offering.
     pub vtr_amount: u64,
     /// The target asset (e.g., "BTC", "LTC").
@@ -332,6 +334,7 @@ pub struct SwapOrder {
 pub struct OrderAnnouncement {
     pub order_id: [u8; 32],
     pub maker_address: String,
+    pub maker_btc_address: Option<String>,
     pub vtr_amount: u64,
     pub target_asset: String,
     pub target_amount: u64,
@@ -345,6 +348,7 @@ impl OrderAnnouncement {
         Self {
             order_id: order.order_id,
             maker_address: order.maker_address.clone(),
+            maker_btc_address: order.maker_btc_address.clone(),
             vtr_amount: order.vtr_amount,
             target_asset: order.target_asset.clone(),
             target_amount: order.target_amount,
@@ -358,6 +362,7 @@ impl OrderAnnouncement {
         SwapOrder {
             order_id: self.order_id,
             maker_address: self.maker_address.clone(),
+            maker_btc_address: self.maker_btc_address.clone(),
             vtr_amount: self.vtr_amount,
             target_asset: self.target_asset.clone(),
             target_amount: self.target_amount,
@@ -415,6 +420,14 @@ pub struct SwapState {
     pub vtr_funding_txid: Option<[u8; 32]>,
     /// The taker's BTC HTLC funding txid.
     pub btc_funding_txid: Option<[u8; 32]>,
+    /// The maker's BTC address (recipient of the BTC claim).
+    pub maker_btc_address: Option<String>,
+    /// The taker's BTC refund address.
+    pub taker_btc_refund_address: Option<String>,
+    /// The BTC amount locked in the HTLC (satoshis).
+    pub btc_amount: u64,
+    /// The BTC HTLC expiry (unix timestamp).
+    pub btc_expiry: u32,
     /// Current status.
     pub status: SwapStatus,
 }
@@ -427,6 +440,10 @@ impl SwapState {
             preimage: None,
             vtr_funding_txid: None,
             btc_funding_txid: None,
+            maker_btc_address: None,
+            taker_btc_refund_address: None,
+            btc_amount: 0,
+            btc_expiry: 0,
             status: SwapStatus::Funding,
         }
     }
@@ -458,6 +475,7 @@ impl SwapOrder {
         Self {
             order_id,
             maker_address,
+            maker_btc_address: None,
             vtr_amount,
             target_asset,
             target_amount,
@@ -537,6 +555,17 @@ impl SwapOrderBook {
         for order in self.orders.iter_mut() {
             if hex::encode(order.order_id) == id {
                 order.hash_lock = Some(hash_lock);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Set the maker's BTC address on an order (where they receive BTC on claim).
+    pub fn set_maker_btc_address(&mut self, id: &str, btc_address: String) -> bool {
+        for order in self.orders.iter_mut() {
+            if hex::encode(order.order_id) == id {
+                order.maker_btc_address = Some(btc_address);
                 return true;
             }
         }

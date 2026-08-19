@@ -8,8 +8,13 @@ use bitcoin::opcodes::all::{
     OP_SHA256,
 };
 use bitcoin::script::Builder;
+use bitcoin::secp256k1::Secp256k1;
+use bitcoin::sighash::SighashCache;
 use bitcoin::transaction::Version;
-use bitcoin::{Address, Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness};
+use bitcoin::{
+    Address, Amount, EcdsaSighashType, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut,
+    Witness,
+};
 use std::str::FromStr;
 
 /// Default HTLC locktime: 48 hours in seconds.
@@ -225,6 +230,113 @@ impl BtcHtlc {
             }],
         })
     }
+
+    /// Sign the funding transaction's P2WPKH input with the funder's key.
+    ///
+    /// The funding input spends a P2WPKH output owned by the funder; the
+    /// witness is `<sig> <pubkey>`.
+    pub fn sign_funding_tx(
+        &self,
+        mut tx: Transaction,
+        input_value: u64,
+        funder_wif: &str,
+    ) -> Result<Transaction> {
+        let key = bitcoin::PrivateKey::from_wif(funder_wif)
+            .map_err(|e| BtcError::Bitcoin(e.to_string()))?;
+        let secp = Secp256k1::new();
+        let pubkey = key.public_key(&secp);
+        let script = bitcoin::ScriptBuf::new_p2wpkh(&pubkey.wpubkey_hash().map_err(|e| {
+            BtcError::Bitcoin(format!("failed to derive witness pubkey hash: {}", e))
+        })?);
+        let sighash = {
+            let mut cache = SighashCache::new(&tx);
+            cache
+                .p2wpkh_signature_hash(
+                    0,
+                    &script,
+                    Amount::from_sat(input_value),
+                    EcdsaSighashType::All,
+                )
+                .map_err(|e| BtcError::Bitcoin(e.to_string()))?
+        };
+        let msg: bitcoin::secp256k1::Message = sighash.into();
+        let sig = secp.sign_ecdsa(&msg, &key.inner);
+        let mut sig_bytes = sig.serialize_der().to_vec();
+        sig_bytes.push(EcdsaSighashType::All as u8);
+
+        let mut witness = Witness::new();
+        witness.push(sig_bytes);
+        witness.push(pubkey.to_bytes());
+        tx.input[0].witness = witness;
+        Ok(tx)
+    }
+
+    /// Sign the claim transaction with the recipient's key, revealing the
+    /// preimage. The witness is `<sig> <preimage> <witness_script>`.
+    pub fn sign_claim_tx(
+        &self,
+        mut tx: Transaction,
+        preimage: &[u8; 32],
+        recipient_wif: &str,
+    ) -> Result<Transaction> {
+        let key = bitcoin::PrivateKey::from_wif(recipient_wif)
+            .map_err(|e| BtcError::Bitcoin(e.to_string()))?;
+        let secp = Secp256k1::new();
+        let witness_script = self.build_script()?;
+        let sighash = {
+            let mut cache = SighashCache::new(&tx);
+            cache
+                .p2wsh_signature_hash(
+                    0,
+                    &witness_script,
+                    Amount::from_sat(self.amount),
+                    EcdsaSighashType::All,
+                )
+                .map_err(|e| BtcError::Bitcoin(e.to_string()))?
+        };
+        let msg: bitcoin::secp256k1::Message = sighash.into();
+        let sig = secp.sign_ecdsa(&msg, &key.inner);
+        let mut sig_bytes = sig.serialize_der().to_vec();
+        sig_bytes.push(EcdsaSighashType::All as u8);
+
+        let mut witness = Witness::new();
+        witness.push(sig_bytes);
+        witness.push(preimage);
+        witness.push(witness_script.as_bytes());
+        tx.input[0].witness = witness;
+        Ok(tx)
+    }
+
+    /// Sign the refund transaction with the refund key. The witness is
+    /// `<sig> <empty> <witness_script>` (the OP_ELSE branch).
+    pub fn sign_refund_tx(&self, mut tx: Transaction, refund_wif: &str) -> Result<Transaction> {
+        let key = bitcoin::PrivateKey::from_wif(refund_wif)
+            .map_err(|e| BtcError::Bitcoin(e.to_string()))?;
+        let secp = Secp256k1::new();
+        let witness_script = self.build_script()?;
+        let sighash = {
+            let mut cache = SighashCache::new(&tx);
+            cache
+                .p2wsh_signature_hash(
+                    0,
+                    &witness_script,
+                    Amount::from_sat(self.amount),
+                    EcdsaSighashType::All,
+                )
+                .map_err(|e| BtcError::Bitcoin(e.to_string()))?
+        };
+        let msg: bitcoin::secp256k1::Message = sighash.into();
+        let sig = secp.sign_ecdsa(&msg, &key.inner);
+        let mut sig_bytes = sig.serialize_der().to_vec();
+        sig_bytes.push(EcdsaSighashType::All as u8);
+
+        let mut witness = Witness::new();
+        witness.push(sig_bytes);
+        witness.push(vec![]);
+        witness.push(witness_script.as_bytes());
+        tx.input[0].witness = witness;
+        Ok(tx)
+    }
 }
 
 #[cfg(test)]
@@ -300,5 +412,28 @@ mod tests {
             .unwrap();
         assert_eq!(tx.output[0].value, Amount::from_sat(100_000));
         assert_eq!(tx.output[1].value, Amount::from_sat(90_000));
+    }
+
+    #[test]
+    fn test_sign_funding_tx_adds_witness() {
+        let htlc = make_htlc();
+        let wif = crate::keys::derive_wif(&[7u8; 64], 0).unwrap();
+        let unsigned = htlc
+            .build_funding_tx([1u8; 32], 0, 200_000, 10_000, ADDR)
+            .unwrap();
+        assert!(unsigned.input[0].witness.is_empty());
+        let signed = htlc.sign_funding_tx(unsigned, 200_000, &wif).unwrap();
+        assert!(!signed.input[0].witness.is_empty());
+    }
+
+    #[test]
+    fn test_sign_claim_tx_adds_witness() {
+        let htlc = make_htlc();
+        let preimage = [42u8; 32];
+        let wif = crate::keys::derive_wif(&[7u8; 64], 0).unwrap();
+        let unsigned = htlc.build_claim_tx([1u8; 32], &preimage, 1000).unwrap();
+        assert!(unsigned.input[0].witness.is_empty());
+        let signed = htlc.sign_claim_tx(unsigned, &preimage, &wif).unwrap();
+        assert!(!signed.input[0].witness.is_empty());
     }
 }

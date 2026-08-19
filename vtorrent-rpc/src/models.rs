@@ -263,6 +263,8 @@ pub struct DexOrderResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PlaceOrderRequest {
     pub maker_address: String,
+    /// The maker's BTC address (where they receive BTC when claiming).
+    pub maker_btc_address: Option<String>,
     pub offer_amount_satoshis: u64,
     pub offer_asset: String,
     pub request_amount_satoshis: u64,
