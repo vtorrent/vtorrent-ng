@@ -26,6 +26,13 @@ use crate::{
 /// Maximum number of simultaneous peer connections.
 pub const MAX_PEERS: usize = 125;
 
+/// Maximum number of simultaneous inbound connections.
+///
+/// Inbound connections are not counted against the outbound connection
+/// budget until the handshake completes, so a flood of unauthenticated
+/// connections must be capped independently to prevent resource exhaustion.
+pub const MAX_INBOUND: usize = 64;
+
 /// Minimum number of outbound connections to maintain.
 pub const TARGET_OUTBOUND: usize = 8;
 
@@ -63,6 +70,8 @@ pub struct PeerManager {
     pub ban_manager: BanManager,
     /// Outbound transport router for clearnet, Tor SOCKS5, and I2P SAM dialing.
     transport: OnionTransport,
+    /// Number of active inbound connections (pre-handshake and post-handshake).
+    inbound_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl PeerManager {
@@ -112,6 +121,7 @@ impl PeerManager {
             addr_book,
             ban_manager: BanManager::new(100, Duration::from_secs(24 * 60 * 60)),
             transport: OnionTransport::new(transport_config),
+            inbound_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
@@ -125,17 +135,32 @@ impl PeerManager {
         let event_tx = self.event_tx.clone();
         let best_height = self.best_height;
         let addr_str = listen_addr.clone();
+        let inbound_count = self.inbound_count.clone();
 
         tokio::spawn(async move {
             loop {
                 match listener.accept().await {
                     Ok((stream, peer_addr)) => {
+                        // Cap inbound connections so a flood of unauthenticated
+                        // sockets cannot exhaust resources before the handshake
+                        // completes (or times out).
+                        let prev = inbound_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        if prev >= MAX_INBOUND {
+                            inbound_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                            tracing::warn!(
+                                "Rejecting inbound connection from {} (inbound cap reached)",
+                                peer_addr
+                            );
+                            continue;
+                        }
                         tracing::info!("Inbound connection from {}", peer_addr);
                         let (cmd_tx, cmd_rx) = mpsc::channel(64);
                         let tx = event_tx.clone();
                         let addr = addr_str.clone();
+                        let count = inbound_count.clone();
                         tokio::spawn(async move {
                             run_peer(stream, peer_addr, best_height, &addr, tx, cmd_rx).await;
+                            count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                         });
                         // Note: peer is registered when HandshakeComplete event arrives
                         let _ = cmd_tx; // keep alive until handshake
@@ -333,6 +358,18 @@ impl PeerManager {
     pub async fn broadcast(&self, msg: NetMessage) {
         for peer in self.peers.values() {
             if peer.state == PeerState::Connected {
+                let _ = peer.cmd_tx.send(PeerCommand::Send(msg.clone())).await;
+            }
+        }
+    }
+
+    /// Broadcast a message to all connected peers except the given address.
+    ///
+    /// Used when relaying a message received from a peer so it is not echoed
+    /// back to the sender, which would otherwise amplify traffic.
+    pub async fn broadcast_except(&self, except: SocketAddr, msg: NetMessage) {
+        for peer in self.peers.values() {
+            if peer.state == PeerState::Connected && peer.addr != except {
                 let _ = peer.cmd_tx.send(PeerCommand::Send(msg.clone())).await;
             }
         }

@@ -83,6 +83,13 @@ pub fn parse_binary(data: &[u8]) -> Result<UtxoSnapshot> {
     let created_at = read_u64!();
     let entry_count = read_u64!() as usize;
 
+    // Cap the allocation: entry_count comes from the file header and must not
+    // drive an unbounded allocation. Each entry needs at least 1 (addr_len) +
+    // 1 (address byte) + 8 (balance) = 10 bytes, so the count cannot exceed
+    // the remaining data size.
+    let max_entries = data.len().saturating_sub(cursor) / 10;
+    let entry_count = entry_count.min(max_entries);
+
     let mut entries = Vec::with_capacity(entry_count);
 
     for _ in 0..entry_count {

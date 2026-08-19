@@ -112,7 +112,7 @@ impl Mempool {
 
         // Enforce minimum absolute fee
         if fee_sats < MIN_RELAY_FEE {
-            return Err(NodeError::Chain(format!(
+            return Err(NodeError::PolicyRejected(format!(
                 "Fee too low: {} sat < {} sat minimum",
                 fee_sats, MIN_RELAY_FEE
             )));
@@ -120,7 +120,7 @@ impl Mempool {
 
         // Enforce dynamic minimum fee rate
         if fee_rate < self.min_fee_rate {
-            return Err(NodeError::Chain(format!(
+            return Err(NodeError::PolicyRejected(format!(
                 "Fee rate too low: {} sat/byte < {} sat/byte minimum",
                 fee_rate, self.min_fee_rate
             )));
@@ -195,6 +195,11 @@ impl Mempool {
                     )));
                 }
             }
+        } else if self.entries.len() < self.max_size / 2 && self.min_fee_rate > 1 {
+            // Decay the dynamic minimum fee rate back toward the base once the
+            // mempool has drained below half capacity. Without this, a burst
+            // of congestion would permanently raise the relay fee floor.
+            self.min_fee_rate -= 1;
         }
 
         let now = std::time::SystemTime::now()

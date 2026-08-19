@@ -199,6 +199,23 @@ impl Chain {
         self.utxo_set.get(&(*txid, vout))
     }
 
+    /// Compute the real fee paid by a transaction using the current UTXO set.
+    ///
+    /// Returns `None` if any input is not in the UTXO set (unspendable or
+    /// already spent). Coinbase/coinstake/legacy claims pay no fee.
+    pub fn compute_tx_fee(&self, tx: &Transaction) -> Option<u64> {
+        if tx.is_coinbase() || tx.is_coinstake() || tx.is_legacy_claim() {
+            return Some(0);
+        }
+        let mut total_input: u64 = 0;
+        for input in &tx.inputs {
+            let utxo = self.utxo_set.get(&(input.prev_txid, input.prev_vout))?;
+            total_input = total_input.saturating_add(utxo.value);
+        }
+        let total_output = tx.total_output();
+        total_input.checked_sub(total_output)
+    }
+
     /// Get all UTXOs for a specific scriptPubKey.
     pub fn get_utxos_for_script(&self, script: &[u8]) -> Vec<&Utxo> {
         self.utxo_set
@@ -1210,7 +1227,10 @@ mod tests {
             claim_address: Some("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string()),
             claim_signature: Some(vec![0u8; 65]),
         };
-        assert_eq!(compute_supply_delta(&claim_tx, 0, claim_tx.total_output()), 0);
+        assert_eq!(
+            compute_supply_delta(&claim_tx, 0, claim_tx.total_output()),
+            0
+        );
 
         // The genesis distribution tx (claim_address = None) establishes the
         // initial supply and must still count.
@@ -1236,6 +1256,9 @@ mod tests {
             claim_address: None,
             claim_signature: None,
         };
-        assert_eq!(compute_supply_delta(&coinbase, 0, coinbase.total_output()), 1_000_000);
+        assert_eq!(
+            compute_supply_delta(&coinbase, 0, coinbase.total_output()),
+            1_000_000
+        );
     }
 }

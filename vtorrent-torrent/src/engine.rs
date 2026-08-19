@@ -463,7 +463,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
             let _ = conn
                 .send(&PeerMessage::Extended {
                     id,
-                    payload: crate::metadata::build_ut_vtr_address(id, &our_addr),
+                    payload: crate::metadata::build_ut_vtr_address(&our_addr),
                 })
                 .await;
             for _ in 0..10 {
@@ -623,6 +623,11 @@ async fn fetch_metadata_from_peer(conn: &mut PeerConnection) -> Option<Metainfo>
     if metadata_size == 0 {
         return None;
     }
+    // Cap the metadata size from the peer so we don't loop over a huge
+    // piece count or allocate unbounded memory.
+    if metadata_size > 64 * 1024 * 1024 {
+        return None;
+    }
 
     // Request the metadata in 16 KiB pieces.
     const PIECE_LEN: u64 = 16 * 1024;
@@ -630,7 +635,7 @@ async fn fetch_metadata_from_peer(conn: &mut PeerConnection) -> Option<Metainfo>
     let mut pieces: std::collections::HashMap<u32, Vec<u8>> = std::collections::HashMap::new();
 
     for piece in 0..piece_count as u32 {
-        let req = metadata::build_request(ut_metadata_id, piece);
+        let req = metadata::build_request(piece);
         let _ = conn
             .send(&PeerMessage::Extended {
                 id: ut_metadata_id,

@@ -30,7 +30,15 @@ pub struct DecryptedMasterKey {
 ///
 /// EVP_BytesToKey equivalent: SHA-512 iterated. The first 32 bytes of the
 /// final digest are the AES key and the next 16 bytes are the IV.
-pub fn derive_key_method0(passphrase: &[u8], salt: &[u8], iterations: u32) -> [u8; 48] {
+///
+/// The iteration count is capped to prevent a malicious wallet.dat from
+/// forcing an unbounded (potentially hours-long) derivation loop.
+pub fn derive_key_method0(passphrase: &[u8], salt: &[u8], iterations: u32) -> Result<[u8; 48]> {
+    const MAX_ITERATIONS: u32 = 1_000_000;
+    if iterations > MAX_ITERATIONS {
+        return Err(MigrateError::ExcessiveIterations(iterations));
+    }
+
     let mut buf = Vec::new();
     buf.extend_from_slice(passphrase);
     buf.extend_from_slice(salt);
@@ -43,7 +51,7 @@ pub fn derive_key_method0(passphrase: &[u8], salt: &[u8], iterations: u32) -> [u
 
     let mut out = [0u8; 48];
     out.copy_from_slice(&hash[..48]);
-    out
+    Ok(out)
 }
 
 /// Decrypt the master key using AES-256-CBC.
@@ -51,10 +59,12 @@ pub fn decrypt_master_key(mkey: &MasterKey, passphrase: &str) -> Result<Decrypte
     let passphrase_bytes = passphrase.as_bytes();
 
     let derived_key = match mkey.derivation_method {
-        0 => derive_key_method0(passphrase_bytes, &mkey.salt, mkey.derive_iterations),
-        _ => {
-            // Fall back to method 0 for unsupported methods
-            derive_key_method0(passphrase_bytes, &mkey.salt, mkey.derive_iterations)
+        0 => derive_key_method0(passphrase_bytes, &mkey.salt, mkey.derive_iterations)?,
+        method => {
+            // Only method 0 (iterated SHA-512) is supported. Method 2 (scrypt)
+            // and any other method are rejected rather than silently downgraded
+            // to method 0, which would produce a wrong key and corrupt output.
+            return Err(MigrateError::UnsupportedDerivationMethod(method));
         }
     };
 

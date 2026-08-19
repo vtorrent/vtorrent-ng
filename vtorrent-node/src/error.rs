@@ -11,6 +11,12 @@ pub enum NodeError {
     #[error("Transaction validation failed: {0}")]
     InvalidTransaction(String),
 
+    /// A transaction was rejected by node relay policy (e.g. fee below the
+    /// relay floor). The transaction may be valid; the peer should not be
+    /// penalized for relaying it.
+    #[error("Transaction rejected by relay policy: {0}")]
+    PolicyRejected(String),
+
     #[error("Chain error: {0}")]
     Chain(String),
 

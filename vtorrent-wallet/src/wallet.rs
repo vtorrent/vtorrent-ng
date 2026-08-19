@@ -18,7 +18,10 @@ use vtorrent_core::{address::Address, keys::PrivateKey, network::mainnet};
 const WALLET_FORMAT_VERSION: u32 = 1;
 
 /// A key entry stored in the wallet.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// The `Debug` impl redacts the WIF private key so a wallet can never be
+/// logged with key material exposed.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct WalletKeyEntry {
     /// The new-chain vTorrent address (starts with 'V').
     pub address: String,
@@ -34,6 +37,20 @@ pub struct WalletKeyEntry {
     pub created_at: u64,
     /// Cached balance in satoshis (updated by the node sync layer).
     pub balance: u64,
+}
+
+impl std::fmt::Debug for WalletKeyEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WalletKeyEntry")
+            .field("address", &self.address)
+            .field("wif", &"[REDACTED]")
+            .field("is_legacy_import", &self.is_legacy_import)
+            .field("legacy_address", &self.legacy_address)
+            .field("label", &self.label)
+            .field("created_at", &self.created_at)
+            .field("balance", &self.balance)
+            .finish()
+    }
 }
 
 /// The plaintext wallet data (serialized to JSON before encryption).

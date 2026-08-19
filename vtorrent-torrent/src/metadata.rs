@@ -22,16 +22,15 @@ pub fn build_ut_vtr_handshake(ut_vtr_id: u8) -> Vec<u8> {
     serde_bencode::to_bytes(&Value::Dict(dict)).unwrap_or_default()
 }
 
-/// Build a `ut_vtr` address message: `<ut_vtr_id><bencoded string>`.
-pub fn build_ut_vtr_address(ut_vtr_id: u8, address: &str) -> Vec<u8> {
-    let payload =
-        serde_bencode::to_bytes(&Value::Bytes(address.as_bytes().to_vec())).unwrap_or_default();
-    let mut out = vec![ut_vtr_id];
-    out.extend_from_slice(&payload);
-    out
+/// Build a `ut_vtr` address message payload: `<bencoded string>`.
+///
+/// The extension id is carried by the `PeerMessage::Extended` envelope, not
+/// embedded in the payload.
+pub fn build_ut_vtr_address(address: &str) -> Vec<u8> {
+    serde_bencode::to_bytes(&Value::Bytes(address.as_bytes().to_vec())).unwrap_or_default()
 }
 
-/// Parse a `ut_vtr` address message payload (the bencoded string after the id).
+/// Parse a `ut_vtr` address message payload (the bencoded string).
 pub fn parse_ut_vtr_address(payload: &[u8]) -> Result<String> {
     let value: Value = serde_bencode::from_bytes(payload)
         .map_err(|e| TorrentError::PeerWireError(e.to_string()))?;
@@ -41,26 +40,25 @@ pub fn parse_ut_vtr_address(payload: &[u8]) -> Result<String> {
     }
 }
 
-/// Build a `ut_metadata` request for a piece: `{ "msg_type": 0, "piece": i }`.
-pub fn build_request(ut_metadata_id: u8, piece: u32) -> Vec<u8> {
+/// Build a `ut_metadata` request payload: `{ "msg_type": 0, "piece": i }`.
+///
+/// The extension id is carried by the `PeerMessage::Extended` envelope, not
+/// embedded in the payload.
+pub fn build_request(piece: u32) -> Vec<u8> {
     let mut dict = std::collections::HashMap::new();
     dict.insert(b"msg_type".to_vec(), Value::Int(0));
     dict.insert(b"piece".to_vec(), Value::Int(piece as i64));
-    let payload = serde_bencode::to_bytes(&Value::Dict(dict)).unwrap_or_default();
-    let mut out = vec![ut_metadata_id];
-    out.extend_from_slice(&payload);
-    out
+    serde_bencode::to_bytes(&Value::Dict(dict)).unwrap_or_default()
 }
 
-/// Parse a `ut_metadata` data message, returning (piece_index, total_size, data).
+/// Parse a `ut_metadata` data message payload, returning (piece_index, total_size, data).
+///
+/// The payload is: `<bencoded dict><piece bytes>` (the extension id is stripped
+/// by the `PeerMessage::Extended` envelope).
 pub fn parse_data(payload: &[u8]) -> Result<(u32, u64, Vec<u8>)> {
-    // The payload is: <ut_metadata_id><bencoded dict><piece bytes>.
-    // Find the end of the top-level bencoded dict by walking the structure,
-    // skipping integer tokens (i...e) and byte-string tokens (len:bytes).
-    let dict_end = find_dict_end(&payload[1..])
-        .map(|end| end + 1)
+    let dict_end = find_dict_end(payload)
         .ok_or_else(|| TorrentError::PeerWireError("malformed ut_metadata".into()))?;
-    let dict_bytes = &payload[1..dict_end];
+    let dict_bytes = &payload[..dict_end];
     let value: Value = serde_bencode::from_bytes(dict_bytes)
         .map_err(|e| TorrentError::PeerWireError(e.to_string()))?;
     let dict = match value {
@@ -68,11 +66,11 @@ pub fn parse_data(payload: &[u8]) -> Result<(u32, u64, Vec<u8>)> {
         _ => return Err(TorrentError::PeerWireError("ut_metadata not a dict".into())),
     };
     let piece = match dict.get(b"piece".as_slice()) {
-        Some(Value::Int(i)) => *i as u32,
+        Some(Value::Int(i)) if *i >= 0 => *i as u32,
         _ => return Err(TorrentError::PeerWireError("missing piece".into())),
     };
     let total_size = match dict.get(b"total_size".as_slice()) {
-        Some(Value::Int(i)) => *i as u64,
+        Some(Value::Int(i)) if *i >= 0 => *i as u64,
         _ => return Err(TorrentError::PeerWireError("missing total_size".into())),
     };
     let data = payload[dict_end..].to_vec();
@@ -118,7 +116,11 @@ fn find_dict_end(bytes: &[u8]) -> Option<usize> {
                     return None;
                 }
                 let len: usize = std::str::from_utf8(&bytes[i..j]).ok()?.parse().ok()?;
-                i = j + 1 + len;
+                let next = j.checked_add(1)?.checked_add(len)?;
+                if next > bytes.len() {
+                    return None;
+                }
+                i = next;
             }
             _ => return None,
         }
@@ -131,6 +133,16 @@ pub fn reassemble_metadata(
     pieces: &std::collections::HashMap<u32, Vec<u8>>,
     total_size: u64,
 ) -> Result<Vec<u8>> {
+    // Cap the allocation: total_size comes from a remote peer and must not be
+    // trusted to allocate unbounded memory. A legitimate info dict is small
+    // (a few MB at most).
+    const MAX_METADATA_SIZE: u64 = 64 * 1024 * 1024;
+    if total_size > MAX_METADATA_SIZE {
+        return Err(TorrentError::PeerWireError(format!(
+            "metadata size too large: {}",
+            total_size
+        )));
+    }
     let mut indices: Vec<u32> = pieces.keys().copied().collect();
     indices.sort_unstable();
     let mut out = Vec::with_capacity(total_size as usize);
@@ -164,10 +176,9 @@ mod tests {
     }
 
     #[test]
-    fn test_request_has_ut_metadata_id_prefix() {
-        let bytes = build_request(3, 0);
-        assert_eq!(bytes[0], 3);
-        let value: Value = serde_bencode::from_bytes(&bytes[1..]).unwrap();
+    fn test_request_payload() {
+        let bytes = build_request(0);
+        let value: Value = serde_bencode::from_bytes(&bytes).unwrap();
         if let Value::Dict(d) = value {
             assert_eq!(d.get(b"msg_type".as_slice()), Some(&Value::Int(0)));
             assert_eq!(d.get(b"piece".as_slice()), Some(&Value::Int(0)));
@@ -183,14 +194,20 @@ mod tests {
         dict.insert(b"piece".to_vec(), Value::Int(0));
         dict.insert(b"total_size".to_vec(), Value::Int(4));
         let dict_bytes = serde_bencode::to_bytes(&Value::Dict(dict)).unwrap();
-        let mut payload = vec![3u8];
-        payload.extend_from_slice(&dict_bytes);
+        let mut payload = dict_bytes;
         payload.extend_from_slice(b"test");
 
         let (piece, total, data) = parse_data(&payload).unwrap();
         assert_eq!(piece, 0);
         assert_eq!(total, 4);
         assert_eq!(data, b"test");
+    }
+
+    #[test]
+    fn test_parse_data_rejects_overflowing_length() {
+        // A malicious length prefix must not overflow the offset arithmetic.
+        let payload = b"d3:piecei0e11:total_sizei4ee99999999999999999999:";
+        assert!(parse_data(payload).is_err());
     }
 
     #[test]
@@ -221,9 +238,8 @@ mod tests {
     #[test]
     fn test_ut_vtr_address_message_roundtrip() {
         let addr = "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT";
-        let msg = build_ut_vtr_address(2, addr);
-        assert_eq!(msg[0], 2); // extension id prefix
-        let parsed = parse_ut_vtr_address(&msg[1..]).unwrap();
+        let msg = build_ut_vtr_address(addr);
+        let parsed = parse_ut_vtr_address(&msg).unwrap();
         assert_eq!(parsed, addr);
     }
 }

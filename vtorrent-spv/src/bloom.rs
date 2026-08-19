@@ -91,8 +91,12 @@ impl BloomFilter {
 
     /// Insert an item into the filter.
     pub fn insert(&mut self, item: &[u8]) {
+        let bits = self.data.len().saturating_mul(8);
+        if bits == 0 {
+            return;
+        }
         for i in 0..self.hash_funcs {
-            let bit = self.hash(item, i) as usize % (self.data.len() * 8);
+            let bit = self.hash(item, i) as usize % bits;
             self.data[bit / 8] |= 1 << (bit % 8);
         }
     }
@@ -112,8 +116,12 @@ impl BloomFilter {
     /// Returns `false` with certainty if the item is not present.
     /// Returns `true` if the item is present or (with low probability) a false positive.
     pub fn contains(&self, item: &[u8]) -> bool {
+        let bits = self.data.len().saturating_mul(8);
+        if bits == 0 {
+            return false;
+        }
         for i in 0..self.hash_funcs {
-            let bit = self.hash(item, i) as usize % (self.data.len() * 8);
+            let bit = self.hash(item, i) as usize % bits;
             if self.data[bit / 8] & (1 << (bit % 8)) == 0 {
                 return false;
             }

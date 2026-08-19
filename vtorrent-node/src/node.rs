@@ -1034,7 +1034,10 @@ impl Node {
                                     .unwrap_or_default();
                                     drop(chain);
                                     self.peer_manager
-                                        .broadcast(NetMessage::new("inv", payload))
+                                        .broadcast_except(
+                                            peer_addr,
+                                            NetMessage::new("inv", payload),
+                                        )
                                         .await;
                                 }
                             }
@@ -1055,11 +1058,22 @@ impl Node {
 
             "tx" => match self.deserialize_tx(&msg.payload) {
                 Ok(tx) => {
+                    // Compute the real fee from the UTXO set rather than the
+                    // fabricated per-input estimate, so zero-fee transactions
+                    // cannot be relayed through the network.
+                    let real_fee = {
+                        let chain = self.chain.lock().await;
+                        chain.compute_tx_fee(&tx)
+                    };
                     let mut mp = self.mempool.lock().await;
-                    match mp.add_transaction(tx.clone()) {
+                    let result = match real_fee {
+                        Some(fee) => mp.add_transaction_with_fee(tx.clone(), fee),
+                        None => Err(NodeError::Chain("Inputs not found in UTXO set".into())),
+                    };
+                    match result {
                         Ok(()) => {
                             let txid = tx.txid();
-                            let fee_sats = tx.fee_sats();
+                            let fee_sats = real_fee.unwrap_or(0);
                             tracing::debug!("Accepted tx {}", hex::encode(txid));
                             self.emit(NodeEvent::TxUnconfirmed { txid, fee_sats });
                             let payload = serde_json::to_vec(&InvMsg {
@@ -1071,8 +1085,13 @@ impl Node {
                             .unwrap_or_default();
                             drop(mp);
                             self.peer_manager
-                                .broadcast(NetMessage::new("inv", payload))
+                                .broadcast_except(peer_addr, NetMessage::new("inv", payload))
                                 .await;
+                        }
+                        Err(NodeError::PolicyRejected(_)) => {
+                            // Policy rejection (e.g. fee below relay floor):
+                            // the tx may be valid, so do not penalize the peer.
+                            tracing::debug!("Rejected tx by policy");
                         }
                         Err(e) => {
                             tracing::debug!("Rejected tx: {}", e);
@@ -1123,7 +1142,7 @@ impl Node {
                         let payload = serde_json::to_vec(&InvMsg { items }).unwrap_or_default();
                         drop(chain);
                         self.peer_manager
-                            .broadcast(NetMessage::new("inv", payload))
+                            .send_to(peer_addr, NetMessage::new("inv", payload))
                             .await;
                     }
                 }

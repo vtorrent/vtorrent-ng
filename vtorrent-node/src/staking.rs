@@ -11,7 +11,9 @@
 use crate::{
     block::{Block, BlockHeader, Transaction, TxInput, TxOutput, TxType},
     chain::Utxo,
-    consensus::{check_stake_kernel, compute_pos_reward, MIN_STAKE_AGE, MIN_STAKE_AMOUNT},
+    consensus::{
+        check_stake_kernel, compute_pos_reward, MAX_STAKE_AGE, MIN_STAKE_AGE, MIN_STAKE_AMOUNT,
+    },
 };
 
 /// The staking engine.
@@ -87,6 +89,12 @@ impl StakingEngine {
         // Must have minimum coin age
         let coin_age_seconds = current_timestamp.saturating_sub(utxo.timestamp);
         if (coin_age_seconds as u64) < MIN_STAKE_AGE {
+            return false;
+        }
+
+        // Must not exceed maximum coin age (prevents very old coins from
+        // dominating the staking weight indefinitely).
+        if (coin_age_seconds as u64) > MAX_STAKE_AGE {
             return false;
         }
 

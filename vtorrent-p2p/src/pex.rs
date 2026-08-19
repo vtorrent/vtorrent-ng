@@ -108,6 +108,11 @@ fn is_private_ip(ip: IpAddr) -> bool {
         IpAddr::V6(v6) => {
             v6.is_loopback()       // ::1
                 || v6.is_unspecified() // ::
+                || v6.is_multicast()   // ff00::/8
+                || v6.is_unique_local() // fc00::/7
+                || v6.is_unicast_link_local() // fe80::/10
+                || (v6.segments()[0] & 0xffc0) == 0x2000 && v6.segments()[1] == 0x0db8
+            // 2001:db8::/32
         }
     }
 }

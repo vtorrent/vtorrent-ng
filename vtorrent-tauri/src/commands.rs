@@ -564,14 +564,14 @@ pub async fn get_transactions(
     let best = chain.best_height();
     Ok(txs
         .into_iter()
-        .map(|(txid, height, ts, dir, fee)| TxResult {
+        .map(|(txid, height, ts, dir, amount)| TxResult {
             txid,
             block_height: height,
             confirmations: best.saturating_sub(height),
             timestamp: ts,
             direction: dir,
-            amount_satoshis: 0, // populated by UTXO diff in a future pass
-            fee_satoshis: fee,
+            amount_satoshis: amount,
+            fee_satoshis: 0, // populated by UTXO diff in a future pass
         })
         .collect())
 }

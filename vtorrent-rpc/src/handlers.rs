@@ -583,9 +583,7 @@ pub async fn unlock_wallet(
 
 pub async fn lock_wallet(State(state): State<Arc<AppState>>) -> RpcResult<Json<Value>> {
     // Clear the hot wallet key on lock for security.
-    *state.wallet_wif.write().await = None;
-    *state.wallet_change_address.write().await = None;
-    *state.wallet_unlock_expiry.write().await = None;
+    state.lock_wallet().await;
     Ok(Json(json!({ "success": true, "message": "Wallet locked" })))
 }
 

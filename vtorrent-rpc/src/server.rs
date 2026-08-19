@@ -53,8 +53,17 @@ async fn require_api_key(
 /// Build the Axum router with all API routes.
 pub fn build_router(state: AppState) -> Router {
     let state = Arc::new(state);
+    // Restrict CORS to local origins. The RPC server is meant to be accessed
+    // from the local machine (Tauri frontend, CLI, local tools); allowing any
+    // origin would let a malicious website drive the local RPC (CSRF / DNS
+    // rebinding), including wallet-funding endpoints.
     let cors = CorsLayer::new()
-        .allow_origin(Any)
+        .allow_origin([
+            "http://localhost".parse().unwrap(),
+            "http://127.0.0.1".parse().unwrap(),
+            "tauri://localhost".parse().unwrap(),
+            "http://tauri.localhost".parse().unwrap(),
+        ])
         .allow_methods(Any)
         .allow_headers(Any);
 

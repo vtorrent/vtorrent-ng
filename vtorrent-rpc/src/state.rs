@@ -177,6 +177,9 @@ impl AppState {
     }
 
     /// Check if the wallet is currently unlocked.
+    ///
+    /// If the unlock has expired, the hot key is cleared from memory so it
+    /// cannot linger indefinitely.
     pub async fn is_wallet_unlocked(&self) -> bool {
         let expiry = self.wallet_unlock_expiry.read().await;
         match *expiry {
@@ -186,9 +189,22 @@ impl AppState {
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                exp == 0 || now < exp
+                if exp != 0 && now >= exp {
+                    drop(expiry);
+                    self.lock_wallet().await;
+                    false
+                } else {
+                    true
+                }
             }
         }
+    }
+
+    /// Lock the wallet, clearing the hot key and change address from memory.
+    pub async fn lock_wallet(&self) {
+        *self.wallet_wif.write().await = None;
+        *self.wallet_change_address.write().await = None;
+        *self.wallet_unlock_expiry.write().await = None;
     }
 }
 

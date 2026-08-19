@@ -236,6 +236,13 @@ impl BlockStore {
             if let Some(v) = height_idx.get(h)? {
                 let bytes = hex::decode(v.value())
                     .map_err(|_| StoreError::Corrupted(format!("bad hash at height {}", h)))?;
+                if bytes.len() != 32 {
+                    return Err(StoreError::Corrupted(format!(
+                        "bad hash length {} at height {}",
+                        bytes.len(),
+                        h
+                    )));
+                }
                 let mut arr = [0u8; 32];
                 arr.copy_from_slice(&bytes);
                 hashes.push(arr);

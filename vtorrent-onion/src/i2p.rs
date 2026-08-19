@@ -51,7 +51,7 @@ impl I2pTransport {
                 source: e,
             })?;
 
-        let mut stream = sam_handshake(stream).await?;
+        let mut reader = sam_handshake(stream).await?;
 
         // Create a STREAM session with a transient (one-time) destination
         let session_id = format!("vtorrent-{}", rand::random::<u32>());
@@ -59,9 +59,9 @@ impl I2pTransport {
             "SESSION CREATE STYLE=STREAM ID={} DESTINATION=TRANSIENT\n",
             session_id
         );
-        stream.write_all(session_cmd.as_bytes()).await?;
+        reader.get_mut().write_all(session_cmd.as_bytes()).await?;
 
-        let resp = read_sam_line(&mut stream).await?;
+        let resp = read_sam_line(&mut reader).await?;
         if !resp.contains("RESULT=OK") {
             return Err(OnionError::SamError(format!(
                 "SESSION CREATE failed: {}",
@@ -74,9 +74,9 @@ impl I2pTransport {
             "STREAM CONNECT ID={} DESTINATION={} SILENT=false\n",
             session_id, dest
         );
-        stream.write_all(connect_cmd.as_bytes()).await?;
+        reader.get_mut().write_all(connect_cmd.as_bytes()).await?;
 
-        let resp = read_sam_line(&mut stream).await?;
+        let resp = read_sam_line(&mut reader).await?;
         if !resp.contains("RESULT=OK") {
             return Err(OnionError::SamError(format!(
                 "STREAM CONNECT failed: {}",
@@ -84,7 +84,7 @@ impl I2pTransport {
             )));
         }
 
-        Ok(stream)
+        Ok(reader.into_inner())
     }
 
     /// Create an I2P hidden service (server-side destination).
@@ -96,13 +96,14 @@ impl I2pTransport {
                 source: e,
             })?;
 
-        let mut stream = sam_handshake(stream).await?;
+        let mut reader = sam_handshake(stream).await?;
 
         // Generate a new destination key pair
-        stream
+        reader
+            .get_mut()
             .write_all(b"DEST GENERATE SIGNATURE_TYPE=EdDSA_SHA512_Ed25519\n")
             .await?;
-        let resp = read_sam_line(&mut stream).await?;
+        let resp = read_sam_line(&mut reader).await?;
 
         // Parse DEST=<pub> PRIV=<priv>
         let pub_key = resp
@@ -136,43 +137,38 @@ impl I2pTransport {
     }
 }
 
-/// Perform the SAM HELLO handshake.
-async fn sam_handshake(mut stream: TcpStream) -> Result<TcpStream> {
-    stream.write_all(b"HELLO VERSION MIN=3.0 MAX=3.3\n").await?;
-    let resp = read_sam_line(&mut stream).await?;
+/// Perform the SAM HELLO handshake, returning a buffered stream for the rest
+/// of the session. The buffer is kept across calls so bytes read ahead by the
+/// bridge are not lost between protocol steps.
+async fn sam_handshake(stream: TcpStream) -> Result<BufReader<TcpStream>> {
+    let mut reader = BufReader::new(stream);
+    reader
+        .get_mut()
+        .write_all(b"HELLO VERSION MIN=3.0 MAX=3.3\n")
+        .await?;
+    let resp = read_sam_line(&mut reader).await?;
     if !resp.contains("RESULT=OK") {
         return Err(OnionError::SamError(format!(
             "SAM HELLO failed: {}",
             resp.trim()
         )));
     }
-    Ok(stream)
+    Ok(reader)
 }
 
 /// Read a single line from a SAM stream.
-async fn read_sam_line(stream: &mut TcpStream) -> Result<String> {
-    let mut reader = BufReader::new(stream);
+async fn read_sam_line(reader: &mut BufReader<TcpStream>) -> Result<String> {
     let mut line = String::new();
     reader.read_line(&mut line).await?;
     Ok(line)
 }
 
-/// Compute SHA-256 of bytes (simple implementation for address derivation).
+/// Compute SHA-256 of bytes for address derivation.
 fn sha256_bytes(data: &[u8]) -> [u8; 32] {
-    // Use a simple djb2-style hash for the address derivation approximation
-    // In production this would use the real SHA-256 from sha2 crate
-    let mut hash = [0u8; 32];
-    let mut h: u64 = 5381;
-    for &b in data {
-        h = h.wrapping_mul(33).wrapping_add(b as u64);
-    }
-    for i in 0..8 {
-        hash[i * 4] = (h >> (i * 8)) as u8;
-        hash[i * 4 + 1] = (h >> (i * 8 + 1)) as u8;
-        hash[i * 4 + 2] = (h >> (i * 8 + 2)) as u8;
-        hash[i * 4 + 3] = (h >> (i * 8 + 3)) as u8;
-    }
-    hash
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hasher.finalize().into()
 }
 
 /// Base32 encode (RFC 4648, no padding).

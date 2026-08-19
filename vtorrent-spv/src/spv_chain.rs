@@ -54,12 +54,38 @@ impl SpvHeader {
     }
 }
 
+/// Compute the work contributed by a single header from its compact `bits`.
+///
+/// Work is `2^256 / target`, the standard Bitcoin-style measure. A header with
+/// a smaller target (higher difficulty) contributes more work. The result is
+/// saturated to `u128::MAX` for absurdly small targets that would otherwise
+/// overflow; such targets do not occur in practice.
+fn header_work(bits: u32) -> u128 {
+    let exponent = bits >> 24;
+    let mantissa = (bits & 0x00ff_ffff) as u128;
+    if mantissa == 0 {
+        return 0;
+    }
+    // target = mantissa * 2^(8*(exponent-3)), so
+    // work = 2^256 / target = 2^(280 - 8*exponent) / mantissa.
+    let shift = 280u32.saturating_sub(8 * exponent);
+    if shift >= 128 {
+        return u128::MAX;
+    }
+    (1u128 << shift) / mantissa
+}
+
 /// A lightweight chain of block headers for SPV verification.
 #[derive(Debug, Default)]
 pub struct SpvChain {
     /// Headers indexed by their hash.
     headers: HashMap<[u8; 32], SpvHeader>,
-    /// Best (highest) chain tip hash.
+    /// Cumulative chain work (sum of per-header work) indexed by header hash.
+    ///
+    /// The best tip is selected by accumulated work rather than raw height so
+    /// a peer cannot steer the client onto a high-height but low-work fork.
+    work: HashMap<[u8; 32], u128>,
+    /// Best (highest-work) chain tip hash.
     best_hash: Option<[u8; 32]>,
     /// Best chain height.
     best_height: u32,
@@ -86,11 +112,30 @@ impl SpvChain {
             return Err(SpvError::UnknownParent(hex::encode(header.prev_hash)));
         }
 
-        let height = header.height;
-        self.headers.insert(hash, header);
+        // The height must be exactly one more than the parent's height.
+        if header.height > 0 {
+            let parent = &self.headers[&header.prev_hash];
+            if header.height != parent.height + 1 {
+                return Err(SpvError::HeightMismatch {
+                    expected: parent.height + 1,
+                    got: header.height,
+                });
+            }
+        }
 
-        // Update best tip if this extends the chain
-        if height >= self.best_height || self.best_hash.is_none() {
+        let height = header.height;
+        // Cumulative work = parent's cumulative work + this header's work.
+        let parent_work = if height == 0 {
+            0
+        } else {
+            self.work[&header.prev_hash]
+        };
+        let cumulative = parent_work.saturating_add(header_work(header.bits));
+        self.headers.insert(hash, header);
+        self.work.insert(hash, cumulative);
+
+        // Update best tip if this chain has the most accumulated work.
+        if self.best_hash.is_none() || cumulative > self.work[&self.best_hash.unwrap()] {
             self.best_height = height;
             self.best_hash = Some(hash);
         }

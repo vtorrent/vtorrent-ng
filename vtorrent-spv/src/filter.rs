@@ -186,6 +186,12 @@ fn gcs_encode(values: &[u64], p: u8) -> Vec<u8> {
 
 /// Decode a GCS back to a sorted list of u64 values.
 fn gcs_decode(data: &[u8], n: usize, p: u8) -> Vec<u64> {
+    // Cap the element count: `n` is attacker-controlled (it travels with the
+    // filter from a remote peer) and must not drive an unbounded allocation.
+    // Each element needs at least p+1 bits, so n cannot exceed the data size.
+    let max_elements = data.len().saturating_mul(8) / (p as usize + 1);
+    let n = n.min(max_elements).min(1_000_000);
+
     let mut bits = BitReader::new(data);
     let mut values = Vec::with_capacity(n);
     let mut acc = 0u64;

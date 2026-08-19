@@ -23,6 +23,12 @@ pub enum MigrateError {
     #[error("Incorrect passphrase (decryption failed)")]
     IncorrectPassphrase,
 
+    #[error("Unsupported key derivation method: {0}")]
+    UnsupportedDerivationMethod(u32),
+
+    #[error("Key derivation iterations exceed the safety limit: {0}")]
+    ExcessiveIterations(u32),
+
     #[error("Wallet requires 2FA OTP code")]
     OtpRequired,
 
