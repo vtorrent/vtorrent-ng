@@ -123,23 +123,6 @@ impl BtcWallet {
         Ok(added)
     }
 
-    /// Scan blocks from `start_height` to the tip for outputs paying the
-    /// wallet's addresses, populating the UTXO set. Returns the number of
-    /// blocks scanned.
-    pub async fn scan_utxos(
-        &self,
-        peer: &mut crate::p2p::BtcPeer,
-        start_height: u32,
-    ) -> Result<usize> {
-        let sync = crate::sync::BtcSync::new(
-            self.headers.clone(),
-            self.utxos.clone(),
-            self.watch_addresses(self.next_index)?,
-            self.network,
-        );
-        sync.scan_utxos(peer, start_height).await
-    }
-
     /// Scan blocks using BIP-158 compact block filters (the modern,
     /// privacy-preserving alternative to BIP-37, which most mainnet nodes
     /// disable). Returns the number of blocks scanned.
