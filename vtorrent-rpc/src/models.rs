@@ -346,6 +346,10 @@ pub struct MatchOrderRequest {
     pub order_id: String,
     /// The taker's VTR address.
     pub taker_address: String,
+    /// The wallet passphrase (re-verified before signing).
+    pub passphrase: String,
+    /// The 6-digit TOTP code (required when 2FA is enabled).
+    pub otp_code: Option<String>,
 }
 
 /// Response for a successful order match.

@@ -286,7 +286,11 @@ pub async fn get_balance(State(state): State<Arc<AppState>>) -> RpcResult<Json<B
     let chain = state.chain.lock().await;
     let staking_enabled = *state.staking_enabled.read().await;
 
-    let confirmed: u64 = chain.get_utxo_set().values().map(|u| u.value).sum();
+    // Sum only the hot wallet's UTXOs, not the entire network UTXO set.
+    let confirmed: u64 = match state.wallet_change_address.read().await.clone() {
+        Some(addr) => chain.get_utxos_for_address(&addr).iter().map(|u| u.value).sum(),
+        None => 0,
+    };
 
     let staking = if staking_enabled { confirmed / 10 } else { 0 };
 
@@ -621,7 +625,11 @@ pub async fn get_staking_status(
     let blocks_staked = *state.blocks_staked.read().await;
     let chain = state.chain.lock().await;
 
-    let total_staking: u64 = chain.get_utxo_set().values().map(|u| u.value).sum();
+    // Sum only the staking address's UTXOs, not the entire network UTXO set.
+    let total_staking: u64 = staking_address
+        .as_ref()
+        .map(|addr| chain.get_utxos_for_address(addr).iter().map(|u| u.value).sum())
+        .unwrap_or(0);
 
     let expected_per_day = if enabled {
         total_staking as f64 * 0.05 / 365.0
@@ -878,11 +886,8 @@ pub async fn match_dex_order(
     vtorrent_wallet::tx_builder::p2pkh_script_pubkey(&req.taker_address)
         .map_err(|e| RpcError::BadRequest(format!("Invalid taker address: {}", e)))?;
 
-    let wif = state.wallet_wif.read().await.clone().ok_or_else(|| {
-        RpcError::BadRequest(
-            "No wallet key imported. Call POST /api/v1/wallet/import first.".into(),
-        )
-    })?;
+    // Re-verify the passphrase (and TOTP if 2FA is enabled) before signing.
+    let wif = verify_wallet_auth(&state, &req.passphrase, req.otp_code.as_deref()).await?;
     let wallet_address = state
         .wallet_change_address
         .read()
