@@ -72,6 +72,10 @@ pub struct PeerManager {
     transport: OnionTransport,
     /// Number of active inbound connections (pre-handshake and post-handshake).
     inbound_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Receiver for inbound peer registrations from the accept loop.
+    inbound_rx: mpsc::Receiver<(SocketAddr, mpsc::Sender<PeerCommand>)>,
+    /// Sender half — cloned into the accept loop.
+    inbound_tx: mpsc::Sender<(SocketAddr, mpsc::Sender<PeerCommand>)>,
 }
 
 impl PeerManager {
@@ -112,6 +116,8 @@ impl PeerManager {
             addr_book.set_our_addr(our_addr);
         }
 
+        let (inbound_tx, inbound_rx) = mpsc::channel(1024);
+
         Self {
             best_height,
             listen_addr: listen_addr.to_string(),
@@ -122,6 +128,8 @@ impl PeerManager {
             ban_manager: BanManager::new(100, Duration::from_secs(24 * 60 * 60)),
             transport: OnionTransport::new(transport_config),
             inbound_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            inbound_rx,
+            inbound_tx,
         }
     }
 
@@ -136,6 +144,7 @@ impl PeerManager {
         let best_height = self.best_height;
         let addr_str = listen_addr.clone();
         let inbound_count = self.inbound_count.clone();
+        let inbound_tx = self.inbound_tx.clone();
 
         tokio::spawn(async move {
             loop {
@@ -158,12 +167,12 @@ impl PeerManager {
                         let tx = event_tx.clone();
                         let addr = addr_str.clone();
                         let count = inbound_count.clone();
+                        // Register the inbound peer so broadcasts reach it.
+                        let _ = inbound_tx.send((peer_addr, cmd_tx.clone())).await;
                         tokio::spawn(async move {
                             run_peer(stream, peer_addr, best_height, &addr, tx, cmd_rx).await;
                             count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                         });
-                        // Note: peer is registered when HandshakeComplete event arrives
-                        let _ = cmd_tx; // keep alive until handshake
                     }
                     Err(e) => {
                         tracing::error!("Accept error: {}", e);
@@ -237,6 +246,18 @@ impl PeerManager {
     /// Returns events for the node to handle, and also updates the address book.
     pub async fn process_events(&mut self) -> Vec<PeerEvent> {
         let mut events = Vec::new();
+
+        // Register inbound peers accepted by the accept loop.
+        while let Ok((peer_addr, cmd_tx)) = self.inbound_rx.try_recv() {
+            self.peers.entry(peer_addr).or_insert(Peer {
+                addr: peer_addr,
+                state: PeerState::Connecting,
+                best_height: 0,
+                user_agent: String::new(),
+                services: 0,
+                cmd_tx,
+            });
+        }
 
         while let Ok(event) = self.event_rx.try_recv() {
             match &event {

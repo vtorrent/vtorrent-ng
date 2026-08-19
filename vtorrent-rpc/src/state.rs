@@ -89,6 +89,9 @@ pub struct AppState {
     /// Channel for submitting locally-created transactions into the node's event loop.
     /// `None` when running in standalone/test mode (no live P2P node).
     pub tx_submit: Option<mpsc::Sender<Transaction>>,
+    /// Channel for submitting locally-minted blocks (regtest faucet) into the
+    /// node's event loop so they are announced to peers. `None` in standalone mode.
+    pub block_submit: Option<mpsc::Sender<vtorrent_node::block::Block>>,
     /// Live list of connected peers — updated by the daemon event bridge.
     pub peer_list: Arc<RwLock<Vec<PeerInfo>>>,
     /// Optional RPC API key. When set, sensitive endpoints require the
@@ -133,6 +136,7 @@ impl AppState {
             wallet_change_address: Arc::new(RwLock::new(None)),
             best_peer_height: Arc::new(RwLock::new(0)),
             tx_submit: None,
+            block_submit: None,
             peer_list: Arc::new(RwLock::new(Vec::new())),
             rpc_api_key: None,
             regtest: false,
@@ -174,6 +178,7 @@ impl AppState {
             wallet_change_address: Arc::new(RwLock::new(None)),
             best_peer_height: Arc::new(RwLock::new(0)),
             tx_submit: None,
+            block_submit: None,
             peer_list: Arc::new(RwLock::new(Vec::new())),
             rpc_api_key: None,
             regtest: false,

@@ -1722,14 +1722,25 @@ pub async fn faucet(
         return Err(RpcError::BadRequest("Amount must be non-zero".into()));
     }
 
-    let (txid, height) = {
+    let (txid, height, block) = {
         let mut chain = state.chain.lock().await;
         let txid = chain
             .mint_to_address(&req.address, amount)
             .map_err(|e| RpcError::Internal(e.to_string()))?;
         let height = chain.best_height();
-        (txid, height)
+        let block = chain
+            .get_block_at_height(height)
+            .cloned()
+            .ok_or_else(|| RpcError::Internal("minted block not found".into()))?;
+        (txid, height, block)
     };
+
+    // Announce the minted block to peers so a multi-node regtest network stays
+    // in sync (the faucet mints directly into the chain, bypassing the node's
+    // normal block-production path).
+    if let Some(sender) = &state.block_submit {
+        let _ = sender.try_send(block);
+    }
 
     Ok(Json(FaucetResponse {
         address: req.address,

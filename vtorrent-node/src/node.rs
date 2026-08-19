@@ -162,6 +162,11 @@ pub struct Node {
     tx_submit_rx: mpsc::Receiver<Transaction>,
     /// Sender half — cloned and given to AppState so RPC can inject transactions.
     tx_submit_tx: mpsc::Sender<Transaction>,
+    /// Receiver for locally-minted blocks (from the regtest faucet).
+    /// When a block is placed here, the node announces it to all peers.
+    block_submit_rx: mpsc::Receiver<Block>,
+    /// Sender half — cloned and given to AppState so the faucet can inject blocks.
+    block_submit_tx: mpsc::Sender<Block>,
 }
 
 /// Encode a P2P message for transport inside the encrypted overlay payload.
@@ -250,6 +255,8 @@ impl Node {
             None
         };
 
+        let (block_submit_tx, block_submit_rx) = mpsc::channel(64);
+
         Ok(Self {
             chain: Arc::new(Mutex::new(chain)),
             mempool: Arc::new(Mutex::new(mempool)),
@@ -270,6 +277,8 @@ impl Node {
             seen_orders: HashSet::new(),
             tx_submit_rx,
             tx_submit_tx,
+            block_submit_rx,
+            block_submit_tx,
         })
     }
 
@@ -301,6 +310,8 @@ impl Node {
             None
         };
 
+        let (block_submit_tx, block_submit_rx) = mpsc::channel(64);
+
         Ok(Self {
             chain: Arc::new(Mutex::new(chain)),
             mempool: Arc::new(Mutex::new(mempool)),
@@ -321,6 +332,8 @@ impl Node {
             seen_orders: HashSet::new(),
             tx_submit_rx,
             tx_submit_tx,
+            block_submit_rx,
+            block_submit_tx,
         })
     }
 
@@ -363,6 +376,13 @@ impl Node {
     /// The node will add them to the mempool and broadcast an `inv` to peers.
     pub fn tx_submit_sender(&self) -> mpsc::Sender<Transaction> {
         self.tx_submit_tx.clone()
+    }
+
+    /// Returns a cloned sender that can be used to submit locally-minted
+    /// blocks (e.g. from the regtest faucet) into the node's event loop.
+    /// The node will announce them to peers via an `inv`.
+    pub fn block_submit_sender(&self) -> mpsc::Sender<Block> {
+        self.block_submit_tx.clone()
     }
 
     /// Emit an event to all subscribers (best-effort; silently drops if no subscribers).
@@ -558,6 +578,23 @@ impl Node {
                             tracing::warn!("Local tx rejected by mempool: {}", e);
                         }
                     }
+                }
+                // Locally-minted blocks from the regtest faucet
+                Some(block) = self.block_submit_rx.recv() => {
+                    let block_hash = block.hash();
+                    let payload = serde_json::to_vec(&InvMsg {
+                        items: vec![InvItem {
+                            inv_type: InvType::Block,
+                            hash: block_hash,
+                        }],
+                    }).unwrap_or_default();
+                    self.peer_manager.broadcast(
+                        NetMessage::new("inv", payload)
+                    ).await;
+                    tracing::info!(
+                        "Local block {} announced to peers",
+                        hex::encode(block_hash)
+                    );
                 }
             }
         }
