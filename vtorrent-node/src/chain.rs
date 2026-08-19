@@ -12,6 +12,21 @@ use crate::{
 use std::collections::{HashMap, HashSet, VecDeque};
 use vtorrent_script::{Engine, Script, ScriptEnv};
 
+/// Compute the net supply change a transaction contributes to the chain.
+///
+/// Standard transactions are value-conserving (outputs <= inputs), so they
+/// contribute nothing. Coinbase/coinstake mint the block reward. Legacy
+/// claims are funded by the snapshot already counted in the genesis supply,
+/// so a user claim (which carries a claim_address) contributes nothing; the
+/// genesis distribution tx (claim_address = None) establishes the supply.
+fn compute_supply_delta(tx: &Transaction, total_input: u64, total_output: u64) -> u64 {
+    if tx.is_legacy_claim() && tx.claim_address.is_some() {
+        0
+    } else {
+        total_output.saturating_sub(total_input)
+    }
+}
+
 /// A UTXO (unspent transaction output).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Utxo {
@@ -751,12 +766,17 @@ impl Chain {
 
         // Net supply change: value created by this transaction (outputs minus
         // UTXO-set inputs spent). Standard transactions are value-conserving
-        // (checked above), so only coinbase/coinstake rewards and legacy
-        // claims contribute. Fees are captured by the block's reward output.
+        // (checked above), so only coinbase/coinstake rewards contribute.
+        //
+        // Legacy claims are funded by the snapshot embedded in the genesis
+        // block, whose full value is already counted in total_supply. A user
+        // claim (which carries a claim_address) mints new coins without
+        // spending inputs, so excluding it here prevents the snapshot value
+        // from being double-counted. The genesis distribution tx itself
+        // (claim_address = None) establishes the initial supply and is kept.
         let total_output = tx.total_output();
-        journal.supply_delta = journal
-            .supply_delta
-            .saturating_add(total_output.saturating_sub(total_input));
+        let supply_delta = compute_supply_delta(tx, total_input, total_output);
+        journal.supply_delta = journal.supply_delta.saturating_add(supply_delta);
 
         Ok(())
     }
@@ -1172,5 +1192,50 @@ mod tests {
         let result = chain.add_block(block);
         assert!(result.is_err(), "block with bad kernel must be rejected");
         assert_eq!(chain.best_height(), 1);
+    }
+
+    #[test]
+    fn test_legacy_claim_does_not_double_count_supply() {
+        // A user legacy claim (claim_address = Some) is funded by the snapshot
+        // already counted in genesis, so it must not add to the supply.
+        let claim_tx = Transaction {
+            version: 1,
+            tx_type: TxType::LegacyClaim,
+            inputs: vec![],
+            outputs: vec![TxOutput {
+                value: 500 * crate::consensus::COIN,
+                script_pubkey: vec![0x76, 0xa9, 0x14],
+            }],
+            lock_time: 1,
+            claim_address: Some("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string()),
+            claim_signature: Some(vec![0u8; 65]),
+        };
+        assert_eq!(compute_supply_delta(&claim_tx, 0, claim_tx.total_output()), 0);
+
+        // The genesis distribution tx (claim_address = None) establishes the
+        // initial supply and must still count.
+        let genesis_dist = Transaction {
+            claim_address: None,
+            ..claim_tx.clone()
+        };
+        assert_eq!(
+            compute_supply_delta(&genesis_dist, 0, genesis_dist.total_output()),
+            genesis_dist.total_output()
+        );
+
+        // A coinbase mints its reward into the supply.
+        let coinbase = Transaction {
+            version: 1,
+            tx_type: TxType::Coinbase,
+            inputs: vec![],
+            outputs: vec![TxOutput {
+                value: 1_000_000,
+                script_pubkey: vec![0x76, 0xa9, 0x14],
+            }],
+            lock_time: 1,
+            claim_address: None,
+            claim_signature: None,
+        };
+        assert_eq!(compute_supply_delta(&coinbase, 0, coinbase.total_output()), 1_000_000);
     }
 }

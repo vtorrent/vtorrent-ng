@@ -197,11 +197,12 @@ pub fn validate_block(
 
 /// Validate a transaction against the consensus rules.
 pub fn validate_transaction(tx: &Transaction) -> Result<()> {
-    // Coinbase and coinstake have no inputs to validate
-    if tx.is_coinbase() || tx.is_coinstake() {
+    // Coinbase, coinstake, and legacy claims have no inputs to validate.
+    // Legacy claims are funded by the snapshot embedded in genesis.
+    if tx.is_coinbase() || tx.is_coinstake() || tx.is_legacy_claim() {
         if tx.outputs.is_empty() {
             return Err(NodeError::InvalidTransaction(
-                "Coinbase/coinstake must have outputs".into(),
+                "Coinbase/coinstake/claim must have outputs".into(),
             ));
         }
         return Ok(());
