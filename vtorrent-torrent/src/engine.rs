@@ -247,18 +247,16 @@ pub async fn run_engine(
                 Err(_) => continue,
             };
             let udp = crate::udp::UdpTracker::new(addr);
-            if let Ok(p) = udp
-                .announce(
-                    &metainfo.info_hash,
-                    &peer_id,
-                    0,
-                    metainfo.total_size,
-                    0,
-                    AnnounceEvent::Started,
-                    6881,
-                )
-                .await
-            {
+            let params = crate::udp::UdpAnnounceParams {
+                info_hash: &metainfo.info_hash,
+                peer_id: &peer_id,
+                downloaded: 0,
+                left: metainfo.total_size,
+                uploaded: 0,
+                event: AnnounceEvent::Started,
+                port: 6881,
+            };
+            if let Ok(p) = udp.announce(&params).await {
                 peers = p;
                 break;
             }

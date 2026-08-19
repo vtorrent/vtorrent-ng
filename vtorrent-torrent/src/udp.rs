@@ -24,7 +24,9 @@ pub fn encode_connect(transaction_id: u32) -> Vec<u8> {
 /// Decode a connect response, returning the connection_id.
 pub fn decode_connect_response(data: &[u8]) -> Result<u64> {
     if data.len() < 16 {
-        return Err(TorrentError::TrackerError("connect response too short".into()));
+        return Err(TorrentError::TrackerError(
+            "connect response too short".into(),
+        ));
     }
     let action = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
     if action == ACTION_ERROR {
@@ -40,19 +42,24 @@ pub fn decode_connect_response(data: &[u8]) -> Result<u64> {
     ]))
 }
 
+/// Parameters for a UDP announce.
+pub struct UdpAnnounceParams<'a> {
+    pub info_hash: &'a [u8; 20],
+    pub peer_id: &'a [u8; 20],
+    pub downloaded: u64,
+    pub left: u64,
+    pub uploaded: u64,
+    pub event: AnnounceEvent,
+    pub port: u16,
+}
+
 /// Encode an announce request.
 pub fn encode_announce(
     connection_id: u64,
     transaction_id: u32,
-    info_hash: &[u8; 20],
-    peer_id: &[u8; 20],
-    downloaded: u64,
-    left: u64,
-    uploaded: u64,
-    event: AnnounceEvent,
-    port: u16,
+    params: &UdpAnnounceParams,
 ) -> Vec<u8> {
-    let event_code: u32 = match event {
+    let event_code: u32 = match params.event {
         AnnounceEvent::None => 0,
         AnnounceEvent::Completed => 1,
         AnnounceEvent::Started => 2,
@@ -62,23 +69,25 @@ pub fn encode_announce(
     buf.extend_from_slice(&connection_id.to_be_bytes());
     buf.extend_from_slice(&ACTION_ANNOUNCE.to_be_bytes());
     buf.extend_from_slice(&transaction_id.to_be_bytes());
-    buf.extend_from_slice(info_hash);
-    buf.extend_from_slice(peer_id);
-    buf.extend_from_slice(&downloaded.to_be_bytes());
-    buf.extend_from_slice(&left.to_be_bytes());
-    buf.extend_from_slice(&uploaded.to_be_bytes());
+    buf.extend_from_slice(params.info_hash);
+    buf.extend_from_slice(params.peer_id);
+    buf.extend_from_slice(&params.downloaded.to_be_bytes());
+    buf.extend_from_slice(&params.left.to_be_bytes());
+    buf.extend_from_slice(&params.uploaded.to_be_bytes());
     buf.extend_from_slice(&event_code.to_be_bytes());
     buf.extend_from_slice(&0u32.to_be_bytes()); // IP address (0 = default)
     buf.extend_from_slice(&0u32.to_be_bytes()); // key
     buf.extend_from_slice(&(-1i32).to_be_bytes()); // num_want = -1 (default)
-    buf.extend_from_slice(&port.to_be_bytes());
+    buf.extend_from_slice(&params.port.to_be_bytes());
     buf
 }
 
 /// Decode an announce response, returning (interval, leechers, seeders, peers).
 pub fn decode_announce_response(data: &[u8]) -> Result<(u32, u32, u32, Vec<TrackerPeer>)> {
     if data.len() < 20 {
-        return Err(TorrentError::TrackerError("announce response too short".into()));
+        return Err(TorrentError::TrackerError(
+            "announce response too short".into(),
+        ));
     }
     let action = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
     if action == ACTION_ERROR {
@@ -109,7 +118,9 @@ pub fn encode_scrape(connection_id: u64, transaction_id: u32, info_hash: &[u8; 2
 /// Decode a scrape response, returning (seeders, completed, leechers).
 pub fn decode_scrape_response(data: &[u8]) -> Result<(u32, u32, u32)> {
     if data.len() < 20 {
-        return Err(TorrentError::TrackerError("scrape response too short".into()));
+        return Err(TorrentError::TrackerError(
+            "scrape response too short".into(),
+        ));
     }
     let action = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
     if action == ACTION_ERROR {
@@ -131,7 +142,13 @@ fn parse_compact_peers(data: &[u8]) -> Vec<TrackerPeer> {
     let mut peers = Vec::new();
     let mut i = 0;
     while i + 6 <= data.len() {
-        let ip = format!("{}.{}.{}.{}", data[i], data[i + 1], data[i + 2], data[i + 3]);
+        let ip = format!(
+            "{}.{}.{}.{}",
+            data[i],
+            data[i + 1],
+            data[i + 2],
+            data[i + 3]
+        );
         let port = u16::from_be_bytes([data[i + 4], data[i + 5]]);
         peers.push(TrackerPeer {
             ip,
@@ -174,33 +191,14 @@ impl UdpTracker {
     }
 
     /// Announce to the tracker, returning the discovered peers.
-    pub async fn announce(
-        &self,
-        info_hash: &[u8; 20],
-        peer_id: &[u8; 20],
-        downloaded: u64,
-        left: u64,
-        uploaded: u64,
-        event: AnnounceEvent,
-        port: u16,
-    ) -> Result<Vec<TrackerPeer>> {
+    pub async fn announce(&self, params: &UdpAnnounceParams<'_>) -> Result<Vec<TrackerPeer>> {
         let socket = UdpSocket::bind("0.0.0.0:0")
             .await
             .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
         let connection_id = self.connect(&socket).await?;
 
         let transaction_id = rand_transaction_id();
-        let req = encode_announce(
-            connection_id,
-            transaction_id,
-            info_hash,
-            peer_id,
-            downloaded,
-            left,
-            uploaded,
-            event,
-            port,
-        );
+        let req = encode_announce(connection_id, transaction_id, params);
         socket
             .send_to(&req, self.addr)
             .await
@@ -245,7 +243,7 @@ fn rand_transaction_id() -> u32 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .subsec_nanos();
-    nanos ^ (std::process::id() as u32)
+    nanos ^ std::process::id()
 }
 
 #[cfg(test)]
@@ -276,17 +274,16 @@ mod tests {
     fn test_announce_roundtrip() {
         let info_hash = [0xAA; 20];
         let peer_id = [0xBB; 20];
-        let req = encode_announce(
-            0x1234,
-            0x5678,
-            &info_hash,
-            &peer_id,
-            0,
-            100,
-            0,
-            AnnounceEvent::Started,
-            6881,
-        );
+        let params = UdpAnnounceParams {
+            info_hash: &info_hash,
+            peer_id: &peer_id,
+            downloaded: 0,
+            left: 100,
+            uploaded: 0,
+            event: AnnounceEvent::Started,
+            port: 6881,
+        };
+        let req = encode_announce(0x1234, 0x5678, &params);
         assert_eq!(req.len(), 98);
     }
 
@@ -298,7 +295,7 @@ mod tests {
         data.extend_from_slice(&1800u32.to_be_bytes()); // interval
         data.extend_from_slice(&5u32.to_be_bytes()); // leechers
         data.extend_from_slice(&10u32.to_be_bytes()); // seeders
-        // One compact peer: 192.168.1.1:6881
+                                                      // One compact peer: 192.168.1.1:6881
         data.extend_from_slice(&[192, 168, 1, 1, 0x1A, 0xE1]);
         let (interval, leechers, seeders, peers) = decode_announce_response(&data).unwrap();
         assert_eq!(interval, 1800);
@@ -365,10 +362,18 @@ mod tests {
         });
 
         let tracker = UdpTracker::new(server_addr);
-        let peers = tracker
-            .announce(&[0xAA; 20], &[0xBB; 20], 0, 100, 0, AnnounceEvent::Started, 6881)
-            .await
-            .unwrap();
+        let info_hash = [0xAA; 20];
+        let peer_id = [0xBB; 20];
+        let params = UdpAnnounceParams {
+            info_hash: &info_hash,
+            peer_id: &peer_id,
+            downloaded: 0,
+            left: 100,
+            uploaded: 0,
+            event: AnnounceEvent::Started,
+            port: 6881,
+        };
+        let peers = tracker.announce(&params).await.unwrap();
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].ip, "10.0.0.1");
         assert_eq!(peers[0].port, 6881);
