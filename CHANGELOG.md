@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **Core Infrastructure**
 - New Rust-based monorepo (`vtorrent-ng`) replacing the legacy C++/Qt codebase
 - Cargo workspace with 17 crates: `vtorrent-core`, `vtorrent-wallet`, `vtorrent-migrate`, `vtorrent-snapshot`, `vtorrent-node`, `vtorrent-p2p`, `vtorrent-torrent`, `vtorrent-rpc`, `vtorrent-tauri`, `vtorrent-overlay`, `vtorrent-spv`, `vtorrent-store`, `vtorrent-daemon`, `vtorrent-script`, `vtorrent-onion`, `vtorrent-cli`, `vtorrent-btc`
-- Full test suite: 418 tests, 0 failures
+- Full test suite: 427 tests, 0 failures
 
 **Overlay / NAT Traversal**
 - `vtorrent-overlay`: Kademlia-style overlay network for NAT traversal and peer relay
@@ -142,11 +142,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Ban manager wired into the P2P message handler — invalid transactions/blocks, malformed payloads, and unknown commands score peers and trigger bans
 - Per-peer message rate limiting (500 msgs / 10 s) bans flooders, protecting the node event loop
 - Mempool conflict detection switched from an O(n²) scan to a spent-input index, making it O(1) per input
+- Inbound connection cap (`MAX_INBOUND`) and a 10s handshake timeout prevent unauthenticated sockets from being held open indefinitely
+- Relayed tx/block invs are no longer echoed back to the sender; `getblocks` responds to the requester only
 
 **Correctness**
 - 8-decimal denomination (`COIN = 100,000,000`) applied consistently across RPC, CLI, and UI
 - Torrent info hash computed from the raw info-dict bytes (BEP-3), not the re-serialized struct
 - Address decoding uses full-width base58 instead of `u128`, fixing addresses with large values
+- Wallet sighash aligned with chain script verification (`Transaction::sighash` shared between wallet and node)
+- PoS coinstake inputs are signed and the stake kernel is validated in the chain
+- Legacy claims no longer double-count the snapshot supply; `validate_transaction` accepts no-input legacy claims
+- Bitcoin SPV client: correct message length parsing, per-input sighash, full version handshake, and BIP-65 refund sequences
+- Torrent metainfo rejects zero piece length
+
+**Atomic Swap / DEX**
+- Bitcoin SPV UTXO scan (BIP37 merkleblock) wired into the daemon sync loop
+- Real BTC-side HTLC settlement: funding, claim, and refund transactions are built, signed, and broadcast
+- Swap lifecycle UI (match / fund BTC / claim VTR / claim BTC / refund) in the Trade page
+- `--btc-seed` / `VTORRENT_BTC_SEED` initializes the BTC SPV wallet in the daemon
 
 **CI & Tooling**
 - CI jobs install GTK/WebKit system libraries so the workspace (including `vtorrent-tauri`) compiles
@@ -159,6 +172,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CVE mitigations**: The legacy codebase was based on Bitcoin 0.8.x with ~10 years of unpatched vulnerabilities. The new codebase starts from a clean Rust foundation with no inherited CVEs.
 - **Passphrase handling**: Passphrases are never stored in memory longer than needed; Argon2id derives the encryption key and the passphrase is zeroed immediately after.
 - **Key isolation**: Private keys are handled exclusively in the Rust backend. The JavaScript frontend never receives key material.
+- **RPC hardening**: CORS restricted to local origins; the hot wallet key is cleared when the unlock expires; legacy wallet import requires a real passphrase (no hardcoded fallback).
+- **Parser hardening**: bounded allocations and length checks across bencode, GCS, bloom filter, snapshot, and BDB parsers; KDF iteration cap; unsupported derivation methods rejected instead of silently downgraded.
+- **Key redaction**: `WalletKeyEntry` `Debug` output redacts the WIF private key.
 
 ---
 
