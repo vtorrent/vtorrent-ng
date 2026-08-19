@@ -288,7 +288,11 @@ pub async fn get_balance(State(state): State<Arc<AppState>>) -> RpcResult<Json<B
 
     // Sum only the hot wallet's UTXOs, not the entire network UTXO set.
     let confirmed: u64 = match state.wallet_change_address.read().await.clone() {
-        Some(addr) => chain.get_utxos_for_address(&addr).iter().map(|u| u.value).sum(),
+        Some(addr) => chain
+            .get_utxos_for_address(&addr)
+            .iter()
+            .map(|u| u.value)
+            .sum(),
         None => 0,
     };
 
@@ -628,7 +632,13 @@ pub async fn get_staking_status(
     // Sum only the staking address's UTXOs, not the entire network UTXO set.
     let total_staking: u64 = staking_address
         .as_ref()
-        .map(|addr| chain.get_utxos_for_address(addr).iter().map(|u| u.value).sum())
+        .map(|addr| {
+            chain
+                .get_utxos_for_address(addr)
+                .iter()
+                .map(|u| u.value)
+                .sum()
+        })
         .unwrap_or(0);
 
     let expected_per_day = if enabled {
