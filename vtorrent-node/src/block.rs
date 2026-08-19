@@ -71,6 +71,35 @@ impl Transaction {
         hash
     }
 
+    /// Compute the SIGHASH_ALL signature hash for a single input.
+    ///
+    /// This is the canonical message that both the wallet (when signing) and
+    /// the chain (when verifying via the script engine) must use. It is
+    /// `SHA256d(bincode(tx with all scriptSigs cleared except the input's,
+    /// which is set to `subscript`) + SIGHASH_ALL(1u32 LE))`.
+    ///
+    /// Keeping this in `vtorrent-node` (which the wallet depends on) ensures
+    /// the signer and verifier can never drift apart.
+    pub fn sighash(&self, input_index: usize, subscript: &[u8]) -> [u8; 32] {
+        let mut tx_copy = self.clone();
+        for (i, inp) in tx_copy.inputs.iter_mut().enumerate() {
+            if i == input_index {
+                inp.script_sig = subscript.to_vec();
+            } else {
+                inp.script_sig = Vec::new();
+            }
+        }
+
+        let mut data = bincode::serialize(&tx_copy).unwrap_or_default();
+        data.extend_from_slice(&1u32.to_le_bytes()); // SIGHASH_ALL
+
+        let h1 = Sha256::digest(&data);
+        let h2 = Sha256::digest(h1);
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&h2);
+        hash
+    }
+
     /// Check if this is a coinbase transaction.
     pub fn is_coinbase(&self) -> bool {
         self.tx_type == TxType::Coinbase

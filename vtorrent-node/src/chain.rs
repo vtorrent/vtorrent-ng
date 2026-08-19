@@ -623,8 +623,6 @@ impl Chain {
         // For coinstake: the staked UTXO that satisfies the kernel check.
         let mut stake_input: Option<Utxo> = None;
         if !tx.is_coinbase() {
-            // Build the sighash for script verification (SHA256d of serialised tx)
-            let tx_hash = tx.txid();
             for (input_index, input) in tx.inputs.iter().enumerate() {
                 let key = (input.prev_txid, input.prev_vout);
                 if let Some(utxo) = self.utxo_set.remove(&key) {
@@ -636,6 +634,9 @@ impl Chain {
                     // Skip for legacy-claim inputs (they use ECDSA message sig,
                     // not script-sig, verified separately in validate_legacy_claim).
                     if !tx.is_legacy_claim() {
+                        // The signature is over the per-input SIGHASH_ALL hash,
+                        // which must match what the wallet signed over.
+                        let tx_hash = tx.sighash(input_index, &utxo.script_pubkey);
                         let env = ScriptEnv {
                             tx_hash,
                             block_height: height,

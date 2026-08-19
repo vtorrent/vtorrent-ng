@@ -146,33 +146,10 @@ fn double_sha256_checksum(data: &[u8]) -> [u8; 4] {
 
 /// Compute the sighash for a P2PKH input.
 ///
-/// sighash = SHA256d(serialized_tx_with_subscript + SIGHASH_ALL(4LE))
-/// where `subscript` is the previous output's scriptPubKey with the input's
-/// scriptSig replaced by the subscript.
+/// Delegates to `Transaction::sighash` in `vtorrent-node` so the signer and the
+/// chain's verifier use the identical message.
 fn compute_sighash(tx: &Transaction, input_index: usize, subscript: &[u8]) -> Result<[u8; 32]> {
-    // Build a copy of the transaction with all scriptSigs cleared except
-    // the one at input_index, which is set to the subscript.
-    let mut tx_copy = tx.clone();
-    for (i, inp) in tx_copy.inputs.iter_mut().enumerate() {
-        if i == input_index {
-            inp.script_sig = subscript.to_vec();
-        } else {
-            inp.script_sig = Vec::new();
-        }
-    }
-
-    // Serialize the modified transaction.
-    let mut data = bincode::serialize(&tx_copy)
-        .map_err(|e| WalletError::BuildError(format!("Sighash serialization failed: {}", e)))?;
-    // Append SIGHASH_ALL as 4-byte little-endian.
-    data.extend_from_slice(&1u32.to_le_bytes());
-
-    // Double-SHA256.
-    let h1 = Sha256::digest(&data);
-    let h2 = Sha256::digest(h1);
-    let mut hash = [0u8; 32];
-    hash.copy_from_slice(&h2);
-    Ok(hash)
+    Ok(tx.sighash(input_index, subscript))
 }
 
 /// Build a DER-encoded ECDSA signature + SIGHASH_ALL byte.
@@ -662,5 +639,36 @@ mod tests {
             tx2.txid(),
             "Same inputs/outputs should produce same txid"
         );
+    }
+
+    #[test]
+    fn test_signed_tx_verifies_against_chain_sighash() {
+        use vtorrent_script::{Engine, Script, ScriptEnv};
+
+        let (wif, sender_addr) = random_wif();
+        let (_, recipient_addr) = random_wif();
+        let script = p2pkh_script_pubkey(&sender_addr).unwrap();
+        let utxos = vec![make_utxo(1, 0, 10_000_000, script.clone())];
+
+        let tx = TxBuilder::new()
+            .recipient(&recipient_addr, 5_000_000)
+            .sign_with_wif(&wif)
+            .build(&utxos)
+            .unwrap();
+
+        // The chain verifies each input over tx.sighash(i, subscript); the
+        // wallet must have signed over the identical message.
+        let input = &tx.inputs[0];
+        let tx_hash = tx.sighash(0, &script);
+        let env = ScriptEnv {
+            tx_hash,
+            block_height: 1,
+            block_time: 1_700_000_000,
+            tx_lock_time: tx.lock_time,
+        };
+        let mut engine = Engine::new(env);
+        let script_sig = Script::from_bytes(input.script_sig.clone()).unwrap();
+        let script_pubkey = Script::from_bytes(script).unwrap();
+        engine.execute(&script_sig, &script_pubkey).unwrap();
     }
 }
