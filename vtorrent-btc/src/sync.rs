@@ -53,6 +53,15 @@ pub async fn broadcast_tx_to(
     let tx: bitcoin::Transaction = bitcoin::consensus::encode::deserialize(raw)
         .map_err(|e| BtcError::Bitcoin(e.to_string()))?;
     let txid = tx.compute_txid().to_byte_array();
+    tracing::debug!(
+        "BTC broadcast: tx {} ({} bytes, {} in, {} out) to {:?}",
+        hex::encode(txid),
+        raw.len(),
+        tx.input.len(),
+        tx.output.len(),
+        addrs
+    );
+    tracing::debug!("BTC broadcast raw: {}", hex::encode(raw));
     let mut last_err = None;
     for addr in addrs {
         match crate::p2p::BtcPeer::connect_with_network(*addr, network).await {
@@ -64,6 +73,21 @@ pub async fn broadcast_tx_to(
         }
     }
     Err(last_err.unwrap_or_else(|| BtcError::P2p("no reachable peers".into())))
+}
+
+/// Extract the 20-byte hash160 from a P2PKH or P2WPKH address.
+fn address_hash160(addr: &bitcoin::Address) -> Option<[u8; 20]> {
+    if let Some(h) = addr.pubkey_hash() {
+        return Some(h.to_byte_array());
+    }
+    if let Some(wp) = addr.witness_program() {
+        if wp.version().to_num() == 0 && wp.program().len() == 20 {
+            let mut out = [0u8; 20];
+            out.copy_from_slice(wp.program().as_bytes());
+            return Some(out);
+        }
+    }
+    None
 }
 
 /// A Bitcoin SPV sync engine.
@@ -91,18 +115,27 @@ impl BtcSync {
 
     /// Build a BIP37 Bloom filter from the wallet's addresses.
     ///
-    /// BIP37 matches against the serialized scriptPubKey of each output, so
-    /// the filter must contain the actual script bytes (e.g. `OP_0 <20-byte
-    /// pubkey hash>` for P2WPKH), not the bech32 string.
+    /// Bitcoin Core matches a bloom filter against the *data elements* of each
+    /// output's scriptPubKey (e.g. the 20-byte witness program for P2WPKH),
+    /// not the full script. Insert the 20-byte hash160 so the filter actually
+    /// matches our addresses.
     pub fn build_filter(&self) -> BloomFilter {
         let mut filter = BloomFilter::new(self.addresses.len().max(1), 0.001, 0);
         for addr in &self.addresses {
             if let Ok(a) = bitcoin::Address::from_str(addr) {
                 if let Ok(a) = a.require_network(self.network) {
-                    filter.insert_script(&a.script_pubkey().to_bytes());
+                    if let Some(hash) = address_hash160(&a) {
+                        tracing::debug!("BTC filter: inserting hash160 {:02x?} for {}", hash, addr);
+                        filter.insert(&hash);
+                    }
                 }
             }
         }
+        tracing::debug!(
+            "BTC filter: {} bytes, {} hash funcs",
+            filter.size_bytes(),
+            filter.hash_funcs()
+        );
         filter
     }
 
@@ -240,6 +273,24 @@ impl BtcSync {
                 }
             }
 
+            // Bitcoin Core sends the matched `tx` messages *after* the last
+            // merkleblock of the batch. Drain them: the number of expected txs
+            // is the sum of matches across all merkleblocks in this batch.
+            let expected_txs: usize = pending
+                .iter()
+                .filter_map(|mb| self.extract_matched_txids(mb).ok())
+                .map(|m| m.len())
+                .sum();
+            while txs.len() < expected_txs {
+                match peer.recv().await? {
+                    NetworkMessage::Tx(tx) => txs.push(tx),
+                    NetworkMessage::Ping(nonce) => {
+                        peer.send(NetworkMessage::Pong(nonce)).await?;
+                    }
+                    _ => continue,
+                }
+            }
+
             // Process each merkleblock: verify the merkle root and record
             // matched outputs that pay one of our addresses.
             for mb in pending {
@@ -250,6 +301,13 @@ impl BtcSync {
                 };
                 let Some(height) = height else { continue };
                 let matched = self.extract_matched_txids(&mb)?;
+                tracing::debug!(
+                    "BTC scan: block {} matched {} txids ({} txs buffered, merkleblock has {} txn)",
+                    height,
+                    matched.len(),
+                    txs.len(),
+                    mb.txn.num_transactions()
+                );
                 for txid in matched {
                     if let Some(tx) = txs.iter().find(|t| t.compute_txid() == txid) {
                         self.record_matching_outputs(tx, height);

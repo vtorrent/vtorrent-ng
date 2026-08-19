@@ -35,7 +35,10 @@ impl BtcPeer {
 
         let version = VersionMessage {
             version: 70016,
-            services: ServiceFlags::WITNESS,
+            // Advertise NODE_BLOOM so peers honor our `filterload` messages
+            // (BIP-37). Without it, Bitcoin Core (protocol >= 70011) silently
+            // ignores bloom filters and returns empty merkleblocks.
+            services: ServiceFlags::WITNESS | ServiceFlags::BLOOM,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -105,8 +108,31 @@ impl BtcPeer {
     }
 
     /// Broadcast a transaction to the network.
+    ///
+    /// Bitcoin Core does not send an `inv` back to the peer that submitted a
+    /// transaction (it only relays to *other* peers), so we cannot wait for an
+    /// acknowledgement. Instead, wait briefly for a `reject` message: if none
+    /// arrives before the timeout, the transaction was accepted and relayed.
     pub async fn broadcast_tx(&mut self, tx: &bitcoin::Transaction) -> Result<()> {
-        self.send(NetworkMessage::Tx(tx.clone())).await
+        self.send(NetworkMessage::Tx(tx.clone())).await?;
+        loop {
+            match timeout(HANDSHAKE_TIMEOUT, self.recv()).await {
+                // No message (and no reject) before the timeout: accepted.
+                Err(_) => return Ok(()),
+                Ok(Err(e)) => return Err(e),
+                Ok(Ok(NetworkMessage::Reject(rej))) => {
+                    return Err(BtcError::P2p(format!(
+                        "transaction rejected: {}",
+                        rej.reason
+                    )));
+                }
+                Ok(Ok(NetworkMessage::Ping(nonce))) => {
+                    self.send(NetworkMessage::Pong(nonce)).await?;
+                }
+                // Ignore pre-tx chatter (sendcmpct, feefilter, etc.).
+                Ok(Ok(_)) => continue,
+            }
+        }
     }
 
     /// Read one raw network message.

@@ -59,7 +59,10 @@ impl BloomFilter {
         // Optimal filter size: m = -n * ln(p) / (ln(2)^2)
         let ln2_sq = std::f64::consts::LN_2 * std::f64::consts::LN_2;
         let size_bits = (-(n_elements as f64) * false_positive_rate.ln() / ln2_sq) as usize;
-        let size_bytes = size_bits.div_ceil(8).min(MAX_BLOOM_FILTER_SIZE);
+        // Enforce a minimum size so a filter for a single address is not so
+        // small that it becomes degenerate (a 2-byte filter with many hash
+        // functions saturates and matches nothing reliably).
+        let size_bytes = size_bits.div_ceil(8).clamp(1024, MAX_BLOOM_FILTER_SIZE);
 
         // Optimal hash count: k = m/n * ln(2)
         let hash_funcs =
