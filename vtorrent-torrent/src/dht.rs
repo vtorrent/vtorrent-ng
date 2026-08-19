@@ -176,6 +176,125 @@ fn parse_bencode_list_of_strings(data: &[u8]) -> Option<Vec<Vec<u8>>> {
     Some(result)
 }
 
+use tokio::net::UdpSocket;
+use tokio::time::{timeout, Duration};
+
+/// Public BitTorrent DHT bootstrap routers.
+pub const DHT_BOOTSTRAP_NODES: &[&str] = &[
+    "router.bittorrent.com:6881",
+    "dht.transmissionbt.com:6881",
+    "router.utorrent.com:6881",
+];
+
+/// A BitTorrent DHT client (BEP-5).
+pub struct DhtClient {
+    node_id: NodeId,
+    bootstrap: Vec<SocketAddr>,
+}
+
+impl DhtClient {
+    pub fn new(bootstrap: Vec<SocketAddr>) -> Self {
+        Self {
+            node_id: NodeId::random(),
+            bootstrap,
+        }
+    }
+
+    /// Create a client seeded with the public bootstrap routers.
+    pub fn with_default_bootstrap() -> Self {
+        let mut addrs = Vec::new();
+        for seed in DHT_BOOTSTRAP_NODES {
+            if let Ok(iter) = std::net::ToSocketAddrs::to_socket_addrs(seed) {
+                addrs.extend(iter);
+            }
+        }
+        Self::new(addrs)
+    }
+
+    /// Perform an iterative `get_peers` lookup for an info hash.
+    pub async fn get_peers(&self, info_hash: &[u8; 20]) -> Result<Vec<TrackerPeer>> {
+        let socket = UdpSocket::bind("0.0.0.0:0")
+            .await
+            .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
+
+        let mut peers = Vec::new();
+        let mut queried: std::collections::HashSet<SocketAddr> = std::collections::HashSet::new();
+        let mut pending: Vec<SocketAddr> = self.bootstrap.clone();
+
+        let mut tid: u16 = 0;
+        while !pending.is_empty() && peers.len() < 50 {
+            let node_addr = pending.remove(0);
+            if !queried.insert(node_addr) {
+                continue;
+            }
+            tid = tid.wrapping_add(1);
+            let tid_bytes = tid.to_be_bytes();
+            let query = build_get_peers_query(&self.node_id, info_hash, &tid_bytes);
+            if socket.send_to(&query, node_addr).await.is_err() {
+                continue;
+            }
+
+            let mut buf = [0u8; 65536];
+            match timeout(Duration::from_secs(3), socket.recv_from(&mut buf)).await {
+                Ok(Ok((len, _))) => {
+                    let (found_peers, nodes) = parse_dht_response(&buf[..len]);
+                    for p in found_peers {
+                        if !peers.contains(&p) {
+                            peers.push(p);
+                        }
+                    }
+                    for node in nodes {
+                        if !queried.contains(&node.addr) {
+                            pending.push(node.addr);
+                        }
+                    }
+                }
+                _ => continue,
+            }
+        }
+
+        Ok(peers)
+    }
+
+    /// Announce ourselves as a peer for an info hash.
+    pub async fn announce_peer(&self, info_hash: &[u8; 20], port: u16) -> Result<()> {
+        let socket = UdpSocket::bind("0.0.0.0:0")
+            .await
+            .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
+
+        for node_addr in &self.bootstrap {
+            let tid = [0x61u8, 0x61u8];
+            let query = build_get_peers_query(&self.node_id, info_hash, &tid);
+            if socket.send_to(&query, node_addr).await.is_err() {
+                continue;
+            }
+            let mut buf = [0u8; 65536];
+            if let Ok(Ok((len, _))) =
+                timeout(Duration::from_secs(3), socket.recv_from(&mut buf)).await
+            {
+                // Extract the token from the response (if present) and announce.
+                if let Some(token) = extract_token(&buf[..len]) {
+                    let tid2 = [0x62u8, 0x62u8];
+                    let announce =
+                        build_announce_peer_query(&self.node_id, info_hash, port, &token, &tid2);
+                    let _ = socket.send_to(&announce, node_addr).await;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Extract the `token` field from a DHT response.
+fn extract_token(data: &[u8]) -> Option<Vec<u8>> {
+    if let Some(pos) = find_bytes(data, b"5:token") {
+        let after = &data[pos + 7..];
+        parse_bencode_string(after)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,5 +355,33 @@ mod tests {
         assert!(peers.is_empty());
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].addr.port(), 6882);
+    }
+
+    #[tokio::test]
+    async fn test_dht_client_get_peers() {
+        use tokio::net::UdpSocket;
+
+        // Mock DHT node that responds to get_peers with one peer.
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = server.local_addr().unwrap();
+
+        let server_task = tokio::spawn(async move {
+            let mut buf = [0u8; 2048];
+            let (n, client_addr) = server.recv_from(&mut buf).await.unwrap();
+            // Respond with a get_peers response containing one peer.
+            let mut resp = Vec::new();
+            resp.extend_from_slice(b"d6:valuesl6:");
+            resp.extend_from_slice(&[10, 0, 0, 1, 0x1A, 0xE1]);
+            resp.extend_from_slice(b"ee");
+            server.send_to(&resp, client_addr).await.unwrap();
+            let _ = n;
+        });
+
+        let client = DhtClient::new(vec![server_addr]);
+        let peers = client.get_peers(&[0xAA; 20]).await.unwrap();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].ip, "10.0.0.1");
+
+        server_task.await.unwrap();
     }
 }
