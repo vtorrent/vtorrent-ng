@@ -279,6 +279,14 @@ pub async fn run_engine(
         }
     }
 
+    // If no peers were found via trackers, fall back to DHT (BEP-5).
+    if peers.is_empty() {
+        let dht = crate::dht::DhtClient::with_default_bootstrap();
+        if let Ok(dht_peers) = dht.get_peers(&metainfo.info_hash).await {
+            peers = dht_peers;
+        }
+    }
+
     // Update the session's peer list.
     {
         let mut guard = sessions.write().await;
