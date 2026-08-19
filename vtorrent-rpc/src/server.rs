@@ -129,6 +129,8 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/debug/order/:id/preimage",
             get(debug_order_preimage),
         )
+        // Regtest debug: set the mock clock (regtest only)
+        .route("/api/v1/debug/mocktime", post(debug_mocktime))
         // SPV light client
         .route("/api/v1/spv/status", get(get_spv_status))
         // Peers

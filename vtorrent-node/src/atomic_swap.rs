@@ -279,13 +279,14 @@ impl Htlc {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as u32;
-
         if now < self.expiry {
             return Err(NodeError::AtomicSwap(format!(
                 "HTLC has not expired yet. Expires at {}, current time {}",
                 self.expiry, now
             )));
         }
+
+        let mut tx = self.build_refund_tx_unsigned(funding_txid, fee)?;
 
         // Build the scriptSig for refunding:
         // <sig> <pubkey> OP_FALSE (OP_0)
@@ -295,14 +296,27 @@ impl Htlc {
         script_sig.push(refund_pubkey.len() as u8);
         script_sig.extend_from_slice(refund_pubkey);
         script_sig.push(0x00); // OP_0 (false branch)
+        tx.inputs[0].script_sig = script_sig;
 
+        Ok(tx)
+    }
+
+    /// Build an unsigned refund transaction (empty scriptSig) for signing.
+    ///
+    /// The expiry check is performed by the caller (which may use a mock clock
+    /// in regtest), so this builder does not consult the wall clock.
+    pub fn build_refund_tx_unsigned(
+        &self,
+        funding_txid: [u8; 32],
+        fee: u64,
+    ) -> Result<Transaction> {
         Ok(Transaction {
             version: 1,
             tx_type: TxType::AtomicSwap,
             inputs: vec![TxInput {
                 prev_txid: funding_txid,
                 prev_vout: 0,
-                script_sig,
+                script_sig: Vec::new(),
                 sequence: u32::MAX - 1,
             }],
             outputs: vec![TxOutput {

@@ -104,6 +104,9 @@ pub struct AppState {
     pub rpc_api_key: Option<String>,
     /// Regtest mode: enables the faucet endpoint and relaxed staking.
     pub regtest: bool,
+    /// Regtest mock time (Unix timestamp). When set, time-dependent checks
+    /// (e.g. HTLC expiry) use this instead of the wall clock. `None` = real time.
+    pub mock_time: Arc<RwLock<Option<u64>>>,
 }
 
 impl AppState {
@@ -147,6 +150,7 @@ impl AppState {
             peer_list: Arc::new(RwLock::new(Vec::new())),
             rpc_api_key: None,
             regtest: false,
+            mock_time: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -191,6 +195,7 @@ impl AppState {
             peer_list: Arc::new(RwLock::new(Vec::new())),
             rpc_api_key: None,
             regtest: false,
+            mock_time: Arc::new(RwLock::new(None)),
         }
     }
 

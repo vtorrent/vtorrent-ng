@@ -17,6 +17,15 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
+/// Current time in seconds, honoring the regtest mock clock if set.
+async fn now_secs_mock(state: &AppState) -> u64 {
+    if let Some(t) = *state.mock_time.read().await {
+        t
+    } else {
+        now_secs()
+    }
+}
+
 /// Broadcast a raw BTC transaction to the configured network/peer.
 async fn broadcast_btc(state: &AppState, raw: &[u8]) -> RpcResult<[u8; 32]> {
     let network = *state.btc_network.read().await;
@@ -1715,7 +1724,8 @@ pub async fn swap_refund(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SwapRefundRequest>,
 ) -> RpcResult<Json<SwapActionResponse>> {
-    use vtorrent_node::atomic_swap::{SwapState, SwapStatus};
+    use vtorrent_node::atomic_swap::{Htlc, SwapState, SwapStatus};
+    use vtorrent_wallet::tx_builder::sign_input_over_subscript;
 
     let order = {
         let order_book = state.order_book.read().await;
@@ -1724,12 +1734,78 @@ pub async fn swap_refund(
             .cloned()
             .ok_or_else(|| RpcError::NotFound(format!("Order {} not found", req.order_id)))?
     };
-    let now = now_secs() as u32;
+    let now = now_secs_mock(&state).await as u32;
     if now < order.expiry {
         return Err(RpcError::BadRequest("Swap has not expired yet".into()));
     }
 
-    // If the BTC side was funded, build/sign/broadcast a real BTC refund.
+    // ── VTR-side refund (the maker reclaims their VTR) ──────────────────────
+    let vtr_refund_txid = {
+        let hash_lock = order.hash_lock;
+        let funding_txid = order.funding_txid;
+        let taker_address = order.taker_address.clone();
+        match (hash_lock, funding_txid, taker_address) {
+            (Some(hash_lock), Some(funding_txid), Some(taker_address)) => {
+                // The maker is the refund address; the taker is the recipient.
+                let htlc = Htlc::with_expiry(
+                    hash_lock,
+                    taker_address,
+                    order.maker_address.clone(),
+                    order.expiry,
+                    order.vtr_amount,
+                )
+                .map_err(|e| RpcError::BadRequest(format!("Unable to reconstruct HTLC: {}", e)))?;
+
+                const REFUND_FEE_SATOSHIS: u64 = 10_000;
+                let unsigned = htlc
+                    .build_refund_tx_unsigned(funding_txid, REFUND_FEE_SATOSHIS)
+                    .map_err(|e| {
+                        RpcError::BadRequest(format!("Unable to build VTR refund tx: {}", e))
+                    })?;
+
+                // The maker signs the refund (they are the refund address).
+                let maker_wif = state
+                    .wallet_wif
+                    .read()
+                    .await
+                    .clone()
+                    .ok_or_else(|| RpcError::BadRequest("Maker wallet not unlocked".into()))?;
+                let htlc_script = htlc.build_script();
+                let (sig, pubkey) =
+                    sign_input_over_subscript(&unsigned, 0, &htlc_script, &maker_wif).map_err(
+                        |e| RpcError::BadRequest(format!("Unable to sign VTR refund tx: {}", e)),
+                    )?;
+
+                // scriptSig: <sig> <pubkey> OP_0 (false branch).
+                let mut script_sig = Vec::new();
+                script_sig.push(sig.len() as u8);
+                script_sig.extend_from_slice(&sig);
+                script_sig.push(pubkey.len() as u8);
+                script_sig.extend_from_slice(&pubkey);
+                script_sig.push(0x00); // OP_0
+
+                let mut refund_tx = unsigned;
+                refund_tx.inputs[0].script_sig = script_sig;
+                let refund_txid = refund_tx.txid();
+
+                {
+                    let mut mempool = state.mempool.lock().await;
+                    mempool
+                        .add_transaction_with_fee(refund_tx.clone(), REFUND_FEE_SATOSHIS)
+                        .map_err(|e| {
+                            RpcError::BadRequest(format!("Mempool rejected VTR refund tx: {}", e))
+                        })?;
+                }
+                if let Some(sender) = &state.tx_submit {
+                    let _ = sender.try_send(refund_tx);
+                }
+                Some(refund_txid)
+            }
+            _ => None,
+        }
+    };
+
+    // ── BTC-side refund (the taker reclaims their BTC) ──────────────────────
     let btc_refund_txid = {
         let swaps = state.swaps.read().await;
         let swap = swaps.get(&req.order_id);
@@ -1749,7 +1825,7 @@ pub async fn swap_refund(
                 };
                 const REFUND_FEE_SATOSHIS: u64 = 1_000;
                 let unsigned = htlc
-                    .build_refund_tx(funding_txid, REFUND_FEE_SATOSHIS)
+                    .build_refund_tx_at(funding_txid, REFUND_FEE_SATOSHIS, now)
                     .map_err(|e| {
                         RpcError::BadRequest(format!("Unable to build BTC refund tx: {}", e))
                     })?;
@@ -1784,7 +1860,8 @@ pub async fn swap_refund(
 
     Ok(Json(SwapActionResponse {
         order_id: req.order_id,
-        txid: btc_refund_txid
+        txid: vtr_refund_txid
+            .or(btc_refund_txid)
             .map(hex::encode)
             .unwrap_or_else(|| hex::encode(order.order_id)),
         status: "Refunded".to_string(),
@@ -1870,4 +1947,33 @@ pub async fn debug_order_preimage(
         "order_id": order_id,
         "preimage": hex::encode(preimage),
     })))
+}
+
+/// POST /api/v1/debug/mocktime
+///
+/// Sets the regtest mock clock (regtest only). Time-dependent checks (e.g.
+/// HTLC expiry) use this instead of the wall clock, enabling refund-path
+/// testing without waiting for real time to pass. A `null` timestamp resets
+/// to the wall clock.
+pub async fn debug_mocktime(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<Value>,
+) -> RpcResult<Json<Value>> {
+    if !state.regtest {
+        return Err(RpcError::Forbidden(
+            "Mocktime is only available in regtest mode".into(),
+        ));
+    }
+    let ts = req.get("timestamp").cloned();
+    let new_time = match ts {
+        None | Some(Value::Null) => None,
+        Some(Value::Number(n)) => n.as_u64(),
+        _ => {
+            return Err(RpcError::BadRequest(
+                "timestamp must be a number or null".into(),
+            ))
+        }
+    };
+    *state.mock_time.write().await = new_time;
+    Ok(Json(json!({ "mock_time": new_time })))
 }

@@ -221,6 +221,17 @@ impl BtcHtlc {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as u32;
+        self.build_refund_tx_at(funding_txid, fee, now)
+    }
+
+    /// Build the refund transaction using an explicit "now" timestamp (for
+    /// regtest mock-time testing).
+    pub fn build_refund_tx_at(
+        &self,
+        funding_txid: [u8; 32],
+        fee: u64,
+        now: u32,
+    ) -> Result<Transaction> {
         if now < self.expiry {
             return Err(BtcError::Bitcoin("HTLC has not expired yet".into()));
         }

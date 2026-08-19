@@ -759,4 +759,65 @@ mod tests {
         let script_pubkey = Script::from_bytes(htlc_script).unwrap();
         engine.execute(&script_sig, &script_pubkey).unwrap();
     }
+
+    #[test]
+    fn test_htlc_refund_verifies_against_script_engine() {
+        use vtorrent_node::atomic_swap::Htlc;
+        use vtorrent_script::{Engine, Script, ScriptEnv};
+
+        let (maker_wif, maker_addr) = random_wif();
+        let (_, taker_addr) = random_wif();
+
+        let preimage = [42u8; 32];
+        let hash_lock = {
+            use sha2::Digest;
+            let mut h = Sha256::new();
+            h.update(preimage);
+            let d = h.finalize();
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&d);
+            out
+        };
+
+        // Use a short locktime so the refund is valid at the test's block time.
+        let htlc = Htlc::new(
+            hash_lock,
+            taker_addr.clone(),
+            maker_addr.clone(),
+            vtorrent_node::atomic_swap::MIN_HTLC_LOCKTIME,
+            100_000_000,
+        )
+        .unwrap();
+        let htlc_script = htlc.build_script();
+
+        // Build the unsigned refund and sign over the HTLC script.
+        let unsigned = htlc.build_refund_tx_unsigned([1u8; 32], 10_000).unwrap();
+        let (sig, pubkey) =
+            sign_input_over_subscript(&unsigned, 0, &htlc_script, &maker_wif).unwrap();
+
+        // Assemble the scriptSig: <sig> <pubkey> OP_0.
+        let mut script_sig = Vec::new();
+        script_sig.push(sig.len() as u8);
+        script_sig.extend_from_slice(&sig);
+        script_sig.push(pubkey.len() as u8);
+        script_sig.extend_from_slice(&pubkey);
+        script_sig.push(0x00);
+
+        let mut refund_tx = unsigned;
+        refund_tx.inputs[0].script_sig = script_sig;
+
+        // The chain verifies over tx.sighash(0, htlc_script) with a block time
+        // past the HTLC expiry (so OP_CLTV passes).
+        let tx_hash = refund_tx.sighash(0, &htlc_script);
+        let env = ScriptEnv {
+            tx_hash,
+            block_height: 1,
+            block_time: htlc.expiry + 1,
+            tx_lock_time: refund_tx.lock_time,
+        };
+        let mut engine = Engine::new(env);
+        let script_sig = Script::from_bytes(refund_tx.inputs[0].script_sig.clone()).unwrap();
+        let script_pubkey = Script::from_bytes(htlc_script).unwrap();
+        engine.execute(&script_sig, &script_pubkey).unwrap();
+    }
 }
