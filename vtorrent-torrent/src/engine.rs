@@ -234,25 +234,50 @@ pub async fn run_engine(
         }
     }
 
-    // Announce to the first tracker.
+    // Announce to trackers (HTTP and UDP), collecting peers.
     let tracker = HttpTracker::new();
     let peer_id = [0x2du8; 20]; // "-VT0001-" style peer id
     let mut peers = Vec::new();
     for url in &trackers {
-        let req = AnnounceRequest {
-            tracker_url: url.clone(),
-            info_hash: metainfo.info_hash,
-            peer_id,
-            port: 6881,
-            uploaded: 0,
-            downloaded: 0,
-            left: metainfo.total_size,
-            event: AnnounceEvent::Started,
-            num_want: 50,
-        };
-        if let Ok(resp) = tracker.announce(&req).await {
-            peers = resp.peers;
-            break;
+        if url.starts_with("udp://") {
+            // UDP tracker (BEP-15).
+            let host_port = url.trim_start_matches("udp://");
+            let addr: SocketAddr = match host_port.parse() {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            let udp = crate::udp::UdpTracker::new(addr);
+            if let Ok(p) = udp
+                .announce(
+                    &metainfo.info_hash,
+                    &peer_id,
+                    0,
+                    metainfo.total_size,
+                    0,
+                    AnnounceEvent::Started,
+                    6881,
+                )
+                .await
+            {
+                peers = p;
+                break;
+            }
+        } else {
+            let req = AnnounceRequest {
+                tracker_url: url.clone(),
+                info_hash: metainfo.info_hash,
+                peer_id,
+                port: 6881,
+                uploaded: 0,
+                downloaded: 0,
+                left: metainfo.total_size,
+                event: AnnounceEvent::Started,
+                num_want: 50,
+            };
+            if let Ok(resp) = tracker.announce(&req).await {
+                peers = resp.peers;
+                break;
+            }
         }
     }
 
