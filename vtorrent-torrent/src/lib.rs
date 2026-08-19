@@ -13,6 +13,7 @@ pub mod error;
 pub mod incentive;
 pub mod metadata;
 pub mod metainfo;
+pub mod payment;
 pub mod peer_wire;
 pub mod scheduler;
 pub mod session;
