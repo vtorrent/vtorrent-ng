@@ -184,6 +184,19 @@ fn parse_token(data: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
+/// Extract the 2-byte transaction id from a BEP-5 response.
+///
+/// Our queries always use 2-byte tids, so the response echoes `1:t2:<2 bytes>`.
+fn parse_tid(data: &[u8]) -> Option<[u8; 2]> {
+    if let Some(pos) = find_bytes(data, b"1:t2:") {
+        let after = &data[pos + 5..];
+        if after.len() >= 2 {
+            return Some([after[0], after[1]]);
+        }
+    }
+    None
+}
+
 /// Find a byte pattern in a slice, returning the position if found.
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
@@ -301,9 +314,14 @@ impl DhtBootstrap {
                 continue;
             }
 
-            // Read response(s)
+            // Read responses until we get one matching our transaction id, or
+            // the read times out. Foreign/stale responses are ignored so a slow
+            // or misbehaving node cannot stall the whole bootstrap.
             let mut buf = [0u8; 65536];
             while let Ok((len, _from)) = socket.recv_from(&mut buf) {
+                if parse_tid(&buf[..len]) != Some(tid_bytes) {
+                    continue;
+                }
                 let (peers, nodes) = parse_dht_response(&buf[..len]);
 
                 // Peers found — these are on DHT port; we need to check if they
@@ -323,11 +341,7 @@ impl DhtBootstrap {
                         pending_nodes.push(node.addr);
                     }
                 }
-
-                // Stop reading if we have enough peers
-                if discovered_peers.len() >= MAX_DHT_PEERS {
-                    break;
-                }
+                break;
             }
         }
 
@@ -356,15 +370,20 @@ impl DhtBootstrap {
 
         // Query each bootstrap node with get_peers to obtain a valid token and
         // the closest nodes, then announce to those nodes with the token.
+        let mut tid: u16 = 0;
         for seed in DHT_BOOTSTRAP_NODES {
-            if let Ok(mut addrs) = std::net::ToSocketAddrs::to_socket_addrs(seed) {
-                if let Some(addr) = addrs.next() {
-                    let tid = [0x61u8, 0x61u8]; // "aa"
-                    let query = build_get_peers_query(&self.node_id, &self.infohash, &tid);
+            if let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(seed) {
+                for addr in addrs {
+                    tid = tid.wrapping_add(1);
+                    let tid_bytes = tid.to_be_bytes();
+                    let query = build_get_peers_query(&self.node_id, &self.infohash, &tid_bytes);
                     let _ = socket.send_to(&query, addr);
 
                     let mut buf = [0u8; 65536];
                     if let Ok((len, _)) = socket.recv_from(&mut buf) {
+                        if parse_tid(&buf[..len]) != Some(tid_bytes) {
+                            continue;
+                        }
                         let token = parse_token(&buf[..len]).unwrap_or_default();
                         let (_, nodes) = parse_dht_response(&buf[..len]);
                         for node in nodes.iter().take(8) {
@@ -374,7 +393,7 @@ impl DhtBootstrap {
                                 &self.infohash,
                                 our_port,
                                 &token,
-                                &[0x62u8, 0x62u8],
+                                &tid_bytes,
                             );
                             let _ = socket.send_to(&announce, node.addr);
                         }
