@@ -351,7 +351,7 @@ impl Engine {
                                     bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
                                 let a =
                                     bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
-                                self.stack.push(int_to_bytes(a + b));
+                                self.stack.push(int_to_bytes(a.wrapping_add(b)));
                             }
                         }
                         0x94 => {
@@ -361,7 +361,7 @@ impl Engine {
                                     bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
                                 let a =
                                     bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
-                                self.stack.push(int_to_bytes(a - b));
+                                self.stack.push(int_to_bytes(a.wrapping_sub(b)));
                             }
                         }
                         0x91 => {
@@ -446,13 +446,23 @@ impl Engine {
     /// Execute OP_CHECKMULTISIG / OP_CHECKMULTISIGVERIFY.
     fn exec_checkmultisig(&mut self, verify: bool) -> Result<()> {
         // Stack: <OP_0> <sig1> ... <sigM> <M> <key1> ... <keyN> <N>
-        let n_keys = bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?) as usize;
+        let n_keys = bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+        // Bound the key count to the remaining stack depth to avoid an
+        // attacker-controlled multi-GB allocation.
+        if n_keys < 0 || n_keys as usize > self.stack.len() {
+            return Err(ScriptError::InvalidScriptNumber);
+        }
+        let n_keys = n_keys as usize;
         let mut keys = Vec::with_capacity(n_keys);
         for _ in 0..n_keys {
             keys.push(self.stack.pop().ok_or(ScriptError::EmptyStack)?);
         }
 
-        let n_sigs = bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?) as usize;
+        let n_sigs = bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+        if n_sigs < 0 || n_sigs as usize > self.stack.len() {
+            return Err(ScriptError::InvalidScriptNumber);
+        }
+        let n_sigs = n_sigs as usize;
         let mut sigs = Vec::with_capacity(n_sigs);
         for _ in 0..n_sigs {
             sigs.push(self.stack.pop().ok_or(ScriptError::EmptyStack)?);
@@ -523,13 +533,16 @@ fn bytes_to_int(bytes: &[u8]) -> i64 {
     if bytes.is_empty() {
         return 0;
     }
+    // Script numbers are limited to 8 bytes (i64). Longer inputs are truncated
+    // to their low 8 bytes to avoid shift overflow (which is UB in release).
+    let n = bytes.len().min(8);
     let mut result = 0i64;
-    for (i, &b) in bytes.iter().enumerate() {
+    for (i, &b) in bytes[..n].iter().enumerate() {
         result |= (b as i64) << (8 * i);
     }
-    // Handle sign bit
-    if bytes.last().map(|&b| b & 0x80 != 0).unwrap_or(false) {
-        let mask = !((1i64 << (8 * bytes.len() - 1)) - 1);
+    // Handle sign bit (of the truncated value).
+    if bytes[n - 1] & 0x80 != 0 {
+        let mask = !((1i64 << (8 * n - 1)) - 1);
         result |= mask;
     }
     result

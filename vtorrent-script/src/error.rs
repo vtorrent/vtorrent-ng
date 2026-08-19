@@ -35,6 +35,9 @@ pub enum ScriptError {
     #[error("Multisig: {0} signatures required but only {1} keys provided")]
     MultisigKeyCount(usize, usize),
 
+    #[error("Invalid script number")]
+    InvalidScriptNumber,
+
     #[error("HTLC: hash preimage does not match")]
     HtlcHashMismatch,
 
