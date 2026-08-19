@@ -166,6 +166,78 @@ impl Chain {
         self.total_supply
     }
 
+    /// Mint coins to an address by appending a coinbase block (regtest only).
+    ///
+    /// This is a development/testing primitive: it creates a PoW coinbase block
+    /// paying `amount` to `address` and appends it to the main chain. It must
+    /// never be reachable on mainnet — callers gate it behind a regtest flag.
+    pub fn mint_to_address(&mut self, address: &str, amount: u64) -> Result<[u8; 32]> {
+        use crate::block::{BlockHeader, TxInput, TxOutput, TxType};
+
+        if amount == 0 {
+            return Err(NodeError::InvalidTransaction(
+                "Mint amount must be non-zero".into(),
+            ));
+        }
+        let script = self.address_to_p2pkh_script(address);
+        if script.is_empty() {
+            return Err(NodeError::InvalidTransaction(format!(
+                "Invalid address: {}",
+                address
+            )));
+        }
+
+        let prev_hash = self
+            .best_hash()
+            .ok_or_else(|| NodeError::Chain("Cannot mint: chain has no tip".into()))?;
+        let height = self.best_height() + 1;
+        let prev_timestamp = self
+            .get_block_at_height(self.best_height())
+            .map(|b| b.header.timestamp)
+            .unwrap_or(0);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+        let timestamp = timestamp.max(prev_timestamp + 1);
+
+        let coinbase = Transaction {
+            version: 1,
+            tx_type: TxType::Coinbase,
+            inputs: vec![TxInput {
+                prev_txid: [0u8; 32],
+                prev_vout: 0xffffffff,
+                script_sig: vec![height as u8],
+                sequence: 0xffffffff,
+            }],
+            outputs: vec![TxOutput {
+                value: amount,
+                script_pubkey: script,
+            }],
+            lock_time: height,
+            claim_address: None,
+            claim_signature: None,
+        };
+        let txid = coinbase.txid();
+
+        let mut block = Block {
+            header: BlockHeader {
+                version: 1,
+                prev_block_hash: prev_hash,
+                merkle_root: [0u8; 32],
+                timestamp,
+                bits: crate::genesis::GENESIS_BITS,
+                nonce: height,
+                stake_modifier: 0,
+            },
+            transactions: vec![coinbase],
+        };
+        block.header.merkle_root = block.compute_merkle_root();
+
+        self.add_block(block)?;
+        Ok(txid)
+    }
+
     /// Get a block by hash.
     pub fn get_block(&self, hash: &[u8; 32]) -> Option<&Block> {
         self.blocks.get(hash)
@@ -1020,6 +1092,41 @@ mod tests {
         assert_eq!(script.len(), 25);
         assert_eq!(&script[..3], &[0x76, 0xa9, 0x14]);
         assert_eq!(&script[23..], &[0x88, 0xac]);
+    }
+
+    #[test]
+    fn test_mint_to_address() {
+        use secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+        let secp = Secp256k1::new();
+        let mut key_bytes = [0u8; 32];
+        key_bytes[31] = 9;
+        let secret = SecretKey::from_slice(&key_bytes).unwrap();
+        let pubkey = PublicKey::from_secret_key(&secp, &secret);
+        let addr = vtorrent_core::address::Address::from_pubkey(&pubkey, true, 70);
+        let address = addr.to_string();
+
+        let mut chain = Chain::new().expect("Chain init failed");
+        let genesis_height = chain.best_height();
+
+        let txid = chain
+            .mint_to_address(&address, 100 * crate::consensus::COIN)
+            .expect("mint should succeed");
+
+        assert_eq!(chain.best_height(), genesis_height + 1);
+        let utxos = chain.get_utxos_for_address(&address);
+        assert_eq!(utxos.len(), 1);
+        assert_eq!(utxos[0].value, 100 * crate::consensus::COIN);
+        assert_eq!(utxos[0].txid, txid);
+    }
+
+    #[test]
+    fn test_mint_to_address_rejects_invalid() {
+        let mut chain = Chain::new().expect("Chain init failed");
+        assert!(chain.mint_to_address("not-an-address", 1000).is_err());
+        assert!(chain
+            .mint_to_address("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT", 0)
+            .is_err());
     }
 
     /// Build a coinbase block paying to a specific P2PKH script.

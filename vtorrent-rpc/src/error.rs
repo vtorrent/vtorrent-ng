@@ -17,6 +17,9 @@ pub enum RpcError {
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
 
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 
@@ -33,6 +36,7 @@ impl IntoResponse for RpcError {
             RpcError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             RpcError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             RpcError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
+            RpcError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             RpcError::WalletLocked => (StatusCode::FORBIDDEN, "Wallet is locked".into()),
             RpcError::Internal(msg) | RpcError::NodeError(msg) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, msg.clone())

@@ -102,6 +102,14 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     testnet: bool,
 
+    /// Run in regtest mode (local development).
+    ///
+    /// Enables a faucet RPC endpoint that mints coins to arbitrary addresses,
+    /// so the full wallet/DEX/swap flow can be exercised locally without real
+    /// coins or a legacy claim.
+    #[arg(long, default_value_t = false)]
+    regtest: bool,
+
     /// Optional API key required for sensitive RPC endpoints.
     ///
     /// When set, wallet, staking, torrent, DEX, claim and broadcast endpoints
@@ -174,6 +182,7 @@ async fn main() -> anyhow::Result<()> {
         data_dir: data_dir.clone(),
         use_overlay: true,
         testnet: cli.testnet,
+        regtest: cli.regtest,
         transport,
     };
 
@@ -211,6 +220,7 @@ async fn main() -> anyhow::Result<()> {
     // Wire the tx broadcast channel so RPC wallet can push txs into the P2P loop.
     rpc_state.tx_submit = Some(tx_submit_sender);
     rpc_state.rpc_api_key = cli.rpc_api_key.clone();
+    rpc_state.regtest = cli.regtest;
     let rpc_addr = cli.rpc_addr.clone();
 
     // Set the torrent download directory under the data dir.

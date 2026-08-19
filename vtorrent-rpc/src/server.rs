@@ -122,6 +122,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/btc/address", get(get_btc_address))
         // Legacy claim
         .route("/api/v1/claim/check", post(check_claim))
+        // Regtest faucet (mints coins to an address; regtest only)
+        .route("/api/v1/faucet", post(faucet))
         // SPV light client
         .route("/api/v1/spv/status", get(get_spv_status))
         // Peers

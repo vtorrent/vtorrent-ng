@@ -88,6 +88,9 @@ pub struct NodeConfig {
     /// - PEX accepts private/RFC1918 addresses
     /// - Looser validation rules may apply in future
     pub testnet: bool,
+    /// When `true`, the node operates in regtest mode:
+    /// - A faucet RPC endpoint mints coins to arbitrary addresses
+    pub regtest: bool,
     /// Outbound routing policy for clearnet, Tor SOCKS5, and I2P SAM peers.
     pub transport: TransportConfig,
 }
@@ -105,6 +108,7 @@ impl Default for NodeConfig {
             data_dir: default_data_dir(),
             use_overlay: true,
             testnet: false,
+            regtest: false,
             transport: TransportConfig::default(),
         }
     }

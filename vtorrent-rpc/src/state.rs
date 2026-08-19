@@ -94,6 +94,8 @@ pub struct AppState {
     /// Optional RPC API key. When set, sensitive endpoints require the
     /// `X-API-Key` header to match (constant-time compared).
     pub rpc_api_key: Option<String>,
+    /// Regtest mode: enables the faucet endpoint and relaxed staking.
+    pub regtest: bool,
 }
 
 impl AppState {
@@ -133,6 +135,7 @@ impl AppState {
             tx_submit: None,
             peer_list: Arc::new(RwLock::new(Vec::new())),
             rpc_api_key: None,
+            regtest: false,
         }
     }
 
@@ -173,6 +176,7 @@ impl AppState {
             tx_submit: None,
             peer_list: Arc::new(RwLock::new(Vec::new())),
             rpc_api_key: None,
+            regtest: false,
         }
     }
 

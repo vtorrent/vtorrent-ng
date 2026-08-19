@@ -516,3 +516,23 @@ pub struct SwapActionResponse {
     pub txid: String,
     pub status: String,
 }
+
+// ─── Regtest Faucet ───────────────────────────────────────────────────────────
+
+/// Request body for `POST /api/v1/faucet` (regtest only).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FaucetRequest {
+    /// The vTorrent address to credit.
+    pub address: String,
+    /// Amount in satoshis (defaults to 100 VTR if omitted).
+    pub amount_satoshis: Option<u64>,
+}
+
+/// Response for `POST /api/v1/faucet`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FaucetResponse {
+    pub address: String,
+    pub amount_satoshis: u64,
+    pub txid: String,
+    pub block_height: u64,
+}

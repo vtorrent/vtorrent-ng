@@ -1695,3 +1695,46 @@ pub async fn swap_refund(
         status: "Refunded".to_string(),
     }))
 }
+
+// ─── Regtest Faucet ───────────────────────────────────────────────────────────
+
+/// POST /api/v1/faucet
+///
+/// Mints coins to an address (regtest only). This is a development primitive
+/// that lets a local node obtain spendable VTR without a legacy claim or a
+/// 6-hour stake age, so the wallet/DEX/swap flow can be exercised end-to-end.
+pub async fn faucet(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<FaucetRequest>,
+) -> RpcResult<Json<FaucetResponse>> {
+    if !state.regtest {
+        return Err(RpcError::Forbidden(
+            "Faucet is only available in regtest mode".into(),
+        ));
+    }
+    if req.address.trim().is_empty() {
+        return Err(RpcError::BadRequest("Address is required".into()));
+    }
+    let amount = req
+        .amount_satoshis
+        .unwrap_or(100 * vtorrent_node::consensus::COIN);
+    if amount == 0 {
+        return Err(RpcError::BadRequest("Amount must be non-zero".into()));
+    }
+
+    let (txid, height) = {
+        let mut chain = state.chain.lock().await;
+        let txid = chain
+            .mint_to_address(&req.address, amount)
+            .map_err(|e| RpcError::Internal(e.to_string()))?;
+        let height = chain.best_height();
+        (txid, height)
+    };
+
+    Ok(Json(FaucetResponse {
+        address: req.address,
+        amount_satoshis: amount,
+        txid: hex::encode(txid),
+        block_height: height as u64,
+    }))
+}

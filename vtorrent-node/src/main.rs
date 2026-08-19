@@ -124,6 +124,7 @@ async fn main() -> anyhow::Result<()> {
         data_dir: data_dir.clone(),
         use_overlay: true,
         testnet: cli.testnet,
+        regtest: false,
         transport,
     };
 
