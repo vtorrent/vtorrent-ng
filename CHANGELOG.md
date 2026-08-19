@@ -70,7 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Async TCP peer manager (Tokio-based)
 - Bitcoin-compatible message framing (command + payload)
 - Version handshake, `inv`/`getblocks`/`getdata` sync protocol
-- DNS seed bootstrap: `seed1.vtorrent.io`, `seed2.vtorrent.io`, `seed3.vtorrent.io`
+- DNS seed bootstrap: `seed1.vtorrent.io`, `seed2.vtorrent.io`, `seed3.vtorrent.io` (retired — see `bootstrap/peers.txt` for current bootstrap peers)
 
 **BitTorrent Integration**
 - Native BitTorrent client built into the wallet (`vtorrent-torrent` crate)

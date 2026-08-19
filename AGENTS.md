@@ -78,8 +78,9 @@ cd vtorrent-ui && pnpm lint
 - **Address format**: Base58Check prefix `75` (`V...`); WIF prefix `203` (`7...`).
 - **Genesis**: deterministic, embeds a legacy UTXO snapshot (59,375 addresses,
   11,589,746.63 VTR) for old-holder claims.
-- **DNS seeds**: `seed1.vtorrent.io`, `seed2.vtorrent.io`, `seed3.vtorrent.io`
-  (see `docs/dns-seeds.md`).
+- **DNS seeds**: none currently (the legacy `seed1/2/3.vtorrent.io` domains are
+  retired). Bootstrap peers are added via `bootstrap/peers.txt` (GitHub-hosted)
+  or `BOOTSTRAP_PEERS` once new seed nodes are deployed (see `docs/dns-seeds.md`).
 
 ## CI
 

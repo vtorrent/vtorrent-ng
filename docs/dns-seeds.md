@@ -1,5 +1,11 @@
 # vTorrent 2.0 — DNS Seed Infrastructure
 
+> **Status:** The legacy `seed1/2/3.vtorrent.io` domains are retired and no
+> longer resolve. This document describes how to deploy new seed nodes. Until
+> new seeds are live, bootstrap peers are added via `bootstrap/peers.txt`
+> (GitHub-hosted) or the `BOOTSTRAP_PEERS` constant in
+> `vtorrent-p2p/src/peer_manager.rs`.
+
 ## Overview
 
 DNS seeds are the bootstrap mechanism that allows new nodes to discover peers on the vTorrent 2.0 network without any hardcoded IP addresses. When a new node starts up, it queries the DNS seeds to get an initial list of active peers.

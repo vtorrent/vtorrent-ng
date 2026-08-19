@@ -36,11 +36,11 @@ pub const BOOTSTRAP_PEERS: &[&str] = &[
 ];
 
 /// Legacy DNS seeds kept for backward compatibility (optional, not required).
-pub const DNS_SEEDS: &[&str] = &[
-    "seed1.vtorrent.io",
-    "seed2.vtorrent.io",
-    "seed3.vtorrent.io",
-];
+///
+/// The original `seed1/2/3.vtorrent.io` domains are no longer valid. New seed
+/// nodes are added via `bootstrap/peers.txt` (GitHub-hosted) or `BOOTSTRAP_PEERS`
+/// once deployed. This list is intentionally empty until new seeds are live.
+pub const DNS_SEEDS: &[&str] = &[];
 
 /// Default mainnet P2P port.
 pub const DEFAULT_PORT: u16 = 22526;
