@@ -72,6 +72,20 @@ impl HeaderChain {
     pub fn get(&self, hash: &[u8; 32]) -> Option<&StoredHeader> {
         self.headers.get(hash)
     }
+
+    /// Return the block hashes at heights `>= start_height`, sorted ascending.
+    ///
+    /// Used to request `merkleblock`s for a UTXO scan from a checkpoint.
+    pub fn hashes_from(&self, start_height: u32) -> Vec<[u8; 32]> {
+        let mut entries: Vec<(&u32, &[u8; 32])> = self
+            .headers
+            .iter()
+            .filter(|(_, h)| h.height >= start_height)
+            .map(|(hash, h)| (&h.height, hash))
+            .collect();
+        entries.sort_by_key(|(height, _)| **height);
+        entries.into_iter().map(|(_, hash)| *hash).collect()
+    }
 }
 
 #[cfg(test)]
@@ -118,5 +132,28 @@ mod tests {
         let mut chain = HeaderChain::new();
         let orphan = make_header([0xffu8; 32], 1);
         assert!(chain.add_header(&serialize(&orphan), 1).is_err());
+    }
+
+    #[test]
+    fn test_hashes_from() {
+        let mut chain = HeaderChain::new();
+        let h0 = make_header([0u8; 32], 0);
+        let h0_hash: [u8; 32] = h0.block_hash().to_byte_array();
+        chain.add_header(&serialize(&h0), 0).unwrap();
+        let h1 = make_header(h0_hash, 1);
+        let h1_hash: [u8; 32] = h1.block_hash().to_byte_array();
+        chain.add_header(&serialize(&h1), 1).unwrap();
+        let h2 = make_header(h1_hash, 2);
+        let h2_hash: [u8; 32] = h2.block_hash().to_byte_array();
+        chain.add_header(&serialize(&h2), 2).unwrap();
+
+        let from_1 = chain.hashes_from(1);
+        assert_eq!(from_1, vec![h1_hash, h2_hash]);
+
+        let from_0 = chain.hashes_from(0);
+        assert_eq!(from_0, vec![h0_hash, h1_hash, h2_hash]);
+
+        let from_99 = chain.hashes_from(99);
+        assert!(from_99.is_empty());
     }
 }

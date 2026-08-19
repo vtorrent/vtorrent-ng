@@ -558,6 +558,17 @@ async fn main() -> anyhow::Result<()> {
                                         Ok(n) => tracing::info!("BTC sync: {} headers", n),
                                         Err(e) => tracing::warn!("BTC sync error: {}", e),
                                     }
+                                    // After header sync, scan for wallet UTXOs
+                                    // from the last checkpoint to the tip.
+                                    let start = w.last_scanned_height();
+                                    match w.scan_utxos(&mut peer, start).await {
+                                        Ok(n) => {
+                                            tracing::info!("BTC UTXO scan: {} blocks", n);
+                                            let tip = w.best_height();
+                                            w.set_last_scanned_height(tip);
+                                        }
+                                        Err(e) => tracing::warn!("BTC UTXO scan error: {}", e),
+                                    }
                                 }
                             }
                             Err(e) => tracing::warn!("BTC peer {} failed: {}", addr, e),

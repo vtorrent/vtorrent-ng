@@ -13,6 +13,8 @@ pub struct BtcWallet {
     utxos: Arc<Mutex<UtxoSet>>,
     next_index: u32,
     synced: bool,
+    /// Height up to which the UTXO scan has completed (incremental checkpoint).
+    last_scanned_height: u32,
 }
 
 impl BtcWallet {
@@ -24,6 +26,7 @@ impl BtcWallet {
             utxos: Arc::new(Mutex::new(UtxoSet::new())),
             next_index: 0,
             synced: false,
+            last_scanned_height: 0,
         }
     }
 
@@ -91,6 +94,32 @@ impl BtcWallet {
             self.synced = true;
         }
         Ok(added)
+    }
+
+    /// Scan blocks from `start_height` to the tip for outputs paying the
+    /// wallet's addresses, populating the UTXO set. Returns the number of
+    /// blocks scanned.
+    pub async fn scan_utxos(
+        &self,
+        peer: &mut crate::p2p::BtcPeer,
+        start_height: u32,
+    ) -> Result<usize> {
+        let sync = crate::sync::BtcSync::new(
+            self.headers.clone(),
+            self.utxos.clone(),
+            vec![self.current_address()?],
+        );
+        sync.scan_utxos(peer, start_height).await
+    }
+
+    /// The height up to which the UTXO scan has completed.
+    pub fn last_scanned_height(&self) -> u32 {
+        self.last_scanned_height
+    }
+
+    /// Advance the UTXO scan checkpoint.
+    pub fn set_last_scanned_height(&mut self, height: u32) {
+        self.last_scanned_height = height;
     }
 }
 

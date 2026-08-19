@@ -7,8 +7,9 @@ use crate::utxo::{Utxo, UtxoSet};
 use bitcoin::consensus::encode::serialize;
 use bitcoin::hashes::Hash;
 use bitcoin::p2p::message::NetworkMessage;
-use bitcoin::p2p::message_blockdata::GetHeadersMessage;
+use bitcoin::p2p::message_blockdata::{GetHeadersMessage, Inventory};
 use bitcoin::p2p::message_bloom::FilterLoad;
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -152,6 +153,90 @@ impl BtcSync {
             height,
         });
     }
+
+    /// Scan blocks from `start_height` to the current tip for outputs paying
+    /// the wallet's addresses, using BIP37 `merkleblock` messages.
+    ///
+    /// For each block hash, a `getdata` request for a filtered block
+    /// (`MSG_FILTERED_BLOCK`) is sent; the peer replies with a `merkleblock`
+    /// (and, for matched transactions, `tx` messages). Matched outputs are
+    /// recorded into the UTXO set. Returns the number of blocks scanned.
+    pub async fn scan_utxos(&self, peer: &mut BtcPeer, start_height: u32) -> Result<usize> {
+        let hashes: Vec<[u8; 32]> = self.headers.lock().unwrap().hashes_from(start_height);
+        if hashes.is_empty() {
+            return Ok(0);
+        }
+
+        // Request filtered blocks in batches to bound memory and stay within
+        // the peer's `getdata` limits.
+        const BATCH: usize = 64;
+        let mut scanned = 0usize;
+        for chunk in hashes.chunks(BATCH) {
+            let inv: Vec<Inventory> = chunk
+                .iter()
+                .map(|h| Inventory::Unknown {
+                    inv_type: 3, // MSG_FILTERED_BLOCK
+                    hash: *h,
+                })
+                .collect();
+            peer.send(NetworkMessage::GetData(inv)).await?;
+
+            // Collect the merkleblocks (and any tx messages) for this batch.
+            let mut pending: VecDeque<bitcoin::merkle_tree::MerkleBlock> = VecDeque::new();
+            let mut txs: Vec<bitcoin::Transaction> = Vec::new();
+            let mut received = 0usize;
+            while received < chunk.len() {
+                match peer.recv().await? {
+                    NetworkMessage::MerkleBlock(mb) => {
+                        pending.push_back(mb);
+                        received += 1;
+                    }
+                    NetworkMessage::Tx(tx) => txs.push(tx),
+                    NetworkMessage::NotFound(_) => received += 1,
+                    NetworkMessage::Inv(_) | NetworkMessage::Ping(_) | NetworkMessage::Pong(_) => {
+                        continue
+                    }
+                    _ => continue,
+                }
+            }
+
+            // Process each merkleblock: verify the merkle root and record
+            // matched outputs that pay one of our addresses.
+            for mb in pending {
+                let height = {
+                    let chain = self.headers.lock().unwrap();
+                    let hash: [u8; 32] = mb.header.block_hash().to_byte_array();
+                    chain.get(&hash).map(|h| h.height)
+                };
+                let Some(height) = height else { continue };
+                let matched = self.extract_matched_txids(&mb)?;
+                for txid in matched {
+                    if let Some(tx) = txs.iter().find(|t| t.compute_txid() == txid) {
+                        self.record_matching_outputs(tx, height);
+                    }
+                }
+                scanned += 1;
+            }
+        }
+        Ok(scanned)
+    }
+
+    /// Record every output of `tx` that pays one of the wallet's addresses.
+    fn record_matching_outputs(&self, tx: &bitcoin::Transaction, height: u32) {
+        let txid = tx.compute_txid().to_string();
+        for (vout, out) in tx.output.iter().enumerate() {
+            let script = out.script_pubkey.to_bytes();
+            for addr in &self.addresses {
+                if let Ok(a) = bitcoin::Address::from_str(addr) {
+                    if let Ok(a) = a.require_network(bitcoin::Network::Bitcoin) {
+                        if a.script_pubkey().to_bytes() == script {
+                            self.record_utxo(&txid, vout as u32, out.value.to_sat(), addr, height);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -207,5 +292,51 @@ mod tests {
             100,
         );
         assert_eq!(utxos.lock().unwrap().total(), 5000);
+    }
+
+    #[test]
+    fn test_record_matching_outputs() {
+        let addr = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh";
+        let utxos = Arc::new(Mutex::new(UtxoSet::new()));
+        let sync = BtcSync::new(
+            Arc::new(Mutex::new(HeaderChain::new())),
+            utxos.clone(),
+            vec![addr.to_string()],
+        );
+
+        // Build a tx with one output paying our address and one paying a
+        // different address.
+        let our_script = bitcoin::Address::from_str(addr)
+            .unwrap()
+            .require_network(bitcoin::Network::Bitcoin)
+            .unwrap()
+            .script_pubkey();
+        let other_addr = crate::keys::derive_address(&[9u8; 64], 0).unwrap();
+        let other_script = bitcoin::Address::from_str(&other_addr)
+            .unwrap()
+            .require_network(bitcoin::Network::Bitcoin)
+            .unwrap()
+            .script_pubkey();
+        let tx = bitcoin::Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![],
+            output: vec![
+                bitcoin::TxOut {
+                    value: bitcoin::Amount::from_sat(1234),
+                    script_pubkey: our_script,
+                },
+                bitcoin::TxOut {
+                    value: bitcoin::Amount::from_sat(9999),
+                    script_pubkey: other_script,
+                },
+            ],
+        };
+
+        sync.record_matching_outputs(&tx, 42);
+        let set = utxos.lock().unwrap();
+        assert_eq!(set.list().len(), 1);
+        assert_eq!(set.list()[0].value, 1234);
+        assert_eq!(set.list()[0].height, 42);
     }
 }
