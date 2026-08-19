@@ -128,7 +128,13 @@ fn parse_compact_peers(data: &[u8]) -> Vec<TrackerPeer> {
     let mut peers = Vec::new();
     let mut i = 0;
     while i + 6 <= data.len() {
-        let ip = format!("{}.{}.{}.{}", data[i], data[i + 1], data[i + 2], data[i + 3]);
+        let ip = format!(
+            "{}.{}.{}.{}",
+            data[i],
+            data[i + 1],
+            data[i + 2],
+            data[i + 3]
+        );
         let port = u16::from_be_bytes([data[i + 4], data[i + 5]]);
         peers.push(TrackerPeer {
             ip,
