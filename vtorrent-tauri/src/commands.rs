@@ -191,6 +191,14 @@ pub fn import_legacy_wallet(
         .decode(&wallet_dat_base64)
         .map_err(|e| TauriError::InvalidInput(format!("Invalid base64: {}", e)))?;
 
+    // The new wallet must be encrypted with a real passphrase, never a
+    // hardcoded fallback.
+    if new_wallet_passphrase.is_empty() {
+        return Err(TauriError::InvalidInput(
+            "A new wallet passphrase is required".into(),
+        ));
+    }
+
     // Extract keys from the legacy wallet.dat using the vtorrent-migrate crate
     let extraction =
         extract_wallet(&wallet_bytes, passphrase.as_deref()).map_err(TauriError::from)?;

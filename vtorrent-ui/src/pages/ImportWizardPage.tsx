@@ -16,6 +16,7 @@ export default function ImportWizardPage() {
   const [walletFile, setWalletFile] = useState<File | null>(null)
   const [walletBase64, setWalletBase64] = useState('')
   const [passphrase, setPassphrase] = useState('')
+  const [newPassphrase, setNewPassphrase] = useState('')
   const [error, setError] = useState('')
   const [result, setResult] = useState<ImportResult | null>(null)
 
@@ -49,7 +50,7 @@ export default function ImportWizardPage() {
     setStep('importing')
     setError('')
     try {
-      const importResult = await importLegacyWallet(walletBase64, passphrase || undefined)
+      const importResult = await importLegacyWallet(walletBase64, passphrase || undefined, newPassphrase)
       setResult(importResult)
       setStep('result')
     } catch (err) {
@@ -184,6 +185,20 @@ export default function ImportWizardPage() {
                 />
               </div>
 
+              <div>
+                <label className="label">New Wallet Passphrase</label>
+                <input
+                  type="password"
+                  className="input-field"
+                  placeholder="Choose a passphrase for the new wallet"
+                  value={newPassphrase}
+                  onChange={e => setNewPassphrase(e.target.value)}
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Your imported keys are re-encrypted with this passphrase. Use a strong, unique passphrase.
+                </p>
+              </div>
+
               {error && (
                 <div className="flex gap-2 bg-red-900/20 border border-red-800/40 rounded-lg p-3">
                   <AlertCircle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
@@ -200,7 +215,11 @@ export default function ImportWizardPage() {
                 <button onClick={() => setStep('upload')} className="btn-secondary flex-1">
                   Back
                 </button>
-                <button onClick={handleImport} className="btn-primary flex-1">
+                <button
+                  onClick={handleImport}
+                  disabled={!newPassphrase}
+                  className="btn-primary flex-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
                   Import Keys
                   <ArrowRight size={16} className="inline ml-2" />
                 </button>

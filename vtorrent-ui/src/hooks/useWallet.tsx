@@ -48,7 +48,7 @@ interface WalletContextType extends WalletState {
   unlock: (passphrase: string, otpCode?: string) => Promise<void>
   lock: () => void
   createWallet: (passphrase: string) => Promise<void>
-  importLegacyWallet: (walletDatBase64: string, passphrase?: string) => Promise<ImportResult>
+  importLegacyWallet: (walletDatBase64: string, legacyPassphrase: string | undefined, newPassphrase: string) => Promise<ImportResult>
   enable2FA: () => Promise<{ uri: string; secret: string }>
   disable2FA: (otpCode: string) => Promise<void>
   generateAddress: (label?: string) => Promise<string>
@@ -245,12 +245,13 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   const importLegacyWallet = useCallback(async (
     walletDatBase64: string,
-    passphrase?: string
+    legacyPassphrase?: string,
+    newPassphrase?: string
   ): Promise<ImportResult> => {
     const result = await invoke<TauriImportResult>('import_legacy_wallet', {
       walletDatBase64,
-      passphrase: passphrase ?? null,
-      newWalletPassphrase: passphrase ?? 'vtorrent-imported',
+      passphrase: legacyPassphrase ?? null,
+      newWalletPassphrase: newPassphrase ?? legacyPassphrase ?? '',
       newWalletPath: getWalletPath(),
     })
 
