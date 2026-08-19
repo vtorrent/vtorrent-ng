@@ -170,9 +170,11 @@ impl BtcSync {
     }
 
     /// Run one sync pass against a single peer.
+    ///
+    /// Header sync does not send a `filterload`: modern Bitcoin Core nodes
+    /// disable BIP-37 bloom filters by default and disconnect peers that send
+    /// one. The filter is only used by the UTXO scan.
     pub async fn sync_once(&self, peer: &mut BtcPeer) -> Result<usize> {
-        peer.send(NetworkMessage::FilterLoad(self.build_filterload()))
-            .await?;
         peer.send(NetworkMessage::GetHeaders(self.build_getheaders()))
             .await?;
 
