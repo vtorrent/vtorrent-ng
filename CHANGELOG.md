@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **Core Infrastructure**
 - New Rust-based monorepo (`vtorrent-ng`) replacing the legacy C++/Qt codebase
 - Cargo workspace with 17 crates: `vtorrent-core`, `vtorrent-wallet`, `vtorrent-migrate`, `vtorrent-snapshot`, `vtorrent-node`, `vtorrent-p2p`, `vtorrent-torrent`, `vtorrent-rpc`, `vtorrent-tauri`, `vtorrent-overlay`, `vtorrent-spv`, `vtorrent-store`, `vtorrent-daemon`, `vtorrent-script`, `vtorrent-onion`, `vtorrent-cli`, `vtorrent-btc`
-- Full test suite: 395 tests, 0 failures
+- Full test suite: 418 tests, 0 failures
 
 **Overlay / NAT Traversal**
 - `vtorrent-overlay`: Kademlia-style overlay network for NAT traversal and peer relay
@@ -76,9 +76,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Native BitTorrent client built into the wallet (`vtorrent-torrent` crate)
 - `.torrent` file parsing (BEP-3 metainfo format), including piece-hash extraction
 - Magnet link support, including BEP-9 `ut_metadata` / BEP-10 extension-protocol metadata fetch from peers
-- HTTP tracker announce (BEP-3)
-- Peer wire protocol (BEP-3) with a download/upload engine: tracker announce, peer connect, handshake, piece request, SHA1 verification, disk write, and seeding
+- HTTP tracker announce (BEP-3) and UDP tracker announce (BEP-15)
+- Trackerless peer discovery via the Kademlia DHT (BEP-5): bootstrap, iterative `get_peers`, and `announce_peer`
+- Peer wire protocol (BEP-3) with a full download/upload engine: tracker/DHT announce, peer connect, handshake, rarest-first multi-peer piece scheduling, 16 KiB block pipelining, endgame mode, SHA1 verification, disk write, resume support, and seeding
 - **VTR incentive system**: earn VTR for seeding, pay VTR for priority download slots, with a periodic settlement loop
+- `ut_vtr` BEP-10 extension exchanges VTR addresses between peers; settlement emits payment events that build and broadcast real VTR transactions
 - Configurable seeding rate: VTR per GB uploaded
 - Configurable download priority: VTR per GB downloaded
 
