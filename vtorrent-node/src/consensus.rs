@@ -35,6 +35,10 @@ pub const MIN_STAKE_AMOUNT: u64 = COIN;
 /// Maximum supply (20 million VTR).
 pub const MAX_SUPPLY: u64 = 20_000_000 * COIN;
 
+/// Maximum value of any single transaction output (the total supply).
+/// Any output above this is rejected as an obvious inflation attempt.
+pub const MAX_MONEY: u64 = MAX_SUPPLY;
+
 /// Block time target (60 seconds).
 pub const TARGET_BLOCK_TIME: u64 = 60;
 
@@ -179,12 +183,18 @@ pub fn validate_transaction(tx: &Transaction) -> Result<()> {
         ));
     }
 
-    // Check for zero-value outputs
+    // Check for zero-value outputs and enforce the per-output money cap
     for output in &tx.outputs {
         if output.value == 0 {
             return Err(NodeError::InvalidTransaction(
                 "Output value cannot be zero".into(),
             ));
+        }
+        if output.value > MAX_MONEY {
+            return Err(NodeError::InvalidTransaction(format!(
+                "Output value {} exceeds MAX_MONEY {}",
+                output.value, MAX_MONEY
+            )));
         }
     }
 

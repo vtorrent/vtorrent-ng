@@ -86,9 +86,9 @@ impl Transaction {
         self.tx_type == TxType::LegacyClaim
     }
 
-    /// Get the total output value.
+    /// Get the total output value, saturating on overflow.
     pub fn total_output(&self) -> u64 {
-        self.outputs.iter().map(|o| o.value).sum()
+        self.outputs.iter().fold(0u64, |acc, o| acc.saturating_add(o.value))
     }
 
     /// Compute the fee paid by this transaction.
