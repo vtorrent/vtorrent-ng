@@ -124,6 +124,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/claim/check", post(check_claim))
         // Regtest faucet (mints coins to an address; regtest only)
         .route("/api/v1/faucet", post(faucet))
+        // Regtest debug: reveal an order's preimage (regtest only)
+        .route(
+            "/api/v1/debug/order/:id/preimage",
+            get(debug_order_preimage),
+        )
         // SPV light client
         .route("/api/v1/spv/status", get(get_spv_status))
         // Peers

@@ -1844,3 +1844,30 @@ pub async fn faucet(
         block_height: height as u64,
     }))
 }
+
+/// GET /api/v1/debug/order/:id/preimage
+///
+/// Returns the secret preimage for an order (regtest only). In a real swap the
+/// taker learns the preimage when the maker claims BTC on-chain; this endpoint
+/// exists purely to exercise the VTR claim leg in local regtest testing.
+pub async fn debug_order_preimage(
+    State(state): State<Arc<AppState>>,
+    Path(order_id): Path<String>,
+) -> RpcResult<Json<Value>> {
+    if !state.regtest {
+        return Err(RpcError::Forbidden(
+            "Preimage debug endpoint is only available in regtest mode".into(),
+        ));
+    }
+    let order_book = state.order_book.read().await;
+    let order = order_book
+        .get_order(&order_id)
+        .ok_or_else(|| RpcError::NotFound(format!("Order {} not found", order_id)))?;
+    let preimage = order
+        .preimage
+        .ok_or_else(|| RpcError::BadRequest("Order has no preimage".into()))?;
+    Ok(Json(json!({
+        "order_id": order_id,
+        "preimage": hex::encode(preimage),
+    })))
+}
