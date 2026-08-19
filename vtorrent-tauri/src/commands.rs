@@ -1179,6 +1179,7 @@ pub async fn btc_claim(
         refund_address: String::new(),
         expiry: btc_expiry,
         amount: btc_amount,
+        network: bitcoin::Network::Bitcoin,
     };
     const CLAIM_FEE_SATOSHIS: u64 = 1_000;
     let unsigned = htlc
@@ -1262,6 +1263,7 @@ pub async fn swap_refund(
                     refund_address,
                     expiry: s.btc_expiry,
                     amount: s.btc_amount,
+                    network: bitcoin::Network::Bitcoin,
                 };
                 const REFUND_FEE_SATOSHIS: u64 = 1_000;
                 let unsigned = htlc

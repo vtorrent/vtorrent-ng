@@ -17,6 +17,21 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
+/// Broadcast a raw BTC transaction to the configured network/peer.
+async fn broadcast_btc(state: &AppState, raw: &[u8]) -> RpcResult<[u8; 32]> {
+    let network = *state.btc_network.read().await;
+    let peer = *state.btc_peer.read().await;
+    if let Some(addr) = peer {
+        vtorrent_btc::sync::broadcast_tx_to(raw, network, &[addr])
+            .await
+            .map_err(|e| RpcError::Internal(format!("BTC broadcast failed: {}", e)))
+    } else {
+        vtorrent_btc::sync::broadcast_tx(raw)
+            .await
+            .map_err(|e| RpcError::Internal(format!("BTC broadcast failed: {}", e)))
+    }
+}
+
 fn parse_hash32(value: &str, field: &str) -> RpcResult<[u8; 32]> {
     let bytes =
         hex::decode(value).map_err(|_| RpcError::BadRequest(format!("Invalid {} hex", field)))?;
@@ -1393,12 +1408,19 @@ pub async fn btc_fund(
 
     // Build the BTC HTLC: the maker is the recipient (claims with preimage),
     // the taker is the refund address.
-    let htlc = vtorrent_btc::htlc::BtcHtlc::new(
+    let btc_network = {
+        let btc = state.btc_wallet.read().await;
+        btc.as_ref()
+            .map(|w| w.network())
+            .unwrap_or(bitcoin::Network::Bitcoin)
+    };
+    let htlc = vtorrent_btc::htlc::BtcHtlc::new_with_network(
         hash_lock,
         maker_btc_address.clone(),
         req.btc_refund_address.clone(),
         vtorrent_btc::htlc::DEFAULT_HTLC_LOCKTIME,
         btc_amount,
+        btc_network,
     )
     .map_err(|e| RpcError::BadRequest(format!("Unable to construct BTC HTLC: {}", e)))?;
 
@@ -1454,9 +1476,7 @@ pub async fn btc_fund(
     };
 
     // Broadcast to the Bitcoin network.
-    vtorrent_btc::sync::broadcast_tx(&raw)
-        .await
-        .map_err(|e| RpcError::Internal(format!("BTC broadcast failed: {}", e)))?;
+    broadcast_btc(&state, &raw).await?;
 
     // Record the swap state with the real funding txid.
     let mut swaps = state.swaps.write().await;
@@ -1557,6 +1577,7 @@ pub async fn btc_claim(
     };
 
     // Reconstruct the HTLC and build/sign/broadcast the claim.
+    let btc_network = *state.btc_network.read().await;
     let htlc = vtorrent_btc::htlc::BtcHtlc {
         hash_lock: {
             use sha2::{Digest, Sha256};
@@ -1571,6 +1592,7 @@ pub async fn btc_claim(
         refund_address: String::new(),
         expiry: btc_expiry,
         amount: btc_amount,
+        network: btc_network,
     };
     const CLAIM_FEE_SATOSHIS: u64 = 1_000;
     let unsigned = htlc
@@ -1594,9 +1616,7 @@ pub async fn btc_claim(
         use bitcoin::hashes::Hash;
         signed.compute_txid().to_byte_array()
     };
-    vtorrent_btc::sync::broadcast_tx(&raw)
-        .await
-        .map_err(|e| RpcError::Internal(format!("BTC broadcast failed: {}", e)))?;
+    broadcast_btc(&state, &raw).await?;
 
     {
         let mut swaps = state.swaps.write().await;
@@ -1649,6 +1669,7 @@ pub async fn swap_refund(
                     refund_address,
                     expiry: s.btc_expiry,
                     amount: s.btc_amount,
+                    network: *state.btc_network.read().await,
                 };
                 const REFUND_FEE_SATOSHIS: u64 = 1_000;
                 let unsigned = htlc
@@ -1672,9 +1693,7 @@ pub async fn swap_refund(
                     use bitcoin::hashes::Hash;
                     signed.compute_txid().to_byte_array()
                 };
-                vtorrent_btc::sync::broadcast_tx(&raw)
-                    .await
-                    .map_err(|e| RpcError::Internal(format!("BTC broadcast failed: {}", e)))?;
+                broadcast_btc(&state, &raw).await?;
                 Some(txid)
             }
             _ => None,

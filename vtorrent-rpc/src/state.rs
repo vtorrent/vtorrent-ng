@@ -54,6 +54,11 @@ pub struct AppState {
     pub spv_chain: Arc<RwLock<SpvChain>>,
     /// Bitcoin SPV wallet (optional — created when a seed is available).
     pub btc_wallet: Arc<RwLock<Option<BtcWallet>>>,
+    /// Bitcoin network the wallet operates on (mainnet or regtest).
+    pub btc_network: Arc<RwLock<bitcoin::Network>>,
+    /// Optional explicit Bitcoin peer address (regtest). When set, BTC sync
+    /// and broadcast use this peer instead of DNS seeds.
+    pub btc_peer: Arc<RwLock<Option<std::net::SocketAddr>>>,
     /// Node start time (Unix timestamp).
     pub start_time: u64,
     /// Number of connected P2P peers.
@@ -122,6 +127,8 @@ impl AppState {
             torrent_cancels: Arc::new(RwLock::new(std::collections::HashMap::new())),
             spv_chain: Arc::new(RwLock::new(SpvChain::new())),
             btc_wallet: Arc::new(RwLock::new(None)),
+            btc_network: Arc::new(RwLock::new(bitcoin::Network::Bitcoin)),
+            btc_peer: Arc::new(RwLock::new(None)),
             start_time: now,
             peer_count: Arc::new(RwLock::new(0)),
             syncing: Arc::new(RwLock::new(false)),
@@ -164,6 +171,8 @@ impl AppState {
             torrent_cancels: Arc::new(RwLock::new(std::collections::HashMap::new())),
             spv_chain: Arc::new(RwLock::new(SpvChain::new())),
             btc_wallet: Arc::new(RwLock::new(None)),
+            btc_network: Arc::new(RwLock::new(bitcoin::Network::Bitcoin)),
+            btc_peer: Arc::new(RwLock::new(None)),
             start_time: now,
             peer_count: Arc::new(RwLock::new(0)),
             syncing: Arc::new(RwLock::new(false)),

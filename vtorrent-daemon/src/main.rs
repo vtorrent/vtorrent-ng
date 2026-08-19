@@ -125,6 +125,17 @@ struct Cli {
     /// it the BTC wallet stays uninitialized and swap settlement is disabled.
     #[arg(long, env = "VTORRENT_BTC_SEED")]
     btc_seed: Option<String>,
+
+    /// Run the Bitcoin SPV wallet in regtest mode (local development).
+    ///
+    /// Uses regtest network magic and addresses (bcrt1...), and connects to
+    /// the peer given by --btc-peer instead of mainnet DNS seeds.
+    #[arg(long, default_value_t = false)]
+    btc_regtest: bool,
+
+    /// Explicit Bitcoin peer address for regtest (e.g. 127.0.0.1:18444).
+    #[arg(long)]
+    btc_peer: Option<String>,
 }
 
 // ─── Entry Point ──────────────────────────────────────────────────────────────
@@ -236,8 +247,24 @@ async fn main() -> anyhow::Result<()> {
         let seed: [u8; 64] = seed_bytes
             .try_into()
             .map_err(|_| anyhow::anyhow!("--btc-seed must be exactly 64 bytes (128 hex chars)"))?;
-        *rpc_state.btc_wallet.write().await = Some(vtorrent_btc::wallet::BtcWallet::new(seed));
-        tracing::info!("Bitcoin SPV wallet initialized from --btc-seed");
+        let network = if cli.btc_regtest {
+            bitcoin::Network::Regtest
+        } else {
+            bitcoin::Network::Bitcoin
+        };
+        *rpc_state.btc_wallet.write().await =
+            Some(vtorrent_btc::wallet::BtcWallet::with_network(seed, network));
+        *rpc_state.btc_network.write().await = network;
+        if let Some(peer) = &cli.btc_peer {
+            let addr: std::net::SocketAddr = peer
+                .parse()
+                .map_err(|e| anyhow::anyhow!("Invalid --btc-peer: {}", e))?;
+            *rpc_state.btc_peer.write().await = Some(addr);
+        }
+        tracing::info!(
+            "Bitcoin SPV wallet initialized from --btc-seed (network: {:?})",
+            network
+        );
     }
 
     // Share the DEX order book between the node (for gossip) and RPC (for the
@@ -572,6 +599,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Bitcoin SPV sync — resolves DNS seeds and syncs headers in a loop.
     let btc_wallet = Arc::clone(&rpc_state.btc_wallet);
+    let btc_network = Arc::clone(&rpc_state.btc_network);
+    let btc_peer = Arc::clone(&rpc_state.btc_peer);
     tokio::spawn(async move {
         tracing::info!("Bitcoin SPV sync task started");
         loop {
@@ -580,34 +609,43 @@ async fn main() -> anyhow::Result<()> {
                 tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
                 continue;
             }
-            match vtorrent_btc::sync::resolve_seeds().await {
-                Ok(addrs) => {
-                    for addr in addrs {
-                        match vtorrent_btc::p2p::BtcPeer::connect(addr).await {
-                            Ok(mut peer) => {
-                                if let Some(w) = btc_wallet.write().await.as_mut() {
-                                    match w.sync(&mut peer).await {
-                                        Ok(n) => tracing::info!("BTC sync: {} headers", n),
-                                        Err(e) => tracing::warn!("BTC sync error: {}", e),
-                                    }
-                                    // After header sync, scan for wallet UTXOs
-                                    // from the last checkpoint to the tip.
-                                    let start = w.last_scanned_height();
-                                    match w.scan_utxos(&mut peer, start).await {
-                                        Ok(n) => {
-                                            tracing::info!("BTC UTXO scan: {} blocks", n);
-                                            let tip = w.best_height();
-                                            w.set_last_scanned_height(tip);
-                                        }
-                                        Err(e) => tracing::warn!("BTC UTXO scan error: {}", e),
-                                    }
-                                }
+            let network = *btc_network.read().await;
+            // Resolve peers: explicit regtest peer, or mainnet DNS seeds.
+            let addrs: Vec<std::net::SocketAddr> = match *btc_peer.read().await {
+                Some(addr) => vec![addr],
+                None => match vtorrent_btc::sync::resolve_seeds().await {
+                    Ok(a) => a,
+                    Err(e) => {
+                        tracing::warn!("BTC seed resolution failed: {}", e);
+                        tokio::time::sleep(tokio::time::Duration::from_secs(300)).await;
+                        continue;
+                    }
+                },
+            };
+            for addr in addrs {
+                tracing::debug!("BTC sync: connecting to {} (network {:?})", addr, network);
+                match vtorrent_btc::p2p::BtcPeer::connect_with_network(addr, network).await {
+                    Ok(mut peer) => {
+                        if let Some(w) = btc_wallet.write().await.as_mut() {
+                            match w.sync(&mut peer).await {
+                                Ok(n) => tracing::info!("BTC sync: {} headers", n),
+                                Err(e) => tracing::warn!("BTC sync error: {}", e),
                             }
-                            Err(e) => tracing::warn!("BTC peer {} failed: {}", addr, e),
+                            // After header sync, scan for wallet UTXOs
+                            // from the last checkpoint to the tip.
+                            let start = w.last_scanned_height();
+                            match w.scan_utxos(&mut peer, start).await {
+                                Ok(n) => {
+                                    tracing::info!("BTC UTXO scan: {} blocks", n);
+                                    let tip = w.best_height();
+                                    w.set_last_scanned_height(tip);
+                                }
+                                Err(e) => tracing::warn!("BTC UTXO scan error: {}", e),
+                            }
                         }
                     }
+                    Err(e) => tracing::warn!("BTC peer {} failed: {}", addr, e),
                 }
-                Err(e) => tracing::warn!("BTC seed resolution failed: {}", e),
             }
             tokio::time::sleep(tokio::time::Duration::from_secs(300)).await;
         }

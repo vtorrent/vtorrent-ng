@@ -36,6 +36,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Encoding
 hex               = "0.4"
+bitcoin           = { workspace = true }
 
 [dev-dependencies]
 axum             = { version = "0.7", features = ["http1", "http2", "json", "tokio"] }

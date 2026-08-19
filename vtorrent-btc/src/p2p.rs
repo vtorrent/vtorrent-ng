@@ -17,11 +17,18 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// A single connection to a Bitcoin peer.
 pub struct BtcPeer {
     stream: TcpStream,
+    network: bitcoin::Network,
 }
 
 impl BtcPeer {
-    /// Connect to a peer and perform the version handshake.
+    /// Connect to a peer and perform the version handshake (mainnet).
     pub async fn connect(addr: SocketAddr) -> Result<Self> {
+        Self::connect_with_network(addr, bitcoin::Network::Bitcoin).await
+    }
+
+    /// Connect to a peer on a specific Bitcoin network and perform the
+    /// version handshake.
+    pub async fn connect_with_network(addr: SocketAddr, network: bitcoin::Network) -> Result<Self> {
         let mut stream = TcpStream::connect(addr)
             .await
             .map_err(|e| BtcError::P2p(e.to_string()))?;
@@ -41,10 +48,7 @@ impl BtcPeer {
             relay: true,
         };
 
-        let msg = RawNetworkMessage::new(
-            bitcoin::Network::Bitcoin.magic(),
-            NetworkMessage::Version(version),
-        );
+        let msg = RawNetworkMessage::new(network.magic(), NetworkMessage::Version(version));
         let payload = serialize(&msg);
         stream
             .write_all(&payload)
@@ -52,33 +56,38 @@ impl BtcPeer {
             .map_err(|e| BtcError::P2p(e.to_string()))?;
 
         // Complete the version handshake: read the peer's version, reply with
-        // verack, then wait for the peer's verack.
-        let mut peer = Self { stream };
-        match timeout(HANDSHAKE_TIMEOUT, peer.recv())
-            .await
-            .map_err(|_| BtcError::P2p("handshake timed out".into()))??
-        {
-            NetworkMessage::Version(_) => {}
-            NetworkMessage::Verack => {}
-            other => {
-                return Err(BtcError::P2p(format!(
-                    "expected version message, got {:?}",
-                    other
-                )))
+        // verack, then wait for the peer's verack. Bitcoin Core sends
+        // wtxidrelay/sendaddrv2/sendheaders/ping around the verack, so ignore
+        // those until we see the verack.
+        let mut peer = Self { stream, network };
+        let mut got_version = false;
+        let mut got_verack = false;
+        while !got_verack {
+            let msg = timeout(HANDSHAKE_TIMEOUT, peer.recv())
+                .await
+                .map_err(|_| BtcError::P2p("handshake timed out".into()))??;
+            tracing::debug!("BTC handshake: received {:?}", msg);
+            match msg {
+                NetworkMessage::Version(_) => {
+                    got_version = true;
+                    peer.send(NetworkMessage::Verack).await?;
+                }
+                NetworkMessage::Verack => got_verack = true,
+                NetworkMessage::WtxidRelay
+                | NetworkMessage::SendAddrV2
+                | NetworkMessage::SendHeaders
+                | NetworkMessage::Ping(_)
+                | NetworkMessage::FeeFilter(_) => continue,
+                other => {
+                    return Err(BtcError::P2p(format!(
+                        "unexpected message during handshake: {:?}",
+                        other
+                    )))
+                }
             }
         }
-        peer.send(NetworkMessage::Verack).await?;
-        match timeout(HANDSHAKE_TIMEOUT, peer.recv())
-            .await
-            .map_err(|_| BtcError::P2p("handshake timed out".into()))??
-        {
-            NetworkMessage::Verack => {}
-            other => {
-                return Err(BtcError::P2p(format!(
-                    "expected verack message, got {:?}",
-                    other
-                )))
-            }
+        if !got_version {
+            return Err(BtcError::P2p("peer did not send version".into()));
         }
 
         Ok(peer)
@@ -86,7 +95,7 @@ impl BtcPeer {
 
     /// Send a raw network message.
     pub async fn send(&mut self, msg: NetworkMessage) -> Result<()> {
-        let raw = RawNetworkMessage::new(bitcoin::Network::Bitcoin.magic(), msg);
+        let raw = RawNetworkMessage::new(self.network.magic(), msg);
         let payload = serialize(&raw);
         self.stream
             .write_all(&payload)

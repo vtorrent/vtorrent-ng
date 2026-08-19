@@ -28,13 +28,14 @@ pub struct BtcHtlc {
     pub refund_address: String,
     pub expiry: u32,
     pub amount: u64,
+    pub network: bitcoin::Network,
 }
 
 /// Extract the 20-byte hash160 from a P2PKH or P2WPKH address.
-fn address_hash160(address: &str) -> Result<[u8; 20]> {
+fn address_hash160(address: &str, network: bitcoin::Network) -> Result<[u8; 20]> {
     let addr = Address::from_str(address)
         .map_err(|e| BtcError::InvalidAddress(e.to_string()))?
-        .require_network(bitcoin::Network::Bitcoin)
+        .require_network(network)
         .map_err(|e| BtcError::InvalidAddress(e.to_string()))?;
     if let Some(h) = addr.pubkey_hash() {
         return Ok(h.to_byte_array());
@@ -59,6 +60,24 @@ impl BtcHtlc {
         locktime_seconds: u32,
         amount: u64,
     ) -> Result<Self> {
+        Self::new_with_network(
+            hash_lock,
+            recipient,
+            refund_address,
+            locktime_seconds,
+            amount,
+            bitcoin::Network::Bitcoin,
+        )
+    }
+
+    pub fn new_with_network(
+        hash_lock: [u8; 32],
+        recipient: String,
+        refund_address: String,
+        locktime_seconds: u32,
+        amount: u64,
+        network: bitcoin::Network,
+    ) -> Result<Self> {
         if amount == 0 {
             return Err(BtcError::Bitcoin("HTLC amount cannot be zero".into()));
         }
@@ -72,13 +91,14 @@ impl BtcHtlc {
             refund_address,
             expiry: now + locktime_seconds,
             amount,
+            network,
         })
     }
 
     /// Build the P2WSH witness script.
     pub fn build_script(&self) -> Result<ScriptBuf> {
-        let recipient_hash = address_hash160(&self.recipient)?;
-        let refund_hash = address_hash160(&self.refund_address)?;
+        let recipient_hash = address_hash160(&self.recipient, self.network)?;
+        let refund_hash = address_hash160(&self.refund_address, self.network)?;
 
         Ok(Builder::new()
             .push_opcode(OP_IF)
@@ -106,7 +126,7 @@ impl BtcHtlc {
     /// The P2WSH address for the funding output.
     pub fn address(&self) -> Result<String> {
         let script = self.build_script()?;
-        let addr = Address::p2wsh(&script, bitcoin::Network::Bitcoin);
+        let addr = Address::p2wsh(&script, self.network);
         Ok(addr.to_string())
     }
 
@@ -127,7 +147,7 @@ impl BtcHtlc {
         }
         let change = Address::from_str(change_address)
             .map_err(|e| BtcError::InvalidAddress(e.to_string()))?
-            .require_network(bitcoin::Network::Bitcoin)
+            .require_network(self.network)
             .map_err(|e| BtcError::InvalidAddress(e.to_string()))?;
 
         let mut outputs = vec![TxOut {
@@ -173,7 +193,7 @@ impl BtcHtlc {
         }
         let recipient = Address::from_str(&self.recipient)
             .map_err(|e| BtcError::InvalidAddress(e.to_string()))?
-            .require_network(bitcoin::Network::Bitcoin)
+            .require_network(self.network)
             .map_err(|e| BtcError::InvalidAddress(e.to_string()))?;
 
         Ok(Transaction {
@@ -206,7 +226,7 @@ impl BtcHtlc {
         }
         let refund = Address::from_str(&self.refund_address)
             .map_err(|e| BtcError::InvalidAddress(e.to_string()))?
-            .require_network(bitcoin::Network::Bitcoin)
+            .require_network(self.network)
             .map_err(|e| BtcError::InvalidAddress(e.to_string()))?;
 
         Ok(Transaction {
@@ -417,7 +437,7 @@ mod tests {
     #[test]
     fn test_sign_funding_tx_adds_witness() {
         let htlc = make_htlc();
-        let wif = crate::keys::derive_wif(&[7u8; 64], 0).unwrap();
+        let wif = crate::keys::derive_wif(&[7u8; 64], 0, bitcoin::Network::Bitcoin).unwrap();
         let unsigned = htlc
             .build_funding_tx([1u8; 32], 0, 200_000, 10_000, ADDR)
             .unwrap();
@@ -430,7 +450,7 @@ mod tests {
     fn test_sign_claim_tx_adds_witness() {
         let htlc = make_htlc();
         let preimage = [42u8; 32];
-        let wif = crate::keys::derive_wif(&[7u8; 64], 0).unwrap();
+        let wif = crate::keys::derive_wif(&[7u8; 64], 0, bitcoin::Network::Bitcoin).unwrap();
         let unsigned = htlc.build_claim_tx([1u8; 32], &preimage, 1000).unwrap();
         assert!(unsigned.input[0].witness.is_empty());
         let signed = htlc.sign_claim_tx(unsigned, &preimage, &wif).unwrap();

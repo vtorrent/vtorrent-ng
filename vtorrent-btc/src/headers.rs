@@ -37,7 +37,10 @@ impl HeaderChain {
 
         if height > 0 {
             let prev: [u8; 32] = header.prev_blockhash.to_byte_array();
-            if !self.headers.contains_key(&prev) {
+            // Bootstrap: the first header received from a trusted peer is
+            // block 1, whose parent is the network genesis block (which we do
+            // not store). Accept it as the chain root.
+            if !self.headers.contains_key(&prev) && !self.headers.is_empty() {
                 return Err(BtcError::Bitcoin(format!(
                     "unknown parent {}",
                     hex::encode(prev)
@@ -130,8 +133,14 @@ mod tests {
     #[test]
     fn test_unknown_parent_rejected() {
         let mut chain = HeaderChain::new();
-        let orphan = make_header([0xffu8; 32], 1);
-        assert!(chain.add_header(&serialize(&orphan), 1).is_err());
+        // The first header is accepted as the chain root (bootstrap), even
+        // though its parent (genesis) is not stored.
+        let h0 = make_header([0xffu8; 32], 1);
+        chain.add_header(&serialize(&h0), 1).unwrap();
+
+        // A subsequent header whose parent is unknown must be rejected.
+        let orphan = make_header([0xeeu8; 32], 2);
+        assert!(chain.add_header(&serialize(&orphan), 2).is_err());
     }
 
     #[test]

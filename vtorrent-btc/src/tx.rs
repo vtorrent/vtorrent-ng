@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn test_build_sign_serializes() {
-        let wif = crate::keys::derive_wif(&[7u8; 64], 0).unwrap();
+        let wif = crate::keys::derive_wif(&[7u8; 64], 0, bitcoin::Network::Bitcoin).unwrap();
         let inputs = vec![Utxo {
             txid: "11".repeat(32),
             vout: 0,
@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn test_insufficient_funds() {
-        let wif = crate::keys::derive_wif(&[7u8; 64], 0).unwrap();
+        let wif = crate::keys::derive_wif(&[7u8; 64], 0, bitcoin::Network::Bitcoin).unwrap();
         let inputs = vec![Utxo {
             txid: "11".repeat(32),
             vout: 0,

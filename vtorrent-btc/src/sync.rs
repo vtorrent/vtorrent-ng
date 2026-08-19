@@ -40,13 +40,22 @@ pub async fn resolve_seeds() -> Result<Vec<SocketAddr>> {
 /// Broadcast a raw transaction to the Bitcoin network via the first reachable
 /// seed peer. Returns the txid on success.
 pub async fn broadcast_tx(raw: &[u8]) -> Result<[u8; 32]> {
+    broadcast_tx_to(raw, bitcoin::Network::Bitcoin, &resolve_seeds().await?).await
+}
+
+/// Broadcast a raw transaction to a specific peer on a specific network.
+/// Returns the txid on success.
+pub async fn broadcast_tx_to(
+    raw: &[u8],
+    network: bitcoin::Network,
+    addrs: &[SocketAddr],
+) -> Result<[u8; 32]> {
     let tx: bitcoin::Transaction = bitcoin::consensus::encode::deserialize(raw)
         .map_err(|e| BtcError::Bitcoin(e.to_string()))?;
     let txid = tx.compute_txid().to_byte_array();
-    let addrs = resolve_seeds().await?;
     let mut last_err = None;
     for addr in addrs {
-        match crate::p2p::BtcPeer::connect(addr).await {
+        match crate::p2p::BtcPeer::connect_with_network(*addr, network).await {
             Ok(mut peer) => match peer.broadcast_tx(&tx).await {
                 Ok(()) => return Ok(txid),
                 Err(e) => last_err = Some(e),
@@ -62,6 +71,7 @@ pub struct BtcSync {
     headers: Arc<Mutex<HeaderChain>>,
     utxos: Arc<Mutex<UtxoSet>>,
     addresses: Vec<String>,
+    network: bitcoin::Network,
 }
 
 impl BtcSync {
@@ -69,11 +79,13 @@ impl BtcSync {
         headers: Arc<Mutex<HeaderChain>>,
         utxos: Arc<Mutex<UtxoSet>>,
         addresses: Vec<String>,
+        network: bitcoin::Network,
     ) -> Self {
         Self {
             headers,
             utxos,
             addresses,
+            network,
         }
     }
 
@@ -86,7 +98,7 @@ impl BtcSync {
         let mut filter = BloomFilter::new(self.addresses.len().max(1), 0.001, 0);
         for addr in &self.addresses {
             if let Ok(a) = bitcoin::Address::from_str(addr) {
-                if let Ok(a) = a.require_network(bitcoin::Network::Bitcoin) {
+                if let Ok(a) = a.require_network(self.network) {
                     filter.insert_script(&a.script_pubkey().to_bytes());
                 }
             }
@@ -100,7 +112,10 @@ impl BtcSync {
         let locator = if let Some(best) = headers.best_hash() {
             vec![bitcoin::BlockHash::from_byte_array(best)]
         } else {
-            vec![]
+            // No headers yet: send a single all-zeros locator so the peer
+            // responds from genesis (an empty locator is rejected by some
+            // implementations).
+            vec![bitcoin::BlockHash::all_zeros()]
         };
         GetHeadersMessage {
             version: 70016,
@@ -130,7 +145,9 @@ impl BtcSync {
 
         let mut added = 0usize;
         loop {
-            match peer.recv().await? {
+            let msg = peer.recv().await?;
+            tracing::debug!("BTC sync: received {:?}", msg);
+            match msg {
                 NetworkMessage::Headers(hdrs) => {
                     for h in hdrs {
                         let raw = serialize(&h);
@@ -142,6 +159,9 @@ impl BtcSync {
                         added += 1;
                     }
                     break;
+                }
+                NetworkMessage::Ping(nonce) => {
+                    peer.send(NetworkMessage::Pong(nonce)).await?;
                 }
                 NetworkMessage::Verack | NetworkMessage::Version(_) => continue,
                 _ => continue,
@@ -248,7 +268,7 @@ impl BtcSync {
             let script = out.script_pubkey.to_bytes();
             for addr in &self.addresses {
                 if let Ok(a) = bitcoin::Address::from_str(addr) {
-                    if let Ok(a) = a.require_network(bitcoin::Network::Bitcoin) {
+                    if let Ok(a) = a.require_network(self.network) {
                         if a.script_pubkey().to_bytes() == script {
                             self.record_utxo(&txid, vout as u32, out.value.to_sat(), addr, height);
                         }
@@ -269,6 +289,7 @@ mod tests {
             Arc::new(Mutex::new(HeaderChain::new())),
             Arc::new(Mutex::new(UtxoSet::new())),
             vec!["bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string()],
+            bitcoin::Network::Bitcoin,
         );
         let filter = sync.build_filter();
         assert!(!filter.is_empty());
@@ -280,9 +301,13 @@ mod tests {
             Arc::new(Mutex::new(HeaderChain::new())),
             Arc::new(Mutex::new(UtxoSet::new())),
             vec![],
+            bitcoin::Network::Bitcoin,
         );
         let msg = sync.build_getheaders();
-        assert!(msg.locator_hashes.is_empty());
+        // A fresh chain sends a single all-zeros locator (not empty) so peers
+        // respond from genesis.
+        assert_eq!(msg.locator_hashes.len(), 1);
+        assert_eq!(msg.locator_hashes[0], bitcoin::BlockHash::all_zeros());
     }
 
     #[test]
@@ -291,6 +316,7 @@ mod tests {
             Arc::new(Mutex::new(HeaderChain::new())),
             Arc::new(Mutex::new(UtxoSet::new())),
             vec!["bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string()],
+            bitcoin::Network::Bitcoin,
         );
         let fl = sync.build_filterload();
         assert!(!fl.filter.is_empty());
@@ -303,6 +329,7 @@ mod tests {
             Arc::new(Mutex::new(HeaderChain::new())),
             utxos.clone(),
             vec![],
+            bitcoin::Network::Bitcoin,
         );
         sync.record_utxo(
             "11".repeat(32).as_str(),
@@ -322,6 +349,7 @@ mod tests {
             Arc::new(Mutex::new(HeaderChain::new())),
             utxos.clone(),
             vec![addr.to_string()],
+            bitcoin::Network::Bitcoin,
         );
 
         // Build a tx with one output paying our address and one paying a
@@ -331,7 +359,8 @@ mod tests {
             .require_network(bitcoin::Network::Bitcoin)
             .unwrap()
             .script_pubkey();
-        let other_addr = crate::keys::derive_address(&[9u8; 64], 0).unwrap();
+        let other_addr =
+            crate::keys::derive_address(&[9u8; 64], 0, bitcoin::Network::Bitcoin).unwrap();
         let other_script = bitcoin::Address::from_str(&other_addr)
             .unwrap()
             .require_network(bitcoin::Network::Bitcoin)
