@@ -24,8 +24,8 @@ pub fn build_ut_vtr_handshake(ut_vtr_id: u8) -> Vec<u8> {
 
 /// Build a `ut_vtr` address message: `<ut_vtr_id><bencoded string>`.
 pub fn build_ut_vtr_address(ut_vtr_id: u8, address: &str) -> Vec<u8> {
-    let payload = serde_bencode::to_bytes(&Value::Bytes(address.as_bytes().to_vec()))
-        .unwrap_or_default();
+    let payload =
+        serde_bencode::to_bytes(&Value::Bytes(address.as_bytes().to_vec())).unwrap_or_default();
     let mut out = vec![ut_vtr_id];
     out.extend_from_slice(&payload);
     out

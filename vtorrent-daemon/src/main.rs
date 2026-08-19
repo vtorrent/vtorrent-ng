@@ -514,7 +514,7 @@ async fn main() -> anyhow::Result<()> {
                     if account.needs_settlement(now) {
                         let (_earned, owed) = account.settle(now);
                         if owed > 0 && !account.peer_address.is_empty() {
-                            let _ = payment_sender.emit(vtorrent_torrent::payment::PaymentDue {
+                            payment_sender.emit(vtorrent_torrent::payment::PaymentDue {
                                 peer_address: account.peer_address.clone(),
                                 amount_satoshis: owed,
                             });
