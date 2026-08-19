@@ -13,6 +13,34 @@ pub fn build_extension_handshake(ut_metadata_id: u8, metadata_size: u64) -> Vec<
     serde_bencode::to_bytes(&Value::Dict(dict)).unwrap_or_default()
 }
 
+/// Build an extension handshake advertising `ut_vtr` at the given id.
+pub fn build_ut_vtr_handshake(ut_vtr_id: u8) -> Vec<u8> {
+    let mut m = std::collections::HashMap::new();
+    m.insert(b"ut_vtr".to_vec(), Value::Int(ut_vtr_id as i64));
+    let mut dict = std::collections::HashMap::new();
+    dict.insert(b"m".to_vec(), Value::Dict(m));
+    serde_bencode::to_bytes(&Value::Dict(dict)).unwrap_or_default()
+}
+
+/// Build a `ut_vtr` address message: `<ut_vtr_id><bencoded string>`.
+pub fn build_ut_vtr_address(ut_vtr_id: u8, address: &str) -> Vec<u8> {
+    let payload = serde_bencode::to_bytes(&Value::Bytes(address.as_bytes().to_vec()))
+        .unwrap_or_default();
+    let mut out = vec![ut_vtr_id];
+    out.extend_from_slice(&payload);
+    out
+}
+
+/// Parse a `ut_vtr` address message payload (the bencoded string after the id).
+pub fn parse_ut_vtr_address(payload: &[u8]) -> Result<String> {
+    let value: Value = serde_bencode::from_bytes(payload)
+        .map_err(|e| TorrentError::PeerWireError(e.to_string()))?;
+    match value {
+        Value::Bytes(b) => Ok(String::from_utf8_lossy(&b).into_owned()),
+        _ => Err(TorrentError::PeerWireError("ut_vtr not a string".into())),
+    }
+}
+
 /// Build a `ut_metadata` request for a piece: `{ "msg_type": 0, "piece": i }`.
 pub fn build_request(ut_metadata_id: u8, piece: u32) -> Vec<u8> {
     let mut dict = std::collections::HashMap::new();
@@ -173,5 +201,29 @@ mod tests {
         pieces.insert(1u32, info_dict[20..].to_vec());
         let reassembled = reassemble_metadata(&pieces, info_dict.len() as u64).unwrap();
         assert_eq!(reassembled, info_dict);
+    }
+
+    #[test]
+    fn test_ut_vtr_handshake_advertises() {
+        let bytes = build_ut_vtr_handshake(2);
+        let value: Value = serde_bencode::from_bytes(&bytes).unwrap();
+        if let Value::Dict(d) = value {
+            if let Some(Value::Dict(m)) = d.get(b"m".as_slice()) {
+                assert_eq!(m.get(b"ut_vtr".as_slice()), Some(&Value::Int(2)));
+            } else {
+                panic!("missing m dict");
+            }
+        } else {
+            panic!("expected dict");
+        }
+    }
+
+    #[test]
+    fn test_ut_vtr_address_message_roundtrip() {
+        let addr = "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT";
+        let msg = build_ut_vtr_address(2, addr);
+        assert_eq!(msg[0], 2); // extension id prefix
+        let parsed = parse_ut_vtr_address(&msg[1..]).unwrap();
+        assert_eq!(parsed, addr);
     }
 }
