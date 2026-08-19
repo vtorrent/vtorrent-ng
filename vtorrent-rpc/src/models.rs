@@ -493,6 +493,8 @@ pub struct VtrClaimRequest {
     pub order_id: String,
     /// The secret preimage (revealed by the taker).
     pub preimage: String,
+    /// The taker's WIF private key, used to sign the claim transaction.
+    pub taker_wif: String,
 }
 
 /// Request body for `POST /api/v1/swap/btc-claim`.

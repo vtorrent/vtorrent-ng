@@ -393,6 +393,7 @@ export async function btcFund(req: {
 export async function vtrClaim(req: {
   orderId: string
   preimage: string
+  takerWif: string
 }): Promise<SwapActionResult> {
   if (isTauri()) {
     return tauriInvoke<SwapActionResult>('vtr_claim', req)
@@ -401,6 +402,7 @@ export async function vtrClaim(req: {
     await rpcPost<unknown>('/api/v1/swap/vtr-claim', {
       order_id: req.orderId,
       preimage: req.preimage,
+      taker_wif: req.takerWif,
     })
   ) as SwapActionResult
 }

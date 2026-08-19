@@ -1504,9 +1504,14 @@ pub async fn vtr_claim(
     State(state): State<Arc<AppState>>,
     Json(req): Json<VtrClaimRequest>,
 ) -> RpcResult<Json<SwapActionResponse>> {
-    use vtorrent_node::atomic_swap::{SwapState, SwapStatus};
+    use vtorrent_node::atomic_swap::{Htlc, SwapState, SwapStatus};
+    use vtorrent_wallet::tx_builder::sign_input_over_subscript;
 
     let preimage = parse_hash32(&req.preimage, "preimage")?;
+    if req.taker_wif.is_empty() {
+        return Err(RpcError::BadRequest("Taker WIF is required".into()));
+    }
+
     let order = {
         let order_book = state.order_book.read().await;
         order_book
@@ -1517,6 +1522,13 @@ pub async fn vtr_claim(
     let hash_lock = order
         .hash_lock
         .ok_or_else(|| RpcError::BadRequest("Order has no hash lock".into()))?;
+    let funding_txid = order
+        .funding_txid
+        .ok_or_else(|| RpcError::BadRequest("Order has no VTR funding txid".into()))?;
+    let taker_address = order
+        .taker_address
+        .clone()
+        .ok_or_else(|| RpcError::BadRequest("Order has no taker address".into()))?;
 
     // Verify the preimage matches the hash lock.
     use sha2::{Digest, Sha256};
@@ -1529,6 +1541,53 @@ pub async fn vtr_claim(
         ));
     }
 
+    // Reconstruct the HTLC: the taker is the recipient (claims with preimage),
+    // the maker is the refund address. Use the exact funded expiry so the
+    // script matches the funding output.
+    let htlc = Htlc::with_expiry(
+        hash_lock,
+        taker_address.clone(),
+        order.maker_address.clone(),
+        order.expiry,
+        order.vtr_amount,
+    )
+    .map_err(|e| RpcError::BadRequest(format!("Unable to reconstruct HTLC: {}", e)))?;
+
+    const CLAIM_FEE_SATOSHIS: u64 = 10_000;
+    let unsigned = htlc
+        .build_claim_tx_unsigned(funding_txid, &preimage, CLAIM_FEE_SATOSHIS)
+        .map_err(|e| RpcError::BadRequest(format!("Unable to build VTR claim tx: {}", e)))?;
+
+    // Sign over the HTLC script (the funding output's scriptPubKey).
+    let htlc_script = htlc.build_script();
+    let (sig, pubkey) = sign_input_over_subscript(&unsigned, 0, &htlc_script, &req.taker_wif)
+        .map_err(|e| RpcError::BadRequest(format!("Unable to sign VTR claim tx: {}", e)))?;
+
+    // Build the scriptSig: <sig> <pubkey> <preimage> OP_1.
+    let mut script_sig = Vec::new();
+    script_sig.push(sig.len() as u8);
+    script_sig.extend_from_slice(&sig);
+    script_sig.push(pubkey.len() as u8);
+    script_sig.extend_from_slice(&pubkey);
+    script_sig.push(0x20);
+    script_sig.extend_from_slice(&preimage);
+    script_sig.push(0x51); // OP_1
+
+    let mut claim_tx = unsigned;
+    claim_tx.inputs[0].script_sig = script_sig;
+    let claim_txid = claim_tx.txid();
+
+    // Admit to the mempool and broadcast.
+    {
+        let mut mempool = state.mempool.lock().await;
+        mempool
+            .add_transaction_with_fee(claim_tx.clone(), CLAIM_FEE_SATOSHIS)
+            .map_err(|e| RpcError::BadRequest(format!("Mempool rejected VTR claim tx: {}", e)))?;
+    }
+    if let Some(sender) = &state.tx_submit {
+        let _ = sender.try_send(claim_tx);
+    }
+
     let mut swaps = state.swaps.write().await;
     let swap = swaps
         .entry(req.order_id.clone())
@@ -1538,7 +1597,7 @@ pub async fn vtr_claim(
 
     Ok(Json(SwapActionResponse {
         order_id: req.order_id,
-        txid: hex::encode(hash_lock),
+        txid: hex::encode(claim_txid),
         status: "Claimed".to_string(),
     }))
 }

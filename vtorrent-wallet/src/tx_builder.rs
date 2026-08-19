@@ -388,6 +388,31 @@ pub fn sign_custom_transaction(
     Ok(tx)
 }
 
+/// Sign a single input of a pre-built transaction over an explicit subscript.
+///
+/// Returns the DER signature (with SIGHASH_ALL) and the compressed pubkey.
+/// Used for HTLC claim/refund, where the subscript is the HTLC script rather
+/// than a P2PKH scriptPubKey.
+pub fn sign_input_over_subscript(
+    tx: &Transaction,
+    input_index: usize,
+    subscript: &[u8],
+    wif: &str,
+) -> Result<(Vec<u8>, Vec<u8>)> {
+    let key = vtorrent_core::keys::PrivateKey::from_wif(wif)
+        .map_err(|e| WalletError::Signing(e.to_string()))?;
+    let secret_key =
+        SecretKey::from_slice(key.as_bytes()).map_err(|e| WalletError::Signing(e.to_string()))?;
+    let secp = Secp256k1::new();
+    let pubkey = secp256k1::PublicKey::from_secret_key(&secp, &secret_key)
+        .serialize()
+        .to_vec();
+
+    let sighash = compute_sighash(tx, input_index, subscript)?;
+    let signature = sign_input(key.as_bytes(), &sighash)?;
+    Ok((signature, pubkey))
+}
+
 impl Default for TxBuilder {
     fn default() -> Self {
         Self::new()
@@ -669,6 +694,69 @@ mod tests {
         let mut engine = Engine::new(env);
         let script_sig = Script::from_bytes(input.script_sig.clone()).unwrap();
         let script_pubkey = Script::from_bytes(script).unwrap();
+        engine.execute(&script_sig, &script_pubkey).unwrap();
+    }
+
+    #[test]
+    fn test_htlc_claim_verifies_against_script_engine() {
+        use vtorrent_node::atomic_swap::Htlc;
+        use vtorrent_script::{Engine, Script, ScriptEnv};
+
+        let (taker_wif, taker_addr) = random_wif();
+        let (_, maker_addr) = random_wif();
+
+        let preimage = [42u8; 32];
+        let hash_lock = {
+            use sha2::Digest;
+            let mut h = Sha256::new();
+            h.update(preimage);
+            let d = h.finalize();
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&d);
+            out
+        };
+
+        let htlc = Htlc::new(
+            hash_lock,
+            taker_addr.clone(),
+            maker_addr.clone(),
+            vtorrent_node::atomic_swap::DEFAULT_HTLC_LOCKTIME,
+            100_000_000,
+        )
+        .unwrap();
+        let htlc_script = htlc.build_script();
+
+        // Build the unsigned claim and sign over the HTLC script.
+        let unsigned = htlc
+            .build_claim_tx_unsigned([1u8; 32], &preimage, 10_000)
+            .unwrap();
+        let (sig, pubkey) =
+            sign_input_over_subscript(&unsigned, 0, &htlc_script, &taker_wif).unwrap();
+
+        // Assemble the scriptSig: <sig> <pubkey> <preimage> OP_1.
+        let mut script_sig = Vec::new();
+        script_sig.push(sig.len() as u8);
+        script_sig.extend_from_slice(&sig);
+        script_sig.push(pubkey.len() as u8);
+        script_sig.extend_from_slice(&pubkey);
+        script_sig.push(0x20);
+        script_sig.extend_from_slice(&preimage);
+        script_sig.push(0x51);
+
+        let mut claim_tx = unsigned;
+        claim_tx.inputs[0].script_sig = script_sig;
+
+        // The chain verifies over tx.sighash(0, htlc_script).
+        let tx_hash = claim_tx.sighash(0, &htlc_script);
+        let env = ScriptEnv {
+            tx_hash,
+            block_height: 1,
+            block_time: 1_700_000_000,
+            tx_lock_time: claim_tx.lock_time,
+        };
+        let mut engine = Engine::new(env);
+        let script_sig = Script::from_bytes(claim_tx.inputs[0].script_sig.clone()).unwrap();
+        let script_pubkey = Script::from_bytes(htlc_script).unwrap();
         engine.execute(&script_sig, &script_pubkey).unwrap();
     }
 }

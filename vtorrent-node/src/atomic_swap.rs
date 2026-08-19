@@ -90,6 +90,28 @@ impl Htlc {
         })
     }
 
+    /// Create an HTLC with an explicit expiry timestamp (for reconstructing a
+    /// previously-funded HTLC so its script matches exactly).
+    pub fn with_expiry(
+        hash_lock: [u8; 32],
+        recipient: String,
+        refund_address: String,
+        expiry: u32,
+        amount: u64,
+    ) -> Result<Self> {
+        if amount == 0 {
+            return Err(NodeError::AtomicSwap("HTLC amount cannot be zero".into()));
+        }
+        Ok(Self {
+            hash_lock,
+            recipient,
+            refund_address,
+            expiry,
+            amount,
+            funding_txid: None,
+        })
+    }
+
     /// Build the HTLC script (locking script / scriptPubKey).
     ///
     /// Script logic:
@@ -194,13 +216,7 @@ impl Htlc {
         recipient_sig: &[u8],
         fee: u64,
     ) -> Result<Transaction> {
-        // Verify the preimage matches the hash lock
-        let hash = sha256(preimage);
-        if hash != self.hash_lock {
-            return Err(NodeError::AtomicSwap(
-                "Preimage does not match hash lock".into(),
-            ));
-        }
+        let mut tx = self.build_claim_tx_unsigned(funding_txid, preimage, fee)?;
 
         // Build the scriptSig for claiming:
         // <sig> <pubkey> <preimage> OP_TRUE (OP_1)
@@ -212,6 +228,25 @@ impl Htlc {
         script_sig.push(0x20); // push 32 bytes
         script_sig.extend_from_slice(preimage);
         script_sig.push(0x51); // OP_1 (true branch)
+        tx.inputs[0].script_sig = script_sig;
+
+        Ok(tx)
+    }
+
+    /// Build an unsigned claim transaction (empty scriptSig) for signing.
+    pub fn build_claim_tx_unsigned(
+        &self,
+        funding_txid: [u8; 32],
+        preimage: &[u8; 32],
+        fee: u64,
+    ) -> Result<Transaction> {
+        // Verify the preimage matches the hash lock
+        let hash = sha256(preimage);
+        if hash != self.hash_lock {
+            return Err(NodeError::AtomicSwap(
+                "Preimage does not match hash lock".into(),
+            ));
+        }
 
         Ok(Transaction {
             version: 1,
@@ -219,7 +254,7 @@ impl Htlc {
             inputs: vec![TxInput {
                 prev_txid: funding_txid,
                 prev_vout: 0,
-                script_sig,
+                script_sig: Vec::new(),
                 sequence: u32::MAX,
             }],
             outputs: vec![TxOutput {
@@ -318,6 +353,8 @@ pub struct SwapOrder {
     pub hash_lock: Option<[u8; 32]>,
     /// The funding transaction ID once the maker's VTR HTLC is in the mempool.
     pub funding_txid: Option<[u8; 32]>,
+    /// The taker's VTR address (the HTLC recipient), set once matched.
+    pub taker_address: Option<String>,
     /// Secret preimage retained locally until the swap claim is executed.
     pub preimage: Option<[u8; 32]>,
     /// Order expiry timestamp.
@@ -368,6 +405,7 @@ impl OrderAnnouncement {
             target_amount: self.target_amount,
             hash_lock: self.hash_lock,
             funding_txid: None,
+            taker_address: None,
             preimage: None,
             expiry: self.expiry,
             status: OrderStatus::Open,
@@ -481,6 +519,7 @@ impl SwapOrder {
             target_amount,
             hash_lock: None,
             funding_txid: None,
+            taker_address: None,
             preimage: None,
             expiry: now + locktime_seconds,
             status: OrderStatus::Open,
@@ -634,6 +673,7 @@ impl SwapOrderBook {
         order.hash_lock = Some(hash_lock);
         order.preimage = Some(preimage);
         order.funding_txid = Some(funding_txid);
+        order.taker_address = Some(taker_address.clone());
         let matched_order = order.clone();
 
         Some(MatchResult {

@@ -49,6 +49,7 @@ export default function TradePage() {
   // Swap lifecycle state
   const [swapOrderId, setSwapOrderId] = useState('')
   const [takerAddress, setTakerAddress] = useState('')
+  const [takerWif, setTakerWif] = useState('')
   const [btcRefundAddress, setBtcRefundAddress] = useState('')
   const [preimage, setPreimage] = useState('')
   const [swapBusy, setSwapBusy] = useState(false)
@@ -381,6 +382,17 @@ export default function TradePage() {
             </div>
 
             <div>
+              <label className="label">Taker WIF (for VTR claim)</label>
+              <input
+                type="password"
+                className="input-field font-mono"
+                placeholder="7…"
+                value={takerWif}
+                onChange={e => setTakerWif(e.target.value)}
+              />
+            </div>
+
+            <div>
               <label className="label">BTC Refund Address</label>
               <input
                 className="input-field font-mono"
@@ -435,9 +447,9 @@ export default function TradePage() {
                 Fund BTC
               </button>
               <button
-                disabled={swapBusy || !swapOrderId || !preimage}
+                disabled={swapBusy || !swapOrderId || !preimage || !takerWif}
                 onClick={() => runSwap(
-                  () => vtrClaim({ orderId: swapOrderId, preimage }),
+                  () => vtrClaim({ orderId: swapOrderId, preimage, takerWif }),
                   'VTR claimed'
                 )}
                 className="btn-primary text-xs disabled:opacity-50"

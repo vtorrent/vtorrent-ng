@@ -1072,8 +1072,10 @@ pub async fn vtr_claim(
     state: tauri::State<'_, AppState>,
     order_id: String,
     preimage: String,
+    taker_wif: String,
 ) -> Result<SwapActionResult> {
-    use vtorrent_node::atomic_swap::{SwapState, SwapStatus};
+    use vtorrent_node::atomic_swap::{Htlc, SwapState, SwapStatus};
+    use vtorrent_wallet::tx_builder::sign_input_over_subscript;
 
     let guard = state.node.lock().await;
     let handle = guard
@@ -1091,6 +1093,9 @@ pub async fn vtr_claim(
         out.copy_from_slice(&bytes);
         out
     };
+    if taker_wif.is_empty() {
+        return Err(TauriError::InvalidInput("Taker WIF is required".into()));
+    }
 
     let order = {
         let order_book = rpc.order_book.read().await;
@@ -1102,6 +1107,13 @@ pub async fn vtr_claim(
     let hash_lock = order
         .hash_lock
         .ok_or_else(|| TauriError::InvalidInput("Order has no hash lock".into()))?;
+    let funding_txid = order
+        .funding_txid
+        .ok_or_else(|| TauriError::InvalidInput("Order has no VTR funding txid".into()))?;
+    let taker_address = order
+        .taker_address
+        .clone()
+        .ok_or_else(|| TauriError::InvalidInput("Order has no taker address".into()))?;
 
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -1113,6 +1125,49 @@ pub async fn vtr_claim(
         ));
     }
 
+    let htlc = Htlc::with_expiry(
+        hash_lock,
+        taker_address.clone(),
+        order.maker_address.clone(),
+        order.expiry,
+        order.vtr_amount,
+    )
+    .map_err(|e| TauriError::InvalidInput(format!("Unable to reconstruct HTLC: {}", e)))?;
+
+    const CLAIM_FEE_SATOSHIS: u64 = 10_000;
+    let unsigned = htlc
+        .build_claim_tx_unsigned(funding_txid, &preimage_bytes, CLAIM_FEE_SATOSHIS)
+        .map_err(|e| TauriError::InvalidInput(format!("Unable to build VTR claim tx: {}", e)))?;
+
+    let htlc_script = htlc.build_script();
+    let (sig, pubkey) = sign_input_over_subscript(&unsigned, 0, &htlc_script, &taker_wif)
+        .map_err(|e| TauriError::InvalidInput(format!("Unable to sign VTR claim tx: {}", e)))?;
+
+    let mut script_sig = Vec::new();
+    script_sig.push(sig.len() as u8);
+    script_sig.extend_from_slice(&sig);
+    script_sig.push(pubkey.len() as u8);
+    script_sig.extend_from_slice(&pubkey);
+    script_sig.push(0x20);
+    script_sig.extend_from_slice(&preimage_bytes);
+    script_sig.push(0x51); // OP_1
+
+    let mut claim_tx = unsigned;
+    claim_tx.inputs[0].script_sig = script_sig;
+    let claim_txid = claim_tx.txid();
+
+    {
+        let mut mempool = rpc.mempool.lock().await;
+        mempool
+            .add_transaction_with_fee(claim_tx.clone(), CLAIM_FEE_SATOSHIS)
+            .map_err(|e| {
+                TauriError::InvalidInput(format!("Mempool rejected VTR claim tx: {}", e))
+            })?;
+    }
+    if let Some(sender) = &rpc.tx_submit {
+        let _ = sender.try_send(claim_tx);
+    }
+
     let mut swaps = rpc.swaps.write().await;
     let swap = swaps
         .entry(order_id.clone())
@@ -1122,7 +1177,7 @@ pub async fn vtr_claim(
 
     Ok(SwapActionResult {
         order_id,
-        txid: hex::encode(hash_lock),
+        txid: hex::encode(claim_txid),
         status: "Claimed".to_string(),
     })
 }
