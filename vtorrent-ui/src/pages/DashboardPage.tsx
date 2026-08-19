@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Copy, Plus, RefreshCw, TrendingUp, Coins, ArrowUpRight,
   ArrowDownLeft, Clock, Wifi, WifiOff, Send, X, CheckCircle, AlertCircle,
@@ -200,6 +201,7 @@ function SendModal({ onClose, onSent }: SendModalProps) {
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
+  const navigate = useNavigate()
   const { keys, defaultAddress, totalBalance, legacyImportCount, generateAddress } = useWallet()
   const [copied, setCopied] = useState('')
   const [generatingKey, setGeneratingKey] = useState(false)
@@ -432,7 +434,10 @@ export default function DashboardPage() {
                 You have {legacyImportCount} imported legacy address{legacyImportCount !== 1 ? 'es' : ''}.
                 Claim your VTR once the new chain launches.
               </p>
-              <button className="mt-2 text-xs text-amber-400 hover:text-amber-300 font-medium transition-colors">
+              <button
+                onClick={() => navigate('/claim')}
+                className="mt-2 text-xs text-amber-400 hover:text-amber-300 font-medium transition-colors"
+              >
                 Claim Now →
               </button>
             </div>
