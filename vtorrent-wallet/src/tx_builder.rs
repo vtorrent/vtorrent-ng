@@ -149,7 +149,7 @@ fn double_sha256_checksum(data: &[u8]) -> [u8; 4] {
 /// sighash = SHA256d(serialized_tx_with_subscript + SIGHASH_ALL(4LE))
 /// where `subscript` is the previous output's scriptPubKey with the input's
 /// scriptSig replaced by the subscript.
-fn compute_sighash(tx: &Transaction, input_index: usize, subscript: &[u8]) -> [u8; 32] {
+fn compute_sighash(tx: &Transaction, input_index: usize, subscript: &[u8]) -> Result<[u8; 32]> {
     // Build a copy of the transaction with all scriptSigs cleared except
     // the one at input_index, which is set to the subscript.
     let mut tx_copy = tx.clone();
@@ -162,7 +162,8 @@ fn compute_sighash(tx: &Transaction, input_index: usize, subscript: &[u8]) -> [u
     }
 
     // Serialize the modified transaction.
-    let mut data = bincode::serialize(&tx_copy).unwrap_or_default();
+    let mut data = bincode::serialize(&tx_copy)
+        .map_err(|e| WalletError::BuildError(format!("Sighash serialization failed: {}", e)))?;
     // Append SIGHASH_ALL as 4-byte little-endian.
     data.extend_from_slice(&1u32.to_le_bytes());
 
@@ -171,7 +172,7 @@ fn compute_sighash(tx: &Transaction, input_index: usize, subscript: &[u8]) -> [u
     let h2 = Sha256::digest(h1);
     let mut hash = [0u8; 32];
     hash.copy_from_slice(&h2);
-    hash
+    Ok(hash)
 }
 
 /// Build a DER-encoded ECDSA signature + SIGHASH_ALL byte.
@@ -352,7 +353,7 @@ impl TxBuilder {
             let subscript = utxo.script_pubkey.clone();
 
             // Compute sighash.
-            let sighash = compute_sighash(&tx, input_index, &subscript);
+            let sighash = compute_sighash(&tx, input_index, &subscript)?;
 
             // Use the first key for all inputs (single-key wallet).
             // For multi-key wallets, match key by address.
@@ -402,7 +403,7 @@ pub fn sign_custom_transaction(
                 "Transaction input does not match its signing UTXO".into(),
             ));
         }
-        let sighash = compute_sighash(&tx, input_index, &utxo.script_pubkey);
+        let sighash = compute_sighash(&tx, input_index, &utxo.script_pubkey)?;
         let signature = sign_input(key.as_bytes(), &sighash)?;
         tx.inputs[input_index].script_sig = build_script_sig(&signature, &pubkey);
     }
