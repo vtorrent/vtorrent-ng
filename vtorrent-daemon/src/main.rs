@@ -63,6 +63,14 @@ struct Cli {
     #[arg(long)]
     staking_address: Option<String>,
 
+    /// WIF-encoded private key used to sign coinstake inputs.
+    ///
+    /// Required for staking; without it the node can find stake kernels but
+    /// the resulting blocks would be rejected by the chain's script
+    /// verification.
+    #[arg(long, env = "VTORRENT_STAKING_WIF")]
+    staking_wif: Option<String>,
+
     /// Disable DHT bootstrap (use DNS seeds only).
     #[arg(long, default_value_t = false)]
     no_dht: bool,
@@ -151,6 +159,7 @@ async fn main() -> anyhow::Result<()> {
         listen_addr: cli.listen.clone(),
         staking_enabled,
         staking_address: cli.staking_address.clone(),
+        staking_wif: cli.staking_wif.clone(),
         max_mempool: 10_000,
         extra_seeds: cli.seeds.clone(),
         use_dht: !cli.no_dht,

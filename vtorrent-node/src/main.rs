@@ -117,6 +117,7 @@ async fn main() -> anyhow::Result<()> {
         listen_addr: cli.listen.clone(),
         staking_enabled,
         staking_address: cli.staking_address.clone(),
+        staking_wif: None,
         max_mempool: 10_000,
         extra_seeds: cli.seeds.clone(),
         use_dht: !cli.no_dht,

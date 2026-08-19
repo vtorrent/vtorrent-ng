@@ -71,6 +71,8 @@ pub struct NodeConfig {
     pub staking_enabled: bool,
     /// The staking address (must have UTXOs).
     pub staking_address: Option<String>,
+    /// The WIF-encoded private key used to sign coinstake inputs.
+    pub staking_wif: Option<String>,
     /// Maximum mempool size.
     pub max_mempool: usize,
     /// Additional seed nodes to connect to.
@@ -96,6 +98,7 @@ impl Default for NodeConfig {
             listen_addr: format!("0.0.0.0:{}", DEFAULT_PORT),
             staking_enabled: false,
             staking_address: None,
+            staking_wif: None,
             max_mempool: 10_000,
             extra_seeds: Vec::new(),
             use_dht: true,
@@ -235,7 +238,10 @@ impl Node {
             config
                 .staking_address
                 .as_ref()
-                .map(|addr| StakingEngine::new(addr.clone()))
+                .map(|addr| match &config.staking_wif {
+                    Some(wif) => StakingEngine::with_wif(addr.clone(), wif.clone()),
+                    None => StakingEngine::new(addr.clone()),
+                })
         } else {
             None
         };
@@ -283,7 +289,10 @@ impl Node {
             config
                 .staking_address
                 .as_ref()
-                .map(|addr| StakingEngine::new(addr.clone()))
+                .map(|addr| match &config.staking_wif {
+                    Some(wif) => StakingEngine::with_wif(addr.clone(), wif.clone()),
+                    None => StakingEngine::new(addr.clone()),
+                })
         } else {
             None
         };

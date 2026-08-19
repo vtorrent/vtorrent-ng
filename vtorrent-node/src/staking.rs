@@ -11,19 +11,29 @@
 use crate::{
     block::{Block, BlockHeader, Transaction, TxInput, TxOutput, TxType},
     chain::Utxo,
-    consensus::{compute_pos_reward, MIN_STAKE_AGE, MIN_STAKE_AMOUNT},
+    consensus::{check_stake_kernel, compute_pos_reward, MIN_STAKE_AGE, MIN_STAKE_AMOUNT},
 };
 
 /// The staking engine.
 pub struct StakingEngine {
     /// The address whose UTXOs are used for staking.
     pub address: String,
+    /// The WIF-encoded private key used to sign the coinstake input.
+    pub wif: Option<String>,
 }
 
 impl StakingEngine {
     /// Create a new staking engine for the given address.
     pub fn new(address: String) -> Self {
-        Self { address }
+        Self { address, wif: None }
+    }
+
+    /// Create a new staking engine with a signing key.
+    pub fn with_wif(address: String, wif: String) -> Self {
+        Self {
+            address,
+            wif: Some(wif),
+        }
     }
 
     /// Try to build a valid PoS block from available UTXOs.
@@ -89,32 +99,9 @@ impl StakingEngine {
     /// This is a simplified version — a production implementation would use
     /// the full PPCoin stake modifier chain.
     fn try_stake_kernel(&self, utxo: &Utxo, timestamp: u32, height: u32) -> Option<Transaction> {
-        use sha2::{Digest, Sha256};
-
-        // Compute the stake kernel hash:
-        // kernel = SHA256d(txid || vout || timestamp)
-        let mut hasher = Sha256::new();
-        hasher.update(utxo.txid);
-        hasher.update(utxo.vout.to_le_bytes());
-        hasher.update(timestamp.to_le_bytes());
-        let first = hasher.finalize();
-
-        let mut hasher2 = Sha256::new();
-        hasher2.update(first);
-        let kernel_hash = hasher2.finalize();
-
-        // Target: proportional to stake value (more coins = easier to stake)
-        // target = MAX_U256 * stake_value / (TARGET_BLOCK_TIME * COIN)
-        // Simplified: accept if first 4 bytes of kernel < stake_value / 1000
-        let kernel_val = u32::from_le_bytes([
-            kernel_hash[0],
-            kernel_hash[1],
-            kernel_hash[2],
-            kernel_hash[3],
-        ]);
-        let target = (utxo.value / 1000).min(u32::MAX as u64) as u32;
-
-        if kernel_val > target {
+        // The kernel check is shared with the chain's block validation so a
+        // block that passes validation provably met the difficulty requirement.
+        if !check_stake_kernel(utxo, timestamp) {
             return None;
         }
 
@@ -127,7 +114,7 @@ impl StakingEngine {
         let stake_input = TxInput {
             prev_txid: utxo.txid,
             prev_vout: utxo.vout,
-            script_sig: self.build_stake_script(timestamp),
+            script_sig: Vec::new(), // filled in below after signing
             sequence: u32::MAX,
         };
 
@@ -143,7 +130,7 @@ impl StakingEngine {
             script_pubkey: self.address_to_script(&self.address),
         };
 
-        Some(Transaction {
+        let mut coinstake = Transaction {
             version: 1,
             tx_type: TxType::Coinstake,
             inputs: vec![stake_input],
@@ -151,7 +138,52 @@ impl StakingEngine {
             lock_time: height,
             claim_address: None,
             claim_signature: None,
-        })
+        };
+
+        // Sign the coinstake input over the same sighash the chain verifies.
+        // Without a valid signature the block would be rejected by the chain's
+        // script verification.
+        if let Some(wif) = &self.wif {
+            let script_sig = self.sign_coinstake_input(&coinstake, utxo, wif)?;
+            coinstake.inputs[0].script_sig = script_sig;
+        } else {
+            tracing::warn!(
+                "Staking engine has no signing key; coinstake would be rejected by the chain"
+            );
+        }
+
+        Some(coinstake)
+    }
+
+    /// Sign the coinstake input with the staking key over the P2PKH sighash.
+    fn sign_coinstake_input(
+        &self,
+        coinstake: &Transaction,
+        utxo: &Utxo,
+        wif: &str,
+    ) -> Option<Vec<u8>> {
+        use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
+
+        let key = vtorrent_core::keys::PrivateKey::from_wif(wif).ok()?;
+        let secret_key = SecretKey::from_slice(key.as_bytes()).ok()?;
+        let secp = Secp256k1::new();
+        let pubkey = PublicKey::from_secret_key(&secp, &secret_key);
+
+        // The subscript is the previous output's scriptPubKey (P2PKH).
+        let sighash = coinstake.sighash(0, &utxo.script_pubkey);
+        let message = Message::from_digest(sighash);
+        let sig = secp.sign_ecdsa(&message, &secret_key);
+        let mut der = sig.serialize_der().to_vec();
+        der.push(0x01); // SIGHASH_ALL
+
+        // Build P2PKH scriptSig: <sig> <pubkey>
+        let pubkey_bytes = pubkey.serialize();
+        let mut script = Vec::with_capacity(1 + der.len() + 1 + pubkey_bytes.len());
+        script.push(der.len() as u8);
+        script.extend_from_slice(&der);
+        script.push(pubkey_bytes.len() as u8);
+        script.extend_from_slice(&pubkey_bytes);
+        Some(script)
     }
 
     /// Assemble a complete PoS block.
@@ -198,16 +230,6 @@ impl StakingEngine {
             header,
             transactions,
         }
-    }
-
-    /// Build the stake script (scriptSig for the coinstake input).
-    /// Contains the timestamp as a push data, matching PPCoin convention.
-    fn build_stake_script(&self, timestamp: u32) -> Vec<u8> {
-        let ts_bytes = timestamp.to_le_bytes();
-        let mut script = Vec::new();
-        script.push(0x04); // push 4 bytes
-        script.extend_from_slice(&ts_bytes);
-        script
     }
 
     /// Convert a vTorrent address to a P2PKH scriptPubKey.
@@ -273,16 +295,6 @@ mod tests {
             (MIN_STAKE_AGE as u32).saturating_add(3600),
         );
         assert!(!engine.is_eligible(&utxo, 1_700_000_000));
-    }
-
-    #[test]
-    fn test_stake_script_contains_timestamp() {
-        let engine = StakingEngine::new("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string());
-        let ts = 1_700_000_000u32;
-        let script = engine.build_stake_script(ts);
-        assert_eq!(script[0], 0x04);
-        let decoded_ts = u32::from_le_bytes([script[1], script[2], script[3], script[4]]);
-        assert_eq!(decoded_ts, ts);
     }
 
     #[test]

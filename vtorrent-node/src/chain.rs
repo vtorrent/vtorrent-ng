@@ -1,6 +1,6 @@
 use crate::{
     block::{Block, Transaction},
-    consensus::{compute_pos_reward, validate_block, validate_legacy_claim},
+    consensus::{check_stake_kernel, compute_pos_reward, validate_block, validate_legacy_claim},
     error::{NodeError, Result},
     genesis::{create_genesis_block, get_legacy_balance},
 };
@@ -731,6 +731,14 @@ impl Chain {
                 NodeError::InvalidTransaction("Coinstake must spend a stake input".into())
             })?;
             let coin_age = timestamp.saturating_sub(staked.timestamp);
+            // The stake kernel must satisfy the PoS difficulty requirement.
+            // Without this check an attacker could forge a coinstake block
+            // without meeting the stake target.
+            if !check_stake_kernel(&staked, timestamp) {
+                return Err(NodeError::InvalidTransaction(
+                    "Coinstake kernel hash does not meet the stake target".into(),
+                ));
+            }
             let max_reward = compute_pos_reward(staked.value, coin_age as u64);
             let minted = tx.total_output().saturating_sub(staked.value);
             if minted > max_reward {
@@ -975,5 +983,194 @@ mod tests {
         assert_eq!(script.len(), 25);
         assert_eq!(&script[..3], &[0x76, 0xa9, 0x14]);
         assert_eq!(&script[23..], &[0x88, 0xac]);
+    }
+
+    /// Build a coinbase block paying to a specific P2PKH script.
+    fn make_coinbase_to_script(
+        prev_hash: [u8; 32],
+        height: u32,
+        timestamp: u32,
+        script_pubkey: Vec<u8>,
+        value: u64,
+    ) -> Block {
+        let transactions = vec![Transaction {
+            version: 1,
+            tx_type: TxType::Coinbase,
+            inputs: vec![TxInput {
+                prev_txid: [0u8; 32],
+                prev_vout: 0xffffffff,
+                script_sig: vec![height as u8],
+                sequence: 0xffffffff,
+            }],
+            outputs: vec![TxOutput {
+                value,
+                script_pubkey,
+            }],
+            lock_time: height,
+            claim_address: None,
+            claim_signature: None,
+        }];
+        let mut block = Block {
+            header: BlockHeader {
+                version: 1,
+                prev_block_hash: prev_hash,
+                merkle_root: [0u8; 32],
+                timestamp,
+                bits: crate::genesis::GENESIS_BITS,
+                nonce: height,
+                stake_modifier: 0u64,
+            },
+            transactions,
+        };
+        block.header.merkle_root = block.compute_merkle_root();
+        block
+    }
+
+    #[test]
+    fn test_pos_block_with_signed_coinstake_accepted() {
+        use crate::staking::StakingEngine;
+        use secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+        // Generate a staking key pair.
+        let secp = Secp256k1::new();
+        let mut key_bytes = [0u8; 32];
+        key_bytes[31] = 42;
+        let key = vtorrent_core::keys::PrivateKey::from_bytes(key_bytes, true).unwrap();
+        let wif = key.to_wif(198);
+        let secret = SecretKey::from_slice(key.as_bytes()).unwrap();
+        let pubkey = PublicKey::from_secret_key(&secp, &secret);
+        let addr = vtorrent_core::address::Address::from_pubkey(&pubkey, true, 70);
+        let address = addr.to_string();
+
+        let mut chain = Chain::new().expect("Chain init failed");
+        let genesis_hash = chain.best_hash().unwrap();
+
+        // Fund the staking address with a large coinbase UTXO at an old
+        // timestamp so the coin is mature (age >= MIN_STAKE_AGE).
+        let funding_ts = 1_700_000_001u32;
+        let script = chain.address_to_p2pkh_script(&address);
+        let funding_block = make_coinbase_to_script(
+            genesis_hash,
+            1,
+            funding_ts,
+            script.clone(),
+            100 * crate::consensus::COIN,
+        );
+        chain.add_block(funding_block).unwrap();
+        assert_eq!(chain.best_height(), 1);
+
+        let utxos = chain.get_utxos_for_address(&address);
+        assert!(!utxos.is_empty(), "staking address must have a UTXO");
+
+        // Search for a timestamp whose kernel hash satisfies the target.
+        let engine = StakingEngine::with_wif(address.clone(), wif);
+        let mut stake_block = None;
+        let mut ts = funding_ts + crate::consensus::MIN_STAKE_AGE as u32;
+        for _ in 0..10_000 {
+            if let Some(block) =
+                engine.build_stake_block(chain.best_hash().unwrap(), 2, ts, utxos.clone(), vec![])
+            {
+                stake_block = Some(block);
+                break;
+            }
+            ts += 1;
+        }
+        let stake_block = stake_block.expect("should find a valid stake kernel");
+
+        // The coinstake input must be signed (scriptSig is a real P2PKH sig).
+        let coinstake = &stake_block.transactions[0];
+        assert_eq!(coinstake.tx_type, TxType::Coinstake);
+        assert!(
+            coinstake.inputs[0].script_sig.len() > 2,
+            "coinstake input must carry a signature"
+        );
+
+        // The chain must accept the block: kernel check + script verification.
+        let result = chain.add_block(stake_block).unwrap();
+        assert!(matches!(
+            result,
+            BlockAcceptance::MainChain { height: 2, .. }
+        ));
+        assert_eq!(chain.best_height(), 2);
+    }
+
+    #[test]
+    fn test_pos_block_with_bad_kernel_rejected() {
+        use secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+        let secp = Secp256k1::new();
+        let mut key_bytes = [0u8; 32];
+        key_bytes[31] = 7;
+        let key = vtorrent_core::keys::PrivateKey::from_bytes(key_bytes, true).unwrap();
+        let secret = SecretKey::from_slice(key.as_bytes()).unwrap();
+        let pubkey = PublicKey::from_secret_key(&secp, &secret);
+        let addr = vtorrent_core::address::Address::from_pubkey(&pubkey, true, 70);
+        let address = addr.to_string();
+
+        let mut chain = Chain::new().expect("Chain init failed");
+        let genesis_hash = chain.best_hash().unwrap();
+        let funding_ts = 1_700_000_001u32;
+        let script = chain.address_to_p2pkh_script(&address);
+        let funding_block = make_coinbase_to_script(
+            genesis_hash,
+            1,
+            funding_ts,
+            script.clone(),
+            100 * crate::consensus::COIN,
+        );
+        chain.add_block(funding_block).unwrap();
+        let utxos = chain.get_utxos_for_address(&address);
+
+        // Build a coinstake whose kernel does NOT satisfy the target by
+        // forging it directly (bypassing the engine's kernel search).
+        let utxo = utxos[0].clone();
+        let mut bad_ts = funding_ts + crate::consensus::MIN_STAKE_AGE as u32;
+        while check_stake_kernel(&utxo, bad_ts) {
+            bad_ts += 1;
+        }
+        let reward = compute_pos_reward(utxo.value, (bad_ts - utxo.timestamp) as u64);
+        let coinstake = Transaction {
+            version: 1,
+            tx_type: TxType::Coinstake,
+            inputs: vec![TxInput {
+                prev_txid: utxo.txid,
+                prev_vout: utxo.vout,
+                script_sig: vec![0x51], // OP_TRUE — no real signature
+                sequence: u32::MAX,
+            }],
+            outputs: vec![
+                TxOutput {
+                    value: 0,
+                    script_pubkey: Vec::new(),
+                },
+                TxOutput {
+                    value: utxo.value + reward,
+                    script_pubkey: script.clone(),
+                },
+            ],
+            lock_time: 2,
+            claim_address: None,
+            claim_signature: None,
+        };
+
+        let mut block = Block {
+            header: BlockHeader {
+                version: 2,
+                prev_block_hash: chain.best_hash().unwrap(),
+                merkle_root: [0u8; 32],
+                timestamp: bad_ts,
+                bits: crate::genesis::GENESIS_BITS,
+                nonce: 0, // PoS block
+                stake_modifier: 0u64,
+            },
+            transactions: vec![coinstake],
+        };
+        block.header.merkle_root = block.compute_merkle_root();
+
+        // The block must be rejected: either the kernel check or the script
+        // verification fails.
+        let result = chain.add_block(block);
+        assert!(result.is_err(), "block with bad kernel must be rejected");
+        assert_eq!(chain.best_height(), 1);
     }
 }

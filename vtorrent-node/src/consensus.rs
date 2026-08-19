@@ -8,6 +8,7 @@ use sha2::{Digest as Sha2Digest, Sha256};
 
 use crate::{
     block::{Block, Transaction, TxType},
+    chain::Utxo,
     error::{NodeError, Result},
 };
 
@@ -52,6 +53,41 @@ pub fn compute_pos_reward(stake_amount: u64, coin_age_seconds: u64) -> u64 {
     let coin_age_days = coin_age_seconds as f64 / 86400.0;
     let reward = stake_amount as f64 * POS_ANNUAL_RATE * coin_age_days / 365.0;
     reward as u64
+}
+
+/// Compute the stake kernel hash for a UTXO at a given timestamp.
+///
+/// kernel = SHA256d(txid || vout || timestamp)
+pub fn stake_kernel_hash(utxo: &Utxo, timestamp: u32) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(utxo.txid);
+    hasher.update(utxo.vout.to_le_bytes());
+    hasher.update(timestamp.to_le_bytes());
+    let first = hasher.finalize();
+
+    let mut hasher2 = Sha256::new();
+    hasher2.update(first);
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&hasher2.finalize());
+    hash
+}
+
+/// Check whether a UTXO satisfies the stake kernel difficulty at a timestamp.
+///
+/// The kernel hash must be below a target proportional to the stake value:
+/// target = min(value / 1000, u32::MAX). This is the same check the staking
+/// engine uses when producing blocks, so a block that passes validation here
+/// provably met the difficulty requirement.
+pub fn check_stake_kernel(utxo: &Utxo, timestamp: u32) -> bool {
+    let kernel_hash = stake_kernel_hash(utxo, timestamp);
+    let kernel_val = u32::from_le_bytes([
+        kernel_hash[0],
+        kernel_hash[1],
+        kernel_hash[2],
+        kernel_hash[3],
+    ]);
+    let target = (utxo.value / 1000).min(u32::MAX as u64) as u32;
+    kernel_val <= target
 }
 
 /// Validate a block against the consensus rules.
