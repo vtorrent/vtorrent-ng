@@ -74,6 +74,20 @@ impl Htlc {
         if amount == 0 {
             return Err(NodeError::AtomicSwap("HTLC amount cannot be zero".into()));
         }
+        // Reject invalid addresses up front: an unparseable address would
+        // otherwise silently lock funds to a zero hash160 (unspendable).
+        if vtorrent_core::address::Address::parse(&recipient).is_err() {
+            return Err(NodeError::AtomicSwap(format!(
+                "Invalid recipient address: {}",
+                recipient
+            )));
+        }
+        if vtorrent_core::address::Address::parse(&refund_address).is_err() {
+            return Err(NodeError::AtomicSwap(format!(
+                "Invalid refund address: {}",
+                refund_address
+            )));
+        }
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -101,6 +115,18 @@ impl Htlc {
     ) -> Result<Self> {
         if amount == 0 {
             return Err(NodeError::AtomicSwap("HTLC amount cannot be zero".into()));
+        }
+        if vtorrent_core::address::Address::parse(&recipient).is_err() {
+            return Err(NodeError::AtomicSwap(format!(
+                "Invalid recipient address: {}",
+                recipient
+            )));
+        }
+        if vtorrent_core::address::Address::parse(&refund_address).is_err() {
+            return Err(NodeError::AtomicSwap(format!(
+                "Invalid refund address: {}",
+                refund_address
+            )));
         }
         Ok(Self {
             hash_lock,
