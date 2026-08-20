@@ -441,8 +441,13 @@ impl Engine {
             return Err(ScriptError::InvalidSignature);
         }
 
-        // Strip the sighash type byte (last byte of DER signature)
-        let sig_der = if sig_bytes.last() == Some(&0x01) || sig_bytes.last() == Some(&0x83) {
+        // Strip the sighash type byte (last byte of the DER signature). The
+        // valid sighash types are 0x01 (ALL), 0x02 (NONE), 0x03 (SINGLE), and
+        // their ANYONECANPAY variants 0x81/0x82/0x83. Strip any of them, not
+        // just 0x01/0x83, so SIGHASH_NONE/SINGLE/ANYONECANPAY signatures verify.
+        let last = *sig_bytes.last().unwrap();
+        let is_sighash = matches!(last, 0x01 | 0x02 | 0x03 | 0x81 | 0x82 | 0x83);
+        let sig_der = if is_sighash {
             &sig_bytes[..sig_bytes.len() - 1]
         } else {
             sig_bytes
