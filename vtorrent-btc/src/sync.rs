@@ -290,7 +290,12 @@ impl BtcSync {
                 };
                 let height = {
                     let chain = self.headers.lock().unwrap();
-                    chain.get(&hash).map(|h| h.height)
+                    // Look up the height by the block hash we actually
+                    // downloaded (the cfilter's authoritative hash), not the
+                    // header-chain hash, so outputs are attributed to the
+                    // correct height even if the chains diverge.
+                    let h: [u8; 32] = block_hash.to_byte_array();
+                    chain.get(&h).map(|h| h.height)
                 };
                 if let Some(height) = height {
                     for tx in &block.txdata {
