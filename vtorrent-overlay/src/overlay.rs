@@ -114,8 +114,10 @@ impl Overlay {
         let local_addr = socket.local_addr().map_err(OverlayError::Io)?;
         tracing::info!("Overlay listening on UDP {}", local_addr);
 
-        // Discover external address via STUN
-        let external_addr = match stun::discover_external_addr(&bind_addr).await {
+        // Discover external address via STUN, using the overlay's own socket so
+        // the reflected address is the NAT mapping for the socket that actually
+        // carries overlay traffic.
+        let external_addr = match stun::discover_external_addr(&socket).await {
             Ok(addr) => {
                 tracing::info!("Overlay external address: {}", addr);
                 Some(addr)

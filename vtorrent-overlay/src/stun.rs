@@ -33,12 +33,10 @@ const MAPPED_ADDRESS: u16 = 0x0001;
 
 /// Discover the node's external UDP address by querying STUN servers.
 ///
-/// Binds to `bind_addr` (e.g. `0.0.0.0:0`), queries all STUN servers in
-/// parallel, and returns the first successful external address.
-pub async fn discover_external_addr(bind_addr: &str) -> Result<SocketAddr> {
-    let socket = UdpSocket::bind(bind_addr).await.map_err(OverlayError::Io)?;
-    let socket = std::sync::Arc::new(socket);
-
+/// Uses the provided socket (the overlay's own socket) so the reflected
+/// external address is the NAT mapping for the socket that actually carries
+/// overlay traffic. Binding a separate socket would reflect the wrong port.
+pub async fn discover_external_addr(socket: &std::sync::Arc<UdpSocket>) -> Result<SocketAddr> {
     // Try all STUN servers concurrently; return first success
     let mut handles = Vec::new();
     for server in STUN_SERVERS {

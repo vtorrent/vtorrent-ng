@@ -683,6 +683,10 @@ impl Chain {
     }
 
     /// Apply a block's transactions to the UTXO set, recording a journal for rollback.
+    ///
+    /// If any transaction fails validation, the partial changes already applied
+    /// are rolled back so the UTXO set is left unchanged. Without this, a
+    /// rejected block would permanently delete the inputs it spent.
     fn apply_block_journaled(&mut self, block: &Block, height: u32) -> Result<BlockJournal> {
         let mut journal = BlockJournal {
             block_hash: block.hash(),
@@ -693,13 +697,19 @@ impl Chain {
         };
 
         for tx in &block.transactions {
-            self.apply_transaction_journaled(tx, height, block.header.timestamp, &mut journal)?;
+            if let Err(e) =
+                self.apply_transaction_journaled(tx, height, block.header.timestamp, &mut journal)
+            {
+                self.rollback_journal(&journal);
+                return Err(e);
+            }
         }
 
         // Enforce the maximum supply cap: a block may not mint value that would
         // push the total coin supply past MAX_SUPPLY.
         let new_supply = self.total_supply.saturating_add(journal.supply_delta);
         if new_supply > crate::consensus::MAX_SUPPLY {
+            self.rollback_journal(&journal);
             return Err(NodeError::InvalidBlock(format!(
                 "Block would exceed maximum supply: {} + {} > {}",
                 self.total_supply,
@@ -710,6 +720,26 @@ impl Chain {
         self.total_supply = new_supply;
 
         Ok(journal)
+    }
+
+    /// Reverse the UTXO-set and claimed-address changes recorded in a journal.
+    ///
+    /// Used to undo a partially-applied block when a later transaction (or the
+    /// supply cap) fails, so a rejected block leaves no trace in the UTXO set.
+    fn rollback_journal(&mut self, journal: &BlockJournal) {
+        for change in journal.changes.iter().rev() {
+            match change {
+                UtxoChange::Added { key } => {
+                    self.utxo_set.remove(key);
+                }
+                UtxoChange::Removed { key, utxo } => {
+                    self.utxo_set.insert(*key, utxo.clone());
+                }
+            }
+        }
+        for addr in journal.claimed_addresses.iter().rev() {
+            self.claimed_addresses.remove(addr);
+        }
     }
 
     /// Apply a transaction to the UTXO set, recording changes in the journal.
@@ -969,6 +999,59 @@ mod tests {
         let block = make_block(genesis_hash, 1);
         chain.add_block(block).unwrap();
         assert_eq!(chain.best_height(), 1);
+    }
+
+    #[test]
+    fn test_rejected_block_does_not_corrupt_utxo_set() {
+        let mut chain = Chain::new().expect("Chain init failed");
+        let genesis_hash = chain.best_hash().unwrap();
+
+        // Mint a spendable UTXO to a known address.
+        let addr = "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT";
+        chain
+            .mint_to_address(addr, 100 * crate::consensus::COIN)
+            .unwrap();
+        let utxos_before = chain.get_utxos_for_address(addr);
+        assert_eq!(utxos_before.len(), 1);
+        let utxo = utxos_before[0].clone();
+
+        // Build a block that spends the UTXO with an invalid scriptSig, so
+        // script verification fails *after* the input is removed.
+        let spend = Transaction {
+            version: 1,
+            tx_type: TxType::Standard,
+            inputs: vec![TxInput {
+                prev_txid: utxo.txid,
+                prev_vout: utxo.vout,
+                script_sig: vec![0x00], // invalid: empty signature
+                sequence: 0xffffffff,
+            }],
+            outputs: vec![TxOutput {
+                value: utxo.value,
+                script_pubkey: utxo.script_pubkey.clone(),
+            }],
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        };
+        let mut block = make_block(genesis_hash, 2);
+        block.transactions.push(spend);
+        block.header.merkle_root = block.compute_merkle_root();
+
+        let result = chain.add_block(block);
+        assert!(
+            result.is_err(),
+            "block with invalid scriptSig must be rejected"
+        );
+
+        // The UTXO must still be present and unspent.
+        let utxos_after = chain.get_utxos_for_address(addr);
+        assert_eq!(
+            utxos_after.len(),
+            1,
+            "rejected block must not delete the UTXO"
+        );
+        assert_eq!(utxos_after[0].txid, utxo.txid);
     }
 
     #[test]

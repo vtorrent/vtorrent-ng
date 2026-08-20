@@ -670,13 +670,17 @@ async fn write_piece_to_disk(
     piece_data: &[u8],
 ) {
     let layout = FileLayout::new(&metainfo.files, metainfo.piece_length);
-    let base = download_dir.join(&metainfo.name);
+    // The torrent name is also untrusted and must not escape the download dir.
+    let Some(base) = sanitize_path(download_dir, std::slice::from_ref(&metainfo.name)) else {
+        return;
+    };
     for (file_index, file_offset, bytes) in layout.piece_segments(piece_index, piece_data) {
         let file = &metainfo.files[file_index];
-        let mut path = base.clone();
-        for comp in &file.path {
-            path.push(comp);
-        }
+        // Build the output path, rejecting any component that would escape the
+        // download directory (absolute paths, `..`, or empty components).
+        let Some(path) = sanitize_path(&base, &file.path) else {
+            continue;
+        };
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -694,6 +698,28 @@ async fn write_piece_to_disk(
     }
 }
 
+/// Build a safe output path from a base directory and untrusted path components.
+///
+/// Returns `None` if any component is absolute, `..`, empty, or otherwise
+/// would escape the base directory. This prevents a malicious torrent from
+/// writing arbitrary files via path traversal.
+fn sanitize_path(base: &std::path::Path, components: &[String]) -> Option<std::path::PathBuf> {
+    let mut path = base.to_path_buf();
+    for comp in components {
+        if comp.is_empty()
+            || comp == "."
+            || comp == ".."
+            || comp.contains('/')
+            || comp.contains('\\')
+            || std::path::Path::new(comp).is_absolute()
+        {
+            return None;
+        }
+        path.push(comp);
+    }
+    Some(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -705,6 +731,35 @@ mod tests {
         let mut out = [0u8; 20];
         out.copy_from_slice(&digest);
         out
+    }
+
+    #[test]
+    fn test_sanitize_path_rejects_traversal() {
+        let base = std::path::Path::new("/downloads");
+
+        // Normal path is accepted.
+        let ok = sanitize_path(base, &["dir".to_string(), "file.txt".to_string()]);
+        assert_eq!(
+            ok,
+            Some(std::path::PathBuf::from("/downloads/dir/file.txt"))
+        );
+
+        // `..` escapes the base.
+        assert!(sanitize_path(base, &["..".to_string()]).is_none());
+        assert!(
+            sanitize_path(base, &["a".to_string(), "..".to_string(), "b".to_string()]).is_none()
+        );
+
+        // Absolute path escapes the base.
+        assert!(sanitize_path(base, &["/etc/passwd".to_string()]).is_none());
+
+        // Embedded separators are rejected.
+        assert!(sanitize_path(base, &["a/b".to_string()]).is_none());
+        assert!(sanitize_path(base, &["a\\b".to_string()]).is_none());
+
+        // Empty and `.` components are rejected.
+        assert!(sanitize_path(base, &["".to_string()]).is_none());
+        assert!(sanitize_path(base, &[".".to_string()]).is_none());
     }
 
     #[test]

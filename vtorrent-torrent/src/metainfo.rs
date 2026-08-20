@@ -93,7 +93,7 @@ impl Metainfo {
         };
 
         let name = get_string(info_dict, b"name")?;
-        let piece_length = get_integer(info_dict, b"piece length")? as u64;
+        let piece_length = get_u64(info_dict, b"piece length")?;
         if piece_length == 0 {
             return Err(TorrentError::InvalidMetainfo(
                 "'piece length' cannot be zero".into(),
@@ -121,8 +121,8 @@ impl Metainfo {
                     serde_bencode::value::Value::Dict(d) => d,
                     _ => continue,
                 };
-                let length = get_integer(fd, b"length")? as u64;
-                total += length;
+                let length = get_u64(fd, b"length")?;
+                total = total.saturating_add(length);
                 let path = get_string_list(fd, b"path")?;
                 files.push(TorrentFile {
                     path,
@@ -133,7 +133,7 @@ impl Metainfo {
             (files, total)
         } else {
             // Single-file torrent
-            let length = get_integer(info_dict, b"length")? as u64;
+            let length = get_u64(info_dict, b"length")?;
             let file = TorrentFile {
                 path: vec![name.clone()],
                 length,
@@ -142,7 +142,13 @@ impl Metainfo {
             (vec![file], length)
         };
 
-        let piece_count = total_size.div_ceil(piece_length) as u32;
+        let piece_count_u64 = total_size.div_ceil(piece_length);
+        if piece_count_u64 > u32::MAX as u64 {
+            return Err(TorrentError::InvalidMetainfo(
+                "piece count exceeds u32 range".into(),
+            ));
+        }
+        let piece_count = piece_count_u64 as u32;
 
         // Parse the piece hashes (BEP-3 `pieces` string: 20 bytes per piece).
         let pieces = match info_dict.get(&b"pieces".to_vec()) {
@@ -356,6 +362,21 @@ fn get_integer(dict: &BencodeDict, key: &[u8]) -> Result<i64> {
             key
         ))),
     }
+}
+
+/// Read a non-negative integer as `u64`, rejecting negative values.
+///
+/// A negative bencode integer would otherwise wrap to a huge `u64` via `as`,
+/// driving unbounded allocations downstream.
+fn get_u64(dict: &BencodeDict, key: &[u8]) -> Result<u64> {
+    let i = get_integer(dict, key)?;
+    if i < 0 {
+        return Err(TorrentError::InvalidMetainfo(format!(
+            "Integer key {:?} must be non-negative",
+            key
+        )));
+    }
+    Ok(i as u64)
 }
 
 fn get_string_list(dict: &BencodeDict, key: &[u8]) -> Result<Vec<String>> {
@@ -667,5 +688,22 @@ mod tests {
 
         let result = Metainfo::from_bytes(&bencode);
         assert!(result.is_err(), "zero piece length must be rejected");
+    }
+
+    #[test]
+    fn test_negative_length_rejected() {
+        // A malicious torrent with a negative "length" must be rejected instead
+        // of wrapping to a huge u64 and driving an unbounded allocation.
+        let mut pieces = Vec::new();
+        pieces.extend_from_slice(&[0x11u8; 20]);
+
+        let mut bencode = Vec::new();
+        bencode.extend_from_slice(b"d4:infod6:lengthi-1e4:name4:test12:piece lengthi1e6:pieces");
+        bencode.extend_from_slice(format!("{}:", pieces.len()).as_bytes());
+        bencode.extend_from_slice(&pieces);
+        bencode.extend_from_slice(b"e8:announce15:http://tracker/ee");
+
+        let result = Metainfo::from_bytes(&bencode);
+        assert!(result.is_err(), "negative length must be rejected");
     }
 }
