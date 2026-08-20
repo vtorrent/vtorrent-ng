@@ -8,7 +8,9 @@ pub struct Mnemonic {
 }
 
 /// HD account metadata stored in the wallet.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// The `Debug` impl redacts the mnemonic so the seed phrase is never logged.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct HdAccount {
     /// The BIP39 mnemonic phrase (space-separated words).
     pub mnemonic: String,
@@ -16,6 +18,16 @@ pub struct HdAccount {
     pub word_count: usize,
     /// Unix timestamp when HD was enabled.
     pub created_at: u64,
+}
+
+impl std::fmt::Debug for HdAccount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HdAccount")
+            .field("mnemonic", &"[REDACTED]")
+            .field("word_count", &self.word_count)
+            .field("created_at", &self.created_at)
+            .finish()
+    }
 }
 
 impl Mnemonic {

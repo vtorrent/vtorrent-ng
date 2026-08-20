@@ -143,6 +143,15 @@ impl BtcPeer {
             .await
             .map_err(|e| BtcError::P2p(e.to_string()))?;
         let len = u32::from_le_bytes([header[16], header[17], header[18], header[19]]) as usize;
+        // Cap the payload size so a malicious peer cannot force a multi-GB
+        // allocation via a forged length prefix.
+        const MAX_PROTOCOL_MESSAGE_LENGTH: usize = 4 * 1024 * 1024;
+        if len > MAX_PROTOCOL_MESSAGE_LENGTH {
+            return Err(BtcError::P2p(format!(
+                "message length {} exceeds maximum {}",
+                len, MAX_PROTOCOL_MESSAGE_LENGTH
+            )));
+        }
         let mut payload = vec![0u8; len];
         self.stream
             .read_exact(&mut payload)

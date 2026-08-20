@@ -69,7 +69,7 @@ pub struct MasterKey {
 }
 
 /// An unencrypted private key record.
-#[derive(Debug, Clone, Zeroize, ZeroizeOnDrop)]
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct KeyRecord {
     /// The public key bytes (compressed or uncompressed).
     pub public_key: Vec<u8>,
@@ -77,8 +77,17 @@ pub struct KeyRecord {
     pub private_key: Vec<u8>,
 }
 
+impl std::fmt::Debug for KeyRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyRecord")
+            .field("public_key", &self.public_key)
+            .field("private_key", &"[REDACTED]")
+            .finish()
+    }
+}
+
 /// An encrypted private key record (ckey).
-#[derive(Debug, Clone, Zeroize, ZeroizeOnDrop)]
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct CKeyRecord {
     /// The public key bytes.
     pub public_key: Vec<u8>,
@@ -86,8 +95,17 @@ pub struct CKeyRecord {
     pub encrypted_private_key: Vec<u8>,
 }
 
+impl std::fmt::Debug for CKeyRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CKeyRecord")
+            .field("public_key", &self.public_key)
+            .field("encrypted_private_key", &"[REDACTED]")
+            .finish()
+    }
+}
+
 /// A fully extracted and decrypted wallet key, ready for migration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ExtractedKey {
     /// The legacy vTorrent address (starts with 'V').
     pub legacy_address: String,
@@ -97,6 +115,17 @@ pub struct ExtractedKey {
     pub compressed: bool,
     /// The source of this key (from `key` record or decrypted `ckey` record).
     pub source: KeySource,
+}
+
+impl std::fmt::Debug for ExtractedKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExtractedKey")
+            .field("legacy_address", &self.legacy_address)
+            .field("wif", &"[REDACTED]")
+            .field("compressed", &self.compressed)
+            .field("source", &self.source)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

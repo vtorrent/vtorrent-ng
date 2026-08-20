@@ -11,7 +11,7 @@ pub fn derive_address(seed: &[u8; 64], index: u32, network: Network) -> Result<S
     let secp = Secp256k1::new();
     let xpriv =
         Xpriv::new_master(network, seed).map_err(|e| BtcError::KeyDerivation(e.to_string()))?;
-    let path = DerivationPath::from_str(&format!("m/84'/0'/0'/0/{}", index))
+    let path = DerivationPath::from_str(&format!("m/84'/{}'/0'/0/{}", coin_type(network), index))
         .map_err(|e| BtcError::KeyDerivation(e.to_string()))?;
     let derived = xpriv
         .derive_priv(&secp, &path)
@@ -28,7 +28,7 @@ pub fn derive_wif(seed: &[u8; 64], index: u32, network: Network) -> Result<Strin
     let secp = Secp256k1::new();
     let xpriv =
         Xpriv::new_master(network, seed).map_err(|e| BtcError::KeyDerivation(e.to_string()))?;
-    let path = DerivationPath::from_str(&format!("m/84'/0'/0'/0/{}", index))
+    let path = DerivationPath::from_str(&format!("m/84'/{}'/0'/0/{}", coin_type(network), index))
         .map_err(|e| BtcError::KeyDerivation(e.to_string()))?;
     let derived = xpriv
         .derive_priv(&secp, &path)
@@ -39,6 +39,14 @@ pub fn derive_wif(seed: &[u8; 64], index: u32, network: Network) -> Result<Strin
     };
     let key = bitcoin::PrivateKey::new(derived.private_key, kind);
     Ok(key.to_wif())
+}
+
+/// BIP44 coin type: 0' for mainnet, 1' for testnet/regtest.
+fn coin_type(network: Network) -> u32 {
+    match network {
+        Network::Bitcoin => 0,
+        _ => 1,
+    }
 }
 
 #[cfg(test)]

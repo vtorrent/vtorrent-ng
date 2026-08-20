@@ -133,6 +133,16 @@ impl PeerMessage {
 
         let length = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
 
+        // Reject absurd lengths so a malicious peer cannot force unbounded
+        // buffering. A piece is at most a few MB; 16 MB is a generous cap.
+        const MAX_MESSAGE_LENGTH: usize = 16 * 1024 * 1024;
+        if length > MAX_MESSAGE_LENGTH {
+            return Err(TorrentError::PeerWireError(format!(
+                "message length {} exceeds maximum {}",
+                length, MAX_MESSAGE_LENGTH
+            )));
+        }
+
         if length == 0 {
             return Ok(Some((PeerMessage::KeepAlive, 4)));
         }

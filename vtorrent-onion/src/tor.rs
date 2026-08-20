@@ -254,14 +254,18 @@ async fn socks5_connect(stream: &mut TcpStream, host: &str, port: u16) -> Result
     stream.write_all(&req).await?;
 
     // ── Step 3: Read response ─────────────────────────────────────────────
-    let mut resp = [0u8; 10];
-    stream.read_exact(&mut resp).await?;
+    // The reply is: VER(1) REP(1) RSV(1) ATYP(1) BND.ADDR(variable) BND.PORT(2).
+    // Read the fixed 4-byte header first, then the variable-length address
+    // based on ATYP, so domain (0x03) and IPv6 (0x04) replies are handled
+    // without leaving trailing bytes in the stream.
+    let mut head = [0u8; 4];
+    stream.read_exact(&mut head).await?;
 
-    if resp[0] != 0x05 {
+    if head[0] != 0x05 {
         return Err(OnionError::Socks5Error("Not a SOCKS5 response".to_string()));
     }
-    if resp[1] != 0x00 {
-        let reason = match resp[1] {
+    if head[1] != 0x00 {
+        let reason = match head[1] {
             0x01 => "general failure",
             0x02 => "connection not allowed",
             0x03 => "network unreachable",
@@ -274,9 +278,40 @@ async fn socks5_connect(stream: &mut TcpStream, host: &str, port: u16) -> Result
         };
         return Err(OnionError::Socks5Error(format!(
             "SOCKS5 CONNECT failed: {} (code {})",
-            reason, resp[1]
+            reason, head[1]
         )));
     }
+
+    // Consume the BND.ADDR based on its address type.
+    match head[3] {
+        0x01 => {
+            // IPv4: 4 bytes.
+            let mut addr = [0u8; 4];
+            stream.read_exact(&mut addr).await?;
+        }
+        0x04 => {
+            // IPv6: 16 bytes.
+            let mut addr = [0u8; 16];
+            stream.read_exact(&mut addr).await?;
+        }
+        0x03 => {
+            // Domain: 1 length byte + that many bytes.
+            let mut len = [0u8; 1];
+            stream.read_exact(&mut len).await?;
+            let mut addr = vec![0u8; len[0] as usize];
+            stream.read_exact(&mut addr).await?;
+        }
+        other => {
+            return Err(OnionError::Socks5Error(format!(
+                "Unsupported SOCKS5 address type: {}",
+                other
+            )));
+        }
+    }
+
+    // Consume the BND.PORT (2 bytes).
+    let mut port = [0u8; 2];
+    stream.read_exact(&mut port).await?;
 
     Ok(())
 }

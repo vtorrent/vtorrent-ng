@@ -161,9 +161,19 @@ impl BtcSync {
         });
     }
 
-    /// Record every output of `tx` that pays one of the wallet's addresses.
+    /// Record every output of `tx` that pays one of the wallet's addresses, and
+    /// remove any previously-recorded output that this tx spends.
     fn record_matching_outputs(&self, tx: &bitcoin::Transaction, height: u32) {
         let txid = tx.compute_txid().to_string();
+
+        // Remove spent outputs: any input that references a UTXO we already
+        // recorded is now spent and must be dropped from the set.
+        for input in &tx.input {
+            let prev_txid = input.previous_output.txid.to_string();
+            let prev_vout = input.previous_output.vout;
+            self.utxos.lock().unwrap().remove(&prev_txid, prev_vout);
+        }
+
         for (vout, out) in tx.output.iter().enumerate() {
             let script = out.script_pubkey.to_bytes();
             for addr in &self.addresses {

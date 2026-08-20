@@ -72,6 +72,24 @@ impl SipHasher {
         self.compress();
         self.v0 ^ self.v1 ^ self.v2 ^ self.v3
     }
+
+    /// Hash a 32-byte value (four 8-byte blocks) and finalize.
+    pub fn hash32(&mut self, data: &[u8; 32]) -> u64 {
+        for chunk in data.chunks_exact(8) {
+            let m = u64::from_le_bytes(chunk.try_into().unwrap());
+            self.v3 ^= m;
+            self.compress();
+            self.compress();
+            self.v0 ^= m;
+        }
+        // Finalization
+        self.v2 ^= 0xff;
+        self.compress();
+        self.compress();
+        self.compress();
+        self.compress();
+        self.v0 ^ self.v1 ^ self.v2 ^ self.v3
+    }
 }
 
 /// Derive the SipHash key pair from a block header and nonce.
@@ -99,9 +117,8 @@ pub fn derive_siphash_keys(header_bytes: &[u8], nonce: u64) -> (u64, u64) {
 /// Per BIP-152: SipHash-2-4(txid, key) & 0x0000_FFFF_FFFF_FFFF
 pub fn short_txid(txid: &[u8; 32], k0: u64, k1: u64) -> u64 {
     let mut hasher = SipHasher::new(k0, k1);
-    // Hash the first 8 bytes of the txid
-    let chunk: [u8; 8] = txid[0..8].try_into().unwrap();
-    let full = hasher.hash(&chunk);
+    // Hash the full 32-byte txid (BIP-152), not just the first 8 bytes.
+    let full = hasher.hash32(txid);
     // Mask to 6 bytes (48 bits)
     full & 0x0000_FFFF_FFFF_FFFF
 }

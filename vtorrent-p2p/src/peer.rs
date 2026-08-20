@@ -99,9 +99,9 @@ pub async fn run_peer(
     let mut peer_version: Option<VersionMsg> = None;
 
     // The handshake must complete within this window or the connection is
-    // dropped. Without a timeout, a peer could hold the connection open
-    // forever without ever completing the version/verack exchange.
-    let handshake_timeout = tokio::time::Duration::from_secs(10);
+    // dropped. Use a fixed deadline (not a re-created sleep) so a peer cannot
+    // reset the timer by trickling messages.
+    let handshake_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
 
     loop {
         tokio::select! {
@@ -175,7 +175,7 @@ pub async fn run_peer(
 
             // Handshake deadline: drop the connection if the peer never
             // completes the version/verack exchange.
-            _ = tokio::time::sleep(handshake_timeout), if !handshake_done => {
+            _ = tokio::time::sleep_until(handshake_deadline), if !handshake_done => {
                 tracing::warn!("Handshake timeout from {}", addr);
                 break;
             }

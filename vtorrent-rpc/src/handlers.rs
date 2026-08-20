@@ -377,27 +377,28 @@ pub async fn get_wallet_utxos(
 pub async fn get_addresses(
     State(state): State<Arc<AppState>>,
 ) -> RpcResult<Json<AddressesResponse>> {
+    // Return only the hot wallet's addresses, not the entire network UTXO set
+    // (which would leak the full chain address/balance map and scale with
+    // network size rather than wallet size).
     let chain = state.chain.lock().await;
-    let utxo_set = chain.get_utxo_set();
+    let wallet_addr = state.wallet_change_address.read().await.clone();
 
-    // Group UTXOs by script_pubkey and sum values
-    let mut script_totals: std::collections::HashMap<Vec<u8>, u64> =
-        std::collections::HashMap::new();
-    for utxo in utxo_set.values() {
-        *script_totals.entry(utxo.script_pubkey.clone()).or_insert(0) += utxo.value;
-    }
-    let addresses: Vec<AddressInfo> = script_totals
-        .iter()
-        .map(|(script, &balance)| {
-            let addr = hex::encode(script);
-            AddressInfo {
+    let addresses: Vec<AddressInfo> = match wallet_addr {
+        Some(addr) => {
+            let balance: u64 = chain
+                .get_utxos_for_address(&addr)
+                .iter()
+                .map(|u| u.value)
+                .sum();
+            vec![AddressInfo {
                 address: addr,
                 label: None,
                 balance,
                 is_change: false,
-            }
-        })
-        .collect();
+            }]
+        }
+        None => Vec::new(),
+    };
 
     Ok(Json(AddressesResponse { addresses }))
 }
@@ -594,7 +595,7 @@ pub async fn unlock_wallet(
     let expires_at = if req.timeout_secs == 0 {
         Some(0u64)
     } else {
-        Some(now_secs() + req.timeout_secs)
+        Some(now_secs().saturating_add(req.timeout_secs))
     };
 
     *state.wallet_unlock_expiry.write().await = expires_at;
