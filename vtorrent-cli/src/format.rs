@@ -88,10 +88,11 @@ pub fn print_mempool(data: &Value) {
                 let txid = tx["txid"].as_str().unwrap_or("unknown");
                 let fee = tx["fee_sats"].as_u64().unwrap_or(0);
                 let size = tx["size"].as_u64().unwrap_or(0);
+                let short = &txid[..txid.len().min(16)];
                 println!(
                     "    {} {} ({} bytes, {} sats fee)",
                     "•".dimmed(),
-                    txid[..16].white(),
+                    short.white(),
                     size,
                     fee
                 );
@@ -179,10 +180,11 @@ pub fn print_torrent_sessions(data: &Value) {
                 let name = session["name"].as_str().unwrap_or("unknown");
                 let progress = session["progress"].as_f64().unwrap_or(0.0);
                 let state = session["state"].as_str().unwrap_or("unknown");
+                let short_id = &id[..id.len().min(8)];
                 println!(
                     "  {} [{}] {} — {:.1}% ({})",
                     "•".dimmed(),
-                    id[..8].dimmed(),
+                    short_id.dimmed(),
                     name.white().bold(),
                     progress * 100.0,
                     state.cyan()

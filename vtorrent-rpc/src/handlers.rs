@@ -1337,12 +1337,14 @@ pub async fn get_btc_status(
 
 /// GET /api/v1/btc/address
 pub async fn get_btc_address(State(state): State<Arc<AppState>>) -> RpcResult<Json<Value>> {
-    let mut btc = state.btc_wallet.write().await;
-    match &mut *btc {
+    // Read-only: return the current receiving address without advancing the
+    // wallet's address index (a GET must not mutate state).
+    let btc = state.btc_wallet.read().await;
+    match &*btc {
         None => Err(RpcError::BadRequest("BTC wallet not initialized".into())),
         Some(w) => {
             let address = w
-                .next_address()
+                .current_address()
                 .map_err(|e| RpcError::Internal(e.to_string()))?;
             Ok(Json(json!({ "address": address })))
         }
