@@ -50,6 +50,9 @@ pub const DIFFICULTY_ADJUSTMENT_INTERVAL: u32 = 2016;
 ///
 /// Formula: reward = stake_amount * annual_rate * coin_age_days / 365
 pub fn compute_pos_reward(stake_amount: u64, coin_age_seconds: u64) -> u64 {
+    // Cap the coin age at MAX_STAKE_AGE so an arbitrarily old UTXO cannot earn
+    // an unbounded reward. This matches the staking engine's eligibility cap.
+    let coin_age_seconds = coin_age_seconds.min(MAX_STAKE_AGE);
     let coin_age_days = coin_age_seconds as f64 / 86400.0;
     let reward = stake_amount as f64 * POS_ANNUAL_RATE * coin_age_days / 365.0;
     reward as u64
@@ -442,15 +445,25 @@ mod tests {
 
     #[test]
     fn test_pos_reward_calculation() {
-        // 1000 VTR staked for 30 days at 5% annual rate
+        // 1000 VTR staked for 30 days at 5% annual rate, capped at MAX_STAKE_AGE
+        // (6 days). Expected: 1000 * 0.05 * 6/365 = ~0.82 VTR.
         let stake = 1000 * COIN;
         let age = 30 * 86400; // 30 days in seconds
         let reward = compute_pos_reward(stake, age);
 
-        // Expected: 1000 * 0.05 * 30/365 = ~4.109 VTR
-        // Allow a generous ±1 VTR tolerance for integer truncation
-        assert!(reward >= 3 * COIN, "Reward {} too low", reward);
-        assert!(reward <= 6 * COIN, "Reward {} too high", reward);
+        // The reward must be capped at the 6-day maximum, not the uncapped
+        // 30-day value (~4.1 VTR).
+        assert!(reward >= COIN / 2, "Reward {} too low", reward);
+        assert!(reward <= COIN + COIN / 2, "Reward {} too high", reward);
+    }
+
+    #[test]
+    fn test_pos_reward_capped_at_max_age() {
+        let stake = 1000 * COIN;
+        // 6 days and 60 days must yield the same reward (both capped).
+        let at_cap = compute_pos_reward(stake, MAX_STAKE_AGE);
+        let beyond_cap = compute_pos_reward(stake, 60 * 86400);
+        assert_eq!(at_cap, beyond_cap, "reward must be capped at MAX_STAKE_AGE");
     }
 
     #[test]
