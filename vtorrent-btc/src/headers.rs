@@ -6,11 +6,13 @@ use bitcoin::consensus::encode::deserialize;
 use bitcoin::hashes::Hash;
 use std::collections::HashMap;
 
-/// A stored header with its height.
+/// A stored header with its height and cumulative chain work.
 #[derive(Debug, Clone)]
 pub struct StoredHeader {
     pub header: Header,
     pub height: u32,
+    /// Cumulative work from genesis to this header (sum of per-header work).
+    pub work: u128,
 }
 
 /// A lightweight Bitcoin header chain.
@@ -19,6 +21,7 @@ pub struct HeaderChain {
     headers: HashMap<[u8; 32], StoredHeader>,
     best_hash: Option<[u8; 32]>,
     best_height: u32,
+    best_work: u128,
 }
 
 impl HeaderChain {
@@ -35,7 +38,7 @@ impl HeaderChain {
             return Ok(());
         }
 
-        if height > 0 {
+        let parent_work = if height > 0 {
             let prev: [u8; 32] = header.prev_blockhash.to_byte_array();
             // Bootstrap: the first header received from a trusted peer is
             // block 1, whose parent is the network genesis block (which we do
@@ -46,12 +49,27 @@ impl HeaderChain {
                     hex::encode(prev)
                 )));
             }
-        }
+            self.headers.get(&prev).map(|h| h.work).unwrap_or(0)
+        } else {
+            0
+        };
 
-        self.headers.insert(hash, StoredHeader { header, height });
-        if height >= self.best_height || self.best_hash.is_none() {
+        let work = parent_work.saturating_add(header_work(header.bits));
+        self.headers.insert(
+            hash,
+            StoredHeader {
+                header,
+                height,
+                work,
+            },
+        );
+
+        // Select the tip by cumulative work, not raw height, so a peer cannot
+        // steer the client onto a high-height but low-work fork.
+        if self.best_hash.is_none() || work > self.best_work {
             self.best_height = height;
             self.best_hash = Some(hash);
+            self.best_work = work;
         }
         Ok(())
     }
@@ -89,6 +107,27 @@ impl HeaderChain {
         entries.sort_by_key(|(height, _)| **height);
         entries.into_iter().map(|(_, hash)| *hash).collect()
     }
+}
+
+/// Compute the work contributed by a single header from its compact `bits`.
+///
+/// Work is `2^256 / target`, the standard Bitcoin measure. A header with a
+/// smaller target (higher difficulty) contributes more work. Saturated to
+/// `u128::MAX` for absurdly small targets.
+fn header_work(bits: bitcoin::CompactTarget) -> u128 {
+    let bits = bits.to_consensus();
+    let exponent = bits >> 24;
+    let mantissa = (bits & 0x00ff_ffff) as u128;
+    if mantissa == 0 {
+        return 0;
+    }
+    // target = mantissa * 2^(8*(exponent-3)), so
+    // work = 2^256 / target = 2^(280 - 8*exponent) / mantissa.
+    let shift = 280u32.saturating_sub(8 * exponent);
+    if shift >= 128 {
+        return u128::MAX;
+    }
+    (1u128 << shift) / mantissa
 }
 
 #[cfg(test)]

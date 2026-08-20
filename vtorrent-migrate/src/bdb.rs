@@ -41,7 +41,12 @@ pub fn parse_wallet(data: &[u8]) -> Result<Vec<RawRecord>> {
     let mut overflow_pages: std::collections::HashMap<u32, Vec<u8>> =
         std::collections::HashMap::new();
 
-    // First pass: collect overflow pages
+    // First pass: collect overflow pages.
+    //
+    // Overflow pages use a different header layout than B-tree pages: the
+    // `entries`/`hf_offset` fields (offsets 12-15) are repurposed as `tlen`,
+    // and the `level` field (offset 16) holds the page type. Data starts at
+    // offset 26.
     for page_idx in 0..num_pages {
         let page_start = page_idx * page_size;
         let page = &data[page_start..page_start + page_size];
@@ -50,11 +55,11 @@ pub fn parse_wallet(data: &[u8]) -> Result<Vec<RawRecord>> {
             continue;
         }
 
-        let page_type = page[17];
+        let page_type = page[16];
         if page_type == P_OVERFLOW {
             let page_num = u32::from_le_bytes([page[0], page[1], page[2], page[3]]);
-            // Overflow data starts at offset 26, length is at offset 16
-            let data_len = u32::from_le_bytes([page[16], page[17], page[18], page[19]]) as usize;
+            // Overflow data length is `tlen` at offset 12.
+            let data_len = u32::from_le_bytes([page[12], page[13], page[14], page[15]]) as usize;
             let available = page_size.saturating_sub(26);
             let copy_len = data_len.min(available);
             if copy_len > 0 && 26 + copy_len <= page.len() {

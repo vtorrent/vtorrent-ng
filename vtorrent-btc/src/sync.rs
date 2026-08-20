@@ -129,6 +129,7 @@ impl BtcSync {
             tracing::debug!("BTC sync: received {:?}", msg);
             match msg {
                 NetworkMessage::Headers(hdrs) => {
+                    let batch_len = hdrs.len();
                     for h in hdrs {
                         let raw = serialize(&h);
                         let height = {
@@ -138,7 +139,14 @@ impl BtcSync {
                         self.headers.lock().unwrap().add_header(&raw, height)?;
                         added += 1;
                     }
-                    break;
+                    // Bitcoin Core caps each `headers` message at 2000 entries.
+                    // Keep requesting until the peer sends a short batch (or
+                    // none), so a single sync pass advances the full chain.
+                    if batch_len < 2000 {
+                        break;
+                    }
+                    peer.send(NetworkMessage::GetHeaders(self.build_getheaders()))
+                        .await?;
                 }
                 NetworkMessage::Ping(nonce) => {
                     peer.send(NetworkMessage::Pong(nonce)).await?;
