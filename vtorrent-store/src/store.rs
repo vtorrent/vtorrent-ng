@@ -57,7 +57,10 @@ impl BlockStore {
         let read_txn = self.db.begin_read()?;
         let table = read_txn.open_table(META)?;
         match table.get("best_height")? {
-            Some(v) => Ok(v.value().parse::<u32>().unwrap_or(0)),
+            Some(v) => v
+                .value()
+                .parse::<u32>()
+                .map_err(|_| StoreError::Corrupted("invalid best_height".into())),
             None => Ok(0),
         }
     }
@@ -185,7 +188,9 @@ impl BlockStore {
             let new_hash_hex = height_idx
                 .get(new_height)?
                 .map(|v| v.value().to_string())
-                .unwrap_or_else(|| "0".repeat(64));
+                .ok_or_else(|| {
+                    StoreError::Corrupted(format!("no block at height {}", new_height))
+                })?;
 
             let mut meta = write_txn.open_table(META)?;
             let new_height_str = new_height.to_string();
@@ -229,6 +234,15 @@ impl BlockStore {
     /// Return all block hashes on the main chain from genesis to tip.
     pub fn main_chain_hashes(&self) -> Result<Vec<[u8; 32]>> {
         let height = self.best_height()?;
+        // Cap the allocation: a corrupted best_height must not drive a huge
+        // allocation or a multi-billion-iteration loop.
+        const MAX_CHAIN_HEIGHT: u32 = 10_000_000;
+        if height > MAX_CHAIN_HEIGHT {
+            return Err(StoreError::Corrupted(format!(
+                "best_height {} exceeds maximum {}",
+                height, MAX_CHAIN_HEIGHT
+            )));
+        }
         let read_txn = self.db.begin_read()?;
         let height_idx = read_txn.open_table(HEIGHT_INDEX)?;
         let mut hashes = Vec::with_capacity(height as usize + 1);
