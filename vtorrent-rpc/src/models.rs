@@ -278,8 +278,9 @@ pub struct PlaceOrderRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PlaceOrderResponse {
     pub order_id: String,
-    /// The order is unfunded until a taker supplies the recipient address.
-    pub htlc_address: String,
+    /// The VTR HTLC funding address. `None` until a taker matches the order and
+    /// supplies the recipient address (the HTLC redeem script needs it).
+    pub htlc_address: Option<String>,
     pub hash_lock: String,
     pub funding_txid: Option<String>,
     pub status: String,

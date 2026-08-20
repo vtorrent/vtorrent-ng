@@ -302,6 +302,7 @@ async fn main() -> anyhow::Result<()> {
         let peer_list_ref = Arc::clone(&rpc_state.peer_list);
         let blocks_staked_ref = Arc::clone(&rpc_state.blocks_staked);
         let last_stake_time_ref = Arc::clone(&rpc_state.last_stake_time);
+        let rewards_earned_ref = Arc::clone(&rpc_state.rewards_earned_sats);
 
         tokio::spawn(async move {
             loop {
@@ -355,13 +356,16 @@ async fn main() -> anyhow::Result<()> {
                         }
 
                         // ── Track staking counters ─────────────────────────
-                        if let node_events::NodeEvent::StakingReward { .. } = &*event {
+                        if let node_events::NodeEvent::StakingReward { reward_sats, .. } = &*event {
                             *blocks_staked_ref.write().await += 1;
                             *last_stake_time_ref.write().await = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap_or_default()
                                 .as_secs()
                                 as u32;
+                            let current = *rewards_earned_ref.read().await;
+                            *rewards_earned_ref.write().await =
+                                current.saturating_add(*reward_sats);
                         }
 
                         // ── Bridge to RPC WebSocket broadcaster ───────────────
@@ -736,10 +740,15 @@ async fn build_incentive_payment(
         return Err(anyhow::anyhow!("no UTXOs available"));
     }
 
+    let fee_rate = {
+        let mempool = mempool.lock().await;
+        mempool.recommended_fee_rate().max(1)
+    };
+
     let tx = TxBuilder::new()
         .recipient(&payment.peer_address, payment.amount_satoshis)
         .change_address(&change_address)
-        .fee_rate(10)
+        .fee_rate(fee_rate)
         .sign_with_wif(&wif)
         .build(&utxos)
         .map_err(|e| anyhow::anyhow!("tx build failed: {}", e))?;

@@ -172,11 +172,15 @@ pub async fn get_block_height(
         .best_hash()
         .map(hex::encode)
         .unwrap_or_else(|| "0".repeat(64));
+    let timestamp = chain
+        .get_block_at_height(chain.best_height())
+        .map(|b| b.header.timestamp)
+        .unwrap_or_else(|| now_secs() as u32);
 
     Ok(Json(BlockHeightResponse {
         height,
         hash: best_hash,
-        timestamp: now_secs() as u32,
+        timestamp,
     }))
 }
 
@@ -283,10 +287,15 @@ pub async fn get_mempool(State(state): State<Arc<AppState>>) -> RpcResult<Json<M
     let txs = mempool.get_transactions();
     let txids: Vec<String> = txs.iter().map(|tx| hex::encode(tx.txid())).collect();
     let count = txids.len();
+    // Sum the actual serialized size of each transaction, not an estimate.
+    let size_bytes: usize = txs
+        .iter()
+        .map(|tx| serde_json::to_vec(tx).map(|v| v.len()).unwrap_or(0))
+        .sum();
 
     Ok(Json(MempoolResponse {
         count,
-        size_bytes: count * 250,
+        size_bytes,
         txids,
     }))
 }
@@ -307,24 +316,15 @@ pub async fn get_fee_estimate(
 // ─── Wallet ───────────────────────────────────────────────────────────────────
 
 pub async fn get_balance(State(state): State<Arc<AppState>>) -> RpcResult<Json<BalanceResponse>> {
-    let chain = state.chain.lock().await;
     let staking_enabled = *state.staking_enabled.read().await;
     let staking_address = state.staking_address.read().await.clone();
+    let change_address = state.wallet_change_address.read().await.clone();
 
-    // Sum only the hot wallet's UTXOs, not the entire network UTXO set.
-    let confirmed: u64 = match state.wallet_change_address.read().await.clone() {
-        Some(addr) => chain
-            .get_utxos_for_address(&addr)
-            .iter()
-            .map(|u| u.value)
-            .sum(),
-        None => 0,
-    };
-
-    // The staking figure is the amount actually staked (UTXOs at the staking
-    // address), not a fabricated fraction of the confirmed balance.
-    let staking = if staking_enabled {
-        staking_address
+    // Compute confirmed + staking + our UTXO map under the chain lock, then
+    // release it before locking the mempool.
+    let (confirmed, staking, our_utxos, our_script) = {
+        let chain = state.chain.lock().await;
+        let confirmed: u64 = change_address
             .as_ref()
             .map(|addr| {
                 chain
@@ -333,14 +333,72 @@ pub async fn get_balance(State(state): State<Arc<AppState>>) -> RpcResult<Json<B
                     .map(|u| u.value)
                     .sum()
             })
-            .unwrap_or(0)
+            .unwrap_or(0);
+
+        // The staking figure is the amount actually staked (UTXOs at the staking
+        // address), not a fabricated fraction of the confirmed balance.
+        let staking = if staking_enabled {
+            staking_address
+                .as_ref()
+                .map(|addr| {
+                    chain
+                        .get_utxos_for_address(addr)
+                        .iter()
+                        .map(|u| u.value)
+                        .sum()
+                })
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        let our_utxos: std::collections::HashMap<([u8; 32], u32), u64> = change_address
+            .as_ref()
+            .map(|addr| {
+                chain
+                    .get_utxos_for_address(addr)
+                    .into_iter()
+                    .map(|u| ((u.txid, u.vout), u.value))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let our_script = change_address
+            .as_ref()
+            .and_then(|addr| vtorrent_wallet::tx_builder::p2pkh_script_pubkey(addr).ok());
+
+        (confirmed, staking, our_utxos, our_script)
+    };
+
+    // Unconfirmed = net pending activity for the hot wallet: mempool outputs
+    // paying to us minus mempool inputs spending our confirmed UTXOs.
+    let unconfirmed: u64 = if change_address.is_some() {
+        let mempool = state.mempool.lock().await;
+        let mp_txs = mempool.get_transactions();
+        let mut incoming = 0u64;
+        let mut outgoing = 0u64;
+        for tx in &mp_txs {
+            if let Some(script) = &our_script {
+                for out in &tx.outputs {
+                    if &out.script_pubkey == script {
+                        incoming = incoming.saturating_add(out.value);
+                    }
+                }
+            }
+            for inp in &tx.inputs {
+                if let Some(v) = our_utxos.get(&(inp.prev_txid, inp.prev_vout)) {
+                    outgoing = outgoing.saturating_add(*v);
+                }
+            }
+        }
+        incoming.saturating_sub(outgoing)
     } else {
         0
     };
 
     Ok(Json(BalanceResponse {
         confirmed,
-        unconfirmed: 0,
+        unconfirmed,
         staking,
         display: format!("{:.6} VTR", confirmed as f64 / 100_000_000.0),
     }))
@@ -553,11 +611,15 @@ pub async fn send_vtr(
         ));
     }
 
-    // Build and sign the transaction.
+    // Build and sign the transaction using the mempool's recommended fee rate.
+    let fee_rate = {
+        let mempool = state.mempool.lock().await;
+        mempool.recommended_fee_rate().max(1)
+    };
     let tx = TxBuilder::new()
         .recipient(&req.to_address, req.amount_satoshis)
         .change_address(&change_address)
-        .fee_rate(10) // 10 sat/byte — reasonable default
+        .fee_rate(fee_rate)
         .sign_with_wif(&wif)
         .build(&utxos)
         .map_err(|e| RpcError::BadRequest(format!("Transaction build failed: {}", e)))?;
@@ -645,14 +707,16 @@ pub async fn get_transactions(
 
     let result = txs
         .into_iter()
-        .map(|(txid, height, ts, tx_type, amount)| TransactionResponse {
-            display: format!("{:.6} VTR", amount as f64 / 100_000_000.0),
-            txid,
-            block_height: height,
-            timestamp: ts,
-            tx_type,
-            amount_satoshis: amount,
-        })
+        .map(
+            |(txid, height, ts, tx_type, amount, _fee)| TransactionResponse {
+                display: format!("{:.6} VTR", amount as f64 / 100_000_000.0),
+                txid,
+                block_height: height,
+                timestamp: ts,
+                tx_type,
+                amount_satoshis: amount,
+            },
+        )
         .collect();
 
     Ok(Json(result))
@@ -855,7 +919,7 @@ pub async fn get_dex_orders(
             rate: o.rate(),
             status: format!("{:?}", o.status),
             funding_txid: o.funding_txid.map(hex::encode),
-            created_at: now_secs(),
+            created_at: o.created_at,
             expires_at: o.expiry as u64,
         })
         .collect();
@@ -927,7 +991,7 @@ pub async fn place_dex_order(
 
     Ok(Json(PlaceOrderResponse {
         order_id,
-        htlc_address: "pending-match".to_string(),
+        htlc_address: None,
         hash_lock,
         funding_txid: None,
         status: "Open".to_string(),

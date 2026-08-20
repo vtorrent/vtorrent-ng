@@ -405,6 +405,8 @@ pub struct SwapOrder {
     pub preimage: Option<[u8; 32]>,
     /// Order expiry timestamp.
     pub expiry: u32,
+    /// Unix timestamp when the order was created.
+    pub created_at: u64,
     /// Order status.
     pub status: OrderStatus,
 }
@@ -454,6 +456,10 @@ impl OrderAnnouncement {
             taker_address: None,
             preimage: None,
             expiry: self.expiry,
+            created_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
             status: OrderStatus::Open,
         }
     }
@@ -568,6 +574,7 @@ impl SwapOrder {
             taker_address: None,
             preimage: None,
             expiry: now + locktime_seconds,
+            created_at: now as u64,
             status: OrderStatus::Open,
         }
     }

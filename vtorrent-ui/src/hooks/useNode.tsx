@@ -304,7 +304,7 @@ export async function placeDexOrder(req: {
   requestAsset: string
   expirySecs: number
   passphrase: string
-}): Promise<{ orderId: string; htlcAddress: string; hashLock: string }> {
+}): Promise<{ orderId: string; htlcAddress: string | null; hashLock: string }> {
   if (isTauri()) {
     return tauriInvoke('place_dex_order', req)
   }

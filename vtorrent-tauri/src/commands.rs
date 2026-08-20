@@ -530,20 +530,23 @@ pub async fn start_node(state: tauri::State<'_, AppState>) -> Result<NodeInfoRes
     {
         let blocks_staked = Arc::clone(&rpc_state.blocks_staked);
         let last_stake_time = Arc::clone(&rpc_state.last_stake_time);
+        let rewards_earned = Arc::clone(&rpc_state.rewards_earned_sats);
         tokio::spawn(async move {
             loop {
                 match node_rx.recv().await {
                     Ok(event) => {
-                        if matches!(
-                            &*event,
-                            vtorrent_node::events::NodeEvent::StakingReward { .. }
-                        ) {
+                        if let vtorrent_node::events::NodeEvent::StakingReward {
+                            reward_sats, ..
+                        } = &*event
+                        {
                             *blocks_staked.write().await += 1;
                             *last_stake_time.write().await = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap_or_default()
                                 .as_secs()
                                 as u32;
+                            let current = *rewards_earned.read().await;
+                            *rewards_earned.write().await = current.saturating_add(*reward_sats);
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
@@ -617,14 +620,14 @@ pub async fn get_transactions(
     let best = chain.best_height();
     Ok(txs
         .into_iter()
-        .map(|(txid, height, ts, dir, amount)| TxResult {
+        .map(|(txid, height, ts, dir, amount, fee)| TxResult {
             txid,
             block_height: height,
             confirmations: best.saturating_sub(height),
             timestamp: ts,
             direction: dir,
             amount_satoshis: amount,
-            fee_satoshis: 0, // populated by UTXO diff in a future pass
+            fee_satoshis: fee,
         })
         .collect())
 }
@@ -1277,7 +1280,7 @@ pub async fn btc_claim(
         refund_address,
         expiry: btc_expiry,
         amount: btc_amount,
-        network: bitcoin::Network::Bitcoin,
+        network: *rpc.btc_network.read().await,
     };
     const CLAIM_FEE_SATOSHIS: u64 = 1_000;
     let unsigned = htlc
@@ -1361,7 +1364,7 @@ pub async fn swap_refund(
                     refund_address,
                     expiry: s.btc_expiry,
                     amount: s.btc_amount,
-                    network: bitcoin::Network::Bitcoin,
+                    network: *rpc.btc_network.read().await,
                 };
                 const REFUND_FEE_SATOSHIS: u64 = 1_000;
                 let unsigned = htlc
@@ -1450,10 +1453,14 @@ pub async fn send_vtr(
         chain.get_utxos_for_address(&from_address)
     };
 
-    // Build and sign the transaction.
+    // Build and sign the transaction using the mempool's recommended fee rate.
+    let fee_rate = {
+        let mempool = handle.rpc_state.mempool.lock().await;
+        mempool.recommended_fee_rate().max(1)
+    };
     let tx = TxBuilder::new()
         .recipient(&to_address, amount_satoshis)
-        .fee_rate(10)
+        .fee_rate(fee_rate)
         .change_address(&from_address)
         .sign_with_wif(&wif)
         .build(&utxos)
@@ -1528,12 +1535,13 @@ pub async fn start_staking(
     tracing::info!("Staking started for address: {}", address);
 
     let blocks_staked = *handle.rpc_state.blocks_staked.read().await;
+    let rewards_earned_sats = *handle.rpc_state.rewards_earned_sats.read().await;
     Ok(StakingStatusResult {
         enabled: true,
         address: Some(address),
         blocks_staked,
         estimated_apy: 5.0,
-        rewards_earned_sats: blocks_staked.saturating_mul(100_000_000) / 100,
+        rewards_earned_sats,
     })
 }
 
@@ -1556,12 +1564,13 @@ pub async fn stop_staking(state: tauri::State<'_, AppState>) -> Result<StakingSt
     tracing::info!("Staking stopped");
 
     let blocks_staked = *handle.rpc_state.blocks_staked.read().await;
+    let rewards_earned_sats = *handle.rpc_state.rewards_earned_sats.read().await;
     Ok(StakingStatusResult {
         enabled: false,
         address: None,
         blocks_staked,
         estimated_apy: 0.0,
-        rewards_earned_sats: 0,
+        rewards_earned_sats,
     })
 }
 
@@ -1578,13 +1587,14 @@ pub async fn get_staking_status(state: tauri::State<'_, AppState>) -> Result<Sta
     let enabled = *handle.rpc_state.staking_enabled.read().await;
     let address = handle.rpc_state.staking_address.read().await.clone();
     let blocks_staked = *handle.rpc_state.blocks_staked.read().await;
+    let rewards_earned_sats = *handle.rpc_state.rewards_earned_sats.read().await;
 
     Ok(StakingStatusResult {
         enabled,
         address,
         blocks_staked,
         estimated_apy: if enabled { 5.0 } else { 0.0 },
-        rewards_earned_sats: blocks_staked.saturating_mul(100_000_000) / 100,
+        rewards_earned_sats,
     })
 }
 
@@ -1600,29 +1610,24 @@ pub struct BtcStatus {
 
 /// Get the BTC wallet status.
 #[tauri::command]
-pub fn get_btc_status(state: State<AppState>) -> Result<BtcStatus> {
-    let wallet = state.wallet.lock().map_err(|_| TauriError::WalletLocked)?;
-    let wallet = wallet.as_ref().ok_or(TauriError::WalletNotInitialized)?;
-    if !wallet.has_hd() {
-        return Ok(BtcStatus {
+pub async fn get_btc_status(state: State<'_, AppState>) -> Result<BtcStatus> {
+    let guard = state.node.lock().await;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    let btc = handle.rpc_state.btc_wallet.read().await;
+    match btc.as_ref() {
+        None => Ok(BtcStatus {
             initialized: false,
             balance_satoshis: 0,
             address: None,
             best_height: 0,
-        });
+        }),
+        Some(wallet) => Ok(BtcStatus {
+            initialized: true,
+            balance_satoshis: wallet.balance(),
+            address: wallet.current_address().ok(),
+            best_height: wallet.best_height(),
+        }),
     }
-    let mnemonic = wallet.mnemonic().ok_or(TauriError::WalletNotInitialized)?;
-    let seed = vtorrent_wallet::hd::Mnemonic::from_phrase(mnemonic)
-        .map_err(TauriError::from)?
-        .to_seed();
-    let mut btc = vtorrent_btc::wallet::BtcWallet::new(seed);
-    let address = btc
-        .next_address()
-        .map_err(|e| TauriError::Wallet(e.to_string()))?;
-    Ok(BtcStatus {
-        initialized: true,
-        balance_satoshis: btc.balance(),
-        address: Some(address),
-        best_height: btc.best_height(),
-    })
 }

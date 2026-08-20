@@ -341,7 +341,10 @@ impl Chain {
     /// Get the most recent `limit` transactions from the main chain (newest first).
     ///
     /// Returns a vector of `(txid_hex, block_height, block_timestamp, tx_type_str, total_output_sats)`.
-    pub fn get_recent_transactions(&self, limit: usize) -> Vec<(String, u32, u32, String, u64)> {
+    pub fn get_recent_transactions(
+        &self,
+        limit: usize,
+    ) -> Vec<(String, u32, u32, String, u64, u64)> {
         let mut result = Vec::new();
         let height = self.best_height();
         let mut h = height;
@@ -361,7 +364,8 @@ impl Chain {
                 let txid = hex::encode(tx.txid());
                 let tx_type = format!("{:?}", tx.tx_type);
                 let total_out: u64 = tx.outputs.iter().map(|o| o.value).sum();
-                result.push((txid, h, ts, tx_type, total_out));
+                let fee = self.tx_fee(tx, total_out);
+                result.push((txid, h, ts, tx_type, total_out, fee));
             }
             if h == 0 {
                 break;
@@ -369,6 +373,33 @@ impl Chain {
             h -= 1;
         }
         result
+    }
+
+    /// Compute the fee for a transaction as (sum of spent input values) - (sum
+    /// of outputs). Returns 0 for coinbase/legacy-claim transactions (no inputs)
+    /// or when an input's previous output can no longer be resolved.
+    fn tx_fee(&self, tx: &Transaction, total_out: u64) -> u64 {
+        if tx.is_coinbase() || tx.is_legacy_claim() {
+            return 0;
+        }
+        let input_sum: u64 = tx
+            .inputs
+            .iter()
+            .filter_map(|inp| self.resolve_output_value(&inp.prev_txid, inp.prev_vout))
+            .sum();
+        input_sum.saturating_sub(total_out)
+    }
+
+    /// Resolve the value of a previous output (txid, vout) from the main chain.
+    fn resolve_output_value(&self, txid: &[u8; 32], vout: u32) -> Option<u64> {
+        let (block_hash, offset) = self.tx_index.get(txid)?;
+        let block = self.blocks.get(block_hash)?;
+        block
+            .transactions
+            .get(*offset)?
+            .outputs
+            .get(vout as usize)
+            .map(|o| o.value)
     }
 
     /// Add a new block to the chain, handling forks and reorgs automatically.

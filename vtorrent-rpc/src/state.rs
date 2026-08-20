@@ -73,6 +73,8 @@ pub struct AppState {
     pub blocks_staked: Arc<RwLock<u64>>,
     /// Unix timestamp of the most recent staked block (0 = never staked).
     pub last_stake_time: Arc<RwLock<u32>>,
+    /// Total staking rewards earned this session (satoshis).
+    pub rewards_earned_sats: Arc<RwLock<u64>>,
     /// WebSocket event broadcaster.
     pub events: EventBroadcaster,
     /// Hot wallet WIF private key (in-memory only, never persisted to disk).
@@ -141,6 +143,7 @@ impl AppState {
             staking_address: Arc::new(RwLock::new(None)),
             blocks_staked: Arc::new(RwLock::new(0)),
             last_stake_time: Arc::new(RwLock::new(0)),
+            rewards_earned_sats: Arc::new(RwLock::new(0)),
             events: EventBroadcaster::new(1024),
             wallet_wif: Arc::new(RwLock::new(None)),
             wallet_encrypted: Arc::new(RwLock::new(None)),
@@ -187,6 +190,7 @@ impl AppState {
             staking_address: Arc::new(RwLock::new(None)),
             blocks_staked: Arc::new(RwLock::new(0)),
             last_stake_time: Arc::new(RwLock::new(0)),
+            rewards_earned_sats: Arc::new(RwLock::new(0)),
             events: EventBroadcaster::new(1024),
             wallet_wif: Arc::new(RwLock::new(None)),
             wallet_encrypted: Arc::new(RwLock::new(None)),
