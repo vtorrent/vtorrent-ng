@@ -46,6 +46,8 @@ pub struct PeerSession {
     pub remote_pubkey: [u8; 32],
     pub local_pubkey: [u8; 32],
     pub send_counter: u32,
+    /// Highest counter received from the peer (for replay protection).
+    pub recv_counter: u32,
 }
 
 /// The hole punch engine.
@@ -156,6 +158,7 @@ impl HolePuncher {
                     remote_pubkey,
                     local_pubkey: *local_pub,
                     send_counter: 0,
+                    recv_counter: 0,
                 };
                 self.sessions
                     .write()
@@ -202,6 +205,7 @@ impl HolePuncher {
             remote_pubkey,
             local_pubkey: *self.local_keypair.public.as_bytes(),
             send_counter: 0,
+            recv_counter: 0,
         };
         self.sessions.write().await.insert(node_id, session);
 
@@ -239,12 +243,26 @@ impl HolePuncher {
     /// Decrypt application data received from a connected peer.
     ///
     /// The packet must be the encrypted payload after the outer `TAG_DATA` byte.
+    /// Rejects replayed packets by tracking the highest received counter.
     pub async fn decrypt_data(&self, node_id: &str, packet: &[u8]) -> Result<Vec<u8>> {
-        let sessions = self.sessions.read().await;
+        let mut sessions = self.sessions.write().await;
         let session = sessions
-            .get(node_id)
+            .get_mut(node_id)
             .ok_or_else(|| OverlayError::PeerNotFound(node_id.to_string()))?;
-        session.shared_key.decrypt(&session.remote_pubkey, packet)
+
+        // Replay protection: the packet's counter must be strictly greater than
+        // the last one we accepted.
+        if packet.len() < 4 {
+            return Err(OverlayError::Crypto("packet too short".into()));
+        }
+        let counter = u32::from_le_bytes([packet[0], packet[1], packet[2], packet[3]]);
+        if counter <= session.recv_counter {
+            return Err(OverlayError::Crypto("replayed packet".into()));
+        }
+
+        let plaintext = session.shared_key.decrypt(&session.remote_pubkey, packet)?;
+        session.recv_counter = counter;
+        Ok(plaintext)
     }
 
     /// Returns true if a session exists for the given node ID.

@@ -96,13 +96,17 @@ impl RelayEngine {
                     .await
                     .map_err(OverlayError::Io)?;
 
-                // Record the session
+                // Record the session, deduplicating by requester so a single
+                // requester cannot monopolize all relay slots (amplification
+                // bound). One session per requester.
                 let session = RelaySession {
                     target_node_id: target_id,
                     target_addr,
                     requester_addr: from,
                 };
-                self.sessions.write().await.push(session);
+                let mut sessions = self.sessions.write().await;
+                sessions.retain(|s| s.requester_addr != from);
+                sessions.push(session);
                 tracing::debug!(
                     "Relaying {} bytes from {} to {}",
                     payload.len(),
