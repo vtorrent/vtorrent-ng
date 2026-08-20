@@ -78,7 +78,7 @@ impl HolePuncher {
                 Ok(_) => {
                     tracing::info!(
                         "Hole punch succeeded to {} via {}",
-                        remote.node_id[..8].to_string(),
+                        &remote.node_id[..remote.node_id.len().min(8)],
                         addr
                     );
                     return Ok(());
@@ -91,7 +91,7 @@ impl HolePuncher {
 
         Err(OverlayError::HolePunch(format!(
             "all candidates failed for {}",
-            &remote.node_id[..8]
+            &remote.node_id[..remote.node_id.len().min(8)]
         )))
     }
 

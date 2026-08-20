@@ -83,7 +83,8 @@ impl Endpoint {
 
 impl fmt::Display for Endpoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}@{}", &self.node_id[..8], self.addr)
+        let short = &self.node_id[..self.node_id.len().min(8)];
+        write!(f, "{}@{}", short, self.addr)
     }
 }
 

@@ -87,8 +87,14 @@ impl OnionTransport {
             }
         }
 
-        // Direct clearnet connection
-        let stream = TcpStream::connect(addr).await?;
+        // Direct clearnet connection (with a timeout so a non-responsive peer
+        // cannot hang the dial indefinitely).
+        let stream = tokio::time::timeout(
+            std::time::Duration::from_secs(self.config.connect_timeout_secs),
+            TcpStream::connect(addr),
+        )
+        .await
+        .map_err(|_| OnionError::Timeout(self.config.connect_timeout_secs))??;
         Ok((stream, TransportMode::Clearnet))
     }
 
