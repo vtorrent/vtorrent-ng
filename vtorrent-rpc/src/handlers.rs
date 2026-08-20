@@ -309,6 +309,7 @@ pub async fn get_fee_estimate(
 pub async fn get_balance(State(state): State<Arc<AppState>>) -> RpcResult<Json<BalanceResponse>> {
     let chain = state.chain.lock().await;
     let staking_enabled = *state.staking_enabled.read().await;
+    let staking_address = state.staking_address.read().await.clone();
 
     // Sum only the hot wallet's UTXOs, not the entire network UTXO set.
     let confirmed: u64 = match state.wallet_change_address.read().await.clone() {
@@ -320,7 +321,22 @@ pub async fn get_balance(State(state): State<Arc<AppState>>) -> RpcResult<Json<B
         None => 0,
     };
 
-    let staking = if staking_enabled { confirmed / 10 } else { 0 };
+    // The staking figure is the amount actually staked (UTXOs at the staking
+    // address), not a fabricated fraction of the confirmed balance.
+    let staking = if staking_enabled {
+        staking_address
+            .as_ref()
+            .map(|addr| {
+                chain
+                    .get_utxos_for_address(addr)
+                    .iter()
+                    .map(|u| u.value)
+                    .sum()
+            })
+            .unwrap_or(0)
+    } else {
+        0
+    };
 
     Ok(Json(BalanceResponse {
         confirmed,

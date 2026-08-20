@@ -21,10 +21,13 @@ pub fn print_node_info(data: &Value) {
         "Block height",
         &data["block_height"].as_u64().unwrap_or(0).to_string(),
     );
-    kv("Best hash", data["best_hash"].as_str().unwrap_or("none"));
+    kv(
+        "Best hash",
+        data["best_block_hash"].as_str().unwrap_or("none"),
+    );
     kv(
         "Peers",
-        &data["peer_count"].as_u64().unwrap_or(0).to_string(),
+        &data["connections"].as_u64().unwrap_or(0).to_string(),
     );
     kv(
         "Syncing",
@@ -36,7 +39,7 @@ pub fn print_node_info(data: &Value) {
     );
     kv(
         "Uptime",
-        &format_uptime(data["uptime_seconds"].as_u64().unwrap_or(0)),
+        &format_uptime(data["uptime_secs"].as_u64().unwrap_or(0)),
     );
     println!();
 }
@@ -53,7 +56,7 @@ pub fn print_block(data: &Value) {
     );
     kv(
         "Size",
-        &format!("{} bytes", data["size"].as_u64().unwrap_or(0)),
+        &format!("{} bytes", data["size_bytes"].as_u64().unwrap_or(0)),
     );
     kv("Prev hash", data["prev_hash"].as_str().unwrap_or("none"));
     kv(
@@ -69,36 +72,20 @@ pub fn print_mempool(data: &Value) {
     println!("\n{}", "=== Mempool ===".cyan().bold());
     kv("Transactions", &count.to_string());
     kv(
-        "Total fees",
-        &sats_to_vtr(data["total_fees"].as_u64().unwrap_or(0)),
-    );
-    kv(
-        "Min fee rate",
-        &format!("{} sat/byte", data["min_fee_rate"].as_u64().unwrap_or(0)),
-    );
-    kv(
-        "Median fee",
-        &format!("{} sat/byte", data["median_fee_rate"].as_u64().unwrap_or(0)),
+        "Size",
+        &format!("{} bytes", data["size_bytes"].as_u64().unwrap_or(0)),
     );
 
-    if let Some(txs) = data["transactions"].as_array() {
-        if !txs.is_empty() {
-            println!("\n  {}", "Recent transactions:".dimmed());
-            for tx in txs.iter().take(10) {
-                let txid = tx["txid"].as_str().unwrap_or("unknown");
-                let fee = tx["fee_sats"].as_u64().unwrap_or(0);
-                let size = tx["size"].as_u64().unwrap_or(0);
+    if let Some(txids) = data["txids"].as_array() {
+        if !txids.is_empty() {
+            println!("\n  {}", "Recent transaction ids:".dimmed());
+            for txid in txids.iter().take(10) {
+                let txid = txid.as_str().unwrap_or("unknown");
                 let short = &txid[..txid.len().min(16)];
-                println!(
-                    "    {} {} ({} bytes, {} sats fee)",
-                    "•".dimmed(),
-                    short.white(),
-                    size,
-                    fee
-                );
+                println!("    {} {}", "•".dimmed(), short.white());
             }
-            if txs.len() > 10 {
-                println!("    {} {} more...", "•".dimmed(), txs.len() - 10);
+            if txids.len() > 10 {
+                println!("    {} {} more...", "•".dimmed(), txids.len() - 10);
             }
         }
     }
@@ -110,15 +97,15 @@ pub fn print_balance(data: &Value) {
     println!("\n{}", "=== Wallet Balance ===".cyan().bold());
     kv(
         "Confirmed",
-        &sats_to_vtr(data["confirmed_satoshis"].as_u64().unwrap_or(0)),
+        &sats_to_vtr(data["confirmed"].as_u64().unwrap_or(0)),
     );
     kv(
         "Unconfirmed",
-        &sats_to_vtr(data["unconfirmed_satoshis"].as_u64().unwrap_or(0)),
+        &sats_to_vtr(data["unconfirmed"].as_u64().unwrap_or(0)),
     );
     kv(
         "Staking",
-        &sats_to_vtr(data["staking_satoshis"].as_u64().unwrap_or(0)),
+        &sats_to_vtr(data["staking"].as_u64().unwrap_or(0)),
     );
     println!();
 }
@@ -129,7 +116,7 @@ pub fn print_addresses(data: &Value) {
     if let Some(addrs) = data.as_array() {
         for addr in addrs {
             let address = addr["address"].as_str().unwrap_or("unknown");
-            let balance = addr["balance_satoshis"].as_u64().unwrap_or(0);
+            let balance = addr["balance"].as_u64().unwrap_or(0);
             let label = addr["label"].as_str().unwrap_or("");
             println!(
                 "  {} {} {} {}",
@@ -152,18 +139,25 @@ pub fn print_staking_status(data: &Value) {
     println!("\n{}", "=== Staking Status ===".cyan().bold());
     let enabled = data["enabled"].as_bool().unwrap_or(false);
     kv("Status", if enabled { "Active" } else { "Inactive" });
-    kv("Address", data["address"].as_str().unwrap_or("none"));
+    kv(
+        "Address",
+        data["staking_address"].as_str().unwrap_or("none"),
+    );
+    kv(
+        "Eligible UTXOs",
+        &data["eligible_utxos"].as_u64().unwrap_or(0).to_string(),
+    );
+    kv(
+        "Staked",
+        &sats_to_vtr(data["total_staking_satoshis"].as_u64().unwrap_or(0)),
+    );
     kv(
         "Blocks staked",
         &data["blocks_staked"].as_u64().unwrap_or(0).to_string(),
     );
     kv(
-        "Total rewards",
-        &sats_to_vtr(data["total_rewards_satoshis"].as_u64().unwrap_or(0)),
-    );
-    kv(
-        "Next stake est",
-        data["next_stake_estimate"].as_str().unwrap_or("unknown"),
+        "Expected/day",
+        &sats_to_vtr(data["expected_reward_per_day"].as_f64().unwrap_or(0.0) as u64),
     );
     println!();
 }
