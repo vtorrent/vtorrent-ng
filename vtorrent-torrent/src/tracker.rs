@@ -160,22 +160,22 @@ fn parse_tracker_response(data: &[u8]) -> Result<AnnounceResponse> {
     }
 
     let interval = match dict.get(&b"interval".to_vec()) {
-        Some(serde_bencode::value::Value::Int(i)) => *i as u32,
+        Some(serde_bencode::value::Value::Int(i)) if *i > 0 => *i as u32,
         _ => 1800, // Default 30 minutes
     };
 
     let min_interval = match dict.get(&b"min interval".to_vec()) {
-        Some(serde_bencode::value::Value::Int(i)) => Some(*i as u32),
+        Some(serde_bencode::value::Value::Int(i)) if *i > 0 => Some(*i as u32),
         _ => None,
     };
 
     let complete = match dict.get(&b"complete".to_vec()) {
-        Some(serde_bencode::value::Value::Int(i)) => *i as u32,
+        Some(serde_bencode::value::Value::Int(i)) if *i >= 0 => *i as u32,
         _ => 0,
     };
 
     let incomplete = match dict.get(&b"incomplete".to_vec()) {
-        Some(serde_bencode::value::Value::Int(i)) => *i as u32,
+        Some(serde_bencode::value::Value::Int(i)) if *i >= 0 => *i as u32,
         _ => 0,
     };
 
@@ -236,7 +236,9 @@ fn parse_dict_peers(list: &[serde_bencode::value::Value]) -> Vec<TrackerPeer> {
                 _ => continue,
             };
             let port = match d.get(&b"port".to_vec()) {
-                Some(serde_bencode::value::Value::Int(p)) => *p as u16,
+                Some(serde_bencode::value::Value::Int(p)) if *p > 0 && *p <= u16::MAX as i64 => {
+                    *p as u16
+                }
                 _ => continue,
             };
             peers.push(TrackerPeer {

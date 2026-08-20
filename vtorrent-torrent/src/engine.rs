@@ -37,12 +37,22 @@ impl PieceAssembler {
     }
 
     /// Add a block of data at the given byte offset within the piece.
-    pub fn add_block(&mut self, begin: u32, data: Vec<u8>) {
+    ///
+    /// Returns `true` if the block was accepted, or `false` if it was rejected
+    /// (duplicate offset or an offset/length that would run past the end of the
+    /// piece). Rejecting out-of-range blocks prevents a malicious peer from
+    /// inflating `received` or producing a piece larger than `expected_length`.
+    pub fn add_block(&mut self, begin: u32, data: Vec<u8>) -> bool {
         if self.blocks.contains_key(&begin) {
-            return;
+            return false;
+        }
+        let end = begin as u64 + data.len() as u64;
+        if end > self.expected_length {
+            return false;
         }
         self.received += data.len() as u64;
         self.blocks.insert(begin, data);
+        true
     }
 
     pub fn is_complete(&self) -> bool {
@@ -787,6 +797,23 @@ mod tests {
         let mut asm = PieceAssembler::new(0, 4);
         asm.add_block(0, b"test".to_vec());
         assert!(!asm.verify(&[0u8; 20]));
+    }
+
+    #[test]
+    fn test_piece_assembler_rejects_out_of_bounds_block() {
+        let mut asm = PieceAssembler::new(0, 10);
+        assert!(!asm.add_block(8, vec![0u8; 4]));
+        assert!(!asm.is_complete());
+        assert!(asm.assemble().is_none());
+        assert!(!asm.add_block(10, vec![0u8; 1]));
+    }
+
+    #[test]
+    fn test_piece_assembler_rejects_duplicate_offset() {
+        let mut asm = PieceAssembler::new(0, 10);
+        assert!(asm.add_block(0, vec![1u8; 5]));
+        assert!(!asm.add_block(0, vec![2u8; 5]));
+        assert_eq!(asm.received, 5);
     }
 
     #[test]
