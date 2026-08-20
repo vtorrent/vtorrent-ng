@@ -120,9 +120,13 @@ impl I2pTransport {
             .ok_or_else(|| OnionError::SamError("Missing PRIV in DEST GENERATE".to_string()))?
             .to_string();
 
-        // Derive the .b32.i2p address from the public key
-        // (SHA-256 of the public key, base32-encoded)
-        let hash = sha256_bytes(pub_key.as_bytes());
+        // Derive the .b32.i2p address from the destination. The SAM `PUB=`
+        // field is the base64-encoded destination (public key + certificate);
+        // the b32 address is base32(SHA-256(decoded destination bytes)).
+        let decoded = base64_decode(&pub_key).ok_or_else(|| {
+            OnionError::SamError("Invalid base64 destination in DEST GENERATE".to_string())
+        })?;
+        let hash = sha256_bytes(&decoded);
         let b32_addr = base32_encode(&hash);
         let i2p_addr = format!("{}.b32.i2p:{}", b32_addr.to_lowercase(), local_port);
 
@@ -169,6 +173,14 @@ fn sha256_bytes(data: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(data);
     hasher.finalize().into()
+}
+
+/// Decode a base64 string (standard alphabet, no padding tolerance).
+fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(s.trim())
+        .ok()
 }
 
 /// Base32 encode (RFC 4648, no padding).
