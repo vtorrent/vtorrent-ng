@@ -379,7 +379,9 @@ pub async fn run_engine(
         let sched = scheduler.lock().unwrap();
         let resume_path = download_dir.join(format!("{}.vtorrent", metainfo.name));
         let _ = std::fs::write(&resume_path, sched.tracker.serialize_have_bitfield());
-        sched.tracker.have_count() as u64 * metainfo.piece_length
+        sched
+            .tracker
+            .have_bytes(&|index| piece_length(&metainfo, index))
     };
 
     // Final state update.
@@ -543,6 +545,10 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
             }
             Ok(PeerMessage::Piece { index, begin, data }) => {
                 in_flight = in_flight.saturating_sub(1);
+                {
+                    let mut sched = scheduler.lock().unwrap();
+                    sched.clear_block(index, begin);
+                }
                 let piece_len = piece_length(&metainfo, index);
                 let asm = assemblers
                     .entry(index)
@@ -554,7 +560,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                             if let Some(piece_data) = asm.assemble() {
                                 write_piece_to_disk(&metainfo, &download_dir, index, &piece_data)
                                     .await;
-                                scheduler.lock().unwrap().tracker.mark_have(index);
+                                scheduler.lock().unwrap().mark_have(index);
                                 // Update session progress.
                                 let mut guard = sessions.write().await;
                                 if let Ok(s) = guard.get_session_mut(&session_id) {

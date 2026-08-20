@@ -116,6 +116,18 @@ impl PieceTracker {
         self.have.iter().filter(|&&h| h).count()
     }
 
+    /// Total bytes of all downloaded pieces, summing each piece's actual length
+    /// (the last piece is typically shorter than `piece_length`).
+    pub fn have_bytes(&self, piece_len: &dyn Fn(u32) -> u64) -> u64 {
+        let mut total = 0u64;
+        for (i, &h) in self.have.iter().enumerate() {
+            if h {
+                total = total.saturating_add(piece_len(i as u32));
+            }
+        }
+        total
+    }
+
     /// Serialize the `have` bitfield to bytes (one bit per piece, MSB-first).
     pub fn serialize_have_bitfield(&self) -> Vec<u8> {
         let mut bytes = vec![0u8; self.have.len().div_ceil(8)];
@@ -201,6 +213,13 @@ impl SchedulerState {
         if let Some(blocks) = self.requested_blocks.get_mut(&piece) {
             blocks.retain(|&b| b != begin);
         }
+    }
+
+    /// Mark a piece as fully downloaded, clearing any in-flight block tracking
+    /// for it so `requested_blocks` does not leak stale offsets.
+    pub fn mark_have(&mut self, index: u32) {
+        self.tracker.mark_have(index);
+        self.requested_blocks.remove(&index);
     }
 }
 
@@ -299,5 +318,34 @@ mod tests {
 
         // All blocks requested; no more.
         assert!(state.next_block(&piece_len).is_none());
+    }
+
+    #[test]
+    fn test_have_bytes_sums_actual_piece_lengths() {
+        // 3 pieces: 2 full (16 KiB) + 1 short last piece (8 KiB) = 40 KiB.
+        let mut tracker = PieceTracker::new(3);
+        let piece_len = |index: u32| {
+            if index == 2 {
+                8 * 1024u64
+            } else {
+                16 * 1024u64
+            }
+        };
+        assert_eq!(tracker.have_bytes(&piece_len), 0);
+        tracker.mark_have(0);
+        tracker.mark_have(2);
+        assert_eq!(tracker.have_bytes(&piece_len), 16 * 1024 + 8 * 1024);
+        assert_eq!(tracker.have_count(), 2);
+    }
+
+    #[test]
+    fn test_mark_have_clears_requested_blocks() {
+        let mut state = SchedulerState::new(1);
+        state.tracker.set_peer_bitfield([1u8; 20], &[0x80]);
+        let piece_len = |_index: u32| 16 * 1024u64;
+        let _ = state.next_block(&piece_len).unwrap();
+        assert!(!state.requested_blocks.is_empty());
+        state.mark_have(0);
+        assert!(state.requested_blocks.is_empty());
     }
 }

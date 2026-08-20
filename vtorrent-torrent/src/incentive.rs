@@ -62,6 +62,9 @@ impl PeerBandwidthAccount {
     /// Uses integer arithmetic (u128 intermediate) to avoid floating-point
     /// precision loss on large byte counts.
     pub fn calculate_earned(&self) -> u64 {
+        if !self.incentive_enabled {
+            return 0;
+        }
         const GB: u128 = 1024 * 1024 * 1024;
         // 1 VTR per GB = COIN satoshis per GB.
         ((self.bytes_uploaded as u128 * COIN as u128) / GB) as u64
@@ -239,6 +242,14 @@ mod tests {
         account.incentive_enabled = false;
         account.record_download(10 * 1024 * 1024 * 1024); // 10 GB
         assert_eq!(account.calculate_owed(), 0);
+    }
+
+    #[test]
+    fn test_incentive_disabled_earns_nothing() {
+        let mut account = PeerBandwidthAccount::new("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+        account.incentive_enabled = false;
+        account.record_upload(10 * 1024 * 1024 * 1024); // 10 GB
+        assert_eq!(account.calculate_earned(), 0);
     }
 
     #[test]
