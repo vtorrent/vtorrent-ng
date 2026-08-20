@@ -170,23 +170,35 @@ enum TorrentCommands {
 enum DexCommands {
     /// Show open DEX orders.
     Orders,
-    /// Place a buy order.
+    /// Place a buy order (buy the quote asset with the base asset).
     Buy {
         /// Trading pair (e.g., VTR/BTC).
         pair: String,
-        /// Amount to buy.
+        /// Amount of the quote asset to buy.
         amount: f64,
-        /// Price per unit.
+        /// Price in base units per quote unit.
         price: f64,
+        /// Maker's base-asset address (e.g. VTR address).
+        #[arg(long)]
+        maker_address: String,
+        /// Wallet passphrase.
+        #[arg(long)]
+        passphrase: Option<String>,
     },
-    /// Place a sell order.
+    /// Place a sell order (sell the base asset for the quote asset).
     Sell {
         /// Trading pair (e.g., VTR/BTC).
         pair: String,
-        /// Amount to sell.
+        /// Amount of the base asset to sell.
         amount: f64,
-        /// Price per unit.
+        /// Price in base units per quote unit.
         price: f64,
+        /// Maker's base-asset address (e.g. VTR address).
+        #[arg(long)]
+        maker_address: String,
+        /// Wallet passphrase.
+        #[arg(long)]
+        passphrase: Option<String>,
     },
     /// Cancel a DEX order.
     Cancel {
@@ -204,10 +216,8 @@ enum ClaimCommands {
     },
     /// Submit a legacy balance claim.
     Submit {
-        /// Legacy vTorrent 1.x address.
-        address: String,
-        /// Signature proving ownership (from signmessage in old wallet).
-        signature: String,
+        /// Legacy vTorrent 1.x WIF-encoded private key.
+        wif: String,
         /// New vTorrent 2.0 destination address.
         destination: String,
     },
@@ -225,6 +235,25 @@ fn main() {
             process::exit(1);
         }
     }
+}
+
+/// Convert a decimal asset amount to satoshis (8 decimal places).
+fn to_sats(units: f64) -> u64 {
+    (units * 100_000_000.0).round() as u64
+}
+
+/// Parse a "BASE/QUOTE" trading pair into its two assets.
+fn parse_pair(pair: &str) -> Result<(&str, &str)> {
+    let mut parts = pair.splitn(2, '/');
+    let base = parts.next().unwrap_or("").trim();
+    let quote = parts.next().unwrap_or("").trim();
+    if base.is_empty() || quote.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Invalid trading pair '{}' (expected BASE/QUOTE, e.g. VTR/BTC)",
+            pair
+        ));
+    }
+    Ok((base, quote))
 }
 
 fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
@@ -305,12 +334,13 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
             let data = client.post("/api/v1/wallet/send", &payload)?;
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&data)?);
-            } else if data["success"].as_bool().unwrap_or(false) {
-                let txid = data["txid"].as_str().unwrap_or("unknown");
-                println!("{} {}", "Sent! TXID:".green().bold(), txid.white());
             } else {
-                let err = data["error"].as_str().unwrap_or("unknown error");
-                return Err(anyhow::anyhow!("Send failed: {}", err));
+                let txid = data["txid"].as_str().unwrap_or("unknown");
+                let fee = data["fee_satoshis"].as_u64().unwrap_or(0);
+                println!("{} {}", "Sent! TXID:".green().bold(), txid.white());
+                if fee > 0 {
+                    println!("  Fee: {} sats", fee.to_string().dimmed());
+                }
             }
         }
 
@@ -347,6 +377,21 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                 }
             }
             StakingCommands::Start { address } => {
+                // Staking requires an unlocked wallet (the coinstake is signed
+                // with the hot-wallet key). Prompt for the passphrase, unlock,
+                // then start staking.
+                let passphrase =
+                    rpassword::prompt_password("Wallet passphrase: ").unwrap_or_default();
+                let unlock = client.post(
+                    "/api/v1/wallet/unlock",
+                    &serde_json::json!({
+                        "passphrase": passphrase,
+                        "timeout_secs": 300,
+                    }),
+                )?;
+                if !unlock["success"].as_bool().unwrap_or(false) {
+                    return Err(anyhow::anyhow!("Failed to unlock wallet"));
+                }
                 let payload = serde_json::json!({ "address": address });
                 let data = client.post("/api/v1/staking/start", &payload)?;
                 if data["success"].as_bool().unwrap_or(false) {
@@ -378,8 +423,9 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
             }
             TorrentCommands::Add { magnet, wallet } => {
                 let payload = serde_json::json!({
-                    "magnet": magnet,
-                    "wallet_address": wallet,
+                    "source": magnet,
+                    "source_type": "magnet",
+                    "wallet_address": wallet.clone().unwrap_or_default(),
                 });
                 let data = client.post("/api/v1/torrent/add", &payload)?;
                 if cli.json {
@@ -416,12 +462,23 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                 pair,
                 amount,
                 price,
+                maker_address,
+                passphrase,
             } => {
+                let (base, quote) = parse_pair(pair)?;
+                let passphrase = passphrase.clone().unwrap_or_else(|| {
+                    rpassword::prompt_password("Wallet passphrase: ").unwrap_or_default()
+                });
+                // Buying `amount` of the quote asset at `price` base/quote:
+                // offer `amount * price` of the base asset, request `amount` quote.
                 let payload = serde_json::json!({
-                    "pair": pair,
-                    "side": "buy",
-                    "amount": amount,
-                    "price": price,
+                    "maker_address": maker_address,
+                    "offer_amount_satoshis": to_sats(amount * price),
+                    "offer_asset": base,
+                    "request_amount_satoshis": to_sats(*amount),
+                    "request_asset": quote,
+                    "expiry_secs": 0,
+                    "passphrase": passphrase,
                 });
                 let data = client.post("/api/v1/dex/order", &payload)?;
                 let id = data["order_id"].as_str().unwrap_or("unknown");
@@ -436,12 +493,23 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                 pair,
                 amount,
                 price,
+                maker_address,
+                passphrase,
             } => {
+                let (base, quote) = parse_pair(pair)?;
+                let passphrase = passphrase.clone().unwrap_or_else(|| {
+                    rpassword::prompt_password("Wallet passphrase: ").unwrap_or_default()
+                });
+                // Selling `amount` of the base asset at `price` base/quote:
+                // offer `amount` of the base asset, request `amount / price` quote.
                 let payload = serde_json::json!({
-                    "pair": pair,
-                    "side": "sell",
-                    "amount": amount,
-                    "price": price,
+                    "maker_address": maker_address,
+                    "offer_amount_satoshis": to_sats(*amount),
+                    "offer_asset": base,
+                    "request_amount_satoshis": to_sats(amount / price),
+                    "request_asset": quote,
+                    "expiry_secs": 0,
+                    "passphrase": passphrase,
                 });
                 let data = client.post("/api/v1/dex/order", &payload)?;
                 let id = data["order_id"].as_str().unwrap_or("unknown");
@@ -460,7 +528,7 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
 
         Commands::Claim { action } => match action {
             ClaimCommands::Check { address } => {
-                let payload = serde_json::json!({ "address": address });
+                let payload = serde_json::json!({ "legacy_address": address });
                 let data = client.post("/api/v1/claim/check", &payload)?;
                 if cli.json {
                     println!("{}", serde_json::to_string_pretty(&data)?);
@@ -468,29 +536,23 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                     format::print_claim_check(&data);
                 }
             }
-            ClaimCommands::Submit {
-                address,
-                signature,
-                destination,
-            } => {
+            ClaimCommands::Submit { wif, destination } => {
                 let payload = serde_json::json!({
-                    "legacy_address": address,
-                    "signature": signature,
-                    "destination_address": destination,
+                    "wif_private_key": wif,
+                    "recipient_address": destination,
                 });
                 let data = client.post("/api/v1/claim/submit", &payload)?;
                 if cli.json {
                     println!("{}", serde_json::to_string_pretty(&data)?);
-                } else if data["success"].as_bool().unwrap_or(false) {
-                    let txid = data["txid"].as_str().unwrap_or("unknown");
-                    println!(
-                        "{} {}",
-                        "Claim submitted! TXID:".green().bold(),
-                        txid.white()
-                    );
                 } else {
-                    let err = data["error"].as_str().unwrap_or("unknown error");
-                    return Err(anyhow::anyhow!("Claim failed: {}", err));
+                    let txid = data["txid"].as_str().unwrap_or("unknown");
+                    let claimed = data["claimed_satoshis"].as_u64().unwrap_or(0);
+                    println!(
+                        "{} {} ({} sats)",
+                        "Claim submitted! TXID:".green().bold(),
+                        txid.white(),
+                        claimed.to_string().dimmed()
+                    );
                 }
             }
         },

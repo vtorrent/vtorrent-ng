@@ -197,32 +197,35 @@ pub fn print_dex_orders(data: &Value) {
             println!("  {}", "No open orders.".dimmed());
         } else {
             println!(
-                "  {:<12} {:<8} {:<12} {:<12} {:<20}",
+                "  {:<12} {:<14} {:<14} {:<12} {:<12}",
                 "ID".dimmed(),
-                "Side".dimmed(),
-                "Pair".dimmed(),
-                "Amount".dimmed(),
-                "Price".dimmed()
+                "Offer".dimmed(),
+                "Request".dimmed(),
+                "Rate".dimmed(),
+                "Status".dimmed()
             );
-            println!("  {}", "-".repeat(64).dimmed());
+            println!("  {}", "-".repeat(68).dimmed());
             for order in orders {
                 let id = order["id"].as_str().unwrap_or("?");
-                let side = order["side"].as_str().unwrap_or("?");
-                let pair = order["pair"].as_str().unwrap_or("?");
-                let amount = order["amount"].as_f64().unwrap_or(0.0);
-                let price = order["price"].as_f64().unwrap_or(0.0);
-                let side_colored = if side == "buy" {
-                    side.green().to_string()
-                } else {
-                    side.red().to_string()
-                };
+                let offer = format!(
+                    "{:.6} {}",
+                    order["offer_amount_satoshis"].as_u64().unwrap_or(0) as f64 / 100_000_000.0,
+                    order["offer_asset"].as_str().unwrap_or("?")
+                );
+                let request = format!(
+                    "{:.6} {}",
+                    order["request_amount_satoshis"].as_u64().unwrap_or(0) as f64 / 100_000_000.0,
+                    order["request_asset"].as_str().unwrap_or("?")
+                );
+                let rate = order["rate"].as_f64().unwrap_or(0.0);
+                let status = order["status"].as_str().unwrap_or("?");
                 println!(
-                    "  {:<12} {:<8} {:<12} {:<12.4} {:<20.8}",
+                    "  {:<12} {:<14} {:<14} {:<12.6} {:<12}",
                     id[..8.min(id.len())].dimmed(),
-                    side_colored,
-                    pair,
-                    amount,
-                    price
+                    offer,
+                    request,
+                    rate,
+                    status
                 );
             }
         }
@@ -233,19 +236,22 @@ pub fn print_dex_orders(data: &Value) {
 /// Print claim check result.
 pub fn print_claim_check(data: &Value) {
     println!("\n{}", "=== Legacy Claim Check ===".cyan().bold());
-    let claimable = data["claimable"].as_bool().unwrap_or(false);
-    kv("Claimable", if claimable { "Yes" } else { "No" });
-    if claimable {
-        kv(
-            "Balance",
-            &sats_to_vtr(data["balance_satoshis"].as_u64().unwrap_or(0)),
-        );
+    let claimable_sats = data["claimable_satoshis"].as_u64().unwrap_or(0);
+    let already_claimed = data["already_claimed"].as_bool().unwrap_or(false);
+    if already_claimed {
+        kv("Status", "Already claimed");
+    } else if claimable_sats > 0 {
+        kv("Status", "Claimable");
+        kv("Balance", &sats_to_vtr(claimable_sats));
         kv("Address", data["address"].as_str().unwrap_or("unknown"));
         println!("\n  {}", "To claim, run:".dimmed());
         println!(
             "  {}",
-            "vtorrent-cli claim submit <address> <signature> <destination>".white()
+            "vtorrent-cli claim submit <wif> <destination>".white()
         );
+    } else {
+        kv("Status", "No claimable balance");
+        kv("Address", data["address"].as_str().unwrap_or("unknown"));
     }
     println!();
 }
