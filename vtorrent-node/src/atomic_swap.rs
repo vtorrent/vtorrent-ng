@@ -170,7 +170,13 @@ impl Htlc {
         input_value: u64,
         fee: u64,
     ) -> Result<Transaction> {
-        if input_value < self.amount + fee {
+        // Use checked arithmetic so a huge amount/fee cannot overflow and mint
+        // a bogus change output.
+        let required = self
+            .amount
+            .checked_add(fee)
+            .ok_or_else(|| NodeError::AtomicSwap("amount + fee overflow".into()))?;
+        if input_value < required {
             return Err(NodeError::AtomicSwap(format!(
                 "Insufficient input: {} < {} + {} (fee)",
                 input_value, self.amount, fee
@@ -183,7 +189,7 @@ impl Htlc {
         }];
 
         // Change output
-        let change = input_value - self.amount - fee;
+        let change = input_value - required;
         if change > 0 {
             outputs.push(TxOutput {
                 value: change,

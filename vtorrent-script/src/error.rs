@@ -44,6 +44,12 @@ pub enum ScriptError {
     #[error("HTLC: locktime has not expired")]
     HtlcLocktimeNotExpired,
 
+    #[error("OP_CHECKLOCKTIMEVERIFY: negative locktime")]
+    NegativeLocktime,
+
+    #[error("OP_CHECKLOCKTIMEVERIFY: unsatisfied (final input or type mismatch)")]
+    UnsatisfiedLocktime,
+
     #[error("OP_RETURN output is unspendable")]
     OpReturnUnspendable,
 

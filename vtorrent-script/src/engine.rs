@@ -25,6 +25,8 @@ pub struct ScriptEnv {
     pub block_time: u32,
     /// Transaction lock_time (for OP_CHECKLOCKTIMEVERIFY).
     pub tx_lock_time: u32,
+    /// The input's nSequence (for OP_CHECKLOCKTIMEVERIFY finality check).
+    pub input_sequence: u32,
 }
 
 /// The script execution engine.
@@ -333,10 +335,25 @@ impl Engine {
 
                         // ── Timelock ─────────────────────────────────────────
                         0xb1 => {
-                            // OP_CHECKLOCKTIMEVERIFY
+                            // OP_CHECKLOCKTIMEVERIFY (BIP-65)
                             if executing {
                                 let top = self.stack.last().ok_or(ScriptError::EmptyStack)?;
-                                let locktime = bytes_to_int(top) as u32;
+                                let locktime = bytes_to_int(top);
+                                if locktime < 0 {
+                                    return Err(ScriptError::NegativeLocktime);
+                                }
+                                let locktime = locktime as u32;
+                                // The input must not be final (nSequence != MAX).
+                                if self.env.input_sequence == 0xffff_ffff {
+                                    return Err(ScriptError::UnsatisfiedLocktime);
+                                }
+                                // The locktime and tx lock_time must be the same
+                                // type (both height or both timestamp).
+                                let locktime_is_time = locktime >= 500_000_000;
+                                let tx_is_time = self.env.tx_lock_time >= 500_000_000;
+                                if locktime_is_time != tx_is_time {
+                                    return Err(ScriptError::UnsatisfiedLocktime);
+                                }
                                 if self.env.tx_lock_time < locktime {
                                     return Err(ScriptError::HtlcLocktimeNotExpired);
                                 }

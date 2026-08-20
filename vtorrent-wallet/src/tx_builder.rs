@@ -690,6 +690,7 @@ mod tests {
             block_height: 1,
             block_time: 1_700_000_000,
             tx_lock_time: tx.lock_time,
+            input_sequence: 0xffff_fffe,
         };
         let mut engine = Engine::new(env);
         let script_sig = Script::from_bytes(input.script_sig.clone()).unwrap();
@@ -753,6 +754,7 @@ mod tests {
             block_height: 1,
             block_time: 1_700_000_000,
             tx_lock_time: claim_tx.lock_time,
+            input_sequence: 0xffff_ffff,
         };
         let mut engine = Engine::new(env);
         let script_sig = Script::from_bytes(claim_tx.inputs[0].script_sig.clone()).unwrap();
@@ -814,6 +816,7 @@ mod tests {
             block_height: 1,
             block_time: htlc.expiry + 1,
             tx_lock_time: refund_tx.lock_time,
+            input_sequence: 0xffff_fffe,
         };
         let mut engine = Engine::new(env);
         let script_sig = Script::from_bytes(refund_tx.inputs[0].script_sig.clone()).unwrap();

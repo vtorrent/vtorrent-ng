@@ -776,6 +776,7 @@ impl Chain {
                             block_height: height,
                             block_time: timestamp,
                             tx_lock_time: tx.lock_time,
+                            input_sequence: input.sequence,
                         };
                         let mut engine = Engine::new(env);
                         let script_sig =

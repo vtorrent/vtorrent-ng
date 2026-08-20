@@ -131,46 +131,51 @@ impl Mempool {
             return Ok(());
         }
 
-        // Check for RBF replacement: does this tx spend the same inputs as an existing tx?
-        let conflicting_txid = self.find_conflict(&tx);
-        if let Some(conflict_txid) = conflicting_txid {
-            let conflict = self
-                .entries
-                .get(&conflict_txid)
-                .ok_or_else(|| NodeError::Chain("Conflict entry missing".into()))?;
-
+        // Check for RBF replacement: does this tx spend the same inputs as any
+        // existing tx? A replacement may conflict with multiple entries (e.g.
+        // spending inputs from two different mempool txs), so collect all of
+        // them and evict each one.
+        let conflicts = self.find_conflicts(&tx);
+        if !conflicts.is_empty() {
             if !rbf {
                 return Err(NodeError::Chain(
                     "Transaction conflicts with mempool entry; signal RBF to replace".into(),
                 ));
             }
 
-            // RBF rules: new fee rate must be at least MIN_RBF_FEE_BUMP higher
-            if fee_rate < conflict.fee_rate() + MIN_RBF_FEE_BUMP {
-                return Err(NodeError::Chain(format!(
-                    "RBF replacement fee rate {} sat/byte must exceed {} + {} sat/byte",
-                    fee_rate,
-                    conflict.fee_rate(),
-                    MIN_RBF_FEE_BUMP
-                )));
+            // RBF rules must hold against every conflicting entry: the new fee
+            // rate must exceed each conflict's rate by MIN_RBF_FEE_BUMP, and the
+            // absolute fee must be at least as large as each conflict's.
+            for conflict_txid in &conflicts {
+                let conflict = self
+                    .entries
+                    .get(conflict_txid)
+                    .ok_or_else(|| NodeError::Chain("Conflict entry missing".into()))?;
+                if fee_rate < conflict.fee_rate() + MIN_RBF_FEE_BUMP {
+                    return Err(NodeError::Chain(format!(
+                        "RBF replacement fee rate {} sat/byte must exceed {} + {} sat/byte",
+                        fee_rate,
+                        conflict.fee_rate(),
+                        MIN_RBF_FEE_BUMP
+                    )));
+                }
+                if fee_sats < conflict.fee_sats {
+                    return Err(NodeError::Chain(format!(
+                        "RBF replacement absolute fee {} sat must be >= {} sat",
+                        fee_sats, conflict.fee_sats
+                    )));
+                }
             }
 
-            // Absolute fee must be at least as large
-            if fee_sats < conflict.fee_sats {
-                return Err(NodeError::Chain(format!(
-                    "RBF replacement absolute fee {} sat must be >= {} sat",
-                    fee_sats, conflict.fee_sats
-                )));
+            for conflict_txid in &conflicts {
+                tracing::info!(
+                    "RBF: replacing {} with {} (fee rate {} sat/byte)",
+                    hex::encode(conflict_txid),
+                    hex::encode(txid),
+                    fee_rate
+                );
+                self.remove_entry(conflict_txid);
             }
-
-            tracing::info!(
-                "RBF: replacing {} with {} (fee rate {} -> {} sat/byte)",
-                hex::encode(conflict_txid),
-                hex::encode(txid),
-                conflict.fee_rate(),
-                fee_rate
-            );
-            self.remove_entry(&conflict_txid);
         }
 
         // If mempool is full, try to evict the lowest-fee-rate entry
@@ -308,14 +313,17 @@ impl Mempool {
         }
     }
 
-    /// Find a mempool transaction that spends the same input as `tx`.
-    fn find_conflict(&self, tx: &Transaction) -> Option<[u8; 32]> {
+    /// Find all mempool transactions that spend the same input as `tx`.
+    fn find_conflicts(&self, tx: &Transaction) -> Vec<[u8; 32]> {
+        let mut conflicts = Vec::new();
         for input in &tx.inputs {
             if let Some(txid) = self.spent_inputs.get(&(input.prev_txid, input.prev_vout)) {
-                return Some(*txid);
+                if !conflicts.contains(txid) {
+                    conflicts.push(*txid);
+                }
             }
         }
-        None
+        conflicts
     }
 
     /// Find the txid of the entry with the lowest fee rate.
@@ -376,6 +384,42 @@ mod tests {
         let tx = make_tx(MIN_RELAY_FEE, 3, false);
         mp.add_transaction(tx.clone()).unwrap();
         mp.add_transaction(tx).unwrap(); // should not error
+        assert_eq!(mp.size(), 1);
+    }
+
+    #[test]
+    fn test_rbf_replaces_all_conflicting_entries() {
+        let mut mp = Mempool::new(100);
+
+        // Two mempool txs, each spending a distinct input.
+        let mut tx_a = make_tx(MIN_RELAY_FEE * 10, 100, false);
+        tx_a.inputs[0].prev_txid = [0xAA; 32];
+        let mut tx_b = make_tx(MIN_RELAY_FEE * 10, 101, false);
+        tx_b.inputs[0].prev_txid = [0xBB; 32];
+        mp.add_transaction(tx_a).unwrap();
+        mp.add_transaction(tx_b).unwrap();
+        assert_eq!(mp.size(), 2);
+
+        // A replacement spending BOTH inputs must evict both entries, not just
+        // the first one found.
+        let mut replacement = make_tx(MIN_RELAY_FEE * 20, 102, true);
+        replacement.inputs = vec![
+            TxInput {
+                prev_txid: [0xAA; 32],
+                prev_vout: 0,
+                script_sig: vec![],
+                sequence: 0xFFFFFFFD,
+            },
+            TxInput {
+                prev_txid: [0xBB; 32],
+                prev_vout: 0,
+                script_sig: vec![],
+                sequence: 0xFFFFFFFD,
+            },
+        ];
+        mp.add_transaction(replacement).unwrap();
+
+        // Only the replacement remains; both conflicts were evicted.
         assert_eq!(mp.size(), 1);
     }
 
@@ -485,12 +529,12 @@ mod tests {
         let mut prev = [0u8; 32];
         prev[..8].copy_from_slice(&42u64.to_le_bytes());
         conflicting.inputs[0].prev_txid = prev;
-        let conflict = mp.find_conflict(&conflicting);
-        assert!(conflict.is_some(), "conflicting input must be detected");
+        let conflict = mp.find_conflicts(&conflicting);
+        assert!(!conflict.is_empty(), "conflicting input must be detected");
 
         // After removing the owner, the same input is no longer conflicted.
-        let owner_txid = conflict.unwrap();
+        let owner_txid = conflict[0];
         mp.remove_transaction(&owner_txid);
-        assert_eq!(mp.find_conflict(&conflicting), None);
+        assert!(mp.find_conflicts(&conflicting).is_empty());
     }
 }
