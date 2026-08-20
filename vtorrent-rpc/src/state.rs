@@ -108,6 +108,9 @@ pub struct AppState {
     pub rpc_api_key: Option<String>,
     /// Regtest mode: enables the faucet endpoint and relaxed staking.
     pub regtest: bool,
+    /// Human-readable network label (e.g. "vtorrent-mainnet", "vtorrent-testnet",
+    /// "vtorrent-regtest"). Set by the daemon from its config.
+    pub network: String,
     /// Regtest mock time (Unix timestamp). When set, time-dependent checks
     /// (e.g. HTLC expiry) use this instead of the wall clock. `None` = real time.
     pub mock_time: Arc<RwLock<Option<u64>>>,
@@ -156,6 +159,7 @@ impl AppState {
             peer_list: Arc::new(RwLock::new(Vec::new())),
             rpc_api_key: None,
             regtest: false,
+            network: "vtorrent-mainnet".to_string(),
             mock_time: Arc::new(RwLock::new(None)),
         }
     }
@@ -203,6 +207,7 @@ impl AppState {
             peer_list: Arc::new(RwLock::new(Vec::new())),
             rpc_api_key: None,
             regtest: false,
+            network: "vtorrent-mainnet".to_string(),
             mock_time: Arc::new(RwLock::new(None)),
         }
     }

@@ -238,6 +238,13 @@ async fn main() -> anyhow::Result<()> {
     rpc_state.staking_control = Some(staking_control_sender);
     rpc_state.rpc_api_key = cli.rpc_api_key.clone();
     rpc_state.regtest = cli.regtest;
+    rpc_state.network = if cli.regtest {
+        "vtorrent-regtest".to_string()
+    } else if config.testnet {
+        "vtorrent-testnet".to_string()
+    } else {
+        "vtorrent-mainnet".to_string()
+    };
     // Reflect startup-configured staking in the RPC status so it agrees with
     // the node's actual staking engine (rather than reporting "disabled").
     if staking_enabled {

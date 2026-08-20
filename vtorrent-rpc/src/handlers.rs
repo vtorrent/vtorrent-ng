@@ -150,7 +150,7 @@ pub async fn get_node_info(
 
     Ok(Json(NodeInfoResponse {
         version: env!("CARGO_PKG_VERSION").to_string(),
-        network: "vtorrent-mainnet".to_string(),
+        network: state.network.clone(),
         block_height: height,
         best_block_hash: best_hash,
         connections: peer_count,
