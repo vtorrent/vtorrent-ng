@@ -238,6 +238,12 @@ async fn main() -> anyhow::Result<()> {
     rpc_state.staking_control = Some(staking_control_sender);
     rpc_state.rpc_api_key = cli.rpc_api_key.clone();
     rpc_state.regtest = cli.regtest;
+    // Reflect startup-configured staking in the RPC status so it agrees with
+    // the node's actual staking engine (rather than reporting "disabled").
+    if staking_enabled {
+        *rpc_state.staking_enabled.write().await = true;
+        *rpc_state.staking_address.write().await = cli.staking_address.clone();
+    }
     let rpc_addr = cli.rpc_addr.clone();
 
     // Set the torrent download directory under the data dir.
