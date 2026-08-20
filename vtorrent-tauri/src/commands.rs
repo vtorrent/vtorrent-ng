@@ -511,8 +511,9 @@ pub async fn start_node(state: tauri::State<'_, AppState>) -> Result<NodeInfoRes
         *rpc_state.btc_wallet.write().await = Some(vtorrent_btc::wallet::BtcWallet::new(seed));
     }
 
-    // Wire the node's event sender to the RPC broadcaster.
-    let (event_tx, _rx) = vtorrent_node::events::channel(1024);
+    // Wire the node's event sender to the RPC broadcaster, and track staking
+    // counters (blocks_staked / last_stake_time) from node events.
+    let (event_tx, mut node_rx) = vtorrent_node::events::channel(1024);
     node.set_event_sender(event_tx);
 
     // Store the NodeHandle before spawning.
@@ -520,6 +521,33 @@ pub async fn start_node(state: tauri::State<'_, AppState>) -> Result<NodeInfoRes
         rpc_state: rpc_state.clone(),
     };
     *state.node.lock().await = Some(handle);
+
+    // Bridge node events → staking counters.
+    {
+        let blocks_staked = Arc::clone(&rpc_state.blocks_staked);
+        let last_stake_time = Arc::clone(&rpc_state.last_stake_time);
+        tokio::spawn(async move {
+            loop {
+                match node_rx.recv().await {
+                    Ok(event) => {
+                        if matches!(
+                            &*event,
+                            vtorrent_node::events::NodeEvent::StakingReward { .. }
+                        ) {
+                            *blocks_staked.write().await += 1;
+                            *last_stake_time.write().await = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs()
+                                as u32;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
 
     // Spawn the node event loop as a background task.
     tokio::spawn(async move {

@@ -440,6 +440,8 @@ mod tests {
         let (status, body) = get(app, "/api/v1/staking/status").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["enabled"], false);
+        assert_eq!(body["blocks_staked"], 0);
+        assert!(body["last_stake_time"].is_null());
     }
 
     #[tokio::test]

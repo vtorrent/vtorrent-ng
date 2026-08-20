@@ -666,6 +666,7 @@ pub async fn get_staking_status(
     let enabled = *state.staking_enabled.read().await;
     let staking_address = state.staking_address.read().await.clone();
     let blocks_staked = *state.blocks_staked.read().await;
+    let last_stake_time_raw = *state.last_stake_time.read().await;
     let chain = state.chain.lock().await;
 
     // Sum only the staking address's UTXOs, not the entire network UTXO set.
@@ -688,7 +689,11 @@ pub async fn get_staking_status(
         eligible_utxos,
         total_staking_satoshis: total_staking,
         expected_reward_per_day: expected_per_day,
-        last_stake_time: None,
+        last_stake_time: if last_stake_time_raw == 0 {
+            None
+        } else {
+            Some(last_stake_time_raw)
+        },
         blocks_staked,
     }))
 }

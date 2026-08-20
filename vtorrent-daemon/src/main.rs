@@ -291,6 +291,8 @@ async fn main() -> anyhow::Result<()> {
         let syncing_ref = Arc::clone(&rpc_state.syncing);
         let spv_chain_ref = Arc::clone(&rpc_state.spv_chain);
         let peer_list_ref = Arc::clone(&rpc_state.peer_list);
+        let blocks_staked_ref = Arc::clone(&rpc_state.blocks_staked);
+        let last_stake_time_ref = Arc::clone(&rpc_state.last_stake_time);
 
         tokio::spawn(async move {
             loop {
@@ -341,6 +343,16 @@ async fn main() -> anyhow::Result<()> {
                                     );
                                 }
                             }
+                        }
+
+                        // ── Track staking counters ─────────────────────────
+                        if let node_events::NodeEvent::StakingReward { .. } = &*event {
+                            *blocks_staked_ref.write().await += 1;
+                            *last_stake_time_ref.write().await = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs()
+                                as u32;
                         }
 
                         // ── Bridge to RPC WebSocket broadcaster ───────────────
