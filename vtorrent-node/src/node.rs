@@ -40,7 +40,7 @@ use crate::{
     error::{NodeError, Result},
     events::{EventSender, NodeEvent},
     mempool::Mempool,
-    staking::StakingEngine,
+    staking::{StakingCommand, StakingEngine},
 };
 
 /// Authenticated overlay notifications queued for the node event loop.
@@ -170,6 +170,10 @@ pub struct Node {
     block_submit_rx: mpsc::Receiver<Block>,
     /// Sender half — cloned and given to AppState so the faucet can inject blocks.
     block_submit_tx: mpsc::Sender<Block>,
+    /// Receiver for runtime staking control commands (from RPC/tauri).
+    staking_rx: mpsc::Receiver<StakingCommand>,
+    /// Sender half — cloned and given to AppState to start/stop staking at runtime.
+    staking_control_tx: mpsc::Sender<StakingCommand>,
 }
 
 /// Encode a P2P message for transport inside the encrypted overlay payload.
@@ -259,6 +263,7 @@ impl Node {
         };
 
         let (block_submit_tx, block_submit_rx) = mpsc::channel(64);
+        let (staking_control_tx, staking_rx) = mpsc::channel(16);
 
         Ok(Self {
             chain: Arc::new(Mutex::new(chain)),
@@ -282,6 +287,8 @@ impl Node {
             tx_submit_tx,
             block_submit_rx,
             block_submit_tx,
+            staking_rx,
+            staking_control_tx,
         })
     }
 
@@ -314,6 +321,7 @@ impl Node {
         };
 
         let (block_submit_tx, block_submit_rx) = mpsc::channel(64);
+        let (staking_control_tx, staking_rx) = mpsc::channel(16);
 
         Ok(Self {
             chain: Arc::new(Mutex::new(chain)),
@@ -337,6 +345,8 @@ impl Node {
             tx_submit_tx,
             block_submit_rx,
             block_submit_tx,
+            staking_rx,
+            staking_control_tx,
         })
     }
 
@@ -386,6 +396,13 @@ impl Node {
     /// The node will announce them to peers via an `inv`.
     pub fn block_submit_sender(&self) -> mpsc::Sender<Block> {
         self.block_submit_tx.clone()
+    }
+
+    /// Returns a cloned sender used to enable/disable staking at runtime.
+    /// Commands are processed in the node's event loop, updating the staking
+    /// engine without restarting the node.
+    pub fn staking_control(&self) -> mpsc::Sender<StakingCommand> {
+        self.staking_control_tx.clone()
     }
 
     /// Emit an event to all subscribers (best-effort; silently drops if no subscribers).
@@ -598,6 +615,22 @@ impl Node {
                         "Local block {} announced to peers",
                         hex::encode(block_hash)
                     );
+                }
+                // Runtime staking control from RPC/tauri
+                Some(cmd) = self.staking_rx.recv() => {
+                    match cmd {
+                        StakingCommand::Start { address, wif } => {
+                            self.staking = Some(match wif {
+                                Some(w) => StakingEngine::with_wif(address, w),
+                                None => StakingEngine::new(address),
+                            });
+                            tracing::info!("Staking enabled via runtime control");
+                        }
+                        StakingCommand::Stop => {
+                            self.staking = None;
+                            tracing::info!("Staking disabled via runtime control");
+                        }
+                    }
                 }
             }
         }

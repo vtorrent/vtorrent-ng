@@ -228,11 +228,14 @@ async fn main() -> anyhow::Result<()> {
     let mempool_arc = node.mempool_arc();
     let tx_submit_sender = node.tx_submit_sender();
     let block_submit_sender = node.block_submit_sender();
+    let staking_control_sender = node.staking_control();
     let mut rpc_state = AppState::new_with_shared(chain_arc, mempool_arc);
     // Wire the tx broadcast channel so RPC wallet can push txs into the P2P loop.
     rpc_state.tx_submit = Some(tx_submit_sender);
     // Wire the block broadcast channel so the regtest faucet can announce blocks.
     rpc_state.block_submit = Some(block_submit_sender);
+    // Wire the staking control channel so RPC can enable/disable staking.
+    rpc_state.staking_control = Some(staking_control_sender);
     rpc_state.rpc_api_key = cli.rpc_api_key.clone();
     rpc_state.regtest = cli.regtest;
     let rpc_addr = cli.rpc_addr.clone();

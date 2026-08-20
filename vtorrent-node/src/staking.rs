@@ -16,6 +16,18 @@ use crate::{
     },
 };
 
+/// Runtime staking control command sent from RPC/tauri to the node.
+#[derive(Debug, Clone)]
+pub enum StakingCommand {
+    /// Start staking with the given address and optional signing WIF.
+    Start {
+        address: String,
+        wif: Option<String>,
+    },
+    /// Stop staking.
+    Stop,
+}
+
 /// The staking engine.
 pub struct StakingEngine {
     /// The address whose UTXOs are used for staking.

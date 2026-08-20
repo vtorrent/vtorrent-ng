@@ -6,7 +6,7 @@ use vtorrent_node::atomic_swap::{SwapOrderBook, SwapState};
 use vtorrent_node::block::Transaction;
 use vtorrent_node::chain::Chain;
 use vtorrent_node::mempool::Mempool;
-use vtorrent_node::staking::StakingEngine;
+use vtorrent_node::staking::StakingCommand;
 use vtorrent_spv::SpvChain;
 use vtorrent_torrent::session::SessionManager;
 use vtorrent_wallet::encryption::EncryptedWallet;
@@ -37,8 +37,6 @@ pub struct AppState {
     pub chain: Arc<Mutex<Chain>>,
     /// The transaction mempool — shared with the P2P node.
     pub mempool: Arc<Mutex<Mempool>>,
-    /// The PoS staking engine.
-    pub staking: Arc<RwLock<StakingEngine>>,
     /// The DEX order book.
     pub order_book: Arc<RwLock<SwapOrderBook>>,
     /// Active cross-chain swaps keyed by hex order_id.
@@ -99,6 +97,8 @@ pub struct AppState {
     /// Channel for submitting locally-minted blocks (regtest faucet) into the
     /// node's event loop so they are announced to peers. `None` in standalone mode.
     pub block_submit: Option<mpsc::Sender<vtorrent_node::block::Block>>,
+    /// Channel for enabling/disabling staking at runtime. `None` in standalone mode.
+    pub staking_control: Option<mpsc::Sender<StakingCommand>>,
     /// Live list of connected peers — updated by the daemon event bridge.
     pub peer_list: Arc<RwLock<Vec<PeerInfo>>>,
     /// Optional RPC API key. When set, sensitive endpoints require the
@@ -124,7 +124,6 @@ impl AppState {
         AppState {
             chain,
             mempool,
-            staking: Arc::new(RwLock::new(StakingEngine::new(String::new()))),
             order_book: Arc::new(RwLock::new(SwapOrderBook::new())),
             swaps: Arc::new(RwLock::new(std::collections::HashMap::new())),
             torrent_sessions: Arc::new(RwLock::new(SessionManager::new())),
@@ -150,6 +149,7 @@ impl AppState {
             best_peer_height: Arc::new(RwLock::new(0)),
             tx_submit: None,
             block_submit: None,
+            staking_control: None,
             peer_list: Arc::new(RwLock::new(Vec::new())),
             rpc_api_key: None,
             regtest: false,
@@ -170,7 +170,6 @@ impl AppState {
                 Chain::new().expect("failed to initialize chain"),
             )),
             mempool: Arc::new(Mutex::new(Mempool::new(10_000))),
-            staking: Arc::new(RwLock::new(StakingEngine::new(String::new()))),
             order_book: Arc::new(RwLock::new(SwapOrderBook::new())),
             swaps: Arc::new(RwLock::new(std::collections::HashMap::new())),
             torrent_sessions: Arc::new(RwLock::new(SessionManager::new())),
@@ -196,6 +195,7 @@ impl AppState {
             best_peer_height: Arc::new(RwLock::new(0)),
             tx_submit: None,
             block_submit: None,
+            staking_control: None,
             peer_list: Arc::new(RwLock::new(Vec::new())),
             rpc_api_key: None,
             regtest: false,

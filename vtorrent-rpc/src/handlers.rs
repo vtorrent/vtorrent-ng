@@ -709,6 +709,20 @@ pub async fn start_staking(
         return Err(RpcError::BadRequest("Staking address is required".into()));
     }
 
+    // Sign the coinstake with the unlocked hot-wallet key. If the requested
+    // staking address is not owned by the hot wallet, coinstake signatures
+    // will be rejected by the chain.
+    let wif = state.wallet_wif.read().await.clone();
+
+    if let Some(tx) = &state.staking_control {
+        let _ = tx
+            .send(vtorrent_node::staking::StakingCommand::Start {
+                address: req.address.clone(),
+                wif,
+            })
+            .await;
+    }
+
     *state.staking_enabled.write().await = true;
     *state.staking_address.write().await = Some(req.address.clone());
 
@@ -719,6 +733,9 @@ pub async fn start_staking(
 }
 
 pub async fn stop_staking(State(state): State<Arc<AppState>>) -> RpcResult<Json<Value>> {
+    if let Some(tx) = &state.staking_control {
+        let _ = tx.send(vtorrent_node::staking::StakingCommand::Stop).await;
+    }
     *state.staking_enabled.write().await = false;
     *state.staking_address.write().await = None;
     Ok(Json(

@@ -496,7 +496,7 @@ pub async fn start_node(state: tauri::State<'_, AppState>) -> Result<NodeInfoRes
     let mut node = Node::new(config).map_err(|e| TauriError::NodeError(e.to_string()))?;
 
     // Create the shared RPC AppState using the node's chain and mempool Arcs.
-    let rpc_state = RpcAppState::new_with_shared(node.chain_arc(), node.mempool_arc());
+    let mut rpc_state = RpcAppState::new_with_shared(node.chain_arc(), node.mempool_arc());
 
     // Initialize the Bitcoin SPV wallet from the HD mnemonic, if available.
     let btc_seed = {
@@ -515,6 +515,10 @@ pub async fn start_node(state: tauri::State<'_, AppState>) -> Result<NodeInfoRes
     // counters (blocks_staked / last_stake_time) from node events.
     let (event_tx, mut node_rx) = vtorrent_node::events::channel(1024);
     node.set_event_sender(event_tx);
+
+    // Capture the staking control channel so RPC state can enable/disable
+    // staking at runtime (before `node` is moved into the event loop task).
+    rpc_state.staking_control = Some(node.staking_control());
 
     // Store the NodeHandle before spawning.
     let handle = NodeHandle {
@@ -1504,10 +1508,19 @@ pub async fn start_staking(
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
 
-    // Update the staking engine with the new address and enable it.
-    {
-        let mut engine = handle.rpc_state.staking.write().await;
-        *engine = vtorrent_node::staking::StakingEngine::new(address.clone());
+    if !handle.rpc_state.is_wallet_unlocked().await {
+        return Err(TauriError::WalletLocked);
+    }
+    let wif = handle.rpc_state.wallet_wif.read().await.clone();
+
+    // Drive the node's actual staking engine via the runtime control channel.
+    if let Some(tx) = &handle.rpc_state.staking_control {
+        let _ = tx
+            .send(vtorrent_node::staking::StakingCommand::Start {
+                address: address.clone(),
+                wif,
+            })
+            .await;
     }
     *handle.rpc_state.staking_enabled.write().await = true;
     *handle.rpc_state.staking_address.write().await = Some(address.clone());
@@ -1534,6 +1547,9 @@ pub async fn stop_staking(state: tauri::State<'_, AppState>) -> Result<StakingSt
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
 
+    if let Some(tx) = &handle.rpc_state.staking_control {
+        let _ = tx.send(vtorrent_node::staking::StakingCommand::Stop).await;
+    }
     *handle.rpc_state.staking_enabled.write().await = false;
     *handle.rpc_state.staking_address.write().await = None;
 
