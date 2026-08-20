@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 /// - The network self-regulates: more VTR reward = more seeders = faster downloads
 pub const VTR_PER_GB_SEEDED: f64 = 1.0; // 1 VTR per GB uploaded to peers
 pub const VTR_PER_GB_DOWNLOADED: f64 = 0.5; // 0.5 VTR per GB downloaded from incentivized peers
+#[allow(dead_code)]
 pub const MIN_PAYMENT_BYTES: u64 = 10 * 1024 * 1024; // Minimum 10 MB before payment is triggered
 pub const PAYMENT_INTERVAL_SECS: u64 = 300; // Payment settled every 5 minutes
 pub const COIN: u64 = 100_000_000; // 1 VTR = 100,000,000 satoshis
@@ -57,10 +58,13 @@ impl PeerBandwidthAccount {
 
     /// Calculate how much VTR we should receive from this peer for our uploads.
     /// Returns the amount in satoshis.
+    ///
+    /// Uses integer arithmetic (u128 intermediate) to avoid floating-point
+    /// precision loss on large byte counts.
     pub fn calculate_earned(&self) -> u64 {
-        let gb_uploaded = self.bytes_uploaded as f64 / (1024.0 * 1024.0 * 1024.0);
-        let vtr = gb_uploaded * VTR_PER_GB_SEEDED;
-        (vtr * COIN as f64) as u64
+        const GB: u128 = 1024 * 1024 * 1024;
+        // 1 VTR per GB = COIN satoshis per GB.
+        ((self.bytes_uploaded as u128 * COIN as u128) / GB) as u64
     }
 
     /// Calculate how much VTR we owe this peer for their uploads to us.
@@ -69,9 +73,9 @@ impl PeerBandwidthAccount {
         if !self.incentive_enabled {
             return 0;
         }
-        let gb_downloaded = self.bytes_downloaded as f64 / (1024.0 * 1024.0 * 1024.0);
-        let vtr = gb_downloaded * VTR_PER_GB_DOWNLOADED;
-        (vtr * COIN as f64) as u64
+        const GB: u128 = 1024 * 1024 * 1024;
+        // 0.5 VTR per GB = COIN/2 satoshis per GB.
+        ((self.bytes_downloaded as u128 * (COIN as u128 / 2)) / GB) as u64
     }
 
     /// Check if a settlement is due based on bytes transferred or time elapsed.
