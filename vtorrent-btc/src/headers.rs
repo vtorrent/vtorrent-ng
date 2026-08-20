@@ -49,6 +49,16 @@ impl HeaderChain {
                     hex::encode(prev)
                 )));
             }
+            // Validate height continuity: the height must be exactly one more
+            // than the parent's, so a caller cannot inject an arbitrary height.
+            if let Some(parent) = self.headers.get(&prev) {
+                if height != parent.height + 1 {
+                    return Err(BtcError::Bitcoin(format!(
+                        "height {} does not follow parent height {}",
+                        height, parent.height
+                    )));
+                }
+            }
             self.headers.get(&prev).map(|h| h.work).unwrap_or(0)
         } else {
             0
