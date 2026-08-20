@@ -653,16 +653,12 @@ pub async fn get_staking_status(
     let chain = state.chain.lock().await;
 
     // Sum only the staking address's UTXOs, not the entire network UTXO set.
-    let total_staking: u64 = staking_address
+    let staking_utxos: Vec<vtorrent_node::chain::Utxo> = staking_address
         .as_ref()
-        .map(|addr| {
-            chain
-                .get_utxos_for_address(addr)
-                .iter()
-                .map(|u| u.value)
-                .sum()
-        })
-        .unwrap_or(0);
+        .map(|addr| chain.get_utxos_for_address(addr))
+        .unwrap_or_default();
+    let total_staking: u64 = staking_utxos.iter().map(|u| u.value).sum();
+    let eligible_utxos = staking_utxos.len();
 
     let expected_per_day = if enabled {
         total_staking as f64 * 0.05 / 365.0
@@ -673,7 +669,7 @@ pub async fn get_staking_status(
     Ok(Json(StakingStatusResponse {
         enabled,
         staking_address,
-        eligible_utxos: if enabled { 1 } else { 0 },
+        eligible_utxos,
         total_staking_satoshis: total_staking,
         expected_reward_per_day: expected_per_day,
         last_stake_time: None,
@@ -848,6 +844,14 @@ pub async fn place_dex_order(
     if req.request_asset.trim().is_empty() {
         return Err(RpcError::BadRequest("Requested asset is required".into()));
     }
+    // Validate the maker address so an invalid address cannot silently lock
+    // funds to an unspendable output.
+    if vtorrent_core::address::Address::parse(&req.maker_address).is_err() {
+        return Err(RpcError::BadRequest(format!(
+            "Invalid maker address: {}",
+            req.maker_address
+        )));
+    }
 
     let locktime = if req.expiry_secs == 0 {
         DEFAULT_HTLC_LOCKTIME
@@ -896,6 +900,20 @@ pub async fn cancel_dex_order(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> RpcResult<Json<Value>> {
+    // Only the maker (the wallet that placed the order) may cancel it.
+    let maker = state.wallet_change_address.read().await.clone();
+    let order = {
+        let order_book = state.order_book.read().await;
+        order_book.get_order(&id).cloned()
+    };
+    let order = order.ok_or_else(|| RpcError::NotFound(format!("Order {} not found", id)))?;
+    if let Some(maker) = maker {
+        if order.maker_address != maker {
+            return Err(RpcError::Unauthorized(
+                "Only the maker may cancel this order".into(),
+            ));
+        }
+    }
     let cancelled = state.order_book.write().await.cancel_order(&id);
     if !cancelled {
         return Err(RpcError::NotFound(format!("Order {} not found", id)));
@@ -1298,14 +1316,15 @@ fn utxo_select(
     amount: u64,
     fee: u64,
 ) -> Option<Vec<vtorrent_btc::utxo::Utxo>> {
+    let required = amount.checked_add(fee)?;
     let mut sorted: Vec<vtorrent_btc::utxo::Utxo> = utxos.to_vec();
     sorted.sort_by(|a, b| b.value.cmp(&a.value));
     let mut selected = Vec::new();
     let mut sum = 0u64;
     for u in sorted {
-        sum += u.value;
+        sum = sum.saturating_add(u.value);
         selected.push(u);
-        if sum >= amount + fee {
+        if sum >= required {
             return Some(selected);
         }
     }
@@ -1356,6 +1375,12 @@ pub async fn send_btc(
     State(state): State<Arc<AppState>>,
     Json(req): Json<BtcSendRequest>,
 ) -> RpcResult<Json<BtcSendResponse>> {
+    if req.amount_satoshis == 0 {
+        return Err(RpcError::BadRequest("Amount must be non-zero".into()));
+    }
+    if req.to_address.trim().is_empty() {
+        return Err(RpcError::BadRequest("Recipient address is required".into()));
+    }
     let btc = state.btc_wallet.read().await;
     let w = btc
         .as_ref()

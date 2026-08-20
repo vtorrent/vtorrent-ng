@@ -351,12 +351,14 @@ async fn integration_dex_place_and_cancel_order() {
     }
     let router = build_router(state);
 
-    // Place an order using the correct PlaceOrderRequest fields.
+    // Place an order using the correct PlaceOrderRequest fields. The maker
+    // address must match the imported wallet (the WIF above derives to
+    // VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k) so the ownership check passes.
     let (status, body) = post_json(
         router.clone(),
         "/api/v1/dex/order",
         serde_json::json!({
-            "maker_address": "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT",
+            "maker_address": "VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k",
             "offer_amount_satoshis": 1_000_000u64,
             "offer_asset": "VTR",
             "request_amount_satoshis": 100u64,
