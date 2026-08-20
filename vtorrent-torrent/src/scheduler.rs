@@ -33,6 +33,11 @@ impl PieceTracker {
         }
     }
 
+    /// Whether we hold the given piece (used to serve uploads).
+    pub fn has_piece(&self, index: u32) -> bool {
+        (index as usize) < self.have.len() && self.have[index as usize]
+    }
+
     /// Mark a piece as requested (in flight).
     pub fn mark_requested(&mut self, index: u32) {
         if (index as usize) < self.requested.len() {

@@ -207,17 +207,9 @@ impl CompactBlockDecoder {
         msg: &CmpctBlockMsg,
         mempool: &HashMap<u64, Vec<u8>>, // short_id → tx_bytes
     ) -> Result<Vec<Vec<u8>>, CompactBlockDecodeError> {
-        // Build header bytes for key derivation
-        let mut header_bytes = Vec::with_capacity(80);
-        header_bytes.extend_from_slice(&msg.version.to_le_bytes());
-        header_bytes.extend_from_slice(&msg.prev_block_hash);
-        header_bytes.extend_from_slice(&msg.merkle_root);
-        header_bytes.extend_from_slice(&msg.timestamp.to_le_bytes());
-        header_bytes.extend_from_slice(&msg.bits.to_le_bytes());
-        header_bytes.extend_from_slice(&msg.nonce.to_le_bytes());
-
-        let (k0, k1) = derive_siphash_keys(&header_bytes, msg.siphash_nonce);
-        let _ = (k0, k1); // keys used for verification in full implementation
+        // The `mempool` map is keyed by the BIP-152 short transaction ID, which
+        // the caller computes from the block header's SipHash keys. Looking up
+        // each peer-supplied short_id in this map performs the short-id matching.
 
         // Total transaction count = prefilled + short_ids
         let total = msg.prefilled_txs.len() + msg.short_ids.len();

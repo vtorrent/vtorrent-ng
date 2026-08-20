@@ -138,6 +138,30 @@ impl FileLayout {
         }
         segments
     }
+
+    /// Map a piece of a known length to `(file_index, file_offset, byte_count)`
+    /// ranges, without requiring the piece bytes in memory.
+    pub fn piece_segment_ranges(&self, piece_index: u32, piece_len: u64) -> Vec<(usize, u64, u64)> {
+        let piece_start = piece_index as u64 * self.piece_length;
+        let piece_end = piece_start + piece_len;
+        let mut segments = Vec::new();
+        for (file_index, file_start, file_len) in &self.ranges {
+            let file_end = file_start + file_len;
+            if file_end <= piece_start {
+                continue;
+            }
+            if *file_start >= piece_end {
+                break;
+            }
+            let seg_start = piece_start.max(*file_start);
+            let seg_end = piece_end.min(file_end);
+            if seg_end <= seg_start {
+                continue;
+            }
+            segments.push((*file_index, seg_start - file_start, seg_end - seg_start));
+        }
+        segments
+    }
 }
 
 /// A single peer connection: handshake + message read/write.
@@ -498,6 +522,10 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
     // Track partial piece assembly across multiple blocks.
     let mut assemblers: std::collections::HashMap<u32, PieceAssembler> =
         std::collections::HashMap::new();
+    // Rolling-window counters for speed estimation.
+    let mut downloaded_window: u64 = 0;
+    let mut uploaded_window: u64 = 0;
+    let mut speed_window_start = std::time::Instant::now();
 
     loop {
         if cancel.is_cancelled() {
@@ -524,6 +552,23 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
             in_flight += 1;
         }
 
+        // Periodically fold the current window into the session's speed fields.
+        {
+            let elapsed = speed_window_start.elapsed().as_secs_f64();
+            if elapsed >= 5.0 {
+                let ds = (downloaded_window as f64 / elapsed).round() as u64;
+                let us = (uploaded_window as f64 / elapsed).round() as u64;
+                let mut guard = sessions.write().await;
+                if let Ok(s) = guard.get_session_mut(&session_id) {
+                    s.download_speed = ds;
+                    s.upload_speed = us;
+                }
+                downloaded_window = 0;
+                uploaded_window = 0;
+                speed_window_start = std::time::Instant::now();
+            }
+        }
+
         // Read one message.
         match conn.recv().await {
             Ok(PeerMessage::Bitfield { bits }) => {
@@ -543,6 +588,51 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
             Ok(PeerMessage::Choke) => {
                 // Wait for unchoke; just continue.
             }
+            Ok(PeerMessage::Interested)
+            | Ok(PeerMessage::NotInterested)
+            | Ok(PeerMessage::Unchoke) => {
+                // Interest/choke bookkeeping is not required for a simple
+                // seeder; requests are served regardless.
+            }
+            Ok(PeerMessage::Request {
+                index,
+                begin,
+                length,
+            }) => {
+                // Serve the requested block if we hold the piece.
+                let have_piece = scheduler.lock().unwrap().tracker.has_piece(index);
+                if have_piece {
+                    if let Some(piece_data) =
+                        read_piece_from_disk(&metainfo, &download_dir, index).await
+                    {
+                        let end = (begin as usize + length as usize).min(piece_data.len());
+                        if begin as usize <= end {
+                            let block = piece_data[begin as usize..end].to_vec();
+                            let _ = conn
+                                .send(&PeerMessage::Piece {
+                                    index,
+                                    begin,
+                                    data: block.clone(),
+                                })
+                                .await;
+                            uploaded_window = uploaded_window.saturating_add(block.len() as u64);
+                            let mut guard = sessions.write().await;
+                            if let Ok(s) = guard.get_session_mut(&session_id) {
+                                let peer_key = peer_vtr_address.clone().unwrap_or_else(|| {
+                                    conn.remote_peer_id
+                                        .iter()
+                                        .map(|b| format!("{:02x}", b))
+                                        .collect()
+                                });
+                                s.record_upload(&peer_key, block.len() as u64);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(PeerMessage::Cancel { index, begin, .. }) => {
+                scheduler.lock().unwrap().clear_block(index, begin);
+            }
             Ok(PeerMessage::Piece { index, begin, data }) => {
                 in_flight = in_flight.saturating_sub(1);
                 {
@@ -561,6 +651,8 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                                 write_piece_to_disk(&metainfo, &download_dir, index, &piece_data)
                                     .await;
                                 scheduler.lock().unwrap().mark_have(index);
+                                downloaded_window =
+                                    downloaded_window.saturating_add(piece_data.len() as u64);
                                 // Update session progress.
                                 let mut guard = sessions.write().await;
                                 if let Ok(s) = guard.get_session_mut(&session_id) {
@@ -714,11 +806,34 @@ async fn write_piece_to_disk(
     }
 }
 
-/// Build a safe output path from a base directory and untrusted path components.
+/// Read a complete piece back from disk so it can be served to peers.
 ///
-/// Returns `None` if any component is absolute, `..`, empty, or otherwise
-/// would escape the base directory. This prevents a malicious torrent from
-/// writing arbitrary files via path traversal.
+/// This is the inverse of `write_piece_to_disk`: it opens each file touched by
+/// the piece and reads the bytes back, reassembling the full piece.
+async fn read_piece_from_disk(
+    metainfo: &Metainfo,
+    download_dir: &std::path::Path,
+    piece_index: u32,
+) -> Option<Vec<u8>> {
+    let layout = FileLayout::new(&metainfo.files, metainfo.piece_length);
+    let base = sanitize_path(download_dir, std::slice::from_ref(&metainfo.name))?;
+    let piece_len = piece_length(metainfo, piece_index);
+    let mut out = Vec::with_capacity(piece_len as usize);
+    for (file_index, file_offset, byte_count) in layout.piece_segment_ranges(piece_index, piece_len)
+    {
+        let file = &metainfo.files[file_index];
+        let path = sanitize_path(&base, &file.path)?;
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+        let mut f = tokio::fs::File::open(&path).await.ok()?;
+        let _ = f.seek(std::io::SeekFrom::Start(file_offset)).await;
+        let mut buf = vec![0u8; byte_count as usize];
+        f.read_exact(&mut buf).await.ok()?;
+        out.extend_from_slice(&buf);
+    }
+    Some(out)
+}
+
+/// Build a safe output path from a base directory and untrusted path components.
 fn sanitize_path(base: &std::path::Path, components: &[String]) -> Option<std::path::PathBuf> {
     let mut path = base.to_path_buf();
     for comp in components {
@@ -860,6 +975,32 @@ mod tests {
         assert_eq!(segs[1].0, 1);
         assert_eq!(segs[1].1, 0);
         assert_eq!(segs[1].2.len(), 20);
+    }
+
+    #[test]
+    fn test_piece_segment_ranges_matches_segments() {
+        let files = vec![
+            TorrentFile {
+                path: vec!["a.bin".to_string()],
+                length: 30,
+                md5sum: None,
+            },
+            TorrentFile {
+                path: vec!["b.bin".to_string()],
+                length: 70,
+                md5sum: None,
+            },
+        ];
+        let layout = FileLayout::new(&files, 50);
+        // Last piece of the multi-file torrent is 50 bytes too.
+        let segs = layout.piece_segments(1, &[0u8; 50]);
+        let ranges = layout.piece_segment_ranges(1, 50);
+        assert_eq!(segs.len(), ranges.len());
+        for (s, r) in segs.iter().zip(ranges.iter()) {
+            assert_eq!(s.0, r.0);
+            assert_eq!(s.1, r.1);
+            assert_eq!(s.2.len() as u64, r.2);
+        }
     }
 
     #[tokio::test]

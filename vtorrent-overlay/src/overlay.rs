@@ -259,15 +259,53 @@ async fn receive_loop(
             crate::relay::TAG_RELAY_REQUEST => {
                 // Build a real peer map from the live EndpointRegistry so the relay
                 // engine can look up target peers by node-id and forward onion-routed
-                // messages to the correct socket address.
+                // messages to the correct socket address. Also resolve the
+                // requester's node ID from their socket address so the forwarded
+                // packet carries the real source ID (not a zero placeholder).
                 let all_endpoints = registry.all().await;
                 let peers: std::collections::HashMap<String, std::net::SocketAddr> = all_endpoints
-                    .into_iter()
-                    .map(|ep| (ep.node_id, ep.addr))
+                    .iter()
+                    .map(|ep| (ep.node_id.clone(), ep.addr))
                     .collect();
-                if let Err(e) = relay.handle_relay_request(from, data, &peers).await {
+                let requester_id = all_endpoints
+                    .iter()
+                    .find(|ep| ep.addr == from)
+                    .map(|ep| ep.node_id.clone());
+                if let Err(e) = relay
+                    .handle_relay_request(from, requester_id.as_deref(), data, &peers)
+                    .await
+                {
                     tracing::debug!("RELAY_REQUEST error from {}: {}", from, e);
                 }
+            }
+            crate::relay::TAG_RELAY_FORWARD => {
+                // A relay forwarded a packet to us. The wire format is
+                // [tag | source node ID (32 bytes) | encrypted payload]; decrypt
+                // it with the source's session key, mirroring the TAG_DATA path.
+                if data.len() > 33 {
+                    let node_id = hex::encode(&data[1..33]);
+                    match puncher.decrypt_data(&node_id, &data[33..]).await {
+                        Ok(payload) => {
+                            let _ = event_tx
+                                .send(OverlayEvent::DataReceived {
+                                    from_node_id: node_id,
+                                    payload,
+                                })
+                                .await;
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                peer = %node_id,
+                                "Discarding unauthenticated relayed data: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+            crate::relay::TAG_RELAY_DECLINE => {
+                // The relay could not reach the target we asked it to forward to.
+                tracing::debug!("Relay declined our request (target unreachable)");
             }
             crate::holepunch::TAG_DATA => {
                 // Wire format: [tag | sender node ID (32 bytes) | encrypted payload].

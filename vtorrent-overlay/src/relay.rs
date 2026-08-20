@@ -57,9 +57,15 @@ impl RelayEngine {
     ///
     /// If we know the target, forward the payload to them as RELAY_FORWARD.
     /// If we don't know the target or are at capacity, send RELAY_DECLINE.
+    ///
+    /// `source_node_id` is the requester's node ID (hex), resolved by the
+    /// caller from the endpoint registry. When the requester is unknown, the
+    /// source field falls back to zeros (the target will reject unauthored
+    /// payloads anyway).
     pub async fn handle_relay_request(
         &self,
         from: SocketAddr,
+        source_node_id: Option<&str>,
         data: &[u8],
         known_peers: &HashMap<String, SocketAddr>,
     ) -> Result<()> {
@@ -83,13 +89,15 @@ impl RelayEngine {
         // Look up target
         match known_peers.get(&target_id) {
             Some(&target_addr) => {
-                // Forward the payload
+                // Forward the payload, carrying the requester's node ID so the
+                // target knows (and can authenticate) who sent it.
                 let mut fwd = Vec::with_capacity(33 + payload.len());
                 fwd.push(TAG_RELAY_FORWARD);
-                // Include the requester's node ID so the target knows who sent it
-                // (we use the first 32 bytes of `from`'s IP as a placeholder;
-                //  in practice the requester embeds their node ID in the payload)
-                fwd.extend_from_slice(&[0u8; 32]); // source placeholder
+                let src = source_node_id
+                    .and_then(|id| hex::decode(id).ok())
+                    .filter(|b| b.len() == 32)
+                    .unwrap_or_else(|| vec![0u8; 32]);
+                fwd.extend_from_slice(&src);
                 fwd.extend_from_slice(payload);
                 self.socket
                     .send_to(&fwd, target_addr)
