@@ -253,7 +253,11 @@ impl AddrBook {
             .addrs
             .iter()
             .filter_map(|pa| {
-                let addr: SocketAddr = format!("{}:{}", pa.addr, pa.port).parse().ok()?;
+                // Parse the IP separately so IPv6 addresses (e.g. "::1") are not
+                // mangled by the "ip:port" string form, which is ambiguous
+                // without brackets and would silently drop IPv6 peers.
+                let ip: IpAddr = pa.addr.parse().ok()?;
+                let addr = SocketAddr::new(ip, pa.port);
                 Some(AddrEntry {
                     addr,
                     services: pa.services,
@@ -301,7 +305,7 @@ impl AddrBook {
             .filter(|e| e.is_fresh())
             .take(MAX_ADDR_PER_MSG)
             .map(|e| PeerAddr {
-                timestamp: e.last_seen as u32,
+                timestamp: u32::try_from(e.last_seen).unwrap_or(u32::MAX),
                 services: e.services,
                 addr: e.addr.ip().to_string(),
                 port: e.addr.port(),

@@ -81,6 +81,13 @@ pub struct Wallet {
     passphrase: String,
 }
 
+impl Drop for Wallet {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.passphrase.zeroize();
+    }
+}
+
 impl Wallet {
     // ─── Construction ─────────────────────────────────────────────────────────
 

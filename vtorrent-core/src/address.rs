@@ -58,11 +58,14 @@ impl Address {
     }
 
     /// Create an address directly from a 20-byte hash (used by the snapshot parser).
-    pub fn from_hash160(hash: &[u8], version: u8) -> Self {
-        let mut h = [0u8; 20];
-        let len = hash.len().min(20);
-        h[..len].copy_from_slice(&hash[..len]);
-        Self { hash: h, version }
+    ///
+    /// Rejects any input that is not exactly 20 bytes rather than silently
+    /// padding or truncating, which could produce a wrong address.
+    pub fn from_hash160(hash: &[u8], version: u8) -> Result<Self> {
+        let h: [u8; 20] = hash.try_into().map_err(|_| {
+            CoreError::InvalidAddress(format!("Expected 20-byte hash160, got {}", hash.len()))
+        })?;
+        Ok(Self { hash: h, version })
     }
 
     /// Check if this address uses the legacy vTorrent version byte.

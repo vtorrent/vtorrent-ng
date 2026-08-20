@@ -110,25 +110,29 @@ pub fn extract_wallet(wallet_data: &[u8], passphrase: Option<&str>) -> Result<Wa
 
         let decrypted_master = decrypt_master_key(mkey, passphrase)?;
 
+        let mut decrypted_any = false;
         for ckey_rec in &encrypted_keys {
-            match decrypt_private_key(
+            if let Ok(privkey_bytes) = decrypt_private_key(
                 &ckey_rec.encrypted_private_key,
                 &ckey_rec.public_key,
                 &decrypted_master,
             ) {
-                Ok(privkey_bytes) => {
-                    if let Some(extracted) = derive_extracted_key(
-                        &ckey_rec.public_key,
-                        &privkey_bytes,
-                        KeySource::DecryptedFromMasterKey,
-                    ) {
-                        extracted_keys.push(extracted);
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Warning: Failed to decrypt a key: {}", e);
+                decrypted_any = true;
+                if let Some(extracted) = derive_extracted_key(
+                    &ckey_rec.public_key,
+                    &privkey_bytes,
+                    KeySource::DecryptedFromMasterKey,
+                ) {
+                    extracted_keys.push(extracted);
                 }
             }
+        }
+
+        // A wrong passphrase produces a garbage master key, so every ckey
+        // fails its secp256k1 scalar check. Report an incorrect passphrase
+        // instead of returning an empty (but "successful") extraction.
+        if !decrypted_any {
+            return Err(MigrateError::IncorrectPassphrase);
         }
     }
 

@@ -238,7 +238,11 @@ async fn socks5_connect(stream: &mut TcpStream, host: &str, port: u16) -> Result
 
     // ── Step 2: CONNECT request ───────────────────────────────────────────
     let host_bytes = host.as_bytes();
-    let host_len = host_bytes.len() as u8;
+    // The SOCKS5 domain-name length field is a single byte (max 255). Reject
+    // longer hosts rather than truncating the length and corrupting the frame.
+    let host_len = u8::try_from(host_bytes.len()).map_err(|_| {
+        OnionError::Socks5Error(format!("Hostname too long: {} bytes", host_bytes.len()))
+    })?;
 
     let mut req = vec![
         0x05,     // SOCKS version

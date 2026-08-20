@@ -18,7 +18,10 @@ use vtorrent_onion::TransportConfig;
 use vtorrent_overlay::{Overlay, OverlayConfig, OverlayEvent};
 
 use vtorrent_p2p::{
-    compact::{derive_siphash_keys, short_txid, CompactBlockDecoder, CompactBlockPeerState},
+    compact::{
+        derive_siphash_keys, short_txid, CompactBlockDecodeError, CompactBlockDecoder,
+        CompactBlockPeerState,
+    },
     dht::{discover_peers_via_doh, discover_peers_via_github, DhtBootstrap},
     message::{
         AddrMsg, BlockTxnMsg, CmpctBlockMsg, FeeFilterMsg, GetBlockTxnMsg, GetBlocksMsg,
@@ -1314,7 +1317,7 @@ impl Node {
                                 }
                             }
                         }
-                        Err(missing_indexes) => {
+                        Err(CompactBlockDecodeError::MissingTransactions(missing_indexes)) => {
                             // Some transactions are missing from our mempool — request them
                             tracing::debug!(
                                 "cmpctblock: {} missing txs from {}, sending getblocktxn",
@@ -1343,6 +1346,12 @@ impl Node {
                             self.peer_manager
                                 .send_to(peer_addr, NetMessage::new("getblocktxn", payload))
                                 .await;
+                        }
+                        Err(CompactBlockDecodeError::TooManyTransactions) => {
+                            tracing::warn!(
+                                "cmpctblock: rejecting block with too many transactions from {}",
+                                peer_addr
+                            );
                         }
                     }
                 }

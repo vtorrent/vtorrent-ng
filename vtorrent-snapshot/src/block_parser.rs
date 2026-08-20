@@ -165,7 +165,7 @@ fn script_to_address(script: &[u8]) -> Option<String> {
     // OP_CHECKSIG
     {
         let hash = &script[3..23];
-        let addr = Address::from_hash160(hash, legacy::PUBKEY_ADDRESS_PREFIX);
+        let addr = Address::from_hash160(hash, legacy::PUBKEY_ADDRESS_PREFIX).ok()?;
         return Some(addr.to_string());
     }
 
@@ -177,7 +177,7 @@ fn script_to_address(script: &[u8]) -> Option<String> {
     // OP_EQUAL
     {
         let hash = &script[2..22];
-        let addr = Address::from_hash160(hash, legacy::SCRIPT_ADDRESS_PREFIX);
+        let addr = Address::from_hash160(hash, legacy::SCRIPT_ADDRESS_PREFIX).ok()?;
         return Some(addr.to_string());
     }
 

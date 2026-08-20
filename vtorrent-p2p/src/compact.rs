@@ -186,6 +186,17 @@ impl CompactBlockEncoder {
 /// Compact block decoder — reconstructs a full block from a compact block message.
 pub struct CompactBlockDecoder;
 
+/// Error produced when a compact block cannot be fully reconstructed locally.
+#[derive(Debug)]
+pub enum CompactBlockDecodeError {
+    /// Some transactions are missing from the mempool; the absolute indexes
+    /// should be requested from the peer via `getblocktxn`.
+    MissingTransactions(Vec<u16>),
+    /// The compact block advertises more transactions than can be represented
+    /// by the u16 `getblocktxn` index field.
+    TooManyTransactions,
+}
+
 impl CompactBlockDecoder {
     /// Try to reconstruct the full transaction list from a compact block.
     ///
@@ -195,7 +206,7 @@ impl CompactBlockDecoder {
     pub fn decode(
         msg: &CmpctBlockMsg,
         mempool: &HashMap<u64, Vec<u8>>, // short_id → tx_bytes
-    ) -> Result<Vec<Vec<u8>>, Vec<u16>> {
+    ) -> Result<Vec<Vec<u8>>, CompactBlockDecodeError> {
         // Build header bytes for key derivation
         let mut header_bytes = Vec::with_capacity(80);
         header_bytes.extend_from_slice(&msg.version.to_le_bytes());
@@ -210,6 +221,12 @@ impl CompactBlockDecoder {
 
         // Total transaction count = prefilled + short_ids
         let total = msg.prefilled_txs.len() + msg.short_ids.len();
+        // The getblocktxn index field is a u16, so reject compact blocks that
+        // advertise more transactions than can be indexed rather than silently
+        // truncating indexes.
+        if total > u16::MAX as usize {
+            return Err(CompactBlockDecodeError::TooManyTransactions);
+        }
         let mut txs: Vec<Option<Vec<u8>>> = vec![None; total];
         let mut missing: Vec<u16> = Vec::new();
 
@@ -243,7 +260,7 @@ impl CompactBlockDecoder {
         if missing.is_empty() {
             Ok(txs.into_iter().map(|t| t.unwrap_or_default()).collect())
         } else {
-            Err(missing)
+            Err(CompactBlockDecodeError::MissingTransactions(missing))
         }
     }
 
@@ -381,7 +398,12 @@ mod tests {
         let result = CompactBlockDecoder::decode(&msg, &mempool);
         assert!(result.is_err());
         let missing = result.unwrap_err();
-        assert_eq!(missing.len(), 1);
+        match missing {
+            CompactBlockDecodeError::MissingTransactions(indexes) => {
+                assert_eq!(indexes.len(), 1);
+            }
+            _ => panic!("expected MissingTransactions"),
+        }
     }
 
     #[test]

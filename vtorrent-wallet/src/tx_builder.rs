@@ -71,14 +71,17 @@ pub fn select_coins(
 
     for utxo in candidates {
         selected.push(utxo.clone());
-        selected_value += utxo.value;
+        selected_value = selected_value
+            .checked_add(utxo.value)
+            .ok_or_else(|| WalletError::BuildError("UTXO value overflow".into()))?;
 
         // Estimate fee for the current selection.
         let n_inputs = selected.len();
         let tx_size = TX_OVERHEAD + n_inputs * P2PKH_INPUT_SIZE + n_outputs * P2PKH_OUTPUT_SIZE;
-        let fee = (tx_size as u64) * fee_rate;
+        let fee = (tx_size as u64).saturating_mul(fee_rate);
 
-        if selected_value >= target_sats + fee {
+        let required = target_sats.saturating_add(fee);
+        if selected_value >= required {
             return Ok((selected, fee));
         }
     }
@@ -271,15 +274,21 @@ impl TxBuilder {
         };
 
         // Total amount to send.
-        let total_send: u64 = self.recipients.iter().map(|(_, v)| v).sum();
+        let total_send: u64 = self.recipients.iter().try_fold(0u64, |acc, (_, v)| {
+            acc.checked_add(*v)
+                .ok_or_else(|| WalletError::BuildError("Total send amount overflow".into()))
+        })?;
         let n_outputs = self.recipients.len() + 1; // +1 for change
 
         // Coin selection.
         let (selected_utxos, fee) =
             select_coins(available_utxos, total_send, self.fee_rate, n_outputs)?;
 
-        let total_input: u64 = selected_utxos.iter().map(|u| u.value).sum();
-        let change = total_input.saturating_sub(total_send + fee);
+        let total_input: u64 = selected_utxos.iter().try_fold(0u64, |acc, u| {
+            acc.checked_add(u.value)
+                .ok_or_else(|| WalletError::BuildError("Total input amount overflow".into()))
+        })?;
+        let change = total_input.saturating_sub(total_send.saturating_add(fee));
 
         // Build unsigned inputs.
         let sequence = if self.signal_rbf {
@@ -324,7 +333,7 @@ impl TxBuilder {
             claim_signature: None,
         };
 
-        // Sign each input.
+        // Sign each input, matching each UTXO to the key that owns it.
         for (input_index, utxo) in selected_utxos.iter().enumerate() {
             // The subscript is the previous output's scriptPubKey.
             let subscript = utxo.script_pubkey.clone();
@@ -332,9 +341,20 @@ impl TxBuilder {
             // Compute sighash.
             let sighash = compute_sighash(&tx, input_index, &subscript)?;
 
-            // Use the first key for all inputs (single-key wallet).
-            // For multi-key wallets, match key by address.
-            let (ref secret_bytes, ref pubkey_bytes) = key_pairs[0];
+            // Match the signing key to this UTXO's P2PKH script. Fall back to
+            // the sole key for single-key wallets; error when a UTXO cannot be
+            // matched (signing with the wrong key would produce an invalid
+            // signature rejected by the chain).
+            let (secret_bytes, pubkey_bytes) = match find_key_for_script(&key_pairs, &subscript) {
+                Some(kp) => kp,
+                None if key_pairs.len() == 1 => &key_pairs[0],
+                None => {
+                    return Err(WalletError::BuildError(format!(
+                        "No signing key matches UTXO {}",
+                        hex::encode(utxo.txid)
+                    )))
+                }
+            };
 
             let sig = sign_input(secret_bytes, &sighash)?;
             let script_sig = build_script_sig(&sig, pubkey_bytes);
@@ -442,6 +462,35 @@ pub fn pubkey_to_vtorrent_address(compressed_pubkey: &[u8]) -> Result<String> {
     payload.extend_from_slice(&checksum);
 
     Ok(bs58::encode(payload).into_string())
+}
+
+/// Build the standard P2PKH scriptPubKey for a compressed public key.
+fn pubkey_to_p2pkh_script(compressed_pubkey: &[u8]) -> Vec<u8> {
+    use ripemd::Digest as _;
+    use ripemd::Ripemd160;
+    use sha2::Sha256;
+
+    let sha256_hash = Sha256::digest(compressed_pubkey);
+    let hash160 = Ripemd160::digest(sha256_hash);
+
+    let mut script = Vec::with_capacity(25);
+    script.push(0x76); // OP_DUP
+    script.push(0xa9); // OP_HASH160
+    script.push(0x14); // push 20 bytes
+    script.extend_from_slice(&hash160);
+    script.push(0x88); // OP_EQUALVERIFY
+    script.push(0xac); // OP_CHECKSIG
+    script
+}
+
+/// Find the signing key whose P2PKH script matches the given scriptPubKey.
+fn find_key_for_script<'a>(
+    key_pairs: &'a [([u8; 32], Vec<u8>)],
+    script_pubkey: &[u8],
+) -> Option<&'a ([u8; 32], Vec<u8>)> {
+    key_pairs
+        .iter()
+        .find(|(_, pubkey_bytes)| pubkey_to_p2pkh_script(pubkey_bytes) == script_pubkey)
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
