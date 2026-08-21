@@ -26,6 +26,9 @@ pub enum MigrateError {
     #[error("Unsupported key derivation method: {0}")]
     UnsupportedDerivationMethod(u32),
 
+    #[error("Key derivation failed: {0}")]
+    KdfError(String),
+
     #[error("Key derivation iterations exceed the safety limit: {0}")]
     ExcessiveIterations(u32),
 
