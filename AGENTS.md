@@ -38,7 +38,7 @@ This is a Cargo workspace with 16 crates plus a frontend:
 # Build the whole workspace
 cargo build --workspace
 
-# Run all tests (320 tests currently pass)
+# Run all tests (435 tests currently pass)
 cargo test --workspace
 
 # Formatting and linting (enforced in CI)
@@ -62,7 +62,8 @@ cd vtorrent-ui && pnpm lint
   under `[workspace.dependencies]`. Add new shared deps there, not in individual crates.
 - **Error handling**: `thiserror` for library error enums, `anyhow` for binaries.
 - **Logging**: `tracing` + `tracing-subscriber` (never `println!` in library code).
-- **Async**: `tokio` (full features) for networking; `libp2p` for overlay/DHT.
+- **Async**: `tokio` (full features) for networking; BEP-5 Kademlia DHT and a
+  custom UDP overlay (not libp2p) for peer discovery and NAT traversal.
 - **Serialization**: `serde` + `serde_json` for RPC, `bincode` for binary wire formats.
 - **Security**: private keys are handled exclusively in the Rust backend; the JS frontend
   never receives key material. Passphrases are zeroized immediately after key derivation.
@@ -71,11 +72,11 @@ cd vtorrent-ui && pnpm lint
 
 ## Key Details
 
-- **Network magic**: `0x22 0x05 0x35 0x70` (preserved from legacy).
-- **Ports**: P2P `22524`, RPC `22525`; testnet P2P `32524`, RPC `32525`.
-- **Consensus**: Proof-of-Stake, 10s target block time, 5% annual reward, min stake 100 VTR,
-  min age 30 days, max supply 20,000,000 VTR.
-- **Address format**: Base58Check prefix `75` (`V...`); WIF prefix `203` (`7...`).
+- **Network magic**: `0x56 0x54 0x52 0x32` (`"VTR2"`); legacy was `0x19 0x3b 0x2f 0x5a`.
+- **Ports**: P2P `22526`, RPC `22525` (testnet uses the same defaults).
+- **Consensus**: Proof-of-Stake, 60s target block time, 5% annual reward, min stake 1 VTR,
+  min stake age 6 hours (max stake age 6 days), max supply 20,000,000 VTR.
+- **Address format**: Base58Check prefix `70` (`V...`); WIF prefix `198` (`7...`).
 - **Genesis**: deterministic, embeds a legacy UTXO snapshot (59,375 addresses,
   11,589,746.63 VTR) for old-holder claims.
 - **DNS seeds**: none currently (the legacy `seed1/2/3.vtorrent.io` domains are
