@@ -36,7 +36,7 @@ use crate::{
     atomic_swap::{OrderAnnouncement, SwapOrderBook},
     block::{Block, BlockHeader, Transaction},
     chain::Chain,
-    consensus::TARGET_BLOCK_TIME,
+    consensus::{compute_stake_modifier, TARGET_BLOCK_TIME},
     error::{NodeError, Result},
     events::{EventSender, NodeEvent},
     mempool::Mempool,
@@ -1288,6 +1288,21 @@ impl Node {
                                 }
                             }
                             if all_ok {
+                                // The compact-block header does not carry the stake
+                                // modifier; derive it from the parent block so the
+                                // reconstructed block validates against the chain.
+                                let stake_modifier = {
+                                    let chain = self.chain.lock().await;
+                                    chain
+                                        .get_block(&cmpct.prev_block_hash)
+                                        .map(|p| {
+                                            compute_stake_modifier(
+                                                p.header.stake_modifier,
+                                                &cmpct.prev_block_hash,
+                                            )
+                                        })
+                                        .unwrap_or(0)
+                                };
                                 let block = Block {
                                     header: BlockHeader {
                                         version: cmpct.version,
@@ -1296,7 +1311,7 @@ impl Node {
                                         timestamp: cmpct.timestamp,
                                         bits: cmpct.bits,
                                         nonce: cmpct.nonce,
-                                        stake_modifier: 0, // compact blocks don't carry stake_modifier; resolved from chain
+                                        stake_modifier,
                                     },
                                     transactions: txs,
                                 };
@@ -1740,16 +1755,21 @@ impl Node {
             .as_ref()
             .ok_or_else(|| NodeError::Chain("Staking not enabled".into()))?;
 
-        let (best_height, best_hash, best_timestamp, stake_utxos) = {
+        let (best_height, best_hash, best_timestamp, best_stake_modifier, stake_utxos) = {
             let chain = self.chain.lock().await;
             let best_height = chain.best_height();
             let best_hash = chain.best_hash().unwrap_or([0u8; 32]);
-            let best_timestamp = chain
-                .get_block_at_height(best_height)
-                .map(|b| b.header.timestamp)
-                .unwrap_or(0);
+            let best_block = chain.get_block_at_height(best_height);
+            let best_timestamp = best_block.map(|b| b.header.timestamp).unwrap_or(0);
+            let best_stake_modifier = best_block.map(|b| b.header.stake_modifier).unwrap_or(0);
             let utxos = chain.get_utxos_for_address(&staking.address);
-            (best_height, best_hash, best_timestamp, utxos)
+            (
+                best_height,
+                best_hash,
+                best_timestamp,
+                best_stake_modifier,
+                utxos,
+            )
         };
 
         if stake_utxos.is_empty() {
@@ -1770,9 +1790,14 @@ impl Node {
             mempool.get_transactions()
         };
 
-        if let Some(block) =
-            staking.build_stake_block(best_hash, best_height + 1, now, stake_utxos, pending_txs)
-        {
+        if let Some(block) = staking.build_stake_block(
+            best_hash,
+            best_stake_modifier,
+            best_height + 1,
+            now,
+            stake_utxos,
+            pending_txs,
+        ) {
             let block_hash = block.hash();
             let block_arc = std::sync::Arc::new(block.clone());
             let acceptance = {

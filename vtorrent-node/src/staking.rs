@@ -12,7 +12,8 @@ use crate::{
     block::{Block, BlockHeader, Transaction, TxInput, TxOutput, TxType},
     chain::Utxo,
     consensus::{
-        check_stake_kernel, compute_pos_reward, MAX_STAKE_AGE, MIN_STAKE_AGE, MIN_STAKE_AMOUNT,
+        check_stake_kernel, compute_pos_reward, compute_stake_modifier, MAX_STAKE_AGE,
+        MIN_STAKE_AGE, MIN_STAKE_AMOUNT,
     },
 };
 
@@ -56,6 +57,7 @@ impl StakingEngine {
     pub fn build_stake_block(
         &self,
         prev_hash: [u8; 32],
+        prev_stake_modifier: u64,
         height: u32,
         timestamp: u32,
         utxos: Vec<Utxo>,
@@ -74,10 +76,17 @@ impl StakingEngine {
 
         // Try each eligible UTXO as a stake kernel
         for utxo in &eligible {
-            if let Some(coinstake) = self.try_stake_kernel(utxo, timestamp, height) {
+            if let Some(coinstake) =
+                self.try_stake_kernel(prev_stake_modifier, utxo, timestamp, height)
+            {
                 // Build the full block
-                let block =
-                    self.assemble_block(prev_hash, timestamp, coinstake, pending_txs.clone());
+                let block = self.assemble_block(
+                    prev_hash,
+                    prev_stake_modifier,
+                    timestamp,
+                    coinstake,
+                    pending_txs.clone(),
+                );
                 tracing::info!(
                     "Found stake kernel: utxo {}:{} at height {}",
                     hex::encode(utxo.txid),
@@ -115,13 +124,18 @@ impl StakingEngine {
 
     /// Try to find a valid stake kernel for a UTXO.
     ///
-    /// The stake kernel hash must be below the target (proportional to stake amount).
-    /// This is a simplified version — a production implementation would use
-    /// the full PPCoin stake modifier chain.
-    fn try_stake_kernel(&self, utxo: &Utxo, timestamp: u32, height: u32) -> Option<Transaction> {
+    /// The stake kernel hash must be below the target (proportional to stake
+    /// amount), using the tip's stake modifier.
+    fn try_stake_kernel(
+        &self,
+        stake_modifier: u64,
+        utxo: &Utxo,
+        timestamp: u32,
+        height: u32,
+    ) -> Option<Transaction> {
         // The kernel check is shared with the chain's block validation so a
         // block that passes validation provably met the difficulty requirement.
-        if !check_stake_kernel(utxo, timestamp) {
+        if !check_stake_kernel(stake_modifier, utxo, timestamp) {
             return None;
         }
 
@@ -210,6 +224,7 @@ impl StakingEngine {
     fn assemble_block(
         &self,
         prev_hash: [u8; 32],
+        prev_stake_modifier: u64,
         timestamp: u32,
         coinstake: Transaction,
         pending_txs: Vec<Transaction>,
@@ -237,7 +252,7 @@ impl StakingEngine {
             timestamp,
             bits: 0x1e0fffff,
             nonce: 0, // PoS blocks always have nonce = 0
-            stake_modifier: 0,
+            stake_modifier: compute_stake_modifier(prev_stake_modifier, &prev_hash),
         };
 
         let temp_block = Block {

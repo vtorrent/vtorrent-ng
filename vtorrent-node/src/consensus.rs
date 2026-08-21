@@ -58,11 +58,30 @@ pub fn compute_pos_reward(stake_amount: u64, coin_age_seconds: u64) -> u64 {
     reward as u64
 }
 
-/// Compute the stake kernel hash for a UTXO at a given timestamp.
+/// Compute the stake modifier for the next block from the previous block's
+/// stake modifier and hash.
 ///
-/// kernel = SHA256d(txid || vout || timestamp)
-pub fn stake_kernel_hash(utxo: &Utxo, timestamp: u32) -> [u8; 32] {
+/// The modifier is a rolling SHA256d chain: it makes future stake kernels
+/// unpredictable until the previous block is confirmed, so a staker cannot
+/// pre-compute winning kernels ahead of time (stake grinding resistance).
+pub fn compute_stake_modifier(prev_stake_modifier: u64, prev_block_hash: &[u8; 32]) -> u64 {
+    let mut data = Vec::with_capacity(40);
+    data.extend_from_slice(&prev_stake_modifier.to_le_bytes());
+    data.extend_from_slice(prev_block_hash);
+    let first = Sha256::digest(&data);
+    let second = Sha256::digest(first);
+    let mut out = [0u8; 8];
+    out.copy_from_slice(&second[..8]);
+    u64::from_le_bytes(out)
+}
+
+/// Compute the stake kernel hash for a UTXO at a given timestamp, using the
+/// current tip's stake modifier.
+///
+/// kernel = SHA256d(stake_modifier || txid || vout || timestamp)
+pub fn stake_kernel_hash(stake_modifier: u64, utxo: &Utxo, timestamp: u32) -> [u8; 32] {
     let mut hasher = Sha256::new();
+    hasher.update(stake_modifier.to_le_bytes());
     hasher.update(utxo.txid);
     hasher.update(utxo.vout.to_le_bytes());
     hasher.update(timestamp.to_le_bytes());
@@ -75,14 +94,15 @@ pub fn stake_kernel_hash(utxo: &Utxo, timestamp: u32) -> [u8; 32] {
     hash
 }
 
-/// Check whether a UTXO satisfies the stake kernel difficulty at a timestamp.
+/// Check whether a UTXO satisfies the stake kernel difficulty at a timestamp,
+/// given the current tip's stake modifier.
 ///
 /// The kernel hash must be below a target proportional to the stake value:
 /// target = min(value / 1000, u32::MAX). This is the same check the staking
 /// engine uses when producing blocks, so a block that passes validation here
 /// provably met the difficulty requirement.
-pub fn check_stake_kernel(utxo: &Utxo, timestamp: u32) -> bool {
-    let kernel_hash = stake_kernel_hash(utxo, timestamp);
+pub fn check_stake_kernel(stake_modifier: u64, utxo: &Utxo, timestamp: u32) -> bool {
+    let kernel_hash = stake_kernel_hash(stake_modifier, utxo, timestamp);
     let kernel_val = u32::from_le_bytes([
         kernel_hash[0],
         kernel_hash[1],
@@ -99,6 +119,8 @@ pub fn validate_block(
     prev_height: u32,
     prev_timestamp: u32,
     prev_bits: u32,
+    prev_stake_modifier: u64,
+    prev_block_hash: [u8; 32],
 ) -> Result<()> {
     // Check block is not empty
     if block.transactions.is_empty() {
@@ -135,6 +157,17 @@ pub fn validate_block(
         return Err(NodeError::InvalidBlock(format!(
             "Block difficulty {} does not match parent difficulty {}",
             block.header.bits, prev_bits
+        )));
+    }
+
+    // The stake modifier must be derived from the parent block's modifier and
+    // hash. This makes the PoS kernel unpredictable ahead of time and prevents
+    // stake grinding.
+    let expected_modifier = compute_stake_modifier(prev_stake_modifier, &prev_block_hash);
+    if block.header.stake_modifier != expected_modifier {
+        return Err(NodeError::InvalidBlock(format!(
+            "Stake modifier {} does not match expected {}",
+            block.header.stake_modifier, expected_modifier
         )));
     }
 
@@ -559,12 +592,43 @@ mod tests {
                 timestamp: 1_700_000_001,
                 bits,
                 nonce,
-                stake_modifier: 0,
+                stake_modifier: compute_stake_modifier(0, &[0u8; 32]),
             },
             transactions: vec![first_tx],
         };
         block.header.merkle_root = block.compute_merkle_root();
         block
+    }
+
+    #[test]
+    fn test_compute_stake_modifier_deterministic() {
+        let a = compute_stake_modifier(0, &[0u8; 32]);
+        let b = compute_stake_modifier(0, &[0u8; 32]);
+        assert_eq!(a, b);
+        assert_ne!(a, compute_stake_modifier(0, &[1u8; 32]));
+        assert_ne!(a, compute_stake_modifier(1, &[0u8; 32]));
+    }
+
+    #[test]
+    fn test_validate_block_rejects_wrong_stake_modifier() {
+        let coinbase = Transaction {
+            version: 1,
+            tx_type: TxType::Coinbase,
+            inputs: vec![],
+            outputs: vec![TxOutput {
+                value: COIN,
+                script_pubkey: vec![0x51],
+            }],
+            lock_time: 1,
+            claim_address: None,
+            claim_signature: None,
+        };
+        // make_test_block derives the modifier from (0, [0;32]).
+        let block = make_test_block(coinbase, 0x1e0fffff, 42);
+        // A different parent modifier must produce a mismatch and be rejected.
+        assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0fffff, 1, [0u8; 32]).is_err());
+        // The correct parent modifier is accepted.
+        assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0fffff, 0, [0u8; 32]).is_ok());
     }
 
     #[test]
@@ -583,9 +647,9 @@ mod tests {
         };
         let block = make_test_block(coinbase, 0x1e0fffff, 42);
         // Matching parent difficulty passes
-        assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0fffff).is_ok());
+        assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0fffff, 0, [0u8; 32]).is_ok());
         // Lower (easier) difficulty rejected
-        assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0ffffe).is_err());
+        assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0ffffe, 0, [0u8; 32]).is_err());
     }
 
     #[test]
@@ -603,7 +667,7 @@ mod tests {
             claim_signature: None,
         };
         let block = make_test_block(coinbase, 0x1e0fffff, 42);
-        assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0fffff).is_err());
+        assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0fffff, 0, [0u8; 32]).is_err());
     }
 
     #[test]
@@ -622,7 +686,7 @@ mod tests {
             claim_signature: None,
         };
         let block = make_test_block(coinbase, 0x1e0fffff, 0);
-        assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0fffff).is_err());
+        assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0fffff, 0, [0u8; 32]).is_err());
     }
 
     #[test]
@@ -640,6 +704,6 @@ mod tests {
             claim_signature: None,
         };
         let block = make_test_block(coinbase, 0x1e0fffff, 42);
-        assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0fffff).is_err());
+        assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0fffff, 0, [0u8; 32]).is_err());
     }
 }

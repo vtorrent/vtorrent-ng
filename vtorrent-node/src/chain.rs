@@ -1,6 +1,9 @@
 use crate::{
     block::{Block, Transaction},
-    consensus::{check_stake_kernel, compute_pos_reward, validate_block, validate_legacy_claim},
+    consensus::{
+        check_stake_kernel, compute_pos_reward, compute_stake_modifier, validate_block,
+        validate_legacy_claim,
+    },
     error::{NodeError, Result},
     genesis::{create_genesis_block, get_legacy_balance},
 };
@@ -228,7 +231,12 @@ impl Chain {
                 timestamp,
                 bits: crate::genesis::GENESIS_BITS,
                 nonce: height,
-                stake_modifier: 0,
+                stake_modifier: compute_stake_modifier(
+                    self.get_block_at_height(self.best_height())
+                        .map(|b| b.header.stake_modifier)
+                        .unwrap_or(0),
+                    &prev_hash,
+                ),
             },
             transactions: vec![coinbase],
         };
@@ -434,6 +442,8 @@ impl Chain {
                 height - 1,
                 prev_block.header.timestamp,
                 prev_block.header.bits,
+                prev_block.header.stake_modifier,
+                prev_hash,
             )?;
 
             let parent_work = self.cumulative_work.get(&prev_hash).copied().unwrap_or(0);
@@ -495,9 +505,17 @@ impl Chain {
             let fork_height = parent_height + 1;
             let parent_timestamp = self.blocks.get(&prev_hash).unwrap().header.timestamp;
             let parent_bits = self.blocks.get(&prev_hash).unwrap().header.bits;
+            let parent_modifier = self.blocks.get(&prev_hash).unwrap().header.stake_modifier;
 
             // Validate against the fork parent
-            validate_block(&block, parent_height, parent_timestamp, parent_bits)?;
+            validate_block(
+                &block,
+                parent_height,
+                parent_timestamp,
+                parent_bits,
+                parent_modifier,
+                prev_hash,
+            )?;
 
             let parent_work = self.cumulative_work.get(&prev_hash).copied().unwrap_or(0);
             let fork_work = parent_work + 1;
@@ -727,10 +745,27 @@ impl Chain {
             supply_delta: 0,
         };
 
+        // The coinstake kernel is validated against the *parent* block's stake
+        // modifier (the tip at stake time). Genesis (height 0) has no parent.
+        let parent_modifier = if height == 0 {
+            0
+        } else {
+            self.blocks
+                .get(&block.header.prev_block_hash)
+                .map(|b| b.header.stake_modifier)
+                .ok_or_else(|| {
+                    NodeError::Chain("Parent block not found for stake modifier".into())
+                })?
+        };
+
         for tx in &block.transactions {
-            if let Err(e) =
-                self.apply_transaction_journaled(tx, height, block.header.timestamp, &mut journal)
-            {
+            if let Err(e) = self.apply_transaction_journaled(
+                tx,
+                height,
+                block.header.timestamp,
+                parent_modifier,
+                &mut journal,
+            ) {
                 self.rollback_journal(&journal);
                 return Err(e);
             }
@@ -779,6 +814,7 @@ impl Chain {
         tx: &Transaction,
         height: u32,
         timestamp: u32,
+        parent_stake_modifier: u64,
         journal: &mut BlockJournal,
     ) -> Result<()> {
         let txid = tx.txid();
@@ -900,7 +936,7 @@ impl Chain {
             // The stake kernel must satisfy the PoS difficulty requirement.
             // Without this check an attacker could forge a coinstake block
             // without meeting the stake target.
-            if !check_stake_kernel(&staked, timestamp) {
+            if !check_stake_kernel(parent_stake_modifier, &staked, timestamp) {
                 return Err(NodeError::InvalidTransaction(
                     "Coinstake kernel hash does not meet the stake target".into(),
                 ));
@@ -944,7 +980,7 @@ mod tests {
     use super::*;
     use crate::block::{Block, BlockHeader, Transaction, TxInput, TxOutput, TxType};
 
-    fn make_block(prev_hash: [u8; 32], height: u32) -> Block {
+    fn make_block(prev_hash: [u8; 32], prev_stake_modifier: u64, height: u32) -> Block {
         let transactions = vec![Transaction {
             version: 1,
             tx_type: TxType::Coinbase,
@@ -974,7 +1010,7 @@ mod tests {
                 timestamp: 1_700_000_000 + height,
                 bits: crate::genesis::GENESIS_BITS,
                 nonce: height, // PoW-style: non-zero nonce for a coinbase block
-                stake_modifier: 0u64,
+                stake_modifier: compute_stake_modifier(prev_stake_modifier, &prev_hash),
             },
             transactions,
         };
@@ -1001,7 +1037,7 @@ mod tests {
         let base = chain.total_supply();
 
         // A 1M-satoshi coinbase block mints value into the supply.
-        let block = make_block(genesis_hash, 1);
+        let block = make_block(genesis_hash, 0, 1);
         chain.add_block(block).unwrap();
         assert_eq!(chain.total_supply(), base + 1_000_000);
 
@@ -1017,7 +1053,7 @@ mod tests {
 
         // A block minting 10M VTR would push total supply over the 20M cap
         // (genesis already embeds ~11.59M VTR).
-        let mut block = make_block(genesis_hash, 1);
+        let mut block = make_block(genesis_hash, 0, 1);
         block.transactions[0].outputs[0].value = 10_000_000 * crate::consensus::COIN;
         block.header.merkle_root = block.compute_merkle_root();
         let result = chain.add_block(block);
@@ -1028,7 +1064,7 @@ mod tests {
         assert_eq!(chain.best_height(), 0);
 
         // A block minting a small amount is still accepted.
-        let block = make_block(genesis_hash, 1);
+        let block = make_block(genesis_hash, 0, 1);
         chain.add_block(block).unwrap();
         assert_eq!(chain.best_height(), 1);
     }
@@ -1066,7 +1102,7 @@ mod tests {
             claim_address: None,
             claim_signature: None,
         };
-        let mut block = make_block(genesis_hash, 2);
+        let mut block = make_block(genesis_hash, 0, 2);
         block.transactions.push(spend);
         block.header.merkle_root = block.compute_merkle_root();
 
@@ -1090,7 +1126,7 @@ mod tests {
     fn test_add_block_main_chain() {
         let mut chain = Chain::new().expect("Chain init failed");
         let genesis_hash = chain.best_hash().unwrap();
-        let block = make_block(genesis_hash, 1);
+        let block = make_block(genesis_hash, 0, 1);
         let result = chain.add_block(block).unwrap();
         assert!(matches!(
             result,
@@ -1103,7 +1139,7 @@ mod tests {
     fn test_duplicate_block_ignored() {
         let mut chain = Chain::new().expect("Chain init failed");
         let genesis_hash = chain.best_hash().unwrap();
-        let block = make_block(genesis_hash, 1);
+        let block = make_block(genesis_hash, 0, 1);
         chain.add_block(block.clone()).unwrap();
         let result = chain.add_block(block).unwrap();
         assert_eq!(result, BlockAcceptance::Duplicate);
@@ -1115,11 +1151,11 @@ mod tests {
         let genesis_hash = chain.best_hash().unwrap();
 
         // Add block 1 to main chain
-        let block1 = make_block(genesis_hash, 1);
+        let block1 = make_block(genesis_hash, 0, 1);
         chain.add_block(block1).unwrap();
 
         // Add a competing block 1 (fork)
-        let mut fork_block = make_block(genesis_hash, 1);
+        let mut fork_block = make_block(genesis_hash, 0, 1);
         fork_block.header.nonce = 999; // make it different
         let result = chain.add_block(fork_block).unwrap();
         assert!(matches!(result, BlockAcceptance::Fork { .. }));
@@ -1132,7 +1168,7 @@ mod tests {
         let genesis_hash = chain.best_hash().unwrap();
         let utxo_count_before = chain.utxo_set.len();
 
-        let block = make_block(genesis_hash, 1);
+        let block = make_block(genesis_hash, 0, 1);
         chain.add_block(block).unwrap();
         assert!(chain.utxo_set.len() > utxo_count_before);
 
@@ -1150,22 +1186,23 @@ mod tests {
         assert_eq!(chain.get_transaction(&genesis_txid).unwrap().2, 0);
 
         // Main chain: genesis → A.
-        let block_a = make_block(genesis_hash, 1);
+        let block_a = make_block(genesis_hash, 0, 1);
         let txid_a = block_a.transactions[0].txid();
         chain.add_block(block_a).unwrap();
         assert_eq!(chain.get_transaction(&txid_a).unwrap().2, 1);
 
         // Longer fork: genesis → B → C, with B using a distinct coinbase txid.
-        let mut block_b = make_block(genesis_hash, 1);
+        let mut block_b = make_block(genesis_hash, 0, 1);
         block_b.header.nonce = 777;
         block_b.transactions[0].inputs[0].script_sig = vec![1, 42];
         block_b.header.merkle_root = block_b.compute_merkle_root();
         let txid_b = block_b.transactions[0].txid();
         let hash_b = block_b.hash();
+        let b_modifier = block_b.header.stake_modifier;
         chain.add_block(block_b).unwrap();
         assert!(chain.get_transaction(&txid_b).is_none());
 
-        let block_c = make_block(hash_b, 2);
+        let block_c = make_block(hash_b, b_modifier, 2);
         let txid_c = block_c.transactions[0].txid();
         chain.add_block(block_c).unwrap();
 
@@ -1180,18 +1217,18 @@ mod tests {
         let genesis_hash = chain.best_hash().unwrap();
 
         // Main chain: genesis → A
-        let block_a = make_block(genesis_hash, 1);
+        let block_a = make_block(genesis_hash, 0, 1);
         chain.add_block(block_a.clone()).unwrap();
         let tip_a = chain.best_hash().unwrap();
 
         // Fork: genesis → B (different nonce)
-        let mut block_b = make_block(genesis_hash, 1);
+        let mut block_b = make_block(genesis_hash, 0, 1);
         block_b.header.nonce = 999;
         chain.add_block(block_b.clone()).unwrap();
         let hash_b = block_b.hash();
 
         // Fork extension: B → C (makes fork longer)
-        let block_c = make_block(hash_b, 2);
+        let block_c = make_block(hash_b, block_b.header.stake_modifier, 2);
         let result = chain.add_block(block_c).unwrap();
 
         assert!(matches!(result, BlockAcceptance::Reorg { .. }));
@@ -1247,6 +1284,7 @@ mod tests {
     /// Build a coinbase block paying to a specific P2PKH script.
     fn make_coinbase_to_script(
         prev_hash: [u8; 32],
+        prev_stake_modifier: u64,
         height: u32,
         timestamp: u32,
         script_pubkey: Vec<u8>,
@@ -1277,7 +1315,7 @@ mod tests {
                 timestamp,
                 bits: crate::genesis::GENESIS_BITS,
                 nonce: height,
-                stake_modifier: 0u64,
+                stake_modifier: compute_stake_modifier(prev_stake_modifier, &prev_hash),
             },
             transactions,
         };
@@ -1310,6 +1348,7 @@ mod tests {
         let script = chain.address_to_p2pkh_script(&address);
         let funding_block = make_coinbase_to_script(
             genesis_hash,
+            0,
             1,
             funding_ts,
             script.clone(),
@@ -1323,12 +1362,21 @@ mod tests {
 
         // Search for a timestamp whose kernel hash satisfies the target.
         let engine = StakingEngine::with_wif(address.clone(), wif);
+        let prev_stake_modifier = chain
+            .get_block_at_height(1)
+            .map(|b| b.header.stake_modifier)
+            .unwrap_or(0);
         let mut stake_block = None;
         let mut ts = funding_ts + crate::consensus::MIN_STAKE_AGE as u32;
         for _ in 0..10_000 {
-            if let Some(block) =
-                engine.build_stake_block(chain.best_hash().unwrap(), 2, ts, utxos.clone(), vec![])
-            {
+            if let Some(block) = engine.build_stake_block(
+                chain.best_hash().unwrap(),
+                prev_stake_modifier,
+                2,
+                ts,
+                utxos.clone(),
+                vec![],
+            ) {
                 stake_block = Some(block);
                 break;
             }
@@ -1372,6 +1420,7 @@ mod tests {
         let script = chain.address_to_p2pkh_script(&address);
         let funding_block = make_coinbase_to_script(
             genesis_hash,
+            0,
             1,
             funding_ts,
             script.clone(),
@@ -1383,8 +1432,12 @@ mod tests {
         // Build a coinstake whose kernel does NOT satisfy the target by
         // forging it directly (bypassing the engine's kernel search).
         let utxo = utxos[0].clone();
+        let prev_stake_modifier = chain
+            .get_block_at_height(1)
+            .map(|b| b.header.stake_modifier)
+            .unwrap_or(0);
         let mut bad_ts = funding_ts + crate::consensus::MIN_STAKE_AGE as u32;
-        while check_stake_kernel(&utxo, bad_ts) {
+        while check_stake_kernel(prev_stake_modifier, &utxo, bad_ts) {
             bad_ts += 1;
         }
         let reward = compute_pos_reward(utxo.value, (bad_ts - utxo.timestamp) as u64);
@@ -1412,22 +1465,22 @@ mod tests {
             claim_signature: None,
         };
 
+        let parent_hash = chain.best_hash().unwrap();
         let mut block = Block {
             header: BlockHeader {
                 version: 2,
-                prev_block_hash: chain.best_hash().unwrap(),
+                prev_block_hash: parent_hash,
                 merkle_root: [0u8; 32],
                 timestamp: bad_ts,
                 bits: crate::genesis::GENESIS_BITS,
                 nonce: 0, // PoS block
-                stake_modifier: 0u64,
+                stake_modifier: compute_stake_modifier(prev_stake_modifier, &parent_hash),
             },
             transactions: vec![coinstake],
         };
         block.header.merkle_root = block.compute_merkle_root();
 
-        // The block must be rejected: either the kernel check or the script
-        // verification fails.
+        // The block must be rejected: the kernel check fails.
         let result = chain.add_block(block);
         assert!(result.is_err(), "block with bad kernel must be rejected");
         assert_eq!(chain.best_height(), 1);
