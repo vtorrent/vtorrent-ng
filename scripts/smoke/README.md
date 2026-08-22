@@ -47,8 +47,30 @@ docker exec vtr-btc-regtest bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass
   -rpcwallet=test generatetoaddress 101 <address>
 ```
 
-The `-blockfilterindex=1` and `-peerblockfilters=1` flags are required: the
-former builds the compact-filter index, the latter serves it to peers.
+The `-blockfilterindex=1` and `-peerblockfilters=1` flags are **required**: the
+former builds the compact-filter index, the latter serves it to peers. Without
+them the daemon's BIP-158 scan will fail with `P2P error: early eof`. You can
+verify a container has the index enabled with:
+
+```bash
+docker exec vtr-btc-regtest bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
+  getblockfilter 0000000000000000000000000000000000000000000000000000000000000000
+# Should return a filter JSON, NOT "Index is not enabled for filtertype basic"
+```
+
+If the index is missing, recreate the container:
+
+```bash
+docker rm -f vtr-btc-regtest
+docker run -d --name vtr-btc-regtest -p 18444:18444 \
+  ruimarinho/bitcoin-core:latest \
+  -regtest -printtoconsole -server=1 \
+  -rpcuser=user -rpcpassword=pass -rpcallowip=0.0.0.0/0 -rpcbind=0.0.0.0 \
+  -fallbackfee=0.0002 -blockfilterindex=1 -peerblockfilters=1
+docker exec vtr-btc-regtest bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass createwallet test
+docker exec vtr-btc-regtest bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
+  -rpcwallet=test generatetoaddress 101 "$(docker exec vtr-btc-regtest bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=test getnewaddress)"
+```
 
 ## Test key material
 

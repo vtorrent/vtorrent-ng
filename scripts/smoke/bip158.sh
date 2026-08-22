@@ -10,8 +10,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 BTC_CONTAINER="${BTC_CONTAINER:-vtr-btc-regtest}"
 BTC_PORT="${BTC_PORT:-18444}"
 BTC_SEED="${BTC_SEED:-33333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333}"
-# Deterministic index-0 address for the seed above.
-DAEMON_BTC_ADDR="${DAEMON_BTC_ADDR:-bcrt1qg2m7g8zg3srez0c0tpr3qusvqnlunjk8x3wwy7}"
+# Deterministic index-0 address for the seed above (derived via
+# vtorrent_btc::keys::derive_address(&[0x33; 64], 0, Regtest)).
+DAEMON_BTC_ADDR="${DAEMON_BTC_ADDR:-bcrt1qvumegsp0hfnxndattnaa4h57r3m88r9dtn5eqf}"
 
 DATA="/tmp/vtr-smoke-bip158"
 rm -rf "$DATA"
@@ -38,7 +39,7 @@ done
 echo "=== BTC status ==="
 echo "$STATUS"
 
-BALANCE=$(jq_field "$STATUS" balance_satoshis)
+BALANCE=$(jq_num "$STATUS" balance_satoshis)
 if [[ -z "$BALANCE" || "$BALANCE" == "0" ]]; then
     echo "FAIL: BIP-158 scan did not discover the funded output" >&2
     exit 1
