@@ -50,6 +50,14 @@ pub enum ScriptError {
     #[error("OP_CHECKLOCKTIMEVERIFY: unsatisfied (final input or type mismatch)")]
     UnsatisfiedLocktime,
 
+    #[error(
+        "OP_CHECKSEQUENCEVERIFY: unsatisfied (final input, type mismatch, or insufficient age)"
+    )]
+    UnsatisfiedSequence,
+
+    #[error("OP_CHECKSEQUENCEVERIFY: negative locktime")]
+    NegativeSequence,
+
     #[error("OP_RETURN output is unspendable")]
     OpReturnUnspendable,
 

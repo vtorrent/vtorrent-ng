@@ -243,6 +243,111 @@ impl Engine {
                                 }
                             }
                         }
+                        0x6f => {
+                            // OP_3DUP
+                            if executing {
+                                let len = self.stack.len();
+                                if len < 3 {
+                                    return Err(ScriptError::EmptyStack);
+                                }
+                                let a = self.stack[len - 3].clone();
+                                let b = self.stack[len - 2].clone();
+                                let c = self.stack[len - 1].clone();
+                                self.stack.extend_from_slice(&[a, b, c]);
+                            }
+                        }
+                        0x70 => {
+                            // OP_2OVER
+                            if executing {
+                                let len = self.stack.len();
+                                if len < 4 {
+                                    return Err(ScriptError::EmptyStack);
+                                }
+                                let a = self.stack[len - 4].clone();
+                                let b = self.stack[len - 3].clone();
+                                self.stack.extend_from_slice(&[a, b]);
+                            }
+                        }
+                        0x71 => {
+                            // OP_2ROT
+                            if executing {
+                                let len = self.stack.len();
+                                if len < 6 {
+                                    return Err(ScriptError::EmptyStack);
+                                }
+                                let a = self.stack[len - 6].clone();
+                                let b = self.stack[len - 5].clone();
+                                self.stack.remove(len - 6);
+                                self.stack.remove(len - 6);
+                                self.stack.push(a);
+                                self.stack.push(b);
+                            }
+                        }
+                        0x72 => {
+                            // OP_2SWAP
+                            if executing {
+                                let len = self.stack.len();
+                                if len < 4 {
+                                    return Err(ScriptError::EmptyStack);
+                                }
+                                self.stack.swap(len - 4, len - 2);
+                                self.stack.swap(len - 3, len - 1);
+                            }
+                        }
+                        0x74 => {
+                            // OP_DEPTH
+                            if executing {
+                                let depth = self.stack.len() as i64;
+                                self.stack.push(int_to_bytes(depth));
+                            }
+                        }
+                        0x77 => {
+                            // OP_NIP
+                            if executing {
+                                let len = self.stack.len();
+                                if len < 2 {
+                                    return Err(ScriptError::EmptyStack);
+                                }
+                                self.stack.remove(len - 2);
+                            }
+                        }
+                        0x7a => {
+                            // OP_ROLL
+                            if executing {
+                                let n =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                if n < 0 || n as usize >= self.stack.len() {
+                                    return Err(ScriptError::InvalidScriptNumber);
+                                }
+                                let idx = self.stack.len() - 1 - n as usize;
+                                let item = self.stack.remove(idx);
+                                self.stack.push(item);
+                            }
+                        }
+                        0x78 => {
+                            // OP_PICK (copy nth item to top)
+                            if executing {
+                                let n =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                if n < 0 || n as usize >= self.stack.len() {
+                                    return Err(ScriptError::InvalidScriptNumber);
+                                }
+                                let idx = self.stack.len() - 1 - n as usize;
+                                let item = self.stack[idx].clone();
+                                self.stack.push(item);
+                            }
+                        }
+                        0x7d => {
+                            // OP_TUCK
+                            if executing {
+                                let len = self.stack.len();
+                                if len < 2 {
+                                    return Err(ScriptError::EmptyStack);
+                                }
+                                let top = self.stack[len - 1].clone();
+                                self.stack.insert(len - 2, top);
+                            }
+                        }
 
                         // ── Bitwise / equality ───────────────────────────────
                         0x87 => {
@@ -359,6 +464,38 @@ impl Engine {
                                 }
                             }
                         }
+                        0xb2 => {
+                            // OP_CHECKSEQUENCEVERIFY (BIP-112)
+                            if executing {
+                                let top = self.stack.last().ok_or(ScriptError::EmptyStack)?;
+                                let seq = bytes_to_int(top);
+                                if seq < 0 {
+                                    return Err(ScriptError::NegativeSequence);
+                                }
+                                let seq = seq as u32;
+                                // If the disable flag (bit 31) is set, CSV behaves
+                                // as a NOP per BIP-112.
+                                if seq & 0x8000_0000 != 0 {
+                                    // NOP — leave stack unchanged.
+                                } else if self.env.input_sequence == 0xffff_ffff {
+                                    // The input must not be final.
+                                    return Err(ScriptError::UnsatisfiedSequence);
+                                } else {
+                                    // Type flags must match (height vs time).
+                                    let seq_is_time = seq & 0x0040_0000 != 0;
+                                    let input_is_time = self.env.input_sequence & 0x0040_0000 != 0;
+                                    if seq_is_time != input_is_time {
+                                        return Err(ScriptError::UnsatisfiedSequence);
+                                    }
+                                    let mask = 0x0000_ffff;
+                                    let arg = seq & mask;
+                                    let input = self.env.input_sequence & mask;
+                                    if input < arg {
+                                        return Err(ScriptError::UnsatisfiedSequence);
+                                    }
+                                }
+                            }
+                        }
 
                         // ── Arithmetic ───────────────────────────────────────
                         0x93 => {
@@ -381,11 +518,170 @@ impl Engine {
                                 self.stack.push(int_to_bytes(a.wrapping_sub(b)));
                             }
                         }
+                        0x8b => {
+                            // OP_1ADD
+                            if executing {
+                                let a =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                self.stack.push(int_to_bytes(a.wrapping_add(1)));
+                            }
+                        }
+                        0x8c => {
+                            // OP_1SUB
+                            if executing {
+                                let a =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                self.stack.push(int_to_bytes(a.wrapping_sub(1)));
+                            }
+                        }
+                        0x8f => {
+                            // OP_NEGATE
+                            if executing {
+                                let a =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                self.stack.push(int_to_bytes(a.wrapping_neg()));
+                            }
+                        }
+                        0x90 => {
+                            // OP_ABS
+                            if executing {
+                                let a =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                self.stack.push(int_to_bytes(a.wrapping_abs()));
+                            }
+                        }
                         0x91 => {
                             // OP_NOT
                             if executing {
                                 let top = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
                                 self.stack.push(bool_to_bytes(!is_true(&top)));
+                            }
+                        }
+                        0x92 => {
+                            // OP_0NOTEQUAL
+                            if executing {
+                                let top = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
+                                self.stack.push(bool_to_bytes(bytes_to_int(&top) != 0));
+                            }
+                        }
+                        0x9a => {
+                            // OP_BOOLAND
+                            if executing {
+                                let b = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
+                                let a = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
+                                self.stack.push(bool_to_bytes(is_true(&a) && is_true(&b)));
+                            }
+                        }
+                        0x9b => {
+                            // OP_BOOLOR
+                            if executing {
+                                let b = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
+                                let a = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
+                                self.stack.push(bool_to_bytes(is_true(&a) || is_true(&b)));
+                            }
+                        }
+                        0x9c => {
+                            // OP_NUMEQUAL
+                            if executing {
+                                let b =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let a =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                self.stack.push(bool_to_bytes(a == b));
+                            }
+                        }
+                        0x9d => {
+                            // OP_NUMEQUALVERIFY
+                            if executing {
+                                let b =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let a =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                if a != b {
+                                    return Err(ScriptError::VerifyFailed);
+                                }
+                            }
+                        }
+                        0x9e => {
+                            // OP_NUMNOTEQUAL
+                            if executing {
+                                let b =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let a =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                self.stack.push(bool_to_bytes(a != b));
+                            }
+                        }
+                        0x9f => {
+                            // OP_LESSTHAN
+                            if executing {
+                                let b =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let a =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                self.stack.push(bool_to_bytes(a < b));
+                            }
+                        }
+                        0xa0 => {
+                            // OP_GREATERTHAN
+                            if executing {
+                                let b =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let a =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                self.stack.push(bool_to_bytes(a > b));
+                            }
+                        }
+                        0xa1 => {
+                            // OP_LESSTHANOREQUAL
+                            if executing {
+                                let b =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let a =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                self.stack.push(bool_to_bytes(a <= b));
+                            }
+                        }
+                        0xa2 => {
+                            // OP_GREATERTHANOREQUAL
+                            if executing {
+                                let b =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let a =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                self.stack.push(bool_to_bytes(a >= b));
+                            }
+                        }
+                        0xa3 => {
+                            // OP_MIN
+                            if executing {
+                                let b =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let a =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                self.stack.push(int_to_bytes(a.min(b)));
+                            }
+                        }
+                        0xa4 => {
+                            // OP_MAX
+                            if executing {
+                                let b =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let a =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                self.stack.push(int_to_bytes(a.max(b)));
+                            }
+                        }
+                        0xa5 => {
+                            // OP_WITHIN
+                            if executing {
+                                let max =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let min =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let x =
+                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                self.stack.push(bool_to_bytes(x >= min && x < max));
                             }
                         }
 
@@ -555,19 +851,20 @@ fn bytes_to_int(bytes: &[u8]) -> i64 {
     if bytes.is_empty() {
         return 0;
     }
-    // Script numbers are limited to 8 bytes (i64). Longer inputs are truncated
-    // to their low 8 bytes to avoid shift overflow (which is UB in release).
+    // Bitcoin script uses sign-magnitude encoding: the high bit of the last
+    // byte is the sign bit, the remaining bits are the absolute value.
     let n = bytes.len().min(8);
     let mut result = 0i64;
     for (i, &b) in bytes[..n].iter().enumerate() {
         result |= (b as i64) << (8 * i);
     }
-    // Handle sign bit (of the truncated value).
-    if bytes[n - 1] & 0x80 != 0 {
-        let mask = !((1i64 << (8 * n - 1)) - 1);
-        result |= mask;
+    let sign_mask = 1i64 << (8 * n - 1);
+    if result & sign_mask != 0 {
+        result &= !sign_mask;
+        -result
+    } else {
+        result
     }
-    result
 }
 
 fn int_to_bytes(n: i64) -> Vec<u8> {
@@ -776,5 +1073,349 @@ mod tests {
         assert!(!is_true(&[0x00]));
         assert!(is_true(&[0x01]));
         assert!(is_true(&[0x80, 0x01]));
+    }
+
+    // ── New opcode tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_depth_op() {
+        let mut script = Script::new();
+        script.push_opcode(0x51);
+        script.push_opcode(0x52);
+        script.push_opcode(0x53);
+        script.push_opcode(0x74);
+        let env = ScriptEnv::default();
+        let mut engine = Engine::new(env);
+        engine.run(&script).unwrap();
+        assert_eq!(engine.stack.last().unwrap(), &vec![3]);
+    }
+
+    #[test]
+    fn test_3dup_op() {
+        let mut script = Script::new();
+        script.push_opcode(0x51);
+        script.push_opcode(0x52);
+        script.push_opcode(0x53);
+        script.push_opcode(0x6f);
+        let env = ScriptEnv::default();
+        let mut engine = Engine::new(env);
+        engine.run(&script).unwrap();
+        assert_eq!(engine.stack.len(), 6);
+        assert_eq!(engine.stack.last().unwrap(), &vec![3]);
+    }
+
+    #[test]
+    fn test_nip_op() {
+        let mut script = Script::new();
+        script.push_opcode(0x51);
+        script.push_opcode(0x52);
+        script.push_opcode(0x53);
+        script.push_opcode(0x77);
+        let env = ScriptEnv::default();
+        let mut engine = Engine::new(env);
+        engine.run(&script).unwrap();
+        assert_eq!(engine.stack.len(), 2);
+        assert_eq!(engine.stack[0], vec![1]);
+        assert_eq!(engine.stack[1], vec![3]);
+    }
+
+    #[test]
+    fn test_roll_op() {
+        let mut script = Script::new();
+        script.push_opcode(0x51); // 1
+        script.push_opcode(0x52); // 2
+        script.push_opcode(0x53); // 3
+        script.push_opcode(0x51); // index 1
+        script.push_opcode(0x7a); // OP_ROLL
+        let env = ScriptEnv::default();
+        let mut engine = Engine::new(env);
+        engine.run(&script).unwrap();
+        // Pop index 1, stack=[1,2,3]. idx=3-1-1=1, remove stack[1]=2 → [1,3,2]
+        assert_eq!(engine.stack.last().unwrap(), &vec![2]);
+    }
+
+    #[test]
+    fn test_pick_op() {
+        let mut script = Script::new();
+        script.push_opcode(0x51); // 1
+        script.push_opcode(0x52); // 2
+        script.push_opcode(0x53); // 3
+        script.push_opcode(0x51); // index 1
+        script.push_opcode(0x78); // OP_PICK (copy, don't remove)
+        let env = ScriptEnv::default();
+        let mut engine = Engine::new(env);
+        engine.run(&script).unwrap();
+        // Pop index 1, stack=[1,2,3]. idx=3-1-1=1, clone stack[1]=2 → [1,2,3,2]
+        assert_eq!(engine.stack.len(), 4);
+        assert_eq!(engine.stack.last().unwrap(), &vec![2]);
+        // Original item still in place
+        assert_eq!(engine.stack[1], vec![2]);
+    }
+
+    #[test]
+    fn test_tuck_op() {
+        let mut script = Script::new();
+        script.push_opcode(0x51);
+        script.push_opcode(0x52);
+        script.push_opcode(0x7d);
+        let env = ScriptEnv::default();
+        let mut engine = Engine::new(env);
+        engine.run(&script).unwrap();
+        // [1,2], top=2, insert at len-2=0 → [2,1,2]
+        assert_eq!(engine.stack.len(), 3);
+        assert_eq!(engine.stack[0], vec![2]);
+        assert_eq!(engine.stack[1], vec![1]);
+        assert_eq!(engine.stack[2], vec![2]);
+    }
+
+    #[test]
+    fn test_2swap_op() {
+        let mut script = Script::new();
+        script.push_opcode(0x51);
+        script.push_opcode(0x52);
+        script.push_opcode(0x53);
+        script.push_opcode(0x54);
+        script.push_opcode(0x72);
+        let env = ScriptEnv::default();
+        let mut engine = Engine::new(env);
+        engine.run(&script).unwrap();
+        assert_eq!(engine.stack[0], vec![3]);
+        assert_eq!(engine.stack[1], vec![4]);
+        assert_eq!(engine.stack[2], vec![1]);
+        assert_eq!(engine.stack[3], vec![2]);
+    }
+
+    #[test]
+    fn test_2over_op() {
+        let mut script = Script::new();
+        script.push_opcode(0x51);
+        script.push_opcode(0x52);
+        script.push_opcode(0x53);
+        script.push_opcode(0x54);
+        script.push_opcode(0x70);
+        let env = ScriptEnv::default();
+        let mut engine = Engine::new(env);
+        engine.run(&script).unwrap();
+        assert_eq!(engine.stack.len(), 6);
+        assert_eq!(engine.stack[4], vec![1]);
+        assert_eq!(engine.stack[5], vec![2]);
+    }
+
+    #[test]
+    fn test_2rot_op() {
+        let mut script = Script::new();
+        script.push_opcode(0x51);
+        script.push_opcode(0x52);
+        script.push_opcode(0x53);
+        script.push_opcode(0x54);
+        script.push_opcode(0x55);
+        script.push_opcode(0x56);
+        script.push_opcode(0x71);
+        let env = ScriptEnv::default();
+        let mut engine = Engine::new(env);
+        engine.run(&script).unwrap();
+        assert_eq!(engine.stack.len(), 6);
+        assert_eq!(engine.stack[0], vec![3]);
+        assert_eq!(engine.stack[1], vec![4]);
+        assert_eq!(engine.stack[2], vec![5]);
+        assert_eq!(engine.stack[3], vec![6]);
+        assert_eq!(engine.stack[4], vec![1]);
+        assert_eq!(engine.stack[5], vec![2]);
+    }
+
+    #[test]
+    fn test_csv_nop_when_disable_flag_set() {
+        let mut script = Script::new();
+        // Push 0x80000001 as a 5-byte value so it's positive in sign-magnitude
+        // (bit 31 set for disable flag, but sign bit in byte[4] is clear)
+        script.push_data(&[0x01, 0x00, 0x00, 0x80, 0x00]).unwrap();
+        script.push_opcode(0xb2);
+        script.push_opcode(0x75);
+        script.push_opcode(0x51);
+        let env = ScriptEnv::default();
+        let mut engine = Engine::new(env);
+        engine.run(&script).unwrap();
+        assert_eq!(engine.stack.last().unwrap(), &vec![1]);
+    }
+
+    #[test]
+    fn test_0notequal() {
+        let mut script = Script::new();
+        script.push_opcode(0x00);
+        script.push_opcode(0x92);
+        let env = ScriptEnv::default();
+        let mut engine = Engine::new(env);
+        engine.run(&script).unwrap();
+        assert_eq!(engine.stack.last().unwrap(), &vec![]);
+    }
+
+    #[test]
+    fn test_booland_boolor() {
+        let mut script = Script::new();
+        script.push_opcode(0x51);
+        script.push_opcode(0x52);
+        script.push_opcode(0x9a);
+        script.push_opcode(0x51);
+        script.push_opcode(0x00);
+        script.push_opcode(0x9b);
+        let env = ScriptEnv::default();
+        let mut engine = Engine::new(env);
+        engine.run(&script).unwrap();
+        assert_eq!(engine.stack.len(), 2);
+        assert_eq!(engine.stack[0], vec![1]);
+        assert_eq!(engine.stack[1], vec![1]);
+    }
+
+    #[test]
+    fn test_numequal_numnotequal() {
+        let mut script = Script::new();
+        script.push_opcode(0x55);
+        script.push_opcode(0x55);
+        script.push_opcode(0x9c);
+        script.push_opcode(0x55);
+        script.push_opcode(0x54);
+        script.push_opcode(0x9e);
+        let env = ScriptEnv::default();
+        let mut engine = Engine::new(env);
+        engine.run(&script).unwrap();
+        assert_eq!(engine.stack.len(), 2);
+        assert_eq!(engine.stack[0], vec![1]);
+        assert_eq!(engine.stack[1], vec![1]);
+    }
+
+    #[test]
+    fn test_numequalverify_fails_on_mismatch() {
+        let mut script = Script::new();
+        script.push_opcode(0x55);
+        script.push_opcode(0x54);
+        script.push_opcode(0x9d);
+        let env = ScriptEnv::default();
+        let mut engine = Engine::new(env);
+        assert!(engine.run(&script).is_err());
+    }
+
+    #[test]
+    fn test_compare_ops() {
+        let mut script = Script::new();
+        script.push_opcode(0x51);
+        script.push_opcode(0x52);
+        script.push_opcode(0x9f);
+        script.push_opcode(0x52);
+        script.push_opcode(0x51);
+        script.push_opcode(0xa0);
+        script.push_opcode(0x53);
+        script.push_opcode(0x53);
+        script.push_opcode(0xa1);
+        script.push_opcode(0x54);
+        script.push_opcode(0x54);
+        script.push_opcode(0xa2);
+        let env = ScriptEnv::default();
+        let mut engine = Engine::new(env);
+        engine.run(&script).unwrap();
+        assert_eq!(engine.stack.len(), 4);
+        for item in &engine.stack {
+            assert_eq!(item, &vec![1u8]);
+        }
+    }
+
+    #[test]
+    fn test_min_max_within() {
+        let mut script = Script::new();
+        script.push_opcode(0x53);
+        script.push_opcode(0x55);
+        script.push_opcode(0xa3);
+        script.push_opcode(0x53);
+        script.push_opcode(0x55);
+        script.push_opcode(0xa4);
+        script.push_opcode(0x54);
+        script.push_opcode(0x53);
+        script.push_opcode(0x57);
+        script.push_opcode(0xa5);
+        let env = ScriptEnv::default();
+        let mut engine = Engine::new(env);
+        engine.run(&script).unwrap();
+        assert_eq!(engine.stack.len(), 3);
+        assert_eq!(engine.stack[0], vec![3]);
+        assert_eq!(engine.stack[1], vec![5]);
+        assert_eq!(engine.stack[2], vec![1]);
+    }
+
+    #[test]
+    fn test_csv_succeeds_when_sequence_sufficient() {
+        let mut script = Script::new();
+        script.push_opcode(0x52);
+        script.push_opcode(0xb2);
+        script.push_opcode(0x75);
+        script.push_opcode(0x51);
+        let env = ScriptEnv {
+            input_sequence: 0x0002_0002,
+            ..Default::default()
+        };
+        let mut engine = Engine::new(env);
+        engine.run(&script).unwrap();
+        assert_eq!(engine.stack.last().unwrap(), &vec![1]);
+    }
+
+    #[test]
+    fn test_csv_fails_when_sequence_insufficient() {
+        let mut script = Script::new();
+        script.push_opcode(0x52);
+        script.push_opcode(0xb2);
+        let env = ScriptEnv {
+            input_sequence: 0x0001_0001,
+            ..Default::default()
+        };
+        let mut engine = Engine::new(env);
+        assert!(matches!(
+            engine.run(&script),
+            Err(ScriptError::UnsatisfiedSequence)
+        ));
+    }
+
+    #[test]
+    fn test_csv_fails_when_final_input() {
+        let mut script = Script::new();
+        script.push_opcode(0x51);
+        script.push_opcode(0xb2);
+        let env = ScriptEnv {
+            input_sequence: 0xffff_ffff,
+            ..Default::default()
+        };
+        let mut engine = Engine::new(env);
+        assert!(matches!(
+            engine.run(&script),
+            Err(ScriptError::UnsatisfiedSequence)
+        ));
+    }
+
+    #[test]
+    fn test_csv_fails_on_negative() {
+        let mut script = Script::new();
+        script.push_data(&[0x81]).unwrap();
+        script.push_opcode(0xb2);
+        let env = ScriptEnv::default();
+        let mut engine = Engine::new(env);
+        assert!(matches!(
+            engine.run(&script),
+            Err(ScriptError::NegativeSequence)
+        ));
+    }
+
+    #[test]
+    fn test_csv_fails_on_type_mismatch() {
+        let mut script = Script::new();
+        script
+            .push_data(&0x0040_0001u32.to_le_bytes()[..4])
+            .unwrap();
+        script.push_opcode(0xb2);
+        let env = ScriptEnv {
+            input_sequence: 0x0000_0002,
+            ..Default::default()
+        };
+        let mut engine = Engine::new(env);
+        assert!(matches!(
+            engine.run(&script),
+            Err(ScriptError::UnsatisfiedSequence)
+        ));
     }
 }
