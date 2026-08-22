@@ -150,6 +150,9 @@ pub struct Node {
     event_tx: Option<EventSender>,
     /// Per-peer compact block relay state (BIP-152).
     compact_peers: std::collections::HashMap<std::net::SocketAddr, CompactBlockPeerState>,
+    /// Partial compact blocks awaiting `blocktxn` responses (BIP-152).
+    /// Keyed by block hash; populated when `cmpctblock` reports missing txs.
+    pending_compact_blocks: HashMap<[u8; 32], CmpctBlockMsg>,
     /// Per-peer minimum fee rate (from feefilter messages), satoshis per 1000 bytes.
     peer_fee_filters: std::collections::HashMap<std::net::SocketAddr, u64>,
     /// Per-peer last-seen ping nonce (for pong matching).
@@ -278,6 +281,7 @@ impl Node {
             overlay_handshaken: HashSet::new(),
             event_tx: None,
             compact_peers: std::collections::HashMap::new(),
+            pending_compact_blocks: HashMap::new(),
             peer_fee_filters: std::collections::HashMap::new(),
             peer_ping_nonces: std::collections::HashMap::new(),
             peer_msg_counts: std::collections::HashMap::new(),
@@ -336,6 +340,7 @@ impl Node {
             overlay_handshaken: HashSet::new(),
             event_tx: None,
             compact_peers: std::collections::HashMap::new(),
+            pending_compact_blocks: HashMap::new(),
             peer_fee_filters: std::collections::HashMap::new(),
             peer_ping_nonces: std::collections::HashMap::new(),
             peer_msg_counts: std::collections::HashMap::new(),
@@ -566,6 +571,7 @@ impl Node {
                 Some(tx) = self.tx_submit_rx.recv() => {
                     let txid = tx.txid();
                     let fee_sats = tx.fee_sats();
+                    let size_bytes = tx.serialized_size();
                     let mut mp = self.mempool.lock().await;
                     let already_admitted = mp.get_transaction(&txid).is_some();
                     let admission = if already_admitted {
@@ -576,7 +582,7 @@ impl Node {
                     match admission {
                         Ok(()) => {
                             if !already_admitted {
-                                self.emit(NodeEvent::TxUnconfirmed { txid, fee_sats });
+                                self.emit(NodeEvent::TxUnconfirmed { txid, fee_sats, size_bytes });
                             }
                             let payload = serde_json::to_vec(&InvMsg {
                                 items: vec![InvItem {
@@ -1151,8 +1157,13 @@ impl Node {
                         Ok(()) => {
                             let txid = tx.txid();
                             let fee_sats = real_fee.unwrap_or(0);
+                            let size_bytes = tx.serialized_size();
                             tracing::debug!("Accepted tx {}", hex::encode(txid));
-                            self.emit(NodeEvent::TxUnconfirmed { txid, fee_sats });
+                            self.emit(NodeEvent::TxUnconfirmed {
+                                txid,
+                                fee_sats,
+                                size_bytes,
+                            });
                             let payload = serde_json::to_vec(&InvMsg {
                                 items: vec![InvItem {
                                     inv_type: InvType::Transaction,
@@ -1394,6 +1405,8 @@ impl Node {
                             self.peer_manager
                                 .send_to(peer_addr, NetMessage::new("getblocktxn", payload))
                                 .await;
+                            // Save the partial compact block so blocktxn can complete it.
+                            self.pending_compact_blocks.insert(block_hash, cmpct);
                         }
                         Err(CompactBlockDecodeError::TooManyTransactions) => {
                             tracing::warn!(
@@ -1445,17 +1458,159 @@ impl Node {
             }
 
             "blocktxn" => {
-                // blocktxn arrives after we sent getblocktxn for a compact block
-                // For now, log it — a full implementation would need to store the
-                // partial compact block state and complete it here.
-                // This is handled by a pending-block cache (future improvement).
+                // blocktxn arrives after we sent getblocktxn for a compact block.
+                // Reconstruct the full block from the saved compact block + received txs.
                 if let Ok(resp) = serde_json::from_slice::<BlockTxnMsg>(&msg.payload) {
+                    let Some(pending) = self.pending_compact_blocks.remove(&resp.block_hash) else {
+                        tracing::debug!(
+                            "blocktxn: no pending compact block for {} from {}",
+                            hex::encode(resp.block_hash),
+                            peer_addr
+                        );
+                        return Ok(());
+                    };
                     tracing::debug!(
-                        "blocktxn: received {} txs for block {} from {}",
+                        "blocktxn: received {} txs for block {} from {}, completing reconstruction",
                         resp.transactions.len(),
                         hex::encode(resp.block_hash),
                         peer_addr
                     );
+
+                    // Build SipHash keys from the compact block header.
+                    let mut header_bytes = Vec::with_capacity(80);
+                    header_bytes.extend_from_slice(&pending.version.to_le_bytes());
+                    header_bytes.extend_from_slice(&pending.prev_block_hash);
+                    header_bytes.extend_from_slice(&pending.merkle_root);
+                    header_bytes.extend_from_slice(&pending.timestamp.to_le_bytes());
+                    header_bytes.extend_from_slice(&pending.bits.to_le_bytes());
+                    header_bytes.extend_from_slice(&pending.nonce.to_le_bytes());
+                    let (k0, k1) = derive_siphash_keys(&header_bytes, pending.siphash_nonce);
+
+                    // Build maps: mempool txs by short_id, and received txs by index.
+                    let mempool_map = {
+                        let mp = self.mempool.lock().await;
+                        let entries = mp.get_entries();
+                        let mut map = std::collections::HashMap::new();
+                        for entry in entries {
+                            let txid = entry.tx.txid();
+                            let sid = short_txid(&txid, k0, k1);
+                            if let Ok(bytes) = serde_json::to_vec(&entry.tx) {
+                                map.insert(sid, bytes);
+                            }
+                        }
+                        map
+                    };
+                    let mut received_map = std::collections::HashMap::new();
+                    for (i, tx_bytes) in resp.transactions.iter().enumerate() {
+                        received_map.insert(i, tx_bytes.clone());
+                    }
+
+                    // Decode: fill short_ids from mempool_map, missing from received_map.
+                    match CompactBlockDecoder::decode_with_received(
+                        &pending,
+                        &mempool_map,
+                        &received_map,
+                    ) {
+                        Ok(tx_bytes_list) => {
+                            let mut txs: Vec<Transaction> = Vec::new();
+                            let mut all_ok = true;
+                            for bytes in &tx_bytes_list {
+                                match serde_json::from_slice::<Transaction>(bytes) {
+                                    Ok(tx) => txs.push(tx),
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "blocktxn: failed to decode tx from {}: {}",
+                                            peer_addr,
+                                            e
+                                        );
+                                        all_ok = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if all_ok {
+                                let stake_modifier = {
+                                    let chain = self.chain.lock().await;
+                                    chain
+                                        .get_block(&pending.prev_block_hash)
+                                        .map(|p| {
+                                            compute_stake_modifier(
+                                                p.header.stake_modifier,
+                                                &pending.prev_block_hash,
+                                            )
+                                        })
+                                        .unwrap_or(0)
+                                };
+                                let block = Block {
+                                    header: BlockHeader {
+                                        version: pending.version,
+                                        prev_block_hash: pending.prev_block_hash,
+                                        merkle_root: pending.merkle_root,
+                                        timestamp: pending.timestamp,
+                                        bits: pending.bits,
+                                        nonce: pending.nonce,
+                                        stake_modifier,
+                                    },
+                                    transactions: txs,
+                                };
+                                let mut chain = self.chain.lock().await;
+                                match chain.add_block(block.clone()) {
+                                    Ok(acceptance) => {
+                                        use crate::chain::BlockAcceptance;
+                                        let hash = block.hash();
+                                        if let BlockAcceptance::MainChain {
+                                            height,
+                                            utxos_added,
+                                            utxos_removed,
+                                            claimed_addresses,
+                                        } = &acceptance
+                                        {
+                                            tracing::info!(
+                                                "blocktxn: accepted block {} at height {}",
+                                                hex::encode(hash),
+                                                height
+                                            );
+                                            let size_bytes = serde_json::to_vec(&block)
+                                                .map(|v| v.len())
+                                                .unwrap_or(0);
+                                            self.emit(NodeEvent::NewBlock {
+                                                height: *height,
+                                                hash,
+                                                tx_count: block.transactions.len(),
+                                                timestamp: block.header.timestamp,
+                                                size_bytes,
+                                                block: std::sync::Arc::new(block.clone()),
+                                                utxos_added: utxos_added.clone(),
+                                                utxos_removed: utxos_removed.clone(),
+                                                claimed_addresses: claimed_addresses.clone(),
+                                            });
+                                            for tx in &block.transactions {
+                                                self.emit(NodeEvent::TxConfirmed {
+                                                    txid: tx.txid(),
+                                                    block_height: *height,
+                                                    block_hash: hash,
+                                                });
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "blocktxn: rejected completed block from {}: {}",
+                                            peer_addr,
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "blocktxn: failed to complete block from {}: {:?}",
+                                peer_addr,
+                                e
+                            );
+                        }
+                    }
                 }
             }
 

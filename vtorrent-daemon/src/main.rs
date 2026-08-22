@@ -400,12 +400,21 @@ async fn main() -> anyhow::Result<()> {
                                 block_height: *block_height,
                                 block_hash: hex::encode(block_hash),
                             }),
-                            node_events::NodeEvent::TxUnconfirmed { txid, fee_sats } => {
+                            node_events::NodeEvent::TxUnconfirmed {
+                                txid,
+                                fee_sats,
+                                size_bytes,
+                            } => {
+                                let fee_rate = if *size_bytes > 0 {
+                                    *fee_sats as f64 / *size_bytes as f64
+                                } else {
+                                    0.0
+                                };
                                 Some(RpcNodeEvent::TxUnconfirmed {
                                     txid: hex::encode(txid),
                                     fee_sats: *fee_sats,
-                                    fee_rate: 0.0,
-                                    size_bytes: 0,
+                                    fee_rate,
+                                    size_bytes: *size_bytes,
                                 })
                             }
                             node_events::NodeEvent::PeerConnected {

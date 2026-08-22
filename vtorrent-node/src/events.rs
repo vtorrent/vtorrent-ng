@@ -39,7 +39,11 @@ pub enum NodeEvent {
         block_hash: [u8; 32],
     },
     /// A new unconfirmed transaction entered the mempool.
-    TxUnconfirmed { txid: [u8; 32], fee_sats: u64 },
+    TxUnconfirmed {
+        txid: [u8; 32],
+        fee_sats: u64,
+        size_bytes: usize,
+    },
     /// A peer completed the handshake and is now connected.
     PeerConnected {
         addr: std::net::SocketAddr,

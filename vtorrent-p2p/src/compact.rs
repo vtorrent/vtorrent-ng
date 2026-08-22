@@ -256,6 +256,61 @@ impl CompactBlockDecoder {
         }
     }
 
+    /// Reconstruct a full block using both mempool lookups and previously received
+    /// transactions from a `blocktxn` response.
+    ///
+    /// `mempool` maps short_txid → serialized tx bytes.
+    /// `received` maps the absolute index → serialized tx bytes (from `blocktxn`).
+    /// Returns `Ok(txs)` on success, or `Err(MissingTransactions)` if some are
+    /// still unresolvable.
+    pub fn decode_with_received(
+        msg: &CmpctBlockMsg,
+        mempool: &HashMap<u64, Vec<u8>>,
+        received: &HashMap<usize, Vec<u8>>,
+    ) -> Result<Vec<Vec<u8>>, CompactBlockDecodeError> {
+        let total = msg.prefilled_txs.len() + msg.short_ids.len();
+        if total > u16::MAX as usize {
+            return Err(CompactBlockDecodeError::TooManyTransactions);
+        }
+        let mut txs: Vec<Option<Vec<u8>>> = vec![None; total];
+        let mut missing: Vec<u16> = Vec::new();
+
+        // Place prefilled transactions
+        let mut offset = 0usize;
+        for prefilled in &msg.prefilled_txs {
+            let abs_index = offset + prefilled.index as usize;
+            if abs_index < total {
+                txs[abs_index] = Some(prefilled.tx_bytes.clone());
+            }
+            offset = abs_index + 1;
+        }
+
+        // Fill in short_id transactions: try mempool first, then received map
+        let mut short_idx = 0usize;
+        for (i, slot) in txs.iter_mut().enumerate() {
+            if slot.is_some() {
+                continue;
+            }
+            if short_idx < msg.short_ids.len() {
+                let sid = msg.short_ids[short_idx];
+                if let Some(tx_bytes) = mempool.get(&sid) {
+                    *slot = Some(tx_bytes.clone());
+                } else if let Some(tx_bytes) = received.get(&i) {
+                    *slot = Some(tx_bytes.clone());
+                } else {
+                    missing.push(i as u16);
+                }
+                short_idx += 1;
+            }
+        }
+
+        if missing.is_empty() {
+            Ok(txs.into_iter().map(|t| t.unwrap_or_default()).collect())
+        } else {
+            Err(CompactBlockDecodeError::MissingTransactions(missing))
+        }
+    }
+
     /// Build a `getblocktxn` request for missing transactions.
     pub fn build_getblocktxn(block_hash: [u8; 32], missing_indexes: Vec<u16>) -> GetBlockTxnMsg {
         GetBlockTxnMsg {
