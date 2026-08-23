@@ -477,4 +477,91 @@ mod tests {
         assert_eq!(msg.block_hash, hash);
         assert_eq!(msg.indexes, vec![1, 3, 5]);
     }
+
+    #[test]
+    fn test_compact_block_multiple_missing_txs() {
+        let coinbase_txid = [1u8; 32];
+        let txids: Vec<[u8; 32]> = (0..10).map(|i| [i as u8 + 10; 32]).collect();
+        let all_txids = std::iter::once(coinbase_txid)
+            .chain(txids.iter().copied())
+            .collect::<Vec<_>>();
+
+        let msg = CompactBlockEncoder::encode(
+            2,
+            [0xAA; 32],
+            [0xBB; 32],
+            5000,
+            0x1d00ffff,
+            99,
+            &all_txids,
+            vec![0xCB; 10],
+        );
+
+        // Only provide txids [10] and [13] in mempool — rest are missing.
+        let header_bytes = {
+            let mut h = Vec::with_capacity(80);
+            h.extend_from_slice(&msg.version.to_le_bytes());
+            h.extend_from_slice(&msg.prev_block_hash);
+            h.extend_from_slice(&msg.merkle_root);
+            h.extend_from_slice(&msg.timestamp.to_le_bytes());
+            h.extend_from_slice(&msg.bits.to_le_bytes());
+            h.extend_from_slice(&msg.nonce.to_le_bytes());
+            h
+        };
+        let (k0, k1) = derive_siphash_keys(&header_bytes, msg.siphash_nonce);
+
+        let mut mempool = HashMap::new();
+        // Only put 2 of 10 txs in the mempool.
+        let have_txids = [txids[1], txids[4]];
+        for tid in &have_txids {
+            mempool.insert(short_txid(tid, k0, k1), vec![0x01; 30]);
+        }
+
+        let result = CompactBlockDecoder::decode(&msg, &mempool);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            CompactBlockDecodeError::MissingTransactions(indexes) => {
+                assert_eq!(indexes.len(), 8, "should be 8 missing txs");
+            }
+            _ => panic!("expected MissingTransactions"),
+        }
+    }
+
+    #[test]
+    fn test_compact_block_empty_block_only_coinbase() {
+        let coinbase_txid = [0xFF; 32];
+        let txids = vec![coinbase_txid];
+
+        let msg = CompactBlockEncoder::encode(
+            1,
+            [0u8; 32],
+            [0u8; 32],
+            1000,
+            0x1d00ffff,
+            0,
+            &txids,
+            vec![0xCB; 50],
+        );
+
+        assert_eq!(msg.short_ids.len(), 0, "no non-coinbase txs");
+        assert_eq!(msg.prefilled_txs.len(), 1, "coinbase prefilled");
+
+        let mempool = HashMap::new();
+        let result = CompactBlockDecoder::decode(&msg, &mempool);
+        assert!(
+            result.is_ok(),
+            "empty block with only coinbase should decode"
+        );
+        let txs = result.unwrap();
+        assert_eq!(txs.len(), 1);
+        assert_eq!(txs[0], vec![0xCB; 50]);
+    }
+
+    #[test]
+    fn test_getblocktxn_builder_empty_indexes() {
+        let hash = [0x42u8; 32];
+        let msg = CompactBlockDecoder::build_getblocktxn(hash, vec![]);
+        assert_eq!(msg.block_hash, hash);
+        assert!(msg.indexes.is_empty());
+    }
 }

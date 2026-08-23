@@ -378,4 +378,57 @@ mod tests {
         assert!(!mgr.is_banned(ip(99)));
         assert_eq!(mgr.score(ip(99)), 0);
     }
+
+    #[test]
+    fn test_rapid_ban_unban_cycle() {
+        let mut mgr = BanManager::new(10, Duration::from_millis(1));
+        for i in 0..50u8 {
+            let addr = ip(i);
+            mgr.ban_ip(addr, "test".into());
+            assert!(mgr.is_banned(addr));
+            mgr.unban(addr);
+            assert!(!mgr.is_banned(addr));
+        }
+        assert_eq!(mgr.ban_count(), 0);
+    }
+
+    #[test]
+    fn test_many_ips_banned_simultaneously() {
+        let mut mgr = BanManager::new(5, Duration::from_secs(3600));
+        for i in 0..100u8 {
+            let addr = ip(i);
+            // 1 InvalidBlockHeader = 20 points > threshold of 5
+            mgr.record_misbehaviour(addr, Misbehaviour::InvalidBlockHeader);
+            assert!(mgr.is_banned(addr), "ip {} should be banned", i);
+        }
+        assert_eq!(mgr.ban_count(), 100);
+    }
+
+    #[test]
+    fn test_score_accumulates_many_offences() {
+        let mut mgr = BanManager::new(1000, Duration::from_secs(3600));
+        let addr = ip(200);
+        for _ in 0..99 {
+            mgr.record_misbehaviour(addr, Misbehaviour::UnknownMessage); // +1 each
+        }
+        assert_eq!(mgr.score(addr), 99);
+        assert!(!mgr.is_banned(addr));
+        mgr.record_misbehaviour(addr, Misbehaviour::UnknownMessage); // 100 → ban
+        assert!(mgr.is_banned(addr));
+    }
+
+    #[test]
+    fn test_prune_many_entries() {
+        let mut mgr = BanManager::new(100, Duration::from_secs(1));
+        for i in 0..50u8 {
+            mgr.record_misbehaviour(ip(i), Misbehaviour::UnknownMessage);
+        }
+        assert_eq!(mgr.list_scores().len(), 50);
+        // Zero all scores to make them prunable.
+        for i in 0..50u8 {
+            mgr.scores.get_mut(&ip(i)).unwrap().score = 0;
+        }
+        mgr.prune();
+        assert_eq!(mgr.list_scores().len(), 0);
+    }
 }
