@@ -1,0 +1,55 @@
+[package]
+name = "vtorrent-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+[dependencies.vtorrent-script]
+path = "../vtorrent-script"
+
+[dependencies.vtorrent-node]
+path = "../vtorrent-node"
+
+[dependencies.vtorrent-p2p]
+path = "../vtorrent-p2p"
+
+[dependencies.vtorrent-btc]
+path = "../vtorrent-btc"
+
+[dependencies.bitcoin]
+version = "0.32"
+
+[[bin]]
+name = "fuzz_script_engine"
+path = "fuzz_targets/fuzz_script_engine.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_p2p_codec"
+path = "fuzz_targets/fuzz_p2p_codec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_tx_deser"
+path = "fuzz_targets/fuzz_tx_deser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_btc_psbt"
+path = "fuzz_targets/fuzz_btc_psbt.rs"
+test = false
+doc = false
+bench = false
