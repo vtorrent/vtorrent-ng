@@ -9,41 +9,13 @@
 /// The stake kernel check is a simplified version of the PPCoin protocol.
 /// A full implementation would use the stake modifier from the chain.
 use crate::{
-    block::{Block, BlockHeader, Transaction, TxInput, TxOutput, TxType},
+    block::{compute_merkle_root_from_txids, Block, BlockHeader, Transaction, TxInput, TxOutput, TxType},
     chain::Utxo,
     consensus::{
         check_stake_kernel, compute_pos_reward, compute_stake_modifier, MAX_STAKE_AGE,
         MIN_STAKE_AGE, MIN_STAKE_AMOUNT,
     },
 };
-
-use sha2::{Digest, Sha256};
-
-/// Compute a Merkle root from a slice of transaction IDs.
-fn compute_merkle_root_from_txids(txids: &[[u8; 32]]) -> [u8; 32] {
-    if txids.is_empty() {
-        return [0u8; 32];
-    }
-    let mut hashes: Vec<[u8; 32]> = txids.to_vec();
-    while hashes.len() > 1 {
-        if !hashes.len().is_multiple_of(2) {
-            hashes.push(*hashes.last().unwrap());
-        }
-        let mut next = Vec::with_capacity(hashes.len() / 2);
-        for chunk in hashes.chunks(2) {
-            let mut combined = [0u8; 64];
-            combined[..32].copy_from_slice(&chunk[0]);
-            combined[32..].copy_from_slice(&chunk[1]);
-            let first = Sha256::digest(combined);
-            let second = Sha256::digest(first);
-            let mut hash = [0u8; 32];
-            hash.copy_from_slice(&second);
-            next.push(hash);
-        }
-        hashes = next;
-    }
-    hashes[0]
-}
 
 /// Runtime staking control command sent from RPC/tauri to the node.
 #[derive(Debug, Clone)]
@@ -274,8 +246,8 @@ impl StakingEngine {
         }
 
         let merkle_root = {
-            let txids: Vec<[u8; 32]> = transactions.iter().map(|tx| tx.txid()).collect();
-            compute_merkle_root_from_txids(&txids)
+            let mut txids: Vec<[u8; 32]> = transactions.iter().map(|tx| tx.txid()).collect();
+            compute_merkle_root_from_txids(&mut txids)
         };
 
         let header = BlockHeader {

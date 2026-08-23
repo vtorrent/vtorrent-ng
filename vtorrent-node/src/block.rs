@@ -217,6 +217,37 @@ pub struct Block {
     pub transactions: Vec<Transaction>,
 }
 
+/// Compute a Merkle root from pre-computed transaction IDs.
+///
+/// Uses in-place reduction: the result is written back into `txids[0]` and
+/// returned.  `txids` is treated as scratch space and is **not** preserved.
+/// For an odd count the last hash is duplicated to reach an even count.
+pub fn compute_merkle_root_from_txids(txids: &mut [[u8; 32]]) -> [u8; 32] {
+    let mut len = txids.len();
+    if len == 0 {
+        return [0u8; 32];
+    }
+    let mut combined = [0u8; 64];
+    while len > 1 {
+        // Duplicate last element if odd.
+        if len & 1 == 1 {
+            // SAFETY: len >= 2 here so the index is valid.
+            txids[len] = txids[len - 1];
+            len += 1;
+        }
+        let half = len / 2;
+        for i in 0..half {
+            combined[..32].copy_from_slice(&txids[i * 2]);
+            combined[32..].copy_from_slice(&txids[i * 2 + 1]);
+            let first = Sha256::digest(combined);
+            let second = Sha256::digest(first);
+            txids[i].copy_from_slice(&second);
+        }
+        len = half;
+    }
+    txids[0]
+}
+
 impl Block {
     /// Compute the block hash.
     pub fn hash(&self) -> [u8; 32] {
@@ -225,31 +256,8 @@ impl Block {
 
     /// Compute the Merkle root of all transactions.
     pub fn compute_merkle_root(&self) -> [u8; 32] {
-        if self.transactions.is_empty() {
-            return [0u8; 32];
-        }
-
-        let mut hashes: Vec<[u8; 32]> = self.transactions.iter().map(|tx| tx.txid()).collect();
-
-        while hashes.len() > 1 {
-            if !hashes.len().is_multiple_of(2) {
-                hashes.push(*hashes.last().unwrap());
-            }
-            let mut next = Vec::with_capacity(hashes.len() / 2);
-            for chunk in hashes.chunks(2) {
-                let mut combined = [0u8; 64];
-                combined[..32].copy_from_slice(&chunk[0]);
-                combined[32..].copy_from_slice(&chunk[1]);
-                let first = Sha256::digest(combined);
-                let second = Sha256::digest(first);
-                let mut hash = [0u8; 32];
-                hash.copy_from_slice(&second);
-                next.push(hash);
-            }
-            hashes = next;
-        }
-
-        hashes[0]
+        let mut txids: Vec<[u8; 32]> = self.transactions.iter().map(|tx| tx.txid()).collect();
+        compute_merkle_root_from_txids(&mut txids)
     }
 
     /// Get the height of this block (stored in the coinbase tx's lock_time for PoW,
