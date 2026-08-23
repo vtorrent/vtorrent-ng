@@ -5,6 +5,7 @@ use crate::headers::HeaderChain;
 use crate::keys::derive_address;
 use crate::utxo::{Utxo, UtxoSet};
 use bitcoin::Network;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 /// A Bitcoin SPV wallet.
@@ -13,6 +14,8 @@ pub struct BtcWallet {
     network: Network,
     headers: Arc<Mutex<HeaderChain>>,
     utxos: Arc<Mutex<UtxoSet>>,
+    /// Optional path for persisting the UTXO set to disk.
+    utxo_path: Option<PathBuf>,
     next_index: u32,
     synced: bool,
     /// Height up to which the UTXO scan has completed (incremental checkpoint).
@@ -32,9 +35,46 @@ impl BtcWallet {
             network,
             headers: Arc::new(Mutex::new(HeaderChain::new())),
             utxos: Arc::new(Mutex::new(UtxoSet::new())),
+            utxo_path: None,
             next_index: 0,
             synced: false,
             last_scanned_height: 0,
+        }
+    }
+
+    /// Create a wallet with a UTXO persistence path.  If the file exists,
+    /// the UTXO set is loaded from disk on construction.
+    pub fn with_persistence(
+        seed: [u8; 64],
+        network: Network,
+        utxo_path: PathBuf,
+    ) -> std::io::Result<Self> {
+        let utxos = UtxoSet::load(&utxo_path)?;
+        Ok(Self {
+            seed,
+            network,
+            headers: Arc::new(Mutex::new(HeaderChain::new())),
+            utxos: Arc::new(Mutex::new(utxos)),
+            utxo_path: Some(utxo_path),
+            next_index: 0,
+            synced: false,
+            last_scanned_height: 0,
+        })
+    }
+
+    /// Set or change the UTXO persistence path.  The current in-memory set
+    /// is immediately saved to the new path.
+    pub fn set_utxo_path(&mut self, path: PathBuf) -> std::io::Result<()> {
+        self.utxo_path = Some(path.clone());
+        self.utxos.lock().unwrap().save(&path)
+    }
+
+    /// Save the current UTXO set to disk (if a persistence path is set).
+    fn save_utxos(&self) {
+        if let Some(ref path) = self.utxo_path {
+            if let Err(e) = self.utxos.lock().unwrap().save(path) {
+                tracing::warn!("Failed to save UTXO set: {}", e);
+            }
         }
     }
 
@@ -96,6 +136,7 @@ impl BtcWallet {
     /// Add a UTXO.
     pub fn add_utxo(&self, utxo: Utxo) {
         self.utxos.lock().unwrap().add(utxo);
+        self.save_utxos();
     }
 
     /// Whether the header chain has synced at least once.
@@ -207,6 +248,7 @@ impl BtcWallet {
             &change_address,
             &wif,
             self.network,
+            false,
         )?;
 
         let txid = txid_of(&raw);
@@ -217,6 +259,8 @@ impl BtcWallet {
         for u in &selected {
             set.remove(&u.txid, u.vout);
         }
+        drop(set);
+        self.save_utxos();
 
         tracing::info!(
             "BTC built: {} sats to {} (txid: {}, fee: {} sats)",
@@ -232,6 +276,24 @@ impl BtcWallet {
     /// Broadcast a raw transaction to the Bitcoin network via DNS seeds.
     pub async fn broadcast_raw(raw: &[u8]) -> Result<[u8; 32]> {
         crate::sync::broadcast_tx(raw).await
+    }
+
+    /// Estimate the fee in satoshis for a transaction with the given number
+    /// of inputs and outputs, using the peer's feefilter as a floor.
+    ///
+    /// `feefilter_sats_per_kb` is the peer's advertised minimum fee rate
+    /// from BIP133 `feefilter` messages.  If 0 or negative, a default of
+    /// 1 000 sat/kB (1 sat/byte) is used.
+    pub fn estimate_fee(input_count: usize, output_count: usize, feefilter_sats_per_kb: i64) -> u64 {
+        let rate = if feefilter_sats_per_kb > 0 {
+            feefilter_sats_per_kb as u64
+        } else {
+            1_000 // 1 sat/byte default
+        };
+        let vsize = crate::tx::estimate_vsize(input_count, output_count);
+        // Fee = rate (sat/kB) * vsize (vB) / 1000, minimum 1 sat.
+        let fee = (rate * vsize).div_ceil(1000);
+        fee.max(1)
     }
 }
 

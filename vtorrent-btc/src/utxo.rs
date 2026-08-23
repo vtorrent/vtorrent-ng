@@ -1,6 +1,7 @@
 //! UTXO set tracking for the wallet's addresses.
 
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 /// A spendable output owned by the wallet.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,8 +18,8 @@ pub struct Utxo {
     pub height: u32,
 }
 
-/// In-memory UTXO set.
-#[derive(Debug, Default)]
+/// In-memory UTXO set with optional disk persistence.
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct UtxoSet {
     utxos: Vec<Utxo>,
 }
@@ -64,6 +65,31 @@ impl UtxoSet {
             }
         }
         None
+    }
+
+    /// Persist the UTXO set to a JSON file.
+    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        let json = serde_json::to_string_pretty(self)
+            .map_err(std::io::Error::other)?;
+        // Write atomically via a temp file + rename.
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, &json)?;
+        std::fs::rename(&tmp, path)?;
+        tracing::debug!("UTXO set saved: {} entries → {}", self.utxos.len(), path.display());
+        Ok(())
+    }
+
+    /// Load the UTXO set from a JSON file.  Returns an empty set if the
+    /// file does not exist.
+    pub fn load(path: &Path) -> std::io::Result<Self> {
+        if !path.exists() {
+            return Ok(Self::new());
+        }
+        let json = std::fs::read_to_string(path)?;
+        let set: UtxoSet = serde_json::from_str(&json)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        tracing::debug!("UTXO set loaded: {} entries from {}", set.utxos.len(), path.display());
+        Ok(set)
     }
 }
 
@@ -112,5 +138,30 @@ mod tests {
         let mut set = UtxoSet::new();
         set.add(utxo("a", 0, 100));
         assert!(set.select(1000, 0).is_none());
+    }
+
+    #[test]
+    fn test_save_and_load() {
+        let dir = std::env::temp_dir().join("vtorrent_utxo_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("utxos.json");
+
+        let mut set = UtxoSet::new();
+        set.add(utxo("aa", 0, 5000));
+        set.add(utxo("bb", 1, 3000));
+        set.save(&path).unwrap();
+
+        let loaded = UtxoSet::load(&path).unwrap();
+        assert_eq!(loaded.total(), 8000);
+        assert_eq!(loaded.list().len(), 2);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_load_nonexistent_returns_empty() {
+        let path = std::env::temp_dir().join("nonexistent_utxo_file.json");
+        let set = UtxoSet::load(&path).unwrap();
+        assert_eq!(set.total(), 0);
     }
 }

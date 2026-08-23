@@ -18,6 +18,9 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct BtcPeer {
     stream: TcpStream,
     network: bitcoin::Network,
+    /// Peer's advertised minimum fee rate in satoshis per kilobyte (BIP133).
+    /// Updated when we receive a `feefilter` message.
+    feefilter_sats_per_kb: i64,
 }
 
 impl BtcPeer {
@@ -62,7 +65,11 @@ impl BtcPeer {
         // verack, then wait for the peer's verack. Bitcoin Core sends
         // wtxidrelay/sendaddrv2/sendheaders/ping around the verack, so ignore
         // those until we see the verack.
-        let mut peer = Self { stream, network };
+        let mut peer = Self {
+            stream,
+            network,
+            feefilter_sats_per_kb: 1_000, // default 1 sat/byte
+        };
         let mut got_version = false;
         let mut got_verack = false;
         while !got_verack {
@@ -79,8 +86,12 @@ impl BtcPeer {
                 NetworkMessage::WtxidRelay
                 | NetworkMessage::SendAddrV2
                 | NetworkMessage::SendHeaders
-                | NetworkMessage::Ping(_)
-                | NetworkMessage::FeeFilter(_) => continue,
+                | NetworkMessage::Ping(_) => continue,
+                NetworkMessage::FeeFilter(rate) => {
+                    peer.feefilter_sats_per_kb = rate;
+                    tracing::debug!("BTC feefilter: {} sat/kB", rate);
+                    continue;
+                }
                 other => {
                     return Err(BtcError::P2p(format!(
                         "unexpected message during handshake: {:?}",
@@ -129,10 +140,19 @@ impl BtcPeer {
                 Ok(Ok(NetworkMessage::Ping(nonce))) => {
                     self.send(NetworkMessage::Pong(nonce)).await?;
                 }
-                // Ignore pre-tx chatter (sendcmpct, feefilter, etc.).
+                Ok(Ok(NetworkMessage::FeeFilter(rate))) => {
+                    self.feefilter_sats_per_kb = rate;
+                    continue;
+                }
+                // Ignore pre-tx chatter (sendcmpct, etc.).
                 Ok(Ok(_)) => continue,
             }
         }
+    }
+
+    /// The peer's advertised minimum fee rate in sat/kB (BIP133).
+    pub fn feefilter_sats_per_kb(&self) -> i64 {
+        self.feefilter_sats_per_kb
     }
 
     /// Read one raw network message.

@@ -1,4 +1,7 @@
 //! Bitcoin transaction building, signing, and serialization.
+//!
+//! Supports BIP69 lexicographic ordering, optional RBF signaling, and
+//! per-input key lookup for multi-index wallets.
 
 use crate::error::{BtcError, Result};
 use crate::utxo::Utxo;
@@ -10,8 +13,15 @@ use bitcoin::transaction::Version;
 use bitcoin::{Address, Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness};
 use std::str::FromStr;
 
+/// BIP69: sequence value that signals RBF (Replace-By-Fee).
+const RBF_SEQUENCE: Sequence = Sequence(0xFFFFFFFE);
+
 /// Build and sign a P2WPKH transaction spending `inputs` to `destination`,
 /// returning the change to `change_address`.
+///
+/// When `rbf` is true, inputs use `Sequence(0xFFFFFFFE)` to signal
+/// replaceability.  Inputs and outputs are sorted per BIP69.
+#[allow(clippy::too_many_arguments)]
 pub fn build_and_sign(
     inputs: &[Utxo],
     destination: &str,
@@ -20,9 +30,60 @@ pub fn build_and_sign(
     change_address: &str,
     wif: &str,
     network: bitcoin::Network,
+    rbf: bool,
+) -> Result<Vec<u8>> {
+    let key = bitcoin::PrivateKey::from_wif(wif).map_err(|e| BtcError::Bitcoin(e.to_string()))?;
+    let pubkey = {
+        let secp = Secp256k1::new();
+        key.public_key(&secp)
+    };
+
+    // Single-key lookup: all inputs must belong to the same address.
+    let key_fn = |address: &str| -> Result<bitcoin::PrivateKey> {
+        if address_matches_wif(address, wif, network)? {
+            Ok(key)
+        } else {
+            Err(BtcError::InvalidAddress(format!(
+                "UTXO address {} does not match the provided key",
+                address
+            )))
+        }
+    };
+
+    build_and_sign_multi(
+        inputs,
+        destination,
+        amount_sats,
+        fee_sats,
+        change_address,
+        &key_fn,
+        &pubkey,
+        network,
+        rbf,
+    )
+}
+
+/// Build and sign a P2WPKH transaction with per-input key lookup.
+///
+/// `key_for_address` maps each input's address to the signing private key.
+/// `common_pubkey` is used for the witness (all P2WPKH inputs share the
+/// compressed pubkey in the witness).
+///
+/// Inputs and outputs are sorted per BIP69.  When `rbf` is true, inputs
+/// use `Sequence(0xFFFFFFFE)`.
+#[allow(clippy::too_many_arguments)]
+pub fn build_and_sign_multi(
+    inputs: &[Utxo],
+    destination: &str,
+    amount_sats: u64,
+    fee_sats: u64,
+    change_address: &str,
+    key_for_address: &dyn Fn(&str) -> Result<bitcoin::PrivateKey>,
+    common_pubkey: &bitcoin::PublicKey,
+    network: bitcoin::Network,
+    rbf: bool,
 ) -> Result<Vec<u8>> {
     let secp = Secp256k1::new();
-    let key = bitcoin::PrivateKey::from_wif(wif).map_err(|e| BtcError::Bitcoin(e.to_string()))?;
 
     let dest = Address::from_str(destination)
         .map_err(|e| BtcError::InvalidAddress(e.to_string()))?
@@ -43,49 +104,64 @@ pub fn build_and_sign(
             required: amount_sats + fee_sats,
         })?;
 
-    let mut tx_inputs = Vec::with_capacity(inputs.len());
-    for u in inputs {
-        let txid =
-            bitcoin::Txid::from_str(&u.txid).map_err(|e| BtcError::Bitcoin(e.to_string()))?;
-        tx_inputs.push(TxIn {
-            previous_output: OutPoint { txid, vout: u.vout },
-            script_sig: ScriptBuf::new(),
-            sequence: Sequence::MAX,
-            witness: Witness::new(),
+    let sequence = if rbf { RBF_SEQUENCE } else { Sequence::MAX };
+
+    // ── BIP69: sort inputs lexicographically by (txid, vout) ────────────
+    let mut indexed_inputs: Vec<(usize, &Utxo)> = inputs.iter().enumerate().collect();
+    indexed_inputs.sort_by(|a, b| {
+        a.1.txid
+            .cmp(&b.1.txid)
+            .then(a.1.vout.cmp(&b.1.vout))
+    });
+
+    let tx_inputs: Vec<TxIn> = indexed_inputs
+        .iter()
+        .map(|(_, u)| {
+            let txid =
+                bitcoin::Txid::from_str(&u.txid).map_err(|e| BtcError::Bitcoin(e.to_string()))?;
+            Ok(TxIn {
+                previous_output: OutPoint { txid, vout: u.vout },
+                script_sig: ScriptBuf::new(),
+                sequence,
+                witness: Witness::new(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    // ── Build outputs (before BIP69 sort) ───────────────────────────────
+    let mut outputs = vec![TxOut {
+        value: Amount::from_sat(amount_sats),
+        script_pubkey: dest.script_pubkey(),
+    }];
+    if change_sats > 0 {
+        outputs.push(TxOut {
+            value: Amount::from_sat(change_sats),
+            script_pubkey: change.script_pubkey(),
         });
     }
+
+    // ── BIP69: sort outputs lexicographically by (value, script_pubkey) ─
+    outputs.sort_by(|a, b| {
+        a.value
+            .cmp(&b.value)
+            .then(a.script_pubkey.as_bytes().cmp(b.script_pubkey.as_bytes()))
+    });
 
     let mut tx = Transaction {
         version: Version::TWO,
         lock_time: LockTime::ZERO,
         input: tx_inputs,
-        output: {
-            let mut outputs = vec![TxOut {
-                value: Amount::from_sat(amount_sats),
-                script_pubkey: dest.script_pubkey(),
-            }];
-            // Only include change output if non-zero (avoids dust outputs
-            // that miners will reject).
-            if change_sats > 0 {
-                outputs.push(TxOut {
-                    value: Amount::from_sat(change_sats),
-                    script_pubkey: change.script_pubkey(),
-                });
-            }
-            outputs
-        },
+        output: outputs,
     };
 
-    let pubkey = key.public_key(&secp);
-    let pubkey_bytes = pubkey.to_bytes();
+    // ── Sign each input ─────────────────────────────────────────────────
+    // Build a map from original-index → key, then sign in BIP69 order.
+    let pubkey_bytes = common_pubkey.to_bytes();
 
-    // Sign each input (P2WPKH), collecting witnesses before mutating the tx.
-    // Each input's sighash uses that input's own scriptPubKey (derived from
-    // the UTXO's address), not the destination's.
-    let mut witnesses = Vec::with_capacity(inputs.len());
+    let mut witnesses: Vec<Witness> = Vec::with_capacity(tx.input.len());
     {
         let mut cache = SighashCache::new(&tx);
-        for (i, u) in inputs.iter().enumerate() {
+        for (tx_idx, (_, u)) in indexed_inputs.iter().enumerate() {
             let input_script = Address::from_str(&u.address)
                 .map_err(|e| BtcError::InvalidAddress(e.to_string()))?
                 .require_network(network)
@@ -93,13 +169,14 @@ pub fn build_and_sign(
                 .script_pubkey();
             let sighash = cache
                 .p2wpkh_signature_hash(
-                    i,
+                    tx_idx,
                     &input_script,
                     Amount::from_sat(u.value),
                     bitcoin::EcdsaSighashType::All,
                 )
                 .map_err(|e| BtcError::Bitcoin(e.to_string()))?;
             let msg: bitcoin::secp256k1::Message = sighash.into();
+            let key = key_for_address(&u.address)?;
             let sig = secp.sign_ecdsa(&msg, &key.inner);
             let mut sig_bytes = sig.serialize_der().to_vec();
             sig_bytes.push(bitcoin::EcdsaSighashType::All as u8);
@@ -113,58 +190,169 @@ pub fn build_and_sign(
     Ok(serialize(&tx))
 }
 
+/// Check whether `address` matches the given WIF key on `network`.
+fn address_matches_wif(address: &str, wif: &str, network: bitcoin::Network) -> Result<bool> {
+    let key = bitcoin::PrivateKey::from_wif(wif).map_err(|e| BtcError::Bitcoin(e.to_string()))?;
+    let secp = Secp256k1::new();
+    let pubkey = key.public_key(&secp);
+    let compressed =
+        bitcoin::CompressedPublicKey::from_slice(&pubkey.to_bytes()).map_err(|e| {
+            BtcError::Bitcoin(e.to_string())
+        })?;
+    let derived = Address::p2wpkh(&compressed, network);
+    Ok(address == derived.to_string())
+}
+
 /// Compute the txid (double-SHA256 of the serialized tx) as bytes.
 pub fn txid_of(raw: &[u8]) -> [u8; 32] {
     use bitcoin::hashes::{sha256d, Hash};
     sha256d::Hash::hash(raw).to_byte_array()
 }
 
+/// Estimate the virtual size (vsize) of a P2WPKH transaction in bytes.
+///
+/// P2WPKH input weight: 4×41 (non-witness) + 108 (witness) = 272 WU → 68 vB.
+/// P2WPKH output weight: 4×31 = 124 WU → 31 vB.
+/// Overhead: version(4) + locktime(4) + vin_count(1) + vout_count(1) +
+///          witness_marker(1) + witness_len(1) = 12 bytes → 48 WU → 12 vB.
+pub fn estimate_vsize(input_count: usize, output_count: usize) -> u64 {
+    let input_vsize = input_count as u64 * 68;
+    let output_vsize = output_count as u64 * 31;
+    let overhead = 12;
+    input_vsize + output_vsize + overhead
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const TEST_SEED: [u8; 64] = [7u8; 64];
+
+    fn test_addr(index: u32) -> String {
+        crate::keys::derive_address(&TEST_SEED, index, bitcoin::Network::Bitcoin).unwrap()
+    }
+
+    fn test_utxo(txid: &str, vout: u32, value: u64, addr_index: u32) -> Utxo {
+        Utxo {
+            txid: txid.to_string(),
+            vout,
+            value,
+            address: test_addr(addr_index),
+            height: 100,
+        }
+    }
+
+    fn test_wif(index: u32) -> String {
+        crate::keys::derive_wif(&TEST_SEED, index, bitcoin::Network::Bitcoin).unwrap()
+    }
+
     #[test]
     fn test_build_sign_serializes() {
-        let wif = crate::keys::derive_wif(&[7u8; 64], 0, bitcoin::Network::Bitcoin).unwrap();
-        let inputs = vec![Utxo {
-            txid: "11".repeat(32),
-            vout: 0,
-            value: 100_000,
-            address: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
-            height: 100,
-        }];
+        let wif = test_wif(0);
+        let addr = test_addr(0);
+        let inputs = vec![test_utxo(&"11".repeat(32), 0, 100_000, 0)];
         let raw = build_and_sign(
-            &inputs,
-            "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
-            50_000,
-            1_000,
-            "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
-            &wif,
-            bitcoin::Network::Bitcoin,
-        )
-        .unwrap();
+            &inputs, &addr, 50_000, 1_000, &addr, &wif,
+            bitcoin::Network::Bitcoin, false,
+        ).unwrap();
         assert!(!raw.is_empty());
     }
 
     #[test]
+    fn test_build_sign_rbf() {
+        let wif = test_wif(0);
+        let addr = test_addr(0);
+        let inputs = vec![test_utxo(&"22".repeat(32), 0, 100_000, 0)];
+        let raw = build_and_sign(
+            &inputs, &addr, 50_000, 1_000, &addr, &wif,
+            bitcoin::Network::Bitcoin, true,
+        ).unwrap();
+        let tx: Transaction = bitcoin::consensus::encode::deserialize(&raw).unwrap();
+        assert_eq!(tx.input[0].sequence, RBF_SEQUENCE);
+    }
+
+    #[test]
     fn test_insufficient_funds() {
-        let wif = crate::keys::derive_wif(&[7u8; 64], 0, bitcoin::Network::Bitcoin).unwrap();
-        let inputs = vec![Utxo {
-            txid: "11".repeat(32),
-            vout: 0,
-            value: 10_000,
-            address: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
-            height: 100,
-        }];
+        let wif = test_wif(0);
+        let addr = test_addr(0);
+        let inputs = vec![test_utxo(&"33".repeat(32), 0, 10_000, 0)];
         let result = build_and_sign(
-            &inputs,
-            "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
-            50_000,
-            1_000,
-            "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
-            &wif,
-            bitcoin::Network::Bitcoin,
+            &inputs, &addr, 50_000, 1_000, &addr, &wif,
+            bitcoin::Network::Bitcoin, false,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_bip69_input_sorting() {
+        let wif = test_wif(0);
+        let addr = test_addr(0);
+        let inputs = vec![
+            test_utxo(&"bb".repeat(32), 0, 50_000, 0),
+            test_utxo(&"aa".repeat(32), 0, 50_000, 0),
+        ];
+        let raw = build_and_sign(
+            &inputs, &addr, 50_000, 1_000, &addr, &wif,
+            bitcoin::Network::Bitcoin, false,
+        ).unwrap();
+        let tx: Transaction = bitcoin::consensus::encode::deserialize(&raw).unwrap();
+        assert!(tx.input[0].previous_output.txid.to_string() < tx.input[1].previous_output.txid.to_string());
+    }
+
+    #[test]
+    fn test_bip69_output_sorting() {
+        let wif = test_wif(0);
+        let addr = test_addr(0);
+        let inputs = vec![test_utxo(&"cc".repeat(32), 0, 200_000, 0)];
+        let raw = build_and_sign(
+            &inputs, &addr, 50_000, 1_000, &addr, &wif,
+            bitcoin::Network::Bitcoin, false,
+        ).unwrap();
+        let tx: Transaction = bitcoin::consensus::encode::deserialize(&raw).unwrap();
+        assert!(tx.output[0].value <= tx.output[1].value);
+    }
+
+    #[test]
+    fn test_estimate_vsize() {
+        let v = estimate_vsize(1, 2);
+        assert!(v > 0);
+        assert!((100..=200).contains(&v));
+    }
+
+    #[test]
+    fn test_multi_index_signing() {
+        let wif0 = test_wif(0);
+        let wif1 = test_wif(1);
+        let addr0 = test_addr(0);
+        let addr1 = test_addr(1);
+        let dest = test_addr(2);
+
+        let inputs = vec![
+            test_utxo(&"aa".repeat(32), 0, 50_000, 0),
+            test_utxo(&"bb".repeat(32), 0, 50_000, 1),
+        ];
+
+        let key_for = |address: &str| -> Result<bitcoin::PrivateKey> {
+            if *address == addr0 {
+                Ok(bitcoin::PrivateKey::from_wif(&wif0).unwrap())
+            } else if *address == addr1 {
+                Ok(bitcoin::PrivateKey::from_wif(&wif1).unwrap())
+            } else {
+                Err(BtcError::InvalidAddress("no key".into()))
+            }
+        };
+
+        let secp = Secp256k1::new();
+        let key0 = bitcoin::PrivateKey::from_wif(&wif0).unwrap();
+        let pubkey = key0.public_key(&secp);
+
+        let raw = build_and_sign_multi(
+            &inputs, &dest, 80_000, 1_000, &dest,
+            &key_for, &pubkey, bitcoin::Network::Bitcoin, false,
+        ).unwrap();
+        assert!(!raw.is_empty());
+
+        let tx: Transaction = bitcoin::consensus::encode::deserialize(&raw).unwrap();
+        assert_eq!(tx.input.len(), 2);
     }
 }
