@@ -503,9 +503,12 @@ impl Chain {
                 .or_else(|| self.block_height(&prev_hash))
                 .unwrap_or(0);
             let fork_height = parent_height + 1;
-            let parent_timestamp = self.blocks.get(&prev_hash).unwrap().header.timestamp;
-            let parent_bits = self.blocks.get(&prev_hash).unwrap().header.bits;
-            let parent_modifier = self.blocks.get(&prev_hash).unwrap().header.stake_modifier;
+            let parent = self.blocks.get(&prev_hash).ok_or_else(|| {
+                NodeError::Chain(format!("missing parent block {}", hex::encode(prev_hash)))
+            })?;
+            let parent_timestamp = parent.header.timestamp;
+            let parent_bits = parent.header.bits;
+            let parent_modifier = parent.header.stake_modifier;
 
             // Validate against the fork parent
             validate_block(

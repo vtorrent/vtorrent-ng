@@ -57,6 +57,24 @@ pub const MAX_MSGS_PER_WINDOW: u64 = 500;
 /// Rate-limit window length in seconds.
 pub const MSG_WINDOW_SECS: u64 = 10;
 
+/// How often (seconds) to sync blocks from peers.
+const SYNC_INTERVAL_SECS: u64 = 30;
+
+/// How often (seconds) to run peer maintenance (prune, eviction).
+const PEER_MAINTENANCE_SECS: u64 = 60;
+
+/// How often (seconds) to send keepalive pings.
+const PING_INTERVAL_SECS: u64 = 120;
+
+/// How often (seconds) to request peer addresses via PEX.
+const PEX_INTERVAL_SECS: u64 = 600;
+
+/// How often (seconds) to re-announce to the DHT.
+const DHT_REANNOUNCE_SECS: u64 = 1800;
+
+/// Number of headers to request per batch during header sync.
+const HEADERS_PER_BATCH: usize = 2000;
+
 /// Current Unix timestamp in seconds.
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -486,12 +504,12 @@ impl Node {
         }
 
         // Periodic timers
-        let mut sync_ticker = interval(Duration::from_secs(30));
+        let mut sync_ticker = interval(Duration::from_secs(SYNC_INTERVAL_SECS));
         let mut stake_ticker = interval(Duration::from_secs(TARGET_BLOCK_TIME));
-        let mut peer_ticker = interval(Duration::from_secs(60));
-        let mut ping_ticker = interval(Duration::from_secs(120)); // Keepalive ping every 2 min
-        let mut pex_ticker = interval(Duration::from_secs(600)); // PEX getaddr every 10 min
-        let mut dht_ticker = interval(Duration::from_secs(1800)); // DHT re-announce every 30 min
+        let mut peer_ticker = interval(Duration::from_secs(PEER_MAINTENANCE_SECS));
+        let mut ping_ticker = interval(Duration::from_secs(PING_INTERVAL_SECS));
+        let mut pex_ticker = interval(Duration::from_secs(PEX_INTERVAL_SECS));
+        let mut dht_ticker = interval(Duration::from_secs(DHT_REANNOUNCE_SECS));
 
         loop {
             tokio::select! {
@@ -1782,7 +1800,8 @@ impl Node {
                         .unwrap_or(1);
 
                     let mut headers: Vec<HeaderEntry> = Vec::new();
-                    for h in start_height..=our_height.min(start_height + 2000) {
+                    for h in start_height..=our_height.min(start_height + HEADERS_PER_BATCH as u32)
+                    {
                         if let Some(block) = chain.get_block_at_height(h) {
                             let hash = block.hash();
                             if req.hash_stop != [0u8; 32] && hash == req.hash_stop {
@@ -1853,8 +1872,8 @@ impl Node {
                             .await;
                     }
 
-                    // If we got a full batch of 2000, there may be more — send another getheaders
-                    if count == 2000 {
+                    // If we got a full batch, there may be more — send another getheaders
+                    if count == HEADERS_PER_BATCH {
                         let last_hash = decoded.last().map(|hdr| hdr.hash()).unwrap_or([0u8; 32]);
                         let payload = serde_json::to_vec(&GetHeadersMsg {
                             version: 70001,

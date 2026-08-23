@@ -362,7 +362,7 @@ pub async fn run_engine(
     // Build the shared scheduler state and load any resume bitfield.
     let scheduler = Arc::new(StdMutex::new(SchedulerState::new(metainfo.piece_count)));
     {
-        let mut sched = scheduler.lock().unwrap();
+        let mut sched = scheduler.lock().unwrap_or_else(|e| e.into_inner());
         let resume_path = download_dir.join(format!("{}.vtorrent", metainfo.name));
         if let Ok(bytes) = std::fs::read(&resume_path) {
             sched.tracker.load_have_bitfield(&bytes);
@@ -371,6 +371,12 @@ pub async fn run_engine(
 
     // Spawn one task per peer, capped at MAX_PEERS to prevent resource exhaustion.
     const MAX_PEERS: usize = 200;
+    // Wrap shared data in Arc so peer tasks clone only a pointer, not the
+    // entire metainfo/download_dir each time.
+    let shared_metainfo = Arc::new(metainfo.clone());
+    let shared_download_dir = Arc::new(download_dir.clone());
+    let shared_cancel = cancel.clone();
+    let shared_session_id = Arc::new(session_id.clone());
     let mut peer_tasks = Vec::new();
     for peer in peers {
         if peer_tasks.len() >= MAX_PEERS {
@@ -381,21 +387,21 @@ pub async fn run_engine(
             Err(_) => continue,
         };
         let scheduler = Arc::clone(&scheduler);
-        let metainfo = metainfo.clone();
-        let download_dir = download_dir.clone();
-        let cancel = cancel.clone();
+        let metainfo = Arc::clone(&shared_metainfo);
+        let download_dir = Arc::clone(&shared_download_dir);
+        let cancel = shared_cancel.clone();
         let sessions = Arc::clone(&sessions);
-        let session_id = session_id.clone();
+        let session_id = Arc::clone(&shared_session_id);
         peer_tasks.push(tokio::spawn(async move {
             run_peer_task(
                 addr,
                 PeerTaskContext {
-                    metainfo,
+                    metainfo: (*metainfo).clone(),
                     peer_id,
                     scheduler,
-                    download_dir,
+                    download_dir: (*download_dir).clone(),
                     sessions,
-                    session_id,
+                    session_id: (*session_id).clone(),
                     cancel,
                 },
             )
@@ -410,7 +416,7 @@ pub async fn run_engine(
 
     // Persist the resume bitfield and update final state.
     let downloaded = {
-        let sched = scheduler.lock().unwrap();
+        let sched = scheduler.lock().unwrap_or_else(|e| e.into_inner());
         let resume_path = download_dir.join(format!("{}.vtorrent", metainfo.name));
         let _ = std::fs::write(&resume_path, sched.tracker.serialize_have_bitfield());
         sched
@@ -543,10 +549,15 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
         }
 
         // Request blocks while we have pipeline capacity and pieces to fetch.
-        while in_flight < scheduler.lock().unwrap().max_pipelined_blocks {
+        while in_flight
+            < scheduler
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .max_pipelined_blocks
+        {
             let piece_len = |index: u32| piece_length(&metainfo, index);
             let (piece, begin, len) = {
-                let mut sched = scheduler.lock().unwrap();
+                let mut sched = scheduler.lock().unwrap_or_else(|e| e.into_inner());
                 match sched.next_block(&piece_len) {
                     Some(b) => b,
                     None => break,
@@ -610,7 +621,11 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                 length,
             }) => {
                 // Serve the requested block if we hold the piece.
-                let have_piece = scheduler.lock().unwrap().tracker.has_piece(index);
+                let have_piece = scheduler
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .tracker
+                    .has_piece(index);
                 if have_piece {
                     if let Some(piece_data) =
                         read_piece_from_disk(&metainfo, &download_dir, index).await
@@ -641,12 +656,15 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                 }
             }
             Ok(PeerMessage::Cancel { index, begin, .. }) => {
-                scheduler.lock().unwrap().clear_block(index, begin);
+                scheduler
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clear_block(index, begin);
             }
             Ok(PeerMessage::Piece { index, begin, data }) => {
                 in_flight = in_flight.saturating_sub(1);
                 {
-                    let mut sched = scheduler.lock().unwrap();
+                    let mut sched = scheduler.lock().unwrap_or_else(|e| e.into_inner());
                     sched.clear_block(index, begin);
                 }
                 let piece_len = piece_length(&metainfo, index);
@@ -670,7 +688,10 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                             if let Some(piece_data) = asm.assemble() {
                                 write_piece_to_disk(&metainfo, &download_dir, index, &piece_data)
                                     .await;
-                                scheduler.lock().unwrap().mark_have(index);
+                                scheduler
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .mark_have(index);
                                 downloaded_window =
                                     downloaded_window.saturating_add(piece_data.len() as u64);
                                 // Update session progress.
@@ -698,7 +719,12 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
         }
 
         // Stop when complete.
-        if scheduler.lock().unwrap().tracker.is_complete() {
+        if scheduler
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .tracker
+            .is_complete()
+        {
             break;
         }
     }
