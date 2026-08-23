@@ -17,6 +17,8 @@ use vtorrent_wallet::wallet::Wallet;
 pub struct NodeHandle {
     /// The full RPC AppState — contains chain, mempool, DEX, torrents, staking.
     pub rpc_state: RpcAppState,
+    /// When the node was started (for uptime calculation).
+    pub start_time: std::time::Instant,
 }
 
 /// Global application state managed by Tauri.

@@ -26,6 +26,7 @@ vtorrent-btc     = { path = "../vtorrent-btc" }
 hex = "0.4"
 bitcoin = { workspace = true }
 sha2 = { workspace = true }
+secp256k1 = { workspace = true }
 
 # Tauri v2 framework
 tauri       = { version = "2", features = [] }

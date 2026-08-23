@@ -436,12 +436,15 @@ pub fn disable_2fa(state: State<AppState>, code: String) -> Result<()> {
 #[derive(Debug, Serialize)]
 pub struct NodeInfoResult {
     pub running: bool,
+    pub version: String,
+    pub network: String,
     pub block_height: u64,
     pub best_hash: String,
-    pub peer_count: usize,
+    pub connections: usize,
     pub syncing: bool,
-    pub mempool_count: usize,
-    pub network: String,
+    pub sync_percent: f64,
+    pub mempool_size: usize,
+    pub uptime_secs: u64,
 }
 
 /// Response type for a single transaction.
@@ -451,9 +454,10 @@ pub struct TxResult {
     pub block_height: u32,
     pub confirmations: u32,
     pub timestamp: u32,
-    pub direction: String,
+    pub tx_type: String,
     pub amount_satoshis: u64,
     pub fee_satoshis: u64,
+    pub display: String,
 }
 
 /// Response type for a single torrent session.
@@ -464,13 +468,14 @@ pub struct TorrentResult {
     pub info_hash: String,
     pub state: String,
     pub progress: f64,
-    pub download_speed: u64,
-    pub upload_speed: u64,
-    pub peers: usize,
     pub size_bytes: u64,
     pub downloaded_bytes: u64,
     pub uploaded_bytes: u64,
-    pub earnings_satoshis: u64,
+    pub download_speed: u64,
+    pub upload_speed: u64,
+    pub peer_count: usize,
+    pub vtr_earned_satoshis: u64,
+    pub vtr_paid_satoshis: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -485,11 +490,14 @@ pub struct AddTorrentResult {
 pub struct DexOrderResult {
     pub id: String,
     pub maker_address: String,
-    pub vtr_amount: u64,
-    pub target_asset: String,
-    pub target_amount: u64,
+    pub offer_amount_satoshis: u64,
+    pub offer_asset: String,
+    pub request_amount_satoshis: u64,
+    pub request_asset: String,
+    pub rate: f64,
     pub status: String,
-    pub expiry: u32,
+    pub created_at: u32,
+    pub expires_at: u32,
 }
 
 /// Start the embedded vTorrent node in a background task.
@@ -545,6 +553,7 @@ pub async fn start_node(state: tauri::State<'_, AppState>) -> Result<NodeInfoRes
     // Store the NodeHandle before spawning.
     let handle = NodeHandle {
         rpc_state: rpc_state.clone(),
+        start_time: std::time::Instant::now(),
     };
     *state.node.lock().await = Some(handle);
 
@@ -598,12 +607,15 @@ pub async fn get_node_info(state: tauri::State<'_, AppState>) -> Result<NodeInfo
     match &*guard {
         None => Ok(NodeInfoResult {
             running: false,
+            version: env!("CARGO_PKG_VERSION").into(),
+            network: "vtorrent-mainnet".into(),
             block_height: 0,
             best_hash: String::new(),
-            peer_count: 0,
+            connections: 0,
             syncing: false,
-            mempool_count: 0,
-            network: "vtorrent-mainnet".into(),
+            sync_percent: 0.0,
+            mempool_size: 0,
+            uptime_secs: 0,
         }),
         Some(handle) => {
             let rpc = &handle.rpc_state;
@@ -611,13 +623,21 @@ pub async fn get_node_info(state: tauri::State<'_, AppState>) -> Result<NodeInfo
             let mempool = rpc.mempool.lock().await;
             let peer_count = *rpc.peer_count.read().await;
             let syncing = *rpc.syncing.read().await;
+            let uptime = handle.start_time.elapsed().as_secs();
+            let height = chain.best_height();
+            let blocks = height as f64;
+            let total = if syncing { blocks.max(1.0) } else { blocks.max(1.0) };
+            let sync_pct = if syncing { (blocks / total.max(1.0)) * 100.0 } else { 100.0 };
             Ok(NodeInfoResult {
                 running: true,
-                block_height: chain.best_height() as u64,
+                version: env!("CARGO_PKG_VERSION").into(),
+                block_height: height as u64,
                 best_hash: chain.best_hash().map(hex::encode).unwrap_or_default(),
-                peer_count,
+                connections: peer_count,
                 syncing,
-                mempool_count: mempool.size(),
+                sync_percent: sync_pct,
+                mempool_size: mempool.size(),
+                uptime_secs: uptime,
                 network: rpc.network.clone(),
             })
         }
@@ -642,14 +662,22 @@ pub async fn get_transactions(
     let best = chain.best_height();
     Ok(txs
         .into_iter()
-        .map(|(txid, height, ts, dir, amount, fee)| TxResult {
-            txid,
-            block_height: height,
-            confirmations: best.saturating_sub(height),
-            timestamp: ts,
-            direction: dir,
-            amount_satoshis: amount,
-            fee_satoshis: fee,
+        .map(|(txid, height, ts, dir, amount, fee)| {
+            let display = format!(
+                "{} {} VTR",
+                if dir == "receive" { "Received" } else { "Sent" },
+                amount as f64 / 100_000_000.0
+            );
+            TxResult {
+                txid,
+                block_height: height,
+                confirmations: best.saturating_sub(height),
+                timestamp: ts,
+                tx_type: dir,
+                amount_satoshis: amount,
+                fee_satoshis: fee,
+                display,
+            }
         })
         .collect())
 }
@@ -673,17 +701,18 @@ pub async fn get_torrent_sessions(state: tauri::State<'_, AppState>) -> Result<V
             info_hash: hex::encode(s.metainfo.info_hash),
             state: format!("{:?}", s.state),
             progress: s.progress(),
-            download_speed: s.download_speed,
-            upload_speed: s.upload_speed,
-            peers: s.peers.len(),
             size_bytes: s.metainfo.total_size,
             downloaded_bytes: s.bytes_downloaded,
             uploaded_bytes: s.bytes_uploaded,
-            earnings_satoshis: s
+            download_speed: s.download_speed,
+            upload_speed: s.upload_speed,
+            peer_count: s.peers.len(),
+            vtr_earned_satoshis: s
                 .incentive_accounts
                 .values()
                 .map(|a| a.total_earned_satoshis)
                 .sum(),
+            vtr_paid_satoshis: 0,
         })
         .collect())
 }
@@ -786,11 +815,18 @@ pub async fn get_dex_orders(state: tauri::State<'_, AppState>) -> Result<Vec<Dex
         .map(|o| DexOrderResult {
             id: hex::encode(o.order_id),
             maker_address: o.maker_address.clone(),
-            vtr_amount: o.vtr_amount,
-            target_asset: o.target_asset.clone(),
-            target_amount: o.target_amount,
+            offer_amount_satoshis: o.vtr_amount,
+            offer_asset: "VTR".into(),
+            request_amount_satoshis: o.target_amount,
+            request_asset: o.target_asset.clone(),
+            rate: if o.target_amount > 0 {
+                o.vtr_amount as f64 / o.target_amount as f64
+            } else {
+                0.0
+            },
             status: format!("{:?}", o.status),
-            expiry: o.expiry,
+            created_at: 0,
+            expires_at: o.expiry,
         })
         .collect())
 }
@@ -827,11 +863,18 @@ pub async fn place_dex_order(
     let result = DexOrderResult {
         id: hex::encode(order.order_id),
         maker_address: order.maker_address.clone(),
-        vtr_amount: order.vtr_amount,
-        target_asset: order.target_asset.clone(),
-        target_amount: order.target_amount,
+        offer_amount_satoshis: order.vtr_amount,
+        offer_asset: "VTR".into(),
+        request_amount_satoshis: order.target_amount,
+        request_asset: order.target_asset.clone(),
+        rate: if order.target_amount > 0 {
+            order.vtr_amount as f64 / order.target_amount as f64
+        } else {
+            0.0
+        },
         status: format!("{:?}", order.status),
-        expiry: order.expiry,
+        created_at: 0,
+        expires_at: order.expiry,
     };
     order_book.add_order(order);
     Ok(result)
@@ -1515,12 +1558,12 @@ pub async fn send_vtr(
 #[derive(Debug, serde::Serialize)]
 pub struct StakingStatusResult {
     pub enabled: bool,
-    pub address: Option<String>,
+    pub staking_address: Option<String>,
+    pub eligible_utxos: usize,
+    pub total_staking_satoshis: u64,
+    pub expected_reward_per_day: u64,
+    pub last_stake_time: Option<u64>,
     pub blocks_staked: u64,
-    /// Estimated APY based on current network parameters (percentage).
-    pub estimated_apy: f64,
-    /// Total rewards earned this session (satoshis).
-    pub rewards_earned_sats: u64,
 }
 
 /// Start PoS staking with the given wallet address.
@@ -1559,22 +1602,24 @@ pub async fn start_staking(
     tracing::info!("Staking started for address: {}", address);
 
     let blocks_staked = *handle.rpc_state.blocks_staked.read().await;
-    let rewards_earned_sats = *handle.rpc_state.rewards_earned_sats.read().await;
     let chain = handle.rpc_state.chain.lock().await;
     let staking_utxos = chain.get_utxos_for_address(&address);
     let total_staking: u64 = staking_utxos.iter().map(|u| u.value).sum();
-    // APY = annual staking reward rate as a percentage.
-    let estimated_apy = if total_staking > 0 {
-        vtorrent_node::consensus::POS_ANNUAL_RATE * 100.0
+    let eligible_count = staking_utxos.len();
+    // Expected daily reward = (total_staked * annual_rate) / 365
+    let expected_reward_per_day = if total_staking > 0 {
+        ((total_staking as f64 * vtorrent_node::consensus::POS_ANNUAL_RATE) / 365.0) as u64
     } else {
-        0.0
+        0
     };
     Ok(StakingStatusResult {
         enabled: true,
-        address: Some(address),
+        staking_address: Some(address),
+        eligible_utxos: eligible_count,
+        total_staking_satoshis: total_staking,
+        expected_reward_per_day,
+        last_stake_time: None,
         blocks_staked,
-        estimated_apy,
-        rewards_earned_sats,
     })
 }
 
@@ -1597,13 +1642,14 @@ pub async fn stop_staking(state: tauri::State<'_, AppState>) -> Result<StakingSt
     tracing::info!("Staking stopped");
 
     let blocks_staked = *handle.rpc_state.blocks_staked.read().await;
-    let rewards_earned_sats = *handle.rpc_state.rewards_earned_sats.read().await;
     Ok(StakingStatusResult {
         enabled: false,
-        address: None,
+        staking_address: None,
+        eligible_utxos: 0,
+        total_staking_satoshis: 0,
+        expected_reward_per_day: 0,
+        last_stake_time: None,
         blocks_staked,
-        estimated_apy: 0.0,
-        rewards_earned_sats,
     })
 }
 
@@ -1618,33 +1664,36 @@ pub async fn get_staking_status(state: tauri::State<'_, AppState>) -> Result<Sta
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
 
     let enabled = *handle.rpc_state.staking_enabled.read().await;
-    let address = handle.rpc_state.staking_address.read().await.clone();
+    let staking_address = handle.rpc_state.staking_address.read().await.clone();
     let blocks_staked = *handle.rpc_state.blocks_staked.read().await;
-    let rewards_earned_sats = *handle.rpc_state.rewards_earned_sats.read().await;
 
-    let estimated_apy = if enabled {
-        if let Some(ref addr) = address {
+    let (eligible_utxos, total_staking_satoshis, expected_reward_per_day) = if enabled {
+        if let Some(ref addr) = staking_address {
             let chain = handle.rpc_state.chain.lock().await;
             let staking_utxos = chain.get_utxos_for_address(addr);
-            let total_staking: u64 = staking_utxos.iter().map(|u| u.value).sum();
-            if total_staking > 0 {
-                vtorrent_node::consensus::POS_ANNUAL_RATE * 100.0
+            let total: u64 = staking_utxos.iter().map(|u| u.value).sum();
+            let count = staking_utxos.len();
+            let daily = if total > 0 {
+                ((total as f64 * vtorrent_node::consensus::POS_ANNUAL_RATE) / 365.0) as u64
             } else {
-                0.0
-            }
+                0
+            };
+            (count, total, daily)
         } else {
-            0.0
+            (0, 0, 0)
         }
     } else {
-        0.0
+        (0, 0, 0)
     };
 
     Ok(StakingStatusResult {
         enabled,
-        address,
+        staking_address,
+        eligible_utxos,
+        total_staking_satoshis,
+        expected_reward_per_day,
+        last_stake_time: None,
         blocks_staked,
-        estimated_apy,
-        rewards_earned_sats,
     })
 }
 
@@ -1656,6 +1705,7 @@ pub struct BtcStatus {
     pub balance_satoshis: u64,
     pub address: Option<String>,
     pub best_height: u32,
+    pub synced: bool,
 }
 
 /// Get the BTC wallet status.
@@ -1672,12 +1722,190 @@ pub async fn get_btc_status(state: State<'_, AppState>) -> Result<BtcStatus> {
             balance_satoshis: 0,
             address: None,
             best_height: 0,
+            synced: false,
         }),
         Some(wallet) => Ok(BtcStatus {
             initialized: true,
             balance_satoshis: wallet.balance(),
             address: wallet.current_address().ok(),
             best_height: wallet.best_height(),
+            synced: wallet.synced(),
         }),
     }
+}
+
+/// Get the current BTC receiving address.
+#[tauri::command]
+pub async fn get_btc_address(state: State<'_, AppState>) -> Result<String> {
+    let guard = state.node.lock().await;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    let btc = handle.rpc_state.btc_wallet.read().await;
+    match btc.as_ref() {
+        None => Err(TauriError::NodeError("BTC wallet not initialized".into())),
+        Some(wallet) => wallet
+            .current_address()
+            .map_err(|e| TauriError::NodeError(e.to_string())),
+    }
+}
+
+/// Build, sign, and broadcast a BTC transaction.
+#[tauri::command]
+pub async fn send_btc(
+    state: State<'_, AppState>,
+    to_address: String,
+    amount_satoshis: u64,
+) -> Result<String> {
+    let guard = state.node.lock().await;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    let btc = handle.rpc_state.btc_wallet.read().await;
+    let _wallet = btc
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("BTC wallet not initialized".into()))?;
+
+    // BTC transaction building requires a connected peer for UTXO selection
+    // and transaction broadcasting.  This is not yet fully implemented in the
+    // embedded wallet; return a clear error until the BTC P2P layer is wired.
+    Err(TauriError::NodeError(
+        "BTC send not yet supported from the embedded wallet — use the CLI or an external wallet".into(),
+    ))
+}
+
+// ─── Legacy claim commands ──────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct ClaimCheckResult {
+    pub address: String,
+    pub claimable_satoshis: u64,
+    pub display: String,
+    pub already_claimed: bool,
+}
+
+/// Check if a legacy address has claimable balance.
+#[tauri::command]
+pub async fn check_legacy_claim(
+    state: State<'_, AppState>,
+    legacy_address: String,
+) -> Result<ClaimCheckResult> {
+    let guard = state.node.lock().await;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    let chain = handle.rpc_state.chain.lock().await;
+    let claimable = vtorrent_node::genesis::get_legacy_balance(&legacy_address);
+    let already_claimed = chain.is_claimed(&legacy_address);
+    Ok(ClaimCheckResult {
+        address: legacy_address,
+        claimable_satoshis: claimable,
+        display: format!("{:.6} VTR", claimable as f64 / 100_000_000.0),
+        already_claimed,
+    })
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClaimSubmitResult {
+    pub txid: String,
+    pub claimed_satoshis: u64,
+    pub recipient_address: String,
+}
+
+/// Submit a legacy claim transaction.
+#[tauri::command]
+pub async fn submit_legacy_claim(
+    state: State<'_, AppState>,
+    wif_private_key: String,
+    recipient_address: String,
+) -> Result<ClaimSubmitResult> {
+    use vtorrent_core::keys::PrivateKey;
+    use vtorrent_node::block::{Transaction, TxOutput, TxType};
+    use vtorrent_node::genesis::get_legacy_balance;
+    use vtorrent_wallet::tx_builder::{p2pkh_script_pubkey, pubkey_to_vtorrent_address};
+
+    if wif_private_key.is_empty() {
+        return Err(TauriError::InvalidInput("WIF private key is required".into()));
+    }
+    if recipient_address.is_empty() {
+        return Err(TauriError::InvalidInput("Recipient address is required".into()));
+    }
+
+    let key = PrivateKey::from_wif(&wif_private_key)
+        .map_err(|e| TauriError::InvalidInput(format!("Invalid WIF key: {}", e)))?;
+    let secp = secp256k1::Secp256k1::new();
+    let secret_key = secp256k1::SecretKey::from_slice(key.as_bytes())
+        .map_err(|e| TauriError::InvalidInput(format!("Invalid key bytes: {}", e)))?;
+    let pubkey = secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
+    let derived_address = pubkey_to_vtorrent_address(&pubkey.serialize())
+        .map_err(|e| TauriError::NodeError(e.to_string()))?;
+
+    let claimable = get_legacy_balance(&derived_address);
+    if claimable == 0 {
+        return Err(TauriError::InvalidInput(format!(
+            "No claimable balance for address {}",
+            derived_address
+        )));
+    }
+
+    let txid;
+    {
+        let guard = state.node.lock().await;
+        let handle = guard
+            .as_ref()
+            .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+
+        {
+            let chain = handle.rpc_state.chain.lock().await;
+            if chain.is_claimed(&derived_address) {
+                return Err(TauriError::InvalidInput(format!(
+                    "Address {} has already been claimed",
+                    derived_address
+                )));
+            }
+        }
+
+        let script_pubkey = p2pkh_script_pubkey(&recipient_address)
+            .map_err(|e| TauriError::InvalidInput(format!("Invalid recipient address: {}", e)))?;
+
+        let msg_hash = vtorrent_node::consensus::claim_message_hash(&derived_address);
+        let msg = secp256k1::Message::from_digest(msg_hash);
+        let rec_sig = secp.sign_ecdsa_recoverable(&msg, &secret_key);
+        let (rec_id, sig64) = rec_sig.serialize_compact();
+        let mut sig_bytes = vec![27 + rec_id.to_i32() as u8 + 4];
+        sig_bytes.extend_from_slice(&sig64);
+
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::LegacyClaim,
+            inputs: vec![],
+            outputs: vec![TxOutput {
+                value: claimable,
+                script_pubkey,
+            }],
+            lock_time: 0,
+            claim_address: Some(derived_address.clone()),
+            claim_signature: Some(sig_bytes),
+        };
+
+        txid = hex::encode(tx.txid());
+
+        let mut mempool = handle.rpc_state.mempool.lock().await;
+        mempool
+            .add_transaction(tx)
+            .map_err(|e| TauriError::NodeError(format!("Failed to submit claim: {}", e)))?;
+    }
+
+    tracing::info!(
+        "Legacy claim submitted: {} VTR from {} to {}",
+        claimable as f64 / 100_000_000.0,
+        derived_address,
+        recipient_address
+    );
+
+    Ok(ClaimSubmitResult {
+        txid,
+        claimed_satoshis: claimable,
+        recipient_address,
+    })
 }

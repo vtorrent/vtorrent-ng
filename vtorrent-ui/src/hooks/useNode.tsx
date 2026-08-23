@@ -184,7 +184,7 @@ async function fetchTransactions(limit = 20): Promise<TxRecord[]> {
 
 async function fetchTorrentSessions(): Promise<TorrentSession[]> {
   if (isTauri()) {
-    return tauriInvoke<TorrentSession[]>('list_torrent_sessions')
+    return tauriInvoke<TorrentSession[]>('get_torrent_sessions')
   }
   return camel(await rpcGet<unknown[]>('/api/v1/torrent/sessions')) as TorrentSession[]
 }
