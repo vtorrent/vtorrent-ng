@@ -1,24 +1,18 @@
 import { useState } from 'react'
 import { Bitcoin, RefreshCw, Send } from 'lucide-react'
-import { useBtcStatus, useBtcAddress } from '../hooks/useBtc'
+import { useBtcStatus, useBtcAddress, useSendBtc } from '../hooks/useBtc'
 
 export default function BtcWalletPage() {
-  const status = useBtcStatus()
+  const { status } = useBtcStatus()
   const { address, generate, loading } = useBtcAddress()
+  const { send, loading: sending, error: sendError } = useSendBtc()
   const [toAddress, setToAddress] = useState('')
   const [amount, setAmount] = useState('')
   const [sent, setSent] = useState<string | null>(null)
 
-  const send = async () => {
-    const res = await fetch('http://127.0.0.1:22525/api/v1/btc/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to_address: toAddress, amount_satoshis: Number(amount) }),
-    })
-    if (res.ok) {
-      const data = await res.json()
-      setSent(data.txid)
-    }
+  const handleSend = async () => {
+    const txid = await send(toAddress, Number(amount))
+    if (txid) setSent(txid)
   }
 
   return (
@@ -77,11 +71,13 @@ export default function BtcWalletPage() {
           className="w-full bg-navy-900 p-2 rounded text-sm"
         />
         <button
-          onClick={send}
-          className="flex items-center gap-2 px-4 py-2 bg-vtorrent-600 rounded hover:bg-vtorrent-500"
+          onClick={handleSend}
+          disabled={sending}
+          className="flex items-center gap-2 px-4 py-2 bg-vtorrent-600 rounded hover:bg-vtorrent-500 disabled:opacity-50"
         >
-          <Send size={16} /> Send
+          <Send size={16} /> {sending ? 'Sending...' : 'Send'}
         </button>
+        {sendError && <p className="text-sm text-red-400">{sendError}</p>}
         {sent && <p className="text-sm text-green-400">Sent! TXID: {sent}</p>}
       </div>
     </div>
