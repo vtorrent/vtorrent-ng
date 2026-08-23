@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+/// Maximum number of incentive accounts per session to prevent memory
+/// exhaustion from unbounded peer tracking.
+const MAX_INCENTIVE_ACCOUNTS: usize = 10_000;
+
 /// The state of a torrent session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionState {
@@ -117,6 +121,7 @@ impl TorrentSession {
     /// Record bytes downloaded from a peer.
     pub fn record_download(&mut self, peer_address: &str, bytes: u64) {
         self.bytes_downloaded = self.bytes_downloaded.saturating_add(bytes);
+        self.evict_stale_accounts();
         let account = self
             .incentive_accounts
             .entry(peer_address.to_string())
@@ -127,11 +132,36 @@ impl TorrentSession {
     /// Record bytes uploaded to a peer.
     pub fn record_upload(&mut self, peer_address: &str, bytes: u64) {
         self.bytes_uploaded = self.bytes_uploaded.saturating_add(bytes);
+        self.evict_stale_accounts();
         let account = self
             .incentive_accounts
             .entry(peer_address.to_string())
             .or_insert_with(|| PeerBandwidthAccount::new(peer_address.to_string()));
         account.record_upload(bytes);
+    }
+
+    /// Evict accounts with zero bandwidth and oldest settlement if over limit.
+    fn evict_stale_accounts(&mut self) {
+        if self.incentive_accounts.len() <= MAX_INCENTIVE_ACCOUNTS {
+            return;
+        }
+        // First pass: remove accounts with no activity
+        self.incentive_accounts
+            .retain(|_, a| a.bytes_uploaded > 0 || a.bytes_downloaded > 0);
+        // If still over limit, remove oldest by last_settlement
+        if self.incentive_accounts.len() > MAX_INCENTIVE_ACCOUNTS {
+            let mut entries: Vec<_> = self.incentive_accounts.iter().collect();
+            entries.sort_by_key(|(_, a)| a.last_settlement);
+            let excess = entries.len() - MAX_INCENTIVE_ACCOUNTS * 3 / 4;
+            let to_remove: Vec<String> = entries
+                .into_iter()
+                .take(excess)
+                .map(|(addr, _)| addr.clone())
+                .collect();
+            for addr in to_remove {
+                self.incentive_accounts.remove(&addr);
+            }
+        }
     }
 
     /// Format total size as human-readable.

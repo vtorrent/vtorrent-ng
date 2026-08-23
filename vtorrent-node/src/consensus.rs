@@ -49,13 +49,19 @@ pub const DIFFICULTY_ADJUSTMENT_INTERVAL: u32 = 2016;
 /// Compute the PoS block reward for a given stake amount and coin age.
 ///
 /// Formula: reward = stake_amount * annual_rate * coin_age_days / 365
+///
+/// Uses u128 intermediate arithmetic to avoid f64 precision loss on large
+/// stake amounts (20M VTR = 2×10^15 satoshis exceeds f64's 15-digit
+/// significant-figure limit).
 pub fn compute_pos_reward(stake_amount: u64, coin_age_seconds: u64) -> u64 {
     // Cap the coin age at MAX_STAKE_AGE so an arbitrarily old UTXO cannot earn
     // an unbounded reward. This matches the staking engine's eligibility cap.
     let coin_age_seconds = coin_age_seconds.min(MAX_STAKE_AGE);
-    let coin_age_days = coin_age_seconds as f64 / 86400.0;
-    let reward = stake_amount as f64 * POS_ANNUAL_RATE * coin_age_days / 365.0;
-    reward as u64
+    // reward = stake_amount * POS_ANNUAL_RATE * coin_age_seconds / (86400 * 365)
+    // POS_ANNUAL_RATE = 0.05 = 5/100.  Multiply numerator first, divide last.
+    let numerator = stake_amount as u128 * coin_age_seconds as u128 * 5;
+    let denominator = 100u128 * 86400 * 365;
+    (numerator / denominator) as u64
 }
 
 /// Compute the stake modifier for the next block from the previous block's

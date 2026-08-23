@@ -89,25 +89,27 @@ pub fn classify_script(script: &Script) -> ScriptType {
 /// Build a P2PKH scriptPubKey from a 20-byte public key hash.
 ///
 /// Output: `OP_DUP OP_HASH160 <hash> OP_EQUALVERIFY OP_CHECKSIG`
-pub fn build_p2pkh(pubkey_hash: &[u8; 20]) -> Script {
+pub fn build_p2pkh(pubkey_hash: &[u8; 20]) -> Result<Script> {
     let mut s = Script::new();
     s.push_opcode(0x76); // OP_DUP
     s.push_opcode(0xa9); // OP_HASH160
-    s.push_data(pubkey_hash).unwrap();
+    s.push_data(pubkey_hash)
+        .map_err(|e| ScriptError::Serialization(e.to_string()))?;
     s.push_opcode(0x88); // OP_EQUALVERIFY
     s.push_opcode(0xac); // OP_CHECKSIG
-    s
+    Ok(s)
 }
 
 /// Build a P2SH scriptPubKey from a 20-byte redeem script hash.
 ///
 /// Output: `OP_HASH160 <hash> OP_EQUAL`
-pub fn build_p2sh(script_hash: &[u8; 20]) -> Script {
+pub fn build_p2sh(script_hash: &[u8; 20]) -> Result<Script> {
     let mut s = Script::new();
     s.push_opcode(0xa9); // OP_HASH160
-    s.push_data(script_hash).unwrap();
+    s.push_data(script_hash)
+        .map_err(|e| ScriptError::Serialization(e.to_string()))?;
     s.push_opcode(0x87); // OP_EQUAL
-    s
+    Ok(s)
 }
 
 /// Build an M-of-N multisig scriptPubKey.
@@ -128,7 +130,11 @@ pub fn build_p2ms(m: u8, keys: &[Vec<u8>]) -> Result<Script> {
     let mut s = Script::new();
     s.push_int(m);
     for key in keys {
-        s.push_data(key).unwrap();
+        if key.len() > 520 {
+            return Err(ScriptError::PushTooLarge(key.len()));
+        }
+        s.push_data(key)
+            .map_err(|e| ScriptError::Serialization(e.to_string()))?;
     }
     s.push_int(n);
     s.push_opcode(0xae); // OP_CHECKMULTISIG
@@ -156,33 +162,37 @@ pub fn build_htlc(
     claim_pubkey_hash: &[u8; 20],
     refund_pubkey_hash: &[u8; 20],
     expiry: u32,
-) -> Script {
+) -> Result<Script> {
     let mut s = Script::new();
 
     // Claim branch
     s.push_opcode(0x63); // OP_IF
     s.push_opcode(0xa8); // OP_SHA256
-    s.push_data(payment_hash).unwrap();
+    s.push_data(payment_hash)
+        .map_err(|e| ScriptError::Serialization(e.to_string()))?;
     s.push_opcode(0x88); // OP_EQUALVERIFY
     s.push_opcode(0x76); // OP_DUP
     s.push_opcode(0xa9); // OP_HASH160
-    s.push_data(claim_pubkey_hash).unwrap();
+    s.push_data(claim_pubkey_hash)
+        .map_err(|e| ScriptError::Serialization(e.to_string()))?;
     s.push_opcode(0x88); // OP_EQUALVERIFY
     s.push_opcode(0xac); // OP_CHECKSIG
 
     // Refund branch
     s.push_opcode(0x67); // OP_ELSE
-    s.push_data(&expiry.to_le_bytes()).unwrap();
+    s.push_data(&expiry.to_le_bytes())
+        .map_err(|e| ScriptError::Serialization(e.to_string()))?;
     s.push_opcode(0xb1); // OP_CHECKLOCKTIMEVERIFY
     s.push_opcode(0x75); // OP_DROP
     s.push_opcode(0x76); // OP_DUP
     s.push_opcode(0xa9); // OP_HASH160
-    s.push_data(refund_pubkey_hash).unwrap();
+    s.push_data(refund_pubkey_hash)
+        .map_err(|e| ScriptError::Serialization(e.to_string()))?;
     s.push_opcode(0x88); // OP_EQUALVERIFY
     s.push_opcode(0xac); // OP_CHECKSIG
 
     s.push_opcode(0x68); // OP_ENDIF
-    s
+    Ok(s)
 }
 
 /// Build an OP_RETURN data carrier output (unspendable, stores arbitrary data).
@@ -207,14 +217,14 @@ mod tests {
     #[test]
     fn test_classify_p2pkh() {
         let hash = [0xabu8; 20];
-        let script = build_p2pkh(&hash);
+        let script = build_p2pkh(&hash).unwrap();
         assert_eq!(classify_script(&script), ScriptType::P2PKH);
     }
 
     #[test]
     fn test_classify_p2sh() {
         let hash = [0x11u8; 20];
-        let script = build_p2sh(&hash);
+        let script = build_p2sh(&hash).unwrap();
         assert_eq!(classify_script(&script), ScriptType::P2SH);
     }
 
@@ -233,19 +243,19 @@ mod tests {
 
     #[test]
     fn test_classify_htlc() {
-        let script = build_htlc(&[0u8; 32], &[1u8; 20], &[2u8; 20], 100);
+        let script = build_htlc(&[0u8; 32], &[1u8; 20], &[2u8; 20], 100).unwrap();
         assert_eq!(classify_script(&script), ScriptType::Htlc);
     }
 
     #[test]
     fn test_p2pkh_length() {
-        let script = build_p2pkh(&[0u8; 20]);
+        let script = build_p2pkh(&[0u8; 20]).unwrap();
         assert_eq!(script.len(), 25);
     }
 
     #[test]
     fn test_p2sh_length() {
-        let script = build_p2sh(&[0u8; 20]);
+        let script = build_p2sh(&[0u8; 20]).unwrap();
         assert_eq!(script.len(), 23);
     }
 
@@ -272,7 +282,7 @@ mod tests {
         let payment_hash = [0xffu8; 32];
         let claim_hash = [0x11u8; 20];
         let refund_hash = [0x22u8; 20];
-        let script = build_htlc(&payment_hash, &claim_hash, &refund_hash, 500_000);
+        let script = build_htlc(&payment_hash, &claim_hash, &refund_hash, 500_000).unwrap();
         assert!(script.len() > 50); // HTLC scripts are complex
         assert_eq!(classify_script(&script), ScriptType::Htlc);
     }

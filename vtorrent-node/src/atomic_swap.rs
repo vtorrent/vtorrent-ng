@@ -93,12 +93,17 @@ impl Htlc {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as u32;
+        let expiry = now.checked_add(locktime_seconds).ok_or_else(|| {
+            NodeError::AtomicSwap(
+                "HTLC expiry overflow: timestamp + locktime exceeds u32::MAX".into(),
+            )
+        })?;
 
         Ok(Self {
             hash_lock,
             recipient,
             refund_address,
-            expiry: now + locktime_seconds,
+            expiry,
             amount,
             funding_txid: None,
         })
@@ -573,7 +578,7 @@ impl SwapOrder {
             funding_txid: None,
             taker_address: None,
             preimage: None,
-            expiry: now + locktime_seconds,
+            expiry: now.saturating_add(locktime_seconds),
             created_at: now as u64,
             status: OrderStatus::Open,
         }
@@ -590,8 +595,13 @@ impl SwapOrder {
 
 // ─── Order Book ─────────────────────────────────────────────────────────────
 
+/// Maximum number of orders the book will hold. Oldest cancelled/expired
+/// orders are evicted first when this limit is reached.
+const MAX_ORDERS: usize = 10_000;
+
 /// An in-memory order book for the P2P DEX.
 #[derive(Debug, Default)]
+
 pub struct SwapOrderBook {
     orders: Vec<SwapOrder>,
 }
@@ -601,9 +611,30 @@ impl SwapOrderBook {
         SwapOrderBook { orders: Vec::new() }
     }
 
-    /// Add a new order to the book.
+    /// Add a new order to the book. Evicts expired/cancelled orders if the
+    /// book exceeds `MAX_ORDERS`.
     pub fn add_order(&mut self, order: SwapOrder) {
+        if self.orders.len() >= MAX_ORDERS {
+            self.evict();
+        }
         self.orders.push(order);
+    }
+
+    /// Evict expired and cancelled orders, keeping the most recently updated.
+    fn evict(&mut self) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+        // Remove cancelled orders first, then expired ones
+        self.orders.retain(|o| {
+            o.status != OrderStatus::Cancelled && (now < o.expiry || o.status != OrderStatus::Open)
+        });
+        // If still over limit, remove oldest open orders by expiry
+        if self.orders.len() >= MAX_ORDERS {
+            self.orders.sort_by_key(|o| std::cmp::Reverse(o.expiry));
+            self.orders.truncate(MAX_ORDERS * 3 / 4);
+        }
     }
 
     /// List all open orders.

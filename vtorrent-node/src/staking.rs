@@ -160,7 +160,7 @@ impl StakingEngine {
 
         // Output 1: stake return + reward to staking address
         let stake_output = TxOutput {
-            value: utxo.value + reward,
+            value: utxo.value.saturating_add(reward),
             script_pubkey: self.address_to_script(&self.address),
         };
 

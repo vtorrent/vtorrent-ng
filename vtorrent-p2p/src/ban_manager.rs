@@ -216,6 +216,9 @@ impl BanManager {
         tracing::info!("Manually unbanned peer {}", ip);
     }
 
+    /// Maximum number of tracked peer scores to prevent memory exhaustion.
+    const MAX_TRACKED_PEERS: usize = 50_000;
+
     /// Prune expired bans and decay old scores.
     ///
     /// Should be called periodically (e.g., every hour).
@@ -240,6 +243,21 @@ impl BanManager {
 
         // Remove peers with zero score
         self.scores.retain(|_, s| s.score > 0);
+
+        // If still over limit, evict the least-recently-seen peers
+        if self.scores.len() > Self::MAX_TRACKED_PEERS {
+            let mut entries: Vec<_> = self.scores.iter().collect();
+            entries.sort_by_key(|(_, s)| s.last_seen);
+            let excess = entries.len() - Self::MAX_TRACKED_PEERS * 3 / 4;
+            let to_remove: Vec<IpAddr> = entries
+                .into_iter()
+                .take(excess)
+                .map(|(ip, _)| *ip)
+                .collect();
+            for ip in to_remove {
+                self.scores.remove(&ip);
+            }
+        }
     }
 
     /// Returns the number of currently banned IPs.

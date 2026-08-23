@@ -447,6 +447,9 @@ impl Engine {
                                 if locktime < 0 {
                                     return Err(ScriptError::NegativeLocktime);
                                 }
+                                if locktime > u32::MAX as i64 {
+                                    return Err(ScriptError::UnsatisfiedLocktime);
+                                }
                                 let locktime = locktime as u32;
                                 // The input must not be final (nSequence != MAX).
                                 if self.env.input_sequence == 0xffff_ffff {
@@ -471,6 +474,9 @@ impl Engine {
                                 let seq = bytes_to_int(top);
                                 if seq < 0 {
                                     return Err(ScriptError::NegativeSequence);
+                                }
+                                if seq > u32::MAX as i64 {
+                                    return Err(ScriptError::UnsatisfiedSequence);
                                 }
                                 let seq = seq as u32;
                                 // If the disable flag (bit 31) is set, CSV behaves
@@ -547,6 +553,11 @@ impl Engine {
                             if executing {
                                 let a =
                                     bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                // Bitcoin spec: OP_ABS of i64::MIN is invalid
+                                // (wrapping_abs would return i64::MIN, still negative).
+                                if a == i64::MIN {
+                                    return Err(ScriptError::InvalidScriptNumber);
+                                }
                                 self.stack.push(int_to_bytes(a.wrapping_abs()));
                             }
                         }
@@ -929,7 +940,7 @@ mod tests {
             let ripe = ripemd::Ripemd160::digest(sha);
             ripe.into()
         };
-        let script_pubkey = build_p2pkh(&pubkey_hash);
+        let script_pubkey = build_p2pkh(&pubkey_hash).unwrap();
 
         // Build scriptSig: <sig> <pubkey>
         let mut script_sig = crate::script::Script::new();
@@ -965,7 +976,7 @@ mod tests {
             let sha = Sha256::digest(&pk_bytes);
             ripemd::Ripemd160::digest(sha).into()
         };
-        let script_pubkey = build_p2pkh(&pubkey_hash);
+        let script_pubkey = build_p2pkh(&pubkey_hash).unwrap();
 
         let mut script_sig = crate::script::Script::new();
         script_sig.push_data(&sig).unwrap();

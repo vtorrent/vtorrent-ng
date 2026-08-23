@@ -85,11 +85,14 @@ impl BtcHtlc {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as u32;
+        let expiry = now.checked_add(locktime_seconds).ok_or_else(|| {
+            BtcError::Bitcoin("HTLC expiry overflow: timestamp + locktime exceeds u32::MAX".into())
+        })?;
         Ok(Self {
             hash_lock,
             recipient,
             refund_address,
-            expiry: now + locktime_seconds,
+            expiry,
             amount,
             network,
         })
