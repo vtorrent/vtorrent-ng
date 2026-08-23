@@ -172,6 +172,7 @@ impl PeerManager {
                         tokio::spawn(async move {
                             run_peer(stream, peer_addr, best_height, &addr, tx, cmd_rx).await;
                             count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                            tracing::debug!("Inbound peer task finished: {}", peer_addr);
                         });
                     }
                     Err(e) => {
@@ -223,6 +224,7 @@ impl PeerManager {
 
         tokio::spawn(async move {
             run_peer(stream, peer_addr, best_height, &our_addr, event_tx, cmd_rx).await;
+            tracing::debug!("Outbound peer task finished: {}", peer_addr);
         });
 
         // Register as connecting peer
