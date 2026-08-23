@@ -9,7 +9,9 @@
 /// The stake kernel check is a simplified version of the PPCoin protocol.
 /// A full implementation would use the stake modifier from the chain.
 use crate::{
-    block::{compute_merkle_root_from_txids, Block, BlockHeader, Transaction, TxInput, TxOutput, TxType},
+    block::{
+        compute_merkle_root_from_txids, Block, BlockHeader, Transaction, TxInput, TxOutput, TxType,
+    },
     chain::Utxo,
     consensus::{
         check_stake_kernel, compute_pos_reward, compute_stake_modifier, MAX_STAKE_AGE,

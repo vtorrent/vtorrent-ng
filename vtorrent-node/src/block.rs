@@ -78,22 +78,59 @@ impl Transaction {
     /// `SHA256d(bincode(tx with all scriptSigs cleared except the input's,
     /// which is set to `subscript`) + SIGHASH_ALL(1u32 LE))`.
     ///
-    /// Keeping this in `vtorrent-node` (which the wallet depends on) ensures
-    /// the signer and verifier can never drift apart.
+    /// **Optimized**: hashes incrementally from the transaction fields instead
+    /// of cloning the entire `Transaction` and serializing via bincode.  This
+    /// avoids one heap allocation and O(n) memcpy per input verification.
+    /// The output is bit-identical to the original bincode-based implementation.
     pub fn sighash(&self, input_index: usize, subscript: &[u8]) -> [u8; 32] {
-        let mut tx_copy = self.clone();
-        for (i, inp) in tx_copy.inputs.iter_mut().enumerate() {
-            if i == input_index {
-                inp.script_sig = subscript.to_vec();
+        use sha2::Digest;
+        let mut h = Sha256::new();
+
+        // bincode 1.x default: little-endian integers, u64 length prefix for Vec.
+        // Enum variants are serialized as u32 LE.
+        h.update(self.version.to_le_bytes());
+        h.update((self.tx_type as u32).to_le_bytes());
+        h.update((self.inputs.len() as u64).to_le_bytes());
+        for (i, inp) in self.inputs.iter().enumerate() {
+            h.update(inp.prev_txid);
+            h.update(inp.prev_vout.to_le_bytes());
+            let sig = if i == input_index {
+                subscript
             } else {
-                inp.script_sig = Vec::new();
+                &[] as &[u8]
+            };
+            h.update((sig.len() as u64).to_le_bytes());
+            h.update(sig);
+            h.update(inp.sequence.to_le_bytes());
+        }
+        h.update((self.outputs.len() as u64).to_le_bytes());
+        for out in &self.outputs {
+            h.update(out.value.to_le_bytes());
+            h.update((out.script_pubkey.len() as u64).to_le_bytes());
+            h.update(&out.script_pubkey);
+        }
+        h.update(self.lock_time.to_le_bytes());
+        match &self.claim_address {
+            None => h.update([0u8]),
+            Some(addr) => {
+                h.update([1u8]);
+                let bytes = addr.as_bytes();
+                h.update((bytes.len() as u64).to_le_bytes());
+                h.update(bytes);
             }
         }
+        match &self.claim_signature {
+            None => h.update([0u8]),
+            Some(sig) => {
+                h.update([1u8]);
+                h.update((sig.len() as u64).to_le_bytes());
+                h.update(sig);
+            }
+        }
+        // SIGHASH_ALL suffix
+        h.update(1u32.to_le_bytes());
 
-        let mut data = bincode::serialize(&tx_copy).unwrap_or_default();
-        data.extend_from_slice(&1u32.to_le_bytes()); // SIGHASH_ALL
-
-        let h1 = Sha256::digest(&data);
+        let h1 = h.finalize();
         let h2 = Sha256::digest(h1);
         let mut hash = [0u8; 32];
         hash.copy_from_slice(&h2);
@@ -318,5 +355,104 @@ mod tests {
         let h1 = header.hash();
         let h2 = header.hash();
         assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn test_sighash_matches_bincode_reference() {
+        use sha2::Digest;
+
+        let subscript = vec![
+            0x76, 0xa9, 0x14, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc,
+            0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0x88, 0xac,
+        ];
+
+        let tx = Transaction {
+            version: 2,
+            tx_type: TxType::Standard,
+            inputs: vec![
+                TxInput {
+                    prev_txid: [0xAA; 32],
+                    prev_vout: 0,
+                    script_sig: vec![0x51, 0x52],
+                    sequence: 0xFFFFFFFF,
+                },
+                TxInput {
+                    prev_txid: [0xBB; 32],
+                    prev_vout: 1,
+                    script_sig: vec![0x53],
+                    sequence: 0xFFFFFFFE,
+                },
+            ],
+            outputs: vec![
+                TxOutput {
+                    value: 500_000_000,
+                    script_pubkey: vec![
+                        0x76, 0xa9, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88, 0xac,
+                    ],
+                },
+                TxOutput {
+                    value: 100_000_000,
+                    script_pubkey: vec![
+                        0x76, 0xa9, 0x14, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x88, 0xac,
+                    ],
+                },
+            ],
+            lock_time: 1700000000,
+            claim_address: Some("VTestAddr123".into()),
+            claim_signature: Some(vec![0xDE, 0xAD]),
+        };
+
+        // Dump bincode format to understand the encoding
+        let mut tx_copy = tx.clone();
+        for (i, inp) in tx_copy.inputs.iter_mut().enumerate() {
+            if i == 0 {
+                inp.script_sig = subscript.clone();
+            } else {
+                inp.script_sig = Vec::new();
+            }
+        }
+
+        // Reference: the original bincode-based implementation
+        fn sighash_reference(tx: &Transaction, input_index: usize, subscript: &[u8]) -> [u8; 32] {
+            let mut tx_copy = tx.clone();
+            for (i, inp) in tx_copy.inputs.iter_mut().enumerate() {
+                if i == input_index {
+                    inp.script_sig = subscript.to_vec();
+                } else {
+                    inp.script_sig = Vec::new();
+                }
+            }
+            let mut data = bincode::serialize(&tx_copy).unwrap_or_default();
+            data.extend_from_slice(&1u32.to_le_bytes());
+            let h1 = Sha256::digest(&data);
+            let h2 = Sha256::digest(h1);
+            let mut hash = [0u8; 32];
+            hash.copy_from_slice(&h2);
+            hash
+        }
+
+        // Compare for both inputs and with None fields
+        for idx in 0..tx.inputs.len() {
+            let old = sighash_reference(&tx, idx, &subscript);
+            let new = tx.sighash(idx, &subscript);
+            if old != new {
+                eprintln!("MISMATCH at input {}", idx);
+                eprintln!("  old: {:02x?}", old);
+                eprintln!("  new: {:02x?}", new);
+            }
+            assert_eq!(old, new, "sighash mismatch for input {}", idx);
+        }
+
+        // Also test with None claim fields
+        let tx_no_claim = Transaction {
+            claim_address: None,
+            claim_signature: None,
+            ..tx
+        };
+        let old = sighash_reference(&tx_no_claim, 0, &subscript);
+        let new = tx_no_claim.sighash(0, &subscript);
+        assert_eq!(old, new, "sighash mismatch for None claim fields");
     }
 }

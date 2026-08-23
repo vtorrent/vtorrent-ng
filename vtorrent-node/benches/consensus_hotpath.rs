@@ -225,11 +225,54 @@ fn bench_merkle_root(c: &mut Criterion) {
     group.finish();
 }
 
+/// Sighash computation — the per-input hot path in script verification.
+fn bench_sighash(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sighash");
+
+    let subscript: Vec<u8> = vec![0x76, 0xa9, 0x14, 0xcc]
+        .into_iter()
+        .chain(std::iter::repeat_n(0xcc, 21))
+        .collect();
+
+    for input_count in [1, 5, 20] {
+        let tx = Transaction {
+            version: 2,
+            tx_type: TxType::Standard,
+            inputs: (0..input_count)
+                .map(|i| TxInput {
+                    prev_txid: [i as u8; 32],
+                    prev_vout: 0,
+                    script_sig: vec![0x51; 72],
+                    sequence: 0xFFFFFFFF,
+                })
+                .collect(),
+            outputs: vec![TxOutput {
+                value: 100_000,
+                script_pubkey: vec![0x76, 0xa9, 0x14, 0x00]
+                    .into_iter()
+                    .chain(std::iter::repeat_n(0x00, 21))
+                    .collect(),
+            }],
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        };
+
+        group.bench_with_input(
+            BenchmarkId::new("p2pkh", format!("{input_count}in")),
+            &tx,
+            |b, tx| b.iter(|| black_box(tx.sighash(0, &subscript))),
+        );
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_pure_functions,
     bench_build_stake_block,
     bench_add_block,
     bench_merkle_root,
+    bench_sighash,
 );
 criterion_main!(benches);

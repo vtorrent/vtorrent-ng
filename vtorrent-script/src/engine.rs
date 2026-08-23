@@ -10,11 +10,15 @@ use crate::{
 use ripemd::Ripemd160;
 use secp256k1::{ecdsa::Signature, Message, PublicKey, Secp256k1};
 use sha2::{Digest, Sha256};
+use std::sync::LazyLock;
 
 /// Maximum stack depth.
 const MAX_STACK_DEPTH: usize = 1000;
 /// Maximum number of opcodes executed before the engine aborts (DoS protection).
 const MAX_SCRIPT_EXEC_STEPS: usize = 200;
+
+/// Static secp256k1 context — avoids re-seeding RNG on every engine creation.
+static SECP: LazyLock<Secp256k1<secp256k1::All>> = LazyLock::new(Secp256k1::new);
 
 /// Execution environment passed to the engine for context-dependent opcodes.
 #[derive(Debug, Clone, Default)]
@@ -39,8 +43,6 @@ pub struct Engine {
     alt_stack: Vec<Vec<u8>>,
     /// Execution environment.
     env: ScriptEnv,
-    /// secp256k1 context.
-    secp: Secp256k1<secp256k1::All>,
 }
 
 impl Engine {
@@ -50,7 +52,6 @@ impl Engine {
             stack: Vec::new(),
             alt_stack: Vec::new(),
             env,
-            secp: Secp256k1::new(),
         }
     }
 
@@ -794,8 +795,7 @@ impl Engine {
 
         let msg = Message::from_digest(self.env.tx_hash);
 
-        self.secp
-            .verify_ecdsa(&msg, &sig, &pubkey)
+        SECP.verify_ecdsa(&msg, &sig, &pubkey)
             .map_err(|_| ScriptError::SignatureVerification)
     }
 
