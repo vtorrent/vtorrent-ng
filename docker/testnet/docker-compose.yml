@@ -1,0 +1,160 @@
+# vTorrent local testnet: 3 nodes + BTC regtest + monitoring stack
+#
+# Usage:
+#   cd docker/testnet && docker compose up -d
+#
+# Nodes:
+#   node1  P2P 22626 RPC 22625 (entry point, mines via staking)
+#   node2  P2P 22627 RPC 22627 (seeds from node1)
+#   node3  P2P 22628 RPC 22629 (seeds from node1)
+#   btc    Bitcoin Core regtest, RPC 18443/18448
+#   prometheus  :9090   scrapes all three nodes' /metrics
+#   grafana     :3300   dashboards (admin/admin)
+
+name: vtorrent-testnet
+
+services:
+  node1:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+    container_name: vtr-node1
+    command:
+      - --listen
+      - "0.0.0.0:22526"
+      - --rpc-addr
+      - "0.0.0.0:22525"
+      - --data-dir
+      - /data/node1
+      - --log-level
+      - info
+    ports:
+      - "22625:22525"
+    expose:
+      - "22526"
+      - "22525"
+    volumes:
+      - vtr-data1:/data/node1
+    networks:
+      - vtrnet
+    restart: unless-stopped
+
+  node2:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+    container_name: vtr-node2
+    command:
+      - --listen
+      - "0.0.0.0:22526"
+      - --rpc-addr
+      - "0.0.0.0:22525"
+      - --data-dir
+      - /data/node2
+      - --seed
+      - "node1:22526"
+      - --no-dht
+      - --log-level
+      - info
+    depends_on:
+      - node1
+    ports:
+      - "22627:22525"
+    volumes:
+      - vtr-data2:/data/node2
+    networks:
+      - vtrnet
+    restart: unless-stopped
+
+  node3:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+    container_name: vtr-node3
+    command:
+      - --listen
+      - "0.0.0.0:22526"
+      - --rpc-addr
+      - "0.0.0.0:22525"
+      - --data-dir
+      - /data/node3
+      - --seed
+      - "node1:22526"
+      - --no-dht
+      - --log-level
+      - info
+    depends_on:
+      - node1
+    ports:
+      - "22629:22525"
+    volumes:
+      - vtr-data3:/data/node3
+    networks:
+      - vtrnet
+    restart: unless-stopped
+
+  btc:
+    image: bitcoin/bitcoin:26
+    container_name: vtr-btc-regtest
+    command:
+      - printtoconsole
+      - -regtest=1
+      - -rpcbind=0.0.0.0
+      - -rpcallowip=0.0.0.0/0
+      - -rpcport=18443
+      - -port=18448
+      - -txindex=1
+      - -fallbackfee=0.0002
+      - -rpcuser=vtr
+      - -rpcpassword=vtrtest
+    ports:
+      - "18448:18448"
+    volumes:
+      - btc-data:/home/bitcoin/.bitcoin
+    networks:
+      - vtrnet
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: vtr-prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - vtrnet
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: vtr-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3300:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - vtrnet
+    restart: unless-stopped
+
+volumes:
+  vtr-data1:
+  vtr-data2:
+  vtr-data3:
+  btc-data:
+  prom-data:
+  grafana-data:
+
+networks:
+  vtrnet:
+    driver: bridge

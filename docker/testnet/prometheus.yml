@@ -1,0 +1,18 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: vtorrent-nodes
+    static_configs:
+      - targets:
+          - node1:22525
+          - node2:22525
+          - node3:22525
+        labels:
+          network: testnet
+
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090
