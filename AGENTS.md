@@ -38,7 +38,7 @@ This is a Cargo workspace with 16 crates plus a frontend:
 # Build the whole workspace
 cargo build --workspace
 
-# Run all tests (435 tests currently pass)
+# Run all tests (456 tests currently pass)
 cargo test --workspace
 
 # Formatting and linting (enforced in CI)
@@ -82,6 +82,34 @@ cd vtorrent-ui && pnpm lint
 - **DNS seeds**: none currently (the legacy `seed1/2/3.vtorrent.io` domains are
   retired). Bootstrap peers are added via `bootstrap/peers.txt` (GitHub-hosted)
   or `BOOTSTRAP_PEERS` once new seed nodes are deployed (see `docs/dns-seeds.md`).
+
+## Performance
+
+Benchmark suite in `vtorrent-node/benches/consensus_hotpath.rs` (criterion):
+
+| Benchmark | Result |
+|---|---|
+| `compute_stake_modifier` | ~67 ns |
+| `stake_kernel_hash` | ~65 ns |
+| `check_stake_kernel` | ~62 ns |
+| `compute_pos_reward` | ~2 ns |
+| `build_stake_block` (1u/0tx) | ~26 ns |
+| `build_stake_block` (50u/50tx) | ~7 µs |
+| `chain_add_block` (coinbase-only) | ~3 µs |
+| `merkle_root` (1 tx) | ~173 ns |
+| `merkle_root` (10 tx) | ~2.4 µs |
+| `merkle_root` (100 tx) | ~23.5 µs |
+| `sighash` (1 input P2PKH) | ~131 ns |
+| `sighash` (5 inputs) | ~221 ns |
+| `sighash` (20 inputs) | ~545 ns |
+
+Key optimizations:
+- **Incremental sighash**: Hashes transaction fields directly via `Sha256::update()`
+  instead of cloning + serializing the full transaction. 56-91% faster depending
+  on input count. Verified bit-identical to bincode reference via unit test.
+- **Static Secp256k1 context**: `LazyLock<Secp256k1<All>>` avoids per-engine RNG re-seeding.
+- **Merkle root in-place reduction**: Single `compute_merkle_root_from_txids` with
+  caller-provided scratch buffer. 7-10% faster than per-level Vec allocation.
 
 ## CI
 

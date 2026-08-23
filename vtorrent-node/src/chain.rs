@@ -1560,4 +1560,159 @@ mod tests {
             1_000_000
         );
     }
+
+    /// Full end-to-end test: coinbase → P2PKH spend → chain acceptance.
+    ///
+    /// Exercises the complete pipeline:
+    ///   keypair generation → address derivation → scriptPubKey construction
+    ///   → coinbase minting → manual signing → sighash →
+    ///   script engine verification → UTXO set update.
+    #[test]
+    fn test_p2pkh_spend_through_chain() {
+        use secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+        // 1. Generate a keypair and derive the vTorrent address.
+        let secp = Secp256k1::new();
+        let secret = SecretKey::from_slice(&[0xAB; 32]).unwrap();
+        let pubkey = PublicKey::from_secret_key(&secp, &secret);
+        let addr = vtorrent_core::address::Address::from_pubkey(&pubkey, true, 70);
+        let address = addr.to_string();
+
+        // 2. Mint a coinbase UTXO to the address.
+        let mut chain = Chain::new().expect("Chain init failed");
+        chain
+            .mint_to_address(&address, 10 * crate::consensus::COIN)
+            .unwrap();
+        let funded_hash = chain.best_hash().unwrap();
+        assert_eq!(
+            chain.best_height(),
+            1,
+            "mint must advance chain to height 1"
+        );
+        let utxos = chain.get_utxos_for_address(&address);
+        assert_eq!(utxos.len(), 1, "must have exactly one funded UTXO");
+        let utxo = &utxos[0];
+        let spend_value = 5 * crate::consensus::COIN;
+
+        // 3. Build the recipient address.
+        let (_, recipient_addr) = {
+            let s = Secp256k1::new();
+            let sk = SecretKey::from_slice(&[0xCD; 32]).unwrap();
+            let pk = PublicKey::from_secret_key(&s, &sk);
+            let a = vtorrent_core::address::Address::from_pubkey(&pk, true, 70);
+            (sk, a.to_string())
+        };
+
+        let script_pubkey = chain.address_to_p2pkh_script(&address);
+
+        // 4. Build the spending transaction manually.
+        //    Height is encoded in the first tx's lock_time (chain is at height 1 after mint).
+        let spend_height = 2u32;
+        let mut tx = Transaction {
+            version: 1,
+            tx_type: TxType::Standard,
+            inputs: vec![TxInput {
+                prev_txid: utxo.txid,
+                prev_vout: utxo.vout,
+                script_sig: Vec::new(), // filled below
+                sequence: 0xffff_fffe,
+            }],
+            outputs: vec![TxOutput {
+                value: spend_value,
+                script_pubkey: chain.address_to_p2pkh_script(&recipient_addr),
+            }],
+            lock_time: spend_height,
+            claim_address: None,
+            claim_signature: None,
+        };
+
+        // 5. Sign the input over the UTXO's scriptPubKey.
+        let sighash = tx.sighash(0, &script_pubkey);
+        let msg = secp256k1::Message::from_digest(sighash);
+        let sig = secp.sign_ecdsa(&msg, &secret);
+        let mut der = sig.serialize_der().to_vec();
+        der.push(0x01); // SIGHASH_ALL
+        let pubkey_bytes = pubkey.serialize();
+
+        // Build scriptSig: <len><sig><len><pubkey>
+        let mut script_sig = Vec::with_capacity(1 + der.len() + 1 + pubkey_bytes.len());
+        script_sig.push(der.len() as u8);
+        script_sig.extend_from_slice(&der);
+        script_sig.push(pubkey_bytes.len() as u8);
+        script_sig.extend_from_slice(&pubkey_bytes);
+        tx.inputs[0].script_sig = script_sig;
+
+        // 6. Verify the scriptSig through the script engine directly.
+        let env = vtorrent_script::ScriptEnv {
+            tx_hash: tx.sighash(0, &script_pubkey),
+            block_height: 2,
+            block_time: 1_700_000_002,
+            tx_lock_time: tx.lock_time,
+            input_sequence: 0xffff_fffe,
+        };
+        let mut engine = vtorrent_script::Engine::new(env);
+        let sig_script =
+            vtorrent_script::Script::from_bytes(tx.inputs[0].script_sig.clone()).unwrap();
+        let pk_script = vtorrent_script::Script::from_bytes(script_pubkey.clone()).unwrap();
+        engine.execute(&sig_script, &pk_script).unwrap();
+
+        // 7. Wrap in a block and add to the chain — exercises full validation.
+        //    Every block must start with a coinbase transaction.
+        let coinbase = Transaction {
+            version: 1,
+            tx_type: TxType::Coinbase,
+            inputs: vec![TxInput {
+                prev_txid: [0u8; 32],
+                prev_vout: 0xffffffff,
+                script_sig: vec![2u8], // height = 2
+                sequence: 0xffffffff,
+            }],
+            outputs: vec![TxOutput {
+                value: crate::consensus::COIN, // block reward
+                script_pubkey: vec![
+                    0x76, 0xa9, 0x14, 0xab, 0xcd, 0xef, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0x88, 0xac,
+                ],
+            }],
+            lock_time: spend_height,
+            claim_address: None,
+            claim_signature: None,
+        };
+
+        let funded_stake_modifier = chain
+            .get_block_at_height(1)
+            .map(|b| b.header.stake_modifier)
+            .unwrap_or(0);
+        let mut block = Block {
+            header: BlockHeader {
+                version: 1,
+                prev_block_hash: funded_hash,
+                merkle_root: [0u8; 32],
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as u32
+                    + 1,
+                bits: crate::genesis::GENESIS_BITS,
+                nonce: 42,
+                stake_modifier: compute_stake_modifier(funded_stake_modifier, &funded_hash),
+            },
+            transactions: vec![coinbase, tx],
+        };
+        block.header.merkle_root = block.compute_merkle_root();
+
+        let acceptance = chain.add_block(block).unwrap();
+        assert!(
+            matches!(acceptance, super::BlockAcceptance::MainChain { .. }),
+            "P2PKH spend block must be accepted on main chain"
+        );
+
+        // 8. Verify UTXO set: old UTXO consumed, new UTXO created for recipient.
+        let sender_utxos = chain.get_utxos_for_address(&address);
+        assert_eq!(sender_utxos.len(), 0, "spent UTXO must be consumed");
+
+        let recipient_utxos = chain.get_utxos_for_address(&recipient_addr);
+        assert_eq!(recipient_utxos.len(), 1, "recipient must have one UTXO");
+        assert_eq!(recipient_utxos[0].value, spend_value);
+    }
 }
