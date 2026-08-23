@@ -4,7 +4,7 @@
 //! transaction building/signing → PSBT round-trip → fee estimation →
 //! UTXO persistence, all without network access.
 
-use bitcoin::{Address, Transaction, Txid};
+use bitcoin::{Address, Amount, Transaction, Txid};
 use std::str::FromStr;
 use vtorrent_btc::keys::{derive_address, derive_wif};
 use vtorrent_btc::utxo::Utxo;
@@ -351,4 +351,186 @@ fn different_seeds_produce_different_addresses() {
     let a1 = derive_address(&SEED, 0, NETWORK).unwrap();
     let a2 = derive_address(&seed2, 0, NETWORK).unwrap();
     assert_ne!(a1, a2);
+}
+
+// ─── Atomic Swap (HTLC) integration tests ────────────────────────────────────
+
+use bitcoin::hashes::{sha256, Hash};
+use vtorrent_btc::htlc::{BtcHtlc, DEFAULT_HTLC_LOCKTIME};
+
+const FUNDING_SEED: [u8; 64] = [0x11; 64];
+const RECIPIENT_SEED: [u8; 64] = [0x22; 64];
+const PREIMAGE: [u8; 32] = [0xDE; 32];
+const FUNDING_TXID: [u8; 32] = [0xAA; 32];
+
+fn swap_htlc() -> BtcHtlc {
+    let hash_lock: [u8; 32] = sha256::Hash::hash(&PREIMAGE).to_byte_array();
+    let recipient_addr = derive_address(&RECIPIENT_SEED, 0, NETWORK).unwrap();
+    let refund_addr = derive_address(&FUNDING_SEED, 0, NETWORK).unwrap();
+    BtcHtlc::new_with_network(
+        hash_lock,
+        recipient_addr,
+        refund_addr,
+        DEFAULT_HTLC_LOCKTIME,
+        100_000,
+        NETWORK,
+    )
+    .unwrap()
+}
+
+#[test]
+fn swap_htlc_script_structure() {
+    let htlc = swap_htlc();
+    let script = htlc.build_script().unwrap();
+    let bytes = script.as_bytes();
+    assert_eq!(bytes[0], 0x63); // OP_IF
+    assert_eq!(*bytes.last().unwrap(), 0x68); // OP_ENDIF
+    assert_eq!(bytes[1], 0xa8); // OP_SHA256
+}
+
+#[test]
+fn swap_htlc_address_is_p2wsh() {
+    let htlc = swap_htlc();
+    let addr = htlc.address().unwrap();
+    assert!(addr.starts_with("bc1q"), "P2WSH addr: {}", addr);
+}
+
+#[test]
+fn swap_funding_tx_build_and_sign() {
+    let htlc = swap_htlc();
+    let funder_wif = derive_wif(&FUNDING_SEED, 0, NETWORK).unwrap();
+    let change_addr = derive_address(&FUNDING_SEED, 1, NETWORK).unwrap();
+
+    // Build funding tx: 200,000 sats in, 100,000 sats to HTLC + change.
+    let unsigned = htlc
+        .build_funding_tx(FUNDING_TXID, 0, 200_000, 1_000, &change_addr)
+        .unwrap();
+    assert_eq!(unsigned.output.len(), 2);
+    assert_eq!(unsigned.output[0].value, Amount::from_sat(100_000));
+
+    // Sign the P2WPKH funding input.
+    let signed = htlc
+        .sign_funding_tx(unsigned, 200_000, &funder_wif)
+        .unwrap();
+    assert!(!signed.input[0].witness.is_empty());
+    assert_eq!(signed.input[0].witness.len(), 2); // sig + pubkey
+
+    // Verify raw serialization round-trips.
+    let raw = bitcoin::consensus::encode::serialize(&signed);
+    let deserialized: Transaction = bitcoin::consensus::encode::deserialize(&raw).unwrap();
+    assert_eq!(deserialized.output[0].value, Amount::from_sat(100_000));
+}
+
+#[test]
+fn swap_claim_tx_full_cycle() {
+    let htlc = swap_htlc();
+    let recipient_wif = derive_wif(&RECIPIENT_SEED, 0, NETWORK).unwrap();
+
+    // Build claim tx spending the HTLC output.
+    let unsigned = htlc.build_claim_tx(FUNDING_TXID, &PREIMAGE, 1_000).unwrap();
+    assert_eq!(unsigned.input.len(), 1);
+    assert_eq!(unsigned.output.len(), 1);
+    assert_eq!(
+        unsigned.output[0].value,
+        Amount::from_sat(99_000) // 100,000 - 1,000 fee
+    );
+
+    // Sign with recipient key (reveals preimage in witness).
+    let signed = htlc
+        .sign_claim_tx(unsigned, &PREIMAGE, &recipient_wif)
+        .unwrap();
+    let witness = &signed.input[0].witness;
+    assert_eq!(witness.len(), 5); // sig, pubkey, preimage, OP_IF(1), witness_script
+    assert_eq!(
+        witness.nth(2),
+        Some(&PREIMAGE[..]),
+        "preimage must be in witness"
+    );
+}
+
+#[test]
+fn swap_claim_wrong_preimage_fails() {
+    let htlc = swap_htlc();
+    let result = htlc.build_claim_tx(FUNDING_TXID, &[0xFF; 32], 1_000);
+    assert!(result.is_err());
+}
+
+#[test]
+fn swap_refund_after_expiry() {
+    let htlc = swap_htlc();
+    let refund_wif = derive_wif(&FUNDING_SEED, 0, NETWORK).unwrap();
+
+    // Use mock "now" far in the future so expiry has passed.
+    let future_now = htlc.expiry + 1;
+    let unsigned = htlc
+        .build_refund_tx_at(FUNDING_TXID, 1_000, future_now)
+        .unwrap();
+    assert_eq!(unsigned.output[0].value, Amount::from_sat(99_000));
+    assert_ne!(unsigned.lock_time.to_consensus_u32(), 0);
+
+    let signed = htlc.sign_refund_tx(unsigned, &refund_wif).unwrap();
+    assert_eq!(signed.input[0].witness.len(), 4); // sig, pubkey, OP_ELSE(0), witness_script
+    assert!(
+        signed.input[0].witness.nth(2).unwrap().is_empty(),
+        "OP_ELSE selector must be empty (minimal false)"
+    );
+}
+
+#[test]
+fn swap_refund_before_expiry_fails() {
+    let htlc = swap_htlc();
+    let now = htlc.expiry - 1;
+    let result = htlc.build_refund_tx_at(FUNDING_TXID, 1_000, now);
+    assert!(result.is_err());
+}
+
+#[test]
+fn swap_claim_and_refund_use_different_witness_branches() {
+    let htlc = swap_htlc();
+    let recipient_wif = derive_wif(&RECIPIENT_SEED, 0, NETWORK).unwrap();
+    let refund_wif = derive_wif(&FUNDING_SEED, 0, NETWORK).unwrap();
+
+    let claim = htlc
+        .sign_claim_tx(
+            htlc.build_claim_tx(FUNDING_TXID, &PREIMAGE, 1_000).unwrap(),
+            &PREIMAGE,
+            &recipient_wif,
+        )
+        .unwrap();
+    let refund = htlc
+        .sign_refund_tx(
+            htlc.build_refund_tx_at(FUNDING_TXID, 1_000, htlc.expiry + 1)
+                .unwrap(),
+            &refund_wif,
+        )
+        .unwrap();
+
+    // Claim witness: [sig, pubkey, preimage, 1, script] — 5 elements
+    assert_eq!(claim.input[0].witness.len(), 5);
+    // Refund witness: [sig, pubkey, 0, script] — 4 elements
+    assert_eq!(refund.input[0].witness.len(), 4);
+    // Different branch selectors.
+    assert_eq!(claim.input[0].witness.nth(3), Some(&[1u8][..]));
+    assert_eq!(refund.input[0].witness.nth(2), Some(&[][..]));
+}
+
+#[test]
+fn swap_htlc_amount_cannot_be_zero() {
+    let hash_lock = sha256::Hash::hash(&PREIMAGE).to_byte_array();
+    let result = BtcHtlc::new_with_network(
+        hash_lock,
+        "bc1qtest".into(),
+        "bc1qtest".into(),
+        3600,
+        0,
+        NETWORK,
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn swap_funding_tx_insufficient_value() {
+    let htlc = swap_htlc();
+    let result = htlc.build_funding_tx(FUNDING_TXID, 0, 50_000, 1_000, "bc1qtest");
+    assert!(result.is_err());
 }
