@@ -406,7 +406,7 @@ mod tests {
 
     #[test]
     fn test_score_accumulates_many_offences() {
-        let mut mgr = BanManager::new(1000, Duration::from_secs(3600));
+        let mut mgr = BanManager::new(100, Duration::from_secs(3600));
         let addr = ip(200);
         for _ in 0..99 {
             mgr.record_misbehaviour(addr, Misbehaviour::UnknownMessage); // +1 each

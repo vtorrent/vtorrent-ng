@@ -222,18 +222,19 @@ impl BtcWallet {
         use crate::keys::derive_wif;
         use crate::tx::{build_and_sign, txid_of};
 
-        let selected = self
-            .utxos
-            .lock()
-            .unwrap()
-            .select(amount_sats, fee_sats)
-            .ok_or_else(|| {
-                let available = self.utxos.lock().unwrap().total();
-                crate::error::BtcError::InsufficientFunds {
-                    available,
-                    required: amount_sats + fee_sats,
+        let selected = {
+            let u = self.utxos.lock().unwrap();
+            match u.select(amount_sats, fee_sats) {
+                Some(s) => s,
+                None => {
+                    let available = u.total();
+                    return Err(crate::error::BtcError::InsufficientFunds {
+                        available,
+                        required: amount_sats + fee_sats,
+                    });
                 }
-            })?;
+            }
+        };
 
         let change_address = self.current_address()?;
 
