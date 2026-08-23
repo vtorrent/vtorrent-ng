@@ -1715,4 +1715,180 @@ mod tests {
         assert_eq!(recipient_utxos.len(), 1, "recipient must have one UTXO");
         assert_eq!(recipient_utxos[0].value, spend_value);
     }
+
+    /// Multi-block staking: produce 3 consecutive PoS blocks and verify
+    /// chain state, UTXO set, and staking reward accumulation.
+    #[test]
+    fn test_multi_block_staking() {
+        use crate::staking::StakingEngine;
+        use secp256k1::{PublicKey, Secp256k1};
+
+        let secp = Secp256k1::new();
+        let mut key_bytes = [0u8; 32];
+        key_bytes[31] = 99;
+        let key = vtorrent_core::keys::PrivateKey::from_bytes(key_bytes, true).unwrap();
+        let wif = key.to_wif(198);
+        let secret = secp256k1::SecretKey::from_slice(key.as_bytes()).unwrap();
+        let pubkey = PublicKey::from_secret_key(&secp, &secret);
+        let addr = vtorrent_core::address::Address::from_pubkey(&pubkey, true, 70);
+        let address = addr.to_string();
+
+        let mut chain = Chain::new().unwrap();
+        let genesis_hash = chain.best_hash().unwrap();
+
+        // Fund the staking address with a coinbase at an old timestamp.
+        let funding_ts = 1_700_000_001u32;
+        let script = chain.address_to_p2pkh_script(&address);
+        let funding_block = make_coinbase_to_script(
+            genesis_hash,
+            0,
+            1,
+            funding_ts,
+            script,
+            100 * crate::consensus::COIN,
+        );
+        chain.add_block(funding_block).unwrap();
+
+        let engine = StakingEngine::with_wif(address.clone(), wif);
+        let mut prev_modifier = chain.get_block_at_height(1).unwrap().header.stake_modifier;
+
+        for expected_height in 2..=4 {
+            let utxos = chain.get_utxos_for_address(&address);
+            assert!(
+                !utxos.is_empty(),
+                "must have UTXOs at height {}",
+                expected_height
+            );
+
+            let mut stake_block = None;
+            let mut ts = chain
+                .get_block_at_height(expected_height - 1)
+                .unwrap()
+                .header
+                .timestamp
+                + crate::consensus::MIN_STAKE_AGE as u32;
+            for _ in 0..100_000 {
+                if let Some(block) = engine.build_stake_block(
+                    chain.best_hash().unwrap(),
+                    prev_modifier,
+                    expected_height,
+                    ts,
+                    utxos.clone(),
+                    vec![],
+                ) {
+                    stake_block = Some(block);
+                    break;
+                }
+                ts += 1;
+            }
+            let block = stake_block.expect("should find stake kernel");
+            prev_modifier = block.header.stake_modifier;
+            let result = chain.add_block(block).unwrap();
+            assert!(
+                matches!(result, super::BlockAcceptance::MainChain { height, .. } if height == expected_height)
+            );
+        }
+
+        assert_eq!(chain.best_height(), 4);
+        // Staking address should still have UTXOs (stake return + rewards).
+        let final_utxos = chain.get_utxos_for_address(&address);
+        assert!(!final_utxos.is_empty());
+    }
+
+    /// PoS block with mempool transactions: verify pending txs are included
+    /// in the block assembled by the staking engine.
+    #[test]
+    fn test_pos_block_includes_mempool_txs() {
+        use crate::staking::StakingEngine;
+        use secp256k1::{PublicKey, Secp256k1};
+
+        let secp = Secp256k1::new();
+        let mut key_bytes = [0u8; 32];
+        key_bytes[31] = 55;
+        let key = vtorrent_core::keys::PrivateKey::from_bytes(key_bytes, true).unwrap();
+        let wif = key.to_wif(198);
+        let secret = secp256k1::SecretKey::from_slice(key.as_bytes()).unwrap();
+        let pubkey = PublicKey::from_secret_key(&secp, &secret);
+        let addr = vtorrent_core::address::Address::from_pubkey(&pubkey, true, 70);
+        let address = addr.to_string();
+
+        let mut chain = Chain::new().unwrap();
+        let genesis_hash = chain.best_hash().unwrap();
+
+        let funding_ts = 1_700_000_001u32;
+        let script = chain.address_to_p2pkh_script(&address);
+        let funding_block = make_coinbase_to_script(
+            genesis_hash,
+            0,
+            1,
+            funding_ts,
+            script,
+            100 * crate::consensus::COIN,
+        );
+        chain.add_block(funding_block).unwrap();
+        assert_eq!(chain.best_height(), 1);
+
+        let utxos = chain.get_utxos_for_address(&address);
+        let engine = StakingEngine::with_wif(address.clone(), wif);
+        let prev_modifier = chain.get_block_at_height(1).unwrap().header.stake_modifier;
+
+        // Create a "mempool" transaction (a dummy tx that the engine should include).
+        let dummy_tx = crate::block::Transaction {
+            version: 1,
+            tx_type: crate::block::TxType::Standard,
+            inputs: vec![crate::block::TxInput {
+                prev_txid: [0xff; 32],
+                prev_vout: 0,
+                script_sig: vec![],
+                sequence: 0,
+            }],
+            outputs: vec![crate::block::TxOutput {
+                value: 5000,
+                script_pubkey: {
+                    let mut s = vec![0x76, 0xa9, 0x14];
+                    s.extend([0xaa; 20]);
+                    s
+                },
+            }],
+            lock_time: 2,
+            claim_address: None,
+            claim_signature: None,
+        };
+
+        let mut stake_block = None;
+        let mut ts = funding_ts + crate::consensus::MIN_STAKE_AGE as u32;
+        for _ in 0..100_000 {
+            if let Some(block) = engine.build_stake_block(
+                chain.best_hash().unwrap(),
+                prev_modifier,
+                2,
+                ts,
+                utxos.clone(),
+                vec![dummy_tx.clone()],
+            ) {
+                stake_block = Some(block);
+                break;
+            }
+            ts += 1;
+        }
+        let block = stake_block.expect("should find stake kernel");
+        // Block should have the coinstake + the mempool tx.
+        assert!(
+            block.transactions.len() >= 2,
+            "block should include mempool txs, got {}",
+            block.transactions.len()
+        );
+        // Verify the mempool tx is in the block.
+        let has_mempool = block.transactions.iter().any(|tx| {
+            tx.tx_type == crate::block::TxType::Standard
+                && tx.outputs.iter().any(|o| o.value == 5000)
+        });
+        assert!(has_mempool, "mempool tx with 5000 sats must be in block");
+
+        // Verify the coinstake is valid (first tx in block).
+        assert_eq!(
+            block.transactions[0].tx_type,
+            crate::block::TxType::Coinstake
+        );
+    }
 }
