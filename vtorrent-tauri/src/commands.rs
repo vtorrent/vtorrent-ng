@@ -626,8 +626,8 @@ pub async fn get_node_info(state: tauri::State<'_, AppState>) -> Result<NodeInfo
             let uptime = handle.start_time.elapsed().as_secs();
             let height = chain.best_height();
             let blocks = height as f64;
-            let total = if syncing { blocks.max(1.0) } else { blocks.max(1.0) };
-            let sync_pct = if syncing { (blocks / total.max(1.0)) * 100.0 } else { 100.0 };
+            let total = blocks.max(1.0);
+            let sync_pct = if syncing { (blocks / total) * 100.0 } else { 100.0 };
             Ok(NodeInfoResult {
                 running: true,
                 version: env!("CARGO_PKG_VERSION").into(),
@@ -1757,21 +1757,44 @@ pub async fn send_btc(
     to_address: String,
     amount_satoshis: u64,
 ) -> Result<String> {
+    if to_address.trim().is_empty() {
+        return Err(TauriError::InvalidInput("Recipient address is required".into()));
+    }
+    if amount_satoshis == 0 {
+        return Err(TauriError::InvalidInput("Amount must be non-zero".into()));
+    }
+
     let guard = state.node.lock().await;
     let handle = guard
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
-    let btc = handle.rpc_state.btc_wallet.read().await;
-    let _wallet = btc
-        .as_ref()
-        .ok_or_else(|| TauriError::NodeError("BTC wallet not initialized".into()))?;
 
-    // BTC transaction building requires a connected peer for UTXO selection
-    // and transaction broadcasting.  This is not yet fully implemented in the
-    // embedded wallet; return a clear error until the BTC P2P layer is wired.
-    Err(TauriError::NodeError(
-        "BTC send not yet supported from the embedded wallet — use the CLI or an external wallet".into(),
-    ))
+    // Build and sign the transaction, removing spent UTXOs from the wallet.
+    let (txid_hex, raw) = {
+        let mut btc = handle.rpc_state.btc_wallet.write().await;
+        let wallet = btc
+            .as_mut()
+            .ok_or_else(|| TauriError::NodeError("BTC wallet not initialized".into()))?;
+        wallet
+            .send_to(&to_address, amount_satoshis, 1_000)
+            .map_err(|e| TauriError::NodeError(e.to_string()))?
+    };
+
+    // Broadcast to the Bitcoin network.
+    let network = *handle.rpc_state.btc_network.read().await;
+    let peer = *handle.rpc_state.btc_peer.read().await;
+    if let Some(addr) = peer {
+        vtorrent_btc::sync::broadcast_tx_to(&raw, network, &[addr])
+            .await
+            .map_err(|e| TauriError::NodeError(format!("BTC broadcast failed: {}", e)))?;
+    } else {
+        vtorrent_btc::sync::broadcast_tx(&raw)
+            .await
+            .map_err(|e| TauriError::NodeError(format!("BTC broadcast failed: {}", e)))?;
+    }
+
+    tracing::info!("BTC tx broadcast: {}", txid_hex);
+    Ok(txid_hex)
 }
 
 // ─── Legacy claim commands ──────────────────────────────────────────────────

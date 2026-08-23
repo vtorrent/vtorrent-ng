@@ -149,6 +149,90 @@ impl BtcWallet {
     pub fn set_last_scanned_height(&mut self, height: u32) {
         self.last_scanned_height = height;
     }
+
+    /// Send BTC to `to_address`, selecting UTXOs, signing, and removing
+    /// spent UTXOs from the in-memory set.
+    ///
+    /// `fee_sats` is a flat fee in satoshis (default 1 000).
+    /// Returns `(txid_hex, raw_tx_bytes)` — the caller should broadcast
+    /// `raw_tx_bytes` to the network.
+    ///
+    /// Only works when all selected UTXOs belong to the same derived address.
+    pub fn send_to(
+        &mut self,
+        to_address: &str,
+        amount_sats: u64,
+        fee_sats: u64,
+    ) -> Result<(String, Vec<u8>)> {
+        use crate::keys::derive_wif;
+        use crate::tx::{build_and_sign, txid_of};
+
+        let selected = self
+            .utxos
+            .lock()
+            .unwrap()
+            .select(amount_sats, fee_sats)
+            .ok_or_else(|| {
+                let available = self.utxos.lock().unwrap().total();
+                crate::error::BtcError::InsufficientFunds {
+                    available,
+                    required: amount_sats + fee_sats,
+                }
+            })?;
+
+        let change_address = self.current_address()?;
+
+        // Find the WIF whose derived address matches the selected UTXOs.
+        let mut wif = None;
+        for idx in 0..self.next_index {
+            let addr = derive_address(&self.seed, idx, self.network)?;
+            if selected.iter().any(|u| u.address == addr) {
+                if wif.is_some() {
+                    return Err(crate::error::BtcError::InvalidAddress(
+                        "send_to requires all UTXOs to belong to the same address index".into(),
+                    ));
+                }
+                wif = Some(derive_wif(&self.seed, idx, self.network)?);
+            }
+        }
+        let wif = wif.ok_or_else(|| {
+            crate::error::BtcError::InvalidAddress("no matching address for selected UTXOs".into())
+        })?;
+
+        let raw = build_and_sign(
+            &selected,
+            to_address,
+            amount_sats,
+            fee_sats,
+            &change_address,
+            &wif,
+            self.network,
+        )?;
+
+        let txid = txid_of(&raw);
+        let txid_hex = hex::encode(txid);
+
+        // Remove spent UTXOs from the set.
+        let mut set = self.utxos.lock().unwrap();
+        for u in &selected {
+            set.remove(&u.txid, u.vout);
+        }
+
+        tracing::info!(
+            "BTC built: {} sats to {} (txid: {}, fee: {} sats)",
+            amount_sats,
+            to_address,
+            txid_hex,
+            fee_sats,
+        );
+
+        Ok((txid_hex, raw))
+    }
+
+    /// Broadcast a raw transaction to the Bitcoin network via DNS seeds.
+    pub async fn broadcast_raw(raw: &[u8]) -> Result<[u8; 32]> {
+        crate::sync::broadcast_tx(raw).await
+    }
 }
 
 #[cfg(test)]

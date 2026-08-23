@@ -1488,34 +1488,24 @@ pub async fn send_btc(
     if req.to_address.trim().is_empty() {
         return Err(RpcError::BadRequest("Recipient address is required".into()));
     }
-    let btc = state.btc_wallet.read().await;
-    let w = btc
-        .as_ref()
-        .ok_or_else(|| RpcError::BadRequest("BTC wallet not initialized".into()))?;
     let fee = req.fee_satoshis.unwrap_or(1_000);
-    let utxos = w.list_utxos();
-    let selected = utxo_select(&utxos, req.amount_satoshis, fee)
-        .ok_or_else(|| RpcError::BadRequest("Insufficient BTC funds".into()))?;
-    let change = w
-        .current_address()
-        .map_err(|e| RpcError::Internal(e.to_string()))?;
-    let wif = w
-        .derive_wif(0)
-        .map_err(|e| RpcError::Internal(e.to_string()))?;
-    let raw = vtorrent_btc::tx::build_and_sign(
-        &selected,
-        &req.to_address,
-        req.amount_satoshis,
-        fee,
-        &change,
-        &wif,
-        w.network(),
-    )
-    .map_err(|e| RpcError::BadRequest(e.to_string()))?;
-    let txid = hex::encode(vtorrent_btc::tx::txid_of(&raw));
+
+    // Build and sign, removing spent UTXOs from the wallet.
+    let (txid_hex, raw) = {
+        let mut btc = state.btc_wallet.write().await;
+        let w = btc
+            .as_mut()
+            .ok_or_else(|| RpcError::BadRequest("BTC wallet not initialized".into()))?;
+        w.send_to(&req.to_address, req.amount_satoshis, fee)
+            .map_err(|e| RpcError::BadRequest(e.to_string()))?
+    };
+
+    // Broadcast to the Bitcoin network.
+    broadcast_btc(&state, &raw).await?;
+
     Ok(Json(BtcSendResponse {
-        txid,
-        raw_tx: hex::encode(raw),
+        txid: txid_hex,
+        raw_tx: String::new(),
     }))
 }
 
