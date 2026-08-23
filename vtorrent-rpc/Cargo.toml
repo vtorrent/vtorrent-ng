@@ -18,7 +18,7 @@ vtorrent-btc     = { path = "../vtorrent-btc" }
 axum = { version = "0.7", features = ["json", "macros", "ws"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = { workspace = true }
-tower = "0.4"
+tower = { version = "0.4", features = ["limit"] }
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 
 # Serialization

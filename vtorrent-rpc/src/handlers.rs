@@ -1509,6 +1509,7 @@ pub async fn send_btc(
         fee,
         &change,
         &wif,
+        w.network(),
     )
     .map_err(|e| RpcError::BadRequest(e.to_string()))?;
     let txid = hex::encode(vtorrent_btc::tx::txid_of(&raw));

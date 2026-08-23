@@ -421,6 +421,13 @@ impl Engine {
                         }
 
                         // ── Signature verification ───────────────────────────
+                        0xab => {
+                            // OP_CODESEPARATOR — currently a NOP.
+                            // Full implementation requires lazy sighash recomputation
+                            // at OP_CHECKSIG time with a truncated subscript (everything
+                            // after the last CODESEPARATOR).  See Bitcoin Core:
+                            // script/interpreter.cpp :: EvalScript for the reference.
+                        }
                         0xac => {
                             // OP_CHECKSIG
                             if executing {
@@ -1448,5 +1455,19 @@ mod tests {
             engine.run(&script),
             Err(ScriptError::UnsatisfiedSequence)
         ));
+    }
+
+    #[test]
+    fn test_op_codeseparator_is_nop() {
+        let mut script = Script::new();
+        script.push_data(&[42]).unwrap();
+        script.push_opcode(0xab); // OP_CODESEPARATOR
+        script.push_data(&[99]).unwrap();
+        let env = ScriptEnv::default();
+        let mut engine = Engine::new(env);
+        engine.run(&script).unwrap();
+        assert_eq!(engine.stack.len(), 2);
+        assert_eq!(engine.stack[0], vec![42]);
+        assert_eq!(engine.stack[1], vec![99]);
     }
 }

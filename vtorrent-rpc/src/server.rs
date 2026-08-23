@@ -50,6 +50,28 @@ async fn require_api_key(
     Ok(next.run(request).await)
 }
 
+/// Semaphore-backed concurrency limiter state: caps the number of simultaneous
+/// requests hitting protected (wallet/staking/DEX) endpoints.  This prevents
+/// resource exhaustion and slows brute-force passphrase guessing.
+type ConcurrencyLimiter = tokio::sync::Semaphore;
+
+/// Reject requests when too many protected endpoints are in flight.
+///
+/// Uses a bounded semaphore (5 permits).  When all permits are held, new
+/// requests receive HTTP 429 (Too Many Requests).  This is not a per-IP rate
+/// limiter — it's a global concurrency cap that prevents the daemon from
+/// being overwhelmed and slows brute-force attacks.
+async fn rate_limit(
+    State(state): State<Arc<ConcurrencyLimiter>>,
+    request: Request,
+    next: Next,
+) -> Result<Response, axum::http::StatusCode> {
+    match state.try_acquire_owned() {
+        Ok(_permit) => Ok(next.run(request).await),
+        Err(_) => Err(axum::http::StatusCode::TOO_MANY_REQUESTS),
+    }
+}
+
 /// Build the Axum router with all API routes.
 pub fn build_router(state: AppState) -> Router {
     let state = Arc::new(state);
@@ -68,6 +90,8 @@ pub fn build_router(state: AppState) -> Router {
         .allow_headers(Any);
 
     let auth = middleware::from_fn_with_state(Arc::clone(&state), require_api_key);
+    let limiter: Arc<ConcurrencyLimiter> = Arc::new(tokio::sync::Semaphore::new(5));
+    let rate = middleware::from_fn_with_state(Arc::clone(&limiter), rate_limit);
 
     // Routes that manage funds, keys, or broadcast to the network require the
     // API key when one is configured.
@@ -91,7 +115,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/claim/submit", post(submit_claim))
         .route("/api/v1/spv/headers", post(add_spv_headers))
         .route("/api/v1/btc/send", post(send_btc))
-        .layer(auth);
+        .layer(auth)
+        .layer(rate);
 
     Router::new()
         // Node info

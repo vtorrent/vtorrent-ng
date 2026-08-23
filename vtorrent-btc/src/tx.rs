@@ -19,18 +19,19 @@ pub fn build_and_sign(
     fee_sats: u64,
     change_address: &str,
     wif: &str,
+    network: bitcoin::Network,
 ) -> Result<Vec<u8>> {
     let secp = Secp256k1::new();
     let key = bitcoin::PrivateKey::from_wif(wif).map_err(|e| BtcError::Bitcoin(e.to_string()))?;
 
     let dest = Address::from_str(destination)
         .map_err(|e| BtcError::InvalidAddress(e.to_string()))?
-        .require_network(bitcoin::Network::Bitcoin)
+        .require_network(network)
         .map_err(|e| BtcError::InvalidAddress(e.to_string()))?;
 
     let change = Address::from_str(change_address)
         .map_err(|e| BtcError::InvalidAddress(e.to_string()))?
-        .require_network(bitcoin::Network::Bitcoin)
+        .require_network(network)
         .map_err(|e| BtcError::InvalidAddress(e.to_string()))?;
 
     let total_in: u64 = inputs.iter().map(|u| u.value).sum();
@@ -87,7 +88,7 @@ pub fn build_and_sign(
         for (i, u) in inputs.iter().enumerate() {
             let input_script = Address::from_str(&u.address)
                 .map_err(|e| BtcError::InvalidAddress(e.to_string()))?
-                .require_network(bitcoin::Network::Bitcoin)
+                .require_network(network)
                 .map_err(|e| BtcError::InvalidAddress(e.to_string()))?
                 .script_pubkey();
             let sighash = cache
@@ -139,6 +140,7 @@ mod tests {
             1_000,
             "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
             &wif,
+            bitcoin::Network::Bitcoin,
         )
         .unwrap();
         assert!(!raw.is_empty());
@@ -161,6 +163,7 @@ mod tests {
             1_000,
             "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
             &wif,
+            bitcoin::Network::Bitcoin,
         );
         assert!(result.is_err());
     }
