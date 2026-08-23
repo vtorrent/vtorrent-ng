@@ -68,6 +68,12 @@ pub struct Peer {
 /// 2. Wait for the peer's version + verack.
 /// 3. Dispatch incoming messages to the node via `event_tx`.
 /// 4. Forward outgoing messages from `cmd_rx` to the peer.
+///
+/// `sent_nonces` carries version nonces we have sent, shared across peer
+/// tasks so a node can detect its own connection to itself (NAT-reflected
+/// dials etc.) and drop it.
+pub type SentNonceRegistry = std::sync::Arc<std::sync::Mutex<std::collections::HashSet<u64>>>;
+
 pub async fn run_peer(
     stream: TcpStream,
     addr: SocketAddr,
@@ -75,6 +81,7 @@ pub async fn run_peer(
     our_addr: &str,
     event_tx: mpsc::Sender<PeerEvent>,
     mut cmd_rx: mpsc::Receiver<PeerCommand>,
+    sent_nonces: SentNonceRegistry,
 ) {
     use futures::{SinkExt, StreamExt};
 
@@ -82,6 +89,15 @@ pub async fn run_peer(
 
     // Send our version message
     let version = VersionMsg::new(our_best_height, our_addr);
+    // Record OUR nonce so a reflected self-connection (we receive a version
+    // carrying a nonce we ourselves sent) is detected and dropped.
+    {
+        let mut reg = sent_nonces.lock().unwrap_or_else(|e| e.into_inner());
+        if reg.len() > 1024 {
+            reg.clear();
+        }
+        reg.insert(version.nonce);
+    }
     let payload = match serde_json::to_vec(&version) {
         Ok(p) => p,
         Err(e) => {
@@ -139,6 +155,20 @@ pub async fn run_peer(
                             "version" => {
                                 // Parse and store peer version
                                 if let Ok(v) = serde_json::from_slice::<VersionMsg>(&msg.payload) {
+                                    // Self-connection detection: if their
+                                    // nonce is one WE recently sent, this
+                                    // socket loops back to us.
+                                    let is_self = sent_nonces
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .contains(&v.nonce);
+                                    if is_self {
+                                        tracing::warn!(
+                                            "Self-connection detected from {} (nonce match); dropping",
+                                            addr
+                                        );
+                                        break;
+                                    }
                                     peer_version = Some(v);
                                 }
                                 // Send verack

@@ -22,13 +22,21 @@ pub fn encode_connect(transaction_id: u32) -> Vec<u8> {
 }
 
 /// Decode a connect response, returning the connection_id.
-pub fn decode_connect_response(data: &[u8]) -> Result<u64> {
+///
+/// `expected_txn_id` must match the transaction id sent in the request —
+/// without this check any UDP packet arriving on the socket between send and
+/// recv (spoofed source) is accepted as the tracker's reply.
+pub fn decode_connect_response(data: &[u8], expected_txn_id: u32) -> Result<u64> {
     if data.len() < 16 {
         return Err(TorrentError::TrackerError(
             "connect response too short".into(),
         ));
     }
     let action = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+    let txn_id = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+    if action != ACTION_ERROR && txn_id != expected_txn_id {
+        return Err(TorrentError::TrackerError("transaction id mismatch".into()));
+    }
     if action == ACTION_ERROR {
         return Err(TorrentError::TrackerError(
             String::from_utf8_lossy(&data[8..]).into_owned(),
@@ -83,13 +91,22 @@ pub fn encode_announce(
 }
 
 /// Decode an announce response, returning (interval, leechers, seeders, peers).
-pub fn decode_announce_response(data: &[u8]) -> Result<(u32, u32, u32, Vec<TrackerPeer>)> {
+///
+/// The response's transaction id must equal `expected_txn_id`.
+pub fn decode_announce_response(
+    data: &[u8],
+    expected_txn_id: u32,
+) -> Result<(u32, u32, u32, Vec<TrackerPeer>)> {
     if data.len() < 20 {
         return Err(TorrentError::TrackerError(
             "announce response too short".into(),
         ));
     }
     let action = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+    let txn_id = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+    if action != ACTION_ERROR && txn_id != expected_txn_id {
+        return Err(TorrentError::TrackerError("transaction id mismatch".into()));
+    }
     if action == ACTION_ERROR {
         return Err(TorrentError::TrackerError(
             String::from_utf8_lossy(&data[8..]).into_owned(),
@@ -116,13 +133,19 @@ pub fn encode_scrape(connection_id: u64, transaction_id: u32, info_hash: &[u8; 2
 }
 
 /// Decode a scrape response, returning (seeders, completed, leechers).
-pub fn decode_scrape_response(data: &[u8]) -> Result<(u32, u32, u32)> {
+///
+/// The response's transaction id must equal `expected_txn_id`.
+pub fn decode_scrape_response(data: &[u8], expected_txn_id: u32) -> Result<(u32, u32, u32)> {
     if data.len() < 20 {
         return Err(TorrentError::TrackerError(
             "scrape response too short".into(),
         ));
     }
     let action = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+    let txn_id = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+    if action != ACTION_ERROR && txn_id != expected_txn_id {
+        return Err(TorrentError::TrackerError("transaction id mismatch".into()));
+    }
     if action == ACTION_ERROR {
         return Err(TorrentError::TrackerError(
             String::from_utf8_lossy(&data[8..]).into_owned(),
@@ -182,12 +205,19 @@ impl UdpTracker {
             .await
             .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
 
+        // Only accept replies from the queried tracker with a matching
+        // transaction id; anything else on the ephemeral socket is ignored.
         let mut buf = [0u8; 2048];
-        let (n, _) = socket
-            .recv_from(&mut buf)
-            .await
-            .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
-        decode_connect_response(&buf[..n])
+        loop {
+            let (n, from) = socket
+                .recv_from(&mut buf)
+                .await
+                .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
+            if from != self.addr {
+                continue;
+            }
+            return decode_connect_response(&buf[..n], transaction_id);
+        }
     }
 
     /// Announce to the tracker, returning the discovered peers.
@@ -205,12 +235,18 @@ impl UdpTracker {
             .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
 
         let mut buf = [0u8; 4096];
-        let (n, _) = socket
-            .recv_from(&mut buf)
-            .await
-            .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
-        let (_interval, _leechers, _seeders, peers) = decode_announce_response(&buf[..n])?;
-        Ok(peers)
+        loop {
+            let (n, from) = socket
+                .recv_from(&mut buf)
+                .await
+                .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
+            if from != self.addr {
+                continue;
+            }
+            let (_interval, _leechers, _seeders, peers) =
+                decode_announce_response(&buf[..n], transaction_id)?;
+            return Ok(peers);
+        }
     }
 
     /// Scrape the tracker for a single info hash.
@@ -228,22 +264,22 @@ impl UdpTracker {
             .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
 
         let mut buf = [0u8; 2048];
-        let (n, _) = socket
-            .recv_from(&mut buf)
-            .await
-            .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
-        decode_scrape_response(&buf[..n])
+        loop {
+            let (n, from) = socket
+                .recv_from(&mut buf)
+                .await
+                .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
+            if from != self.addr {
+                continue;
+            }
+            return decode_scrape_response(&buf[..n], transaction_id);
+        }
     }
 }
 
-/// Generate a random transaction id.
+/// Generate a random transaction id (full 32 bits of entropy).
 fn rand_transaction_id() -> u32 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-    nanos ^ std::process::id()
+    rand::random::<u32>()
 }
 
 #[cfg(test)]
@@ -266,8 +302,17 @@ mod tests {
         data.extend_from_slice(&ACTION_CONNECT.to_be_bytes());
         data.extend_from_slice(&0x1234_5678u32.to_be_bytes());
         data.extend_from_slice(&0xDEAD_BEEF_CAFE_BABEu64.to_be_bytes());
-        let conn_id = decode_connect_response(&data).unwrap();
+        let conn_id = decode_connect_response(&data, 0x1234_5678).unwrap();
         assert_eq!(conn_id, 0xDEAD_BEEF_CAFE_BABE);
+    }
+
+    #[test]
+    fn test_decode_connect_response_wrong_txn_id_rejected() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&ACTION_CONNECT.to_be_bytes());
+        data.extend_from_slice(&0x9999_9999u32.to_be_bytes());
+        data.extend_from_slice(&42u64.to_be_bytes());
+        assert!(decode_connect_response(&data, 0x1234_5678).is_err());
     }
 
     #[test]
@@ -297,7 +342,8 @@ mod tests {
         data.extend_from_slice(&10u32.to_be_bytes()); // seeders
                                                       // One compact peer: 192.168.1.1:6881
         data.extend_from_slice(&[192, 168, 1, 1, 0x1A, 0xE1]);
-        let (interval, leechers, seeders, peers) = decode_announce_response(&data).unwrap();
+        let (interval, leechers, seeders, peers) =
+            decode_announce_response(&data, 0x1234_5678).unwrap();
         assert_eq!(interval, 1800);
         assert_eq!(leechers, 5);
         assert_eq!(seeders, 10);
@@ -321,7 +367,7 @@ mod tests {
         data.extend_from_slice(&10u32.to_be_bytes()); // seeders
         data.extend_from_slice(&20u32.to_be_bytes()); // completed
         data.extend_from_slice(&5u32.to_be_bytes()); // leechers
-        let (seeders, completed, leechers) = decode_scrape_response(&data).unwrap();
+        let (seeders, completed, leechers) = decode_scrape_response(&data, 0x1234_5678).unwrap();
         assert_eq!(seeders, 10);
         assert_eq!(completed, 20);
         assert_eq!(leechers, 5);

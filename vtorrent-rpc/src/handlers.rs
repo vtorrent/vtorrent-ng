@@ -1490,8 +1490,11 @@ pub async fn send_btc(
     }
     let fee = req.fee_satoshis.unwrap_or(1_000);
 
-    // Build and sign, removing spent UTXOs from the wallet.
-    let (txid_hex, raw) = {
+    // Build and sign, removing spent UTXOs from the wallet. The selected
+    // UTXOs are returned so the spend can be rolled back if broadcasting
+    // fails (otherwise the wallet forgets outputs for a tx that never made
+    // it onto the network).
+    let (txid_hex, raw, spent_utxos) = {
         let mut btc = state.btc_wallet.write().await;
         let w = btc
             .as_mut()
@@ -1501,7 +1504,12 @@ pub async fn send_btc(
     };
 
     // Broadcast to the Bitcoin network.
-    broadcast_btc(&state, &raw).await?;
+    if let Err(e) = broadcast_btc(&state, &raw).await {
+        if let Some(w) = state.btc_wallet.write().await.as_mut() {
+            w.restore_utxos(&spent_utxos);
+        }
+        return Err(e);
+    }
 
     Ok(Json(BtcSendResponse {
         txid: txid_hex,

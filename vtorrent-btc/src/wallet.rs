@@ -218,7 +218,7 @@ impl BtcWallet {
         to_address: &str,
         amount_sats: u64,
         fee_sats: u64,
-    ) -> Result<(String, Vec<u8>)> {
+    ) -> Result<(String, Vec<u8>, Vec<Utxo>)> {
         use crate::keys::derive_wif;
         use crate::tx::{build_and_sign, txid_of};
 
@@ -289,7 +289,7 @@ impl BtcWallet {
             fee_sats,
         );
 
-        Ok((txid_hex, raw))
+        Ok((txid_hex, raw, selected))
     }
 
     /// Re-add previously spent UTXOs (e.g. when a broadcast failed) and

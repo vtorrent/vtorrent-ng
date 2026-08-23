@@ -60,12 +60,27 @@ impl EndpointRegistry {
     }
 
     /// Register or update an endpoint.
+    ///
+    /// The registry is bounded: when it exceeds [`MAX_REGISTRY_ENTRIES`], the
+    /// oldest entries are evicted. Without a cap, forged PUNCH floods (one
+    /// 65-byte datagram per fake node_id) grow the map unboundedly.
     pub async fn upsert(&self, endpoint: Endpoint, source: EndpointSource) {
+        const MAX_REGISTRY_ENTRIES: usize = 10_000;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
         let mut map = self.inner.write().await;
+        if !map.contains_key(&endpoint.node_id) && map.len() >= MAX_REGISTRY_ENTRIES {
+            // Evict the ~10% oldest entries by last_seen.
+            let mut by_age: Vec<(String, u64)> =
+                map.iter().map(|(k, v)| (k.clone(), v.last_seen)).collect();
+            by_age.sort_by_key(|(_, seen)| *seen);
+            let evict = by_age.len() / 10 + 1;
+            for (key, _) in by_age.into_iter().take(evict) {
+                map.remove(&key);
+            }
+        }
         map.insert(
             endpoint.node_id.clone(),
             EndpointEntry {

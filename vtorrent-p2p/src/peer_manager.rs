@@ -76,6 +76,8 @@ pub struct PeerManager {
     inbound_rx: mpsc::Receiver<(SocketAddr, mpsc::Sender<PeerCommand>)>,
     /// Sender half — cloned into the accept loop.
     inbound_tx: mpsc::Sender<(SocketAddr, mpsc::Sender<PeerCommand>)>,
+    /// Version nonces we have sent, for self-connection detection.
+    sent_version_nonces: crate::peer::SentNonceRegistry,
 }
 
 impl PeerManager {
@@ -133,6 +135,9 @@ impl PeerManager {
             inbound_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             inbound_rx,
             inbound_tx,
+            sent_version_nonces: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashSet::new(),
+            )),
         }
     }
 
@@ -149,6 +154,7 @@ impl PeerManager {
         let inbound_count = self.inbound_count.clone();
         let inbound_tx = self.inbound_tx.clone();
         let accept_bans = self.ban_manager.clone();
+        let accept_nonces = self.sent_version_nonces.clone();
 
         tokio::spawn(async move {
             loop {
@@ -182,10 +188,20 @@ impl PeerManager {
                         let tx = event_tx.clone();
                         let addr = addr_str.clone();
                         let count = inbound_count.clone();
+                        let accept_nonces = accept_nonces.clone();
                         // Register the inbound peer so broadcasts reach it.
                         let _ = inbound_tx.send((peer_addr, cmd_tx.clone())).await;
                         tokio::spawn(async move {
-                            run_peer(stream, peer_addr, best_height, &addr, tx, cmd_rx).await;
+                            run_peer(
+                                stream,
+                                peer_addr,
+                                best_height,
+                                &addr,
+                                tx,
+                                cmd_rx,
+                                accept_nonces,
+                            )
+                            .await;
                             count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                             tracing::debug!("Inbound peer task finished: {}", peer_addr);
                         });
@@ -246,9 +262,19 @@ impl PeerManager {
         let event_tx = self.event_tx.clone();
         let best_height = self.best_height;
         let our_addr = self.listen_addr.clone();
+        let nonces = self.sent_version_nonces.clone();
 
         tokio::spawn(async move {
-            run_peer(stream, peer_addr, best_height, &our_addr, event_tx, cmd_rx).await;
+            run_peer(
+                stream,
+                peer_addr,
+                best_height,
+                &our_addr,
+                event_tx,
+                cmd_rx,
+                nonces,
+            )
+            .await;
             tracing::debug!("Outbound peer task finished: {}", peer_addr);
         });
 

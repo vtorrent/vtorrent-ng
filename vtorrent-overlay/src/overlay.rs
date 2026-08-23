@@ -21,6 +21,7 @@
 ///     }
 /// }
 /// ```
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -217,6 +218,11 @@ impl Overlay {
 }
 
 /// The main UDP receive loop.
+///
+/// This is the ONLY place that reads the socket: every datagram is fanned out
+/// to the puncher's ingest channel so concurrent punch attempts observe their
+/// replies without racing this loop (tokio delivers each datagram to exactly
+/// one recv()).
 async fn receive_loop(
     socket: Arc<UdpSocket>,
     puncher: Arc<HolePuncher>,
@@ -226,6 +232,12 @@ async fn receive_loop(
     _our_pubkey: [u8; 32],
 ) {
     let mut buf = [0u8; 65536];
+    // Per-source-IP rate limiting for unauthenticated handshake packets:
+    // token bucket of PUNCH_BURST tokens refilled at PUNCH_RATE per second.
+    const PUNCH_BURST: u32 = 20;
+    const PUNCH_RATE: u32 = 10; // tokens per second
+    let mut punch_tokens: HashMap<std::net::IpAddr, (f64, std::time::Instant)> = HashMap::new();
+
     loop {
         let (n, from) = match socket.recv_from(&mut buf).await {
             Ok(r) => r,
@@ -242,17 +254,43 @@ async fn receive_loop(
         let tag = buf[0];
         let data = &buf[..n];
 
+        // Fan out to punch attempts BEFORE tag dispatch.
+        puncher.ingest(data, from);
+
         match tag {
-            crate::holepunch::TAG_PUNCH => {
-                if let Err(e) = puncher.handle_punch(from, data).await {
-                    tracing::debug!("PUNCH handling error from {}: {}", from, e);
+            crate::holepunch::TAG_PUNCH | crate::holepunch::TAG_PUNCH_CONFIRM => {
+                // Rate-limit unauthenticated handshake traffic per source IP:
+                // each datagram otherwise allocates keypairs and registry
+                // entries on the responder.
+                let now = std::time::Instant::now();
+                let entry = punch_tokens
+                    .entry(from.ip())
+                    .or_insert((PUNCH_BURST as f64, now));
+                let elapsed = now.duration_since(entry.1).as_secs_f64();
+                entry.0 = (entry.0 + elapsed * PUNCH_RATE as f64).min(PUNCH_BURST as f64);
+                entry.1 = now;
+                if entry.0 < 1.0 {
+                    tracing::debug!("Dropping handshake packet from {} (rate limited)", from);
+                    continue;
+                }
+                entry.0 -= 1.0;
+
+                if tag == crate::holepunch::TAG_PUNCH {
+                    if let Err(e) = puncher.handle_punch(from, data).await {
+                        tracing::debug!("PUNCH handling error from {}: {}", from, e);
+                    }
                 } else {
-                    // Emit PeerConnected event
-                    if data.len() >= 33 {
-                        let node_id = hex::encode(&data[1..33]);
-                        let ep = Endpoint::new(node_id.clone(), from);
-                        registry.upsert(ep.clone(), EndpointSource::HolePunch).await;
-                        let _ = event_tx.send(OverlayEvent::PeerConnected(ep)).await;
+                    // CONFIRM completes mutual authentication — only now is a
+                    // session (and PeerConnected event) established.
+                    match puncher.handle_punch_confirm(from, data).await {
+                        Ok(node_id) => {
+                            let ep = Endpoint::new(node_id.clone(), from);
+                            registry.upsert(ep.clone(), EndpointSource::HolePunch).await;
+                            let _ = event_tx.send(OverlayEvent::PeerConnected(ep)).await;
+                        }
+                        Err(e) => {
+                            tracing::debug!("PUNCH_CONFIRM error from {}: {}", from, e);
+                        }
                     }
                 }
             }

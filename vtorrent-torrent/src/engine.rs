@@ -11,6 +11,7 @@ use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -200,7 +201,21 @@ impl PeerConnection {
         let (hs, _) = PeerMessage::decode_handshake(&buf)?
             .ok_or_else(|| TorrentError::PeerWireError("incomplete handshake".into()))?;
         let remote_peer_id = match hs {
-            PeerMessage::Handshake { peer_id, .. } => peer_id,
+            PeerMessage::Handshake {
+                peer_id,
+                info_hash: their_info_hash,
+                ..
+            } => {
+                // Protocol contract: the peer must echo OUR info-hash. A
+                // handshake for a different torrent must not proceed into
+                // bitfield/piece exchange.
+                if their_info_hash != info_hash {
+                    return Err(TorrentError::PeerWireError(
+                        "handshake info-hash mismatch".into(),
+                    ));
+                }
+                peer_id
+            }
             _ => return Err(TorrentError::PeerWireError("expected handshake".into())),
         };
 
@@ -569,6 +584,10 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
     // Track partial piece assembly across multiple blocks.
     let mut assemblers: std::collections::HashMap<u32, PieceAssembler> =
         std::collections::HashMap::new();
+    // Upload-side request throttling state (per peer task).
+    let served_requests: std::sync::Mutex<std::collections::HashMap<(u32, u32, u32), u32>> =
+        std::sync::Mutex::new(std::collections::HashMap::new());
+    let outstanding_served = std::sync::atomic::AtomicUsize::new(0);
     // Rolling-window counters for speed estimation.
     let mut downloaded_window: u64 = 0;
     let mut uploaded_window: u64 = 0;
@@ -651,6 +670,51 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                 begin,
                 length,
             }) => {
+                // ── Request sanity limits (upload-bandwidth protection) ──
+                // A single socket must not be able to extract unlimited
+                // redundant upload bandwidth.
+                const MAX_SERVED_BLOCK: u32 = 32 * 1024;
+                const MAX_OUTSTANDING_PER_PEER: usize = 64;
+
+                // Reject requests for blocks larger than a sane maximum —
+                // real clients request 16 KiB blocks.
+                if length == 0 || length > MAX_SERVED_BLOCK {
+                    tracing::debug!("Rejecting oversized request (len {}) from peer", length);
+                    continue;
+                }
+
+                // Bound outstanding requests per peer: dedupe identical
+                // in-flight requests so loops of the same Request don't each
+                // trigger a disk read + send.
+                let key = (index, begin, length);
+                let is_duplicate = {
+                    let mut inflight = served_requests.lock().unwrap_or_else(|e| e.into_inner());
+                    let count = inflight.entry(key).or_insert(0);
+                    if *count >= 2 {
+                        true
+                    } else {
+                        *count += 1;
+                        false
+                    }
+                };
+                if is_duplicate {
+                    tracing::trace!("Dropping duplicate in-flight request {:?}", key);
+                    continue;
+                }
+                // Entry decays after this window.
+                served_requests
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .entry(key)
+                    .and_modify(|c| *c = c.saturating_sub(1));
+
+                let outstanding = outstanding_served.fetch_add(1, Ordering::SeqCst);
+                if outstanding >= MAX_OUTSTANDING_PER_PEER {
+                    outstanding_served.fetch_sub(1, Ordering::SeqCst);
+                    tracing::debug!("Peer has too many outstanding requests; dropping");
+                    continue;
+                }
+
                 // Serve the requested block if we hold the piece.
                 let have_piece = scheduler
                     .lock()
@@ -685,6 +749,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                         }
                     }
                 }
+                outstanding_served.fetch_sub(1, Ordering::SeqCst);
             }
             Ok(PeerMessage::Cancel { index, begin, .. }) => {
                 scheduler
@@ -1012,6 +1077,9 @@ fn sanitize_path(base: &std::path::Path, components: &[String]) -> Option<std::p
             || comp == ".."
             || comp.contains('/')
             || comp.contains('\\')
+            // Windows: a colon makes the component an NTFS Alternate Data
+            // Stream ("file.txt:ads") or drive-relative path ("C:x").
+            || comp.contains(':')
             || std::path::Path::new(comp).is_absolute()
         {
             return None;

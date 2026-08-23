@@ -92,13 +92,21 @@ impl HttpTracker {
 
     /// Send an announce request to an HTTP tracker.
     pub async fn announce(&self, req: &AnnounceRequest) -> Result<AnnounceResponse> {
-        // Build the URL with query parameters
+        // Build the URL with query parameters. The tracker URL may already
+        // carry a query string (e.g. passkey trackers: ".../a?passkey=X"),
+        // so join with '?' only when absent, otherwise '&'.
         let info_hash_encoded = url_encode_bytes(&req.info_hash);
         let peer_id_encoded = url_encode_bytes(&req.peer_id);
 
+        let base = if req.tracker_url.contains('?') {
+            format!("{}&", req.tracker_url)
+        } else {
+            format!("{}?", req.tracker_url)
+        };
+
         let mut url = format!(
-            "{}?info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact=1&numwant={}",
-            req.tracker_url,
+            "{}info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact=1&numwant={}",
+            base,
             info_hash_encoded,
             peer_id_encoded,
             req.port,

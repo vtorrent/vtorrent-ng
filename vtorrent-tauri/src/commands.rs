@@ -1813,7 +1813,8 @@ pub async fn send_btc(
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
 
     // Build and sign the transaction, removing spent UTXOs from the wallet.
-    let (txid_hex, raw) = {
+    // The selected UTXOs are kept for rollback if broadcasting fails.
+    let (txid_hex, raw, spent_utxos) = {
         let mut btc = handle.rpc_state.btc_wallet.write().await;
         let wallet = btc
             .as_mut()
@@ -1823,17 +1824,25 @@ pub async fn send_btc(
             .map_err(|e| TauriError::NodeError(e.to_string()))?
     };
 
-    // Broadcast to the Bitcoin network.
-    let network = *handle.rpc_state.btc_network.read().await;
-    let peer = *handle.rpc_state.btc_peer.read().await;
-    if let Some(addr) = peer {
-        vtorrent_btc::sync::broadcast_tx_to(&raw, network, &[addr])
-            .await
-            .map_err(|e| TauriError::NodeError(format!("BTC broadcast failed: {}", e)))?;
-    } else {
-        vtorrent_btc::sync::broadcast_tx(&raw)
-            .await
-            .map_err(|e| TauriError::NodeError(format!("BTC broadcast failed: {}", e)))?;
+    // Broadcast to the Bitcoin network. On failure, restore the spent UTXOs
+    // so the wallet does not forget outputs for a tx that never landed.
+    let broadcast_result = {
+        let network = *handle.rpc_state.btc_network.read().await;
+        let peer = *handle.rpc_state.btc_peer.read().await;
+        if let Some(addr) = peer {
+            vtorrent_btc::sync::broadcast_tx_to(&raw, network, &[addr]).await
+        } else {
+            vtorrent_btc::sync::broadcast_tx(&raw).await
+        }
+    };
+    if let Err(e) = broadcast_result {
+        if let Some(wallet) = handle.rpc_state.btc_wallet.write().await.as_mut() {
+            wallet.restore_utxos(&spent_utxos);
+        }
+        return Err(TauriError::NodeError(format!(
+            "BTC broadcast failed: {}",
+            e
+        )));
     }
 
     tracing::info!("BTC tx broadcast: {}", txid_hex);

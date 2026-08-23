@@ -37,7 +37,7 @@ fn wallet_send_to_full_cycle() {
     assert_eq!(wallet.balance(), 80_000);
 
     // Send 60_000 sats to addr1 with 1_000 sat fee.
-    let (txid_hex, raw) = wallet.send_to(&addr1, 60_000, 1_000).unwrap();
+    let (txid_hex, raw, _) = wallet.send_to(&addr1, 60_000, 1_000).unwrap();
 
     // Verify txid is a 64-char hex string.
     assert_eq!(txid_hex.len(), 64);
@@ -101,7 +101,7 @@ fn wallet_rbf_signaling() {
     let addr1 = wallet.next_address().unwrap();
     wallet.add_utxo(make_utxo(&"11".repeat(32), 0, 50_000, &addr0));
 
-    let (_, raw) = wallet.send_to(&addr1, 40_000, 1_000).unwrap();
+    let (_, raw, _) = wallet.send_to(&addr1, 40_000, 1_000).unwrap();
     let tx: Transaction = bitcoin::consensus::encode::deserialize(&raw).unwrap();
 
     // RBF sequence = 0xFFFFFFFD (must be < 0xFFFFFFFE per BIP-125).
@@ -116,7 +116,7 @@ fn wallet_no_rbf_signaling() {
     let addr1 = wallet.next_address().unwrap();
     wallet.add_utxo(make_utxo(&"22".repeat(32), 0, 50_000, &addr0));
 
-    let (_, raw) = wallet.send_to(&addr1, 40_000, 1_000).unwrap();
+    let (_, raw, _) = wallet.send_to(&addr1, 40_000, 1_000).unwrap();
     let tx: Transaction = bitcoin::consensus::encode::deserialize(&raw).unwrap();
 
     // No RBF: sequence = 0xFFFFFFFF (final).
@@ -292,7 +292,7 @@ fn send_to_transaction_has_witness() {
     let addr1 = wallet.next_address().unwrap();
     wallet.add_utxo(make_utxo(&"aa".repeat(32), 0, 100_000, &addr0));
 
-    let (_, raw) = wallet.send_to(&addr1, 50_000, 1_000).unwrap();
+    let (_, raw, _) = wallet.send_to(&addr1, 50_000, 1_000).unwrap();
     let tx: Transaction = bitcoin::consensus::encode::deserialize(&raw).unwrap();
 
     // SegWit transactions have non-empty witness on each input.
@@ -310,7 +310,7 @@ fn send_to_output_amounts_sum_to_input_minus_fee() {
 
     let fee = 2_500u64;
     let send_amount = 75_000u64;
-    let (_, raw) = wallet.send_to(&addr1, send_amount, fee).unwrap();
+    let (_, raw, _) = wallet.send_to(&addr1, send_amount, fee).unwrap();
     let tx: Transaction = bitcoin::consensus::encode::deserialize(&raw).unwrap();
 
     let input_total: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
@@ -328,7 +328,7 @@ fn send_to_locktime_is_zero() {
     let addr1 = wallet.next_address().unwrap();
     wallet.add_utxo(make_utxo(&"aa".repeat(32), 0, 50_000, &addr0));
 
-    let (_, raw) = wallet.send_to(&addr1, 40_000, 1_000).unwrap();
+    let (_, raw, _) = wallet.send_to(&addr1, 40_000, 1_000).unwrap();
     let tx: Transaction = bitcoin::consensus::encode::deserialize(&raw).unwrap();
     assert_eq!(tx.lock_time.to_consensus_u32(), 0);
 }
