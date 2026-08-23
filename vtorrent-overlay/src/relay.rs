@@ -78,6 +78,16 @@ impl RelayEngine {
         let target_id = hex::encode(&data[1..33]);
         let payload = &data[33..];
 
+        // Purge stale sessions BEFORE the capacity check: otherwise a full
+        // table of already-expired sessions wedges relaying until the next
+        // maintenance tick. Also deduplicates by requester so one requester
+        // cannot monopolize all relay slots.
+        {
+            let mut sessions = self.sessions.write().await;
+            let ttl = std::time::Duration::from_secs(300);
+            sessions.retain(|s| s.created_at.elapsed() < ttl && s.requester_addr != from);
+        }
+
         // Check capacity
         if self.sessions.read().await.len() >= self.max_sessions {
             let decline = build_relay_decline(&data[1..33]);

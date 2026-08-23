@@ -104,8 +104,8 @@ fn wallet_rbf_signaling() {
     let (_, raw) = wallet.send_to(&addr1, 40_000, 1_000).unwrap();
     let tx: Transaction = bitcoin::consensus::encode::deserialize(&raw).unwrap();
 
-    // RBF sequence = 0xFFFFFFFE.
-    assert_eq!(tx.input[0].sequence.0, 0xFFFFFFFE);
+    // RBF sequence = 0xFFFFFFFD (must be < 0xFFFFFFFE per BIP-125).
+    assert_eq!(tx.input[0].sequence.0, 0xFFFFFFFD);
 }
 
 #[test]
@@ -166,7 +166,7 @@ fn psbt_create_sign_finalize_roundtrip() {
     assert_eq!(tx.input.len(), 1);
     assert_eq!(tx.output.len(), 2);
     // RBF sequence.
-    assert_eq!(tx.input[0].sequence.0, 0xFFFFFFFE);
+    assert_eq!(tx.input[0].sequence.0, 0xFFFFFFFD);
 }
 
 #[test]

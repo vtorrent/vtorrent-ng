@@ -4,7 +4,7 @@
 /// UTXO records, extracting the amount and output script.
 use crate::{
     error::{Result, SnapshotError},
-    leveldb_reader::{decode_varint, decompress_amount, RawUtxo},
+    leveldb_reader::{decode_varint_base128, decompress_amount, RawUtxo},
 };
 
 /// A parsed UTXO with decoded amount and script.
@@ -37,7 +37,7 @@ pub fn parse_utxo_value(raw: &RawUtxo) -> Result<ParsedUtxo> {
     let mut cursor = 0usize;
 
     // Read height + coinbase flag (packed into one varint)
-    let (height_coinbase, n) = decode_varint(&data[cursor..])
+    let (height_coinbase, n) = decode_varint_base128(&data[cursor..])
         .ok_or_else(|| SnapshotError::BlockParse("Failed to read height/coinbase varint".into()))?;
     cursor += n;
 
@@ -45,14 +45,14 @@ pub fn parse_utxo_value(raw: &RawUtxo) -> Result<ParsedUtxo> {
     let is_coinbase = (height_coinbase & 1) != 0;
 
     // Read compressed amount
-    let (compressed_amount, n) = decode_varint(&data[cursor..])
+    let (compressed_amount, n) = decode_varint_base128(&data[cursor..])
         .ok_or_else(|| SnapshotError::BlockParse("Failed to read amount varint".into()))?;
     cursor += n;
 
     let amount = decompress_amount(compressed_amount);
 
     // Read script type and data
-    let (script_type, n) = decode_varint(&data[cursor..])
+    let (script_type, n) = decode_varint_base128(&data[cursor..])
         .ok_or_else(|| SnapshotError::BlockParse("Failed to read script type varint".into()))?;
     cursor += n;
 

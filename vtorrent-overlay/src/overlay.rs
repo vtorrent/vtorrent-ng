@@ -377,8 +377,20 @@ fn load_or_generate_keypair(key_file: &Option<PathBuf>) -> Result<NodeKeypair> {
                     std::fs::create_dir_all(parent)
                         .map_err(|e| OverlayError::KeyFile(e.to_string()))?;
                 }
+                // Restrict to owner-only before writing any key material:
+                // the node identity secret must not be world-readable.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+                }
                 std::fs::write(path, kp.secret_bytes())
                     .map_err(|e| OverlayError::KeyFile(e.to_string()))?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+                }
                 tracing::info!("Generated new overlay keypair, saved to {}", path.display());
                 Ok(kp)
             }

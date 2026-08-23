@@ -22,6 +22,21 @@ pub struct TorTransport {
     config: TransportConfig,
 }
 
+/// Control-port operations must not hang forever: a wedged local Tor control
+/// port would otherwise block RPC paths indefinitely.
+const CONTROL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+async fn timed_io<T>(
+    fut: impl std::future::Future<Output = std::io::Result<T>>,
+) -> std::io::Result<T> {
+    match tokio::time::timeout(CONTROL_TIMEOUT, fut).await {
+        Ok(r) => r,
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "tor control port timed out",
+        )),
+    }
+}
 impl TorTransport {
     pub fn new(config: TransportConfig) -> Self {
         Self { config }
@@ -65,7 +80,7 @@ impl TorTransport {
     /// Get the Tor bootstrap status via the control port.
     /// Returns a percentage (0–100) or None if control port is unavailable.
     pub async fn bootstrap_status(&self) -> Option<u8> {
-        let mut stream = TcpStream::connect(&self.config.tor_control_addr)
+        let mut stream = timed_io(TcpStream::connect(&self.config.tor_control_addr))
             .await
             .ok()?;
 
@@ -76,20 +91,19 @@ impl TorTransport {
             format!("AUTHENTICATE \"{}\"\r\n", self.config.tor_control_password)
         };
 
-        stream.write_all(auth_cmd.as_bytes()).await.ok()?;
+        timed_io(stream.write_all(auth_cmd.as_bytes())).await.ok()?;
         let mut buf = [0u8; 4096];
-        let n = stream.read(&mut buf).await.ok()?;
+        let n = timed_io(stream.read(&mut buf)).await.ok()?;
         let resp = std::str::from_utf8(&buf[..n]).ok()?;
         if !resp.starts_with("250") {
             return None;
         }
 
         // Query bootstrap status
-        stream
-            .write_all(b"GETINFO status/bootstrap-phase\r\n")
+        timed_io(stream.write_all(b"GETINFO status/bootstrap-phase\r\n"))
             .await
             .ok()?;
-        let n = stream.read(&mut buf).await.ok()?;
+        let n = timed_io(stream.read(&mut buf)).await.ok()?;
         let resp = std::str::from_utf8(&buf[..n]).ok()?;
 
         // Parse "PROGRESS=XX" from the response
@@ -108,7 +122,7 @@ impl TorTransport {
         local_port: u16,
         virtual_port: u16,
     ) -> Result<HiddenServiceInfo> {
-        let mut stream = TcpStream::connect(&self.config.tor_control_addr)
+        let mut stream = timed_io(TcpStream::connect(&self.config.tor_control_addr))
             .await
             .map_err(|e| {
                 OnionError::HiddenServiceError(format!("Control port unavailable: {}", e))
@@ -120,9 +134,9 @@ impl TorTransport {
         } else {
             format!("AUTHENTICATE \"{}\"\r\n", self.config.tor_control_password)
         };
-        stream.write_all(auth_cmd.as_bytes()).await?;
+        timed_io(stream.write_all(auth_cmd.as_bytes())).await?;
         let mut buf = vec![0u8; 4096];
-        let n = stream.read(&mut buf).await?;
+        let n = timed_io(stream.read(&mut buf)).await?;
         let resp = std::str::from_utf8(&buf[..n]).unwrap_or("");
         if !resp.starts_with("250") {
             return Err(OnionError::HiddenServiceError(format!(
@@ -136,8 +150,8 @@ impl TorTransport {
             "ADD_ONION NEW:ED25519-V3 Port={},{} Flags=DiscardPK\r\n",
             virtual_port, local_port
         );
-        stream.write_all(cmd.as_bytes()).await?;
-        let n = stream.read(&mut buf).await?;
+        timed_io(stream.write_all(cmd.as_bytes())).await?;
+        let n = timed_io(stream.read(&mut buf)).await?;
         let resp = std::str::from_utf8(&buf[..n]).unwrap_or("").to_string();
 
         if !resp.contains("250-ServiceID=") {
@@ -173,7 +187,7 @@ impl TorTransport {
     /// Request a new Tor circuit (SIGNAL NEWNYM).
     /// This changes the exit node used for subsequent connections.
     pub async fn new_circuit(&self) -> Result<()> {
-        let mut stream = TcpStream::connect(&self.config.tor_control_addr)
+        let mut stream = timed_io(TcpStream::connect(&self.config.tor_control_addr))
             .await
             .map_err(|e| {
                 OnionError::HiddenServiceError(format!("Control port unavailable: {}", e))

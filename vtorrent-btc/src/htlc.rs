@@ -199,6 +199,15 @@ impl BtcHtlc {
             .require_network(self.network)
             .map_err(|e| BtcError::InvalidAddress(e.to_string()))?;
 
+        // A fee at or above the HTLC amount would burn the entire swap value
+        // (or create a zero/dust output) while still revealing the preimage.
+        if fee >= self.amount {
+            return Err(BtcError::Bitcoin(format!(
+                "fee {} >= HTLC amount {}; refusing to build claim tx",
+                fee, self.amount
+            )));
+        }
+
         Ok(Transaction {
             version: Version::TWO,
             lock_time: LockTime::ZERO,
@@ -242,6 +251,14 @@ impl BtcHtlc {
             .map_err(|e| BtcError::InvalidAddress(e.to_string()))?
             .require_network(self.network)
             .map_err(|e| BtcError::InvalidAddress(e.to_string()))?;
+
+        // Same fee guard as the claim path: never burn the HTLC value.
+        if fee >= self.amount {
+            return Err(BtcError::Bitcoin(format!(
+                "fee {} >= HTLC amount {}; refusing to build refund tx",
+                fee, self.amount
+            )));
+        }
 
         Ok(Transaction {
             version: Version::TWO,

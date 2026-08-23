@@ -269,7 +269,11 @@ impl BtcWallet {
         let txid = txid_of(&raw);
         let txid_hex = hex::encode(txid);
 
-        // Remove spent UTXOs from the set.
+        // Remove spent UTXOs from the in-memory set immediately (prevents
+        // double-spending within this session) and persist. If broadcasting
+        // later fails, the caller must roll back via [`BtcWallet::restore_utxos`]
+        // using the returned selection — otherwise the wallet would forget
+        // spendable outputs for a tx that never made it onto the network.
         let mut set = self.utxos.lock().unwrap();
         for u in &selected {
             set.remove(&u.txid, u.vout);
@@ -286,6 +290,18 @@ impl BtcWallet {
         );
 
         Ok((txid_hex, raw))
+    }
+
+    /// Re-add previously spent UTXOs (e.g. when a broadcast failed) and
+    /// persist the restored set.
+    pub fn restore_utxos(&self, utxos: &[Utxo]) {
+        {
+            let mut set = self.utxos.lock().unwrap();
+            for u in utxos {
+                set.add(u.clone());
+            }
+        }
+        self.save_utxos();
     }
 
     /// Broadcast a raw transaction to the Bitcoin network via DNS seeds.
@@ -308,7 +324,9 @@ impl BtcWallet {
         feefilter_sats_per_kb: i64,
         target_blocks: u32,
     ) -> u64 {
-        let base_rate = if feefilter_sats_per_kb > 0 {
+        // Peer-supplied feefilter is untrusted: clamp to a sane range so a
+        // hostile value (e.g. i64::MAX) cannot overflow the fee computation.
+        let base_rate = if (1..=10_000_000).contains(&feefilter_sats_per_kb) {
             feefilter_sats_per_kb as u64
         } else {
             1_000 // 1 sat/byte default

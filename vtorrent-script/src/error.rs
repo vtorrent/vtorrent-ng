@@ -29,6 +29,9 @@ pub enum ScriptError {
     #[error("Script too large ({0} bytes, max 10000)")]
     ScriptTooLarge(usize),
 
+    #[error("Truncated push: length prefix exceeds script bounds")]
+    TruncatedPush,
+
     #[error("Stack item too large ({0} bytes, max 520)")]
     PushTooLarge(usize),
 

@@ -95,6 +95,11 @@ impl Engine {
 
     /// Run a single script, modifying the stack.
     fn run(&mut self, script: &Script) -> Result<()> {
+        // Reject truncated pushes up front: the iterator would otherwise stop
+        // silently mid-script and let whatever is on the stack stand as the
+        // result (consensus-incorrect — a truncated push must fail the script).
+        script.validate()?;
+
         let mut executing = true;
         let mut if_stack: Vec<bool> = Vec::new();
         let mut steps: usize = 0;
@@ -1028,6 +1033,22 @@ mod tests {
         let mut engine = Engine::new(env);
         let result = engine.execute(&script_sig, &script_pubkey);
         assert!(matches!(result, Err(ScriptError::OpReturnUnspendable)));
+    }
+
+    #[test]
+    fn test_truncated_push_fails_script() {
+        // A redeem script of `OP_TRUE` followed by a PUSHDATA1 claiming 255
+        // bytes with no data must FAIL, not silently evaluate to true.
+        let script_sig = Script::new();
+        let mut script_pubkey = Script::new();
+        script_pubkey.push_opcode(0x51); // OP_TRUE
+        script_pubkey.push_opcode(0x4c); // OP_PUSHDATA1
+        script_pubkey.push_opcode(0xff); // declared length 255, no data follows
+
+        let env = ScriptEnv::default();
+        let mut engine = Engine::new(env);
+        let result = engine.execute(&script_sig, &script_pubkey);
+        assert!(result.is_err(), "truncated push must fail the script");
     }
 
     #[test]

@@ -43,10 +43,12 @@ pub fn parse_wallet(data: &[u8]) -> Result<Vec<RawRecord>> {
 
     // First pass: collect overflow pages.
     //
-    // Overflow pages use a different header layout than B-tree pages: the
-    // `entries`/`hf_offset` fields (offsets 12-15) are repurposed as `tlen`,
-    // and the `level` field (offset 16) holds the page type. Data starts at
-    // offset 26.
+    // All BDB pages share the same header layout: pgno(0-3), prev(4-7),
+    // next(8-11), entries(12-13), hf_offset(14-15), level(16), type(17).
+    // Overflow pages are identified by their TYPE byte (H_OVERFLOW = 7) at
+    // offset 17 — not the level byte at 16, which is 0 on overflow pages.
+    // The used-data length (`tlen`) lives in the hf_offset field (14-15);
+    // data starts at offset 26.
     for page_idx in 0..num_pages {
         let page_start = page_idx * page_size;
         let page = &data[page_start..page_start + page_size];
@@ -55,11 +57,10 @@ pub fn parse_wallet(data: &[u8]) -> Result<Vec<RawRecord>> {
             continue;
         }
 
-        let page_type = page[16];
+        let page_type = page[17];
         if page_type == P_OVERFLOW {
             let page_num = u32::from_le_bytes([page[0], page[1], page[2], page[3]]);
-            // Overflow data length is `tlen` at offset 12.
-            let data_len = u32::from_le_bytes([page[12], page[13], page[14], page[15]]) as usize;
+            let data_len = u16::from_le_bytes([page[14], page[15]]) as usize;
             let available = page_size.saturating_sub(26);
             let copy_len = data_len.min(available);
             if copy_len > 0 && 26 + copy_len <= page.len() {

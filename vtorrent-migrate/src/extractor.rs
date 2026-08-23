@@ -1,6 +1,6 @@
 use crate::{
     bdb::{decode_record_type, parse_wallet},
-    crypter::{decrypt_master_key, decrypt_private_key},
+    crypter::{decrypt_master_key, decrypt_private_key, DecryptedMasterKey},
     error::{MigrateError, Result},
     types::{
         CKeyRecord, ExtractedKey, KeyRecord, KeySource, MasterKey, RecordType, WalletExtraction,
@@ -103,12 +103,45 @@ pub fn extract_wallet(wallet_data: &[u8], passphrase: Option<&str>) -> Result<Wa
     if !encrypted_keys.is_empty() {
         let passphrase = passphrase.ok_or(MigrateError::EncryptedWalletNoPassphrase)?;
 
-        // Decrypt the master key (use master key ID 1 by default)
-        let mkey = master_keys
-            .get(&1)
-            .ok_or(MigrateError::EncryptedWalletNoPassphrase)?;
+        // Try every stored master key: Bitcoin-family wallets write the
+        // first mkey under ID 0 (nMasterKeyMaxID starts at 0), while some
+        // derivatives use 1. Rotated wallets may hold several — the first
+        // one that successfully decrypts any ckey wins.
+        if master_keys.is_empty() {
+            return Err(MigrateError::EncryptedWalletNoPassphrase);
+        }
+        let mut ordered_ids: Vec<u32> = master_keys.keys().copied().collect();
+        ordered_ids.sort_unstable();
 
-        let decrypted_master = decrypt_master_key(mkey, passphrase)?;
+        let mut decrypted_master: Option<DecryptedMasterKey> = None;
+        for id in &ordered_ids {
+            let mkey = &master_keys[id];
+            match decrypt_master_key(mkey, passphrase) {
+                Ok(master) => {
+                    // Validate this candidate by checking whether it decrypts
+                    // at least one ckey below; keep the first candidate that
+                    // yields a usable key.
+                    let works = encrypted_keys.iter().any(|ckey_rec| {
+                        decrypt_private_key(
+                            &ckey_rec.encrypted_private_key,
+                            &ckey_rec.public_key,
+                            &master,
+                        )
+                        .is_ok()
+                    });
+                    if works {
+                        decrypted_master = Some(master);
+                        break;
+                    }
+                    // Remember the first decryptable candidate as fallback.
+                    if decrypted_master.is_none() {
+                        decrypted_master = Some(master);
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+        let decrypted_master = decrypted_master.ok_or(MigrateError::IncorrectPassphrase)?;
 
         let mut decrypted_any = false;
         for ckey_rec in &encrypted_keys {

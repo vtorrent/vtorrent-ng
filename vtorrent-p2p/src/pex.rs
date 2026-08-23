@@ -258,10 +258,19 @@ impl AddrBook {
                 // without brackets and would silently drop IPv6 peers.
                 let ip: IpAddr = pa.addr.parse().ok()?;
                 let addr = SocketAddr::new(ip, pa.port);
+                // Clamp peer-supplied timestamps to now (+10 min skew for
+                // clock drift): a remote value of u32::MAX would otherwise
+                // stay "fresh" for decades, pinning attacker addresses in
+                // the book and steering connection selection.
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let last_seen = (pa.timestamp as u64).min(now + 600);
                 Some(AddrEntry {
                     addr,
                     services: pa.services,
-                    last_seen: pa.timestamp as u64,
+                    last_seen,
                     connection_attempts: 0,
                     successful_connections: 0,
                 })

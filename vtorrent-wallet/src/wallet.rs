@@ -220,7 +220,12 @@ impl Wallet {
         }
 
         let label = legacy_address
-            .map(|a| format!("Legacy {}", &a[..8.min(a.len())]))
+            .map(|a| {
+                // Char-boundary-safe truncation: legacy addresses come from
+                // parsed wallet.dat records and may not be ASCII.
+                let end = a.char_indices().nth(8).map(|(i, _)| i).unwrap_or(a.len());
+                format!("Legacy {}", &a[..end])
+            })
             .unwrap_or_else(|| "Imported Key".to_string());
 
         let entry = WalletKeyEntry {

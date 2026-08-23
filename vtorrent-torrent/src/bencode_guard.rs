@@ -103,7 +103,7 @@ mod tests {
     fn malformed_rejected() {
         assert!(!bencode_depth_ok(b"zzzz", 32));
         assert!(!bencode_depth_ok(b"d4:info", 32));
-        assert!(!bencode_depth_ok(&[b'i', b'e', b'e'], 32));
+        assert!(!bencode_depth_ok(b"iee", 32));
     }
 
     #[test]

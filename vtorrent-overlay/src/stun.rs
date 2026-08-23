@@ -37,25 +37,20 @@ const MAPPED_ADDRESS: u16 = 0x0001;
 /// external address is the NAT mapping for the socket that actually carries
 /// overlay traffic. Binding a separate socket would reflect the wrong port.
 pub async fn discover_external_addr(socket: &std::sync::Arc<UdpSocket>) -> Result<SocketAddr> {
-    // Try all STUN servers concurrently; return first success
-    let mut handles = Vec::new();
+    // Query servers sequentially: concurrent queries share one socket, and
+    // whichever task polls first consumes datagrams addressed to another
+    // transaction, spuriously failing discovery. Sequential queries are
+    // deterministic; total worst-case time is bounded by the per-server
+    // timeout.
+    let mut last_err = OverlayError::Stun("no servers configured".to_string());
     for server in STUN_SERVERS {
-        let sock = socket.clone();
-        let server = server.to_string();
-        handles.push(tokio::spawn(async move {
-            query_stun_server(&sock, &server).await
-        }));
-    }
-
-    for handle in handles {
-        if let Ok(Ok(addr)) = handle.await {
-            return Ok(addr);
+        match query_stun_server(socket, server).await {
+            Ok(addr) => return Ok(addr),
+            Err(e) => last_err = e,
         }
     }
 
-    Err(OverlayError::Stun(
-        "all STUN servers unreachable".to_string(),
-    ))
+    Err(last_err)
 }
 
 /// Query a single STUN server and return the reflected external address.
@@ -77,14 +72,19 @@ async fn query_stun_server(socket: &UdpSocket, server: &str) -> Result<SocketAdd
         .await
         .map_err(OverlayError::Io)?;
 
-    // Wait for response (500ms timeout per server)
+    // Wait for response (500ms timeout per server), validating that it came
+    // from the queried server.
     let mut buf = [0u8; 512];
-    let (n, _from) = timeout(Duration::from_millis(500), socket.recv_from(&mut buf))
-        .await
-        .map_err(|_| OverlayError::Timeout)?
-        .map_err(OverlayError::Io)?;
-
-    parse_binding_response(&buf[..n], &transaction_id)
+    loop {
+        let (n, from) = timeout(Duration::from_millis(500), socket.recv_from(&mut buf))
+            .await
+            .map_err(|_| OverlayError::Timeout)?
+            .map_err(OverlayError::Io)?;
+        if from != server_addr {
+            continue; // stray datagram; keep waiting for the real reply
+        }
+        return parse_binding_response(&buf[..n], &transaction_id);
+    }
 }
 
 /// Build a minimal STUN Binding Request message.

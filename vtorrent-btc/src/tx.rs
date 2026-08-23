@@ -14,12 +14,12 @@ use bitcoin::{Address, Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn,
 use std::str::FromStr;
 
 /// BIP69: sequence value that signals RBF (Replace-By-Fee).
-const RBF_SEQUENCE: Sequence = Sequence(0xFFFFFFFE);
+const RBF_SEQUENCE: Sequence = Sequence(0xFFFFFFFD);
 
 /// Build and sign a P2WPKH transaction spending `inputs` to `destination`,
 /// returning the change to `change_address`.
 ///
-/// When `rbf` is true, inputs use `Sequence(0xFFFFFFFE)` to signal
+/// When `rbf` is true, inputs use `Sequence(0xFFFFFFFD)` to signal
 /// replaceability.  Inputs and outputs are sorted per BIP69.
 #[allow(clippy::too_many_arguments)]
 pub fn build_and_sign(
@@ -66,11 +66,12 @@ pub fn build_and_sign(
 /// Build and sign a P2WPKH transaction with per-input key lookup.
 ///
 /// `key_for_address` maps each input's address to the signing private key.
-/// `common_pubkey` is used for the witness (all P2WPKH inputs share the
-/// compressed pubkey in the witness).
+/// Each input's witness carries the compressed pubkey derived from its own
+/// signing key (a mismatched pubkey makes the input invalid).
+/// `common_pubkey` is accepted for API compatibility but unused.
 ///
 /// Inputs and outputs are sorted per BIP69.  When `rbf` is true, inputs
-/// use `Sequence(0xFFFFFFFE)`.
+/// use `Sequence(0xFFFFFFFD)`.
 #[allow(clippy::too_many_arguments)]
 pub fn build_and_sign_multi(
     inputs: &[Utxo],
@@ -79,7 +80,7 @@ pub fn build_and_sign_multi(
     fee_sats: u64,
     change_address: &str,
     key_for_address: &dyn Fn(&str) -> Result<bitcoin::PrivateKey>,
-    common_pubkey: &bitcoin::PublicKey,
+    _common_pubkey: &bitcoin::PublicKey,
     network: bitcoin::Network,
     rbf: bool,
 ) -> Result<Vec<u8>> {
@@ -152,8 +153,6 @@ pub fn build_and_sign_multi(
 
     // ── Sign each input ─────────────────────────────────────────────────
     // Build a map from original-index → key, then sign in BIP69 order.
-    let pubkey_bytes = common_pubkey.to_bytes();
-
     let mut witnesses: Vec<Witness> = Vec::with_capacity(tx.input.len());
     {
         let mut cache = SighashCache::new(&tx);
@@ -176,7 +175,11 @@ pub fn build_and_sign_multi(
             let sig = secp.sign_ecdsa(&msg, &key.inner);
             let mut sig_bytes = sig.serialize_der().to_vec();
             sig_bytes.push(bitcoin::EcdsaSighashType::All as u8);
-            witnesses.push(Witness::from_slice(&[sig_bytes, pubkey_bytes.clone()]));
+            // The witness must carry the pubkey matching THIS input's signing
+            // key — using a shared/common pubkey here makes any input signed
+            // by a different key invalid (bad-witness-nonstandard).
+            let input_pubkey = key.inner.public_key(&secp).serialize().to_vec();
+            witnesses.push(Witness::from_slice(&[sig_bytes, input_pubkey]));
         }
     }
     for (i, witness) in witnesses.into_iter().enumerate() {
@@ -341,10 +344,28 @@ pub fn sign_psbt(psbt_bytes: &[u8], wif: &str, network: bitcoin::Network) -> Res
 }
 
 /// Finalize a signed PSBT, extracting the raw transaction bytes.
+///
+/// For each P2WPKH input with exactly one partial signature, builds the final
+/// scriptWitness (`<sig> <pubkey>`). `Psbt::extract_tx` alone does NOT convert
+/// partial signatures into witnesses — skipping this step yields a transaction
+/// with empty witnesses that every node rejects.
 pub fn finalize_psbt(psbt_bytes: &[u8]) -> Result<Vec<u8>> {
     use bitcoin::psbt::Psbt;
 
-    let psbt = Psbt::deserialize(psbt_bytes).map_err(|e| BtcError::Bitcoin(e.to_string()))?;
+    let mut psbt = Psbt::deserialize(psbt_bytes).map_err(|e| BtcError::Bitcoin(e.to_string()))?;
+
+    for input in psbt.inputs.iter_mut() {
+        if input.final_script_witness.is_some() || input.final_script_sig.is_some() {
+            continue; // already finalized
+        }
+        if input.partial_sigs.len() == 1 {
+            let (pubkey, sig) = input.partial_sigs.iter().next().unwrap();
+            let mut sig_bytes = sig.signature.serialize_der().to_vec();
+            sig_bytes.push(sig.sighash_type as u8);
+            let witness = Witness::from_slice(&[sig_bytes, pubkey.to_bytes()]);
+            input.final_script_witness = Some(witness);
+        }
+    }
 
     let tx = psbt
         .extract_tx()

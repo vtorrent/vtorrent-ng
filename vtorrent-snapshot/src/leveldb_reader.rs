@@ -74,7 +74,7 @@ pub fn read_all_utxos(chainstate_path: &std::path::Path) -> Result<Vec<RawUtxo>>
                 let mut txid = [0u8; 32];
                 txid.copy_from_slice(&key_buf[txid_start..txid_start + 32]);
 
-                let (vout, _) = decode_varint(&key_buf[vout_start..]).unwrap_or((0, 0));
+                let (vout, _) = decode_varint_base128(&key_buf[vout_start..]).unwrap_or((0, 0));
 
                 utxos.push(RawUtxo {
                     txid,
@@ -129,6 +129,33 @@ pub fn decode_varint(data: &[u8]) -> Option<(u64, usize)> {
     }
 }
 
+/// Decode a base-128 `VARINT` as written by Bitcoin 0.8.x `serialize.h`
+/// (`WriteVarInt`/`ReadVarInt`) — the encoding actually used inside the
+/// chainstate DB for the height/code, compressed amount, and script size.
+///
+/// Continuation bytes have the high bit set and contribute `+1` when shifting
+/// in; the final byte has no high bit. Example encodings: 256 → `[0x81,
+/// 0x00]`, 65535 → `[0x82, 0xFE, 0x7F]`.
+///
+/// Returns (value, bytes_consumed).
+pub fn decode_varint_base128(data: &[u8]) -> Option<(u64, usize)> {
+    let mut n: u64 = 0;
+    let mut consumed = 0usize;
+    loop {
+        let byte = *data.get(consumed)?;
+        consumed += 1;
+        n = n.checked_shl(7)?.checked_add((byte & 0x7F) as u64)?;
+        if byte & 0x80 != 0 {
+            n = n.checked_add(1)?;
+        } else {
+            return Some((n, consumed));
+        }
+        if consumed > 10 {
+            return None; // longer than any u64 can require
+        }
+    }
+}
+
 /// Decode a Bitcoin-style "compressed amount" as used in the chainstate DB.
 /// See: https://github.com/bitcoin/bitcoin/blob/master/src/compressor.cpp
 pub fn decompress_amount(x: u64) -> u64 {
@@ -165,6 +192,20 @@ mod tests {
     #[test]
     fn test_decode_varint_two_bytes() {
         assert_eq!(decode_varint(&[0xfd, 0x00, 0x01]), Some((256, 3)));
+    }
+
+    #[test]
+    fn test_decode_varint_base128_known_encodings() {
+        // Encodings verified against Bitcoin Core serialize.h WriteVarInt.
+        assert_eq!(decode_varint_base128(&[0x00]), Some((0, 1)));
+        assert_eq!(decode_varint_base128(&[0x2a]), Some((42, 1)));
+        // 256 = [0x81, 0x00]
+        assert_eq!(decode_varint_base128(&[0x81, 0x00]), Some((256, 2)));
+        // 65535 = [0x82, 0xFE, 0x7F]
+        assert_eq!(decode_varint_base128(&[0x82, 0xFE, 0x7F]), Some((65535, 3)));
+        // Truncated input rejected
+        assert_eq!(decode_varint_base128(&[0x81]), None);
+        assert_eq!(decode_varint_base128(&[]), None);
     }
 
     #[test]

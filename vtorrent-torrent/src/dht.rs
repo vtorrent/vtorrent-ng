@@ -132,7 +132,7 @@ pub fn parse_dht_response(data: &[u8]) -> (Vec<TrackerPeer>, Vec<CompactNode>, O
 
 /// Minimal depth-limited bencode value used for KRPC response parsing.
 enum BVal {
-    Int(i64),
+    Int(#[allow(dead_code)] i64),
     Bytes(Vec<u8>),
     List(Vec<BVal>),
     Dict(Vec<(Vec<u8>, BVal)>),

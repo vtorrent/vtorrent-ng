@@ -78,12 +78,25 @@ impl BloomFilter {
     }
 
     /// Create a Bloom filter from raw wire bytes (as received in a `filterload` message).
+    ///
+    /// Peer-supplied values are clamped to the same limits as [`BloomFilter::new`]:
+    /// filter size to `[1024, MAX_BLOOM_FILTER_SIZE]` bytes and hash count to
+    /// `[1, 50]`. Without clamping, a `hash_funcs` of u32::MAX would turn every
+    /// membership test into billions of murmur evaluations (CPU DoS).
     pub fn from_bytes(data: Vec<u8>, hash_funcs: u32, tweak: u32, flags: u8) -> Self {
         let flags = match flags {
             1 => BloomFlags::All,
             2 => BloomFlags::PubKeyOnly,
             _ => BloomFlags::None,
         };
+        let mut data = data;
+        if data.len() > MAX_BLOOM_FILTER_SIZE {
+            data.truncate(MAX_BLOOM_FILTER_SIZE);
+        }
+        if data.is_empty() {
+            data = vec![0; 1024];
+        }
+        let hash_funcs = hash_funcs.clamp(1, 50);
         Self {
             data,
             hash_funcs,

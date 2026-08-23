@@ -34,7 +34,7 @@ pub fn build_ut_vtr_address(address: &str) -> Vec<u8> {
 pub fn parse_ut_vtr_address(payload: &[u8]) -> Result<String> {
     let value: Value = crate::bencode_guard::parse_untrusted(payload)
         .ok_or_else(|| TorrentError::PeerWireError("bencode nesting too deep".into()))?
-        .map_err(|e| TorrentError::PeerWireError(e))?;
+        .map_err(TorrentError::PeerWireError)?;
     match value {
         Value::Bytes(b) => Ok(String::from_utf8_lossy(&b).into_owned()),
         _ => Err(TorrentError::PeerWireError("ut_vtr not a string".into())),
@@ -62,7 +62,7 @@ pub fn parse_data(payload: &[u8]) -> Result<(u32, u64, Vec<u8>)> {
     let dict_bytes = &payload[..dict_end];
     let value: Value = crate::bencode_guard::parse_untrusted(dict_bytes)
         .ok_or_else(|| TorrentError::PeerWireError("bencode nesting too deep".into()))?
-        .map_err(|e| TorrentError::PeerWireError(e))?;
+        .map_err(TorrentError::PeerWireError)?;
     let dict = match value {
         Value::Dict(d) => d,
         _ => return Err(TorrentError::PeerWireError("ut_metadata not a dict".into())),

@@ -210,6 +210,16 @@ impl PeerManager {
 
         // Ban check: reject connections to banned IPs before even opening a socket
         if let Ok(sock_addr) = addr.parse::<SocketAddr>() {
+            // Deduplicate: a second connection to the same address would
+            // overwrite the first peer's map entry, orphaning its task and
+            // leaving the newer connection unmanaged when the old one dies.
+            if self.peers.contains_key(&sock_addr) {
+                tracing::debug!("Already connected to {}, skipping duplicate connect", addr);
+                return Err(P2pError::Transport(format!(
+                    "already connected to {}",
+                    addr
+                )));
+            }
             let ip = sock_addr.ip();
             if self.ban_manager.read().await.is_banned(ip) {
                 tracing::debug!("Skipping banned peer {}", addr);

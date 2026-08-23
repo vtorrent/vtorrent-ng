@@ -289,6 +289,43 @@ async fn integration_spv_status_empty_on_fresh_node() {
 
 #[tokio::test]
 async fn integration_spv_add_genesis_header() {
+    // Headers must satisfy their own compact-target PoW now, so mine a nonce
+    // against the easiest possible target (~2 attempts on average).
+    let bits = 0x207f_ffffu32;
+    let mut nonce = 0u32;
+    let meets_target = |nonce: u32| -> bool {
+        let mut buf = Vec::with_capacity(80);
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 32]);
+        buf.extend_from_slice(&[0x01u8; 32]);
+        buf.extend_from_slice(&1_700_000_000u32.to_le_bytes());
+        buf.extend_from_slice(&bits.to_le_bytes());
+        buf.extend_from_slice(&nonce.to_le_bytes());
+        use sha2::Digest as _;
+        let h1 = sha2::Sha256::digest(&buf);
+        let h2 = sha2::Sha256::digest(h1);
+        // Compare as little-endian numbers vs target from (bits).
+        let exponent = (bits >> 24) as usize;
+        let mantissa = bits & 0x00ff_ffff;
+        let mut target = [0u8; 32];
+        let low_zeros = exponent - 3;
+        let mb = mantissa.to_le_bytes();
+        target[low_zeros] = mb[0];
+        target[low_zeros + 1] = mb[1];
+        target[low_zeros + 2] = mb[2];
+        for i in (0..32).rev() {
+            match h2[i].cmp(&target[i]) {
+                std::cmp::Ordering::Less => return true,
+                std::cmp::Ordering::Greater => return false,
+                _ => {}
+            }
+        }
+        true
+    };
+    while !meets_target(nonce) {
+        nonce += 1;
+    }
+
     let (status, body) = post_json(
         app(),
         "/api/v1/spv/headers",
@@ -298,8 +335,8 @@ async fn integration_spv_add_genesis_header() {
                 "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
                 "merkle_root": "0101010101010101010101010101010101010101010101010101010101010101",
                 "timestamp": 1_700_000_000u32,
-                "bits": 0x1d00_ffffu32,
-                "nonce": 0u32,
+                "bits": bits,
+                "nonce": nonce,
                 "height": 0u32
             }]
         }),

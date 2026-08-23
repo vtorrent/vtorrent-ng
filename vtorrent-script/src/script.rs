@@ -104,6 +104,57 @@ impl Script {
             pos: 0,
         }
     }
+
+    /// Validate that every push-data length prefix fits within the script.
+    ///
+    /// A push whose declared length exceeds the remaining bytes makes
+    /// [`ScriptIter`] stop silently mid-script; without this check such a
+    /// truncated script would evaluate whatever happens to be on the stack
+    /// instead of failing, which is consensus-incorrect (Bitcoin treats
+    /// truncated pushes as script failure).
+    pub fn validate(&self) -> Result<()> {
+        let data = &self.0;
+        let mut pos = 0usize;
+        while pos < data.len() {
+            match data[pos] {
+                0x00 => pos += 1,
+                n @ 1..=75 => {
+                    pos += 1 + n as usize;
+                }
+                0x4c => {
+                    if pos + 2 > data.len() {
+                        return Err(ScriptError::TruncatedPush);
+                    }
+                    pos += 2 + data[pos + 1] as usize;
+                }
+                0x4d => {
+                    if pos + 3 > data.len() {
+                        return Err(ScriptError::TruncatedPush);
+                    }
+                    let len = u16::from_le_bytes([data[pos + 1], data[pos + 2]]) as usize;
+                    pos += 3 + len;
+                }
+                0x4e => {
+                    if pos + 5 > data.len() {
+                        return Err(ScriptError::TruncatedPush);
+                    }
+                    let len = u32::from_le_bytes([
+                        data[pos + 1],
+                        data[pos + 2],
+                        data[pos + 3],
+                        data[pos + 4],
+                    ]) as usize;
+                    pos += 5 + len;
+                }
+                _ => pos += 1,
+            }
+            // Overflow-safe bound check after advancing.
+            if pos > data.len() {
+                return Err(ScriptError::TruncatedPush);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl From<Vec<u8>> for Script {

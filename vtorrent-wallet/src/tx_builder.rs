@@ -134,7 +134,18 @@ fn address_to_hash160(address: &str) -> Result<[u8; 20]> {
         )));
     }
 
-    // payload[0] is the version byte; payload[1..21] is the hash160.
+    // The version byte must be the vTorrent mainnet P2PKH prefix (70).
+    // Without this check a Base58Check address from any other network
+    // (e.g. a Bitcoin `1...` address) passes validation and funds sent to
+    // it are unrecoverable on the VTR chain.
+    if payload[0] != vtorrent_core::network::legacy::PUBKEY_ADDRESS_PREFIX {
+        return Err(WalletError::InvalidAddress(format!(
+            "Address {} is not a vTorrent mainnet address (version byte {})",
+            address, payload[0]
+        )));
+    }
+
+    // payload[1..21] is the hash160.
     let mut hash = [0u8; 20];
     hash.copy_from_slice(&payload[1..21]);
     Ok(hash)

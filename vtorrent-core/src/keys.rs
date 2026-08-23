@@ -41,6 +41,17 @@ impl PrivateKey {
         }
 
         // payload[0] is the version byte (198 for legacy VTR, 128 for standard)
+        // Reject any other version: a foreign-network WIF (e.g. Bitcoin
+        // testnet 0xEF) must not silently import as a VTR key.
+        match payload[0] {
+            crate::network::legacy::SECRET_KEY_PREFIX | 128 => {}
+            other => {
+                return Err(CoreError::InvalidWif(format!(
+                    "Unsupported WIF version byte {}",
+                    other
+                )))
+            }
+        }
         let key_bytes = &payload[1..];
         let compressed = key_bytes.len() == 33 && key_bytes[32] == 0x01;
         let raw = if compressed {

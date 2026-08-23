@@ -63,7 +63,7 @@ impl Metainfo {
         // would overflow the stack and abort the process.
         let value: serde_bencode::value::Value = crate::bencode_guard::parse_untrusted(data)
             .ok_or_else(|| TorrentError::BencodeError("bencode nesting too deep".into()))?
-            .map_err(|e| TorrentError::BencodeError(e))?;
+            .map_err(TorrentError::BencodeError)?;
 
         let dict = match &value {
             serde_bencode::value::Value::Dict(d) => d,
