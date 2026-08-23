@@ -17,6 +17,34 @@ use crate::{
     },
 };
 
+use sha2::{Digest, Sha256};
+
+/// Compute a Merkle root from a slice of transaction IDs.
+fn compute_merkle_root_from_txids(txids: &[[u8; 32]]) -> [u8; 32] {
+    if txids.is_empty() {
+        return [0u8; 32];
+    }
+    let mut hashes: Vec<[u8; 32]> = txids.to_vec();
+    while hashes.len() > 1 {
+        if !hashes.len().is_multiple_of(2) {
+            hashes.push(*hashes.last().unwrap());
+        }
+        let mut next = Vec::with_capacity(hashes.len() / 2);
+        for chunk in hashes.chunks(2) {
+            let mut combined = [0u8; 64];
+            combined[..32].copy_from_slice(&chunk[0]);
+            combined[32..].copy_from_slice(&chunk[1]);
+            let first = Sha256::digest(combined);
+            let second = Sha256::digest(first);
+            let mut hash = [0u8; 32];
+            hash.copy_from_slice(&second);
+            next.push(hash);
+        }
+        hashes = next;
+    }
+    hashes[0]
+}
+
 /// Runtime staking control command sent from RPC/tauri to the node.
 #[derive(Debug, Clone)]
 pub enum StakingCommand {
@@ -74,18 +102,18 @@ impl StakingEngine {
             return None;
         }
 
-        // Try each eligible UTXO as a stake kernel
+        // Try each eligible UTXO as a stake kernel.  Move pending_txs on
+        // the first (and only) success — the function returns immediately.
         for utxo in &eligible {
             if let Some(coinstake) =
                 self.try_stake_kernel(prev_stake_modifier, utxo, timestamp, height)
             {
-                // Build the full block
                 let block = self.assemble_block(
                     prev_hash,
                     prev_stake_modifier,
                     timestamp,
                     coinstake,
-                    pending_txs.clone(),
+                    pending_txs,
                 );
                 tracing::info!(
                     "Found stake kernel: utxo {}:{} at height {}",
@@ -245,21 +273,20 @@ impl StakingEngine {
             block_size += tx_size;
         }
 
-        let mut header = BlockHeader {
-            version: 2,
-            prev_block_hash: prev_hash,
-            merkle_root: [0u8; 32],
-            timestamp,
-            bits: 0x1e0fffff,
-            nonce: 0, // PoS blocks always have nonce = 0
-            stake_modifier: compute_stake_modifier(prev_stake_modifier, &prev_hash),
+        let merkle_root = {
+            let txids: Vec<[u8; 32]> = transactions.iter().map(|tx| tx.txid()).collect();
+            compute_merkle_root_from_txids(&txids)
         };
 
-        let temp_block = Block {
-            header: header.clone(),
-            transactions: transactions.clone(),
+        let header = BlockHeader {
+            version: 2,
+            prev_block_hash: prev_hash,
+            merkle_root,
+            timestamp,
+            bits: 0x1e0fffff,
+            nonce: 0,
+            stake_modifier: compute_stake_modifier(prev_stake_modifier, &prev_hash),
         };
-        header.merkle_root = temp_block.compute_merkle_root();
 
         Block {
             header,

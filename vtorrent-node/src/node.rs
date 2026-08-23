@@ -1056,12 +1056,17 @@ impl Node {
                 // Block payload is raw bytes — deserialize and add to chain
                 match self.deserialize_block(&msg.payload) {
                     Ok(block) => {
+                        // Extract metadata before add_block consumes the block.
+                        let hash = block.hash();
+                        let tx_count = block.transactions.len();
+                        let timestamp = block.header.timestamp;
+                        let size_bytes = serde_json::to_vec(&block).map(|v| v.len()).unwrap_or(0);
+                        let block_arc = std::sync::Arc::new(block);
                         let mut chain = self.chain.lock().await;
-                        match chain.add_block(block.clone()) {
+                        match chain.add_block((*block_arc).clone()) {
                             Ok(acceptance) => {
                                 use crate::chain::BlockAcceptance;
-                                let hash = block.hash();
-                                let should_relay = match &acceptance {
+                                let should_relay = match acceptance {
                                     BlockAcceptance::MainChain {
                                         height,
                                         utxos_added,
@@ -1073,26 +1078,22 @@ impl Node {
                                             hex::encode(hash),
                                             height
                                         );
-                                        // Emit new_block event (carries full block + UTXO diff for BlockStore persistence)
-                                        let size_bytes = serde_json::to_vec(&block)
-                                            .map(|v| v.len())
-                                            .unwrap_or(0);
                                         self.emit(NodeEvent::NewBlock {
-                                            height: *height,
+                                            height,
                                             hash,
-                                            tx_count: block.transactions.len(),
-                                            timestamp: block.header.timestamp,
+                                            tx_count,
+                                            timestamp,
                                             size_bytes,
-                                            block: std::sync::Arc::new(block.clone()),
-                                            utxos_added: utxos_added.clone(),
-                                            utxos_removed: utxos_removed.clone(),
-                                            claimed_addresses: claimed_addresses.clone(),
+                                            block: block_arc.clone(),
+                                            utxos_added,
+                                            utxos_removed,
+                                            claimed_addresses,
                                         });
-                                        // Emit tx_confirmed for each transaction in the block
-                                        for tx in &block.transactions {
+                                        // Emit tx_confirmed for each transaction
+                                        for tx in block_arc.transactions.iter() {
                                             self.emit(NodeEvent::TxConfirmed {
                                                 txid: tx.txid(),
-                                                block_height: *height,
+                                                block_height: height,
                                                 block_hash: hash,
                                             });
                                         }
@@ -1110,9 +1111,9 @@ impl Node {
                                             hex::encode(new_tip)
                                         );
                                         self.emit(NodeEvent::Reorg {
-                                            old_tip: *old_tip,
-                                            new_tip: *new_tip,
-                                            depth: *depth,
+                                            old_tip,
+                                            new_tip,
+                                            depth,
                                         });
                                         true
                                     }
@@ -1344,41 +1345,43 @@ impl Node {
                                     },
                                     transactions: txs,
                                 };
+                                let hash = block.hash();
+                                let tx_count = block.transactions.len();
+                                let timestamp = block.header.timestamp;
+                                let size_bytes =
+                                    serde_json::to_vec(&block).map(|v| v.len()).unwrap_or(0);
+                                let block_arc = std::sync::Arc::new(block);
                                 let mut chain = self.chain.lock().await;
-                                match chain.add_block(block.clone()) {
+                                match chain.add_block((*block_arc).clone()) {
                                     Ok(acceptance) => {
                                         use crate::chain::BlockAcceptance;
-                                        let hash = block.hash();
                                         if let BlockAcceptance::MainChain {
                                             height,
                                             utxos_added,
                                             utxos_removed,
                                             claimed_addresses,
-                                        } = &acceptance
+                                        } = acceptance
                                         {
                                             tracing::info!(
                                                 "cmpctblock: accepted block {} at height {}",
                                                 hex::encode(hash),
                                                 height
                                             );
-                                            let size_bytes = serde_json::to_vec(&block)
-                                                .map(|v| v.len())
-                                                .unwrap_or(0);
                                             self.emit(NodeEvent::NewBlock {
-                                                height: *height,
+                                                height,
                                                 hash,
-                                                tx_count: block.transactions.len(),
-                                                timestamp: block.header.timestamp,
+                                                tx_count,
+                                                timestamp,
                                                 size_bytes,
-                                                block: std::sync::Arc::new(block.clone()),
-                                                utxos_added: utxos_added.clone(),
-                                                utxos_removed: utxos_removed.clone(),
-                                                claimed_addresses: claimed_addresses.clone(),
+                                                block: block_arc.clone(),
+                                                utxos_added,
+                                                utxos_removed,
+                                                claimed_addresses,
                                             });
-                                            for tx in &block.transactions {
+                                            for tx in block_arc.transactions.iter() {
                                                 self.emit(NodeEvent::TxConfirmed {
                                                     txid: tx.txid(),
-                                                    block_height: *height,
+                                                    block_height: height,
                                                     block_hash: hash,
                                                 });
                                             }
@@ -1571,41 +1574,43 @@ impl Node {
                                     },
                                     transactions: txs,
                                 };
+                                let hash = block.hash();
+                                let tx_count = block.transactions.len();
+                                let timestamp = block.header.timestamp;
+                                let size_bytes =
+                                    serde_json::to_vec(&block).map(|v| v.len()).unwrap_or(0);
+                                let block_arc = std::sync::Arc::new(block);
                                 let mut chain = self.chain.lock().await;
-                                match chain.add_block(block.clone()) {
+                                match chain.add_block((*block_arc).clone()) {
                                     Ok(acceptance) => {
                                         use crate::chain::BlockAcceptance;
-                                        let hash = block.hash();
                                         if let BlockAcceptance::MainChain {
                                             height,
                                             utxos_added,
                                             utxos_removed,
                                             claimed_addresses,
-                                        } = &acceptance
+                                        } = acceptance
                                         {
                                             tracing::info!(
                                                 "blocktxn: accepted block {} at height {}",
                                                 hex::encode(hash),
                                                 height
                                             );
-                                            let size_bytes = serde_json::to_vec(&block)
-                                                .map(|v| v.len())
-                                                .unwrap_or(0);
                                             self.emit(NodeEvent::NewBlock {
-                                                height: *height,
+                                                height,
                                                 hash,
-                                                tx_count: block.transactions.len(),
-                                                timestamp: block.header.timestamp,
+                                                tx_count,
+                                                timestamp,
                                                 size_bytes,
-                                                block: std::sync::Arc::new(block.clone()),
-                                                utxos_added: utxos_added.clone(),
-                                                utxos_removed: utxos_removed.clone(),
-                                                claimed_addresses: claimed_addresses.clone(),
+                                                block: block_arc.clone(),
+                                                utxos_added,
+                                                utxos_removed,
+                                                claimed_addresses,
                                             });
-                                            for tx in &block.transactions {
+                                            for tx in block_arc.transactions.iter() {
                                                 self.emit(NodeEvent::TxConfirmed {
                                                     txid: tx.txid(),
-                                                    block_height: *height,
+                                                    block_height: height,
                                                     block_hash: hash,
                                                 });
                                             }
@@ -1613,7 +1618,7 @@ impl Node {
                                     }
                                     Err(e) => {
                                         tracing::warn!(
-                                            "blocktxn: rejected completed block from {}: {}",
+                                            "cmpctblock: rejected completed block from {}: {}",
                                             peer_addr,
                                             e
                                         );
@@ -1973,10 +1978,13 @@ impl Node {
             pending_txs,
         ) {
             let block_hash = block.hash();
-            let block_arc = std::sync::Arc::new(block.clone());
+            let tx_count = block.transactions.len();
+            let timestamp = block.header.timestamp;
+            let size_bytes = serde_json::to_vec(&block).map(|v| v.len()).unwrap_or(0);
+            let block_arc = std::sync::Arc::new(block);
             let acceptance = {
                 let mut chain = self.chain.lock().await;
-                let result = chain.add_block(block.clone())?;
+                let result = chain.add_block((*block_arc).clone())?;
                 tracing::info!(
                     "Staked new block {} at height {}",
                     hex::encode(block_hash),
@@ -1992,26 +2000,23 @@ impl Node {
                 utxos_added,
                 utxos_removed,
                 claimed_addresses,
-            } = &acceptance
+            } = acceptance
             {
-                let size_bytes = serde_json::to_vec(&*block_arc)
-                    .map(|v| v.len())
-                    .unwrap_or(0);
                 self.emit(NodeEvent::NewBlock {
-                    height: *height,
+                    height,
                     hash: block_hash,
-                    tx_count: block_arc.transactions.len(),
-                    timestamp: block_arc.header.timestamp,
+                    tx_count,
+                    timestamp,
                     size_bytes,
                     block: block_arc.clone(),
-                    utxos_added: utxos_added.clone(),
-                    utxos_removed: utxos_removed.clone(),
-                    claimed_addresses: claimed_addresses.clone(),
+                    utxos_added,
+                    utxos_removed,
+                    claimed_addresses,
                 });
-                for tx in &block_arc.transactions {
+                for tx in block_arc.transactions.iter() {
                     self.emit(NodeEvent::TxConfirmed {
                         txid: tx.txid(),
-                        block_height: *height,
+                        block_height: height,
                         block_hash,
                     });
                 }
@@ -2025,7 +2030,7 @@ impl Node {
                     .sum();
                 let staking_addr = staking.address.clone();
                 self.emit(NodeEvent::StakingReward {
-                    block_height: *height,
+                    block_height: height,
                     reward_sats,
                     address: staking_addr,
                 });

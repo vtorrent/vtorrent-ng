@@ -681,21 +681,22 @@ impl Chain {
             .pop_back()
             .ok_or_else(|| NodeError::Chain("No journal to roll back".into()))?;
 
-        // Apply changes in reverse
-        for change in journal.changes.iter().rev() {
+        // Apply changes in reverse.  The journal is consumed here — use
+        // into_iter() to move UTXOs instead of cloning them.
+        for change in journal.changes.into_iter().rev() {
             match change {
                 UtxoChange::Added { key } => {
-                    self.utxo_set.remove(key);
+                    self.utxo_set.remove(&key);
                 }
                 UtxoChange::Removed { key, utxo } => {
-                    self.utxo_set.insert(*key, utxo.clone());
+                    self.utxo_set.insert(key, utxo);
                 }
             }
         }
 
-        // Restore claimed addresses
-        for addr in &journal.claimed_addresses {
-            self.claimed_addresses.remove(addr);
+        // Restore claimed addresses (move out of the consumed journal).
+        for addr in journal.claimed_addresses {
+            self.claimed_addresses.remove(&addr);
         }
 
         // Restore total supply.
@@ -831,15 +832,15 @@ impl Chain {
                 let key = (input.prev_txid, input.prev_vout);
                 if let Some(utxo) = self.utxo_set.remove(&key) {
                     total_input = total_input.saturating_add(utxo.value);
-                    if tx.is_coinstake() && input_index == 0 {
-                        stake_input = Some(utxo.clone());
-                    }
+
+                    // Extract data before moving utxo into the journal.
+                    let script_bytes = utxo.script_pubkey.clone();
+                    let stake_value = utxo.value;
+                    let stake_height = utxo.height;
+                    let stake_timestamp = utxo.timestamp;
+
                     // ── Script verification ──────────────────────────────────
-                    // Skip for legacy-claim inputs (they use ECDSA message sig,
-                    // not script-sig, verified separately in validate_legacy_claim).
                     if !tx.is_legacy_claim() {
-                        // The signature is over the per-input SIGHASH_ALL hash,
-                        // which must match what the wallet signed over.
                         let tx_hash = tx.sighash(input_index, &utxo.script_pubkey);
                         let env = ScriptEnv {
                             tx_hash,
@@ -853,8 +854,8 @@ impl Chain {
                             Script::from_bytes(input.script_sig.clone()).map_err(|e| {
                                 NodeError::InvalidTransaction(format!("Invalid scriptSig: {}", e))
                             })?;
-                        let script_pubkey = Script::from_bytes(utxo.script_pubkey.clone())
-                            .map_err(|e| {
+                        let script_pubkey =
+                            Script::from_bytes(script_bytes.clone()).map_err(|e| {
                                 NodeError::InvalidTransaction(format!(
                                     "Invalid scriptPubKey: {}",
                                     e
@@ -869,6 +870,19 @@ impl Chain {
                             ))
                         })?;
                     }
+
+                    // Save coinstake kernel data before the move.
+                    if tx.is_coinstake() && input_index == 0 {
+                        stake_input = Some(Utxo {
+                            txid: utxo.txid,
+                            vout: utxo.vout,
+                            value: stake_value,
+                            script_pubkey: script_bytes,
+                            height: stake_height,
+                            timestamp: stake_timestamp,
+                        });
+                    }
+
                     journal.changes.push(UtxoChange::Removed { key, utxo });
                 } else if !tx.is_legacy_claim() {
                     return Err(NodeError::InvalidTransaction(format!(
