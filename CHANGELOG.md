@@ -7,12 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — vTorrent 2.0.0
 
+### Since v2.0.0-beta.1
+
+**Security Audit**
+- Full codebase audit: 85 findings identified and resolved (5 Critical, 18 High, 32 Medium, 18 Low, 12 Info) across three fix batches plus a second-pass review of Medium/Low items
+- 15-finding edge-case audit resolved (f64→integer incentive math, store corruption handling, piece-assembler bounds checks, torrent scheduler accounting)
+- RPC/CLI fabricated values eliminated — all reported data comes from real chain/wallet state
+- Runtime staking control (`start`/`stop`) with live staking counters
+
+**Performance**
+- Criterion benchmark suite (`vtorrent-node/benches/consensus_hotpath.rs`): stake modifier ~67ns, kernel hash ~65ns, sighash 131–545ns, merkle root 173ns–23.5µs
+- Incremental sighash via `Sha256::update()` — 56–91% faster than full-tx serialization, bit-identical output
+- Static `LazyLock<Secp256k1<All>>` context; merkle root in-place reduction; consensus hot-path clone reduction
+
+**BTC Wallet**
+- Full send-to-address workflow with network broadcast (multi-peer fan-out, 3 concurrent)
+- PSBT create/sign/finalize round-trip; P2TR (Taproot) addresses; Schnorr signing
+- BIP69 input/output sorting, RBF signaling, multi-index signing, UTXO persistence
+- Fee estimation with urgency multiplier (economy/normal/urgent target blocks)
+
+**Testing**
+- 508 workspace tests (was 424): 29 BTC send-flow/HTLC integration tests, PoS multi-block staking tests, mempool-inclusion test, compact-block edge cases, ban-manager stress tests
+- 4 libFuzzer targets (script engine, P2P codec, tx deser, PSBT) — 8.1M runs, 0 crashes
+
+**Script Engine**
+- 20+ new opcodes added; sign-magnitude `bytes_to_int` encoding fix matching Bitcoin semantics
+
+**Networking**
+- Compact block (BIP-152-style) encode/decode with SipHash short-id reconstruction
+- PEX, DHT, codec, ban-manager test coverage expanded to 50 P2P tests
+
+**Frontend / Desktop**
+- All Tauri command stubs eliminated; 25+ IPC commands registered and wired
+- BTC wallet page fully connected via `useBtc` hooks; DEX/staking result types aligned with backend
+
+**Documentation**
+- `docs/rpc-api.md`: complete reference for all 40+ endpoints
+- `docs/atomic-swap-protocol.md`: cross-chain HTLC flow, timing parameters, failure modes
+- `docs/wallet-recovery.md`: legacy `wallet.dat` migration and WIF import guide
+
+**Fixed**
+- `BtcWallet::send_to` MutexGuard deadlock (double-lock in insufficient-funds error path) that hung `cargo test --workspace`
+- Ban-manager test threshold mismatch (100 vs 1000)
+
 ### Added
 
 **Core Infrastructure**
 - New Rust-based monorepo (`vtorrent-ng`) replacing the legacy C++/Qt codebase
 - Cargo workspace with 17 crates: `vtorrent-core`, `vtorrent-wallet`, `vtorrent-migrate`, `vtorrent-snapshot`, `vtorrent-node`, `vtorrent-p2p`, `vtorrent-torrent`, `vtorrent-rpc`, `vtorrent-tauri`, `vtorrent-overlay`, `vtorrent-spv`, `vtorrent-store`, `vtorrent-daemon`, `vtorrent-script`, `vtorrent-onion`, `vtorrent-cli`, `vtorrent-btc`
-- Full test suite: 424 tests, 0 failures
+- Full test suite: 508 tests, 0 failures; 4 libFuzzer targets (8.1M runs, 0 crashes)
 
 **Overlay / NAT Traversal**
 - `vtorrent-overlay`: Kademlia-style overlay network for NAT traversal and peer relay
@@ -60,9 +103,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **New Chain (vTorrent 2.0)**
 - Proof-of-Stake consensus (PPCoin-style, modernized)
-- 10-second target block time
+- 60-second target block time
 - 5% annual staking reward
-- Minimum stake: 100 VTR, minimum age: 30 days
+- Minimum stake: 1 VTR, minimum age: 6 hours (maximum age: 6 days)
 - Maximum supply: 20,000,000 VTR
 - Deterministic genesis block with embedded legacy UTXO snapshot
 
@@ -118,8 +161,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Address format**: Legacy `V...` addresses (Base58Check prefix 75) are preserved in the snapshot; new chain uses the same prefix for continuity
 - **WIF format**: Legacy `7...` WIF keys (prefix 203) are imported and re-encoded for the new chain
-- **Network magic**: Preserved from legacy (`0x22 0x05 0x35 0x70`) for potential bootstrap compatibility
-- **P2P port**: Preserved at `22524`
+- **Network magic**: New `0x56 0x54 0x52 0x32` (`"VTR2"`); legacy was `0x19 0x3b 0x2f 0x5a`
+- **P2P port**: `22526`; RPC port `22525`
 
 ### Removed
 
