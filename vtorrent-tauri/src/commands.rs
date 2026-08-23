@@ -330,6 +330,7 @@ pub fn generate_address(state: State<AppState>, label: Option<String>) -> Result
         .generate_key(label.as_deref())
         .map_err(TauriError::from)?;
 
+    // A newly generated address has no UTXOs yet — balance is always 0.
     Ok(AddressInfo {
         address: address.to_string(),
         label: label.unwrap_or_else(|| "New Address".into()),
@@ -340,24 +341,53 @@ pub fn generate_address(state: State<AppState>, label: Option<String>) -> Result
 
 /// Get all addresses in the current wallet.
 ///
+/// When the node is running, balances are queried live from the chain.
+/// Otherwise falls back to the wallet's stored balances (always 0 for
+/// addresses that haven't been synced yet).
+///
 /// Called from: `DashboardPage.tsx` → `invoke('get_addresses')`
 #[tauri::command]
-pub fn get_addresses(state: State<AppState>) -> Result<Vec<AddressInfo>> {
-    let guard = state.wallet.lock().unwrap();
-    let wallet = guard.as_ref().ok_or(TauriError::WalletNotInitialized)?;
+pub async fn get_addresses(state: tauri::State<'_, AppState>) -> Result<Vec<AddressInfo>> {
+    // Read wallet addresses (synchronous lock).
+    let wallet_addrs: Vec<(String, String, u64, bool)> = {
+        let guard = state.wallet.lock().unwrap();
+        let wallet = guard.as_ref().ok_or(TauriError::WalletNotInitialized)?;
+        wallet.list_addresses()
+    };
 
-    let addresses = wallet
-        .list_addresses()
-        .iter()
-        .map(|(addr, label, balance, is_import)| AddressInfo {
-            address: addr.to_string(),
-            label: label.clone(),
-            balance: *balance,
-            is_legacy_import: *is_import,
-        })
-        .collect();
+    // If the node is running, query the chain for live balances.
+    let chain_guard = state.node.lock().await;
+    let chain = chain_guard.as_ref().map(|h| h.rpc_state.chain.clone());
+    drop(chain_guard);
 
-    Ok(addresses)
+    let balances: Vec<u64> = if let Some(chain) = chain {
+        let chain = chain.lock().await;
+        wallet_addrs
+            .iter()
+            .map(|(addr, _, _, _)| {
+                chain
+                    .get_utxos_for_address(addr)
+                    .iter()
+                    .map(|u| u.value)
+                    .sum()
+            })
+            .collect()
+    } else {
+        wallet_addrs.iter().map(|(_, _, bal, _)| *bal).collect()
+    };
+
+    Ok(wallet_addrs
+        .into_iter()
+        .zip(balances)
+        .map(
+            |((address, label, _, is_legacy_import), balance)| AddressInfo {
+                address,
+                label,
+                balance,
+                is_legacy_import,
+            },
+        )
+        .collect())
 }
 
 // ─── 2FA commands ─────────────────────────────────────────────────────────────
@@ -596,7 +626,7 @@ pub async fn get_node_info(state: tauri::State<'_, AppState>) -> Result<NodeInfo
                 peer_count,
                 syncing,
                 mempool_count: mempool.size(),
-                network: "vtorrent-mainnet".into(),
+                network: rpc.network.clone(),
             })
         }
     }
@@ -1536,11 +1566,20 @@ pub async fn start_staking(
 
     let blocks_staked = *handle.rpc_state.blocks_staked.read().await;
     let rewards_earned_sats = *handle.rpc_state.rewards_earned_sats.read().await;
+    let chain = handle.rpc_state.chain.lock().await;
+    let staking_utxos = chain.get_utxos_for_address(&address);
+    let total_staking: u64 = staking_utxos.iter().map(|u| u.value).sum();
+    // APY = annual staking reward rate as a percentage.
+    let estimated_apy = if total_staking > 0 {
+        vtorrent_node::consensus::POS_ANNUAL_RATE * 100.0
+    } else {
+        0.0
+    };
     Ok(StakingStatusResult {
         enabled: true,
         address: Some(address),
         blocks_staked,
-        estimated_apy: 5.0,
+        estimated_apy,
         rewards_earned_sats,
     })
 }
@@ -1589,11 +1628,28 @@ pub async fn get_staking_status(state: tauri::State<'_, AppState>) -> Result<Sta
     let blocks_staked = *handle.rpc_state.blocks_staked.read().await;
     let rewards_earned_sats = *handle.rpc_state.rewards_earned_sats.read().await;
 
+    let estimated_apy = if enabled {
+        if let Some(ref addr) = address {
+            let chain = handle.rpc_state.chain.lock().await;
+            let staking_utxos = chain.get_utxos_for_address(addr);
+            let total_staking: u64 = staking_utxos.iter().map(|u| u.value).sum();
+            if total_staking > 0 {
+                vtorrent_node::consensus::POS_ANNUAL_RATE * 100.0
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
     Ok(StakingStatusResult {
         enabled,
         address,
         blocks_staked,
-        estimated_apy: if enabled { 5.0 } else { 0.0 },
+        estimated_apy,
         rewards_earned_sats,
     })
 }
