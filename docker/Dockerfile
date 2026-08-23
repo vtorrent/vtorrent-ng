@@ -2,7 +2,7 @@
 # Build:  docker build -t vtorrent/node -f docker/Dockerfile .
 # Run:    docker run vtorrent/node --listen 0.0.0.0:22526 --rpc-addr 0.0.0.0:22525
 
-FROM rust:1.83-slim AS builder
+FROM rust:1.90-slim AS builder
 WORKDIR /build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -10,6 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY Cargo.toml Cargo.lock* ./
+# All workspace members must be present for `cargo build` to resolve the
+# workspace — even crates the daemon does not depend on (e.g. vtorrent-tauri).
 COPY vtorrent-core ./vtorrent-core
 COPY vtorrent-wallet ./vtorrent-wallet
 COPY vtorrent-migrate ./vtorrent-migrate
@@ -26,6 +28,7 @@ COPY vtorrent-script ./vtorrent-script
 COPY vtorrent-onion ./vtorrent-onion
 COPY vtorrent-cli ./vtorrent-cli
 COPY vtorrent-btc ./vtorrent-btc
+COPY vtorrent-tauri ./vtorrent-tauri
 
 RUN cargo build --release -p vtorrent-daemon
 

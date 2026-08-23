@@ -18,6 +18,8 @@ services:
     build:
       context: ../..
       dockerfile: docker/Dockerfile
+    # Named volumes are root-owned; run as root for this local testnet only.
+    user: "0:0"
     container_name: vtr-node1
     command:
       - --listen
@@ -43,6 +45,8 @@ services:
     build:
       context: ../..
       dockerfile: docker/Dockerfile
+    # Named volumes are root-owned; run as root for this local testnet only.
+    user: "0:0"
     container_name: vtr-node2
     command:
       - --listen
@@ -70,6 +74,8 @@ services:
     build:
       context: ../..
       dockerfile: docker/Dockerfile
+    # Named volumes are root-owned; run as root for this local testnet only.
+    user: "0:0"
     container_name: vtr-node3
     command:
       - --listen
@@ -97,7 +103,7 @@ services:
     image: bitcoin/bitcoin:26
     container_name: vtr-btc-regtest
     command:
-      - printtoconsole
+      - -printtoconsole=1
       - -regtest=1
       - -rpcbind=0.0.0.0
       - -rpcallowip=0.0.0.0/0
