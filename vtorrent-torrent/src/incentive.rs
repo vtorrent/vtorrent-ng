@@ -29,6 +29,10 @@ pub struct PeerBandwidthAccount {
     pub total_paid_satoshis: u64,
     /// Unix timestamp of last settlement.
     pub last_settlement: u64,
+    /// Unix timestamp of last bandwidth activity (upload or download).
+    /// Used for eviction: least-recently-active accounts are evicted first,
+    /// never active-settled ones (which would delete pending earnings).
+    pub last_active: u64,
     /// Whether this peer is participating in the incentive scheme.
     pub incentive_enabled: bool,
 }
@@ -42,6 +46,7 @@ impl PeerBandwidthAccount {
             total_earned_satoshis: 0,
             total_paid_satoshis: 0,
             last_settlement: 0,
+            last_active: 0,
             incentive_enabled: true,
         }
     }
@@ -54,6 +59,11 @@ impl PeerBandwidthAccount {
     /// Record bytes downloaded from this peer.
     pub fn record_download(&mut self, bytes: u64) {
         self.bytes_downloaded = self.bytes_downloaded.saturating_add(bytes);
+    }
+
+    /// Update the last-activity timestamp.
+    pub fn touch(&mut self, timestamp: u64) {
+        self.last_active = timestamp;
     }
 
     /// Calculate how much VTR we should receive from this peer for our uploads.

@@ -99,28 +99,113 @@ pub fn build_announce_peer_query(
     msg
 }
 
-/// Parse a DHT response, extracting peers (from `values`) and nodes (from `nodes`).
-pub fn parse_dht_response(data: &[u8]) -> (Vec<TrackerPeer>, Vec<CompactNode>) {
+/// Parse a DHT reply, extracting peers (from `r.values`) and nodes
+/// (`r.nodes`). Only accepts well-formed top-level response dicts; returns
+/// the transaction id (`r.t`) so callers can match replies to queries.
+pub fn parse_dht_response(data: &[u8]) -> (Vec<TrackerPeer>, Vec<CompactNode>, Option<Vec<u8>>) {
     let mut peers = Vec::new();
     let mut nodes = Vec::new();
+    let mut txn_id = None;
 
-    if let Some(pos) = find_bytes(data, b"6:values") {
-        let after = &data[pos + 8..];
-        if let Some(list) = parse_bencode_list_of_strings(after) {
-            for item in list {
-                peers.extend(parse_compact_peers(&item));
+    let mut pos = 0usize;
+    if let Some(BVal::Dict(root)) = parse_bencode_value(data, &mut pos, 0) {
+        // KRPC reply: {"t": <txn id>, "y": "r", "r": {...}}
+        if let Some((_, BVal::Bytes(t))) = root.iter().find(|(k, _)| k == b"t") {
+            txn_id = Some(t.clone());
+        }
+        if let Some(BVal::Dict(r)) = root.iter().find(|(k, _)| k == b"r").map(|(_, v)| v) {
+            if let Some((_, BVal::Bytes(node_data))) = r.iter().find(|(k, _)| k == b"nodes") {
+                nodes = CompactNode::parse_list(node_data);
+            }
+            if let Some((_, BVal::List(values))) = r.iter().find(|(k, _)| k == b"values") {
+                for v in values {
+                    if let BVal::Bytes(item) = v {
+                        peers.extend(parse_compact_peers(item));
+                    }
+                }
             }
         }
     }
 
-    if let Some(pos) = find_bytes(data, b"5:nodes") {
-        let after = &data[pos + 7..];
-        if let Some(node_data) = parse_bencode_string(after) {
-            nodes = CompactNode::parse_list(&node_data);
-        }
-    }
+    (peers, nodes, txn_id)
+}
 
-    (peers, nodes)
+/// Minimal depth-limited bencode value used for KRPC response parsing.
+enum BVal {
+    Int(i64),
+    Bytes(Vec<u8>),
+    List(Vec<BVal>),
+    Dict(Vec<(Vec<u8>, BVal)>),
+}
+
+const MAX_KRPC_DEPTH: usize = 32;
+
+/// Iterative-safe recursive bencode parser with a hard depth cap. Returns
+/// `None` on malformed input or when `depth` exceeds [`MAX_KRPC_DEPTH`].
+fn parse_bencode_value(data: &[u8], pos: &mut usize, depth: usize) -> Option<BVal> {
+    if depth > MAX_KRPC_DEPTH || *pos >= data.len() {
+        return None;
+    }
+    match data[*pos] {
+        b'i' => {
+            *pos += 1;
+            let end = data[*pos..].iter().position(|&b| b == b'e')? + *pos;
+            let s = std::str::from_utf8(&data[*pos..end]).ok()?;
+            let n: i64 = s.parse().ok()?;
+            *pos = end + 1;
+            Some(BVal::Int(n))
+        }
+        b'0'..=b'9' => {
+            let colon = data[*pos..].iter().position(|&b| b == b':')? + *pos;
+            let s = std::str::from_utf8(&data[*pos..colon]).ok()?;
+            let len: usize = s.parse().ok()?;
+            let start = colon + 1;
+            let end = start.checked_add(len)?;
+            if end > data.len() {
+                return None;
+            }
+            let bytes = data[start..end].to_vec();
+            *pos = end;
+            Some(BVal::Bytes(bytes))
+        }
+        b'l' => {
+            *pos += 1;
+            let mut items = Vec::new();
+            loop {
+                if *pos >= data.len() {
+                    return None;
+                }
+                if data[*pos] == b'e' {
+                    *pos += 1;
+                    break;
+                }
+                items.push(parse_bencode_value(data, pos, depth + 1)?);
+            }
+            Some(BVal::List(items))
+        }
+        b'd' => {
+            *pos += 1;
+            let mut entries = Vec::new();
+            loop {
+                if *pos >= data.len() {
+                    return None;
+                }
+                if data[*pos] == b'e' {
+                    *pos += 1;
+                    break;
+                }
+                match parse_bencode_value(data, pos, depth + 1)? {
+                    BVal::Bytes(key) => {
+                        let val = parse_bencode_value(data, pos, depth + 1)?;
+                        entries.push((key, val));
+                    }
+                    _ => return None,
+                }
+            }
+            Some(BVal::Dict(entries))
+        }
+        _ => None,
+    }
 }
 
 /// Parse compact peers (6 bytes each: 4 IP + 2 port).
@@ -144,42 +229,6 @@ fn parse_compact_peers(data: &[u8]) -> Vec<TrackerPeer> {
         i += 6;
     }
     peers
-}
-
-fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
-fn parse_bencode_string(data: &[u8]) -> Option<Vec<u8>> {
-    let colon_pos = data.iter().position(|&b| b == b':')?;
-    let len_str = std::str::from_utf8(&data[..colon_pos]).ok()?;
-    let len: usize = len_str.parse().ok()?;
-    let start = colon_pos + 1;
-    if start + len <= data.len() {
-        Some(data[start..start + len].to_vec())
-    } else {
-        None
-    }
-}
-
-fn parse_bencode_list_of_strings(data: &[u8]) -> Option<Vec<Vec<u8>>> {
-    if data.first() != Some(&b'l') {
-        return None;
-    }
-    let mut result = Vec::new();
-    let mut pos = 1;
-    while pos < data.len() && data[pos] != b'e' {
-        if let Some(s) = parse_bencode_string(&data[pos..]) {
-            let colon = data[pos..].iter().position(|&b| b == b':')?;
-            let len_str = std::str::from_utf8(&data[pos..pos + colon]).ok()?;
-            let len: usize = len_str.parse().ok()?;
-            pos += colon + 1 + len;
-            result.push(s);
-        } else {
-            break;
-        }
-    }
-    Some(result)
 }
 
 use tokio::net::UdpSocket;
@@ -242,8 +291,17 @@ impl DhtClient {
 
             let mut buf = [0u8; 65536];
             match timeout(Duration::from_secs(3), socket.recv_from(&mut buf)).await {
-                Ok(Ok((len, _))) => {
-                    let (found_peers, nodes) = parse_dht_response(&buf[..len]);
+                Ok(Ok((len, src))) => {
+                    // Only accept replies from the node we actually queried,
+                    // and only when the transaction id matches our query —
+                    // otherwise any internet host could inject fake peers.
+                    if src != node_addr {
+                        continue;
+                    }
+                    let (found_peers, nodes, reply_tid) = parse_dht_response(&buf[..len]);
+                    if reply_tid.as_deref() != Some(&tid_bytes[..]) {
+                        continue;
+                    }
                     for p in found_peers {
                         if !peers.contains(&p) {
                             peers.push(p);
@@ -275,11 +333,14 @@ impl DhtClient {
                 continue;
             }
             let mut buf = [0u8; 65536];
-            if let Ok(Ok((len, _))) =
+            if let Ok(Ok((len, src))) =
                 timeout(Duration::from_secs(3), socket.recv_from(&mut buf)).await
             {
+                if src != *node_addr {
+                    continue;
+                }
                 // Extract the token from the response (if present) and announce.
-                if let Some(token) = extract_token(&buf[..len]) {
+                if let Some(token) = extract_token(&buf[..len], &tid) {
                     let tid2 = [0x62u8, 0x62u8];
                     let announce =
                         build_announce_peer_query(&self.node_id, info_hash, port, &token, &tid2);
@@ -291,14 +352,21 @@ impl DhtClient {
     }
 }
 
-/// Extract the `token` field from a DHT response.
-fn extract_token(data: &[u8]) -> Option<Vec<u8>> {
-    if let Some(pos) = find_bytes(data, b"5:token") {
-        let after = &data[pos + 7..];
-        parse_bencode_string(after)
-    } else {
-        None
+/// Extract the `r.token` field from a KRPC reply whose transaction id matches.
+fn extract_token(data: &[u8], expected_tid: &[u8]) -> Option<Vec<u8>> {
+    let (_, _, reply_tid) = parse_dht_response(data);
+    if reply_tid.as_deref() != Some(expected_tid) {
+        return None;
     }
+    let mut pos = 0usize;
+    if let Some(BVal::Dict(root)) = parse_bencode_value(data, &mut pos, 0) {
+        if let Some(BVal::Dict(r)) = root.iter().find(|(k, _)| k == b"r").map(|(_, v)| v) {
+            if let Some((_, BVal::Bytes(token))) = r.iter().find(|(k, _)| k == b"token") {
+                return Some(token.clone());
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -335,15 +403,35 @@ mod tests {
 
     #[test]
     fn test_parse_dht_response_peers() {
+        // Proper KRPC reply:
+        // {"t": "aa", "y": "r", "r": {"id": <20>, "values": [<peer>]}}
         let mut resp = Vec::new();
-        resp.extend_from_slice(b"d6:valuesl6:");
+        resp.extend_from_slice(b"d1:t2:aa1:y1:e1:rd2:id20:");
+        resp.extend_from_slice(&[0u8; 20]);
+        resp.extend_from_slice(b"6:valuesl6:");
         resp.extend_from_slice(&[10, 0, 0, 1, 0x1A, 0xE1]);
-        resp.extend_from_slice(b"ee");
-        let (peers, nodes) = parse_dht_response(&resp);
+        resp.extend_from_slice(b"eee");
+        let (peers, nodes, tid) = parse_dht_response(&resp);
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].ip, "10.0.0.1");
         assert_eq!(peers[0].port, 6881);
         assert!(nodes.is_empty());
+        assert_eq!(tid.as_deref(), Some(&b"aa"[..]));
+    }
+
+    #[test]
+    fn test_parse_dht_response_rejects_substring_smuggling() {
+        // The old substring parser accepted "values"/"nodes" appearing inside
+        // unrelated strings; the dict walker must not.
+        let mut resp = Vec::new();
+        resp.extend_from_slice(b"d1:t2:aa1:y1:e1:rd2:id20:");
+        resp.extend_from_slice(&[0u8; 20]);
+        // A token string that CONTAINS "6:values..." as raw bytes.
+        // Content: x 6:values l 6: AAAAAA e = 19 bytes.
+        resp.extend_from_slice(b"5:token19:x6:valuesl6:AAAAAAe");
+        resp.extend_from_slice(b"ee");
+        let (peers, _, _) = parse_dht_response(&resp);
+        assert!(peers.is_empty());
     }
 
     #[test]
@@ -353,14 +441,24 @@ mod tests {
         node.extend_from_slice(&[10, 0, 0, 2]);
         node.extend_from_slice(&6882u16.to_be_bytes());
         let mut resp = Vec::new();
-        resp.extend_from_slice(b"d5:nodes");
+        resp.extend_from_slice(b"d1:t2:aa1:y1:e1:rd2:id20:");
+        resp.extend_from_slice(&[0u8; 20]);
+        resp.extend_from_slice(b"5:nodes");
         resp.extend_from_slice(format!("{}:", node.len()).as_bytes());
         resp.extend_from_slice(&node);
-        resp.extend_from_slice(b"e");
-        let (peers, nodes) = parse_dht_response(&resp);
+        resp.extend_from_slice(b"ee");
+        let (peers, nodes, _) = parse_dht_response(&resp);
         assert!(peers.is_empty());
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].addr.port(), 6882);
+    }
+
+    #[test]
+    fn test_parse_dht_response_depth_bomb_safe() {
+        let bomb = vec![b'd'; 50_000];
+        let (peers, nodes, _) = parse_dht_response(&bomb);
+        assert!(peers.is_empty());
+        assert!(nodes.is_empty());
     }
 
     #[tokio::test]
@@ -374,11 +472,22 @@ mod tests {
         let server_task = tokio::spawn(async move {
             let mut buf = [0u8; 2048];
             let (n, client_addr) = server.recv_from(&mut buf).await.unwrap();
-            // Respond with a get_peers response containing one peer.
+            // Reply with the SAME transaction id the query carried
+            // ("1:t2:" followed by the two tid bytes at the end).
+            let query = &buf[..n];
+            let tid_pos = query
+                .windows(5)
+                .rposition(|w| w == b"1:t2:")
+                .expect("query carries t2:");
+            let tid = [query[tid_pos + 5], query[tid_pos + 6]];
             let mut resp = Vec::new();
-            resp.extend_from_slice(b"d6:valuesl6:");
+            resp.extend_from_slice(b"d1:t2:");
+            resp.extend_from_slice(&tid);
+            resp.extend_from_slice(b"1:y1:e1:rd2:id20:");
+            resp.extend_from_slice(&[0u8; 20]);
+            resp.extend_from_slice(b"6:valuesl6:");
             resp.extend_from_slice(&[10, 0, 0, 1, 0x1A, 0xE1]);
-            resp.extend_from_slice(b"ee");
+            resp.extend_from_slice(b"eee");
             server.send_to(&resp, client_addr).await.unwrap();
             let _ = n;
         });

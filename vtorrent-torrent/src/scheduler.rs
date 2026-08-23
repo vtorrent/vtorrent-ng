@@ -1,6 +1,12 @@
 //! Piece scheduler: rarest-first selection, block pipelining, resume.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+/// How long a block request stays "in flight" without a response before the
+/// lease expires and the block becomes requestable again. Covers peers that
+/// choke, disconnect, or stall with requests outstanding.
+pub const BLOCK_LEASE_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Tracks piece availability across peers and our own download progress.
 #[derive(Debug, Default)]
@@ -30,6 +36,14 @@ impl PieceTracker {
         if (index as usize) < self.have.len() {
             self.have[index as usize] = true;
             self.requested[index as usize] = false;
+        }
+    }
+
+    /// Clear the have flag for a piece (e.g. resume bitfield turned out to be
+    /// invalid for that piece), making it eligible for download again.
+    pub fn mark_not_have(&mut self, index: u32) {
+        if (index as usize) < self.have.len() {
+            self.have[index as usize] = false;
         }
     }
 
@@ -167,8 +181,10 @@ pub struct SchedulerState {
     pub max_pipelined_blocks: usize,
     /// Endgame threshold: when this many pieces remain, request from all peers.
     pub endgame_threshold: usize,
-    /// Blocks currently in flight: piece index -> set of begin offsets.
-    requested_blocks: HashMap<u32, Vec<u32>>,
+    /// Blocks currently in flight: piece index -> (begin offset, lease time).
+    /// Leases expire after `BLOCK_LEASE_TIMEOUT` so blocks lost to a choked,
+    /// disconnected, or stalled peer are automatically re-requestable.
+    requested_blocks: HashMap<u32, Vec<(u32, Instant)>>,
 }
 
 impl SchedulerState {
@@ -187,12 +203,30 @@ impl SchedulerState {
         self.tracker.remaining() <= self.endgame_threshold
     }
 
+    /// Drop expired leases and unmark their pieces so they can be re-picked.
+    fn purge_expired_leases(&mut self) {
+        let now = Instant::now();
+        let mut expired_pieces: Vec<u32> = Vec::new();
+        for (piece, leases) in self.requested_blocks.iter_mut() {
+            let before = leases.len();
+            leases.retain(|(_, leased_at)| now.duration_since(*leased_at) < BLOCK_LEASE_TIMEOUT);
+            if leases.len() != before {
+                expired_pieces.push(*piece);
+            }
+        }
+        self.requested_blocks.retain(|_, leases| !leases.is_empty());
+        for piece in expired_pieces {
+            self.tracker.clear_requested(piece);
+        }
+    }
+
     /// Select the next block to request: (piece, begin, length).
     ///
     /// Picks the rarest piece we don't have, then the next unrequested block
     /// within that piece. `piece_len` maps a piece index to its byte length.
     /// Returns `None` when no block is available.
     pub fn next_block(&mut self, piece_len: &dyn Fn(u32) -> u64) -> Option<(u32, u32, u32)> {
+        self.purge_expired_leases();
         let piece = self.tracker.next_piece()?;
         let len = piece_len(piece);
         let block_size = self.block_size as u64;
@@ -200,23 +234,27 @@ impl SchedulerState {
         let requested = self.requested_blocks.entry(piece).or_default();
         for block in 0..total_blocks {
             let begin = (block * block_size) as u32;
-            if requested.contains(&begin) {
+            if requested.iter().any(|&(b, _)| b == begin) {
                 continue;
             }
             let block_len = (len - block * block_size).min(block_size) as u32;
-            requested.push(begin);
+            requested.push((begin, Instant::now()));
             return Some((piece, begin, block_len));
         }
-        // All blocks of this piece are requested; mark the piece requested so
-        // next_piece skips it, and try the next piece.
+        // All blocks of this piece are in flight; mark the piece requested so
+        // next_piece skips it until a lease expires or the piece completes.
         self.tracker.mark_requested(piece);
         None
     }
 
-    /// Mark a block as no longer in flight (e.g. on cancel or completion).
+    /// Mark a block as no longer in flight (e.g. on cancel).
     pub fn clear_block(&mut self, piece: u32, begin: u32) {
-        if let Some(blocks) = self.requested_blocks.get_mut(&piece) {
-            blocks.retain(|&b| b != begin);
+        if let Some(leases) = self.requested_blocks.get_mut(&piece) {
+            leases.retain(|&(b, _)| b != begin);
+            if leases.is_empty() {
+                self.requested_blocks.remove(&piece);
+                self.tracker.clear_requested(piece);
+            }
         }
     }
 

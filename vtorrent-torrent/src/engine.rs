@@ -344,7 +344,7 @@ pub async fn run_engine(
                 Err(_) => continue,
             };
             if let Ok(mut conn) = PeerConnection::connect(addr, metainfo.info_hash, peer_id).await {
-                if let Some(full) = fetch_metadata_from_peer(&mut conn).await {
+                if let Some(full) = fetch_metadata_from_peer(&mut conn, metainfo.info_hash).await {
                     metainfo = full;
                     break;
                 }
@@ -360,12 +360,41 @@ pub async fn run_engine(
     }
 
     // Build the shared scheduler state and load any resume bitfield.
+    // Resume files are keyed by info-hash (not display name — two different
+    // torrents can share a name) and the bitfield is validated against the
+    // actual piece data on disk before any piece is trusted.
     let scheduler = Arc::new(StdMutex::new(SchedulerState::new(metainfo.piece_count)));
     {
-        let mut sched = scheduler.lock().unwrap_or_else(|e| e.into_inner());
-        let resume_path = download_dir.join(format!("{}.vtorrent", metainfo.name));
-        if let Ok(bytes) = std::fs::read(&resume_path) {
-            sched.tracker.load_have_bitfield(&bytes);
+        // Phase 1: load the bitfield and list claimed pieces (lock dropped
+        // before any await — StdMutexGuard is not Send).
+        let claimed: Vec<u32> = {
+            let mut sched = scheduler.lock().unwrap_or_else(|e| e.into_inner());
+            let resume_path = resume_file_path(&download_dir, &metainfo.info_hash);
+            if let Ok(bytes) = std::fs::read(&resume_path) {
+                sched.tracker.load_have_bitfield(&bytes);
+            }
+            (0..metainfo.piece_count)
+                .filter(|&i| sched.tracker.has_piece(i))
+                .collect()
+        };
+        // Phase 2: verify each claimed piece against disk (async, no lock).
+        let mut unverified: Vec<u32> = Vec::new();
+        for i in claimed {
+            if !piece_on_disk_matches(&metainfo, &download_dir, i).await {
+                unverified.push(i);
+            }
+        }
+        // Phase 3: clear bits for pieces that failed verification.
+        if !unverified.is_empty() {
+            let mut sched = scheduler.lock().unwrap_or_else(|e| e.into_inner());
+            for &i in &unverified {
+                tracing::warn!(
+                    "Resume bitfield claims piece {} but it is missing/corrupt on disk; re-fetching",
+                    i
+                );
+                sched.tracker.clear_requested(i);
+                sched.tracker.mark_not_have(i);
+            }
         }
     }
 
@@ -417,7 +446,7 @@ pub async fn run_engine(
     // Persist the resume bitfield and update final state.
     let downloaded = {
         let sched = scheduler.lock().unwrap_or_else(|e| e.into_inner());
-        let resume_path = download_dir.join(format!("{}.vtorrent", metainfo.name));
+        let resume_path = resume_file_path(&download_dir, &metainfo.info_hash);
         let _ = std::fs::write(&resume_path, sched.tracker.serialize_have_bitfield());
         sched
             .tracker
@@ -490,7 +519,9 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
         for _ in 0..10 {
             match conn.recv().await {
                 Ok(PeerMessage::Extended { id: 0, payload }) => {
-                    if let Ok(Value::Dict(d)) = serde_bencode::from_bytes::<Value>(&payload) {
+                    if let Some(Ok(Value::Dict(d))) =
+                        crate::bencode_guard::parse_untrusted::<Value>(&payload)
+                    {
                         if let Some(Value::Dict(m)) = d.get(b"m".as_slice()) {
                             if let Some(Value::Int(id)) = m.get(b"ut_vtr".as_slice()) {
                                 ut_vtr_id = Some(*id as u8);
@@ -663,10 +694,11 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
             }
             Ok(PeerMessage::Piece { index, begin, data }) => {
                 in_flight = in_flight.saturating_sub(1);
-                {
-                    let mut sched = scheduler.lock().unwrap_or_else(|e| e.into_inner());
-                    sched.clear_block(index, begin);
-                }
+                // NOTE: the block's in-flight lease is intentionally kept until
+                // the piece completes (`mark_have`) or the lease expires. The
+                // block data lives only in this peer task's assembler, so
+                // clearing the lease here would cause the same block to be
+                // re-requested (and rejected as a duplicate) forever.
                 let piece_len = piece_length(&metainfo, index);
                 // Cap concurrent assemblers per peer to prevent memory exhaustion
                 // from a malicious peer sending blocks for many different pieces.
@@ -686,27 +718,40 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     if let Some(expected) = metainfo.pieces.get(index as usize) {
                         if asm.verify(expected) {
                             if let Some(piece_data) = asm.assemble() {
-                                write_piece_to_disk(&metainfo, &download_dir, index, &piece_data)
-                                    .await;
-                                scheduler
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner())
-                                    .mark_have(index);
-                                downloaded_window =
-                                    downloaded_window.saturating_add(piece_data.len() as u64);
-                                // Update session progress.
-                                let mut guard = sessions.write().await;
-                                if let Ok(s) = guard.get_session_mut(&session_id) {
-                                    s.bytes_downloaded =
-                                        s.bytes_downloaded.saturating_add(piece_data.len() as u64);
-                                    // Record bandwidth for incentive accounting.
-                                    let peer_key = peer_vtr_address.clone().unwrap_or_else(|| {
-                                        conn.remote_peer_id
-                                            .iter()
-                                            .map(|b| format!("{:02x}", b))
-                                            .collect()
-                                    });
-                                    s.record_download(&peer_key, piece_data.len() as u64);
+                                let written = write_piece_to_disk(
+                                    &metainfo,
+                                    &download_dir,
+                                    index,
+                                    &piece_data,
+                                )
+                                .await;
+                                // Only mark the piece had (and credit the
+                                // download) when it is durably on disk.
+                                // Otherwise leave its blocks leased; they
+                                // expire and the piece is re-requested.
+                                if written {
+                                    scheduler
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .mark_have(index);
+                                    downloaded_window =
+                                        downloaded_window.saturating_add(piece_data.len() as u64);
+                                    // Update session progress.
+                                    let mut guard = sessions.write().await;
+                                    if let Ok(s) = guard.get_session_mut(&session_id) {
+                                        s.bytes_downloaded = s
+                                            .bytes_downloaded
+                                            .saturating_add(piece_data.len() as u64);
+                                        // Record bandwidth for incentive accounting.
+                                        let peer_key =
+                                            peer_vtr_address.clone().unwrap_or_else(|| {
+                                                conn.remote_peer_id
+                                                    .iter()
+                                                    .map(|b| format!("{:02x}", b))
+                                                    .collect()
+                                            });
+                                        s.record_download(&peer_key, piece_data.len() as u64);
+                                    }
                                 }
                             }
                         }
@@ -730,6 +775,35 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
     }
 }
 
+/// Resume-file path keyed by info-hash hex (display names can collide across
+/// different torrents).
+fn resume_file_path(download_dir: &std::path::Path, info_hash: &[u8; 20]) -> std::path::PathBuf {
+    download_dir.join(format!("{}.vtorrent", hex::encode(info_hash)))
+}
+
+/// Verify a piece's bytes on disk hash to the expected SHA1. Used to validate
+/// resume bitfields: stale bits must not mark missing/corrupt data as had.
+async fn piece_on_disk_matches(
+    metainfo: &Metainfo,
+    download_dir: &std::path::Path,
+    piece_index: u32,
+) -> bool {
+    let Some(data) = read_piece_from_disk(metainfo, download_dir, piece_index).await else {
+        return false;
+    };
+    if data.len() != piece_length(metainfo, piece_index) as usize {
+        return false;
+    }
+    match metainfo.pieces.get(piece_index as usize) {
+        Some(expected) => {
+            use sha1::{Digest as _, Sha1};
+            let computed: [u8; 20] = Sha1::digest(&data).into();
+            &computed == expected
+        }
+        None => false,
+    }
+}
+
 /// The length of a piece (the last piece may be shorter).
 fn piece_length(metainfo: &Metainfo, index: u32) -> u64 {
     let start = index as u64 * metainfo.piece_length;
@@ -739,8 +813,12 @@ fn piece_length(metainfo: &Metainfo, index: u32) -> u64 {
 
 /// Fetch the info dict from a peer via BEP-9 `ut_metadata`, returning the
 /// parsed `Metainfo`. Returns `None` if the peer does not support extensions.
-async fn fetch_metadata_from_peer(conn: &mut PeerConnection) -> Option<Metainfo> {
+async fn fetch_metadata_from_peer(
+    conn: &mut PeerConnection,
+    expected_info_hash: [u8; 20],
+) -> Option<Metainfo> {
     use crate::metadata;
+    use sha1::{Digest as _, Sha1};
 
     // Send the extension handshake (id 0) advertising ut_metadata id 1.
     let handshake = metadata::build_extension_handshake(1, 0);
@@ -757,7 +835,9 @@ async fn fetch_metadata_from_peer(conn: &mut PeerConnection) -> Option<Metainfo>
     for _ in 0..10 {
         match conn.recv().await {
             Ok(PeerMessage::Extended { id: 0, payload }) => {
-                if let Ok(Value::Dict(d)) = serde_bencode::from_bytes::<Value>(&payload) {
+                if let Some(Ok(Value::Dict(d))) =
+                    crate::bencode_guard::parse_untrusted::<Value>(&payload)
+                {
                     if let Some(Value::Dict(m)) = d.get(b"m".as_slice()) {
                         if let Some(Value::Int(id)) = m.get(&b"ut_metadata".to_vec()) {
                             ut_metadata_id = Some(*id as u8);
@@ -813,43 +893,87 @@ async fn fetch_metadata_from_peer(conn: &mut PeerConnection) -> Option<Metainfo>
     }
 
     let info_dict = metadata::reassemble_metadata(&pieces, metadata_size).ok()?;
-    Metainfo::from_bytes(&info_dict).ok()
+
+    // BEP-9: the reassembled blob is the raw `info` dict. Its SHA1 must equal
+    // the magnet's info_hash — without this check any peer could serve forged
+    // metadata and we would download attacker-chosen content under this
+    // magnet's identity.
+    let computed: [u8; 20] = Sha1::digest(&info_dict).into();
+    if computed != expected_info_hash {
+        tracing::warn!(
+            "ut_metadata info_hash mismatch: got {}, expected {}",
+            hex::encode(computed),
+            hex::encode(expected_info_hash)
+        );
+        return None;
+    }
+
+    // Wrap the raw info dict in a minimal torrent structure so the standard
+    // parser (which expects a top-level "info" key) can read it.
+    let mut wrapped = Vec::with_capacity(info_dict.len() + 10);
+    wrapped.extend_from_slice(b"d4:info");
+    wrapped.extend_from_slice(&info_dict);
+    wrapped.extend_from_slice(b"e");
+    Metainfo::from_bytes(&wrapped).ok()
 }
 
 /// Write a verified piece's data to the correct file(s) on disk.
+///
+/// Returns `false` if any segment could not be written (open, seek, or write
+/// failure — disk full, permissions, IO error). The caller must NOT mark the
+/// piece as had when this fails, otherwise the download is permanently
+/// corrupted: the hole is never re-requested and gets served to peers.
 async fn write_piece_to_disk(
     metainfo: &Metainfo,
     download_dir: &std::path::Path,
     piece_index: u32,
     piece_data: &[u8],
-) {
+) -> bool {
     let layout = FileLayout::new(&metainfo.files, metainfo.piece_length);
     // The torrent name is also untrusted and must not escape the download dir.
     let Some(base) = sanitize_path(download_dir, std::slice::from_ref(&metainfo.name)) else {
-        return;
+        return false;
     };
+    let mut all_ok = true;
     for (file_index, file_offset, bytes) in layout.piece_segments(piece_index, piece_data) {
         let file = &metainfo.files[file_index];
         // Build the output path, rejecting any component that would escape the
         // download directory (absolute paths, `..`, or empty components).
         let Some(path) = sanitize_path(&base, &file.path) else {
+            all_ok = false;
             continue;
         };
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::error!("Piece {}: create_dir_all failed: {}", piece_index, e);
+                all_ok = false;
+                continue;
+            }
         }
-        if let Ok(mut f) = tokio::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&path)
-            .await
-        {
-            use tokio::io::AsyncSeekExt;
-            let _ = f.seek(std::io::SeekFrom::Start(file_offset)).await;
-            let _ = f.write_all(&bytes).await;
+        use tokio::io::AsyncSeekExt;
+        let write_result: std::result::Result<(), std::io::Error> = async {
+            let mut f = tokio::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&path)
+                .await?;
+            f.seek(std::io::SeekFrom::Start(file_offset)).await?;
+            f.write_all(&bytes).await?;
+            Ok(())
+        }
+        .await;
+        if let Err(e) = write_result {
+            tracing::error!(
+                "Piece {}: writing {:?} failed: {} — piece will be re-requested",
+                piece_index,
+                path,
+                e
+            );
+            all_ok = false;
         }
     }
+    all_ok
 }
 
 /// Read a complete piece back from disk so it can be served to peers.

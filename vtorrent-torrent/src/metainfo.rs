@@ -58,9 +58,12 @@ pub struct MagnetLink {
 impl Metainfo {
     /// Parse a .torrent file from raw bytes.
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        // Parse the bencode
-        let value: serde_bencode::value::Value = serde_bencode::from_bytes(data)
-            .map_err(|e| TorrentError::BencodeError(e.to_string()))?;
+        // Parse the bencode with a nesting-depth pre-check: serde_bencode
+        // recurses per level with no depth counter, so deeply nested input
+        // would overflow the stack and abort the process.
+        let value: serde_bencode::value::Value = crate::bencode_guard::parse_untrusted(data)
+            .ok_or_else(|| TorrentError::BencodeError("bencode nesting too deep".into()))?
+            .map_err(|e| TorrentError::BencodeError(e))?;
 
         let dict = match &value {
             serde_bencode::value::Value::Dict(d) => d,
@@ -151,6 +154,9 @@ impl Metainfo {
         let piece_count = piece_count_u64 as u32;
 
         // Parse the piece hashes (BEP-3 `pieces` string: 20 bytes per piece).
+        // A missing or malformed `pieces` key is an error: without it the
+        // engine would request and silently discard every downloaded piece
+        // forever (no hash to verify against).
         let pieces = match info_dict.get(&b"pieces".to_vec()) {
             Some(serde_bencode::value::Value::Bytes(b)) => {
                 if b.len() % 20 != 0 {
@@ -166,8 +172,18 @@ impl Metainfo {
                 }
                 hashes
             }
-            _ => Vec::new(),
+            _ => return Err(TorrentError::InvalidMetainfo("missing 'pieces' key".into())),
         };
+
+        // The piece-hash count must match the computed piece count, otherwise
+        // some pieces can never be verified.
+        if pieces.len() != piece_count as usize {
+            return Err(TorrentError::InvalidMetainfo(format!(
+                "piece count {} does not match pieces hash count {}",
+                piece_count,
+                pieces.len()
+            )));
+        }
 
         // Parse announce
         let announce = dict.get(&b"announce".to_vec()).and_then(|v| match v {
@@ -433,6 +449,7 @@ fn find_info_span(data: &[u8]) -> Result<std::ops::Range<usize>> {
         return Err(TorrentError::InvalidMetainfo("Root is not a dict".into()));
     }
     pos += 1;
+    let mut info_span: Option<std::ops::Range<usize>> = None;
     loop {
         match data.get(pos) {
             Some(b'e') => break,
@@ -452,12 +469,19 @@ fn find_info_span(data: &[u8]) -> Result<std::ops::Range<usize>> {
                     .position(|&b| b == b':')
                     .ok_or_else(|| TorrentError::InvalidMetainfo("Invalid dict key".into()))?;
                 if &key[colon + 1..] == b"info" {
-                    return Ok(val_start..pos);
+                    // Duplicate top-level "info" keys are forbidden: the
+                    // info-hash is computed over the first occurrence while
+                    // field parsing (HashMap insert semantics) would use the
+                    // last — a UI-deception / content-identity mismatch.
+                    if info_span.is_some() {
+                        return Err(TorrentError::InvalidMetainfo("duplicate 'info' key".into()));
+                    }
+                    info_span = Some(val_start..pos);
                 }
             }
         }
     }
-    Err(TorrentError::InvalidMetainfo("Missing 'info' key".into()))
+    info_span.ok_or_else(|| TorrentError::InvalidMetainfo("Missing 'info' key".into()))
 }
 
 /// Skip a length-prefixed bencode string, advancing `pos` past it.
@@ -623,7 +647,7 @@ mod tests {
 
     #[test]
     fn test_info_hash_multi_file() {
-        let torrent: &[u8] = b"d8:announce26:http://tracker.example.com4:infod5:filesld6:lengthi40000e4:pathl3:dir9:file1.txteed6:lengthi60000e4:pathl3:dir9:file2.txteee6:lengthi100000e4:name8:test.dir12:piece lengthi32768e6:pieces20:aaaaaaaaaaaaaaaaaaaaee";
+        let torrent: &[u8] = b"d8:announce26:http://tracker.example.com4:infod5:filesld6:lengthi40000e4:pathl3:dir9:file1.txteed6:lengthi60000e4:pathl3:dir9:file2.txteee6:lengthi100000e4:name8:test.dir12:piece lengthi32768e6:pieces80:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaee";
         let meta = Metainfo::from_bytes(torrent).unwrap();
         assert_eq!(meta.name, "test.dir");
         assert_eq!(meta.total_size, 100_000);
@@ -632,14 +656,14 @@ mod tests {
         assert_eq!(meta.files[1].path, vec!["dir", "file2.txt"]);
         assert_eq!(
             meta.info_hash_hex(),
-            "b9c14f71a1ac4237b202bea4f459e940572c5844"
+            "0a1b23ec28ec4a24f8025733a17a31d2632887a1"
         );
     }
 
     #[test]
     fn test_info_hash_single_file() {
         let torrent: &[u8] =
-            b"d8:announce26:http://tracker.example.com4:infod6:lengthi100000e4:name8:test.iso12:piece lengthi32768e6:pieces20:aaaaaaaaaaaaaaaaaaaaee";
+            b"d8:announce26:http://tracker.example.com4:infod6:lengthi100000e4:name8:test.iso12:piece lengthi32768e6:pieces80:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaee";
         let meta = Metainfo::from_bytes(torrent).unwrap();
         assert_eq!(meta.name, "test.iso");
         assert_eq!(meta.total_size, 100_000);
@@ -647,7 +671,7 @@ mod tests {
         assert_eq!(meta.piece_count, 4);
         assert_eq!(
             meta.info_hash_hex(),
-            "f3b9571348b58f6948b753f309ab07b3994ab5cf"
+            "df08b2cf9cc869445ff01af89b070cbba66fecaf"
         );
     }
 
@@ -664,7 +688,7 @@ mod tests {
         bencode.extend_from_slice(b"d4:infod6:lengthi8e4:name4:test12:piece lengthi4e6:pieces");
         bencode.extend_from_slice(format!("{}:", pieces.len()).as_bytes());
         bencode.extend_from_slice(&pieces);
-        bencode.extend_from_slice(b"e8:announce15:http://tracker/ee");
+        bencode.extend_from_slice(b"e8:announce15:http://tracker/e");
 
         let meta = Metainfo::from_bytes(&bencode).unwrap();
         assert_eq!(meta.piece_count, 2);
@@ -684,7 +708,7 @@ mod tests {
         bencode.extend_from_slice(b"d4:infod6:lengthi8e4:name4:test12:piece lengthi0e6:pieces");
         bencode.extend_from_slice(format!("{}:", pieces.len()).as_bytes());
         bencode.extend_from_slice(&pieces);
-        bencode.extend_from_slice(b"e8:announce15:http://tracker/ee");
+        bencode.extend_from_slice(b"e8:announce15:http://tracker/e");
 
         let result = Metainfo::from_bytes(&bencode);
         assert!(result.is_err(), "zero piece length must be rejected");
@@ -701,7 +725,7 @@ mod tests {
         bencode.extend_from_slice(b"d4:infod6:lengthi-1e4:name4:test12:piece lengthi1e6:pieces");
         bencode.extend_from_slice(format!("{}:", pieces.len()).as_bytes());
         bencode.extend_from_slice(&pieces);
-        bencode.extend_from_slice(b"e8:announce15:http://tracker/ee");
+        bencode.extend_from_slice(b"e8:announce15:http://tracker/e");
 
         let result = Metainfo::from_bytes(&bencode);
         assert!(result.is_err(), "negative length must be rejected");

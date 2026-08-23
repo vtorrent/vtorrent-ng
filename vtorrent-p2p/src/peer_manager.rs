@@ -67,7 +67,7 @@ pub struct PeerManager {
     /// PEX address book for decentralized peer discovery.
     pub addr_book: AddrBook,
     /// Ban manager — tracks misbehaviour scores and IP bans.
-    pub ban_manager: BanManager,
+    pub ban_manager: std::sync::Arc<tokio::sync::RwLock<BanManager>>,
     /// Outbound transport router for clearnet, Tor SOCKS5, and I2P SAM dialing.
     transport: OnionTransport,
     /// Number of active inbound connections (pre-handshake and post-handshake).
@@ -125,7 +125,10 @@ impl PeerManager {
             event_rx,
             event_tx,
             addr_book,
-            ban_manager: BanManager::new(100, Duration::from_secs(24 * 60 * 60)),
+            ban_manager: std::sync::Arc::new(tokio::sync::RwLock::new(BanManager::new(
+                100,
+                Duration::from_secs(24 * 60 * 60),
+            ))),
             transport: OnionTransport::new(transport_config),
             inbound_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             inbound_rx,
@@ -145,11 +148,23 @@ impl PeerManager {
         let addr_str = listen_addr.clone();
         let inbound_count = self.inbound_count.clone();
         let inbound_tx = self.inbound_tx.clone();
+        let accept_bans = self.ban_manager.clone();
 
         tokio::spawn(async move {
             loop {
                 match listener.accept().await {
                     Ok((stream, peer_addr)) => {
+                        // Ban check at the TCP boundary: banned IPs are
+                        // rejected before any handshake or message processing,
+                        // otherwise each reconnect buys ~10s of pre-handshake
+                        // processing and burns an inbound slot.
+                        if accept_bans.read().await.is_banned(peer_addr.ip()) {
+                            tracing::warn!(
+                                "Rejecting inbound connection from banned IP {}",
+                                peer_addr
+                            );
+                            continue;
+                        }
                         // Cap inbound connections so a flood of unauthenticated
                         // sockets cannot exhaust resources before the handshake
                         // completes (or times out).
@@ -196,7 +211,7 @@ impl PeerManager {
         // Ban check: reject connections to banned IPs before even opening a socket
         if let Ok(sock_addr) = addr.parse::<SocketAddr>() {
             let ip = sock_addr.ip();
-            if self.ban_manager.is_banned(ip) {
+            if self.ban_manager.read().await.is_banned(ip) {
                 tracing::debug!("Skipping banned peer {}", addr);
                 return Err(P2pError::Banned(ip.to_string()));
             }
@@ -266,7 +281,7 @@ impl PeerManager {
                 PeerEvent::HandshakeComplete { peer_addr, version } => {
                     // Ban check on inbound connections (outbound are checked in connect())
                     let ip = peer_addr.ip();
-                    if self.ban_manager.is_banned(ip) {
+                    if self.ban_manager.read().await.is_banned(ip) {
                         tracing::info!(
                             "Dropping inbound connection from banned peer {}",
                             peer_addr
@@ -311,9 +326,13 @@ impl PeerManager {
     ///
     /// Returns `true` if the peer was banned as a result.
     /// If banned, the peer is also immediately disconnected.
-    pub fn record_misbehaviour(&mut self, addr: SocketAddr, offence: Misbehaviour) -> bool {
+    pub async fn record_misbehaviour(&mut self, addr: SocketAddr, offence: Misbehaviour) -> bool {
         let ip = addr.ip();
-        let banned = self.ban_manager.record_misbehaviour(ip, offence);
+        let banned = self
+            .ban_manager
+            .write()
+            .await
+            .record_misbehaviour(ip, offence);
         if banned {
             tracing::warn!("Peer {} banned for misbehaviour ({:?})", addr, offence);
             // Disconnect the peer if still connected
@@ -325,9 +344,9 @@ impl PeerManager {
     }
 
     /// Manually ban a peer IP with a reason.
-    pub fn ban_peer(&mut self, addr: SocketAddr, reason: String) {
+    pub async fn ban_peer(&mut self, addr: SocketAddr, reason: String) {
         let ip = addr.ip();
-        self.ban_manager.ban_ip(ip, reason.clone());
+        self.ban_manager.write().await.ban_ip(ip, reason.clone());
         tracing::warn!("Manually banned peer {}: {}", addr, reason);
         // Disconnect if currently connected
         if let Some(peer) = self.peers.get(&addr) {
@@ -336,14 +355,14 @@ impl PeerManager {
     }
 
     /// Returns `true` if the given address is currently banned.
-    pub fn is_banned(&self, addr: SocketAddr) -> bool {
-        self.ban_manager.is_banned(addr.ip())
+    pub async fn is_banned(&self, addr: SocketAddr) -> bool {
+        self.ban_manager.read().await.is_banned(addr.ip())
     }
 
     /// Prune expired bans and decay old misbehaviour scores.
     /// Should be called periodically (e.g., every hour).
-    pub fn prune_bans(&mut self) {
-        self.ban_manager.prune();
+    pub async fn prune_bans(&mut self) {
+        self.ban_manager.write().await.prune();
     }
 
     /// Register an already-established non-TCP peer, such as an authenticated
@@ -378,10 +397,17 @@ impl PeerManager {
     }
 
     /// Broadcast a message to all connected peers.
+    ///
+    /// Uses `try_send` so one stalled peer (full command queue because its
+    /// TCP socket stopped draining) cannot head-of-line block global message
+    /// propagation. Messages to a stalled peer are dropped; the peer's idle
+    /// timeout will eventually evict it.
     pub async fn broadcast(&self, msg: NetMessage) {
         for peer in self.peers.values() {
             if peer.state == PeerState::Connected {
-                let _ = peer.cmd_tx.send(PeerCommand::Send(msg.clone())).await;
+                if let Err(e) = peer.cmd_tx.try_send(PeerCommand::Send(msg.clone())) {
+                    tracing::debug!("Broadcast queue full for {}, dropping: {}", peer.addr, e);
+                }
             }
         }
     }
@@ -393,16 +419,27 @@ impl PeerManager {
     pub async fn broadcast_except(&self, except: SocketAddr, msg: NetMessage) {
         for peer in self.peers.values() {
             if peer.state == PeerState::Connected && peer.addr != except {
-                let _ = peer.cmd_tx.send(PeerCommand::Send(msg.clone())).await;
+                if let Err(e) = peer.cmd_tx.try_send(PeerCommand::Send(msg.clone())) {
+                    tracing::debug!("Broadcast queue full for {}, dropping: {}", peer.addr, e);
+                }
             }
         }
     }
 
     /// Send a message to a specific peer.
+    ///
+    /// Bounded wait: if the peer's queue is full for longer than a second the
+    /// message is dropped rather than blocking the caller indefinitely.
     pub async fn send_to(&self, addr: SocketAddr, msg: NetMessage) {
         if let Some(peer) = self.peers.get(&addr) {
             if peer.state == PeerState::Connected {
-                let _ = peer.cmd_tx.send(PeerCommand::Send(msg)).await;
+                let send = peer.cmd_tx.send(PeerCommand::Send(msg));
+                if tokio::time::timeout(std::time::Duration::from_secs(1), send)
+                    .await
+                    .is_err()
+                {
+                    tracing::debug!("Send queue full for {}, dropping message", addr);
+                }
             }
         }
     }

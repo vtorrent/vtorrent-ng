@@ -32,8 +32,9 @@ pub fn build_ut_vtr_address(address: &str) -> Vec<u8> {
 
 /// Parse a `ut_vtr` address message payload (the bencoded string).
 pub fn parse_ut_vtr_address(payload: &[u8]) -> Result<String> {
-    let value: Value = serde_bencode::from_bytes(payload)
-        .map_err(|e| TorrentError::PeerWireError(e.to_string()))?;
+    let value: Value = crate::bencode_guard::parse_untrusted(payload)
+        .ok_or_else(|| TorrentError::PeerWireError("bencode nesting too deep".into()))?
+        .map_err(|e| TorrentError::PeerWireError(e))?;
     match value {
         Value::Bytes(b) => Ok(String::from_utf8_lossy(&b).into_owned()),
         _ => Err(TorrentError::PeerWireError("ut_vtr not a string".into())),
@@ -59,14 +60,15 @@ pub fn parse_data(payload: &[u8]) -> Result<(u32, u64, Vec<u8>)> {
     let dict_end = find_dict_end(payload)
         .ok_or_else(|| TorrentError::PeerWireError("malformed ut_metadata".into()))?;
     let dict_bytes = &payload[..dict_end];
-    let value: Value = serde_bencode::from_bytes(dict_bytes)
-        .map_err(|e| TorrentError::PeerWireError(e.to_string()))?;
+    let value: Value = crate::bencode_guard::parse_untrusted(dict_bytes)
+        .ok_or_else(|| TorrentError::PeerWireError("bencode nesting too deep".into()))?
+        .map_err(|e| TorrentError::PeerWireError(e))?;
     let dict = match value {
         Value::Dict(d) => d,
         _ => return Err(TorrentError::PeerWireError("ut_metadata not a dict".into())),
     };
     let piece = match dict.get(b"piece".as_slice()) {
-        Some(Value::Int(i)) if *i >= 0 => *i as u32,
+        Some(Value::Int(i)) if *i >= 0 && *i <= u32::MAX as i64 => *i as u32,
         _ => return Err(TorrentError::PeerWireError("missing piece".into())),
     };
     let total_size = match dict.get(b"total_size".as_slice()) {

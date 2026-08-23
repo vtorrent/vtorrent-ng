@@ -122,25 +122,37 @@ impl TorrentSession {
     pub fn record_download(&mut self, peer_address: &str, bytes: u64) {
         self.bytes_downloaded = self.bytes_downloaded.saturating_add(bytes);
         self.evict_stale_accounts();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         let account = self
             .incentive_accounts
             .entry(peer_address.to_string())
             .or_insert_with(|| PeerBandwidthAccount::new(peer_address.to_string()));
         account.record_download(bytes);
+        account.touch(now);
     }
 
     /// Record bytes uploaded to a peer.
     pub fn record_upload(&mut self, peer_address: &str, bytes: u64) {
         self.bytes_uploaded = self.bytes_uploaded.saturating_add(bytes);
         self.evict_stale_accounts();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         let account = self
             .incentive_accounts
             .entry(peer_address.to_string())
             .or_insert_with(|| PeerBandwidthAccount::new(peer_address.to_string()));
         account.record_upload(bytes);
+        account.touch(now);
     }
 
-    /// Evict accounts with zero bandwidth and oldest settlement if over limit.
+    /// Evict accounts with zero bandwidth and least-recently-active accounts
+    /// when over limit. Never evicts by settlement age alone: never-settled
+    /// accounts hold pending earnings for active peers.
     fn evict_stale_accounts(&mut self) {
         if self.incentive_accounts.len() <= MAX_INCENTIVE_ACCOUNTS {
             return;
@@ -148,10 +160,10 @@ impl TorrentSession {
         // First pass: remove accounts with no activity
         self.incentive_accounts
             .retain(|_, a| a.bytes_uploaded > 0 || a.bytes_downloaded > 0);
-        // If still over limit, remove oldest by last_settlement
+        // If still over limit, remove the least-recently-active accounts.
         if self.incentive_accounts.len() > MAX_INCENTIVE_ACCOUNTS {
             let mut entries: Vec<_> = self.incentive_accounts.iter().collect();
-            entries.sort_by_key(|(_, a)| a.last_settlement);
+            entries.sort_by_key(|(_, a)| a.last_active);
             let excess = entries.len() - MAX_INCENTIVE_ACCOUNTS * 3 / 4;
             let to_remove: Vec<String> = entries
                 .into_iter()

@@ -4,7 +4,7 @@ use crate::error::{Result, TorrentError};
 use crate::tracker::{AnnounceEvent, TrackerPeer};
 
 /// BEP-15 protocol magic (0x41727101980).
-const PROTOCOL_ID: u64 = 0x4172_7101_9800_0000;
+const PROTOCOL_ID: u64 = 0x0000_0417_2710_1980;
 
 /// Action codes.
 const ACTION_CONNECT: u32 = 0;

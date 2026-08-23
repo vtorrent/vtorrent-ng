@@ -103,14 +103,37 @@ pub async fn run_peer(
     // reset the timer by trickling messages.
     let handshake_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
 
+    // Post-handshake idle timeout: a connected peer must send *something*
+    // (ping, message, or complete handshake) within this window. Without it
+    // a silent peer holds its inbound slot and its receive buffer forever.
+    const IDLE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(15 * 60);
+    let mut idle_deadline = tokio::time::Instant::now() + IDLE_TIMEOUT;
+
     loop {
         tokio::select! {
             // Incoming message from peer
             Some(result) = framed.next() => {
                 match result {
                     Ok(msg) => {
+                        // Reset the idle window on any traffic.
+                        idle_deadline = tokio::time::Instant::now() + IDLE_TIMEOUT;
                         let cmd = msg.command_str().to_string();
                         tracing::debug!("Received '{}' from {}", cmd, addr);
+
+                        // Before the handshake completes only version/verack/
+                        // ping are processed; everything else is dropped so
+                        // unauthenticated (or banned-pending-disconnect)
+                        // peers cannot drive node logic.
+                        if !handshake_done
+                            && !matches!(cmd.as_str(), "version" | "verack" | "ping")
+                        {
+                            tracing::debug!(
+                                "Dropping pre-handshake '{}' from {}",
+                                cmd,
+                                addr
+                            );
+                            continue;
+                        }
 
                         match cmd.as_str() {
                             "version" => {
@@ -174,9 +197,15 @@ pub async fn run_peer(
             }
 
             // Handshake deadline: drop the connection if the peer never
-            // completes the version/verack exchange.
+            // completes the version/verack exchange. After the handshake,
+            // enforce the idle timeout instead.
             _ = tokio::time::sleep_until(handshake_deadline), if !handshake_done => {
                 tracing::warn!("Handshake timeout from {}", addr);
+                break;
+            }
+
+            _ = tokio::time::sleep_until(idle_deadline), if handshake_done => {
+                tracing::warn!("Idle timeout from {}", addr);
                 break;
             }
 

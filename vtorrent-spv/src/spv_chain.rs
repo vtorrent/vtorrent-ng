@@ -59,7 +59,8 @@ impl SpvHeader {
 /// Work is `2^256 / target`, the standard Bitcoin-style measure. A header with
 /// a smaller target (higher difficulty) contributes more work. The result is
 /// saturated to `u128::MAX` for absurdly small targets that would otherwise
-/// overflow; such targets do not occur in practice.
+/// overflow; such headers can only be produced by genuine extreme PoW because
+/// [`hash_meets_target`] gates admission.
 fn header_work(bits: u32) -> u128 {
     let exponent = bits >> 24;
     let mantissa = (bits & 0x00ff_ffff) as u128;
@@ -73,6 +74,49 @@ fn header_work(bits: u32) -> u128 {
         return u128::MAX;
     }
     (1u128 << shift) / mantissa
+}
+
+/// Check that a header hash meets the compact-target difficulty in `bits`.
+///
+/// Both the hash and the target are compared as little-endian 256-bit numbers
+/// (Bitcoin convention: byte 0 is the least significant).
+pub fn hash_meets_target(hash: &[u8; 32], bits: u32) -> bool {
+    let exponent = (bits >> 24) as usize;
+    let mantissa = bits & 0x00ff_ffff;
+    if exponent == 0 || mantissa == 0 {
+        return false;
+    }
+    // Build the target as a little-endian byte array.
+    let mut target = [0u8; 32];
+    if exponent <= 3 {
+        let val = mantissa >> (8 * (3 - exponent));
+        if val == 0 {
+            return false;
+        }
+        target[0] = val as u8;
+        target[1] = (val >> 8) as u8;
+        target[2] = (val >> 16) as u8;
+    } else {
+        let low_zeros = exponent - 3;
+        if low_zeros + 3 > 32 {
+            // Target ≥ 2^256: every hash trivially meets it.
+            return true;
+        }
+        let mb = mantissa.to_le_bytes();
+        target[low_zeros] = mb[0];
+        target[low_zeros + 1] = mb[1];
+        target[low_zeros + 2] = mb[2];
+    }
+    // Compare hash ≤ target as little-endian numbers: scan from the most
+    // significant byte down.
+    for i in (0..32).rev() {
+        match hash[i].cmp(&target[i]) {
+            std::cmp::Ordering::Less => return true,
+            std::cmp::Ordering::Greater => return false,
+            std::cmp::Ordering::Equal => continue,
+        }
+    }
+    true
 }
 
 /// A lightweight chain of block headers for SPV verification.
@@ -110,6 +154,18 @@ impl SpvChain {
         // Validate chain linkage (skip for genesis block at height 0)
         if header.height > 0 && !self.headers.contains_key(&header.prev_hash) {
             return Err(SpvError::UnknownParent(hex::encode(header.prev_hash)));
+        }
+
+        // Proof-of-work validation for non-PoS headers: the hash must meet
+        // the target encoded in `bits`. Without this a malicious peer could
+        // fabricate a high-work fork out of thin air (each header claiming
+        // an easy target yet contributing huge claimed work).
+        if !header.is_pos() && !hash_meets_target(&hash, header.bits) {
+            return Err(SpvError::HeaderValidation(format!(
+                "hash {} does not meet target {:08x}",
+                hex::encode(hash),
+                header.bits
+            )));
         }
 
         // The height must be exactly one more than the parent's height.
@@ -228,15 +284,34 @@ mod tests {
     use super::*;
 
     fn make_header(height: u32, prev: [u8; 32], merkle: [u8; 32]) -> SpvHeader {
-        SpvHeader {
-            version: 1,
-            prev_hash: prev,
-            merkle_root: merkle,
-            timestamp: 1_700_000_000 + height,
-            bits: 0x1d00ffff,
-            nonce: height,
-            height,
+        // Maximum (easiest) target; mine a nonce that satisfies PoW (~2 tries
+        // on average). Production sync validates real difficulty.
+        let bits = 0x207f_ffff;
+        let mut nonce: u32 = 0;
+        loop {
+            let h = SpvHeader {
+                version: 1,
+                prev_hash: prev,
+                merkle_root: merkle,
+                timestamp: 1_700_000_000 + height,
+                bits,
+                nonce,
+                height,
+            };
+            if hash_meets_target(&h.hash(), bits) {
+                return h;
+            }
+            nonce += 1;
         }
+    }
+
+    #[test]
+    fn test_pow_invalid_header_rejected() {
+        let mut chain = SpvChain::new();
+        // A non-PoS header whose hash cannot meet a hard target is rejected.
+        let mut h = make_header(0, [0u8; 32], [1u8; 32]);
+        h.bits = 0x1b_00_00_01;
+        assert!(chain.add_header(h).is_err());
     }
 
     #[test]

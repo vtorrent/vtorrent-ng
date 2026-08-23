@@ -7,6 +7,7 @@
 //! - VTR incentive payment logic (earn for seeding, pay for leeching)
 //! - Upload/download bandwidth accounting per peer
 
+pub mod bencode_guard;
 pub mod dht;
 pub mod engine;
 pub mod error;

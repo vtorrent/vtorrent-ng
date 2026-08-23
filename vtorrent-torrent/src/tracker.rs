@@ -143,8 +143,9 @@ impl Default for HttpTracker {
 
 /// Parse a bencoded tracker response.
 fn parse_tracker_response(data: &[u8]) -> Result<AnnounceResponse> {
-    let value: serde_bencode::value::Value =
-        serde_bencode::from_bytes(data).map_err(|e| TorrentError::BencodeError(e.to_string()))?;
+    let value: serde_bencode::value::Value = crate::bencode_guard::parse_untrusted(data)
+        .ok_or_else(|| TorrentError::BencodeError("bencode nesting too deep".into()))?
+        .map_err(|e| TorrentError::BencodeError(e))?;
 
     let dict = match &value {
         serde_bencode::value::Value::Dict(d) => d,

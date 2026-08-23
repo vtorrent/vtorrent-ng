@@ -195,6 +195,10 @@ pub enum CompactBlockDecodeError {
     /// The compact block advertises more transactions than can be represented
     /// by the u16 `getblocktxn` index field.
     TooManyTransactions,
+    /// A prefilled transaction index is out of range or duplicated — a
+    /// protocol violation by the sender. Must not be silently skipped:
+    /// skipping desynchronizes short-id mapping and yields phantom blocks.
+    InvalidPrefilledIndex,
 }
 
 impl CompactBlockDecoder {
@@ -222,13 +226,16 @@ impl CompactBlockDecoder {
         let mut txs: Vec<Option<Vec<u8>>> = vec![None; total];
         let mut missing: Vec<u16> = Vec::new();
 
-        // Place prefilled transactions
+        // Place prefilled transactions. Indexes are differential and must be
+        // strictly increasing with in-range absolute positions; anything else
+        // is a protocol violation by the sender.
         let mut offset = 0usize;
         for prefilled in &msg.prefilled_txs {
             let abs_index = offset + prefilled.index as usize;
-            if abs_index < total {
-                txs[abs_index] = Some(prefilled.tx_bytes.clone());
+            if abs_index >= total || txs[abs_index].is_some() {
+                return Err(CompactBlockDecodeError::InvalidPrefilledIndex);
             }
+            txs[abs_index] = Some(prefilled.tx_bytes.clone());
             offset = abs_index + 1;
         }
 
@@ -275,13 +282,14 @@ impl CompactBlockDecoder {
         let mut txs: Vec<Option<Vec<u8>>> = vec![None; total];
         let mut missing: Vec<u16> = Vec::new();
 
-        // Place prefilled transactions
+        // Place prefilled transactions (strict validation, see `decode`).
         let mut offset = 0usize;
         for prefilled in &msg.prefilled_txs {
             let abs_index = offset + prefilled.index as usize;
-            if abs_index < total {
-                txs[abs_index] = Some(prefilled.tx_bytes.clone());
+            if abs_index >= total || txs[abs_index].is_some() {
+                return Err(CompactBlockDecodeError::InvalidPrefilledIndex);
             }
+            txs[abs_index] = Some(prefilled.tx_bytes.clone());
             offset = abs_index + 1;
         }
 

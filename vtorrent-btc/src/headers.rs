@@ -38,6 +38,14 @@ impl HeaderChain {
             return Ok(());
         }
 
+        // Proof-of-work validation: the header hash must meet the target
+        // encoded in its own `bits`. Without this a malicious peer could
+        // fabricate an arbitrarily long "chain" of zero-work headers and
+        // phantom balances would pass SPV verification.
+        header
+            .validate_pow(header.bits.into())
+            .map_err(|e| BtcError::Bitcoin(format!("PoW validation failed: {}", e)))?;
+
         let parent_work = if height > 0 {
             let prev: [u8; 32] = header.prev_blockhash.to_byte_array();
             // Bootstrap: the first header received from a trusted peer is
@@ -147,14 +155,33 @@ mod tests {
     use bitcoin::consensus::encode::serialize;
 
     fn make_header(prev: [u8; 32], nonce: u32) -> Header {
-        Header {
-            version: bitcoin::blockdata::block::Version::ONE,
-            prev_blockhash: bitcoin::BlockHash::from_byte_array(prev),
-            merkle_root: bitcoin::TxMerkleNode::all_zeros(),
-            time: 1_700_000_000 + nonce,
-            bits: bitcoin::CompactTarget::from_consensus(0x1d00ffff),
-            nonce,
+        // Maximum (easiest) target; the caller-supplied nonce may not satisfy
+        // PoW (50% at max target), so mine forward from it until it does.
+        let bits = bitcoin::CompactTarget::from_consensus(0x207fffff);
+        let mut nonce = nonce;
+        loop {
+            let h = Header {
+                version: bitcoin::blockdata::block::Version::ONE,
+                prev_blockhash: bitcoin::BlockHash::from_byte_array(prev),
+                merkle_root: bitcoin::TxMerkleNode::all_zeros(),
+                time: 1_700_000_000 + nonce,
+                bits,
+                nonce,
+            };
+            if h.validate_pow(bits.into()).is_ok() {
+                return h;
+            }
+            nonce = nonce.wrapping_add(1);
         }
+    }
+
+    #[test]
+    fn test_pow_invalid_header_rejected() {
+        let mut chain = HeaderChain::new();
+        // A header whose hash cannot meet a hard target must be rejected.
+        let mut h = make_header([0u8; 32], 0);
+        h.bits = bitcoin::CompactTarget::from_consensus(0x1b_00_00_01); // ~impossible
+        assert!(chain.add_header(&serialize(&h), 0).is_err());
     }
 
     #[test]

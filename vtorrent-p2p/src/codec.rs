@@ -59,9 +59,14 @@ impl Decoder for VtrCodec {
             )));
         }
 
-        // Wait for the full message
+        // Wait for the full message. Reserve only a bounded chunk: reserving
+        // the full declared length lets a 24-byte header force a ~MAX_PAYLOAD
+        // allocation per connection before any payload byte arrives (memory
+        // amplification DoS). BytesMut grows as real data arrives.
         if src.len() < HEADER_SIZE + payload_len {
-            src.reserve(HEADER_SIZE + payload_len - src.len());
+            const RESERVE_CHUNK: usize = 64 * 1024;
+            let needed = HEADER_SIZE + payload_len - src.len();
+            src.reserve(needed.min(RESERVE_CHUNK));
             return Ok(None);
         }
 

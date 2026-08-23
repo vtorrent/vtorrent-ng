@@ -230,12 +230,14 @@ impl PeerMessage {
                 }
             }
             _ => {
-                // Unknown message IDs are silently ignored per BEP
+                // Unknown message IDs are silently skipped per BEP
                 // (BitTorrent extension protocol). Returning an error
                 // would kill the connection for peers using extensions
-                // we don't implement.
+                // we don't implement. We must consume the full frame —
+                // returning Ok(None) here would be read as "need more
+                // data", wedging the connection on this prefix forever.
                 tracing::trace!("Ignoring unknown message id: {}", id);
-                return Ok(None);
+                return Ok(Some((PeerMessage::KeepAlive, 4 + length)));
             }
         };
 

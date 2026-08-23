@@ -1023,7 +1023,8 @@ impl Node {
                 MSG_WINDOW_SECS
             );
             self.peer_manager
-                .record_misbehaviour(peer_addr, Misbehaviour::Custom(100));
+                .record_misbehaviour(peer_addr, Misbehaviour::Custom(100))
+                .await;
             return Ok(());
         }
 
@@ -1036,7 +1037,8 @@ impl Node {
                     tracing::debug!("PEX: Received {} addresses from {}", count, peer_addr);
                 } else {
                     self.peer_manager
-                        .record_misbehaviour(peer_addr, Misbehaviour::MalformedMessage);
+                        .record_misbehaviour(peer_addr, Misbehaviour::MalformedMessage)
+                        .await;
                 }
             }
 
@@ -1173,14 +1175,16 @@ impl Node {
                             Err(e) => {
                                 tracing::warn!("Rejected block from {}: {}", peer_addr, e);
                                 self.peer_manager
-                                    .record_misbehaviour(peer_addr, Misbehaviour::InvalidBlock);
+                                    .record_misbehaviour(peer_addr, Misbehaviour::InvalidBlock)
+                                    .await;
                             }
                         }
                     }
                     Err(e) => {
                         tracing::warn!("Failed to deserialize block from {}: {}", peer_addr, e);
                         self.peer_manager
-                            .record_misbehaviour(peer_addr, Misbehaviour::MalformedMessage);
+                            .record_misbehaviour(peer_addr, Misbehaviour::MalformedMessage)
+                            .await;
                     }
                 }
             }
@@ -1230,14 +1234,16 @@ impl Node {
                         Err(e) => {
                             tracing::debug!("Rejected tx: {}", e);
                             self.peer_manager
-                                .record_misbehaviour(peer_addr, Misbehaviour::InvalidTransaction);
+                                .record_misbehaviour(peer_addr, Misbehaviour::InvalidTransaction)
+                                .await;
                         }
                     }
                 }
                 Err(e) => {
                     tracing::warn!("Failed to deserialize tx from {}: {}", peer_addr, e);
                     self.peer_manager
-                        .record_misbehaviour(peer_addr, Misbehaviour::MalformedMessage);
+                        .record_misbehaviour(peer_addr, Misbehaviour::MalformedMessage)
+                        .await;
                 }
             },
 
@@ -1461,6 +1467,21 @@ impl Node {
                                 "cmpctblock: rejecting block with too many transactions from {}",
                                 peer_addr
                             );
+                        }
+                        Err(CompactBlockDecodeError::InvalidPrefilledIndex) => {
+                            // Protocol violation: score the peer so repeat
+                            // offenders get banned.
+                            tracing::warn!(
+                                "cmpctblock: invalid prefilled index from {}",
+                                peer_addr
+                            );
+                            let _ = self
+                                .peer_manager
+                                .record_misbehaviour(
+                                    peer_addr,
+                                    vtorrent_p2p::ban_manager::Misbehaviour::MalformedMessage,
+                                )
+                                .await;
                         }
                     }
                 }
@@ -1941,14 +1962,16 @@ impl Node {
                     }
                 } else {
                     self.peer_manager
-                        .record_misbehaviour(peer_addr, Misbehaviour::MalformedMessage);
+                        .record_misbehaviour(peer_addr, Misbehaviour::MalformedMessage)
+                        .await;
                 }
             }
 
             cmd => {
                 tracing::trace!("Unhandled message '{}' from {}", cmd, peer_addr);
                 self.peer_manager
-                    .record_misbehaviour(peer_addr, Misbehaviour::UnknownMessage);
+                    .record_misbehaviour(peer_addr, Misbehaviour::UnknownMessage)
+                    .await;
             }
         }
         Ok(())
@@ -2383,7 +2406,11 @@ mod tests {
         node.handle_message(peer_addr, msg).await.unwrap();
 
         assert_eq!(
-            node.peer_manager.ban_manager.score(peer_addr.ip()),
+            node.peer_manager
+                .ban_manager
+                .read()
+                .await
+                .score(peer_addr.ip()),
             Misbehaviour::InvalidTransaction.score()
         );
     }
@@ -2400,7 +2427,11 @@ mod tests {
         node.handle_message(peer_addr, msg).await.unwrap();
 
         assert_eq!(
-            node.peer_manager.ban_manager.score(peer_addr.ip()),
+            node.peer_manager
+                .ban_manager
+                .read()
+                .await
+                .score(peer_addr.ip()),
             Misbehaviour::MalformedMessage.score()
         );
     }
@@ -2419,7 +2450,7 @@ mod tests {
         }
 
         assert!(
-            node.peer_manager.is_banned(peer_addr),
+            node.peer_manager.is_banned(peer_addr).await,
             "flooding peer should be banned"
         );
     }
