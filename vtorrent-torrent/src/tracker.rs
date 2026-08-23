@@ -80,14 +80,14 @@ pub struct HttpTracker {
 }
 
 impl HttpTracker {
-    pub fn new() -> Self {
-        HttpTracker {
+    pub fn new() -> crate::error::Result<Self> {
+        Ok(HttpTracker {
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .user_agent("vTorrent-NG/2.0")
                 .build()
-                .expect("Failed to build HTTP client"),
-        }
+                .map_err(|e| crate::error::TorrentError::Io(e.to_string()))?,
+        })
     }
 
     /// Send an announce request to an HTTP tracker.
@@ -137,7 +137,7 @@ impl HttpTracker {
 
 impl Default for HttpTracker {
     fn default() -> Self {
-        Self::new()
+        Self::new().expect("Failed to build HTTP client")
     }
 }
 

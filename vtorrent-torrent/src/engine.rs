@@ -269,7 +269,13 @@ pub async fn run_engine(
     }
 
     // Announce to trackers (HTTP and UDP), collecting peers.
-    let tracker = HttpTracker::new();
+    let tracker = match HttpTracker::new() {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!("Failed to create HTTP tracker client: {}", e);
+            return;
+        }
+    };
     let peer_id = [0x2du8; 20]; // "-VT0001-" style peer id
     let mut peers = Vec::new();
     for url in &trackers {
@@ -363,9 +369,13 @@ pub async fn run_engine(
         }
     }
 
-    // Spawn one task per peer.
+    // Spawn one task per peer, capped at MAX_PEERS to prevent resource exhaustion.
+    const MAX_PEERS: usize = 200;
     let mut peer_tasks = Vec::new();
     for peer in peers {
+        if peer_tasks.len() >= MAX_PEERS {
+            break;
+        }
         let addr: SocketAddr = match format!("{}:{}", peer.ip, peer.port).parse() {
             Ok(a) => a,
             Err(_) => continue,
@@ -640,6 +650,16 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     sched.clear_block(index, begin);
                 }
                 let piece_len = piece_length(&metainfo, index);
+                // Cap concurrent assemblers per peer to prevent memory exhaustion
+                // from a malicious peer sending blocks for many different pieces.
+                const MAX_ASSEMBLERS: usize = 5;
+                if !assemblers.contains_key(&index) && assemblers.len() >= MAX_ASSEMBLERS {
+                    tracing::warn!(
+                        "Peer sent block for piece {} but assembler cap reached",
+                        index
+                    );
+                    continue;
+                }
                 let asm = assemblers
                     .entry(index)
                     .or_insert_with(|| PieceAssembler::new(index, piece_len));

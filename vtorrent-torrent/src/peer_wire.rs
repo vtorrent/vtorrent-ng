@@ -230,10 +230,12 @@ impl PeerMessage {
                 }
             }
             _ => {
-                return Err(TorrentError::PeerWireError(format!(
-                    "Unknown message id: {}",
-                    id
-                )))
+                // Unknown message IDs are silently ignored per BEP
+                // (BitTorrent extension protocol). Returning an error
+                // would kill the connection for peers using extensions
+                // we don't implement.
+                tracing::trace!("Ignoring unknown message id: {}", id);
+                return Ok(None);
             }
         };
 

@@ -10,10 +10,12 @@ pub struct Mnemonic {
 /// HD account metadata stored in the wallet.
 ///
 /// The `Debug` impl redacts the mnemonic so the seed phrase is never logged.
+/// The mnemonic is stored in a `Zeroizing<String>` to ensure it is zeroed on
+/// drop, preventing seed phrase recovery from freed heap memory.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct HdAccount {
     /// The BIP39 mnemonic phrase (space-separated words).
-    pub mnemonic: String,
+    pub mnemonic: zeroize::Zeroizing<String>,
     /// Word count (12 or 24).
     pub word_count: usize,
     /// Unix timestamp when HD was enabled.
@@ -57,11 +59,11 @@ impl Mnemonic {
     }
 
     /// Derive the 64-byte BIP39 seed (empty passphrase).
-    pub fn to_seed(&self) -> [u8; 64] {
+    pub fn to_seed(&self) -> crate::error::Result<[u8; 64]> {
         use bip39::Mnemonic as Bip39Mnemonic;
         let m = Bip39Mnemonic::parse_in_normalized(bip39::Language::English, &self.words)
-            .expect("mnemonic already validated");
-        m.to_seed("")
+            .map_err(|e| crate::error::WalletError::MnemonicError(e.to_string()))?;
+        Ok(m.to_seed(""))
     }
 }
 
@@ -78,7 +80,7 @@ mod tests {
     #[test]
     fn test_seed_is_64_bytes() {
         let m = Mnemonic::generate().unwrap();
-        assert_eq!(m.to_seed().len(), 64);
+        assert_eq!(m.to_seed().unwrap().len(), 64);
     }
 
     #[test]

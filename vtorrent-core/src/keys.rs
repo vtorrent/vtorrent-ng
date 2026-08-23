@@ -82,10 +82,10 @@ impl PrivateKey {
     }
 
     /// Derive the corresponding public key.
-    pub fn public_key(&self) -> PublicKey {
+    pub fn public_key(&self) -> Result<PublicKey> {
         let secp = Secp256k1::new();
-        let secret = SecretKey::from_slice(&self.inner).expect("Key already validated");
-        PublicKey::from_secret_key(&secp, &secret)
+        let secret = SecretKey::from_slice(&self.inner).map_err(CoreError::Secp256k1)?;
+        Ok(PublicKey::from_secret_key(&secp, &secret))
     }
 
     pub fn is_compressed(&self) -> bool {

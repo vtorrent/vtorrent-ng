@@ -54,8 +54,9 @@ impl UtxoSnapshot {
 
     /// Add a UTXO to the snapshot.
     pub fn add_utxo(&mut self, utxo: Utxo, address: &str) {
-        self.total_value += utxo.value;
-        *self.balances.entry(address.to_string()).or_insert(0) += utxo.value;
+        self.total_value = self.total_value.saturating_add(utxo.value);
+        let balance = self.balances.entry(address.to_string()).or_insert(0);
+        *balance = balance.saturating_add(utxo.value);
         self.utxos.push(utxo);
     }
 

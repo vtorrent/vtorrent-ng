@@ -115,8 +115,9 @@ fn address_to_hash160(address: &str) -> Result<[u8; 20]> {
         .into_vec()
         .map_err(|_| WalletError::InvalidAddress(address.to_string()))?;
 
-    // Minimum: 1 version byte + 20 hash bytes + 4 checksum bytes = 25 bytes.
-    if decoded.len() < 25 {
+    // Exact: 1 version byte + 20 hash bytes + 4 checksum bytes = 25 bytes.
+    // Reject longer payloads to prevent trailing garbage from passing validation.
+    if decoded.len() != 25 {
         return Err(WalletError::InvalidAddress(format!(
             "Address too short: {}",
             address

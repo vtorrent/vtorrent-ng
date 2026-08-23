@@ -37,6 +37,10 @@ const MAX_PUNCH_RETRIES: u32 = 10;
 const PUNCH_RETRY_INTERVAL: Duration = Duration::from_millis(200);
 /// Total timeout for the hole punch handshake.
 const PUNCH_TIMEOUT: Duration = Duration::from_secs(5);
+/// Maximum number of concurrent hole-punch sessions to prevent memory exhaustion.
+const MAX_SESSIONS: usize = 256;
+/// Session TTL — idle sessions older than this are evicted.
+const SESSION_TTL: Duration = Duration::from_secs(3600);
 
 /// A successfully established peer session.
 pub struct PeerSession {
@@ -48,6 +52,8 @@ pub struct PeerSession {
     pub send_counter: u32,
     /// Highest counter received from the peer (for replay protection).
     pub recv_counter: u32,
+    /// When this session was created (for TTL eviction).
+    pub created_at: tokio::time::Instant,
 }
 
 /// The hole punch engine.
@@ -159,6 +165,7 @@ impl HolePuncher {
                     local_pubkey: *local_pub,
                     send_counter: 0,
                     recv_counter: 0,
+                    created_at: tokio::time::Instant::now(),
                 };
                 self.sessions
                     .write()
@@ -180,6 +187,22 @@ impl HolePuncher {
 
         let remote_pubkey: [u8; 32] = data[1..33].try_into().unwrap();
         let remote_eph_pub: [u8; 32] = data[33..65].try_into().unwrap();
+
+        // Evict stale sessions and enforce cap before creating a new one.
+        {
+            let mut sessions = self.sessions.write().await;
+            sessions.retain(|_, s| s.created_at.elapsed() < SESSION_TTL);
+            if sessions.len() >= MAX_SESSIONS {
+                // Evict the oldest session
+                if let Some(oldest) = sessions
+                    .iter()
+                    .min_by_key(|(_, s)| s.created_at)
+                    .map(|(k, _)| k.clone())
+                {
+                    sessions.remove(&oldest);
+                }
+            }
+        }
 
         // Generate our own ephemeral keypair and derive the session key from
         // our ephemeral secret + the initiator's ephemeral public key.
@@ -206,6 +229,7 @@ impl HolePuncher {
             local_pubkey: *self.local_keypair.public.as_bytes(),
             send_counter: 0,
             recv_counter: 0,
+            created_at: tokio::time::Instant::now(),
         };
         self.sessions.write().await.insert(node_id, session);
 

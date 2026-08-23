@@ -58,16 +58,21 @@ pub fn build_and_sign(
         version: Version::TWO,
         lock_time: LockTime::ZERO,
         input: tx_inputs,
-        output: vec![
-            TxOut {
+        output: {
+            let mut outputs = vec![TxOut {
                 value: Amount::from_sat(amount_sats),
                 script_pubkey: dest.script_pubkey(),
-            },
-            TxOut {
-                value: Amount::from_sat(change_sats),
-                script_pubkey: change.script_pubkey(),
-            },
-        ],
+            }];
+            // Only include change output if non-zero (avoids dust outputs
+            // that miners will reject).
+            if change_sats > 0 {
+                outputs.push(TxOut {
+                    value: Amount::from_sat(change_sats),
+                    script_pubkey: change.script_pubkey(),
+                });
+            }
+            outputs
+        },
     };
 
     let pubkey = key.public_key(&secp);

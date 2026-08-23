@@ -47,7 +47,7 @@ aes = "0.8"
 cbc = { version = "0.1", features = ["alloc"] }
 totp-rs = { version = "5", features = ["qr", "gen_secret"] }
 rand = "0.8"
-zeroize = { version = "1", features = ["derive"] }
+zeroize = { version = "1", features = ["derive", "serde"] }
 
 # Encoding
 bs58 = "0.5"

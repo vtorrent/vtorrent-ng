@@ -1148,20 +1148,25 @@ pub async fn match_dex_order(
         )));
     }
 
-    let matched = state
-        .order_book
-        .write()
-        .await
-        .fund_and_match_order(
-            &req.order_id,
-            req.taker_address,
-            preimage,
-            hash_lock,
-            funding_txid,
-        )
-        .ok_or_else(|| {
-            RpcError::Internal("Funding reservation disappeared before order completion".into())
-        })?;
+    let matched = match state.order_book.write().await.fund_and_match_order(
+        &req.order_id,
+        req.taker_address,
+        preimage,
+        hash_lock,
+        funding_txid,
+    ) {
+        Some(m) => m,
+        None => {
+            state
+                .order_book
+                .write()
+                .await
+                .release_funding(&req.order_id);
+            return Err(RpcError::Internal(
+                "Funding reservation disappeared before order completion".into(),
+            ));
+        }
+    };
 
     let relayed = match &state.tx_submit {
         Some(sender) => sender.try_send(funding_tx).is_ok(),

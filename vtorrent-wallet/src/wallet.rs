@@ -25,8 +25,8 @@ const WALLET_FORMAT_VERSION: u32 = 1;
 pub struct WalletKeyEntry {
     /// The new-chain vTorrent address (starts with 'V').
     pub address: String,
-    /// WIF-encoded private key.
-    pub wif: String,
+    /// WIF-encoded private key, zeroized on drop.
+    pub wif: zeroize::Zeroizing<String>,
     /// Whether this key was imported from a legacy wallet.
     pub is_legacy_import: bool,
     /// The legacy address this key was imported from (if applicable).
@@ -78,7 +78,7 @@ pub struct WalletFile {
 pub struct Wallet {
     data: WalletData,
     /// Passphrase used to encrypt this wallet (held in memory while unlocked).
-    passphrase: String,
+    passphrase: zeroize::Zeroizing<String>,
 }
 
 impl Drop for Wallet {
@@ -105,7 +105,7 @@ impl Wallet {
                 created_at: now,
                 last_modified: now,
             },
-            passphrase: passphrase.to_string(),
+            passphrase: passphrase.to_string().into(),
         };
         // Generate the first receiving address
         wallet.generate_key(Some("Primary Address"))?;
@@ -122,7 +122,7 @@ impl Wallet {
             .map_err(|e| WalletError::Serialization(e.to_string()))?;
         Ok(Self {
             data,
-            passphrase: passphrase.to_string(),
+            passphrase: passphrase.to_string().into(),
         })
     }
 
@@ -161,14 +161,14 @@ impl Wallet {
         }
 
         let privkey = PrivateKey::from_bytes(bytes, true)?;
-        let pubkey = privkey.public_key();
+        let pubkey = privkey.public_key().map_err(WalletError::Core)?;
         let address = Address::from_pubkey(&pubkey, true, mainnet::PUBKEY_ADDRESS_PREFIX);
         let address_str = address.to_string();
         let wif = privkey.to_wif(mainnet::SECRET_KEY_PREFIX);
 
         let entry = WalletKeyEntry {
             address: address_str.clone(),
-            wif,
+            wif: wif.into(),
             is_legacy_import: false,
             legacy_address: None,
             label: label.map(|s| s.to_string()),
@@ -188,7 +188,7 @@ impl Wallet {
     /// Returns the new-chain address for this key.
     pub fn import_wif(&mut self, wif: &str, legacy_address: Option<&str>) -> Result<String> {
         let privkey = PrivateKey::from_wif(wif)?;
-        let pubkey = privkey.public_key();
+        let pubkey = privkey.public_key().map_err(WalletError::Core)?;
         let new_address = Address::from_pubkey(
             &pubkey,
             privkey.is_compressed(),
@@ -208,7 +208,7 @@ impl Wallet {
 
         let entry = WalletKeyEntry {
             address: new_address_str.clone(),
-            wif: new_wif,
+            wif: new_wif.into(),
             is_legacy_import: true,
             legacy_address: legacy_address.map(|s| s.to_string()),
             label: Some(label),
@@ -330,12 +330,12 @@ impl Wallet {
     /// Returns the mnemonic phrase so the caller can display it for backup.
     pub fn enable_hd(&mut self) -> Result<String> {
         if let Some(hd) = &self.data.hd {
-            return Ok(hd.mnemonic.clone());
+            return Ok(hd.mnemonic.to_string());
         }
         let mnemonic = crate::hd::Mnemonic::generate()?;
         let phrase = mnemonic.phrase().to_string();
         self.data.hd = Some(crate::hd::HdAccount {
-            mnemonic: phrase.clone(),
+            mnemonic: phrase.clone().into(),
             word_count: 24,
             created_at: unix_now(),
         });
@@ -386,7 +386,7 @@ impl Wallet {
 
         Ok(Self {
             data,
-            passphrase: passphrase.to_string(),
+            passphrase: passphrase.to_string().into(),
         })
     }
 }

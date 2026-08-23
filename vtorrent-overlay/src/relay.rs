@@ -33,6 +33,8 @@ pub struct RelaySession {
     pub target_node_id: String,
     pub target_addr: SocketAddr,
     pub requester_addr: SocketAddr,
+    /// When this session was created (for TTL eviction).
+    pub created_at: std::time::Instant,
 }
 
 /// The relay engine — handles forwarding for peers that cannot hole-punch.
@@ -111,9 +113,14 @@ impl RelayEngine {
                     target_node_id: target_id,
                     target_addr,
                     requester_addr: from,
+                    created_at: std::time::Instant::now(),
                 };
                 let mut sessions = self.sessions.write().await;
-                sessions.retain(|s| s.requester_addr != from);
+                // Evict stale sessions (older than 5 minutes) and deduplicate
+                // by requester so a single requester cannot monopolize all
+                // relay slots.
+                let ttl = std::time::Duration::from_secs(300);
+                sessions.retain(|s| s.created_at.elapsed() < ttl && s.requester_addr != from);
                 sessions.push(session);
                 tracing::debug!(
                     "Relaying {} bytes from {} to {}",

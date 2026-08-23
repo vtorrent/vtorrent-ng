@@ -39,7 +39,11 @@ impl IntoResponse for RpcError {
             RpcError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             RpcError::WalletLocked => (StatusCode::FORBIDDEN, "Wallet is locked".into()),
             RpcError::Internal(msg) | RpcError::NodeError(msg) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, msg.clone())
+                tracing::error!("Internal RPC error: {}", msg);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error".into(),
+                )
             }
         };
 
@@ -57,7 +61,8 @@ pub type RpcResult<T> = std::result::Result<T, RpcError>;
 
 impl From<vtorrent_node::error::NodeError> for RpcError {
     fn from(e: vtorrent_node::error::NodeError) -> Self {
-        RpcError::NodeError(e.to_string())
+        tracing::error!("Node error: {}", e);
+        RpcError::NodeError("Node operation failed".into())
     }
 }
 
@@ -68,13 +73,17 @@ impl From<vtorrent_wallet::error::WalletError> for RpcError {
             vtorrent_wallet::error::WalletError::IncorrectPassphrase => {
                 RpcError::Unauthorized("Incorrect passphrase".into())
             }
-            other => RpcError::Internal(other.to_string()),
+            other => {
+                tracing::error!("Wallet error: {}", other);
+                RpcError::Internal("Wallet operation failed".into())
+            }
         }
     }
 }
 
 impl From<vtorrent_btc::error::BtcError> for RpcError {
     fn from(e: vtorrent_btc::error::BtcError) -> Self {
-        RpcError::Internal(e.to_string())
+        tracing::error!("BTC error: {}", e);
+        RpcError::Internal("Bitcoin operation failed".into())
     }
 }

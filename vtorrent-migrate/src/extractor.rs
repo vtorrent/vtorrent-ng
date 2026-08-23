@@ -265,7 +265,7 @@ fn derive_extracted_key(
     let compressed = pubkey_bytes.len() == 33;
 
     let privkey = PrivateKey::from_bytes(key_bytes, compressed).ok()?;
-    let pubkey = privkey.public_key();
+    let pubkey = privkey.public_key().ok()?;
 
     // Derive the legacy vTorrent address
     let address = Address::from_pubkey(&pubkey, compressed, legacy::PUBKEY_ADDRESS_PREFIX);

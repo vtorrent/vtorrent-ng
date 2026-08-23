@@ -13,6 +13,8 @@ use sha2::{Digest, Sha256};
 
 /// Maximum stack depth.
 const MAX_STACK_DEPTH: usize = 1000;
+/// Maximum number of opcodes executed before the engine aborts (DoS protection).
+const MAX_SCRIPT_EXEC_STEPS: usize = 200;
 
 /// Execution environment passed to the engine for context-dependent opcodes.
 #[derive(Debug, Clone, Default)]
@@ -94,8 +96,13 @@ impl Engine {
     fn run(&mut self, script: &Script) -> Result<()> {
         let mut executing = true;
         let mut if_stack: Vec<bool> = Vec::new();
+        let mut steps: usize = 0;
 
         for item in script.iter() {
+            steps += 1;
+            if steps > MAX_SCRIPT_EXEC_STEPS {
+                return Err(ScriptError::StackOverflow);
+            }
             match item {
                 ScriptItem::PushData(data) => {
                     if executing {
@@ -370,6 +377,14 @@ impl Engine {
                         }
 
                         // ── Crypto ───────────────────────────────────────────
+                        0xa7 => {
+                            // OP_SHA1
+                            if executing {
+                                let top = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
+                                let hash = sha1::Sha1::digest(&top).to_vec();
+                                self.stack.push(hash);
+                            }
+                        }
                         0xa8 => {
                             // OP_SHA256
                             if executing {
@@ -448,6 +463,11 @@ impl Engine {
                                     return Err(ScriptError::NegativeLocktime);
                                 }
                                 if locktime > u32::MAX as i64 {
+                                    return Err(ScriptError::UnsatisfiedLocktime);
+                                }
+                                // Bitcoin Core rejects values where bit 31 is set
+                                // (treated as negative by CScriptNum).
+                                if locktime > 0x7FFF_FFFF {
                                     return Err(ScriptError::UnsatisfiedLocktime);
                                 }
                                 let locktime = locktime as u32;

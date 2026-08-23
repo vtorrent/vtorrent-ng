@@ -77,14 +77,22 @@ impl Script {
     }
 
     /// Push a small integer (0–16) as the corresponding OP_N opcode.
+    /// Values >16 are encoded as minimally-encoded script numbers.
     pub fn push_int(&mut self, n: u8) {
         match n {
             0 => self.0.push(0x00),
             1..=16 => self.0.push(0x50 + n),
             _ => {
-                // Encode as minimally-encoded script integer
-                self.0.push(1);
-                self.0.push(n);
+                // Bitcoin canonical encoding: push the value as a single byte.
+                // Values 0x01..0x7F are pushed directly (minimal).
+                // Values 0x80..0xFF require a trailing 0x00 to avoid being
+                // interpreted as negative (sign-magnitude).
+                if n < 0x80 {
+                    self.0.push(n);
+                } else {
+                    self.0.push(n);
+                    self.0.push(0x00);
+                }
             }
         }
     }

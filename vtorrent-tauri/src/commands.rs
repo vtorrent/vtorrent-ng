@@ -535,7 +535,7 @@ pub async fn start_node(state: tauri::State<'_, AppState>) -> Result<NodeInfoRes
             .as_ref()
             .and_then(|w| w.mnemonic())
             .and_then(|m| vtorrent_wallet::hd::Mnemonic::from_phrase(m).ok())
-            .map(|m| m.to_seed())
+            .and_then(|m| m.to_seed().ok())
     };
     if let Some(seed) = btc_seed {
         *rpc_state.btc_wallet.write().await = Some(vtorrent_btc::wallet::BtcWallet::new(seed));
