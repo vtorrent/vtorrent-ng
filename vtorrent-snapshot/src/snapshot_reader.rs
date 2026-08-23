@@ -132,6 +132,13 @@ pub fn parse_binary(data: &[u8]) -> Result<UtxoSnapshot> {
         },
         entries,
     })
+    .map(|mut snap| {
+        // lookup_balance() binary-searches entries, which is only correct on
+        // sorted data. The writer sorts, but a hand-built or third-party
+        // snapshot may not be — sort defensively so lookups stay sound.
+        snap.entries.sort_by(|a, b| a.address.cmp(&b.address));
+        snap
+    })
 }
 
 /// Verify the integrity of a loaded snapshot by recomputing the entries hash.
