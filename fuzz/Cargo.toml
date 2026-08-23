@@ -10,6 +10,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
+bytes = "1"
+tokio-util = { version = "0.7", features = ["codec"] }
 
 [dependencies.vtorrent-script]
 path = "../vtorrent-script"
