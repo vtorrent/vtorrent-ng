@@ -50,7 +50,9 @@ impl Transaction {
                 let mut sig = Vec::new();
                 // Encode: [legacy_address_len][legacy_address][signature_proof]
                 let addr_bytes = legacy_address.as_bytes();
-                sig.push(addr_bytes.len() as u8);
+                let addr_len =
+                    u8::try_from(addr_bytes.len()).expect("legacy address exceeds 255 bytes");
+                sig.push(addr_len);
                 sig.extend_from_slice(addr_bytes);
                 sig.extend_from_slice(&signature_proof);
                 sig

@@ -106,15 +106,7 @@ pub fn open_wallet(
 ) -> Result<WalletInfo> {
     let path = std::path::PathBuf::from(&wallet_path);
 
-    let wallet = Wallet::load(&path, &passphrase).map_err(TauriError::from)?;
-
-    // Verify 2FA if the wallet has it enabled
-    if wallet.has_2fa() {
-        let code = otp_code.ok_or(TauriError::TwoFAFailed)?;
-        if !wallet.verify_2fa(&code).map_err(TauriError::from)? {
-            return Err(TauriError::TwoFAFailed);
-        }
-    }
+    let wallet = Wallet::load(&path, &passphrase, otp_code.as_deref()).map_err(TauriError::from)?;
 
     let default_address = wallet.default_address().map(|a| a.to_string());
     let address_count = wallet.address_count();
@@ -1204,7 +1196,9 @@ pub async fn vtr_claim(
         .build_claim_tx_unsigned(funding_txid, &preimage_bytes, CLAIM_FEE_SATOSHIS)
         .map_err(|e| TauriError::InvalidInput(format!("Unable to build VTR claim tx: {}", e)))?;
 
-    let htlc_script = htlc.build_script();
+    let htlc_script = htlc
+        .build_script()
+        .map_err(|e| TauriError::InvalidInput(format!("Invalid HTLC addresses: {}", e)))?;
     let (sig, pubkey) = sign_input_over_subscript(&unsigned, 0, &htlc_script, &taker_wif)
         .map_err(|e| TauriError::InvalidInput(format!("Unable to sign VTR claim tx: {}", e)))?;
 

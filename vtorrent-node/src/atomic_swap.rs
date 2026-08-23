@@ -155,9 +155,13 @@ impl Htlc {
     ///   OP_DUP OP_HASH160 <refund_hash160> OP_EQUALVERIFY OP_CHECKSIG
     /// OP_ENDIF
     /// ```
-    pub fn build_script(&self) -> Vec<u8> {
-        let recipient_hash = address_to_hash160(&self.recipient);
-        let refund_hash = address_to_hash160(&self.refund_address);
+    pub fn build_script(&self) -> Result<Vec<u8>> {
+        let recipient_hash = address_to_hash160(&self.recipient).ok_or_else(|| {
+            NodeError::AtomicSwap(format!("invalid recipient address: {}", self.recipient))
+        })?;
+        let refund_hash = address_to_hash160(&self.refund_address).ok_or_else(|| {
+            NodeError::AtomicSwap(format!("invalid refund address: {}", self.refund_address))
+        })?;
         let expiry_bytes = self.expiry.to_le_bytes();
 
         let mut script = Vec::new();
@@ -190,7 +194,7 @@ impl Htlc {
 
         script.push(0x68); // OP_ENDIF
 
-        script
+        Ok(script)
     }
 
     /// Build the funding transaction that locks VTR into the HTLC.
@@ -216,7 +220,7 @@ impl Htlc {
 
         let mut outputs = vec![TxOutput {
             value: self.amount,
-            script_pubkey: self.build_script(),
+            script_pubkey: self.build_script()?,
         }];
 
         // Change output
@@ -224,7 +228,12 @@ impl Htlc {
         if change > 0 {
             outputs.push(TxOutput {
                 value: change,
-                script_pubkey: p2pkh_script(&self.refund_address),
+                script_pubkey: p2pkh_script(&self.refund_address).ok_or_else(|| {
+                    NodeError::AtomicSwap(format!(
+                        "invalid refund address: {}",
+                        self.refund_address
+                    ))
+                })?,
             });
         }
 
@@ -296,7 +305,9 @@ impl Htlc {
             }],
             outputs: vec![TxOutput {
                 value: self.amount.saturating_sub(fee),
-                script_pubkey: p2pkh_script(&self.recipient),
+                script_pubkey: p2pkh_script(&self.recipient).ok_or_else(|| {
+                    NodeError::AtomicSwap(format!("invalid recipient address: {}", self.recipient))
+                })?,
             }],
             lock_time: 0,
             claim_address: Some(self.recipient.clone()),
@@ -358,7 +369,12 @@ impl Htlc {
             }],
             outputs: vec![TxOutput {
                 value: self.amount.saturating_sub(fee),
-                script_pubkey: p2pkh_script(&self.refund_address),
+                script_pubkey: p2pkh_script(&self.refund_address).ok_or_else(|| {
+                    NodeError::AtomicSwap(format!(
+                        "invalid refund address: {}",
+                        self.refund_address
+                    ))
+                })?,
             }],
             lock_time: self.expiry,
             claim_address: Some(self.refund_address.clone()),
@@ -867,16 +883,17 @@ fn sha256_bytes(data: &[u8]) -> [u8; 32] {
 }
 
 /// Decode a Base58Check address to its 20-byte hash160 payload.
-fn address_to_hash160(address: &str) -> [u8; 20] {
-    match vtorrent_core::address::Address::parse(address) {
-        Ok(addr) => addr.hash,
-        Err(_) => [0u8; 20],
-    }
+/// Returns `None` if the address is malformed.
+fn address_to_hash160(address: &str) -> Option<[u8; 20]> {
+    vtorrent_core::address::Address::parse(address)
+        .ok()
+        .map(|addr| addr.hash)
 }
 
 /// Build a standard P2PKH scriptPubKey from an address.
-fn p2pkh_script(address: &str) -> Vec<u8> {
-    let hash160 = address_to_hash160(address);
+/// Returns `None` if the address is invalid.
+fn p2pkh_script(address: &str) -> Option<Vec<u8>> {
+    let hash160 = address_to_hash160(address)?;
     let mut script = Vec::with_capacity(25);
     script.push(0x76); // OP_DUP
     script.push(0xa9); // OP_HASH160
@@ -884,7 +901,7 @@ fn p2pkh_script(address: &str) -> Vec<u8> {
     script.extend_from_slice(&hash160);
     script.push(0x88); // OP_EQUALVERIFY
     script.push(0xac); // OP_CHECKSIG
-    script
+    Some(script)
 }
 
 #[cfg(test)]
@@ -915,7 +932,7 @@ mod tests {
     #[test]
     fn test_htlc_script_not_empty() {
         let htlc = make_htlc();
-        let script = htlc.build_script();
+        let script = htlc.build_script().unwrap();
         assert!(!script.is_empty());
         assert_eq!(script[0], 0x63); // OP_IF
         assert_eq!(*script.last().unwrap(), 0x68); // OP_ENDIF
@@ -933,7 +950,7 @@ mod tests {
             100_000_000,
         )
         .unwrap();
-        let script = htlc.build_script();
+        let script = htlc.build_script().unwrap();
         // hash_lock should appear in the script
         let script_hex = hex::encode(&script);
         let hash_hex = hex::encode(hash_lock);

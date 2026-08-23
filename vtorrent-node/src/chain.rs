@@ -650,8 +650,15 @@ impl Chain {
         }
 
         // Sanity check
-        assert_eq!(self.best_hash(), Some(new_tip));
-        assert_eq!(self.best_height(), new_tip_height);
+        if self.best_hash() != Some(new_tip) || self.best_height() != new_tip_height {
+            return Err(NodeError::Chain(format!(
+                "reorg verification failed: expected tip {:?} at height {}, got {:?} at height {}",
+                new_tip,
+                new_tip_height,
+                self.best_hash(),
+                self.best_height()
+            )));
+        }
 
         Ok(())
     }

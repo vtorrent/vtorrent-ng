@@ -4,7 +4,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 /// A BIP39 mnemonic phrase, zeroized on drop.
 #[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct Mnemonic {
-    words: String,
+    words: zeroize::Zeroizing<String>,
 }
 
 /// HD account metadata stored in the wallet.
@@ -39,7 +39,7 @@ impl Mnemonic {
         let m = Bip39Mnemonic::generate_in(Language::English, 24)
             .map_err(|e| crate::error::WalletError::MnemonicError(e.to_string()))?;
         Ok(Self {
-            words: m.to_string(),
+            words: zeroize::Zeroizing::new(m.to_string()),
         })
     }
 
@@ -49,7 +49,7 @@ impl Mnemonic {
         Bip39Mnemonic::parse_in_normalized(bip39::Language::English, phrase)
             .map_err(|e| crate::error::WalletError::MnemonicError(e.to_string()))?;
         Ok(Self {
-            words: phrase.to_string(),
+            words: zeroize::Zeroizing::new(phrase.to_string()),
         })
     }
 

@@ -77,7 +77,7 @@ impl TorTransport {
         };
 
         stream.write_all(auth_cmd.as_bytes()).await.ok()?;
-        let mut buf = [0u8; 256];
+        let mut buf = [0u8; 4096];
         let n = stream.read(&mut buf).await.ok()?;
         let resp = std::str::from_utf8(&buf[..n]).ok()?;
         if !resp.starts_with("250") {

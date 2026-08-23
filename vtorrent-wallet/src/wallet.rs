@@ -113,13 +113,23 @@ impl Wallet {
     }
 
     /// Load and decrypt a wallet from a file path.
-    pub fn load(path: &std::path::Path, passphrase: &str) -> Result<Self> {
+    /// If 2FA is enabled, `otp_code` must be provided to verify.
+    pub fn load(path: &std::path::Path, passphrase: &str, otp_code: Option<&str>) -> Result<Self> {
         let json = std::fs::read_to_string(path).map_err(|e| WalletError::Io(e.to_string()))?;
         let wallet_file: WalletFile =
             serde_json::from_str(&json).map_err(|e| WalletError::Serialization(e.to_string()))?;
         let plaintext = decrypt_wallet(&wallet_file.encrypted, passphrase)?;
         let data: WalletData = serde_json::from_slice(&plaintext)
             .map_err(|e| WalletError::Serialization(e.to_string()))?;
+
+        // If 2FA is enabled, verify the OTP code before returning the wallet
+        if let Some(config) = &data.otp_config {
+            if config.enabled {
+                let code = otp_code.ok_or(WalletError::OtpRequired)?;
+                config.verify_code(code)?;
+            }
+        }
+
         Ok(Self {
             data,
             passphrase: passphrase.to_string().into(),
@@ -153,10 +163,17 @@ impl Wallet {
         use secp256k1::SecretKey;
 
         let mut bytes = [0u8; 32];
+        let mut attempts = 0u32;
         loop {
             rand::thread_rng().fill_bytes(&mut bytes);
             if SecretKey::from_slice(&bytes).is_ok() {
                 break;
+            }
+            attempts += 1;
+            if attempts >= 1000 {
+                return Err(WalletError::KeyGeneration(
+                    "failed to generate valid key after 1000 attempts".into(),
+                ));
             }
         }
 

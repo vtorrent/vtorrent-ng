@@ -433,8 +433,9 @@ fn bitcoin_signed_message_hash(magic: &str, message: &str) -> [u8; 32] {
     }
 
     let mut preimage = Vec::new();
-    // Magic prefix also uses a varint length
-    let magic_len = magic_bytes.len() as u8;
+    // Magic prefix length as a single byte (matches Bitcoin signed message format).
+    // Safe as long as the magic string is < 256 bytes (current: ~26 bytes).
+    let magic_len = u8::try_from(magic_bytes.len()).expect("magic prefix exceeds 255 bytes");
     preimage.push(magic_len);
     preimage.extend_from_slice(magic_bytes.as_bytes());
     preimage.extend_from_slice(&varint);

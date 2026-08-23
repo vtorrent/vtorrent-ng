@@ -1704,7 +1704,9 @@ pub async fn vtr_claim(
         .map_err(|e| RpcError::BadRequest(format!("Unable to build VTR claim tx: {}", e)))?;
 
     // Sign over the HTLC script (the funding output's scriptPubKey).
-    let htlc_script = htlc.build_script();
+    let htlc_script = htlc
+        .build_script()
+        .map_err(|e| RpcError::BadRequest(format!("Invalid HTLC addresses: {}", e)))?;
     let (sig, pubkey) = sign_input_over_subscript(&unsigned, 0, &htlc_script, &req.taker_wif)
         .map_err(|e| RpcError::BadRequest(format!("Unable to sign VTR claim tx: {}", e)))?;
 
@@ -1906,7 +1908,9 @@ pub async fn swap_refund(
                     .await
                     .clone()
                     .ok_or_else(|| RpcError::BadRequest("Maker wallet not unlocked".into()))?;
-                let htlc_script = htlc.build_script();
+                let htlc_script = htlc
+                    .build_script()
+                    .map_err(|e| RpcError::BadRequest(format!("Invalid HTLC addresses: {}", e)))?;
                 let (sig, pubkey) =
                     sign_input_over_subscript(&unsigned, 0, &htlc_script, &maker_wif).map_err(
                         |e| RpcError::BadRequest(format!("Unable to sign VTR refund tx: {}", e)),

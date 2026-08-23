@@ -63,7 +63,10 @@ pub struct Transaction {
 impl Transaction {
     /// Compute the transaction hash (txid).
     pub fn txid(&self) -> [u8; 32] {
-        let serialized = bincode::serialize(self).unwrap_or_default();
+        let serialized = bincode::serialize(self).unwrap_or_else(|e| {
+            tracing::warn!("txid serialization failed: {}", e);
+            Vec::new()
+        });
         let first = Sha256::digest(&serialized);
         let second = Sha256::digest(first);
         let mut hash = [0u8; 32];
@@ -231,7 +234,10 @@ pub struct BlockHeader {
 impl BlockHeader {
     /// Compute the block hash (SHA256d of the serialized header).
     pub fn hash(&self) -> [u8; 32] {
-        let serialized = bincode::serialize(self).unwrap_or_default();
+        let serialized = bincode::serialize(self).unwrap_or_else(|e| {
+            tracing::warn!("block header serialization failed: {}", e);
+            Vec::new()
+        });
         let first = Sha256::digest(&serialized);
         let second = Sha256::digest(first);
         let mut hash = [0u8; 32];
@@ -264,25 +270,29 @@ pub fn compute_merkle_root_from_txids(txids: &mut [[u8; 32]]) -> [u8; 32] {
     if len == 0 {
         return [0u8; 32];
     }
+    // Ensure capacity for odd-length duplication.  If the caller provided
+    // exactly `len` slots and `len` is odd, we need one extra slot to
+    // duplicate the last hash.  We reallocate in this rare case rather
+    // than requiring callers to always over-allocate.
+    let mut buf: Vec<[u8; 32]> = Vec::with_capacity(len + 1);
+    buf.extend_from_slice(txids);
     let mut combined = [0u8; 64];
     while len > 1 {
-        // Duplicate last element if odd.
         if len & 1 == 1 {
-            // SAFETY: len >= 2 here so the index is valid.
-            txids[len] = txids[len - 1];
+            buf.push(buf[len - 1]);
             len += 1;
         }
         let half = len / 2;
         for i in 0..half {
-            combined[..32].copy_from_slice(&txids[i * 2]);
-            combined[32..].copy_from_slice(&txids[i * 2 + 1]);
+            combined[..32].copy_from_slice(&buf[i * 2]);
+            combined[32..].copy_from_slice(&buf[i * 2 + 1]);
             let first = Sha256::digest(combined);
             let second = Sha256::digest(first);
-            txids[i].copy_from_slice(&second);
+            buf[i].copy_from_slice(&second);
         }
         len = half;
     }
-    txids[0]
+    buf[0]
 }
 
 impl Block {

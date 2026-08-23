@@ -401,7 +401,13 @@ impl Node {
     pub async fn broadcast_order(&mut self, order: &crate::atomic_swap::SwapOrder) {
         let ann = OrderAnnouncement::from_order(order);
         self.seen_orders.insert(order.order_id);
-        let payload = serde_json::to_vec(&ann).unwrap_or_default();
+        let payload = match serde_json::to_vec(&ann) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("Failed to serialize order announcement: {}", e);
+                return;
+            }
+        };
         self.peer_manager
             .broadcast(NetMessage::new("dexorder", payload))
             .await;
@@ -602,12 +608,19 @@ impl Node {
                             if !already_admitted {
                                 self.emit(NodeEvent::TxUnconfirmed { txid, fee_sats, size_bytes });
                             }
-                            let payload = serde_json::to_vec(&InvMsg {
+                            let payload = match serde_json::to_vec(&InvMsg {
                                 items: vec![InvItem {
                                     inv_type: InvType::Transaction,
                                     hash: txid,
                                 }],
-                            }).unwrap_or_default();
+                            }) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    tracing::warn!("Failed to serialize inv message: {}", e);
+                                    drop(mp);
+                                    return Ok(());
+                                }
+                            };
                             drop(mp);
                             self.peer_manager.broadcast(
                                 NetMessage::new("inv", payload)
@@ -626,12 +639,18 @@ impl Node {
                 // Locally-minted blocks from the regtest faucet
                 Some(block) = self.block_submit_rx.recv() => {
                     let block_hash = block.hash();
-                    let payload = serde_json::to_vec(&InvMsg {
+                    let payload = match serde_json::to_vec(&InvMsg {
                         items: vec![InvItem {
                             inv_type: InvType::Block,
                             hash: block_hash,
                         }],
-                    }).unwrap_or_default();
+                    }) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            tracing::warn!("Failed to serialize block inv: {}", e);
+                            continue;
+                        }
+                    };
                     self.peer_manager.broadcast(
                         NetMessage::new("inv", payload)
                     ).await;
@@ -758,7 +777,10 @@ impl Node {
 
         let peers = tokio::task::spawn_blocking(move || discover_peers_via_github(port))
             .await
-            .unwrap_or_default();
+            .unwrap_or_else(|e| {
+                tracing::warn!("GitHub bootstrap task failed: {}", e);
+                Vec::new()
+            });
 
         if peers.is_empty() {
             tracing::debug!("GitHub bootstrap: no peers returned");
@@ -811,11 +833,16 @@ impl Node {
                 });
                 // Negotiate compact block relay (BIP-152)
                 // We use low-bandwidth mode (0) by default; high-bandwidth (1) is for the 3 fastest peers
-                let sendcmpct_payload = serde_json::to_vec(&SendCmpctMsg {
+                let sendcmpct_payload = match serde_json::to_vec(&SendCmpctMsg {
                     high_bandwidth: false,
                     version: 1,
-                })
-                .unwrap_or_default();
+                }) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!("Failed to serialize sendcmpct: {}", e);
+                        return Ok(());
+                    }
+                };
                 self.peer_manager
                     .send_to(peer_addr, NetMessage::new("sendcmpct", sendcmpct_payload))
                     .await;

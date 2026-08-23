@@ -40,6 +40,9 @@ pub enum NodeError {
 
     #[error("Atomic swap error: {0}")]
     AtomicSwap(String),
+
+    #[error("Invalid address: {0}")]
+    InvalidAddress(String),
 }
 
 pub type Result<T> = std::result::Result<T, NodeError>;

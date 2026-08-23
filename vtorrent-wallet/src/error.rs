@@ -64,6 +64,9 @@ pub enum WalletError {
 
     #[error("Mnemonic error: {0}")]
     MnemonicError(String),
+
+    #[error("Key generation error: {0}")]
+    KeyGeneration(String),
 }
 
 pub type Result<T> = std::result::Result<T, WalletError>;

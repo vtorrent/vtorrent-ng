@@ -161,9 +161,10 @@ impl StakingEngine {
         };
 
         // Output 1: stake return + reward to staking address
+        let stake_script = self.address_to_script(&self.address)?;
         let stake_output = TxOutput {
             value: utxo.value.saturating_add(reward),
-            script_pubkey: self.address_to_script(&self.address),
+            script_pubkey: stake_script,
         };
 
         let mut coinstake = Transaction {
@@ -214,6 +215,9 @@ impl StakingEngine {
 
         // Build P2PKH scriptSig: <sig> <pubkey>
         let pubkey_bytes = pubkey.serialize();
+        if der.len() > 255 || pubkey_bytes.len() > 255 {
+            return None;
+        }
         let mut script = Vec::with_capacity(1 + der.len() + 1 + pubkey_bytes.len());
         script.push(der.len() as u8);
         script.extend_from_slice(&der);
@@ -270,15 +274,9 @@ impl StakingEngine {
 
     /// Convert a vTorrent address to a P2PKH scriptPubKey.
     /// Decodes the Base58Check address and builds the standard script.
-    fn address_to_script(&self, address: &str) -> Vec<u8> {
-        let Ok(addr) = vtorrent_core::address::Address::parse(address) else {
-            // Fallback: OP_RETURN with address bytes
-            let mut script = vec![0x6a];
-            let addr_bytes = address.as_bytes();
-            script.push(addr_bytes.len() as u8);
-            script.extend_from_slice(addr_bytes);
-            return script;
-        };
+    /// Returns `None` if the address is invalid (avoids silent fund burn).
+    fn address_to_script(&self, address: &str) -> Option<Vec<u8>> {
+        let addr = vtorrent_core::address::Address::parse(address).ok()?;
 
         // Standard P2PKH: OP_DUP OP_HASH160 <20-byte-hash> OP_EQUALVERIFY OP_CHECKSIG
         let mut script = Vec::with_capacity(25);
@@ -288,7 +286,7 @@ impl StakingEngine {
         script.extend_from_slice(&addr.hash);
         script.push(0x88); // OP_EQUALVERIFY
         script.push(0xac); // OP_CHECKSIG
-        script
+        Some(script)
     }
 }
 
@@ -337,15 +335,18 @@ mod tests {
     fn test_address_to_script_length() {
         let engine = StakingEngine::new("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string());
         // A valid P2PKH script is always 25 bytes
-        let script = engine.address_to_script("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT");
-        // May be 25 (P2PKH) or fallback OP_RETURN — just check it's non-empty
-        assert!(!script.is_empty());
+        let script = engine
+            .address_to_script("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT")
+            .expect("valid address");
+        assert_eq!(script.len(), 25);
     }
 
     #[test]
     fn test_address_to_script_p2pkh() {
         let engine = StakingEngine::new("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string());
-        let script = engine.address_to_script("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT");
+        let script = engine
+            .address_to_script("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT")
+            .expect("valid address");
         // Standard P2PKH: OP_DUP OP_HASH160 <20-byte-hash> OP_EQUALVERIFY OP_CHECKSIG
         assert_eq!(script.len(), 25);
         assert_eq!(&script[..3], &[0x76, 0xa9, 0x14]);

@@ -170,6 +170,15 @@ fn sign_input(secret_key_bytes: &[u8; 32], sighash: &[u8; 32]) -> Result<Vec<u8>
 
 /// Build a P2PKH scriptSig: <sig> <pubkey>.
 fn build_script_sig(sig: &[u8], pubkey: &[u8]) -> Vec<u8> {
+    // DER-encoded ECDSA signatures are typically 70-72 bytes; compressed
+    // pubkeys are exactly 33.  Reject pathological inputs to avoid
+    // silent length-byte truncation.
+    assert!(sig.len() <= 255, "signature too large: {} bytes", sig.len());
+    assert!(
+        pubkey.len() <= 255,
+        "pubkey too large: {} bytes",
+        pubkey.len()
+    );
     let mut script = Vec::with_capacity(1 + sig.len() + 1 + pubkey.len());
     script.push(sig.len() as u8);
     script.extend_from_slice(sig);
@@ -775,7 +784,7 @@ mod tests {
             100_000_000,
         )
         .unwrap();
-        let htlc_script = htlc.build_script();
+        let htlc_script = htlc.build_script().unwrap();
 
         // Build the unsigned claim and sign over the HTLC script.
         let unsigned = htlc
@@ -840,7 +849,7 @@ mod tests {
             100_000_000,
         )
         .unwrap();
-        let htlc_script = htlc.build_script();
+        let htlc_script = htlc.build_script().unwrap();
 
         // Build the unsigned refund and sign over the HTLC script.
         let unsigned = htlc.build_refund_tx_unsigned([1u8; 32], 10_000).unwrap();
