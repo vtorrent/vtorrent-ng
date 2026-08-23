@@ -69,13 +69,16 @@ impl UtxoSet {
 
     /// Persist the UTXO set to a JSON file.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        let json = serde_json::to_string_pretty(self)
-            .map_err(std::io::Error::other)?;
+        let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
         // Write atomically via a temp file + rename.
         let tmp = path.with_extension("tmp");
         std::fs::write(&tmp, &json)?;
         std::fs::rename(&tmp, path)?;
-        tracing::debug!("UTXO set saved: {} entries → {}", self.utxos.len(), path.display());
+        tracing::debug!(
+            "UTXO set saved: {} entries → {}",
+            self.utxos.len(),
+            path.display()
+        );
         Ok(())
     }
 
@@ -88,7 +91,11 @@ impl UtxoSet {
         let json = std::fs::read_to_string(path)?;
         let set: UtxoSet = serde_json::from_str(&json)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        tracing::debug!("UTXO set loaded: {} entries from {}", set.utxos.len(), path.display());
+        tracing::debug!(
+            "UTXO set loaded: {} entries from {}",
+            set.utxos.len(),
+            path.display()
+        );
         Ok(set)
     }
 }

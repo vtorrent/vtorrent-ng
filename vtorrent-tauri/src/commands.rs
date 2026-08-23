@@ -538,7 +538,44 @@ pub async fn start_node(state: tauri::State<'_, AppState>) -> Result<NodeInfoRes
             .and_then(|m| m.to_seed().ok())
     };
     if let Some(seed) = btc_seed {
-        *rpc_state.btc_wallet.write().await = Some(vtorrent_btc::wallet::BtcWallet::new(seed));
+        // Persist UTXOs to the app data directory so they survive restarts.
+        let utxo_path = {
+            let wp = state
+                .wallet_path
+                .lock()
+                .map_err(|_| TauriError::WalletLocked)?;
+            wp.as_ref()
+                .map(|p| {
+                    p.parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .join("btc_utxos.json")
+                })
+                .unwrap_or_else(|| std::env::temp_dir().join("vtorrent_btc_utxos.json"))
+        };
+        match vtorrent_btc::wallet::BtcWallet::with_persistence(
+            seed,
+            bitcoin::Network::Bitcoin,
+            utxo_path.clone(),
+        ) {
+            Ok(mut wallet) => {
+                // Advance the derivation index to skip any already-used addresses.
+                wallet.set_last_scanned_height(wallet.best_height());
+                *rpc_state.btc_wallet.write().await = Some(wallet);
+                tracing::info!(
+                    "BTC wallet loaded with UTXO persistence: {}",
+                    utxo_path.display()
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to load BTC UTXOs from {}: {}, using fresh wallet",
+                    utxo_path.display(),
+                    e
+                );
+                *rpc_state.btc_wallet.write().await =
+                    Some(vtorrent_btc::wallet::BtcWallet::new(seed));
+            }
+        }
     }
 
     // Wire the node's event sender to the RPC broadcaster, and track staking
@@ -627,7 +664,11 @@ pub async fn get_node_info(state: tauri::State<'_, AppState>) -> Result<NodeInfo
             let height = chain.best_height();
             let blocks = height as f64;
             let total = blocks.max(1.0);
-            let sync_pct = if syncing { (blocks / total) * 100.0 } else { 100.0 };
+            let sync_pct = if syncing {
+                (blocks / total) * 100.0
+            } else {
+                100.0
+            };
             Ok(NodeInfoResult {
                 running: true,
                 version: env!("CARGO_PKG_VERSION").into(),
@@ -1758,7 +1799,9 @@ pub async fn send_btc(
     amount_satoshis: u64,
 ) -> Result<String> {
     if to_address.trim().is_empty() {
-        return Err(TauriError::InvalidInput("Recipient address is required".into()));
+        return Err(TauriError::InvalidInput(
+            "Recipient address is required".into(),
+        ));
     }
     if amount_satoshis == 0 {
         return Err(TauriError::InvalidInput("Amount must be non-zero".into()));
@@ -1848,10 +1891,14 @@ pub async fn submit_legacy_claim(
     use vtorrent_wallet::tx_builder::{p2pkh_script_pubkey, pubkey_to_vtorrent_address};
 
     if wif_private_key.is_empty() {
-        return Err(TauriError::InvalidInput("WIF private key is required".into()));
+        return Err(TauriError::InvalidInput(
+            "WIF private key is required".into(),
+        ));
     }
     if recipient_address.is_empty() {
-        return Err(TauriError::InvalidInput("Recipient address is required".into()));
+        return Err(TauriError::InvalidInput(
+            "Recipient address is required".into(),
+        ));
     }
 
     let key = PrivateKey::from_wif(&wif_private_key)

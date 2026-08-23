@@ -108,11 +108,7 @@ pub fn build_and_sign_multi(
 
     // ── BIP69: sort inputs lexicographically by (txid, vout) ────────────
     let mut indexed_inputs: Vec<(usize, &Utxo)> = inputs.iter().enumerate().collect();
-    indexed_inputs.sort_by(|a, b| {
-        a.1.txid
-            .cmp(&b.1.txid)
-            .then(a.1.vout.cmp(&b.1.vout))
-    });
+    indexed_inputs.sort_by(|a, b| a.1.txid.cmp(&b.1.txid).then(a.1.vout.cmp(&b.1.vout)));
 
     let tx_inputs: Vec<TxIn> = indexed_inputs
         .iter()
@@ -195,10 +191,8 @@ fn address_matches_wif(address: &str, wif: &str, network: bitcoin::Network) -> R
     let key = bitcoin::PrivateKey::from_wif(wif).map_err(|e| BtcError::Bitcoin(e.to_string()))?;
     let secp = Secp256k1::new();
     let pubkey = key.public_key(&secp);
-    let compressed =
-        bitcoin::CompressedPublicKey::from_slice(&pubkey.to_bytes()).map_err(|e| {
-            BtcError::Bitcoin(e.to_string())
-        })?;
+    let compressed = bitcoin::CompressedPublicKey::from_slice(&pubkey.to_bytes())
+        .map_err(|e| BtcError::Bitcoin(e.to_string()))?;
     let derived = Address::p2wpkh(&compressed, network);
     Ok(address == derived.to_string())
 }
@@ -220,6 +214,171 @@ pub fn estimate_vsize(input_count: usize, output_count: usize) -> u64 {
     let output_vsize = output_count as u64 * 31;
     let overhead = 12;
     input_vsize + output_vsize + overhead
+}
+
+// ─── PSBT (BIP174) ───────────────────────────────────────────────────────────
+
+/// Create an unsigned PSBT (Partially Signed Bitcoin Transaction) from the
+/// given UTXOs and outputs.  Returns the serialized PSBT bytes.
+///
+/// The PSBT can later be signed with `sign_psbt` and finalized with
+/// `finalize_psbt` to produce a broadcastable raw transaction.
+pub fn create_psbt(
+    inputs: &[Utxo],
+    outputs: &[(u64, Address)],
+    network: bitcoin::Network,
+    rbf: bool,
+) -> Result<Vec<u8>> {
+    use bitcoin::psbt::Psbt;
+
+    let sequence = if rbf { RBF_SEQUENCE } else { Sequence::MAX };
+
+    // BIP69 sort inputs
+    let mut indexed: Vec<(usize, &Utxo)> = inputs.iter().enumerate().collect();
+    indexed.sort_by(|a, b| a.1.txid.cmp(&b.1.txid).then(a.1.vout.cmp(&b.1.vout)));
+
+    let tx_inputs: Vec<TxIn> = indexed
+        .iter()
+        .map(|(_, u)| {
+            let txid =
+                bitcoin::Txid::from_str(&u.txid).map_err(|e| BtcError::Bitcoin(e.to_string()))?;
+            Ok(TxIn {
+                previous_output: OutPoint { txid, vout: u.vout },
+                script_sig: ScriptBuf::new(),
+                sequence,
+                witness: Witness::new(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    // BIP69 sort outputs
+    let mut sorted_outputs: Vec<(u64, &Address)> = outputs.iter().map(|(v, a)| (*v, a)).collect();
+    sorted_outputs.sort_by(|a, b| {
+        a.0.cmp(&b.0).then(
+            a.1.script_pubkey()
+                .as_bytes()
+                .cmp(b.1.script_pubkey().as_bytes()),
+        )
+    });
+
+    let tx_outputs: Vec<TxOut> = sorted_outputs
+        .iter()
+        .map(|(value, addr)| TxOut {
+            value: Amount::from_sat(*value),
+            script_pubkey: addr.script_pubkey(),
+        })
+        .collect();
+
+    let unsigned_tx = Transaction {
+        version: Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: tx_inputs,
+        output: tx_outputs,
+    };
+
+    let mut psbt =
+        Psbt::from_unsigned_tx(unsigned_tx).map_err(|e| BtcError::Bitcoin(e.to_string()))?;
+
+    // Populate per-input witness_utxo for signers.
+    for (i, (_, u)) in indexed.iter().enumerate() {
+        let input_addr = Address::from_str(&u.address)
+            .map_err(|e| BtcError::InvalidAddress(e.to_string()))?
+            .require_network(network)
+            .map_err(|e| BtcError::InvalidAddress(e.to_string()))?;
+        let input = bitcoin::psbt::Input {
+            witness_utxo: Some(bitcoin::TxOut {
+                value: Amount::from_sat(u.value),
+                script_pubkey: input_addr.script_pubkey(),
+            }),
+            ..Default::default()
+        };
+        psbt.inputs.insert(i, input);
+    }
+
+    Ok(psbt.serialize())
+}
+
+/// Sign a PSBT with the given WIF private key for all matching P2WPKH inputs.
+/// Returns the updated PSBT bytes.
+pub fn sign_psbt(psbt_bytes: &[u8], wif: &str, network: bitcoin::Network) -> Result<Vec<u8>> {
+    use bitcoin::psbt::Psbt;
+
+    let mut psbt = Psbt::deserialize(psbt_bytes).map_err(|e| BtcError::Bitcoin(e.to_string()))?;
+
+    let key = bitcoin::PrivateKey::from_wif(wif).map_err(|e| BtcError::Bitcoin(e.to_string()))?;
+    let secp = Secp256k1::new();
+    let pubkey = key.public_key(&secp);
+    let compressed = bitcoin::CompressedPublicKey::from_slice(&pubkey.to_bytes())
+        .map_err(|e| BtcError::Bitcoin(e.to_string()))?;
+    let our_script = Address::p2wpkh(&compressed, network).script_pubkey();
+
+    for (i, input) in psbt.inputs.iter_mut().enumerate() {
+        if let Some(ref utxo) = input.witness_utxo {
+            if utxo.script_pubkey == our_script {
+                let mut sighash_cache = bitcoin::sighash::SighashCache::new(&psbt.unsigned_tx);
+                let sighash = sighash_cache
+                    .p2wpkh_signature_hash(
+                        i,
+                        &utxo.script_pubkey,
+                        utxo.value,
+                        bitcoin::EcdsaSighashType::All,
+                    )
+                    .map_err(|e| BtcError::Bitcoin(e.to_string()))?;
+                let msg = bitcoin::secp256k1::Message::from(sighash);
+                let sig = secp.sign_ecdsa(&msg, &key.inner);
+                input.partial_sigs.insert(
+                    pubkey,
+                    bitcoin::ecdsa::Signature {
+                        signature: sig,
+                        sighash_type: bitcoin::EcdsaSighashType::All,
+                    },
+                );
+            }
+        }
+    }
+
+    Ok(psbt.serialize())
+}
+
+/// Finalize a signed PSBT, extracting the raw transaction bytes.
+pub fn finalize_psbt(psbt_bytes: &[u8]) -> Result<Vec<u8>> {
+    use bitcoin::psbt::Psbt;
+
+    let psbt = Psbt::deserialize(psbt_bytes).map_err(|e| BtcError::Bitcoin(e.to_string()))?;
+
+    let tx = psbt
+        .extract_tx()
+        .map_err(|e| BtcError::Bitcoin(e.to_string()))?;
+
+    Ok(bitcoin::consensus::encode::serialize(&tx))
+}
+
+// ─── Taproot / P2TR ──────────────────────────────────────────────────────────
+
+/// Create a P2TR (Taproot) address from a public key.
+pub fn p2tr_address(pubkey: &bitcoin::PublicKey, network: bitcoin::Network) -> Result<Address> {
+    let secp = Secp256k1::new();
+    let (xonly, _parity) = pubkey.inner.x_only_public_key();
+    Ok(Address::p2tr(&secp, xonly, None, network))
+}
+
+/// Create a P2TR address from a WIF private key.
+pub fn p2tr_address_from_wif(wif: &str, network: bitcoin::Network) -> Result<Address> {
+    let key = bitcoin::PrivateKey::from_wif(wif).map_err(|e| BtcError::Bitcoin(e.to_string()))?;
+    let secp = Secp256k1::new();
+    let pubkey = key.public_key(&secp);
+    p2tr_address(&pubkey, network)
+}
+
+/// Sign a 32-byte message using Schnorr (BIP340) with the given WIF key.
+pub fn schnorr_sign(message: &[u8; 32], wif: &str) -> Result<[u8; 64]> {
+    let key = bitcoin::PrivateKey::from_wif(wif).map_err(|e| BtcError::Bitcoin(e.to_string()))?;
+    let secp = Secp256k1::new();
+    let kp = key.inner.keypair(&secp);
+    let msg = bitcoin::secp256k1::Message::from_digest_slice(message)
+        .map_err(|e| BtcError::Bitcoin(e.to_string()))?;
+    let sig = secp.sign_schnorr(&msg, &kp);
+    Ok(sig.serialize())
 }
 
 #[cfg(test)]
@@ -252,9 +411,16 @@ mod tests {
         let addr = test_addr(0);
         let inputs = vec![test_utxo(&"11".repeat(32), 0, 100_000, 0)];
         let raw = build_and_sign(
-            &inputs, &addr, 50_000, 1_000, &addr, &wif,
-            bitcoin::Network::Bitcoin, false,
-        ).unwrap();
+            &inputs,
+            &addr,
+            50_000,
+            1_000,
+            &addr,
+            &wif,
+            bitcoin::Network::Bitcoin,
+            false,
+        )
+        .unwrap();
         assert!(!raw.is_empty());
     }
 
@@ -264,9 +430,16 @@ mod tests {
         let addr = test_addr(0);
         let inputs = vec![test_utxo(&"22".repeat(32), 0, 100_000, 0)];
         let raw = build_and_sign(
-            &inputs, &addr, 50_000, 1_000, &addr, &wif,
-            bitcoin::Network::Bitcoin, true,
-        ).unwrap();
+            &inputs,
+            &addr,
+            50_000,
+            1_000,
+            &addr,
+            &wif,
+            bitcoin::Network::Bitcoin,
+            true,
+        )
+        .unwrap();
         let tx: Transaction = bitcoin::consensus::encode::deserialize(&raw).unwrap();
         assert_eq!(tx.input[0].sequence, RBF_SEQUENCE);
     }
@@ -277,8 +450,14 @@ mod tests {
         let addr = test_addr(0);
         let inputs = vec![test_utxo(&"33".repeat(32), 0, 10_000, 0)];
         let result = build_and_sign(
-            &inputs, &addr, 50_000, 1_000, &addr, &wif,
-            bitcoin::Network::Bitcoin, false,
+            &inputs,
+            &addr,
+            50_000,
+            1_000,
+            &addr,
+            &wif,
+            bitcoin::Network::Bitcoin,
+            false,
         );
         assert!(result.is_err());
     }
@@ -292,11 +471,21 @@ mod tests {
             test_utxo(&"aa".repeat(32), 0, 50_000, 0),
         ];
         let raw = build_and_sign(
-            &inputs, &addr, 50_000, 1_000, &addr, &wif,
-            bitcoin::Network::Bitcoin, false,
-        ).unwrap();
+            &inputs,
+            &addr,
+            50_000,
+            1_000,
+            &addr,
+            &wif,
+            bitcoin::Network::Bitcoin,
+            false,
+        )
+        .unwrap();
         let tx: Transaction = bitcoin::consensus::encode::deserialize(&raw).unwrap();
-        assert!(tx.input[0].previous_output.txid.to_string() < tx.input[1].previous_output.txid.to_string());
+        assert!(
+            tx.input[0].previous_output.txid.to_string()
+                < tx.input[1].previous_output.txid.to_string()
+        );
     }
 
     #[test]
@@ -305,9 +494,16 @@ mod tests {
         let addr = test_addr(0);
         let inputs = vec![test_utxo(&"cc".repeat(32), 0, 200_000, 0)];
         let raw = build_and_sign(
-            &inputs, &addr, 50_000, 1_000, &addr, &wif,
-            bitcoin::Network::Bitcoin, false,
-        ).unwrap();
+            &inputs,
+            &addr,
+            50_000,
+            1_000,
+            &addr,
+            &wif,
+            bitcoin::Network::Bitcoin,
+            false,
+        )
+        .unwrap();
         let tx: Transaction = bitcoin::consensus::encode::deserialize(&raw).unwrap();
         assert!(tx.output[0].value <= tx.output[1].value);
     }
@@ -347,9 +543,17 @@ mod tests {
         let pubkey = key0.public_key(&secp);
 
         let raw = build_and_sign_multi(
-            &inputs, &dest, 80_000, 1_000, &dest,
-            &key_for, &pubkey, bitcoin::Network::Bitcoin, false,
-        ).unwrap();
+            &inputs,
+            &dest,
+            80_000,
+            1_000,
+            &dest,
+            &key_for,
+            &pubkey,
+            bitcoin::Network::Bitcoin,
+            false,
+        )
+        .unwrap();
         assert!(!raw.is_empty());
 
         let tx: Transaction = bitcoin::consensus::encode::deserialize(&raw).unwrap();

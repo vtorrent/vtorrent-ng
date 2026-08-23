@@ -59,15 +59,34 @@ pub async fn broadcast_tx_to(
         tx.output.len(),
         addrs
     );
-    tracing::debug!("BTC broadcast raw: {}", hex::encode(raw));
+
+    // Fan out to up to 3 peers concurrently for reliability.
+    let fan_out = addrs.len().min(3);
+    let addrs_slice = &addrs[..fan_out];
+
+    let handles: Vec<_> = addrs_slice
+        .iter()
+        .map(|addr| {
+            let tx = tx.clone();
+            let addr = *addr;
+            tokio::spawn(async move {
+                match crate::p2p::BtcPeer::connect_with_network(addr, network).await {
+                    Ok(mut peer) => peer.broadcast_tx(&tx).await.map(|_| addr),
+                    Err(e) => Err(e),
+                }
+            })
+        })
+        .collect();
+
     let mut last_err = None;
-    for addr in addrs {
-        match crate::p2p::BtcPeer::connect_with_network(*addr, network).await {
-            Ok(mut peer) => match peer.broadcast_tx(&tx).await {
-                Ok(()) => return Ok(txid),
-                Err(e) => last_err = Some(e),
-            },
-            Err(e) => last_err = Some(e),
+    for handle in handles {
+        match handle.await {
+            Ok(Ok(addr)) => {
+                tracing::info!("BTC broadcast accepted by peer {}", addr);
+                return Ok(txid);
+            }
+            Ok(Err(e)) => last_err = Some(e),
+            Err(e) => last_err = Some(BtcError::P2p(e.to_string())),
         }
     }
     Err(last_err.unwrap_or_else(|| BtcError::P2p("no reachable peers".into())))

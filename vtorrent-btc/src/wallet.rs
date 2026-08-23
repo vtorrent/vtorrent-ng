@@ -20,6 +20,8 @@ pub struct BtcWallet {
     synced: bool,
     /// Height up to which the UTXO scan has completed (incremental checkpoint).
     last_scanned_height: u32,
+    /// Whether new transactions signal RBF (Replace-By-Fee).
+    rbf_enabled: bool,
 }
 
 impl BtcWallet {
@@ -39,6 +41,7 @@ impl BtcWallet {
             next_index: 0,
             synced: false,
             last_scanned_height: 0,
+            rbf_enabled: true,
         }
     }
 
@@ -59,6 +62,7 @@ impl BtcWallet {
             next_index: 0,
             synced: false,
             last_scanned_height: 0,
+            rbf_enabled: true,
         })
     }
 
@@ -191,6 +195,16 @@ impl BtcWallet {
         self.last_scanned_height = height;
     }
 
+    /// Whether new transactions signal RBF.
+    pub fn rbf_enabled(&self) -> bool {
+        self.rbf_enabled
+    }
+
+    /// Enable or disable RBF signaling for new transactions.
+    pub fn set_rbf_enabled(&mut self, enabled: bool) {
+        self.rbf_enabled = enabled;
+    }
+
     /// Send BTC to `to_address`, selecting UTXOs, signing, and removing
     /// spent UTXOs from the in-memory set.
     ///
@@ -248,7 +262,7 @@ impl BtcWallet {
             &change_address,
             &wif,
             self.network,
-            false,
+            self.rbf_enabled,
         )?;
 
         let txid = txid_of(&raw);
@@ -279,20 +293,35 @@ impl BtcWallet {
     }
 
     /// Estimate the fee in satoshis for a transaction with the given number
-    /// of inputs and outputs, using the peer's feefilter as a floor.
+    /// of inputs and outputs, targeting `target_blocks` confirmation.
     ///
-    /// `feefilter_sats_per_kb` is the peer's advertised minimum fee rate
-    /// from BIP133 `feefilter` messages.  If 0 or negative, a default of
-    /// 1 000 sat/kB (1 sat/byte) is used.
-    pub fn estimate_fee(input_count: usize, output_count: usize, feefilter_sats_per_kb: i64) -> u64 {
-        let rate = if feefilter_sats_per_kb > 0 {
+    /// Uses a simple heuristic: the peer's feefilter as a floor, then
+    /// applies a multiplier based on how urgently the user wants confirmation.
+    ///
+    /// - `target_blocks = 1` → high priority (2× feefilter)
+    /// - `target_blocks = 3` → medium priority (1× feefilter)
+    /// - `target_blocks = 6` → low priority (0.5× feefilter, min 1 sat/vB)
+    pub fn estimate_fee(
+        input_count: usize,
+        output_count: usize,
+        feefilter_sats_per_kb: i64,
+        target_blocks: u32,
+    ) -> u64 {
+        let base_rate = if feefilter_sats_per_kb > 0 {
             feefilter_sats_per_kb as u64
         } else {
             1_000 // 1 sat/byte default
         };
+
+        let multiplier = match target_blocks {
+            0..=1 => 2000, // urgent: 2×
+            2..=3 => 1000, // standard: 1×
+            _ => 500,      // economy: 0.5×
+        };
+
         let vsize = crate::tx::estimate_vsize(input_count, output_count);
-        // Fee = rate (sat/kB) * vsize (vB) / 1000, minimum 1 sat.
-        let fee = (rate * vsize).div_ceil(1000);
+        // fee = rate × multiplier/1000 × vsize / 1000
+        let fee = (base_rate * multiplier * vsize).div_ceil(1_000_000);
         fee.max(1)
     }
 }
