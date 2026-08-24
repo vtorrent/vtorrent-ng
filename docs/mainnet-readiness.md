@@ -44,8 +44,13 @@
       BTC regtest via the compose stack (fund → claim → refund paths all hit).
 - [ ] **Legacy claim rehearsal**: import a legacy `wallet.dat`, check snapshot
       balance, submit a claim on testnet, verify funds arrive.
-- [ ] **Upgrade/downgrade drill**: stop a node, upgrade binary, restart —
-      chain state loads from disk and sync resumes without manual repair.
+- [x] **Upgrade/downgrade drill**: 2026-08-24 on soak `vtr-node3` — binary
+      swapped under the running container, restarted: chain state loaded from
+      disk ("Resuming from persisted chain"), peers re-established, fleet tip
+      hash matched; downgrade to prior binary also resumed cleanly; post-drill
+      block propagated to all nodes. Note: `docker restart` is broken on the
+      soak host for root-owned containers (use `sudo kill <pid>` +
+      `docker start`) — investigate separately.
 
 ## 3. Network Infrastructure
 
