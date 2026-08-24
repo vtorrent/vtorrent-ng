@@ -52,6 +52,14 @@ fn parse_hash32(value: &str, field: &str) -> RpcResult<[u8; 32]> {
     Ok(hash)
 }
 
+/// Encode a Bitcoin txid stored in internal (little-endian) byte order as the
+/// display-order hex string used by Bitcoin Core and block explorers.
+fn btc_txid_hex(bytes: &[u8; 32]) -> String {
+    let mut display = *bytes;
+    display.reverse();
+    hex::encode(display)
+}
+
 fn block_response(
     hash: [u8; 32],
     height: u32,
@@ -1635,7 +1643,7 @@ pub async fn btc_fund(
 
     Ok(Json(BtcFundResponse {
         order_id: req.order_id,
-        btc_funding_txid: hex::encode(btc_funding_txid),
+        btc_funding_txid: btc_txid_hex(&btc_funding_txid),
         status: "BtcFunded".to_string(),
     }))
 }
@@ -1848,7 +1856,7 @@ pub async fn btc_claim(
 
     Ok(Json(SwapActionResponse {
         order_id: req.order_id,
-        txid: hex::encode(txid),
+        txid: btc_txid_hex(&txid),
         status: "Claimed".to_string(),
     }))
 }
@@ -1999,7 +2007,10 @@ pub async fn swap_refund(
     Ok(Json(SwapActionResponse {
         order_id: req.order_id,
         txid: vtr_refund_txid
-            .or(btc_refund_txid)
+            .or_else(|| btc_refund_txid.map(|mut t| {
+                t.reverse();
+                t
+            }))
             .map(hex::encode)
             .unwrap_or_else(|| hex::encode(order.order_id)),
         status: "Refunded".to_string(),

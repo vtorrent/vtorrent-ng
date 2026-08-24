@@ -245,6 +245,15 @@ const ENTRY_SIZE: usize = ADDR_LEN + 8; // 42 bytes per entry
 /// Look up balances in the embedded UTXO snapshot for a list of legacy addresses.
 ///
 /// Uses binary search on the sorted snapshot for O(log n) lookup per address.
+
+/// Encode a Bitcoin txid stored in internal (little-endian) byte order as the
+/// display-order hex string used by Bitcoin Core and block explorers.
+fn btc_txid_hex(bytes: &[u8; 32]) -> String {
+    let mut display = *bytes;
+    display.reverse();
+    hex::encode(display)
+}
+
 fn lookup_snapshot_balances(addresses: &[String]) -> u64 {
     if UTXO_SNAPSHOT.len() < SNAPSHOT_HEADER_SIZE {
         return 0;
@@ -1202,7 +1211,7 @@ pub async fn btc_fund(
 
     Ok(SwapActionResult {
         order_id,
-        txid: hex::encode(btc_funding_txid),
+        txid: btc_txid_hex(&btc_funding_txid),
         status: "BtcFunded".to_string(),
     })
 }
@@ -1423,7 +1432,7 @@ pub async fn btc_claim(
 
     Ok(SwapActionResult {
         order_id,
-        txid: hex::encode(txid),
+        txid: btc_txid_hex(&txid),
         status: "Claimed".to_string(),
     })
 }
@@ -1514,6 +1523,10 @@ pub async fn swap_refund(
     Ok(SwapActionResult {
         order_id: order_id.clone(),
         txid: btc_refund_txid
+            .map(|mut t| {
+                t.reverse();
+                t
+            })
             .map(hex::encode)
             .unwrap_or_else(|| hex::encode(order.order_id)),
         status: "Refunded".to_string(),
