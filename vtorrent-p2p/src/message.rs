@@ -7,8 +7,12 @@ use serde::{Deserialize, Serialize};
 /// Network magic bytes for vTorrent 2.0 mainnet.
 pub const NETWORK_MAGIC: [u8; 4] = [0x56, 0x54, 0x52, 0x32]; // "VTR2"
 
-/// Maximum allowed message payload size (32 MB).
-pub const MAX_PAYLOAD_SIZE: u32 = 32 * 1024 * 1024;
+/// Maximum allowed message payload size (4 MB).
+///
+/// Consensus blocks are capped at 1 MB (`MAX_BLOCK_SIZE`), so 4 MB leaves
+/// generous headroom for serialization overhead while bounding the memory a
+/// single malicious peer can pin in the node's event queue.
+pub const MAX_PAYLOAD_SIZE: u32 = 4 * 1024 * 1024;
 
 /// A P2P network message.
 #[derive(Debug, Clone)]

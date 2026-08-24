@@ -295,13 +295,15 @@ pub async fn broadcast_transaction(
     let txid = tx.txid();
 
     {
-        let mut mempool = state.mempool.lock().await;
         // Verify the fee from the live UTXO set — same rule the P2P relay
         // path applies — so self-reported fee estimates cannot buy priority.
+        // Chain is locked BEFORE mempool to match the node loop's lock order
+        // (chain → mempool) and avoid ABBA deadlock with block processing.
         let real_fee = {
             let chain = state.chain.lock().await;
             chain.compute_tx_fee(&tx)
         };
+        let mut mempool = state.mempool.lock().await;
         match real_fee {
             Some(fee) => mempool
                 .add_transaction_with_fee(tx.clone(), fee)
@@ -709,12 +711,27 @@ pub async fn send_vtr(
         .sum::<u64>()
         .saturating_sub(tx.outputs.iter().map(|o| o.value).sum::<u64>());
 
-    // Add to local mempool and broadcast to P2P network.
+    // Add to local mempool and broadcast to P2P network. Fee is recomputed
+    // from the chain's UTXO set (lock order: chain → mempool) so mempool fee
+    // statistics reflect reality rather than the builder's estimate.
     {
+        let real_fee = {
+            let chain = state.chain.lock().await;
+            chain.compute_tx_fee(&tx)
+        };
         let mut mempool = state.mempool.lock().await;
-        mempool
-            .add_transaction(tx.clone())
-            .map_err(|e| RpcError::BadRequest(format!("Mempool rejected transaction: {}", e)))?;
+        match real_fee {
+            Some(fee) => mempool
+                .add_transaction_with_fee(tx.clone(), fee)
+                .map_err(|e| {
+                    RpcError::BadRequest(format!("Mempool rejected transaction: {}", e))
+                })?,
+            None => {
+                return Err(RpcError::BadRequest(
+                    "Transaction inputs not found in UTXO set".into(),
+                ))
+            }
+        }
     }
     // If a live P2P node is attached, submit the tx for network broadcast.
     if let Some(ref sender) = state.tx_submit {

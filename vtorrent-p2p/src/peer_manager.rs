@@ -110,7 +110,10 @@ impl PeerManager {
         testnet: bool,
         transport_config: TransportConfig,
     ) -> Self {
-        let (event_tx, event_rx) = mpsc::channel(1024);
+        // Bounded so a flooding peer cannot pin unbounded memory: worst case
+        // is `capacity × MAX_PAYLOAD_SIZE`. The per-peer read task blocks on
+        // send when full, applying TCP backpressure to the offender.
+        let (event_tx, event_rx) = mpsc::channel(256);
         let mut addr_book = AddrBook::with_testnet(testnet);
 
         // Set our own listen address so we don't connect to ourselves

@@ -1588,12 +1588,24 @@ pub async fn send_vtr(
 
     let txid = hex::encode(tx.txid());
 
-    // Submit to mempool.
+    // Submit to mempool. Fee verified from the chain UTXO set (lock order:
+    // chain → mempool, matching the node loop).
     {
+        let real_fee = {
+            let chain = handle.rpc_state.chain.lock().await;
+            chain.compute_tx_fee(&tx)
+        };
         let mut mempool = handle.rpc_state.mempool.lock().await;
-        mempool
-            .add_transaction(tx)
-            .map_err(|e| TauriError::NodeError(format!("Mempool rejected tx: {}", e)))?;
+        match real_fee {
+            Some(fee) => mempool
+                .add_transaction_with_fee(tx, fee)
+                .map_err(|e| TauriError::NodeError(format!("Mempool rejected tx: {}", e)))?,
+            None => {
+                return Err(TauriError::NodeError(
+                    "Transaction inputs not found in UTXO set".into(),
+                ))
+            }
+        }
     }
 
     tracing::info!(
@@ -1988,10 +2000,21 @@ pub async fn submit_legacy_claim(
 
         txid = hex::encode(tx.txid());
 
+        let real_fee = {
+            let chain = handle.rpc_state.chain.lock().await;
+            chain.compute_tx_fee(&tx)
+        };
         let mut mempool = handle.rpc_state.mempool.lock().await;
-        mempool
-            .add_transaction(tx)
-            .map_err(|e| TauriError::NodeError(format!("Failed to submit claim: {}", e)))?;
+        match real_fee {
+            Some(fee) => mempool
+                .add_transaction_with_fee(tx, fee)
+                .map_err(|e| TauriError::NodeError(format!("Failed to submit claim: {}", e)))?,
+            None => {
+                return Err(TauriError::NodeError(
+                    "Claim inputs not found in UTXO set".into(),
+                ))
+            }
+        }
     }
 
     tracing::info!(
