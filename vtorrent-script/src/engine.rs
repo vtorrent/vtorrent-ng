@@ -14,6 +14,22 @@ use std::sync::LazyLock;
 
 /// Maximum stack depth.
 const MAX_STACK_DEPTH: usize = 1000;
+
+/// Maximum operand size for arithmetic opcodes (CScriptNum rule).
+const MAX_ARITH_NUM_LEN: usize = 4;
+
+/// Push an arithmetic result, rejecting values that do not fit a 4-byte
+/// sign-magnitude script number (Bitcoin requires arithmetic outputs to be
+/// representable in CScriptNum serialization).
+fn push_arith_result(stack: &mut Vec<Vec<u8>>, value: Option<i64>) -> Result<()> {
+    let value = value.ok_or(ScriptError::InvalidScriptNumber)?;
+    let bytes = int_to_bytes(value);
+    if bytes.len() > MAX_ARITH_NUM_LEN {
+        return Err(ScriptError::InvalidScriptNumber);
+    }
+    stack.push(bytes);
+    Ok(())
+}
 /// Maximum number of opcodes executed before the engine aborts (DoS protection).
 const MAX_SCRIPT_EXEC_STEPS: usize = 200;
 
@@ -471,7 +487,7 @@ impl Engine {
                             // OP_CHECKLOCKTIMEVERIFY (BIP-65)
                             if executing {
                                 let top = self.stack.last().ok_or(ScriptError::EmptyStack)?;
-                                let locktime = bytes_to_int(top);
+                                let locktime = decode_script_num(top, 5)?;
                                 if locktime < 0 {
                                     return Err(ScriptError::NegativeLocktime);
                                 }
@@ -504,7 +520,7 @@ impl Engine {
                             // OP_CHECKSEQUENCEVERIFY (BIP-112)
                             if executing {
                                 let top = self.stack.last().ok_or(ScriptError::EmptyStack)?;
-                                let seq = bytes_to_int(top);
+                                let seq = decode_script_num(top, 5)?;
                                 if seq < 0 {
                                     return Err(ScriptError::NegativeSequence);
                                 }
@@ -540,58 +556,69 @@ impl Engine {
                         0x93 => {
                             // OP_ADD
                             if executing {
-                                let b =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
-                                let a =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
-                                self.stack.push(int_to_bytes(a.wrapping_add(b)));
+                                let b = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                let a = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                push_arith_result(&mut self.stack, a.checked_add(b))?;
                             }
                         }
                         0x94 => {
                             // OP_SUB
                             if executing {
-                                let b =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
-                                let a =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
-                                self.stack.push(int_to_bytes(a.wrapping_sub(b)));
+                                let b = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                let a = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                push_arith_result(&mut self.stack, a.checked_sub(b))?;
                             }
                         }
                         0x8b => {
                             // OP_1ADD
                             if executing {
-                                let a =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
-                                self.stack.push(int_to_bytes(a.wrapping_add(1)));
+                                let a = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                push_arith_result(&mut self.stack, a.checked_add(1))?;
                             }
                         }
                         0x8c => {
                             // OP_1SUB
                             if executing {
-                                let a =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
-                                self.stack.push(int_to_bytes(a.wrapping_sub(1)));
+                                let a = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                push_arith_result(&mut self.stack, a.checked_sub(1))?;
                             }
                         }
                         0x8f => {
                             // OP_NEGATE
                             if executing {
-                                let a =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
-                                self.stack.push(int_to_bytes(a.wrapping_neg()));
+                                let a = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                push_arith_result(&mut self.stack, a.checked_neg())?;
                             }
                         }
                         0x90 => {
                             // OP_ABS
                             if executing {
-                                let a =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
-                                // Bitcoin spec: OP_ABS of i64::MIN is invalid
-                                // (wrapping_abs would return i64::MIN, still negative).
-                                if a == i64::MIN {
-                                    return Err(ScriptError::InvalidScriptNumber);
-                                }
-                                self.stack.push(int_to_bytes(a.wrapping_abs()));
+                                let a = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                push_arith_result(&mut self.stack, a.checked_abs())?;
                             }
                         }
                         0x91 => {
@@ -627,20 +654,28 @@ impl Engine {
                         0x9c => {
                             // OP_NUMEQUAL
                             if executing {
-                                let b =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
-                                let a =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let b = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                let a = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
                                 self.stack.push(bool_to_bytes(a == b));
                             }
                         }
                         0x9d => {
                             // OP_NUMEQUALVERIFY
                             if executing {
-                                let b =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
-                                let a =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let b = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                let a = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
                                 if a != b {
                                     return Err(ScriptError::VerifyFailed);
                                 }
@@ -649,70 +684,98 @@ impl Engine {
                         0x9e => {
                             // OP_NUMNOTEQUAL
                             if executing {
-                                let b =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
-                                let a =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let b = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                let a = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
                                 self.stack.push(bool_to_bytes(a != b));
                             }
                         }
                         0x9f => {
                             // OP_LESSTHAN
                             if executing {
-                                let b =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
-                                let a =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let b = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                let a = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
                                 self.stack.push(bool_to_bytes(a < b));
                             }
                         }
                         0xa0 => {
                             // OP_GREATERTHAN
                             if executing {
-                                let b =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
-                                let a =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let b = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                let a = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
                                 self.stack.push(bool_to_bytes(a > b));
                             }
                         }
                         0xa1 => {
                             // OP_LESSTHANOREQUAL
                             if executing {
-                                let b =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
-                                let a =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let b = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                let a = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
                                 self.stack.push(bool_to_bytes(a <= b));
                             }
                         }
                         0xa2 => {
                             // OP_GREATERTHANOREQUAL
                             if executing {
-                                let b =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
-                                let a =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let b = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                let a = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
                                 self.stack.push(bool_to_bytes(a >= b));
                             }
                         }
                         0xa3 => {
                             // OP_MIN
                             if executing {
-                                let b =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
-                                let a =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let b = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                let a = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
                                 self.stack.push(int_to_bytes(a.min(b)));
                             }
                         }
                         0xa4 => {
                             // OP_MAX
                             if executing {
-                                let b =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
-                                let a =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let b = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                let a = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
                                 self.stack.push(int_to_bytes(a.max(b)));
                             }
                         }
@@ -891,23 +954,37 @@ fn bool_to_bytes(b: bool) -> Vec<u8> {
 }
 
 fn bytes_to_int(bytes: &[u8]) -> i64 {
+    decode_script_num(bytes, 8).unwrap_or(0)
+}
+
+/// Decode a sign-magnitude script number, rejecting encodings longer than
+/// `max_len` bytes. Arithmetic operands allow 4 bytes (CScriptNum rule);
+/// CLTV/CSV operands allow 5 (BIP-65/112).
+fn decode_script_num(bytes: &[u8], max_len: usize) -> Result<i64> {
     if bytes.is_empty() {
-        return 0;
+        return Ok(0);
     }
-    // Bitcoin script uses sign-magnitude encoding: the high bit of the last
-    // byte is the sign bit, the remaining bits are the absolute value.
-    let n = bytes.len().min(8);
-    let mut result = 0i64;
+    if bytes.len() > max_len {
+        return Err(ScriptError::InvalidScriptNumber);
+    }
+    let n = bytes.len();
+    let mut magnitude = 0u64;
     for (i, &b) in bytes[..n].iter().enumerate() {
-        result |= (b as i64) << (8 * i);
+        if i == n - 1 {
+            magnitude |= u64::from(b & 0x7f) << (8 * i);
+        } else {
+            magnitude |= u64::from(b) << (8 * i);
+        }
     }
-    let sign_mask = 1i64 << (8 * n - 1);
-    if result & sign_mask != 0 {
-        result &= !sign_mask;
-        -result
+    let negative = bytes[n - 1] & 0x80 != 0;
+    if magnitude > i64::MAX as u64 {
+        return Err(ScriptError::InvalidScriptNumber);
+    }
+    Ok(if negative {
+        -(magnitude as i64)
     } else {
-        result
-    }
+        magnitude as i64
+    })
 }
 
 fn int_to_bytes(n: i64) -> Vec<u8> {

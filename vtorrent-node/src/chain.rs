@@ -63,7 +63,7 @@ struct BlockJournal {
 }
 
 /// The result of processing a new block.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum BlockAcceptance {
     /// Block was appended to the main chain.
     MainChain {
@@ -80,11 +80,40 @@ pub enum BlockAcceptance {
         old_tip: [u8; 32],
         new_tip: [u8; 32],
         depth: u32,
+        /// Transactions from the abandoned chain — their inputs are spendable
+        /// again and callers should consider them for mempool re-admission.
+        rolled_back_txs: Vec<Transaction>,
     },
     /// Block extended a fork that is still shorter than the main chain.
     Fork { fork_tip: [u8; 32] },
     /// Block was already known.
     Duplicate,
+}
+
+impl PartialEq for BlockAcceptance {
+    fn eq(&self, other: &Self) -> bool {
+        use BlockAcceptance::*;
+        match (self, other) {
+            (MainChain { height: h1, .. }, MainChain { height: h2, .. }) => h1 == h2,
+            (
+                Reorg {
+                    old_tip: o1,
+                    new_tip: n1,
+                    depth: d1,
+                    ..
+                },
+                Reorg {
+                    old_tip: o2,
+                    new_tip: n2,
+                    depth: d2,
+                    ..
+                },
+            ) => o1 == o2 && n1 == n2 && d1 == d2,
+            (Fork { fork_tip: f1 }, Fork { fork_tip: f2 }) => f1 == f2,
+            (Duplicate, Duplicate) => true,
+            _ => false,
+        }
+    }
 }
 
 /// The blockchain state.
@@ -532,7 +561,7 @@ impl Chain {
             if fork_work > main_work {
                 // ── Reorg: fork is now longer than main chain ─────────────
                 let old_tip = main_tip;
-                self.reorganize_to(block_hash, fork_height)?;
+                let rolled_back_txs = self.reorganize_to(block_hash, fork_height)?;
 
                 let depth =
                     (self.best_height() as i64 - fork_height as i64).unsigned_abs() as u32 + 1;
@@ -547,6 +576,7 @@ impl Chain {
                     old_tip,
                     new_tip: block_hash,
                     depth,
+                    rolled_back_txs,
                 })
             } else {
                 tracing::debug!(
@@ -584,7 +614,11 @@ impl Chain {
     /// 1. Walk back from both tips to find the common ancestor.
     /// 2. Roll back the main chain to the fork point.
     /// 3. Apply the fork chain forward to the new tip.
-    fn reorganize_to(&mut self, new_tip: [u8; 32], new_tip_height: u32) -> Result<()> {
+    fn reorganize_to(
+        &mut self,
+        new_tip: [u8; 32],
+        new_tip_height: u32,
+    ) -> Result<Vec<Transaction>> {
         let old_tip = self.best_hash().unwrap_or([0u8; 32]);
 
         // Build the path from new_tip back to genesis
@@ -615,8 +649,9 @@ impl Chain {
         tracing::info!("Reorg: fork point at height {}", fork_height);
 
         // ── Step 1: Roll back main chain to fork point ────────────────────
+        let mut rolled_back: Vec<Transaction> = Vec::new();
         while self.best_height() > fork_height {
-            self.rollback_one_block()?;
+            rolled_back.extend(self.rollback_one_block()?);
         }
 
         // ── Step 2: Apply new fork chain from fork_point+1 to new_tip ────
@@ -660,7 +695,7 @@ impl Chain {
             )));
         }
 
-        Ok(())
+        Ok(rolled_back)
     }
 
     /// Walk the parent_map from `tip` back to genesis, returning hashes in
@@ -682,11 +717,19 @@ impl Chain {
     }
 
     /// Roll back the most recent main chain block, restoring the UTXO set.
-    fn rollback_one_block(&mut self) -> Result<()> {
+    fn rollback_one_block(&mut self) -> Result<Vec<Transaction>> {
         let journal = self
             .journals
             .pop_back()
             .ok_or_else(|| NodeError::Chain("No journal to roll back".into()))?;
+
+        // Capture the block's transactions so callers can re-inject them into
+        // the mempool (their inputs become spendable again after rollback).
+        let rolled_back_txs: Vec<Transaction> = self
+            .blocks
+            .get(&journal.block_hash)
+            .map(|b| b.transactions.clone())
+            .unwrap_or_default();
 
         // Apply changes in reverse.  The journal is consumed here — use
         // into_iter() to move UTXOs instead of cloning them.
@@ -720,7 +763,7 @@ impl Chain {
             journal.height
         );
 
-        Ok(())
+        Ok(rolled_back_txs)
     }
 
     /// Add all transactions from an active main-chain block to the transaction index.

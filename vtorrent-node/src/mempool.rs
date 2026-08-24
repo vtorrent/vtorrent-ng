@@ -176,6 +176,25 @@ impl Mempool {
                 );
                 self.remove_entry(conflict_txid);
             }
+
+            // Evict descendants: entries spending outputs of the replaced
+            // transactions become orphaned (their parent no longer exists).
+            let mut frontier: Vec<[u8; 32]> = conflicts.to_vec();
+            while !frontier.is_empty() {
+                let doomed: Vec<[u8; 32]> = self
+                    .spent_inputs
+                    .iter()
+                    .filter(|((prev_txid, _), _)| frontier.contains(prev_txid))
+                    .map(|(_, owner)| *owner)
+                    .collect();
+                if doomed.is_empty() {
+                    break;
+                }
+                for txid in &doomed {
+                    self.remove_entry(txid);
+                }
+                frontier = doomed;
+            }
         }
 
         // If mempool is full, try to evict the lowest-fee-rate entry

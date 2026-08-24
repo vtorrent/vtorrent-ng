@@ -1146,6 +1146,7 @@ impl Node {
                                         old_tip,
                                         new_tip,
                                         depth,
+                                        rolled_back_txs,
                                     } => {
                                         tracing::warn!(
                                             "Reorg depth {}: {} -> {}",
@@ -1153,6 +1154,17 @@ impl Node {
                                             hex::encode(old_tip),
                                             hex::encode(new_tip)
                                         );
+                                        // Re-admit transactions from the abandoned
+                                        // chain: their inputs are spendable again.
+                                        {
+                                            let chain = self.chain.lock().await;
+                                            let mut mp = self.mempool.lock().await;
+                                            for tx in rolled_back_txs {
+                                                if let Some(fee) = chain.compute_tx_fee(&tx) {
+                                                    let _ = mp.add_transaction_with_fee(tx, fee);
+                                                }
+                                            }
+                                        }
                                         self.emit(NodeEvent::Reorg {
                                             old_tip,
                                             new_tip,

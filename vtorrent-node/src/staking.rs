@@ -276,7 +276,7 @@ impl StakingEngine {
     /// Decodes the Base58Check address and builds the standard script.
     /// Returns `None` if the address is invalid (avoids silent fund burn).
     fn address_to_script(&self, address: &str) -> Option<Vec<u8>> {
-        let addr = vtorrent_core::address::Address::parse(address).ok()?;
+        let addr = vtorrent_core::address::validate_p2pkh(address).ok()?;
 
         // Standard P2PKH: OP_DUP OP_HASH160 <20-byte-hash> OP_EQUALVERIFY OP_CHECKSIG
         let mut script = Vec::with_capacity(25);

@@ -1020,7 +1020,7 @@ pub async fn place_dex_order(
     }
     // Validate the maker address so an invalid address cannot silently lock
     // funds to an unspendable output.
-    if vtorrent_core::address::Address::parse(&req.maker_address).is_err() {
+    if vtorrent_core::address::validate_p2pkh(&req.maker_address).is_err() {
         return Err(RpcError::BadRequest(format!(
             "Invalid maker address: {}",
             req.maker_address

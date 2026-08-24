@@ -88,6 +88,20 @@ impl std::fmt::Display for Address {
     }
 }
 
+/// Validate that a Base58Check address decodes to a vTorrent P2PKH address
+/// (version byte 70). Rejects foreign-network addresses whose funds would be
+/// unrecoverable on the VTR chain.
+pub fn validate_p2pkh(s: &str) -> Result<Address> {
+    let addr = Address::parse(s)?;
+    if addr.version != crate::network::legacy::PUBKEY_ADDRESS_PREFIX {
+        return Err(crate::error::CoreError::InvalidAddress(format!(
+            "not a vTorrent mainnet address (version byte {})",
+            addr.version
+        )));
+    }
+    Ok(addr)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
