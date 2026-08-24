@@ -40,8 +40,13 @@
       PoS reorg depth, no memory growth, no peer churn storms.
 - [ ] **Staking soak**: at least one node stakes continuously and produces
       blocks at the expected ~60s average over the soak window.
-- [ ] **Atomic swap E2E on testnet**: full VTR↔BTC swap cycle executed against
-      BTC regtest via the compose stack (fund → claim → refund paths all hit).
+- [x] **Atomic swap E2E on testnet**: 2026-08-24 via compose stack — full
+      VTR↔BTC cycle against BTC regtest: VTR HTLC funded (match), BTC HTLC
+      funded and confirmed (P2WSH, block 127), taker claimed VTR revealing
+      preimage, maker claimed BTC with preimage witness (block 130), refund
+      rejected pre-expiry / accepted post-expiry on both chains. Found+fixed:
+      BTC txids reported in internal byte order (`915af74`). Follow-ups filed
+      in Known Issues below.
 - [ ] **Legacy claim rehearsal**: import a legacy `wallet.dat`, check snapshot
       balance, submit a claim on testnet, verify funds arrive.
 - [x] **Upgrade/downgrade drill**: 2026-08-24 on soak `vtr-node3` — binary
@@ -97,6 +102,20 @@
 |---|---|---|
 | GitHub Actions billing failure | Account admin | Fix at github.com/billing; until then run CI locally (`cargo test --workspace && cargo clippy --workspace --all-targets --all-features -- -D warnings`) |
 | External security review not scheduled | Lead | Required before final v2.0.0 |
+
+## Known Issues (found during soak/E2E, 2026-08-24)
+
+- **Imported wallets are memory-only** — `POST /wallet/import` never writes to
+  `--data-dir`; wallets vanish on daemon restart. Must persist encrypted
+  wallet before mainnet.
+- **SPV wallet UTXO staleness** — after restart, a partial BIP-158 scan
+  checkpoints at the wrong height (122 of 207 blocks scanned, then "1 block"
+  per cycle); subsequent HTLC funding txs spend stale inputs and peers reject
+  them silently. Scan must loop to tip and only checkpoint on full coverage.
+- **BTC HTLC locktime mismatch** — `DEFAULT_HTLC_LOCKTIME = 48*3600` (48
+  hours) vs documented "48 blocks (~8 hours)". Pick one before launch.
+- **Docker cannot stop root-owned containers** on the soak host (daemon
+  `permission denied`; workaround `sudo kill <pid>` + `docker start`).
 
 > Resolved 2026-08-24: seed nodes deployed (vtr-seed1 DE, vtr-seed2 FI),
 > peers.txt published with real IPs, DNS seeds live on `vtorrent.org`.
