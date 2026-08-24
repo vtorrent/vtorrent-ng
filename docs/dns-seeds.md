@@ -1,17 +1,17 @@
 # vTorrent 2.0 — DNS Seed Infrastructure
 
 > **Status:** The legacy `seed1/2/3.vtorrent.io` domains are retired and no
-> longer resolve. Two new mainnet seed nodes are deployed (see inventory below);
-> bootstrap peers are published via `bootstrap/peers.txt` (GitHub-hosted) and
-> the `BOOTSTRAP_PEERS` constant in `vtorrent-p2p/src/peer_manager.rs`.
-> DNS A records and a crawler are still pending.
+> longer resolve. Two new mainnet seed nodes are deployed on `vtorrent.org`
+> (IONOS DNS); bootstrap peers are published via `bootstrap/peers.txt`
+> (GitHub-hosted) and the `BOOTSTRAP_PEERS` constant in
+> `vtorrent-p2p/src/peer_manager.rs`. A DNS crawler is still pending.
 
 ## Deployed Seed Nodes
 
 | Hostname | IP | Location | P2P | RPC |
 |---|---|---|---|---|
-| `vtr-seed1` (`seed1.vtorrent.io`) | `91.98.80.38` | Falkenstein, DE | 22526/tcp | localhost only |
-| `vtr-seed2` (`seed2.vtorrent.io`) | `2.29.8.113` | Helsinki, FI | 22526/tcp | localhost only |
+| `vtr-seed1` (`seed1.vtorrent.org`) | `91.98.80.38` | Falkenstein, DE | 22526/tcp | localhost only |
+| `vtr-seed2` (`seed2.vtorrent.org`) | `2.29.8.113` | Helsinki, FI | 22526/tcp | localhost only |
 
 Both run `vtorrent-daemon` under systemd (unit `vtorrent.service`, user
 `vtorrent`, data dir `/var/lib/vtorrent`), peered with each other via `--seed`.
@@ -22,15 +22,16 @@ DNS seeds are the bootstrap mechanism that allows new nodes to discover peers on
 
 ## Required DNS Records
 
-You need to configure the following DNS records on a domain you control (e.g., `vtorrent.io`):
+The live records are managed at IONOS for `vtorrent.org` (zone ID
+`18a5c0b2-9f72-11f1-8f43-0a58644409ee`, API: `api.hosting.ionos.com/dns`):
 
 ### Seed Nodes (A Records)
 
 | Hostname | Type | Value | Purpose |
 |---|---|---|---|
-| `seed1.vtorrent.io` | A | `<seed1-server-ip>` | Primary seed node (US/EU) |
-| `seed2.vtorrent.io` | A | `<seed2-server-ip>` | Secondary seed node (Asia) |
-| `seed3.vtorrent.io` | A | `<seed3-server-ip>` | Tertiary seed node (backup) |
+| `seed1.vtorrent.org` | A | `91.98.80.38` | Primary seed node (Falkenstein, DE) |
+| `seed2.vtorrent.org` | A | `2.29.8.113` | Secondary seed node (Helsinki, FI) |
+| `seed3.vtorrent.org` | A | `<seed3-server-ip>` | Tertiary seed node (not yet deployed) |
 
 ### DNS Seed Crawler (NS Records)
 
@@ -38,8 +39,8 @@ For a production network, you should run a **DNS seed crawler** — a service th
 
 | Hostname | Type | Value | Purpose |
 |---|---|---|---|
-| `dnsseed.vtorrent.io` | NS | `vps1.vtorrent.io` | DNS seed crawler nameserver |
-| `vps1.vtorrent.io` | A | `<crawler-server-ip>` | The crawler server itself |
+| `dnsseed.vtorrent.org` | NS | `vps1.vtorrent.org` | DNS seed crawler nameserver |
+| `vps1.vtorrent.org` | A | `<crawler-server-ip>` | The crawler server itself |
 
 ## Setting Up a Seed Node
 
@@ -129,7 +130,7 @@ cd bitcoin-seeder
 # Edit main.cpp: change port to 22526 and magic bytes to 0x56545232 ("VTR2")
 
 make
-./dnsseed -h dnsseed.vtorrent.io -n vps1.vtorrent.io -m admin@vtorrent.io
+./dnsseed -h dnsseed.vtorrent.org -n vps1.vtorrent.org -m admin@vtorrent.org
 ```
 
 ## Network Parameters Reference
@@ -149,7 +150,7 @@ For development and testing, a separate testnet is available:
 |---|---|
 | **Testnet P2P Port** | 32524 |
 | **Testnet RPC Port** | 32525 |
-| **Testnet DNS Seed** | `seed1-testnet.vtorrent.io` |
+| **Testnet DNS Seed** | `seed1-testnet.vtorrent.org` (not yet created) |
 
 To run a testnet node:
 ```bash
