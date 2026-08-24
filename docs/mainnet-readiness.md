@@ -44,11 +44,12 @@
 
 ## 3. Network Infrastructure
 
-- [ ] **Seed nodes deployed** (≥3 geographically distributed VPS) per
-      `docs/dns-seeds.md`; DNS crawler or static A records live.
-- [ ] **Bootstrap peers published**: real IPs appended to
+- [x] **Seed nodes deployed** (2 of ≥3 geographically distributed VPS) per
+      `docs/dns-seeds.md`; static A records live (`seed1/seed2.vtorrent.org`).
+      Third node in another region still pending.
+- [x] **Bootstrap peers published**: real IPs appended to
       `bootstrap/peers.txt` (replacing examples); CDN mirrors confirmed fresh.
-- [ ] **`BOOTSTRAP_PEERS` constant updated** in
+- [x] **`BOOTSTRAP_PEERS` constant updated** in
       `vtorrent-p2p/src/peer_manager.rs` to match deployed seeds.
 - [ ] **Block explorer API** available (read-only chain index) or explicitly
       deferred with an announcement.
@@ -83,6 +84,7 @@
 | Blocker | Owner | Notes |
 |---|---|---|
 | GitHub Actions billing failure | Account admin | Fix at github.com/billing; until then run CI locally (`cargo test --workspace && cargo clippy --workspace --all-targets --all-features -- -D warnings`) |
-| Seed nodes not deployed | Infra | See docs/dns-seeds.md deployment guide |
-| Bootstrap peers.txt has placeholder IPs | Infra | Replace examples with real VPS IPs |
 | External security review not scheduled | Lead | Required before final v2.0.0 |
+
+> Resolved 2026-08-24: seed nodes deployed (vtr-seed1 DE, vtr-seed2 FI),
+> peers.txt published with real IPs, DNS seeds live on `vtorrent.org`.
