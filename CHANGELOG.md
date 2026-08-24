@@ -11,7 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **Security Audit**
 - Full codebase audit: 85 findings identified and resolved (5 Critical, 18 High, 32 Medium, 18 Low, 12 Info) across three fix batches plus a second-pass review of Medium/Low items
-- 15-finding edge-case audit resolved (f64→integer incentive math, store corruption handling, piece-assembler bounds checks, torrent scheduler accounting)
+- Second full review (~40 additional findings fixed): torrent scheduler livelock (downloads of large pieces could never complete), bencode stack-overflow crash from any peer message, SPV header PoW validation (both chains), BTC wallet correctness batch, script-engine truncated-push consensus fix, BDB/snapshot parser fixes
+- Overlay handshake redesigned: Noise-KK-style mutual authentication via static-key DH proofs — MITM/impersonation of any node_id no longer possible; per-IP handshake rate limiting; bounded endpoint registry
 - RPC/CLI fabricated values eliminated — all reported data comes from real chain/wallet state
 - Runtime staking control (`start`/`stop`) with live staking counters
 
@@ -23,19 +24,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **BTC Wallet**
 - Full send-to-address workflow with network broadcast (multi-peer fan-out, 3 concurrent)
 - PSBT create/sign/finalize round-trip; P2TR (Taproot) addresses; Schnorr signing
-- BIP69 input/output sorting, RBF signaling, multi-index signing, UTXO persistence
-- Fee estimation with urgency multiplier (economy/normal/urgent target blocks)
+- BIP69 input/output sorting, RBF signaling (correct `0xFFFFFFFD` sequence), multi-index signing with per-input witness pubkeys, UTXO persistence with broadcast-failure rollback
+- Fee estimation with urgency multiplier; feefilter input clamping
 
 **Testing**
-- 508 workspace tests (was 424): 29 BTC send-flow/HTLC integration tests, PoS multi-block staking tests, mempool-inclusion test, compact-block edge cases, ban-manager stress tests
-- 4 libFuzzer targets (script engine, P2P codec, tx deser, PSBT) — 8.1M runs, 0 crashes
+- 523 workspace tests (was 424 at beta.1): BTC send-flow/HTLC integration tests, PoS multi-block staking tests, mempool-inclusion test, compact-block edge cases, ban-manager stress tests, authenticated-handshake end-to-end tests
+- 4 libFuzzer targets (script engine, P2P codec, tx deser, PSBT); extended runs clean (55.9M executions on the script engine alone)
 
 **Script Engine**
 - 20+ new opcodes added; sign-magnitude `bytes_to_int` encoding fix matching Bitcoin semantics
+- Truncated push-data now fails the script (was: silently evaluated whatever was on the stack)
 
 **Networking**
 - Compact block (BIP-152-style) encode/decode with SipHash short-id reconstruction
-- PEX, DHT, codec, ban-manager test coverage expanded to 50 P2P tests
+- PEX timestamps clamped; DHT responses validated by transaction id and source address; UDP tracker replies validated likewise
+- Self-connection detection via sent-version-nonce registry; post-handshake idle timeout; pre-handshake message gating; bounded codec buffering
 
 **Frontend / Desktop**
 - All Tauri command stubs eliminated; 25+ IPC commands registered and wired
@@ -45,17 +48,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/rpc-api.md`: complete reference for all 40+ endpoints
 - `docs/atomic-swap-protocol.md`: cross-chain HTLC flow, timing parameters, failure modes
 - `docs/wallet-recovery.md`: legacy `wallet.dat` migration and WIF import guide
+- `docs/mainnet-readiness.md`: launch checklist (consensus verification, soak, seeds, release engineering)
+
+**Infrastructure**
+- Docker image verified end-to-end: multi-stage build fixed (workspace member copy, Rust ≥1.85 for edition2024 deps), single-node smoke + 3-node peered testnet with Prometheus/Grafana monitoring live
+- `docker/testnet/docker-compose.yml`: reproducible local chain (3 VTR nodes + BTC regtest + monitoring)
 
 **Fixed**
 - `BtcWallet::send_to` MutexGuard deadlock (double-lock in insufficient-funds error path) that hung `cargo test --workspace`
 - Ban-manager test threshold mismatch (100 vs 1000)
+- Snapshot binary parsing: entries sorted after load (binary-search lookups returned 0 on unsorted files); chainstate varints use base-128 encoding per Bitcoin `serialize.h`
 
 ### Added
 
 **Core Infrastructure**
 - New Rust-based monorepo (`vtorrent-ng`) replacing the legacy C++/Qt codebase
 - Cargo workspace with 17 crates: `vtorrent-core`, `vtorrent-wallet`, `vtorrent-migrate`, `vtorrent-snapshot`, `vtorrent-node`, `vtorrent-p2p`, `vtorrent-torrent`, `vtorrent-rpc`, `vtorrent-tauri`, `vtorrent-overlay`, `vtorrent-spv`, `vtorrent-store`, `vtorrent-daemon`, `vtorrent-script`, `vtorrent-onion`, `vtorrent-cli`, `vtorrent-btc`
-- Full test suite: 508 tests, 0 failures; 4 libFuzzer targets (8.1M runs, 0 crashes)
+- Full test suite: 523 tests, 0 failures; 4 libFuzzer targets with extended clean runs
 
 **Overlay / NAT Traversal**
 - `vtorrent-overlay`: Kademlia-style overlay network for NAT traversal and peer relay
