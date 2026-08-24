@@ -90,8 +90,10 @@
       staking across the fleet; alerts on stalled height + peer-count drop
       (+ daemon down, disk, RAM) pushed via ntfy. On-call rotation/runbook
       still open below.
-- [ ] **On-call rotation + runbook**: node restart, ban-list inspection,
-      chain-state recovery from store corruption, RPC key rotation.
+- [x] **On-call rotation + runbook**: `docs/oncall-runbook.md` covers node
+      restart, ban-list inspection, chain-state recovery, RPC key rotation,
+      seed failover/DNS changes, reorg response, and alert triage. Formal
+      on-call rotation (who carries the pager) is a launch-week decision.
 - [ ] **Incident comms channel** announced (status page / Telegram / X).
 - [ ] **Backup policy**: seed node data dirs snapshotted daily; genesis and
       snapshot binaries archived in ≥2 locations with checksums published.
