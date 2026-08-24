@@ -279,8 +279,8 @@ async fn main() -> anyhow::Result<()> {
             Some(vtorrent_btc::wallet::BtcWallet::with_network(seed, network));
         *rpc_state.btc_network.write().await = network;
         if let Some(peer) = &cli.btc_peer {
-            let addr: std::net::SocketAddr = peer
-                .parse()
+            let addr = resolve_addr(peer)
+                .await
                 .map_err(|e| anyhow::anyhow!("Invalid --btc-peer: {}", e))?;
             *rpc_state.btc_peer.write().await = Some(addr);
         }
@@ -821,4 +821,15 @@ fn print_banner() {
     println!("║  Decentralized • Incentivized • Exchange-Free            ║");
     println!("╚══════════════════════════════════════════════════════════╝");
     println!();
+}
+
+/// Resolve a `host:port` peer address, accepting hostnames as well as IPs.
+async fn resolve_addr(peer: &str) -> anyhow::Result<std::net::SocketAddr> {
+    if let Ok(addr) = peer.parse() {
+        return Ok(addr);
+    }
+    let mut addrs = tokio::net::lookup_host(peer)
+        .await
+        .map_err(|e| anyhow::anyhow!("resolution failed: {}", e))?;
+    addrs.next().ok_or_else(|| anyhow::anyhow!("no addresses"))
 }

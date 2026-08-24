@@ -224,26 +224,37 @@ impl PeerManager {
             return Err(P2pError::TooManyPeers(MAX_PEERS));
         }
 
-        // Ban check: reject connections to banned IPs before even opening a socket
-        if let Ok(sock_addr) = addr.parse::<SocketAddr>() {
-            // Deduplicate: a second connection to the same address would
-            // overwrite the first peer's map entry, orphaning its task and
-            // leaving the newer connection unmanaged when the old one dies.
-            if self.peers.contains_key(&sock_addr) {
-                tracing::debug!("Already connected to {}, skipping duplicate connect", addr);
-                return Err(P2pError::Transport(format!(
-                    "already connected to {}",
-                    addr
-                )));
+        // Resolve hostnames up front so dedup/ban checks apply to the actual
+        // socket address — otherwise repeated dials of the same hostname seed
+        // would each open a fresh connection and orphan the previous peer task.
+        let sock_addr: SocketAddr = match addr.parse::<SocketAddr>() {
+            Ok(sa) => sa,
+            Err(_) => {
+                let mut it = tokio::net::lookup_host(addr)
+                    .await
+                    .map_err(|e| P2pError::Transport(format!("resolution failed: {}", e)))?;
+                it.next()
+                    .ok_or_else(|| P2pError::Transport(format!("no addresses for {}", addr)))?
             }
-            let ip = sock_addr.ip();
-            if self.ban_manager.read().await.is_banned(ip) {
-                tracing::debug!("Skipping banned peer {}", addr);
-                return Err(P2pError::Banned(ip.to_string()));
-            }
-            // Record the attempt in the address book
-            self.addr_book.record_attempt(sock_addr);
+        };
+
+        // Deduplicate: a second connection to the same address would
+        // overwrite the first peer's map entry, orphaning its task and
+        // leaving the newer connection unmanaged when the old one dies.
+        if self.peers.contains_key(&sock_addr) {
+            tracing::debug!("Already connected to {}, skipping duplicate connect", addr);
+            return Err(P2pError::Transport(format!(
+                "already connected to {}",
+                addr
+            )));
         }
+        let ip = sock_addr.ip();
+        if self.ban_manager.read().await.is_banned(ip) {
+            tracing::debug!("Skipping banned peer {}", addr);
+            return Err(P2pError::Banned(ip.to_string()));
+        }
+        // Record the attempt in the address book
+        self.addr_book.record_attempt(sock_addr);
 
         let (stream, transport_mode) = self
             .transport

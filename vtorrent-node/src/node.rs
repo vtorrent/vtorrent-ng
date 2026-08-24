@@ -2191,6 +2191,21 @@ impl Node {
                 }
             }
 
+            // If still not enough, re-dial explicitly configured seeds
+            if connected < needed && !self.config.extra_seeds.is_empty() {
+                tracing::debug!("PEX insufficient, re-dialing {} explicit seeds", self.config.extra_seeds.len());
+                for seed in self.config.extra_seeds.clone() {
+                    if connected >= needed {
+                        break;
+                    }
+                    if let Err(e) = self.peer_manager.connect(&seed).await {
+                        tracing::debug!("Could not connect to seed {}: {}", seed, e);
+                    } else {
+                        connected += 1;
+                    }
+                }
+            }
+
             // If still not enough, try DHT again
             if connected < needed && self.config.use_dht && !self.config.isolated {
                 tracing::debug!("PEX insufficient, re-running DHT bootstrap");
