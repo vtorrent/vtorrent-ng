@@ -84,9 +84,13 @@ pub struct AppState {
     /// wallet lock or daemon restart.
     pub wallet_wif: Arc<RwLock<Option<String>>>,
     /// The imported hot-wallet WIF encrypted with the wallet passphrase
-    /// (Argon2id + ChaCha20-Poly1305). Set on import; used to verify the
-    /// passphrase on unlock and send. Never persisted to disk.
+    /// (Argon2id + ChaCha20-Poly1305). Set on import (and restored from disk
+    /// on startup when `wallet_path` is configured); used to verify the
+    /// passphrase on unlock and send.
     pub wallet_encrypted: Arc<RwLock<Option<EncryptedWallet>>>,
+    /// File path where the encrypted hot wallet is persisted. `None` disables
+    /// persistence (standalone/test instances).
+    pub wallet_path: Option<std::path::PathBuf>,
     /// TOTP secret for the hot wallet's 2FA (optional, set on import).
     pub wallet_totp_secret: Arc<RwLock<Option<TotpSecret>>>,
     /// Derived change address for the hot wallet (from `wallet_wif`).
@@ -157,6 +161,7 @@ impl AppState {
             block_submit: None,
             staking_control: None,
             peer_list: Arc::new(RwLock::new(Vec::new())),
+            wallet_path: None,
             rpc_api_key: None,
             regtest: false,
             network: "vtorrent-mainnet".to_string(),
@@ -205,6 +210,7 @@ impl AppState {
             block_submit: None,
             staking_control: None,
             peer_list: Arc::new(RwLock::new(Vec::new())),
+            wallet_path: None,
             rpc_api_key: None,
             regtest: false,
             network: "vtorrent-mainnet".to_string(),

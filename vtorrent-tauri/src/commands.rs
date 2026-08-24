@@ -242,10 +242,6 @@ const SNAPSHOT_HEADER_SIZE: usize = 12;
 const ADDR_LEN: usize = 34;
 const ENTRY_SIZE: usize = ADDR_LEN + 8; // 42 bytes per entry
 
-/// Look up balances in the embedded UTXO snapshot for a list of legacy addresses.
-///
-/// Uses binary search on the sorted snapshot for O(log n) lookup per address.
-
 /// Encode a Bitcoin txid stored in internal (little-endian) byte order as the
 /// display-order hex string used by Bitcoin Core and block explorers.
 fn btc_txid_hex(bytes: &[u8; 32]) -> String {
@@ -254,6 +250,9 @@ fn btc_txid_hex(bytes: &[u8; 32]) -> String {
     hex::encode(display)
 }
 
+/// Look up balances in the embedded UTXO snapshot for a list of legacy addresses.
+///
+/// Uses binary search on the sorted snapshot for O(log n) lookup per address.
 fn lookup_snapshot_balances(addresses: &[String]) -> u64 {
     if UTXO_SNAPSHOT.len() < SNAPSHOT_HEADER_SIZE {
         return 0;

@@ -518,8 +518,9 @@ async fn verify_wallet_auth(
 ///
 /// Imports a WIF-encoded private key into the hot wallet.  The key is
 /// encrypted with the provided passphrase (Argon2id + ChaCha20-Poly1305) and
-/// kept in memory only — it is never written to disk.  The wallet starts
-/// locked; call `/api/v1/wallet/unlock` with the same passphrase to use it.
+/// persisted to `wallet_path` when configured (written 0600, atomic rename);
+/// the plaintext never touches disk.  The wallet starts locked; call
+/// `/api/v1/wallet/unlock` with the same passphrase to use it.
 pub async fn import_wallet(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ImportWalletRequest>,
@@ -562,12 +563,42 @@ pub async fn import_wallet(
     *state.wallet_wif.write().await = None;
     *state.wallet_unlock_expiry.write().await = None;
 
+    persist_wallet(&state).await?;
+
     tracing::info!("Hot wallet imported: {}", address);
 
     Ok(Json(ImportWalletResponse {
         address,
         success: true,
     }))
+}
+
+/// Write the encrypted hot wallet to `wallet_path` (0600, atomic rename).
+/// No-op when persistence is disabled (standalone/test instances).
+async fn persist_wallet(state: &AppState) -> RpcResult<()> {
+    let Some(path) = &state.wallet_path else {
+        return Ok(());
+    };
+    let encrypted = state.wallet_encrypted.read().await.clone();
+    let Some(encrypted) = encrypted else {
+        return Ok(());
+    };
+    let blob = serde_json::json!({ "version": 1u8, "wallet": encrypted });
+
+    let tmp = path.with_extension("json.tmp");
+    let bytes = serde_json::to_vec_pretty(&blob)
+        .map_err(|e| RpcError::Internal(format!("Wallet serialize failed: {}", e)))?;
+    std::fs::write(&tmp, &bytes)
+        .map_err(|e| RpcError::Internal(format!("Wallet write failed: {}", e)))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
+    std::fs::rename(&tmp, path)
+        .map_err(|e| RpcError::Internal(format!("Wallet rename failed: {}", e)))?;
+    tracing::info!("Encrypted wallet persisted to {}", path.display());
+    Ok(())
 }
 
 /// POST /api/v1/wallet/send
@@ -2007,10 +2038,12 @@ pub async fn swap_refund(
     Ok(Json(SwapActionResponse {
         order_id: req.order_id,
         txid: vtr_refund_txid
-            .or_else(|| btc_refund_txid.map(|mut t| {
-                t.reverse();
-                t
-            }))
+            .or_else(|| {
+                btc_refund_txid.map(|mut t| {
+                    t.reverse();
+                    t
+                })
+            })
             .map(hex::encode)
             .unwrap_or_else(|| hex::encode(order.order_id)),
         status: "Refunded".to_string(),

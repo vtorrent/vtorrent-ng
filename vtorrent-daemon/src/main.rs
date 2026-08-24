@@ -252,6 +252,34 @@ async fn main() -> anyhow::Result<()> {
     } else {
         "vtorrent-mainnet".to_string()
     };
+    // Persist imported wallets under the data dir and restore any previous
+    // one on startup (the wallet stays locked until /wallet/unlock).
+    let wallet_path = data_dir.join("wallet.json");
+    rpc_state.wallet_path = Some(wallet_path.clone());
+    if wallet_path.exists() {
+        match std::fs::read(&wallet_path)
+            .map_err(|e| anyhow::anyhow!("read failed: {}", e))
+            .and_then(|b| {
+                serde_json::from_slice::<serde_json::Value>(&b)
+                    .map_err(|e| anyhow::anyhow!("parse failed: {}", e))
+            }) {
+            Ok(blob) => {
+                match serde_json::from_value::<vtorrent_wallet::encryption::EncryptedWallet>(
+                    blob["wallet"].clone(),
+                ) {
+                    Ok(encrypted) => {
+                        *rpc_state.wallet_encrypted.write().await = Some(encrypted);
+                        tracing::info!(
+                            "Restored encrypted wallet from {} (locked)",
+                            wallet_path.display()
+                        );
+                    }
+                    Err(e) => tracing::warn!("Could not parse stored wallet: {}", e),
+                }
+            }
+            Err(e) => tracing::warn!("Could not read stored wallet: {}", e),
+        }
+    }
     // Reflect startup-configured staking in the RPC status so it agrees with
     // the node's actual staking engine (rather than reporting "disabled").
     if staking_enabled {
@@ -683,14 +711,36 @@ async fn main() -> anyhow::Result<()> {
                             // last checkpoint to the tip. Use BIP-158 compact
                             // block filters (BIP-37 is disabled by most
                             // mainnet nodes).
-                            let start = w.last_scanned_height();
-                            match w.scan_utxos_bip158(&mut peer, start).await {
-                                Ok(n) => {
-                                    tracing::info!("BTC UTXO scan (BIP-158): {} blocks", n);
-                                    let tip = w.best_height();
-                                    w.set_last_scanned_height(tip);
+                            //
+                            // Only checkpoint the range actually covered: a
+                            // partial scan (peer filter-index lag, dropped
+                            // connection) must be resumed on the next cycle,
+                            // never skipped over.
+                            loop {
+                                let start = w.last_scanned_height();
+                                let tip = w.best_height();
+                                if start >= tip {
+                                    break;
                                 }
-                                Err(e) => tracing::warn!("BTC UTXO scan error: {}", e),
+                                match w.scan_utxos_bip158(&mut peer, start).await {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        let done = start.saturating_add(n as u32);
+                                        w.set_last_scanned_height(done);
+                                        tracing::info!(
+                                            "BTC UTXO scan (BIP-158): {} blocks (through height {})",
+                                            n,
+                                            done
+                                        );
+                                        if done >= tip {
+                                            break;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("BTC UTXO scan error: {}", e);
+                                        break;
+                                    }
+                                }
                             }
                         }
                     }
