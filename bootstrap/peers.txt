@@ -14,11 +14,9 @@
 #
 # Default P2P port: 22526
 #
-# Last updated: 2026-03-22
+# Last updated: 2026-08-24
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── Testnet bootstrap nodes (add VPS IPs here once deployed) ─────────────────
-# Example entries (replace with real IPs before testnet launch):
-# 203.0.113.10:22526
-# 198.51.100.42:22526
-# 192.0.2.77:22526
+# ── Mainnet seed nodes ───────────────────────────────────────────────────────
+91.98.80.38:22526   # vtr-seed1 (Falkenstein, DE)
+2.29.8.113:22526    # vtr-seed2 (Helsinki, FI)

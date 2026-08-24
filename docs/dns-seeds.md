@@ -1,10 +1,20 @@
 # vTorrent 2.0 — DNS Seed Infrastructure
 
 > **Status:** The legacy `seed1/2/3.vtorrent.io` domains are retired and no
-> longer resolve. This document describes how to deploy new seed nodes. Until
-> new seeds are live, bootstrap peers are added via `bootstrap/peers.txt`
-> (GitHub-hosted) or the `BOOTSTRAP_PEERS` constant in
-> `vtorrent-p2p/src/peer_manager.rs`.
+> longer resolve. Two new mainnet seed nodes are deployed (see inventory below);
+> bootstrap peers are published via `bootstrap/peers.txt` (GitHub-hosted) and
+> the `BOOTSTRAP_PEERS` constant in `vtorrent-p2p/src/peer_manager.rs`.
+> DNS A records and a crawler are still pending.
+
+## Deployed Seed Nodes
+
+| Hostname | IP | Location | P2P | RPC |
+|---|---|---|---|---|
+| `vtr-seed1` (`seed1.vtorrent.io`) | `91.98.80.38` | Falkenstein, DE | 22526/tcp | localhost only |
+| `vtr-seed2` (`seed2.vtorrent.io`) | `2.29.8.113` | Helsinki, FI | 22526/tcp | localhost only |
+
+Both run `vtorrent-daemon` under systemd (unit `vtorrent.service`, user
+`vtorrent`, data dir `/var/lib/vtorrent`), peered with each other via `--seed`.
 
 ## Overview
 
@@ -33,13 +43,6 @@ For a production network, you should run a **DNS seed crawler** — a service th
 
 ## Setting Up a Seed Node
 
-### Requirements
-
-- VPS with at least 2 GB RAM and 20 GB SSD
-- Ubuntu 22.04 LTS
-- Open port `22524` (TCP, vTorrent P2P)
-- Static IP address
-
 ### Installation
 
 ```bash
@@ -47,52 +50,41 @@ For a production network, you should run a **DNS seed crawler** — a service th
 git clone https://github.com/vtorrent/vtorrent-ng.git
 cd vtorrent-ng
 
-# 2. Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source "$HOME/.cargo/env"
+# 2. Build the daemon (or build locally and scp target/release/vtorrent-daemon)
+cargo build --release -p vtorrent-daemon
+install -m 0755 target/release/vtorrent-daemon /usr/local/bin/
 
-# 3. Build the node binary
-cargo build --release -p vtorrent-node
+# 3. Create a service user and data directory
+useradd --system --home-dir /var/lib/vtorrent --create-home --shell /usr/sbin/nologin vtorrent
 
-# 4. Create the data directory
-mkdir -p ~/.vtorrent
-
-# 5. Create the node configuration
-cat > ~/.vtorrent/vtorrent.conf << 'EOF'
-# vTorrent 2.0 Node Configuration
-listen=1
-port=22524
-maxconnections=125
-# Enable this node as a seed (accepts inbound connections)
-seednode=1
-# Log level: error, warn, info, debug
-loglevel=info
-EOF
-
-# 6. Create a systemd service
+# 4. Create the systemd service
 sudo tee /etc/systemd/system/vtorrent.service << 'EOF'
 [Unit]
-Description=vTorrent 2.0 Node
-After=network.target
+Description=vTorrent seed node
+After=network-online.target
+Wants=network-online.target
 
 [Service]
-Type=simple
-User=ubuntu
-ExecStart=/home/ubuntu/vtorrent-ng/target/release/vtorrent-node
+User=vtorrent
+Group=vtorrent
+ExecStart=/usr/local/bin/vtorrent-daemon --listen 0.0.0.0:22526 --rpc-addr 127.0.0.1:22525 --data-dir /var/lib/vtorrent
 Restart=on-failure
 RestartSec=10
 LimitNOFILE=65536
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# 7. Enable and start the service
+# 5. Enable and start the service
 sudo systemctl daemon-reload
-sudo systemctl enable vtorrent
-sudo systemctl start vtorrent
+sudo systemctl enable --now vtorrent
 
-# 8. Check status
+# 6. Check status
 sudo systemctl status vtorrent
 journalctl -u vtorrent -f
 ```
@@ -101,25 +93,28 @@ journalctl -u vtorrent -f
 
 ```bash
 # Allow vTorrent P2P port
-sudo ufw allow 22524/tcp comment 'vTorrent P2P'
-sudo ufw allow 22525/tcp comment 'vTorrent RPC (local only)'
-sudo ufw enable
+sudo ufw allow OpenSSH
+sudo ufw allow 22526/tcp comment 'vTorrent P2P'
+sudo ufw --force enable
+# RPC stays bound to 127.0.0.1; do NOT open it publicly
 ```
 
 ## Updating the Seed Node List in the Codebase
 
-Once your seed nodes are running, update `vtorrent-node/src/genesis.rs`:
+Once your seed nodes are running, update `vtorrent-p2p/src/peer_manager.rs`:
 
 ```rust
-pub const DNS_SEEDS: &[&str] = &[
-    "seed1.vtorrent.io",
-    "seed2.vtorrent.io",
-    "seed3.vtorrent.io",
-    "dnsseed.vtorrent.io",
+pub const BOOTSTRAP_PEERS: &[&str] = &[
+    "91.98.80.38:22526",  // vtr-seed1 (Falkenstein, DE)
+    "2.29.8.113:22526",   // vtr-seed2 (Helsinki, FI)
 ];
+
+// Once DNS A records are live, add hostnames here:
+pub const DNS_SEEDS: &[&str] = &[];
 ```
 
-And update `vtorrent-p2p/src/peer_manager.rs` to use these seeds in the initial peer discovery.
+and append the IPs to `bootstrap/peers.txt` (GitHub + CDN mirrors refresh
+within ~10 minutes of a push).
 
 ## DNS Seed Crawler
 
@@ -131,7 +126,7 @@ git clone https://github.com/sipa/bitcoin-seeder.git
 cd bitcoin-seeder
 
 # Configure for vTorrent
-# Edit main.cpp: change port to 22524 and magic bytes to 0x22053570
+# Edit main.cpp: change port to 22526 and magic bytes to 0x56545232 ("VTR2")
 
 make
 ./dnsseed -h dnsseed.vtorrent.io -n vps1.vtorrent.io -m admin@vtorrent.io
@@ -141,13 +136,10 @@ make
 
 | Parameter | Value |
 |---|---|
-| **P2P Port** | 22524 |
-| **RPC Port** | 22525 |
-| **Network Magic** | `0x22 0x05 0x35 0x70` |
-| **Protocol Version** | 70002 |
-| **Chain ID** | `vtorrent-mainnet-v2` |
-| **Genesis Block Date** | 2024 (new chain) |
-| **Legacy Snapshot Date** | 2018-01-10 (block 1,680,456) |
+| **P2P Port** | 22526 |
+| **RPC Port** | 22525 (localhost only) |
+| **Network Magic** | `0x56 0x54 0x52 0x32` (`"VTR2"`) |
+| **Chain ID** | `vtorrent-mainnet` |
 
 ## Testnet
 

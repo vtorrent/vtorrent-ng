@@ -39,7 +39,8 @@ pub const TARGET_OUTBOUND: usize = 8;
 /// vTorrent 2.0 hardcoded bootstrap peers (fallback if DHT is unavailable).
 /// These are well-known long-running nodes; DNS is NOT required.
 pub const BOOTSTRAP_PEERS: &[&str] = &[
-    // Populated before mainnet launch — left empty for testnet
+    "91.98.80.38:22526", // vtr-seed1 (Falkenstein, DE)
+    "2.29.8.113:22526",  // vtr-seed2 (Helsinki, FI)
 ];
 
 /// Legacy DNS seeds kept for backward compatibility (optional, not required).
