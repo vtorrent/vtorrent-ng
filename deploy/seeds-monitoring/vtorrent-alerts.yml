@@ -1,0 +1,53 @@
+groups:
+  - name: vtorrent-seeds
+    rules:
+      - alert: DaemonDown
+        expr: up{job="vtorrent-daemon"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "vTorrent daemon unreachable on {{ $labels.instance }}"
+          description: "Prometheus cannot scrape /metrics for 2+ minutes."
+
+      - alert: PeerCountZero
+        expr: vtorrent_peer_count == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} has no P2P peers"
+          description: "Seed node lost all peer connections for 5+ minutes."
+
+      - alert: HeightStalled
+        expr: max_over_time(vtorrent_block_height[1h]) > 0 and changes(vtorrent_block_height[1h]) == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Height stalled on {{ $labels.instance }}"
+          description: "Chain had blocks but height did not change for 1h (silent while pre-launch at height 0)."
+
+      - alert: StakingStopped
+        expr: vtorrent_staking_enabled == 0 and on(instance) max_over_time(vtorrent_staking_enabled[24h]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Staking stopped on {{ $labels.instance }}"
+
+      - alert: HostDiskFull
+        expr: (node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"}) < 0.15
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk below 15% free on {{ $labels.instance }}"
+
+      - alert: HostOutOfMemory
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Available memory below 10% on {{ $labels.instance }}"

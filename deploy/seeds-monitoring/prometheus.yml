@@ -1,0 +1,33 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/vtorrent-alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['localhost:9093']
+
+scrape_configs:
+  - job_name: vtorrent-daemon
+    static_configs:
+      - targets:
+          - 127.0.0.1:22525
+          - 2.29.8.113:9105
+        labels:
+          fleet: seeds
+
+  - job_name: node
+    static_configs:
+      - targets:
+          - 127.0.0.1:9100
+          - 2.29.8.113:9100
+        labels:
+          fleet: seeds
+
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090

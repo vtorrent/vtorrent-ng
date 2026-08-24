@@ -75,9 +75,11 @@
 
 ## 5. Operations
 
-- [ ] **Monitoring live**: Prometheus scrapes seed nodes; Grafana dashboard
-      (`docker/grafana/dashboards/vtorrent-overview.json`) shows height/peers/
-      staking across the fleet; alerts on stalled height + peer-count drop.
+- [x] **Monitoring live**: Prometheus scrapes seed nodes (vtr-seed1 central;
+      see `deploy/seeds-monitoring/`); Grafana dashboard shows height/peers/
+      staking across the fleet; alerts on stalled height + peer-count drop
+      (+ daemon down, disk, RAM) pushed via ntfy. On-call rotation/runbook
+      still open below.
 - [ ] **On-call rotation + runbook**: node restart, ban-list inspection,
       chain-state recovery from store corruption, RPC key rotation.
 - [ ] **Incident comms channel** announced (status page / Telegram / X).

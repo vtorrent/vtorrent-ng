@@ -1,0 +1,12 @@
+route:
+  receiver: ntfy-push
+  group_by: [alertname, instance]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: ntfy-push
+    webhook_configs:
+      - url: https://ntfy.sh/vtorrent-seeds-4254e0588837
+        send_resolved: true
