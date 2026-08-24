@@ -110,8 +110,10 @@
       (0600, atomic rename) and is restored locked on startup.
 - [x] ~~**SPV wallet UTXO staleness**~~ — FIXED `8a78acd`: BIP-158 scan
       checkpoints only the covered range and loops to tip within one cycle.
-- [ ] **BTC HTLC locktime mismatch** — `DEFAULT_HTLC_LOCKTIME = 48*3600` (48
-      hours) vs documented "48 blocks (~8 hours)". Pick one before launch.
+- [x] ~~**BTC HTLC locktime mismatch**~~ — RESOLVED: code and docs now agree
+      on 48-hour time-based CLTV (matches original design intent; stays longer
+      than the ~2.4h VTR window). Block-height CLTV can be revisited at launch
+      review if desired.
 - [ ] **Docker cannot stop root-owned containers** on the soak host (daemon
       `permission denied`; workaround `sudo kill <pid>` + `docker start`).
 

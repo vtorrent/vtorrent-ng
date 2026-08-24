@@ -55,7 +55,7 @@ POST /api/v1/swap/btc-fund
 
 This creates a P2WSH HTLC on Bitcoin:
 - **Claim:** With preimage that hashes to `hash_lock`
-- **Refund:** After `btc_expiry` blocks (default 48), back to taker
+- **Refund:** After `btc_expiry` (default 48 hours, time-based CLTV), back to taker
 
 The funding txid is recorded in the swap state.
 
@@ -137,9 +137,15 @@ Same logic using the script engine's `OP_SHA256`, `OP_CHECKLOCKTIMEVERIFY`, and 
 
 | Parameter | Value | Purpose |
 |---|---|---|
-| BTC HTLC expiry | 48 blocks (~8 hours) | Taker refund window |
-| VTR HTLC expiry | 144 blocks (~2.4 hours) | Taker claim window |
+| BTC HTLC expiry | 48 hours (time-based CLTV vs MTP) | Taker refund window |
+| VTR HTLC expiry | 144 blocks (~2.4 hours at 60s blocks) | Taker claim window |
 | Preimage size | 32 bytes | SHA256 preimage |
+
+The BTC window is deliberately much longer than the VTR window: the taker must
+claim VTR (revealing the preimage) well before the BTC HTLC expires, giving the
+maker time to claim the BTC. Both expiries are absolute — the BTC side as a
+Unix timestamp checked against median-time-past, the VTR side via its own
+consensus rules.
 
 ## Security Properties
 
