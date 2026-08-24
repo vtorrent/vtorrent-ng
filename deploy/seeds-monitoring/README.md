@@ -27,7 +27,9 @@ exposed read-only through an nginx location restricted to seed1's IP.
 
 Notifications are pushed to ntfy topic `vtorrent-seeds-4254e0588837`
 (topic name acts as the secret). Subscribe at https://ntfy.sh/ or in the
-mobile app. Alertmanager delivers its native JSON envelope.
+mobile app. `ntfy-relay.py` (systemd unit `ntfy-relay`, listens on
+127.0.0.1:9094) formats Alertmanager's JSON envelope into readable push
+titles like `🔥 FIRING: DaemonDown` / `✅ RESOLVED: …`.
 
 ## Reinstall from scratch
 

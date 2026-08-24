@@ -8,5 +8,5 @@ route:
 receivers:
   - name: ntfy-push
     webhook_configs:
-      - url: https://ntfy.sh/vtorrent-seeds-4254e0588837
+      - url: http://127.0.0.1:9094/
         send_resolved: true
