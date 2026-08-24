@@ -16,6 +16,8 @@ name: vtorrent-testnet
 services:
   node1:
     image: vtorrent/node:soak
+    security_opt:
+      - apparmor=unconfined
     build:
       context: ../..
       dockerfile: docker/Dockerfile
@@ -51,6 +53,8 @@ services:
 
   node2:
     image: vtorrent/node:soak
+    security_opt:
+      - apparmor=unconfined
     build:
       context: ../..
       dockerfile: docker/Dockerfile
@@ -83,6 +87,8 @@ services:
 
   node3:
     image: vtorrent/node:soak
+    security_opt:
+      - apparmor=unconfined
     build:
       context: ../..
       dockerfile: docker/Dockerfile
@@ -115,6 +121,8 @@ services:
 
   btc:
     image: bitcoin/bitcoin:26
+    security_opt:
+      - apparmor=unconfined
     container_name: vtr-btc-regtest
     command:
       - -printtoconsole=1
@@ -139,6 +147,8 @@ services:
 
   prometheus:
     image: prom/prometheus:v2.53.0
+    security_opt:
+      - apparmor=unconfined
     container_name: vtr-prometheus
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -151,6 +161,8 @@ services:
 
   grafana:
     image: grafana/grafana:11.1.0
+    security_opt:
+      - apparmor=unconfined
     container_name: vtr-grafana
     environment:
       - GF_SECURITY_ADMIN_USER=admin

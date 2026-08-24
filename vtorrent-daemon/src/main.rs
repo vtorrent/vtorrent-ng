@@ -307,10 +307,9 @@ async fn main() -> anyhow::Result<()> {
             Some(vtorrent_btc::wallet::BtcWallet::with_network(seed, network));
         *rpc_state.btc_network.write().await = network;
         if let Some(peer) = &cli.btc_peer {
-            let addr = resolve_addr(peer)
-                .await
-                .map_err(|e| anyhow::anyhow!("Invalid --btc-peer: {}", e))?;
-            *rpc_state.btc_peer.write().await = Some(addr);
+            // Store the host:port as given; it is resolved on every connection
+            // attempt so peer IPs can change across container restarts.
+            *rpc_state.btc_peer.write().await = Some(peer.clone());
         }
         tracing::info!(
             "Bitcoin SPV wallet initialized from --btc-seed (network: {:?})",
@@ -687,8 +686,15 @@ async fn main() -> anyhow::Result<()> {
             }
             let network = *btc_network.read().await;
             // Resolve peers: explicit regtest peer, or mainnet DNS seeds.
-            let addrs: Vec<std::net::SocketAddr> = match *btc_peer.read().await {
-                Some(addr) => vec![addr],
+            let addrs: Vec<std::net::SocketAddr> = match btc_peer.read().await.clone() {
+                Some(host) => match resolve_addr(&host).await {
+                    Ok(addr) => vec![addr],
+                    Err(e) => {
+                        tracing::warn!("BTC peer {} unresolved: {}", host, e);
+                        tokio::time::sleep(tokio::time::Duration::from_secs(300)).await;
+                        continue;
+                    }
+                },
                 None => match vtorrent_btc::sync::resolve_seeds().await {
                     Ok(a) => a,
                     Err(e) => {

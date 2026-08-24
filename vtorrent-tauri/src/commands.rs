@@ -1840,8 +1840,15 @@ pub async fn send_btc(
     // so the wallet does not forget outputs for a tx that never landed.
     let broadcast_result = {
         let network = *handle.rpc_state.btc_network.read().await;
-        let peer = *handle.rpc_state.btc_peer.read().await;
-        if let Some(addr) = peer {
+        let peer = handle.rpc_state.btc_peer.read().await.clone();
+        if let Some(host) = peer {
+            let addr = tokio::net::lookup_host(&host)
+                .await
+                .ok()
+                .and_then(|mut it| it.next())
+                .ok_or_else(|| {
+                    crate::error::TauriError::InvalidInput(format!("BTC peer {} unresolved", host))
+                })?;
             vtorrent_btc::sync::broadcast_tx_to(&raw, network, &[addr]).await
         } else {
             vtorrent_btc::sync::broadcast_tx(&raw).await

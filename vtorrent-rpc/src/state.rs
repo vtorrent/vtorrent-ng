@@ -54,9 +54,10 @@ pub struct AppState {
     pub btc_wallet: Arc<RwLock<Option<BtcWallet>>>,
     /// Bitcoin network the wallet operates on (mainnet or regtest).
     pub btc_network: Arc<RwLock<bitcoin::Network>>,
-    /// Optional explicit Bitcoin peer address (regtest). When set, BTC sync
-    /// and broadcast use this peer instead of DNS seeds.
-    pub btc_peer: Arc<RwLock<Option<std::net::SocketAddr>>>,
+    /// Optional explicit Bitcoin peer as `host:port` (regtest). When set, BTC
+    /// sync and broadcast use this peer instead of DNS seeds. Stored as a
+    /// hostname so container restarts with new IPs are re-resolved per cycle.
+    pub btc_peer: Arc<RwLock<Option<String>>>,
     /// Node start time (Unix timestamp).
     pub start_time: u64,
     /// Number of connected P2P peers.
