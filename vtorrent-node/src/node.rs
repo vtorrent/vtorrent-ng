@@ -1112,6 +1112,15 @@ impl Node {
                                             hex::encode(hash),
                                             height
                                         );
+                                        {
+                                            let confirmed: Vec<[u8; 32]> = block_arc
+                                                .transactions
+                                                .iter()
+                                                .map(|tx| tx.txid())
+                                                .collect();
+                                            let mut mp = self.mempool.lock().await;
+                                            mp.handle_confirmed_block(&confirmed, &utxos_removed);
+                                        }
                                         self.emit(NodeEvent::NewBlock {
                                             height,
                                             hash,
@@ -1405,6 +1414,18 @@ impl Node {
                                                 hex::encode(hash),
                                                 height
                                             );
+                                            {
+                                                let confirmed: Vec<[u8; 32]> = block_arc
+                                                    .transactions
+                                                    .iter()
+                                                    .map(|tx| tx.txid())
+                                                    .collect();
+                                                let mut mp = self.mempool.lock().await;
+                                                mp.handle_confirmed_block(
+                                                    &confirmed,
+                                                    &utxos_removed,
+                                                );
+                                            }
                                             self.emit(NodeEvent::NewBlock {
                                                 height,
                                                 hash,
@@ -1649,6 +1670,18 @@ impl Node {
                                                 hex::encode(hash),
                                                 height
                                             );
+                                            {
+                                                let confirmed: Vec<[u8; 32]> = block_arc
+                                                    .transactions
+                                                    .iter()
+                                                    .map(|tx| tx.txid())
+                                                    .collect();
+                                                let mut mp = self.mempool.lock().await;
+                                                mp.handle_confirmed_block(
+                                                    &confirmed,
+                                                    &utxos_removed,
+                                                );
+                                            }
                                             self.emit(NodeEvent::NewBlock {
                                                 height,
                                                 hash,
@@ -2019,9 +2052,18 @@ impl Node {
             return Err(NodeError::Chain("Too soon to stake".into()));
         }
 
+        // Only include pending txs whose inputs are still unspent in the
+        // current UTXO set — mempool entries can go stale when a competing
+        // block confirms the same inputs, and including them would make our
+        // block invalid.
         let pending_txs = {
+            let chain = self.chain.lock().await;
             let mempool = self.mempool.lock().await;
-            mempool.get_transactions()
+            mempool
+                .get_transactions()
+                .into_iter()
+                .filter(|tx| chain.compute_tx_fee(tx).is_some())
+                .collect()
         };
 
         if let Some(block) = staking.build_stake_block(
@@ -2057,6 +2099,12 @@ impl Node {
                 claimed_addresses,
             } = acceptance
             {
+                {
+                    let confirmed: Vec<[u8; 32]> =
+                        block_arc.transactions.iter().map(|tx| tx.txid()).collect();
+                    let mut mp = self.mempool.lock().await;
+                    mp.handle_confirmed_block(&confirmed, &utxos_removed);
+                }
                 self.emit(NodeEvent::NewBlock {
                     height,
                     hash: block_hash,
@@ -2193,7 +2241,10 @@ impl Node {
 
             // If still not enough, re-dial explicitly configured seeds
             if connected < needed && !self.config.extra_seeds.is_empty() {
-                tracing::debug!("PEX insufficient, re-dialing {} explicit seeds", self.config.extra_seeds.len());
+                tracing::debug!(
+                    "PEX insufficient, re-dialing {} explicit seeds",
+                    self.config.extra_seeds.len()
+                );
                 for seed in self.config.extra_seeds.clone() {
                     if connected >= needed {
                         break;

@@ -243,6 +243,41 @@ impl Mempool {
         self.remove_entry(txid);
     }
 
+    /// Update the mempool after a block was confirmed on the main chain.
+    ///
+    /// Removes the block's transactions and evicts any entries that spend
+    /// outputs the block consumed (they are now double-spends against
+    /// confirmed history and would make any block including them invalid).
+    pub fn handle_confirmed_block(
+        &mut self,
+        confirmed_txids: &[[u8; 32]],
+        spent_outpoints: &[([u8; 32], u32)],
+    ) {
+        for txid in confirmed_txids {
+            self.remove_entry(txid);
+        }
+        if spent_outpoints.is_empty() {
+            return;
+        }
+        let doomed: Vec<[u8; 32]> = self
+            .spent_inputs
+            .iter()
+            .filter(|((prev_txid, prev_vout), _)| {
+                spent_outpoints
+                    .iter()
+                    .any(|(t, v)| t == prev_txid && v == prev_vout)
+            })
+            .map(|(_, owner)| *owner)
+            .collect();
+        for txid in doomed {
+            tracing::debug!(
+                "Evicting mempool tx {} (inputs confirmed in block)",
+                hex::encode(txid)
+            );
+            self.remove_entry(&txid);
+        }
+    }
+
     /// Get a specific transaction by txid.
     pub fn get_transaction(&self, txid: &[u8; 32]) -> Option<&Transaction> {
         self.entries.get(txid).map(|e| &e.tx)
@@ -537,4 +572,40 @@ mod tests {
         mp.remove_transaction(&owner_txid);
         assert!(mp.find_conflicts(&conflicting).is_empty());
     }
+
+    #[test]
+    fn test_handle_confirmed_block_removes_and_evicts() {
+        let mut mp = Mempool::new(100);
+
+        // T1 spends outpoint A=([1u8;32],0).
+        let t1 = make_tx(2000, 1, false);
+        let t1_txid = t1.txid();
+        let outpoint_a = ([1u8; 32], 0);
+        mp.add_transaction_with_fee(t1, 2000).unwrap();
+
+        // T3 spends outpoint B=([7u8;32],5) — unrelated to T1.
+        let mut t3 = make_tx(3000, 3, false);
+        t3.inputs[0].prev_txid = [7u8; 32];
+        t3.inputs[0].prev_vout = 5;
+        let t3_txid = t3.txid();
+        mp.add_transaction_with_fee(t3, 3000).unwrap();
+
+        assert!(mp.get_transaction(&t1_txid).is_some());
+        assert!(mp.get_transaction(&t3_txid).is_some());
+
+        // A block confirms T1 and also consumes outpoint B (via another tx).
+        mp.handle_confirmed_block(&[t1_txid], &[outpoint_a, ([7u8; 32], 5)]);
+
+        assert!(
+            mp.get_transaction(&t1_txid).is_none(),
+            "confirmed tx must leave mempool"
+        );
+        assert!(
+            mp.get_transaction(&t3_txid).is_none(),
+            "entry spending a confirmed output must be evicted"
+        );
+        assert!(mp.spent_inputs.get(&outpoint_a).is_none());
+        assert!(mp.spent_inputs.get(&([7u8; 32], 5)).is_none());
+    }
+
 }
