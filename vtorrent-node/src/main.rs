@@ -50,6 +50,10 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     no_dht: bool,
 
+    /// Skip all internet bootstrap; only connect to explicit --seed peers.
+    #[arg(long, default_value_t = false)]
+    isolated: bool,
+
     /// Additional seed nodes to connect to (can be repeated).
     #[arg(long = "seed", value_name = "ADDR")]
     seeds: Vec<String>,
@@ -121,6 +125,7 @@ async fn main() -> anyhow::Result<()> {
         max_mempool: 10_000,
         extra_seeds: cli.seeds.clone(),
         use_dht: !cli.no_dht,
+        isolated: cli.isolated,
         data_dir: data_dir.clone(),
         use_overlay: true,
         testnet: cli.testnet,

@@ -30,6 +30,11 @@
 
 ## 2. Testnet Soak
 
+> **Run 1 started 2026-08-24** — `docker/testnet/docker-compose.yml` on the dev
+> workstation (3 regtest nodes, isolated bootstrap, node1 staking 500 VTR;
+> first stake blocks expected after the 6h min stake age). Check daily with
+> `scripts/soak-status.sh`; Grafana at http://localhost:3300 (admin/admin).
+
 - [ ] **3+ node Docker testnet** (`docker/testnet/docker-compose.yml`) runs
       ≥7 days: blocks propagate between all nodes, no forks beyond expected
       PoS reorg depth, no memory growth, no peer churn storms.

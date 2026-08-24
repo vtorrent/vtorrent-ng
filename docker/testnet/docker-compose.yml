@@ -15,6 +15,7 @@ name: vtorrent-testnet
 
 services:
   node1:
+    image: vtorrent/node:soak
     build:
       context: ../..
       dockerfile: docker/Dockerfile
@@ -28,6 +29,8 @@ services:
       - "0.0.0.0:22525"
       - --data-dir
       - /data/node1
+      - --regtest
+      - --isolated
       - --log-level
       - info
     ports:
@@ -42,6 +45,7 @@ services:
     restart: unless-stopped
 
   node2:
+    image: vtorrent/node:soak
     build:
       context: ../..
       dockerfile: docker/Dockerfile
@@ -58,6 +62,8 @@ services:
       - --seed
       - "node1:22526"
       - --no-dht
+      - --regtest
+      - --isolated
       - --log-level
       - info
     depends_on:
@@ -71,6 +77,7 @@ services:
     restart: unless-stopped
 
   node3:
+    image: vtorrent/node:soak
     build:
       context: ../..
       dockerfile: docker/Dockerfile
@@ -87,6 +94,8 @@ services:
       - --seed
       - "node1:22526"
       - --no-dht
+      - --regtest
+      - --isolated
       - --log-level
       - info
     depends_on:

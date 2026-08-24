@@ -100,6 +100,10 @@ pub struct NodeConfig {
     pub extra_seeds: Vec<String>,
     /// Whether to use DHT bootstrap for peer discovery.
     pub use_dht: bool,
+    /// When `true`, skip all internet bootstrap (DHT, DoH, DNS seeds, GitHub
+    /// peer list) and only talk to explicitly configured `--seed` peers.
+    /// Used for isolated local testnets so they never reach production seeds.
+    pub isolated: bool,
     /// Node data directory (for peer cache, chain data, etc.).
     /// Defaults to `~/.vtorrent` on all platforms.
     pub data_dir: PathBuf,
@@ -126,6 +130,7 @@ impl Default for NodeConfig {
             max_mempool: 10_000,
             extra_seeds: Vec::new(),
             use_dht: true,
+            isolated: false,
             data_dir: default_data_dir(),
             use_overlay: true,
             testnet: false,
@@ -488,7 +493,7 @@ impl Node {
         }
 
         // ── Stage 1: DHT + Cloudflare DoH in parallel (decentralized) ────────
-        if self.config.use_dht {
+        if self.config.use_dht && !self.config.isolated {
             self.bootstrap_via_dht().await;
         }
 
@@ -498,13 +503,13 @@ impl Node {
         }
 
         // ── Stage 3: GitHub-hosted peer list (if still no peers) ─────────────
-        if self.peer_manager.peer_count() == 0 {
+        if !self.config.isolated && self.peer_manager.peer_count() == 0 {
             tracing::info!("No peers yet — trying GitHub bootstrap peer list...");
             self.bootstrap_via_github().await;
         }
 
         // ── Stage 4: Legacy DNS seeds (absolute last resort) ──────────────────
-        if self.peer_manager.peer_count() == 0 {
+        if !self.config.isolated && self.peer_manager.peer_count() == 0 {
             tracing::warn!("No peers found via any decentralized source, trying legacy DNS seeds");
             self.connect_to_dns_seeds().await;
         }
@@ -587,7 +592,7 @@ impl Node {
 
                 // DHT: periodically re-announce ourselves
                 _ = dht_ticker.tick() => {
-                    if self.config.use_dht {
+                    if self.config.use_dht && !self.config.isolated {
                         self.dht_announce().await;
                     }
                 }
@@ -2187,7 +2192,7 @@ impl Node {
             }
 
             // If still not enough, try DHT again
-            if connected < needed && self.config.use_dht {
+            if connected < needed && self.config.use_dht && !self.config.isolated {
                 tracing::debug!("PEX insufficient, re-running DHT bootstrap");
                 self.bootstrap_via_dht().await;
             }
