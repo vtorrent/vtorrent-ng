@@ -105,17 +105,15 @@
 
 ## Known Issues (found during soak/E2E, 2026-08-24)
 
-- **Imported wallets are memory-only** — `POST /wallet/import` never writes to
-  `--data-dir`; wallets vanish on daemon restart. Must persist encrypted
-  wallet before mainnet.
-- **SPV wallet UTXO staleness** — after restart, a partial BIP-158 scan
-  checkpoints at the wrong height (122 of 207 blocks scanned, then "1 block"
-  per cycle); subsequent HTLC funding txs spend stale inputs and peers reject
-  them silently. Scan must loop to tip and only checkpoint on full coverage.
-- **BTC HTLC locktime mismatch** — `DEFAULT_HTLC_LOCKTIME = 48*3600` (48
-  hours) vs documented "48 blocks (~8 hours)". Pick one before launch.
-- **Docker cannot stop root-owned containers** on the soak host (daemon
-  `permission denied`; workaround `sudo kill <pid>` + `docker start`).
+- [x] ~~**Imported wallets are memory-only**~~ — FIXED `8a78acd`: encrypted
+      wallet (Argon2id + ChaCha20-Poly1305) persists to `<data-dir>/wallet.json`
+      (0600, atomic rename) and is restored locked on startup.
+- [x] ~~**SPV wallet UTXO staleness**~~ — FIXED `8a78acd`: BIP-158 scan
+      checkpoints only the covered range and loops to tip within one cycle.
+- [ ] **BTC HTLC locktime mismatch** — `DEFAULT_HTLC_LOCKTIME = 48*3600` (48
+      hours) vs documented "48 blocks (~8 hours)". Pick one before launch.
+- [ ] **Docker cannot stop root-owned containers** on the soak host (daemon
+      `permission denied`; workaround `sudo kill <pid>` + `docker start`).
 
 > Resolved 2026-08-24: seed nodes deployed (vtr-seed1 DE, vtr-seed2 FI),
 > peers.txt published with real IPs, DNS seeds live on `vtorrent.org`.
