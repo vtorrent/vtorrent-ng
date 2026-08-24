@@ -279,15 +279,30 @@ mod tests {
 
     #[tokio::test]
     async fn test_broadcast_raw_transaction_and_lookup() {
+        use secp256k1::{Message, Secp256k1, SecretKey};
         use vtorrent_node::block::{Transaction, TxInput, TxOutput, TxType};
+        use vtorrent_wallet::tx_builder::pubkey_to_vtorrent_address;
 
-        let tx = Transaction {
+        // Fund a real UTXO so the broadcast path's fee verification passes.
+        let state = AppState::new();
+        let secret = SecretKey::from_slice(&[42u8; 32]).unwrap();
+        let secp = Secp256k1::new();
+        let pubkey = secp256k1::PublicKey::from_secret_key(&secp, &secret);
+        let address = pubkey_to_vtorrent_address(&pubkey.serialize()).unwrap();
+        let funding_txid = state
+            .chain
+            .lock()
+            .await
+            .mint_to_address(&address, 100_000)
+            .unwrap();
+
+        let mut tx = Transaction {
             version: 1,
             tx_type: TxType::Standard,
             inputs: vec![TxInput {
-                prev_txid: [7u8; 32],
+                prev_txid: funding_txid,
                 prev_vout: 0,
-                script_sig: vec![0x51],
+                script_sig: vec![],
                 sequence: 0xffff_ffff,
             }],
             outputs: vec![TxOutput {
@@ -298,8 +313,21 @@ mod tests {
             claim_address: None,
             claim_signature: None,
         };
+        // Sign the input so the mempool's script validation accepts it.
+        let sighash = tx.sighash(0, &[]);
+        let msg = Message::from_digest(sighash);
+        let sig = secp.sign_ecdsa(&msg, &secret);
+        let mut sig_der = sig.serialize_der().to_vec();
+        sig_der.push(0x01);
+        let mut script_sig = Vec::new();
+        script_sig.push(sig_der.len() as u8);
+        script_sig.extend_from_slice(&sig_der);
+        script_sig.push(pubkey.serialize().len() as u8);
+        script_sig.extend_from_slice(&pubkey.serialize());
+        tx.inputs[0].script_sig = script_sig;
+
         let txid = hex::encode(tx.txid());
-        let app = build_router(AppState::new());
+        let app = build_router(state);
         let (status, body) = post_json(
             app.clone(),
             "/api/v1/blockchain/broadcast",

@@ -4,6 +4,7 @@ use axum::{
 };
 use serde_json::{json, Value};
 use std::time::{SystemTime, UNIX_EPOCH};
+use vtorrent_node::atomic_swap::{SwapState, SwapStatus};
 
 use crate::error::{RpcError, RpcResult};
 use crate::models::*;
@@ -58,6 +59,23 @@ fn btc_txid_hex(bytes: &[u8; 32]) -> String {
     let mut display = *bytes;
     display.reverse();
     hex::encode(display)
+}
+
+/// Reject swap operations whose current lifecycle stage makes them invalid
+/// (e.g. double-funding, claiming after refund, refunding after claim).
+fn require_swap_stage(
+    swap: Option<&vtorrent_node::atomic_swap::SwapState>,
+    forbidden: &[vtorrent_node::atomic_swap::SwapStatus],
+) -> RpcResult<()> {
+    if let Some(swap) = swap {
+        if forbidden.contains(&swap.status) {
+            return Err(RpcError::BadRequest(format!(
+                "Swap is in state {:?}; operation not allowed",
+                swap.status
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn block_response(
@@ -272,9 +290,24 @@ pub async fn broadcast_transaction(
 
     {
         let mut mempool = state.mempool.lock().await;
-        mempool
-            .add_transaction(tx.clone())
-            .map_err(|e| RpcError::BadRequest(format!("Mempool rejected transaction: {}", e)))?;
+        // Verify the fee from the live UTXO set — same rule the P2P relay
+        // path applies — so self-reported fee estimates cannot buy priority.
+        let real_fee = {
+            let chain = state.chain.lock().await;
+            chain.compute_tx_fee(&tx)
+        };
+        match real_fee {
+            Some(fee) => mempool
+                .add_transaction_with_fee(tx.clone(), fee)
+                .map_err(|e| {
+                    RpcError::BadRequest(format!("Mempool rejected transaction: {}", e))
+                })?,
+            None => {
+                return Err(RpcError::BadRequest(
+                    "Transaction inputs not found in UTXO set".into(),
+                ))
+            }
+        }
     }
 
     let relayed = match &state.tx_submit {
@@ -1218,6 +1251,19 @@ pub async fn match_dex_order(
         "DEX maker HTLC funding transaction accepted"
     );
 
+    // Materialize the swap state in VtrFunded stage so lifecycle guards on
+    // btc-fund / claims / refunds operate from a known baseline.
+    {
+        let mut swaps = state.swaps.write().await;
+        let swap = swaps
+            .entry(hex::encode(matched.order.order_id))
+            .or_insert_with(|| SwapState::new(matched.order.order_id, matched.hash_lock));
+        if swap.vtr_funding_txid.is_none() {
+            swap.vtr_funding_txid = Some(funding_txid);
+            swap.status = SwapStatus::VtrFunded;
+        }
+    }
+
     Ok(Json(MatchOrderResponse {
         order_id: hex::encode(matched.order.order_id),
         maker_address: matched.order.maker_address,
@@ -1582,6 +1628,20 @@ pub async fn btc_fund(
         .clone()
         .ok_or_else(|| RpcError::BadRequest("Order has no maker BTC address".into()))?;
 
+    // Lifecycle guard: the BTC HTLC must not already be funded, and a
+    // finished swap (claimed/refunded) can never be funded again.
+    {
+        let swaps = state.swaps.read().await;
+        require_swap_stage(
+            swaps.get(&req.order_id),
+            &[
+                SwapStatus::BtcFunded,
+                SwapStatus::Claimed,
+                SwapStatus::Refunded,
+            ],
+        )?;
+    }
+
     // The BTC amount the taker must lock is the order's target amount.
     let btc_amount = order.target_amount;
     if btc_amount == 0 {
@@ -1712,6 +1772,16 @@ pub async fn vtr_claim(
         .clone()
         .ok_or_else(|| RpcError::BadRequest("Order has no taker address".into()))?;
 
+    // Lifecycle guard: a swap that already completed (claimed or refunded)
+    // cannot be claimed again.
+    {
+        let swaps = state.swaps.read().await;
+        require_swap_stage(
+            swaps.get(&req.order_id),
+            &[SwapStatus::Claimed, SwapStatus::Refunded],
+        )?;
+    }
+
     // Verify the preimage matches the hash lock.
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -1793,13 +1863,20 @@ pub async fn btc_claim(
     State(state): State<Arc<AppState>>,
     Json(req): Json<BtcClaimRequest>,
 ) -> RpcResult<Json<SwapActionResponse>> {
-    use vtorrent_node::atomic_swap::SwapStatus;
-
     let (preimage, btc_funding_txid, maker_btc_address, btc_amount, btc_expiry, refund_address) = {
         let swaps = state.swaps.read().await;
         let swap = swaps
             .get(&req.order_id)
             .ok_or_else(|| RpcError::NotFound(format!("Swap {} not found", req.order_id)))?;
+        // Lifecycle guard: only a funded swap can be claimed, and only once.
+        require_swap_stage(
+            Some(swap),
+            &[
+                SwapStatus::Claimed,
+                SwapStatus::Refunded,
+                SwapStatus::Funding,
+            ],
+        )?;
         // The maker generated the preimage at order placement and holds it in
         // the order book. The swap state's preimage is only populated when the
         // taker reveals it via vtr_claim, so fall back to the order's preimage.
@@ -1912,6 +1989,15 @@ pub async fn swap_refund(
     let now = now_secs_mock(&state).await as u32;
     if now < order.expiry {
         return Err(RpcError::BadRequest("Swap has not expired yet".into()));
+    }
+
+    // Lifecycle guard: a swap that already completed cannot be refunded again.
+    {
+        let swaps = state.swaps.read().await;
+        require_swap_stage(
+            swaps.get(&req.order_id),
+            &[SwapStatus::Claimed, SwapStatus::Refunded],
+        )?;
     }
 
     // ── VTR-side refund (the maker reclaims their VTR) ──────────────────────

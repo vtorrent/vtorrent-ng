@@ -604,8 +604,7 @@ mod tests {
             mp.get_transaction(&t3_txid).is_none(),
             "entry spending a confirmed output must be evicted"
         );
-        assert!(mp.spent_inputs.get(&outpoint_a).is_none());
-        assert!(mp.spent_inputs.get(&([7u8; 32], 5)).is_none());
+        assert!(!mp.spent_inputs.contains_key(&outpoint_a));
+        assert!(!mp.spent_inputs.contains_key(&([7u8; 32], 5)));
     }
-
 }

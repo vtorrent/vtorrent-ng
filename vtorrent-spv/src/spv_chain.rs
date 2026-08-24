@@ -168,6 +168,28 @@ impl SpvChain {
             )));
         }
 
+        // Timestamp sanity: reject headers far in the future and enforce
+        // monotonicity against the parent. Without this, timestamp games can
+        // influence difficulty-independent tip selection.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+        if header.timestamp > now + 7200 {
+            return Err(SpvError::HeaderValidation(format!(
+                "header timestamp {} too far in the future",
+                header.timestamp
+            )));
+        }
+        if header.height > 0 {
+            let parent = &self.headers[&header.prev_hash];
+            if header.timestamp <= parent.timestamp {
+                return Err(SpvError::HeaderValidation(
+                    "header timestamp must exceed parent timestamp".into(),
+                ));
+            }
+        }
+
         // The height must be exactly one more than the parent's height.
         if header.height > 0 {
             let parent = &self.headers[&header.prev_hash];
