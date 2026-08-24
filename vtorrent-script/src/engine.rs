@@ -343,8 +343,10 @@ impl Engine {
                         0x7a => {
                             // OP_ROLL
                             if executing {
-                                let n =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let n = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
                                 if n < 0 || n as usize >= self.stack.len() {
                                     return Err(ScriptError::InvalidScriptNumber);
                                 }
@@ -356,8 +358,10 @@ impl Engine {
                         0x78 => {
                             // OP_PICK (copy nth item to top)
                             if executing {
-                                let n =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let n = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
                                 if n < 0 || n as usize >= self.stack.len() {
                                     return Err(ScriptError::InvalidScriptNumber);
                                 }
@@ -632,7 +636,9 @@ impl Engine {
                             // OP_0NOTEQUAL
                             if executing {
                                 let top = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
-                                self.stack.push(bool_to_bytes(bytes_to_int(&top) != 0));
+                                self.stack.push(bool_to_bytes(
+                                    decode_script_num(&top, MAX_ARITH_NUM_LEN)? != 0,
+                                ));
                             }
                         }
                         0x9a => {
@@ -782,12 +788,18 @@ impl Engine {
                         0xa5 => {
                             // OP_WITHIN
                             if executing {
-                                let max =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
-                                let min =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
-                                let x =
-                                    bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+                                let max = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                let min = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                let x = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
                                 self.stack.push(bool_to_bytes(x >= min && x < max));
                             }
                         }
@@ -870,7 +882,10 @@ impl Engine {
     /// Execute OP_CHECKMULTISIG / OP_CHECKMULTISIGVERIFY.
     fn exec_checkmultisig(&mut self, verify: bool) -> Result<()> {
         // Stack: <OP_0> <sig1> ... <sigM> <M> <key1> ... <keyN> <N>
-        let n_keys = bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+        let n_keys = decode_script_num(
+            &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+            MAX_ARITH_NUM_LEN,
+        )?;
         // Bound the key count to the remaining stack depth to avoid an
         // attacker-controlled multi-GB allocation.
         if n_keys < 0 || n_keys as usize > self.stack.len() {
@@ -882,7 +897,10 @@ impl Engine {
             keys.push(self.stack.pop().ok_or(ScriptError::EmptyStack)?);
         }
 
-        let n_sigs = bytes_to_int(&self.stack.pop().ok_or(ScriptError::EmptyStack)?);
+        let n_sigs = decode_script_num(
+            &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+            MAX_ARITH_NUM_LEN,
+        )?;
         if n_sigs < 0 || n_sigs as usize > self.stack.len() {
             return Err(ScriptError::InvalidScriptNumber);
         }
@@ -951,10 +969,6 @@ fn bool_to_bytes(b: bool) -> Vec<u8> {
     } else {
         vec![]
     }
-}
-
-fn bytes_to_int(bytes: &[u8]) -> i64 {
-    decode_script_num(bytes, 8).unwrap_or(0)
 }
 
 /// Decode a sign-magnitude script number, rejecting encodings longer than
