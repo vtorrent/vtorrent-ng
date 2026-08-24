@@ -5,7 +5,7 @@ use bitcoin::absolute::LockTime;
 use bitcoin::hashes::{sha256, Hash};
 use bitcoin::opcodes::all::{
     OP_CHECKSIG, OP_CLTV, OP_DROP, OP_DUP, OP_ELSE, OP_ENDIF, OP_EQUALVERIFY, OP_HASH160, OP_IF,
-    OP_SHA256,
+    OP_SHA256, OP_SIZE,
 };
 use bitcoin::script::Builder;
 use bitcoin::secp256k1::Secp256k1;
@@ -110,8 +110,15 @@ impl BtcHtlc {
         let recipient_hash = address_hash160(&self.recipient, self.network)?;
         let refund_hash = address_hash160(&self.refund_address, self.network)?;
 
+        // Claim branch requires the preimage to be exactly 32 bytes
+        // (OP_SIZE 32): standard cross-chain HTLC hygiene — it pins the
+        // preimage format across chains so a revealing party cannot satisfy
+        // one chain's hash-lock with an encoding the other rejects.
         Ok(Builder::new()
             .push_opcode(OP_IF)
+            .push_opcode(OP_SIZE)
+            .push_int(32)
+            .push_opcode(OP_EQUALVERIFY)
             .push_opcode(OP_SHA256)
             .push_slice(self.hash_lock)
             .push_opcode(OP_EQUALVERIFY)

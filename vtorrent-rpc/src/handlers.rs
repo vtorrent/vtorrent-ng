@@ -1795,14 +1795,10 @@ pub async fn vtr_claim(
         .clone()
         .ok_or_else(|| RpcError::BadRequest("Order has no taker address".into()))?;
 
-    // Lifecycle guard: a swap that already completed (claimed or refunded)
-    // cannot be claimed again.
+    // Lifecycle guard: a refunded swap cannot be claimed on the VTR leg.
     {
         let swaps = state.swaps.read().await;
-        require_swap_stage(
-            swaps.get(&req.order_id),
-            &[SwapStatus::Claimed, SwapStatus::Refunded],
-        )?;
+        require_swap_stage(swaps.get(&req.order_id), &[SwapStatus::Refunded])?;
     }
 
     // Verify the preimage matches the hash lock.
@@ -1891,15 +1887,10 @@ pub async fn btc_claim(
         let swap = swaps
             .get(&req.order_id)
             .ok_or_else(|| RpcError::NotFound(format!("Swap {} not found", req.order_id)))?;
-        // Lifecycle guard: only a funded swap can be claimed, and only once.
-        require_swap_stage(
-            Some(swap),
-            &[
-                SwapStatus::Claimed,
-                SwapStatus::Refunded,
-                SwapStatus::Funding,
-            ],
-        )?;
+        // Lifecycle guard: the BTC leg can be claimed any time after it was
+        // funded (typically after vtr-claim revealed the preimage) and never
+        // after a refund.
+        require_swap_stage(Some(swap), &[SwapStatus::Refunded])?;
         // The maker generated the preimage at order placement and holds it in
         // the order book. The swap state's preimage is only populated when the
         // taker reveals it via vtr_claim, so fall back to the order's preimage.
@@ -2014,13 +2005,11 @@ pub async fn swap_refund(
         return Err(RpcError::BadRequest("Swap has not expired yet".into()));
     }
 
-    // Lifecycle guard: a swap that already completed cannot be refunded again.
+    // Lifecycle guard: each leg refunds independently; a completed refund is
+    // the only terminal state for this endpoint.
     {
         let swaps = state.swaps.read().await;
-        require_swap_stage(
-            swaps.get(&req.order_id),
-            &[SwapStatus::Claimed, SwapStatus::Refunded],
-        )?;
+        require_swap_stage(swaps.get(&req.order_id), &[SwapStatus::Refunded])?;
     }
 
     // ── VTR-side refund (the maker reclaims their VTR) ──────────────────────

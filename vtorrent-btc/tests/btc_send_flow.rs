@@ -384,8 +384,13 @@ fn swap_htlc_script_structure() {
     let script = htlc.build_script().unwrap();
     let bytes = script.as_bytes();
     assert_eq!(bytes[0], 0x63); // OP_IF
+                                // Preimage-size guard: OP_SIZE 32 OP_EQUALVERIFY
+    assert_eq!(bytes[1], 0x82); // OP_SIZE
+    assert_eq!(bytes[2], 0x01); // push 1 byte
+    assert_eq!(bytes[3], 0x20); // literal 32
+    assert_eq!(bytes[4], 0x88); // OP_EQUALVERIFY
+    assert_eq!(bytes[5], 0xa8); // OP_SHA256
     assert_eq!(*bytes.last().unwrap(), 0x68); // OP_ENDIF
-    assert_eq!(bytes[1], 0xa8); // OP_SHA256
 }
 
 #[test]

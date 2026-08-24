@@ -117,6 +117,7 @@ Similarly, if the maker never claims BTC, the VTR HTLC expires and the maker can
 
 ```
 OP_IF
+  OP_SIZE 32 OP_EQUALVERIFY
   OP_SHA256 <hash_lock>
   OP_EQUALVERIFY
   <maker_pubkey>
