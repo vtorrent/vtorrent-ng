@@ -114,8 +114,14 @@
       on 48-hour time-based CLTV (matches original design intent; stays longer
       than the ~2.4h VTR window). Block-height CLTV can be revisited at launch
       review if desired.
-- [ ] **Docker cannot stop root-owned containers** on the soak host (daemon
-      `permission denied`; workaround `sudo kill <pid>` + `docker start`).
+- [x] ~~**Docker cannot stop root-owned containers**~~ — RESOLVED `30ac2e1`:
+      root cause is the **snap-packaged Docker** (AppArmor signal mediation
+      denies `snap.docker.dockerd` → `docker-default`, kernel audit log
+      confirms). Workaround: soak stack runs with `apparmor=unconfined`
+      (trusted images; namespaces/cgroups still apply) and `docker stop` now
+      works. Permanent option: migrate to apt `docker-ce`.
+- [x] ~~**BTC peer IP cached across restarts**~~ — FIXED `30ac2e1`: `--btc-peer`
+      stored as hostname, resolved per sync cycle and per broadcast.
 
 > Resolved 2026-08-24: seed nodes deployed (vtr-seed1 DE, vtr-seed2 FI),
 > peers.txt published with real IPs, DNS seeds live on `vtorrent.org`.
