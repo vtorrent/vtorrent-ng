@@ -20,9 +20,10 @@
       (`7...`) verified against legacy claim tooling end-to-end.
 - [ ] **Script engine differential testing**: run the legacy client's standard
       script corpus against `vtorrent-script`; results must match on every case.
-- [ ] **Long-run fuzzing**: ≥24h continuous runs of all four targets
+- [x] **Long-run fuzzing**: 25h continuous (90001s) on all four targets
       (`fuzz_script_engine`, `fuzz_p2p_codec`, `fuzz_tx_deser`,
-      `fuzz_btc_psbt`) with zero crashes on the release commit.
+      `fuzz_btc_psbt`), 2026-08-24→25 — 11.4B / 41.7B / 4.7B / 3.1B
+      executions respectively. Zero crashes, zero artifacts.
 - [ ] **Benchmark regression gate**: record criterion baselines; CI fails if
       sighash/merkle/kernel regress >25%.
 - [ ] **External security review** of wallet encryption (Argon2id +
