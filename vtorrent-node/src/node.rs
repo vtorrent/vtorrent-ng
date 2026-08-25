@@ -1285,41 +1285,53 @@ impl Node {
 
             "getblocks" => {
                 if let Ok(req) = serde_json::from_slice::<GetBlocksMsg>(&msg.payload) {
-                    let chain = self.chain.lock().await;
-                    let our_height = chain.best_height();
+                    // Bound the locator: an unbounded list turns this handler
+                    // into O(locator × height) hash work per message.
+                    const MAX_LOCATOR_HASHES: usize = 64;
+                    if req.block_locator_hashes.len() > MAX_LOCATOR_HASHES {
+                        tracing::debug!(
+                            "getblocks from {} with {} locator hashes — rejecting",
+                            peer_addr,
+                            req.block_locator_hashes.len()
+                        );
+                        self.peer_manager
+                            .record_misbehaviour(peer_addr, Misbehaviour::MalformedMessage)
+                            .await;
+                    } else {
+                        let chain = self.chain.lock().await;
+                        let our_height = chain.best_height();
 
-                    // Find the peer's best known block height
-                    let start_height = req
-                        .block_locator_hashes
-                        .iter()
-                        .find_map(|hash| {
-                            for h in 0..=our_height {
-                                if let Some(b) = chain.get_block_at_height(h) {
-                                    if b.hash() == *hash {
-                                        return Some(h + 1);
-                                    }
+                        // One pass over the chain: hash→height lookup set instead
+                        // of a full rescan per locator entry.
+                        let locator: std::collections::HashSet<[u8; 32]> =
+                            req.block_locator_hashes.iter().copied().collect();
+                        let mut start_height = 1u32;
+                        for h in (1..=our_height).rev() {
+                            if let Some(b) = chain.get_block_at_height(h) {
+                                if locator.contains(&b.hash()) {
+                                    start_height = h + 1;
+                                    break;
                                 }
                             }
-                            None
-                        })
-                        .unwrap_or(1);
-
-                    let mut items = Vec::new();
-                    for h in start_height..=our_height.min(start_height + 500) {
-                        if let Some(block) = chain.get_block_at_height(h) {
-                            items.push(InvItem {
-                                inv_type: InvType::Block,
-                                hash: block.hash(),
-                            });
                         }
-                    }
 
-                    if !items.is_empty() {
-                        let payload = serde_json::to_vec(&InvMsg { items }).unwrap_or_default();
-                        drop(chain);
-                        self.peer_manager
-                            .send_to(peer_addr, NetMessage::new("inv", payload))
-                            .await;
+                        let mut items = Vec::new();
+                        for h in start_height..=our_height.min(start_height + 500) {
+                            if let Some(block) = chain.get_block_at_height(h) {
+                                items.push(InvItem {
+                                    inv_type: InvType::Block,
+                                    hash: block.hash(),
+                                });
+                            }
+                        }
+
+                        if !items.is_empty() {
+                            let payload = serde_json::to_vec(&InvMsg { items }).unwrap_or_default();
+                            drop(chain);
+                            self.peer_manager
+                                .send_to(peer_addr, NetMessage::new("inv", payload))
+                                .await;
+                        }
                     }
                 }
             }
@@ -1508,6 +1520,15 @@ impl Node {
                                 .send_to(peer_addr, NetMessage::new("getblocktxn", payload))
                                 .await;
                             // Save the partial compact block so blocktxn can complete it.
+                            // Bounded: a peer flooding cmpctblocks with missing
+                            // txs must not grow this map without limit.
+                            if self.pending_compact_blocks.len() >= 16 {
+                                if let Some(oldest) =
+                                    self.pending_compact_blocks.keys().next().copied()
+                                {
+                                    self.pending_compact_blocks.remove(&oldest);
+                                }
+                            }
                             self.pending_compact_blocks.insert(block_hash, cmpct);
                         }
                         Err(CompactBlockDecodeError::TooManyTransactions) => {
@@ -1515,6 +1536,15 @@ impl Node {
                                 "cmpctblock: rejecting block with too many transactions from {}",
                                 peer_addr
                             );
+                        }
+                        Err(CompactBlockDecodeError::DuplicateShortId) => {
+                            tracing::warn!(
+                                "cmpctblock: duplicate short IDs from {} — protocol violation",
+                                peer_addr
+                            );
+                            self.peer_manager
+                                .record_misbehaviour(peer_addr, Misbehaviour::MalformedMessage)
+                                .await;
                         }
                         Err(CompactBlockDecodeError::InvalidPrefilledIndex) => {
                             // Protocol violation: score the peer so repeat
@@ -1893,56 +1923,66 @@ impl Node {
             // ── Header sync (getheaders / headers) ────────────────────────────
             "getheaders" => {
                 if let Ok(req) = serde_json::from_slice::<GetHeadersMsg>(&msg.payload) {
-                    let chain = self.chain.lock().await;
-                    let our_height = chain.best_height();
+                    // Same locator bound as getblocks (amplification guard).
+                    const MAX_LOCATOR_HASHES: usize = 64;
+                    if req.block_locator_hashes.len() > MAX_LOCATOR_HASHES {
+                        tracing::debug!(
+                            "getheaders from {} with {} locator hashes — rejecting",
+                            peer_addr,
+                            req.block_locator_hashes.len()
+                        );
+                        self.peer_manager
+                            .record_misbehaviour(peer_addr, Misbehaviour::MalformedMessage)
+                            .await;
+                    } else {
+                        let chain = self.chain.lock().await;
+                        let our_height = chain.best_height();
 
-                    // Find the highest block in the locator that we know
-                    let start_height = req
-                        .block_locator_hashes
-                        .iter()
-                        .find_map(|hash| {
-                            for h in (0..=our_height).rev() {
-                                if let Some(b) = chain.get_block_at_height(h) {
-                                    if b.hash() == *hash {
-                                        return Some(h + 1);
-                                    }
+                        // One reverse pass with a locator set: O(height + locator).
+                        let locator: std::collections::HashSet<[u8; 32]> =
+                            req.block_locator_hashes.iter().copied().collect();
+                        let mut start_height = 1u32;
+                        for h in (1..=our_height).rev() {
+                            if let Some(b) = chain.get_block_at_height(h) {
+                                if locator.contains(&b.hash()) {
+                                    start_height = h + 1;
+                                    break;
                                 }
                             }
-                            None
-                        })
-                        .unwrap_or(1);
+                        }
 
-                    let mut headers: Vec<HeaderEntry> = Vec::new();
-                    for h in start_height..=our_height.min(start_height + HEADERS_PER_BATCH as u32)
-                    {
-                        if let Some(block) = chain.get_block_at_height(h) {
-                            let hash = block.hash();
-                            if req.hash_stop != [0u8; 32] && hash == req.hash_stop {
-                                // Serialize header as bytes (bincode matches how hash() works)
+                        let mut headers: Vec<HeaderEntry> = Vec::new();
+                        for h in
+                            start_height..=our_height.min(start_height + HEADERS_PER_BATCH as u32)
+                        {
+                            if let Some(block) = chain.get_block_at_height(h) {
+                                let hash = block.hash();
+                                if req.hash_stop != [0u8; 32] && hash == req.hash_stop {
+                                    let header_bytes =
+                                        bincode::serialize(&block.header).unwrap_or_default();
+                                    headers.push(HeaderEntry {
+                                        header: header_bytes,
+                                        tx_count: 0,
+                                    });
+                                    break;
+                                }
                                 let header_bytes =
                                     bincode::serialize(&block.header).unwrap_or_default();
                                 headers.push(HeaderEntry {
                                     header: header_bytes,
                                     tx_count: 0,
                                 });
-                                break;
                             }
-                            let header_bytes =
-                                bincode::serialize(&block.header).unwrap_or_default();
-                            headers.push(HeaderEntry {
-                                header: header_bytes,
-                                tx_count: 0,
-                            });
                         }
-                    }
 
-                    if !headers.is_empty() {
-                        let payload =
-                            serde_json::to_vec(&HeadersMsg { headers }).unwrap_or_default();
-                        drop(chain);
-                        self.peer_manager
-                            .send_to(peer_addr, NetMessage::new("headers", payload))
-                            .await;
+                        if !headers.is_empty() {
+                            let payload =
+                                serde_json::to_vec(&HeadersMsg { headers }).unwrap_or_default();
+                            drop(chain);
+                            self.peer_manager
+                                .send_to(peer_addr, NetMessage::new("headers", payload))
+                                .await;
+                        }
                     }
                 }
             }

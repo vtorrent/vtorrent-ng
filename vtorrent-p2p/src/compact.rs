@@ -143,7 +143,6 @@ impl CompactBlockEncoder {
         coinbase_tx_bytes: Vec<u8>,
     ) -> CmpctBlockMsg {
         use rand::Rng;
-        let siphash_nonce: u64 = rand::thread_rng().gen();
 
         // Build header bytes for key derivation
         let mut header_bytes = Vec::with_capacity(80);
@@ -154,14 +153,23 @@ impl CompactBlockEncoder {
         header_bytes.extend_from_slice(&bits.to_le_bytes());
         header_bytes.extend_from_slice(&nonce.to_le_bytes());
 
-        let (k0, k1) = derive_siphash_keys(&header_bytes, siphash_nonce);
-
-        // Build short IDs for all transactions except the coinbase (index 0)
-        let short_ids: Vec<u64> = txids
-            .iter()
-            .skip(1)
-            .map(|txid| short_txid(txid, k0, k1))
-            .collect();
+        // BIP-152 §4: the sender must guarantee short IDs are unique. On a
+        // SipHash collision, retry with fresh nonces (probability of needing
+        // more than a handful of rounds is negligible).
+        let mut siphash_nonce: u64 = rand::thread_rng().gen();
+        let short_ids = loop {
+            let (k0, k1) = derive_siphash_keys(&header_bytes, siphash_nonce);
+            let ids: Vec<u64> = txids
+                .iter()
+                .skip(1)
+                .map(|txid| short_txid(txid, k0, k1))
+                .collect();
+            let unique = ids.iter().collect::<std::collections::HashSet<_>>().len();
+            if unique == ids.len() {
+                break ids;
+            }
+            siphash_nonce = rand::thread_rng().gen();
+        };
 
         // Coinbase is always prefilled at index 0
         let prefilled_txs = vec![PrefilledTx {
@@ -199,6 +207,9 @@ pub enum CompactBlockDecodeError {
     /// protocol violation by the sender. Must not be silently skipped:
     /// skipping desynchronizes short-id mapping and yields phantom blocks.
     InvalidPrefilledIndex,
+    /// The message contains duplicate short IDs — a BIP-152 protocol
+    /// violation (sender must retry with a different nonce).
+    DuplicateShortId,
 }
 
 impl CompactBlockDecoder {
@@ -237,6 +248,18 @@ impl CompactBlockDecoder {
             }
             txs[abs_index] = Some(prefilled.tx_bytes.clone());
             offset = abs_index + 1;
+        }
+
+        // BIP-152 §5: duplicate short IDs in the message are a protocol
+        // violation (the sender must have retried with a different nonce).
+        // They would silently fill two slots with the same transaction.
+        {
+            let mut seen = std::collections::HashSet::new();
+            for sid in &msg.short_ids {
+                if !seen.insert(*sid) {
+                    return Err(CompactBlockDecodeError::DuplicateShortId);
+                }
+            }
         }
 
         // Fill in short_id transactions from mempool
@@ -281,6 +304,15 @@ impl CompactBlockDecoder {
         }
         let mut txs: Vec<Option<Vec<u8>>> = vec![None; total];
         let mut missing: Vec<u16> = Vec::new();
+
+        {
+            let mut seen = std::collections::HashSet::new();
+            for sid in &msg.short_ids {
+                if !seen.insert(*sid) {
+                    return Err(CompactBlockDecodeError::DuplicateShortId);
+                }
+            }
+        }
 
         // Place prefilled transactions (strict validation, see `decode`).
         let mut offset = 0usize;
