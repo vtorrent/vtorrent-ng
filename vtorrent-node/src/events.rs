@@ -58,6 +58,10 @@ pub enum NodeEvent {
         old_tip: [u8; 32],
         new_tip: [u8; 32],
         depth: u32,
+        /// Abandoned main-chain blocks, tip first, with disk-undo data.
+        rolled_back_blocks: Vec<crate::chain::RolledBackBlock>,
+        /// Fork blocks now canonical, ascending, with disk data.
+        applied_fork_blocks: Vec<crate::chain::AppliedForkBlock>,
     },
     /// A staking reward was earned.
     StakingReward {

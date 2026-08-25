@@ -521,11 +521,49 @@ async fn main() -> anyhow::Result<()> {
                                 old_tip,
                                 new_tip,
                                 depth,
-                            } => Some(RpcNodeEvent::Reorg {
-                                old_tip: hex::encode(old_tip),
-                                new_tip: hex::encode(new_tip),
-                                depth: *depth,
-                            }),
+                                rolled_back_blocks,
+                                applied_fork_blocks,
+                            } => {
+                                // ── Persist the reorg: undo abandoned blocks, then
+                                // record the fork blocks now canonical. Without
+                                // this the on-disk state diverges from memory and
+                                // the next restart fails replay.
+                                for rb in rolled_back_blocks.iter() {
+                                    if let Err(e) = store_for_bridge.rollback_tip(
+                                        &rb.utxos_to_restore,
+                                        &rb.utxos_to_remove,
+                                        &rb.claimed_to_remove,
+                                    ) {
+                                        tracing::error!(
+                                            "BlockStore::rollback_tip failed for block {} at height {}: {}",
+                                            hex::encode(rb.hash),
+                                            rb.height,
+                                            e
+                                        );
+                                    }
+                                }
+                                for fb in applied_fork_blocks.iter() {
+                                    if let Err(e) = store_for_bridge.append_block(
+                                        &fb.block,
+                                        fb.height,
+                                        &fb.utxos_added,
+                                        &fb.utxos_removed,
+                                        &fb.claimed_addresses,
+                                    ) {
+                                        tracing::error!(
+                                            "BlockStore::append_block (reorg) failed at height {}: {}",
+                                            fb.height,
+                                            e
+                                        );
+                                    }
+                                }
+
+                                Some(RpcNodeEvent::Reorg {
+                                    old_tip: hex::encode(old_tip),
+                                    new_tip: hex::encode(new_tip),
+                                    depth: *depth,
+                                })
+                            }
                             node_events::NodeEvent::StakingReward {
                                 block_height,
                                 reward_sats,

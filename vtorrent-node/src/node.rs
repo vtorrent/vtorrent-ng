@@ -1157,6 +1157,8 @@ impl Node {
                                         new_tip,
                                         depth,
                                         rolled_back_txs,
+                                        rolled_back_blocks,
+                                        applied_fork_blocks,
                                     } => {
                                         tracing::warn!(
                                             "Reorg depth {}: {} -> {}",
@@ -1179,6 +1181,8 @@ impl Node {
                                             old_tip,
                                             new_tip,
                                             depth,
+                                            rolled_back_blocks,
+                                            applied_fork_blocks,
                                         });
                                         true
                                     }

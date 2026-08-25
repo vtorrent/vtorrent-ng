@@ -83,11 +83,40 @@ pub enum BlockAcceptance {
         /// Transactions from the abandoned chain — their inputs are spendable
         /// again and callers should consider them for mempool re-admission.
         rolled_back_txs: Vec<Transaction>,
+        /// Abandoned main-chain blocks, tip first, with disk-undo data.
+        rolled_back_blocks: Vec<RolledBackBlock>,
+        /// Fork blocks now part of the main chain, ascending, with disk data.
+        applied_fork_blocks: Vec<AppliedForkBlock>,
     },
     /// Block extended a fork that is still shorter than the main chain.
     Fork { fork_tip: [u8; 32] },
     /// Block was already known.
     Duplicate,
+}
+
+/// A main-chain block that was abandoned during a reorg, with the data the
+/// persistence layer needs to undo its effects on disk.
+#[derive(Debug, Clone)]
+pub struct RolledBackBlock {
+    pub hash: [u8; 32],
+    pub height: u32,
+    /// UTXOs created by the abandoned block (must be removed from disk).
+    pub utxos_to_remove: Vec<([u8; 32], u32)>,
+    /// UTXOs spent by the abandoned block (must be restored to disk).
+    pub utxos_to_restore: Vec<Utxo>,
+    /// Snapshot claims made by the abandoned block (must be un-claimed).
+    pub claimed_to_remove: Vec<String>,
+}
+
+/// A fork-chain block applied during a reorg, with the data the persistence
+/// layer needs to record it on disk.
+#[derive(Debug, Clone)]
+pub struct AppliedForkBlock {
+    pub block: Block,
+    pub height: u32,
+    pub utxos_added: Vec<Utxo>,
+    pub utxos_removed: Vec<([u8; 32], u32)>,
+    pub claimed_addresses: Vec<String>,
 }
 
 impl PartialEq for BlockAcceptance {
@@ -561,7 +590,8 @@ impl Chain {
             if fork_work > main_work {
                 // ── Reorg: fork is now longer than main chain ─────────────
                 let old_tip = main_tip;
-                let rolled_back_txs = self.reorganize_to(block_hash, fork_height)?;
+                let (rolled_back_txs, rolled_back_blocks, applied_fork_blocks) =
+                    self.reorganize_to(block_hash, fork_height)?;
 
                 let depth =
                     (self.best_height() as i64 - fork_height as i64).unsigned_abs() as u32 + 1;
@@ -577,6 +607,8 @@ impl Chain {
                     new_tip: block_hash,
                     depth,
                     rolled_back_txs,
+                    rolled_back_blocks,
+                    applied_fork_blocks,
                 })
             } else {
                 tracing::debug!(
@@ -618,7 +650,11 @@ impl Chain {
         &mut self,
         new_tip: [u8; 32],
         new_tip_height: u32,
-    ) -> Result<Vec<Transaction>> {
+    ) -> Result<(
+        Vec<Transaction>,
+        Vec<RolledBackBlock>,
+        Vec<AppliedForkBlock>,
+    )> {
         let old_tip = self.best_hash().unwrap_or([0u8; 32]);
 
         // Build the path from new_tip back to genesis
@@ -649,9 +685,13 @@ impl Chain {
         tracing::info!("Reorg: fork point at height {}", fork_height);
 
         // ── Step 1: Roll back main chain to fork point ────────────────────
-        let mut rolled_back: Vec<Transaction> = Vec::new();
+        let mut applied_fork_blocks: Vec<AppliedForkBlock> = Vec::new();
+        let mut rolled_back_txs: Vec<Transaction> = Vec::new();
+        let mut rolled_back_blocks: Vec<RolledBackBlock> = Vec::new();
         while self.best_height() > fork_height {
-            rolled_back.extend(self.rollback_one_block()?);
+            let (txs, rb) = self.rollback_one_block()?;
+            rolled_back_txs.extend(txs);
+            rolled_back_blocks.push(rb);
         }
 
         // ── Step 2: Apply new fork chain from fork_point+1 to new_tip ────
@@ -680,6 +720,32 @@ impl Chain {
 
             let journal = self.apply_block_journaled(&block, height)?;
             self.index_block_transactions(*hash, &block);
+            let claimed_addresses = journal.claimed_addresses.clone();
+            let (utxos_added, utxos_removed): (Vec<Utxo>, Vec<([u8; 32], u32)>) =
+                journal.changes.iter().fold(
+                    (Vec::new(), Vec::new()),
+                    |(mut added, mut removed), c| match c {
+                        UtxoChange::Added { key } => {
+                            // Reconstruct the full UTXO from the chain state.
+                            if let Some(u) = self.utxo_set.get(key) {
+                                added.push(u.clone());
+                            }
+                            removed.retain(|(t, v)| t != &key.0 || v != &key.1);
+                            (added, removed)
+                        }
+                        UtxoChange::Removed { key, .. } => {
+                            removed.push(*key);
+                            (added, removed)
+                        }
+                    },
+                );
+            applied_fork_blocks.push(AppliedForkBlock {
+                block: block.clone(),
+                height,
+                utxos_added,
+                utxos_removed,
+                claimed_addresses,
+            });
             self.journals.push_back(journal);
             self.height_index.push(*hash);
         }
@@ -695,7 +761,7 @@ impl Chain {
             )));
         }
 
-        Ok(rolled_back)
+        Ok((rolled_back_txs, rolled_back_blocks, applied_fork_blocks))
     }
 
     /// Walk the parent_map from `tip` back to genesis, returning hashes in
@@ -717,7 +783,7 @@ impl Chain {
     }
 
     /// Roll back the most recent main chain block, restoring the UTXO set.
-    fn rollback_one_block(&mut self) -> Result<Vec<Transaction>> {
+    fn rollback_one_block(&mut self) -> Result<(Vec<Transaction>, RolledBackBlock)> {
         let journal = self
             .journals
             .pop_back()
@@ -730,6 +796,21 @@ impl Chain {
             .get(&journal.block_hash)
             .map(|b| b.transactions.clone())
             .unwrap_or_default();
+
+        // Undo data for the persistence layer, extracted before the journal
+        // is consumed.
+        let mut utxos_to_remove: Vec<([u8; 32], u32)> = Vec::new();
+        let mut utxos_to_restore: Vec<Utxo> = Vec::new();
+        for change in &journal.changes {
+            match change {
+                UtxoChange::Added { key } => utxos_to_remove.push(*key),
+                UtxoChange::Removed { key, utxo } => {
+                    utxos_to_remove.push(*key);
+                    utxos_to_restore.push(utxo.clone());
+                }
+            }
+        }
+        let claimed_to_remove = journal.claimed_addresses.clone();
 
         // Apply changes in reverse.  The journal is consumed here — use
         // into_iter() to move UTXOs instead of cloning them.
@@ -745,8 +826,8 @@ impl Chain {
         }
 
         // Restore claimed addresses (move out of the consumed journal).
-        for addr in journal.claimed_addresses {
-            self.claimed_addresses.remove(&addr);
+        for addr in &claimed_to_remove {
+            self.claimed_addresses.remove(addr);
         }
 
         // Restore total supply.
@@ -763,7 +844,16 @@ impl Chain {
             journal.height
         );
 
-        Ok(rolled_back_txs)
+        Ok((
+            rolled_back_txs,
+            RolledBackBlock {
+                hash: journal.block_hash,
+                height: journal.height,
+                utxos_to_remove,
+                utxos_to_restore,
+                claimed_to_remove,
+            },
+        ))
     }
 
     /// Add all transactions from an active main-chain block to the transaction index.

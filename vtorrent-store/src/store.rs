@@ -352,7 +352,49 @@ impl BlockStore {
             Chain::new().map_err(|e| StoreError::Corrupted(format!("chain init failed: {}", e)))?;
 
         // Replay blocks from height 1 (genesis is already in Chain::new()).
-        for h in 1..=height {
+        // On failure the store is truncated to the last good height and
+        // rebuilt — a diverged/corrupted tail must never brick the node.
+        let mut replay_height = height;
+        // Bounded self-heal: each round truncates at least one block, so this
+        // terminates. Multi-site corruption converges over successive rounds.
+        for _round in 0..=height {
+            match self.replay_range(&mut chain, 1, replay_height) {
+                Ok(()) => break,
+                Err(first_err) => {
+                    // Find the exact failing height by scanning from genesis.
+                    let bad = self.first_failing_height(&mut chain, replay_height);
+                    let keep = bad.saturating_sub(1);
+                    tracing::error!(
+                        "Replay failed at height {} ({}); truncating store to height {} and rebuilding",
+                        bad,
+                        first_err,
+                        keep
+                    );
+                    self.truncate_above(keep)?;
+                    self.clear_derived_state()?;
+                    chain = Chain::new()
+                        .map_err(|e| StoreError::Corrupted(format!("chain init failed: {}", e)))?;
+                    self.replay_and_repersist(&mut chain, 1, keep)?;
+                    replay_height = keep;
+                }
+            }
+        }
+
+        tracing::info!(
+            "Chain loaded successfully at height {}",
+            chain.best_height()
+        );
+        Ok(chain)
+    }
+
+    /// Replay `from..=to` through the in-memory chain only.
+    fn replay_range(
+        &self,
+        chain: &mut vtorrent_node::chain::Chain,
+        from: u32,
+        to: u32,
+    ) -> Result<()> {
+        for h in from..=to {
             if let Some(block) = self.get_block_at_height(h)? {
                 chain.add_block(block).map_err(|e| {
                     StoreError::Corrupted(format!("replay failed at height {}: {}", h, e))
@@ -364,12 +406,101 @@ impl BlockStore {
                 )));
             }
         }
+        Ok(())
+    }
 
-        tracing::info!(
-            "Chain loaded successfully at height {}",
-            chain.best_height()
-        );
-        Ok(chain)
+    /// Find the lowest height whose block fails replay, starting fresh.
+    fn first_failing_height(&self, chain: &mut vtorrent_node::chain::Chain, max: u32) -> u32 {
+        for h in 1..=max {
+            match self.get_block_at_height(h) {
+                Ok(Some(block)) => {
+                    if chain.add_block(block).is_err() {
+                        return h;
+                    }
+                }
+                _ => return h,
+            }
+        }
+        max
+    }
+
+    /// Remove all blocks above `keep` from BLOCKS + HEIGHT_INDEX.
+    fn truncate_above(&self, keep: u32) -> Result<()> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut height_idx = write_txn.open_table(HEIGHT_INDEX)?;
+            let mut blocks = write_txn.open_table(BLOCKS)?;
+            let doomed: Vec<(u32, String)> = height_idx
+                .range(keep + 1..)?
+                .filter_map(|r| r.ok().map(|(k, v)| (k.value(), v.value().to_string())))
+                .collect();
+            for (h, hash_hex) in doomed {
+                blocks.remove(hash_hex.as_str())?;
+                height_idx.remove(h)?;
+            }
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Wipe UTXOS + CLAIMED tables (rebuilt by replay_and_repersist).
+    fn clear_derived_state(&self) -> Result<()> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut utxos = write_txn.open_table(UTXOS)?;
+            let keys: Vec<String> = utxos
+                .iter()?
+                .filter_map(|r| r.ok().map(|(k, _)| k.value().to_string()))
+                .collect();
+            for k in keys {
+                utxos.remove(k.as_str())?;
+            }
+            let mut claimed = write_txn.open_table(CLAIMED_ADDRS)?;
+            let ckeys: Vec<String> = claimed
+                .iter()?
+                .filter_map(|r| r.ok().map(|(k, _)| k.value().to_string()))
+                .collect();
+            for k in ckeys {
+                claimed.remove(k.as_str())?;
+            }
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Replay `from..=to` into the chain AND repersist derived state (UTXO
+    /// diffs + claims) after each block. Used after a truncate+clear.
+    fn replay_and_repersist(
+        &self,
+        chain: &mut vtorrent_node::chain::Chain,
+        from: u32,
+        to: u32,
+    ) -> Result<()> {
+        for h in from..=to {
+            let block = self.get_block_at_height(h)?.ok_or_else(|| {
+                StoreError::Corrupted(format!("missing block at height {} during rebuild", h))
+            })?;
+            let acceptance = chain.add_block(block.clone()).map_err(|e| {
+                StoreError::Corrupted(format!("rebuild replay failed at height {}: {}", h, e))
+            })?;
+            match acceptance {
+                vtorrent_node::chain::BlockAcceptance::MainChain {
+                    utxos_added,
+                    utxos_removed,
+                    claimed_addresses,
+                    ..
+                } => {
+                    self.append_block(&block, h, &utxos_added, &utxos_removed, &claimed_addresses)?;
+                }
+                _ => {
+                    return Err(StoreError::Corrupted(format!(
+                        "unexpected acceptance during rebuild at height {}",
+                        h
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     // ─── Statistics ───────────────────────────────────────────────────────────
