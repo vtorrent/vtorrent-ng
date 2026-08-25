@@ -41,6 +41,7 @@ pub const TARGET_OUTBOUND: usize = 8;
 pub const BOOTSTRAP_PEERS: &[&str] = &[
     "91.98.80.38:22526", // vtr-seed1 (Falkenstein, DE)
     "2.29.8.113:22526",  // vtr-seed2 (Helsinki, FI)
+    "5.161.90.55:22526", // vtr-seed3 (Ashburn, US)
 ];
 
 /// DNS seed hostnames resolved at bootstrap (Cloudflare DoH + direct).

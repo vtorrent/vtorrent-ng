@@ -59,9 +59,9 @@
 
 ## 3. Network Infrastructure
 
-- [x] **Seed nodes deployed** (2 of ≥3 geographically distributed VPS) per
-      `docs/dns-seeds.md`; static A records live (`seed1/seed2.vtorrent.org`).
-      Third node in another region still pending.
+- [x] **Seed nodes deployed** (3 geographically distributed VPS: DE, FI, US)
+      per `docs/dns-seeds.md`; static A records live
+      (`seed1/seed2/seed3.vtorrent.org`).
 - [x] **Bootstrap peers published**: real IPs appended to
       `bootstrap/peers.txt` (replacing examples); CDN mirrors confirmed fresh.
 - [x] **`BOOTSTRAP_PEERS` constant updated** in

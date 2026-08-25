@@ -13,19 +13,18 @@
 
 set -euo pipefail
 
-SEED_PEER="${1:?usage: provision-seed.sh <seed-peer-ip> [binary-path]}"
-BIN="${2:-target/release/vtorrent-daemon}"
-
-[[ -f "$BIN" ]] || { echo "binary not found: $BIN (run cargo build --release -p vtorrent-daemon)" >&2; exit 1; }
+SEED_PEER="${1:?usage: provision-seed.sh <seed-peer-ip>}"
+# Runs ON the target node; the daemon binary must already be staged at
+# /tmp/vtorrent-daemon (scp it from a build machine first — see header).
 
 cat <<EOF
-── vTorrent seed provisioning ──────────────────────────────────────────────
+── vTorrent seed provisioning ───────────────────────────────────────────────
 This script expects to run ON the target node as root, with the daemon
 binary already at /tmp/vtorrent-daemon:
 
-  scp "$BIN" root@NODE:/tmp/vtorrent-daemon
+  scp target/release/vtorrent-daemon root@NODE:/tmp/vtorrent-daemon
   scp deploy/provision-seed.sh root@NODE:/tmp/
-  ssh root@NODE '/tmp/provision-seed.sh $SEED_PEER'
+  ssh root@NODE '/tmp/provision-seed.sh SEED_PEER_IP'
 
 ────────────────────────────────────────────────────────────────────────────
 EOF

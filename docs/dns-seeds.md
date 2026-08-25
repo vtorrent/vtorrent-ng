@@ -1,7 +1,7 @@
 # vTorrent 2.0 — DNS Seed Infrastructure
 
 > **Status:** The legacy `seed1/2/3.vtorrent.io` domains are retired and no
-> longer resolve. Two new mainnet seed nodes are deployed on `vtorrent.org`
+> longer resolve. Three mainnet seed nodes are deployed on `vtorrent.org`
 > (IONOS DNS); bootstrap peers are published via `bootstrap/peers.txt`
 > (GitHub-hosted) and the `BOOTSTRAP_PEERS` constant in
 > `vtorrent-p2p/src/peer_manager.rs`. A DNS crawler is still pending.
@@ -12,6 +12,7 @@
 |---|---|---|---|---|
 | `vtr-seed1` (`seed1.vtorrent.org`) | `91.98.80.38` | Falkenstein, DE | 22526/tcp | localhost only |
 | `vtr-seed2` (`seed2.vtorrent.org`) | `2.29.8.113` | Helsinki, FI | 22526/tcp | localhost only |
+| `vtr-seed3` (`seed3.vtorrent.org`) | `5.161.90.55` | Ashburn, US | 22526/tcp | localhost only |
 
 Both run `vtorrent-daemon` under systemd (unit `vtorrent.service`, user
 `vtorrent`, data dir `/var/lib/vtorrent`), peered with each other via `--seed`.
@@ -31,7 +32,7 @@ The live records are managed at IONOS for `vtorrent.org` (zone ID
 |---|---|---|---|
 | `seed1.vtorrent.org` | A | `91.98.80.38` | Primary seed node (Falkenstein, DE) |
 | `seed2.vtorrent.org` | A | `2.29.8.113` | Secondary seed node (Helsinki, FI) |
-| `seed3.vtorrent.org` | A | `<seed3-server-ip>` | Tertiary seed node (not yet deployed) |
+| `seed3.vtorrent.org` | A | `5.161.90.55` | Tertiary seed node (Ashburn, US) |
 
 ### DNS Seed Crawler (NS Records)
 
