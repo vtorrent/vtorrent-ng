@@ -83,3 +83,10 @@ criterion = { version = "0.5", features = ["html_reports"] }
 
 # Networking
 libp2p = { version = "0.54", features = ["tcp", "noise", "yamux", "gossipsub", "kad", "identify", "ping"] }
+
+# Blockchain-correctness settings: arithmetic overflow in consensus code must
+# panic (and reject the block/tx) rather than silently wrap. Dev/test profiles
+# enable this by default; without this section release builds did NOT, meaning
+# production behaved differently from every test run.
+[profile.release]
+overflow-checks = true
