@@ -691,7 +691,9 @@ pub async fn send_vtr(
         ));
     }
 
-    // Build and sign the transaction using the mempool's recommended fee rate.
+    // Build and sign the transaction using the mempool's recommended fee
+    // rate, with the relay floor enforced as an absolute minimum so small
+    // transfers are not rejected by our own node.
     let fee_rate = {
         let mempool = state.mempool.lock().await;
         mempool.recommended_fee_rate().max(1)
@@ -700,6 +702,7 @@ pub async fn send_vtr(
         .recipient(&req.to_address, req.amount_satoshis)
         .change_address(&change_address)
         .fee_rate(fee_rate)
+        .min_absolute_fee(vtorrent_wallet::tx_builder::MIN_ABSOLUTE_FEE_SATS)
         .sign_with_wif(&wif)
         .build(&utxos)
         .map_err(|e| RpcError::BadRequest(format!("Transaction build failed: {}", e)))?;
@@ -2256,4 +2259,16 @@ pub async fn debug_mocktime(
     };
     *state.mock_time.write().await = new_time;
     Ok(Json(json!({ "mock_time": new_time })))
+}
+
+#[cfg(test)]
+mod relay_floor_lockstep {
+    #[test]
+    fn wallet_minimum_matches_mempool_relay_policy() {
+        assert_eq!(
+            vtorrent_node::mempool::MIN_RELAY_FEE,
+            vtorrent_wallet::tx_builder::MIN_ABSOLUTE_FEE_SATS,
+            "wallet builder floor drifted from mempool relay policy"
+        );
+    }
 }

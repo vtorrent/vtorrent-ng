@@ -39,6 +39,11 @@ pub const DUST_SATOSHIS: u64 = 546;
 pub const DEFAULT_FEE_RATE: u64 = 10;
 
 /// Approximate size of a P2PKH input in bytes (32 txid + 4 vout + 107 scriptsig + 4 seq).
+/// Absolute minimum transaction fee accepted by the node's relay policy.
+/// Must stay in sync with `vtorrent_node::mempool::MIN_RELAY_FEE` (a unit
+/// test in the node crate asserts equality).
+pub const MIN_ABSOLUTE_FEE_SATS: u64 = 1_000;
+
 const P2PKH_INPUT_SIZE: usize = 147;
 
 /// Approximate size of a P2PKH output in bytes (8 value + 25 scriptpubkey).
@@ -58,6 +63,7 @@ pub fn select_coins(
     utxos: &[Utxo],
     target_sats: u64,
     fee_rate: u64,
+    min_absolute_fee: u64,
     n_outputs: usize,
 ) -> Result<(Vec<Utxo>, u64)> {
     // Filter out dust UTXOs.
@@ -78,7 +84,7 @@ pub fn select_coins(
         // Estimate fee for the current selection.
         let n_inputs = selected.len();
         let tx_size = TX_OVERHEAD + n_inputs * P2PKH_INPUT_SIZE + n_outputs * P2PKH_OUTPUT_SIZE;
-        let fee = (tx_size as u64).saturating_mul(fee_rate);
+        let fee = ((tx_size as u64).saturating_mul(fee_rate)).max(min_absolute_fee);
 
         let required = target_sats.saturating_add(fee);
         if selected_value >= required {
@@ -204,6 +210,7 @@ fn build_script_sig(sig: &[u8], pubkey: &[u8]) -> Vec<u8> {
 pub struct TxBuilder {
     recipients: Vec<(String, u64)>,
     fee_rate: u64,
+    min_absolute_fee: u64,
     wif_keys: Vec<String>,
     change_address: Option<String>,
     signal_rbf: bool,
@@ -216,6 +223,7 @@ impl TxBuilder {
         Self {
             recipients: Vec::new(),
             fee_rate: DEFAULT_FEE_RATE,
+            min_absolute_fee: 0,
             wif_keys: Vec::new(),
             change_address: None,
             signal_rbf: false,
@@ -232,6 +240,13 @@ impl TxBuilder {
     /// Set the fee rate in satoshis per byte (default: 10).
     pub fn fee_rate(mut self, sats_per_byte: u64) -> Self {
         self.fee_rate = sats_per_byte;
+        self
+    }
+
+    /// Enforce an absolute minimum fee regardless of the size estimate.
+    /// Set this to the node's relay floor so small transfers are not rejected.
+    pub fn min_absolute_fee(mut self, sats: u64) -> Self {
+        self.min_absolute_fee = sats;
         self
     }
 
@@ -302,8 +317,13 @@ impl TxBuilder {
         let n_outputs = self.recipients.len() + 1; // +1 for change
 
         // Coin selection.
-        let (selected_utxos, fee) =
-            select_coins(available_utxos, total_send, self.fee_rate, n_outputs)?;
+        let (selected_utxos, fee) = select_coins(
+            available_utxos,
+            total_send,
+            self.fee_rate,
+            self.min_absolute_fee,
+            n_outputs,
+        )?;
 
         let total_input: u64 = selected_utxos.iter().try_fold(0u64, |acc, u| {
             acc.checked_add(u.value)
@@ -575,7 +595,7 @@ mod tests {
             make_utxo(1, 0, 5_000_000, script.clone()),
             make_utxo(2, 0, 3_000_000, script.clone()),
         ];
-        let (selected, fee) = select_coins(&utxos, 4_000_000, 10, 2).unwrap();
+        let (selected, fee) = select_coins(&utxos, 4_000_000, 10, 0, 2).unwrap();
         let total: u64 = selected.iter().map(|u| u.value).sum();
         assert!(total >= 4_000_000 + fee);
         let _ = wif; // suppress unused warning
@@ -585,7 +605,7 @@ mod tests {
     fn test_coin_selection_insufficient_funds() {
         let script = vec![0x76, 0xa9];
         let utxos = vec![make_utxo(1, 0, 100_000, script)];
-        let result = select_coins(&utxos, 5_000_000, 10, 2);
+        let result = select_coins(&utxos, 5_000_000, 10, 0, 2);
         assert!(matches!(result, Err(WalletError::InsufficientFunds { .. })));
     }
 

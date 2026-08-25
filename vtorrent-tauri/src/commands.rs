@@ -1573,7 +1573,8 @@ pub async fn send_vtr(
         chain.get_utxos_for_address(&from_address)
     };
 
-    // Build and sign the transaction using the mempool's recommended fee rate.
+    // Build and sign the transaction using the mempool's recommended fee
+    // rate, with the relay floor enforced as an absolute minimum.
     let fee_rate = {
         let mempool = handle.rpc_state.mempool.lock().await;
         mempool.recommended_fee_rate().max(1)
@@ -1581,6 +1582,7 @@ pub async fn send_vtr(
     let tx = TxBuilder::new()
         .recipient(&to_address, amount_satoshis)
         .fee_rate(fee_rate)
+        .min_absolute_fee(vtorrent_wallet::tx_builder::MIN_ABSOLUTE_FEE_SATS)
         .change_address(&from_address)
         .sign_with_wif(&wif)
         .build(&utxos)
