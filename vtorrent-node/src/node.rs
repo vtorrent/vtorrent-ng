@@ -1501,22 +1501,36 @@ impl Node {
                                 missing_indexes.len(),
                                 peer_addr
                             );
-                            let mut header_bytes2 = Vec::with_capacity(80);
-                            header_bytes2.extend_from_slice(&cmpct.version.to_le_bytes());
-                            header_bytes2.extend_from_slice(&cmpct.prev_block_hash);
-                            header_bytes2.extend_from_slice(&cmpct.merkle_root);
-                            header_bytes2.extend_from_slice(&cmpct.timestamp.to_le_bytes());
-                            header_bytes2.extend_from_slice(&cmpct.bits.to_le_bytes());
-                            header_bytes2.extend_from_slice(&cmpct.nonce.to_le_bytes());
-                            // Compute block hash as the hash of the header bytes
-                            let block_hash = {
-                                use sha2::{Digest, Sha256};
-                                let h1 = Sha256::digest(&header_bytes2);
-                                let h2 = Sha256::digest(h1);
-                                let mut arr = [0u8; 32];
-                                arr.copy_from_slice(&h2);
-                                arr
+                            // The request must carry the block's REAL hash —
+                            // SHA256d of the full serialized header INCLUDING
+                            // the stake modifier. The 6-field digest used for
+                            // SipHash keys is a different value and would never
+                            // match the responder's Block::hash() lookup.
+                            let stake_modifier = {
+                                let chain = self.chain.lock().await;
+                                chain
+                                    .get_block(&cmpct.prev_block_hash)
+                                    .map(|p| {
+                                        compute_stake_modifier(
+                                            p.header.stake_modifier,
+                                            &cmpct.prev_block_hash,
+                                        )
+                                    })
+                                    .unwrap_or(0)
                             };
+                            let probe_block_hash = {
+                                let hdr = crate::block::BlockHeader {
+                                    version: cmpct.version,
+                                    prev_block_hash: cmpct.prev_block_hash,
+                                    merkle_root: cmpct.merkle_root,
+                                    timestamp: cmpct.timestamp,
+                                    bits: cmpct.bits,
+                                    nonce: cmpct.nonce,
+                                    stake_modifier,
+                                };
+                                hdr.hash()
+                            };
+                            let block_hash = probe_block_hash;
                             let req =
                                 CompactBlockDecoder::build_getblocktxn(block_hash, missing_indexes);
                             let payload = serde_json::to_vec(&req).unwrap_or_default();
