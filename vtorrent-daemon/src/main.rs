@@ -347,6 +347,7 @@ async fn main() -> anyhow::Result<()> {
         let peer_count_ref = Arc::clone(&rpc_state.peer_count);
         let syncing_ref = Arc::clone(&rpc_state.syncing);
         let spv_chain_ref = Arc::clone(&rpc_state.spv_chain);
+        let chain_ref = Arc::clone(&rpc_state.chain);
         let peer_list_ref = Arc::clone(&rpc_state.peer_list);
         let blocks_staked_ref = Arc::clone(&rpc_state.blocks_staked);
         let last_stake_time_ref = Arc::clone(&rpc_state.last_stake_time);
@@ -580,7 +581,28 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!("Event bridge lagged, skipped {} events", n);
+                        // Dropped events may include NewBlock persistence — the
+                        // store can now be behind the in-memory chain. Rebuild
+                        // derived state from the chain's full block list.
+                        tracing::error!(
+                            "Event bridge lagged, {} events lost — reconciling block store",
+                            n
+                        );
+                        let blocks: Vec<vtorrent_node::block::Block> = {
+                            let chain = chain_ref.lock().await;
+                            (0..=chain.best_height())
+                                .filter_map(|h| chain.get_block_at_height(h))
+                                .cloned()
+                                .collect()
+                        };
+                        if let Err(e) = store_for_bridge.rebuild_from_blocks(&blocks) {
+                            tracing::error!("Block store reconciliation failed: {}", e);
+                        } else {
+                            tracing::info!(
+                                "Block store reconciled to height {} after lag",
+                                blocks.len().saturating_sub(1)
+                            );
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         tracing::info!("Node event channel closed — event bridge stopping");

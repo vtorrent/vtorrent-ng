@@ -387,6 +387,40 @@ impl BlockStore {
         Ok(chain)
     }
 
+    /// Rebuild ALL derived state (UTXOS, CLAIMED_ADDRS, HEIGHT_INDEX) from a
+    /// complete in-memory block list. Used when event loss may have left the
+    /// store behind the chain.
+    pub fn rebuild_from_blocks(&self, blocks: &[vtorrent_node::block::Block]) -> Result<()> {
+        let mut chain = vtorrent_node::chain::Chain::new().map_err(|e| {
+            StoreError::Corrupted(format!("chain init failed during rebuild: {}", e))
+        })?;
+        self.truncate_above(0)?;
+        self.clear_derived_state()?;
+        for (i, block) in blocks.iter().enumerate() {
+            let h = i as u32;
+            let acceptance = chain.add_block(block.clone()).map_err(|e| {
+                StoreError::Corrupted(format!("rebuild failed at height {}: {}", h, e))
+            })?;
+            match acceptance {
+                vtorrent_node::chain::BlockAcceptance::MainChain {
+                    utxos_added,
+                    utxos_removed,
+                    claimed_addresses,
+                    ..
+                } => {
+                    self.append_block(block, h, &utxos_added, &utxos_removed, &claimed_addresses)?;
+                }
+                _ => {
+                    return Err(StoreError::Corrupted(format!(
+                        "unexpected acceptance during rebuild at height {}",
+                        h
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Replay `from..=to` through the in-memory chain only.
     fn replay_range(
         &self,
