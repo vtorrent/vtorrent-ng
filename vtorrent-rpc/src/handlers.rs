@@ -708,9 +708,17 @@ pub async fn send_vtr(
         .map_err(|e| RpcError::BadRequest(format!("Transaction build failed: {}", e)))?;
 
     let txid = hex::encode(tx.txid());
-    let fee_satoshis: u64 = utxos
+    // Actual fee = selected inputs − outputs. Summing the whole wallet UTXO
+    // list here would overcount by every unselected coin.
+    let fee_satoshis: u64 = tx
+        .inputs
         .iter()
-        .map(|u| u.value)
+        .filter_map(|inp| {
+            utxos
+                .iter()
+                .find(|u| u.txid == inp.prev_txid && u.vout == inp.prev_vout)
+                .map(|u| u.value)
+        })
         .sum::<u64>()
         .saturating_sub(tx.outputs.iter().map(|o| o.value).sum::<u64>());
 
