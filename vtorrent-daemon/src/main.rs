@@ -81,6 +81,12 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     isolated: bool,
 
+    /// This node's public `ip:port` as seen by peers. Prevents self-dials
+    /// when listening on 0.0.0.0 (PEX-learned addresses matching it are
+    /// filtered). Recommended for public seed nodes.
+    #[arg(long, value_name = "IP:PORT")]
+    public_addr: Option<String>,
+
     /// Additional seed nodes to connect to (can be repeated).
     #[arg(long = "seed", value_name = "ADDR")]
     seeds: Vec<String>,
@@ -197,6 +203,7 @@ async fn main() -> anyhow::Result<()> {
         extra_seeds: cli.seeds.clone(),
         use_dht: !cli.no_dht,
         isolated: cli.isolated,
+        public_addr: cli.public_addr.as_deref().and_then(|a| a.parse().ok()),
         data_dir: data_dir.clone(),
         use_overlay: true,
         testnet: cli.testnet,

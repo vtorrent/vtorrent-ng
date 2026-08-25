@@ -104,6 +104,9 @@ pub struct NodeConfig {
     /// peer list) and only talk to explicitly configured `--seed` peers.
     /// Used for isolated local testnets so they never reach production seeds.
     pub isolated: bool,
+    /// This node's public `ip:port`. Learned addresses matching it are
+    /// filtered so the node never dials or gossips itself.
+    pub public_addr: Option<std::net::SocketAddr>,
     /// Node data directory (for peer cache, chain data, etc.).
     /// Defaults to `~/.vtorrent` on all platforms.
     pub data_dir: PathBuf,
@@ -131,6 +134,7 @@ impl Default for NodeConfig {
             extra_seeds: Vec::new(),
             use_dht: true,
             isolated: false,
+            public_addr: None,
             data_dir: default_data_dir(),
             use_overlay: true,
             testnet: false,
@@ -267,12 +271,15 @@ impl Node {
         let chain = Chain::new()?;
         let best_height = chain.best_height();
         let mempool = Mempool::new(config.max_mempool);
-        let peer_manager = PeerManager::with_transport_config(
+        let mut peer_manager = PeerManager::with_transport_config(
             best_height,
             &config.listen_addr,
             config.testnet,
             config.transport.clone(),
         );
+        if let Some(public) = config.public_addr {
+            peer_manager.set_public_addr(public);
+        }
         let (tx_submit_tx, tx_submit_rx) = mpsc::channel(256);
         let (overlay_tx, overlay_rx) = mpsc::channel(256);
 
@@ -326,12 +333,15 @@ impl Node {
     pub fn new_with_chain(config: NodeConfig, chain: Chain) -> Result<Self> {
         let best_height = chain.best_height();
         let mempool = Mempool::new(config.max_mempool);
-        let peer_manager = PeerManager::with_transport_config(
+        let mut peer_manager = PeerManager::with_transport_config(
             best_height,
             &config.listen_addr,
             config.testnet,
             config.transport.clone(),
         );
+        if let Some(public) = config.public_addr {
+            peer_manager.set_public_addr(public);
+        }
         let (tx_submit_tx, tx_submit_rx) = mpsc::channel(256);
         let (overlay_tx, overlay_rx) = mpsc::channel(256);
 
@@ -2051,6 +2061,11 @@ impl Node {
             )
         };
 
+        tracing::debug!(
+            "Stake tick: address {} holds {} UTXOs",
+            staking.address,
+            stake_utxos.len()
+        );
         if stake_utxos.is_empty() {
             return Err(NodeError::Chain("No UTXOs available for staking".into()));
         }
@@ -2078,14 +2093,22 @@ impl Node {
                 .collect()
         };
 
-        if let Some(block) = staking.build_stake_block(
+        let block_opt = staking.build_stake_block(
             best_hash,
             best_stake_modifier,
             best_height + 1,
             now,
             stake_utxos,
             pending_txs,
-        ) {
+        );
+        if block_opt.is_none() {
+            tracing::debug!(
+                "Stake tick: no kernel met target (height {}, now {})",
+                best_height + 1,
+                now
+            );
+        }
+        if let Some(block) = block_opt {
             let block_hash = block.hash();
             let tx_count = block.transactions.len();
             let timestamp = block.header.timestamp;

@@ -312,6 +312,12 @@ impl PeerManager {
 
     /// Process pending peer events (call this in the main loop).
     /// Returns events for the node to handle, and also updates the address book.
+    /// Declare this node's public `ip:port` so PEX-learned addresses matching
+    /// it are filtered (prevents self-dials when listening on 0.0.0.0).
+    pub fn set_public_addr(&mut self, addr: SocketAddr) {
+        self.addr_book.set_our_addr(addr);
+    }
+
     pub async fn process_events(&mut self) -> Vec<PeerEvent> {
         let mut events = Vec::new();
 
