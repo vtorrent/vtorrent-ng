@@ -394,6 +394,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn duplicate_short_ids_rejected() {
+        let cmpct = CompactBlockEncoder::encode(
+            1,
+            [1u8; 32],
+            [2u8; 32],
+            12345,
+            0x1e0fffff,
+            7,
+            &[[3u8; 32], [4u8; 32]],
+            vec![0x51],
+        );
+        // Force a duplicate short id (simulating a malicious or buggy sender).
+        let mut bad = cmpct.clone();
+        let dup = *bad.short_ids.first().unwrap_or(&42);
+        bad.short_ids.push(dup);
+        assert!(matches!(
+            CompactBlockDecoder::decode(&bad, &std::collections::HashMap::new()),
+            Err(CompactBlockDecodeError::DuplicateShortId)
+        ));
+    }
+
+    #[test]
     fn test_siphash_deterministic() {
         let mut h1 = SipHasher::new(0x0706050403020100, 0x0f0e0d0c0b0a0908);
         let mut h2 = SipHasher::new(0x0706050403020100, 0x0f0e0d0c0b0a0908);
