@@ -1479,12 +1479,24 @@ pub async fn submit_claim(
 
     let txid = hex::encode(tx.txid());
 
-    // 5. Submit to mempool.
+    // 5. Submit to mempool. Fee verified from live UTXO set (lock order:
+    // chain → mempool) so claim fees cannot buy priority.
     {
+        let real_fee = {
+            let chain = state.chain.lock().await;
+            chain.compute_tx_fee(&tx)
+        };
         let mut mempool = state.mempool.lock().await;
-        mempool
-            .add_transaction(tx)
-            .map_err(|e| RpcError::BadRequest(format!("Mempool rejected claim: {}", e)))?;
+        match real_fee {
+            Some(fee) => mempool
+                .add_transaction_with_fee(tx, fee)
+                .map_err(|e| RpcError::BadRequest(format!("Mempool rejected claim: {}", e)))?,
+            None => {
+                return Err(RpcError::BadRequest(
+                    "Claim inputs not found in UTXO set".into(),
+                ))
+            }
+        }
     }
 
     tracing::info!(

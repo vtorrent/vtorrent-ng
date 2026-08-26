@@ -937,16 +937,24 @@ async fn build_incentive_payment(
         .recipient(&payment.peer_address, payment.amount_satoshis)
         .change_address(&change_address)
         .fee_rate(fee_rate)
+        .min_absolute_fee(vtorrent_wallet::tx_builder::MIN_ABSOLUTE_FEE_SATS)
         .sign_with_wif(&wif)
         .build(&utxos)
         .map_err(|e| anyhow::anyhow!("tx build failed: {}", e))?;
 
     let txid = hex::encode(tx.txid());
     {
+        let real_fee = {
+            let chain = chain.lock().await;
+            chain.compute_tx_fee(&tx)
+        };
         let mut mempool = mempool.lock().await;
-        mempool
-            .add_transaction(tx.clone())
-            .map_err(|e| anyhow::anyhow!("mempool rejected: {}", e))?;
+        match real_fee {
+            Some(fee) => mempool
+                .add_transaction_with_fee(tx.clone(), fee)
+                .map_err(|e| anyhow::anyhow!("mempool rejected: {}", e))?,
+            None => return Err(anyhow::anyhow!("incentive claim inputs not in UTXO set")),
+        }
     }
     if let Some(ref sender) = tx_submit {
         let _ = sender.try_send(tx);
