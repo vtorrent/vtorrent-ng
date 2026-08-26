@@ -44,6 +44,25 @@ impl BlockStore {
             write_txn.open_table(UTXOS)?;
             write_txn.open_table(CLAIMED_ADDRS)?;
             write_txn.open_table(META)?;
+
+            // Backfill genesis on first open (and on stores created before
+            // this convention): reorgs that roll back to height 0 need the
+            // genesis entry present in HEIGHT_INDEX/BLOCKS.
+            let needs_genesis = write_txn.open_table(HEIGHT_INDEX)?.get(0)?.is_none();
+            if needs_genesis {
+                let genesis = vtorrent_node::genesis::create_genesis_block();
+                let hash_hex = hex::encode(genesis.hash());
+                let block_bytes = serde_json::to_vec(&genesis)?;
+                write_txn
+                    .open_table(BLOCKS)?
+                    .insert(hash_hex.as_str(), block_bytes.as_slice())?;
+                write_txn
+                    .open_table(HEIGHT_INDEX)?
+                    .insert(0, hash_hex.as_str())?;
+                let mut meta = write_txn.open_table(META)?;
+                meta.insert("best_height", "0")?;
+                meta.insert("best_hash", hash_hex.as_str())?;
+            }
         }
         write_txn.commit()?;
         tracing::info!("Opened block store at {}", path.as_ref().display());
@@ -605,9 +624,10 @@ mod tests {
     fn test_open_and_empty_state() {
         let dir = tempdir().unwrap();
         let store = BlockStore::open(dir.path().join("chain.db")).unwrap();
+        // Fresh stores are seeded with the deterministic genesis block.
         assert_eq!(store.best_height().unwrap(), 0);
-        assert!(store.best_hash().unwrap().is_none());
-        assert_eq!(store.block_count().unwrap(), 0);
+        assert!(store.best_hash().unwrap().is_some());
+        assert_eq!(store.block_count().unwrap(), 1);
         assert_eq!(store.utxo_count().unwrap(), 0);
     }
 
@@ -627,7 +647,7 @@ mod tests {
 
         assert_eq!(store.best_height().unwrap(), 1);
         assert_eq!(store.best_hash().unwrap(), Some(block_hash));
-        assert_eq!(store.block_count().unwrap(), 1);
+        assert_eq!(store.block_count().unwrap(), 2); // genesis + appended
         assert_eq!(store.utxo_count().unwrap(), 1);
 
         let retrieved = store.get_block(&block_hash).unwrap().unwrap();
@@ -740,9 +760,9 @@ mod tests {
         store.append_block(&b2, 2, &[], &[], &[]).unwrap();
 
         let hashes = store.main_chain_hashes().unwrap();
-        assert_eq!(hashes.len(), 2);
-        assert_eq!(hashes[0], h1);
-        assert_eq!(hashes[1], h2);
+        assert_eq!(hashes.len(), 3); // genesis + b1 + b2
+        assert_eq!(hashes[1], h1);
+        assert_eq!(hashes[2], h2);
     }
 
     #[test]
@@ -792,11 +812,11 @@ mod tests {
             assert_eq!(store.best_height().unwrap(), 1);
         }
 
-        // Reopen and verify data persisted.
+        // Reopen and verify data persisted (genesis backfill is idempotent).
         {
             let store = BlockStore::open(&path).unwrap();
             assert_eq!(store.best_height().unwrap(), 1);
-            assert_eq!(store.block_count().unwrap(), 1);
+            assert_eq!(store.block_count().unwrap(), 2); // genesis + block
             assert_eq!(store.utxo_count().unwrap(), 1);
         }
     }

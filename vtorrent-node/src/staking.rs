@@ -15,8 +15,7 @@ use crate::{
     chain::Utxo,
     consensus::{
         check_stake_kernel, compute_pos_reward, compute_stake_modifier, stake_kernel_hash,
-        MAX_STAKE_AGE,
-        MIN_STAKE_AGE, MIN_STAKE_AMOUNT,
+        MAX_STAKE_AGE, MIN_STAKE_AGE, MIN_STAKE_AMOUNT,
     },
 };
 
