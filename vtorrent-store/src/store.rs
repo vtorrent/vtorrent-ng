@@ -429,6 +429,8 @@ impl BlockStore {
                 } => {
                     self.append_block(block, h, &utxos_added, &utxos_removed, &claimed_addresses)?;
                 }
+                // Genesis is already present in a fresh Chain::new(); skip it.
+                vtorrent_node::chain::BlockAcceptance::Duplicate if h == 0 => {}
                 _ => {
                     return Err(StoreError::Corrupted(format!(
                         "unexpected acceptance during rebuild at height {}",
@@ -545,6 +547,8 @@ impl BlockStore {
                 } => {
                     self.append_block(&block, h, &utxos_added, &utxos_removed, &claimed_addresses)?;
                 }
+                // Genesis is already present in a fresh Chain::new(); skip it.
+                vtorrent_node::chain::BlockAcceptance::Duplicate if h == 0 => {}
                 _ => {
                     return Err(StoreError::Corrupted(format!(
                         "unexpected acceptance during rebuild at height {}",
