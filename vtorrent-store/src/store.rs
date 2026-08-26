@@ -59,9 +59,42 @@ impl BlockStore {
                 write_txn
                     .open_table(HEIGHT_INDEX)?
                     .insert(0, hash_hex.as_str())?;
-                let mut meta = write_txn.open_table(META)?;
-                meta.insert("best_height", "0")?;
-                meta.insert("best_hash", hash_hex.as_str())?;
+            }
+
+            // Repair META when it lags the height index (e.g. after genesis
+            // backfill on a pre-existing store, or a failed mid-commit).
+            {
+                let max_indexed = write_txn
+                    .open_table(HEIGHT_INDEX)?
+                    .iter()?
+                    .filter_map(|r| r.ok().map(|(k, _)| k.value()))
+                    .max()
+                    .unwrap_or(0);
+                let stored = write_txn
+                    .open_table(META)?
+                    .get("best_height")?
+                    .and_then(|v| v.value().parse::<u32>().ok())
+                    .unwrap_or(0);
+                if stored < max_indexed {
+                    let hash_hex = write_txn
+                        .open_table(HEIGHT_INDEX)?
+                        .get(&max_indexed)?
+                        .map(|v| v.value().to_string())
+                        .ok_or_else(|| {
+                            StoreError::Corrupted(format!(
+                                "height index missing block {}",
+                                max_indexed
+                            ))
+                        })?;
+                    let mut meta = write_txn.open_table(META)?;
+                    meta.insert("best_height", max_indexed.to_string().as_str())?;
+                    meta.insert("best_hash", hash_hex.as_str())?;
+                    tracing::warn!(
+                        "Repaired block store META: best_height {} -> {}",
+                        stored,
+                        max_indexed
+                    );
+                }
             }
         }
         write_txn.commit()?;
