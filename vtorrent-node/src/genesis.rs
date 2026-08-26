@@ -59505,6 +59505,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_snapshot_sum_matches_documented_supply() {
+        // Guards against accidental edits to the embedded snapshot table:
+        // the per-address balances must sum to the documented legacy supply.
+        let total: u64 = LEGACY_SNAPSHOT.iter().map(|(_, bal)| bal).sum();
+        assert_eq!(total, LEGACY_TOTAL_SUPPLY_SATOSHIS);
+        assert_eq!(LEGACY_SNAPSHOT.len(), LEGACY_ADDRESS_COUNT);
+        // Addresses must be unique — duplicates would allow double claims.
+        let addrs: std::collections::HashSet<&str> =
+            LEGACY_SNAPSHOT.iter().map(|(a, _)| *a).collect();
+        assert_eq!(addrs.len(), LEGACY_SNAPSHOT.len());
+    }
+
+    #[test]
     fn test_genesis_block_creation() {
         let genesis = create_genesis_block();
         assert_eq!(genesis.transactions.len(), 2);
