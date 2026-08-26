@@ -49,6 +49,7 @@ impl BlockStore {
             // this convention): reorgs that roll back to height 0 need the
             // genesis entry present in HEIGHT_INDEX/BLOCKS.
             let needs_genesis = write_txn.open_table(HEIGHT_INDEX)?.get(0)?.is_none();
+            let mut backfilled_genesis = false;
             if needs_genesis {
                 let genesis = vtorrent_node::genesis::create_genesis_block();
                 let hash_hex = hex::encode(genesis.hash());
@@ -59,6 +60,7 @@ impl BlockStore {
                 write_txn
                     .open_table(HEIGHT_INDEX)?
                     .insert(0, hash_hex.as_str())?;
+                backfilled_genesis = true;
             }
 
             // Repair META when it lags the height index (e.g. after genesis
@@ -75,7 +77,7 @@ impl BlockStore {
                     .get("best_height")?
                     .and_then(|v| v.value().parse::<u32>().ok())
                     .unwrap_or(0);
-                if stored < max_indexed {
+                if backfilled_genesis || stored < max_indexed {
                     let hash_hex = write_txn
                         .open_table(HEIGHT_INDEX)?
                         .get(&max_indexed)?
