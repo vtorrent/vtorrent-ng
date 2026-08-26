@@ -14,7 +14,8 @@ use crate::{
     },
     chain::Utxo,
     consensus::{
-        check_stake_kernel, compute_pos_reward, compute_stake_modifier, MAX_STAKE_AGE,
+        check_stake_kernel, compute_pos_reward, compute_stake_modifier, stake_kernel_hash,
+        MAX_STAKE_AGE,
         MIN_STAKE_AGE, MIN_STAKE_AMOUNT,
     },
 };
@@ -70,6 +71,20 @@ impl StakingEngine {
             .iter()
             .filter(|u| self.is_eligible(u, timestamp))
             .collect();
+        for u in &utxos {
+            if !self.is_eligible(u, timestamp) {
+                let age = timestamp.saturating_sub(u.timestamp);
+                tracing::debug!(
+                    "UTXO {}:{} value={} REJECTED: age={}s (min {} max {})",
+                    hex::encode(u.txid),
+                    u.vout,
+                    u.value,
+                    age,
+                    MIN_STAKE_AGE,
+                    MAX_STAKE_AGE
+                );
+            }
+        }
 
         if eligible.is_empty() {
             tracing::debug!("No eligible UTXOs for staking at height {}", height);
@@ -138,6 +153,20 @@ impl StakingEngine {
         // The kernel check is shared with the chain's block validation so a
         // block that passes validation provably met the difficulty requirement.
         if !check_stake_kernel(stake_modifier, utxo, timestamp) {
+            let kernel_hash = stake_kernel_hash(stake_modifier, utxo, timestamp);
+            let kv = u32::from_le_bytes([
+                kernel_hash[0],
+                kernel_hash[1],
+                kernel_hash[2],
+                kernel_hash[3],
+            ]);
+            tracing::debug!(
+                "Kernel miss: value={} target={} kernel_val={} modifier={}",
+                utxo.value,
+                (utxo.value / 1000).min(u32::MAX as u64),
+                kv,
+                stake_modifier
+            );
             return None;
         }
 
