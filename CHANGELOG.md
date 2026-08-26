@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — vTorrent 2.0.0
 
+### Since v2.0.0-beta.2 (44 commits)
+
+**Mainnet Infrastructure**
+- Three geographically distributed seed nodes deployed and verified: `vtr-seed1` (Falkenstein DE), `vtr-seed2` (Helsinki FI), `vtr-seed3` (Ashburn US); DNS seeds `seed1/2/3.vtorrent.org` live at IONOS
+- Bootstrap surfaces active: hardcoded `BOOTSTRAP_PEERS`, GitHub-hosted `bootstrap/peers.txt` with CDN mirrors, DNS seeds
+- Seed-fleet monitoring: Prometheus + Grafana + Alertmanager on vtr-seed1, IP-pinned metrics proxies, ntfy push alerts (daemon-down, peer-drop, height-stall, disk/RAM)
+- Parameterized seed provisioning script (`deploy/provision-seed.sh`); on-call runbook (`docs/oncall-runbook.md`)
+- `--isolated` bootstrap flag for local testnets; `--public-addr` for correct PEX self-filtering on 0.0.0.0 listeners
+
+**Critical Node Fixes**
+- Mempool eviction on block acceptance: confirmed + conflicted transactions are now removed — previously every staked block after the first spend was invalid network-wide
+- Reorg persistence: abandoned blocks are rolled back on disk (`rollback_tip`) and fork blocks recorded; the store self-heals corrupt tails at startup instead of refusing to boot; genesis backfilled at store open
+- Event-bridge lag reconciliation: dropped `NewBlock` events trigger a full store rebuild from the in-memory chain
+- Release profile enables `overflow-checks` — consensus arithmetic now panics (rejecting the block) instead of silently wrapping
+
+**Protocol & Networking Fixes**
+- BIP-152 short-id collision handling on both sides (sender nonce retry, receiver misbehaviour scoring); pending compact blocks bounded
+- `getblocktxn` requests carry the full-header block hash (the 6-field digest never matched, so missing-tx recovery always failed)
+- `getblocks`/`getheaders` locator caps + O(height) lookup — closes an amplification DoS
+- P2P payload cap 32 MB → 4 MB; node event queue bounded (flood OOM hardening)
+- Seed re-dial every maintenance cycle; hostname resolution before peer dedup/ban checks
+- CScriptNum semantics enforced for all arithmetic opcodes (4-byte operands, overflow rejection); CLTV/CSV accept 5 bytes per BIP-65/112
+
+**Wallet & RPC Fixes**
+- Imported wallets persist to `<data-dir>/wallet.json` (Argon2id + ChaCha20-Poly1305, 0600, atomic) and restore locked on startup
+- Swap lifecycle guards: no double-funding, no claim-after-refund; swap state materializes at match time
+- HTLC claim branch requires exactly-32-byte preimage (`OP_SIZE` guard)
+- BTC txids reported in display-order hex (matches Bitcoin Core/explorers)
+- Relay-floor fees enforced via `TxBuilder.min_absolute_fee`; raw-broadcast fees verified from the UTXO set; chain→mempool lock order documented and consistent (deadlock prevention)
+- `validate_p2pkh` on staking/swap/faucet recipient paths — foreign-network addresses rejected
+- SPV UTXO scan checkpoints only covered ranges and resumes to tip; SPV timestamp validation added
+
+**Testing & Verification**
+- 531 workspace tests (was ~523 at beta.2 start of session): reorg-persistence integration test, store self-heal/reconciliation tests, mempool-regression test, fee-floor lock-step test, BIP-152 duplicate-id regression
+- 25-hour fuzz marathon across all four targets: 60+ billion executions, zero crashes
+- Upgrade/downgrade drill passed on a live soak node; full VTR↔BTC atomic swap E2E executed against BTC regtest (fund/claim/refund paths confirmed on-chain)
+- cargo audit: zero vulnerabilities
+
 ### Since v2.0.0-beta.1
 
 **Security Audit**
