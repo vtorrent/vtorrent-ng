@@ -1124,12 +1124,6 @@ impl Chain {
 
         Ok(())
     }
-
-    /// Legacy `add_block` that returns `Result<()>` for compatibility.
-    /// Internally calls the new `add_block` and discards the acceptance type.
-    pub fn add_block_simple(&mut self, block: Block) -> Result<()> {
-        self.add_block(block).map(|_| ())
-    }
 }
 
 #[cfg(test)]

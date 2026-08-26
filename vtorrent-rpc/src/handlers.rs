@@ -2342,4 +2342,44 @@ mod relay_floor_lockstep {
             "wallet builder floor drifted from mempool relay policy"
         );
     }
+
+    #[cfg(test)]
+    mod swap_guard_tests {
+        use crate::handlers::require_swap_stage;
+        use vtorrent_node::atomic_swap::{SwapState, SwapStatus};
+
+        fn state_at(status: SwapStatus) -> SwapState {
+            let mut s = SwapState::new([7u8; 32], [9u8; 32]);
+            s.status = status;
+            s
+        }
+
+        #[test]
+        fn absent_state_is_allowed() {
+            assert!(require_swap_stage(None, &[SwapStatus::Refunded]).is_ok());
+        }
+
+        #[test]
+        fn terminal_states_block_everything() {
+            for status in [SwapStatus::Claimed, SwapStatus::Refunded] {
+                let s = state_at(status);
+                assert!(
+                    require_swap_stage(Some(&s), &[SwapStatus::Claimed, SwapStatus::Refunded])
+                        .is_err()
+                );
+            }
+        }
+
+        #[test]
+        fn funded_states_allow_claims() {
+            for status in [
+                SwapStatus::Funding,
+                SwapStatus::VtrFunded,
+                SwapStatus::BtcFunded,
+            ] {
+                let s = state_at(status);
+                assert!(require_swap_stage(Some(&s), &[SwapStatus::Refunded]).is_ok());
+            }
+        }
+    }
 }

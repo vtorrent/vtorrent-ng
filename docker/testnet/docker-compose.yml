@@ -18,6 +18,12 @@ services:
     image: vtorrent/node:soak
     security_opt:
       - apparmor=unconfined
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:22525/api/v1/info"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     build:
       context: ../..
       dockerfile: docker/Dockerfile
@@ -55,6 +61,12 @@ services:
     image: vtorrent/node:soak
     security_opt:
       - apparmor=unconfined
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:22525/api/v1/info"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     build:
       context: ../..
       dockerfile: docker/Dockerfile
@@ -89,6 +101,12 @@ services:
     image: vtorrent/node:soak
     security_opt:
       - apparmor=unconfined
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:22525/api/v1/info"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     build:
       context: ../..
       dockerfile: docker/Dockerfile
