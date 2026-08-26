@@ -616,6 +616,27 @@ pub async fn import_wallet(
 
 /// Write the encrypted hot wallet to `wallet_path` (0600, atomic rename).
 /// No-op when persistence is disabled (standalone/test instances).
+/// Record the staking intent so it survives daemon restarts: the address is
+/// re-armed automatically whenever the wallet is unlocked again.
+fn persist_staking_intent(state: &AppState, address: Option<&str>) {
+    let Some(path) = &state.staking_state_path else {
+        return;
+    };
+    match address {
+        Some(addr) => {
+            let blob = serde_json::json!({ "enabled": true, "address": addr });
+            if let Ok(bytes) = serde_json::to_vec_pretty(&blob) {
+                if let Err(e) = std::fs::write(path, bytes) {
+                    tracing::warn!("Could not persist staking intent: {}", e);
+                }
+            }
+        }
+        None => {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 async fn persist_wallet(state: &AppState) -> RpcResult<()> {
     let Some(path) = &state.wallet_path else {
         return Ok(());
@@ -784,6 +805,46 @@ pub async fn unlock_wallet(
 
     *state.wallet_unlock_expiry.write().await = expires_at;
 
+    // Auto-resume staking if it was enabled before the last restart: the
+    // intent file records the address; signing now works because the wallet
+    // is unlocked.
+    if let Some(path) = &state.staking_state_path {
+        if let Ok(blob) = std::fs::read_to_string(path) {
+            let enabled = serde_json::from_str::<serde_json::Value>(&blob)
+                .ok()
+                .and_then(|v| {
+                    v.get("enabled")
+                        .and_then(|e| e.as_bool())
+                        .or_else(|| v.get("address").map(|_| true))
+                })
+                .unwrap_or(false);
+            let addr = serde_json::from_str::<serde_json::Value>(&blob)
+                .ok()
+                .and_then(|v| {
+                    v.get("address")
+                        .and_then(|a| a.as_str())
+                        .map(|s| s.to_string())
+                });
+            if enabled {
+                if let Some(address) = addr {
+                    tracing::info!("Auto-resuming staking for {} after unlock", address);
+                    if let Some(tx) = &state.staking_control {
+                        let _ = tx
+                            .send(vtorrent_node::staking::StakingCommand::Start {
+                                address: address.clone(),
+                                wif: Some(
+                                    state.wallet_wif.read().await.clone().unwrap_or_default(),
+                                ),
+                            })
+                            .await;
+                    }
+                    *state.staking_enabled.write().await = true;
+                    *state.staking_address.write().await = Some(address);
+                }
+            }
+        }
+    }
+
     Ok(Json(UnlockResponse {
         success: true,
         expires_at,
@@ -895,6 +956,7 @@ pub async fn start_staking(
 
     *state.staking_enabled.write().await = true;
     *state.staking_address.write().await = Some(req.address.clone());
+    persist_staking_intent(&state, Some(&req.address));
 
     Ok(Json(json!({
         "success": true,
@@ -908,6 +970,7 @@ pub async fn stop_staking(State(state): State<Arc<AppState>>) -> RpcResult<Json<
     }
     *state.staking_enabled.write().await = false;
     *state.staking_address.write().await = None;
+    persist_staking_intent(&state, None);
     Ok(Json(
         json!({ "success": true, "message": "Staking stopped" }),
     ))

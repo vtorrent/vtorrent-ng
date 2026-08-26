@@ -239,7 +239,34 @@ async fn main() -> anyhow::Result<()> {
     // Share the live chain and mempool Arcs from the node so that RPC
     // responses always reflect the current chain state.
     let chain_arc = node.chain_arc();
+    let chain_arc_clone = std::sync::Arc::clone(&chain_arc);
     let mempool_arc = node.mempool_arc();
+    let mempool_arc_for_saver = std::sync::Arc::clone(&mempool_arc);
+
+    // ── Mempool durability: reload persisted entries, then save periodically ──
+    let mempool_path = data_dir.join("mempool.json");
+    {
+        let saved = vtorrent_node::mempool::Mempool::load_saved(&mempool_path);
+        if !saved.is_empty() {
+            let mut mp = mempool_arc.lock().await;
+            let chain = chain_arc_clone.lock().await;
+            let mut admitted = 0usize;
+            for (tx, _old_fee) in saved {
+                // Re-verify against the loaded UTXO set: entries may reference
+                // inputs that were confirmed while we were down.
+                if let Some(fee) = chain.compute_tx_fee(&tx) {
+                    if mp.add_transaction_with_fee(tx, fee).is_ok() {
+                        admitted += 1;
+                    }
+                }
+            }
+            drop(chain);
+            drop(mp);
+            if admitted > 0 {
+                tracing::info!("Restored {} mempool transactions from disk", admitted);
+            }
+        }
+    }
     let tx_submit_sender = node.tx_submit_sender();
     let block_submit_sender = node.block_submit_sender();
     let staking_control_sender = node.staking_control();
@@ -263,6 +290,7 @@ async fn main() -> anyhow::Result<()> {
     // one on startup (the wallet stays locked until /wallet/unlock).
     let wallet_path = data_dir.join("wallet.json");
     rpc_state.wallet_path = Some(wallet_path.clone());
+    rpc_state.staking_state_path = Some(data_dir.join("staking.json"));
     if wallet_path.exists() {
         match std::fs::read(&wallet_path)
             .map_err(|e| anyhow::anyhow!("read failed: {}", e))
@@ -837,6 +865,20 @@ async fn main() -> anyhow::Result<()> {
             tracing::error!("P2P node error: {}", e);
         }
     });
+
+    // Periodic mempool persistence so restarts keep unconfirmed transactions.
+    {
+        let mp = std::sync::Arc::clone(&mempool_arc_for_saver);
+        let path = mempool_path.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                if let Err(e) = mp.lock().await.save_to(&path) {
+                    tracing::warn!("Mempool save failed: {}", e);
+                }
+            }
+        });
+    }
 
     // Wait for shutdown signal or unexpected service exit
     tokio::select! {

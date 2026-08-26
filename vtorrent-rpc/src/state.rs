@@ -92,6 +92,9 @@ pub struct AppState {
     /// File path where the encrypted hot wallet is persisted. `None` disables
     /// persistence (standalone/test instances).
     pub wallet_path: Option<std::path::PathBuf>,
+    /// File path recording the staking intent (`{"address": ...}`). When set,
+    /// staking auto-resumes whenever the wallet is unlocked.
+    pub staking_state_path: Option<std::path::PathBuf>,
     /// TOTP secret for the hot wallet's 2FA (optional, set on import).
     pub wallet_totp_secret: Arc<RwLock<Option<TotpSecret>>>,
     /// Derived change address for the hot wallet (from `wallet_wif`).
@@ -163,6 +166,7 @@ impl AppState {
             staking_control: None,
             peer_list: Arc::new(RwLock::new(Vec::new())),
             wallet_path: None,
+            staking_state_path: None,
             rpc_api_key: None,
             regtest: false,
             network: "vtorrent-mainnet".to_string(),
@@ -212,6 +216,7 @@ impl AppState {
             staking_control: None,
             peer_list: Arc::new(RwLock::new(Vec::new())),
             wallet_path: None,
+            staking_state_path: None,
             rpc_api_key: None,
             regtest: false,
             network: "vtorrent-mainnet".to_string(),

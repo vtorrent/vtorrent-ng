@@ -316,6 +316,38 @@ impl Mempool {
         entries
     }
 
+    /// Persist all entries to `path` as JSON. Best-effort durability for
+    /// restarts: entries are re-verified against the UTXO set on reload.
+    pub fn save_to(&self, path: &std::path::Path) -> Result<()> {
+        let entries: Vec<(&Transaction, u64)> =
+            self.entries.values().map(|e| (&e.tx, e.fee_sats)).collect();
+        let tmp = path.with_extension("json.tmp");
+        let blob = serde_json::to_vec(&entries)
+            .map_err(|e| NodeError::Chain(format!("mempool serialize failed: {}", e)))?;
+        std::fs::write(&tmp, &blob)
+            .map_err(|e| NodeError::Chain(format!("mempool write failed: {}", e)))?;
+        std::fs::rename(&tmp, path)
+            .map_err(|e| NodeError::Chain(format!("mempool rename failed: {}", e)))?;
+        Ok(())
+    }
+
+    /// Load previously persisted entries. The caller MUST re-verify each
+    /// transaction against the current UTXO set before admitting it.
+    pub fn load_saved(path: &std::path::Path) -> Vec<(Transaction, u64)> {
+        let data = match std::fs::read(path) {
+            Ok(d) => d,
+            Err(_) => return Vec::new(),
+        };
+        let parsed: Vec<(Transaction, u64)> = match serde_json::from_slice(&data) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("Mempool file unreadable, ignoring: {}", e);
+                return Vec::new();
+            }
+        };
+        parsed
+    }
+
     /// Returns the number of transactions in the mempool.
     pub fn size(&self) -> usize {
         self.entries.len()
