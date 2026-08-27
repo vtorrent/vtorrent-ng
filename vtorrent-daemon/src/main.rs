@@ -888,6 +888,10 @@ async fn main() -> anyhow::Result<()> {
         }
         _ = shutdown_signal() => {
             tracing::info!("Shutdown signal received — stopping daemon");
+            // Flush mempool to disk so unconfirmed transactions survive restart.
+            if let Err(e) = mempool_arc_for_saver.lock().await.save_to(&mempool_path) {
+                tracing::warn!("Final mempool save failed: {}", e);
+            }
         }
     }
 
