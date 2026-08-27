@@ -22,6 +22,16 @@ function formatSpeed(bps: number): string {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
+function EmptyState({ title, action }: { title: string; action: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-16 text-center border border-dashed border-navy-700/60 rounded-xl bg-navy-800/20">
+      <HardDrive size={32} className="text-gray-600 mb-3" />
+      <p className="text-sm font-medium text-gray-300">{title}</p>
+      <p className="text-xs text-gray-500 mt-1">{action}</p>
+    </div>
+  )
+}
+
 export default function TorrentPage() {
   const { data: sessions, loading, error, refresh } = useTorrentSessions(5_000)
   const [showAdd, setShowAdd] = useState(false)
@@ -33,6 +43,7 @@ export default function TorrentPage() {
   const totalUpload   = sessions.reduce((s, t) => s + t.uploadSpeed, 0)
   const activeSeeders = sessions.filter(t => t.state === 'Seeding').length
   const totalPeers    = sessions.reduce((s, t) => s + t.peerCount, 0)
+  const torrents = sessions
 
   const handleAdd = async () => {
     if (!magnetLink.trim()) return
@@ -185,11 +196,12 @@ export default function TorrentPage() {
             <RefreshCw size={12} className="animate-spin" />
             Loading sessions…
           </div>
-        ) : sessions.length === 0 ? (
-          <p className="text-xs text-gray-600 py-4">No active torrents. Add one above to start earning VTR.</p>
         ) : (
-          <div className="space-y-4">
-            {sessions.map((torrent: TorrentSession) => {
+          <>
+            {torrents.length === 0 && <EmptyState title="No torrents yet" action="Add .torrent or magnet" />}
+            {torrents.length > 0 && (
+              <div className="space-y-4">
+                {torrents.map((torrent: TorrentSession) => {
               const progressPct = Math.round(torrent.progress * 100)
               return (
                 <div key={torrent.id} className="border border-navy-700/60 rounded-xl p-4">
@@ -268,7 +280,9 @@ export default function TorrentPage() {
                 </div>
               )
             })}
-          </div>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

@@ -795,19 +795,24 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                                 // Otherwise leave its blocks leased; they
                                 // expire and the piece is re-requested.
                                 if written {
-                                    scheduler
-                                        .lock()
-                                        .unwrap_or_else(|e| e.into_inner())
-                                        .mark_have(index);
+                                    // Deterministic progress: verified_bytes is sum of
+                                    // SHA1-verified piece lengths via have_bytes, not
+                                    // raw received bytes. Prevents progress inflation
+                                    // from unverified/corrupt blocks or duplicates.
+                                    let verified_bytes = {
+                                        let mut sched =
+                                            scheduler.lock().unwrap_or_else(|e| e.into_inner());
+                                        sched.mark_have(index);
+                                        sched
+                                            .tracker
+                                            .have_bytes(&|idx| piece_length(&metainfo, idx))
+                                    };
                                     downloaded_window =
                                         downloaded_window.saturating_add(piece_data.len() as u64);
-                                    // Update session progress.
+                                    // Update session progress deterministically:
+                                    // progress = verified_bytes / total_bytes
                                     let mut guard = sessions.write().await;
                                     if let Ok(s) = guard.get_session_mut(&session_id) {
-                                        s.bytes_downloaded = s
-                                            .bytes_downloaded
-                                            .saturating_add(piece_data.len() as u64);
-                                        // Record bandwidth for incentive accounting.
                                         let peer_key =
                                             peer_vtr_address.clone().unwrap_or_else(|| {
                                                 conn.remote_peer_id
@@ -816,6 +821,9 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                                                     .collect()
                                             });
                                         s.record_download(&peer_key, piece_data.len() as u64);
+                                        // Overwrite incremental sum with verified count
+                                        // to ensure determinism and avoid double-count.
+                                        s.bytes_downloaded = verified_bytes;
                                     }
                                 }
                             }
