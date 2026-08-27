@@ -345,23 +345,11 @@ pub async fn send_vtr(
     // from the chain's UTXO set (lock order: chain → mempool) so mempool fee
     // statistics reflect reality rather than the builder's estimate.
     {
-        let real_fee = {
-            let chain = state.chain.lock().await;
-            chain.compute_tx_fee(&tx)
-        };
+        let chain = state.chain.lock().await;
         let mut mempool = state.mempool.lock().await;
-        match real_fee {
-            Some(fee) => mempool
-                .add_transaction_with_fee(tx.clone(), fee)
-                .map_err(|e| {
-                    RpcError::BadRequest(format!("Mempool rejected transaction: {}", e))
-                })?,
-            None => {
-                return Err(RpcError::BadRequest(
-                    "Transaction inputs not found in UTXO set".into(),
-                ))
-            }
-        }
+        mempool
+            .admit_with_chain_fee(&chain, tx.clone())
+            .map_err(|e| RpcError::BadRequest(format!("Mempool rejected transaction: {}", e)))?;
     }
     // If a live P2P node is attached, submit the tx for network broadcast.
     if let Some(ref sender) = state.tx_submit {

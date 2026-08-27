@@ -128,10 +128,30 @@ enum Commands {
         #[command(subcommand)]
         action: ClaimCommands,
     },
+    /// Bitcoin SPV wallet commands (built-in BTC side of atomic swaps).
+    Btc {
+        #[command(subcommand)]
+        action: BtcCommands,
+    },
     /// Show Prometheus metrics summary.
     Metrics,
     /// List connected P2P peers.
     Peers,
+}
+
+#[derive(Subcommand, Debug)]
+enum BtcCommands {
+    /// Show BTC SPV wallet status (sync state, balance).
+    Status,
+    /// Show the BTC receive address.
+    Address,
+    /// Send BTC to an address.
+    Send {
+        /// Destination BTC address.
+        address: String,
+        /// Amount in BTC (e.g. 0.001).
+        amount: f64,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -526,6 +546,37 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
             }
         },
 
+        Commands::Btc { action } => match action {
+            BtcCommands::Status => {
+                let data = client.get("/api/v1/btc/status")?;
+                if cli.json {
+                    println!("{}", serde_json::to_string_pretty(&data)?);
+                } else {
+                    format::print_btc_status(&data);
+                }
+            }
+            BtcCommands::Address => {
+                let data = client.get("/api/v1/btc/address")?;
+                if cli.json {
+                    println!("{}", serde_json::to_string_pretty(&data)?);
+                } else {
+                    println!("BTC address: {}", data["address"].as_str().unwrap_or("?"));
+                }
+            }
+            BtcCommands::Send { address, amount } => {
+                let amount_satoshis = (amount * 100_000_000.0).round() as u64;
+                let payload = serde_json::json!({
+                    "to_address": address,
+                    "amount_satoshis": amount_satoshis,
+                });
+                let data = client.post("/api/v1/btc/send", &payload)?;
+                if cli.json {
+                    println!("{}", serde_json::to_string_pretty(&data)?);
+                } else {
+                    println!("BTC txid: {}", data["txid"].as_str().unwrap_or("?"));
+                }
+            }
+        },
         Commands::Claim { action } => match action {
             ClaimCommands::Check { address } => {
                 let payload = serde_json::json!({ "legacy_address": address });

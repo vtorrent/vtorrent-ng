@@ -135,6 +135,24 @@ pub fn print_addresses(data: &Value) {
 }
 
 /// Print staking status.
+pub fn print_btc_status(data: &Value) {
+    println!("{}", "BTC SPV Wallet".bold().underline());
+    println!(
+        "  Initialized: {}",
+        data["initialized"].as_bool().unwrap_or(false)
+    );
+    println!(
+        "  Synced:      {}",
+        data["synced"].as_bool().unwrap_or(false)
+    );
+    if let Some(h) = data["best_height"].as_u64() {
+        println!("  Height:      {}", h);
+    }
+    if let Some(b) = data["balance_satoshis"].as_u64() {
+        println!("  Balance:     {:.8} BTC", b as f64 / 100_000_000.0);
+    }
+}
+
 pub fn print_staking_status(data: &Value) {
     println!("\n{}", "=== Staking Status ===".cyan().bold());
     let enabled = data["enabled"].as_bool().unwrap_or(false);

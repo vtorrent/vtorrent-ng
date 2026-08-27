@@ -316,6 +316,24 @@ impl Mempool {
         entries
     }
 
+    /// Verify a transaction against the chain UTXO set and admit it with the
+    /// chain-verified fee. Every mempool admission path must use this (or
+    /// `add_transaction_with_fee` with an independently verified fee) so
+    /// self-reported fees can never buy priority.
+    ///
+    /// Lock order: callers hold the chain guard before the mempool guard.
+    pub fn admit_with_chain_fee(
+        &mut self,
+        chain: &crate::chain::Chain,
+        tx: Transaction,
+    ) -> Result<u64> {
+        let fee = chain
+            .compute_tx_fee(&tx)
+            .ok_or_else(|| NodeError::Chain("Transaction inputs not found in UTXO set".into()))?;
+        self.add_transaction_with_fee(tx, fee)?;
+        Ok(fee)
+    }
+
     /// Persist all entries to `path` as JSON. Best-effort durability for
     /// restarts: entries are re-verified against the UTXO set on reload.
     pub fn save_to(&self, path: &std::path::Path) -> Result<()> {

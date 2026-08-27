@@ -362,23 +362,11 @@ pub async fn broadcast_transaction(
         // path applies — so self-reported fee estimates cannot buy priority.
         // Chain is locked BEFORE mempool to match the node loop's lock order
         // (chain → mempool) and avoid ABBA deadlock with block processing.
-        let real_fee = {
-            let chain = state.chain.lock().await;
-            chain.compute_tx_fee(&tx)
-        };
+        let chain = state.chain.lock().await;
         let mut mempool = state.mempool.lock().await;
-        match real_fee {
-            Some(fee) => mempool
-                .add_transaction_with_fee(tx.clone(), fee)
-                .map_err(|e| {
-                    RpcError::BadRequest(format!("Mempool rejected transaction: {}", e))
-                })?,
-            None => {
-                return Err(RpcError::BadRequest(
-                    "Transaction inputs not found in UTXO set".into(),
-                ))
-            }
-        }
+        mempool
+            .admit_with_chain_fee(&chain, tx.clone())
+            .map_err(|e| RpcError::BadRequest(format!("Mempool rejected transaction: {}", e)))?;
     }
 
     let relayed = match &state.tx_submit {
@@ -657,21 +645,11 @@ pub async fn submit_claim(
     // 5. Submit to mempool. Fee verified from live UTXO set (lock order:
     // chain → mempool) so claim fees cannot buy priority.
     {
-        let real_fee = {
-            let chain = state.chain.lock().await;
-            chain.compute_tx_fee(&tx)
-        };
+        let chain = state.chain.lock().await;
         let mut mempool = state.mempool.lock().await;
-        match real_fee {
-            Some(fee) => mempool
-                .add_transaction_with_fee(tx, fee)
-                .map_err(|e| RpcError::BadRequest(format!("Mempool rejected claim: {}", e)))?,
-            None => {
-                return Err(RpcError::BadRequest(
-                    "Claim inputs not found in UTXO set".into(),
-                ))
-            }
-        }
+        mempool
+            .admit_with_chain_fee(&chain, tx)
+            .map_err(|e| RpcError::BadRequest(format!("Mempool rejected claim: {}", e)))?;
     }
 
     tracing::info!(

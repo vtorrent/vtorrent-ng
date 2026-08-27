@@ -254,10 +254,8 @@ async fn main() -> anyhow::Result<()> {
             for (tx, _old_fee) in saved {
                 // Re-verify against the loaded UTXO set: entries may reference
                 // inputs that were confirmed while we were down.
-                if let Some(fee) = chain.compute_tx_fee(&tx) {
-                    if mp.add_transaction_with_fee(tx, fee).is_ok() {
-                        admitted += 1;
-                    }
+                if mp.admit_with_chain_fee(&chain, tx).is_ok() {
+                    admitted += 1;
                 }
             }
             drop(chain);
@@ -943,17 +941,11 @@ async fn build_incentive_payment(
 
     let txid = hex::encode(tx.txid());
     {
-        let real_fee = {
-            let chain = chain.lock().await;
-            chain.compute_tx_fee(&tx)
-        };
+        let chain = chain.lock().await;
         let mut mempool = mempool.lock().await;
-        match real_fee {
-            Some(fee) => mempool
-                .add_transaction_with_fee(tx.clone(), fee)
-                .map_err(|e| anyhow::anyhow!("mempool rejected: {}", e))?,
-            None => return Err(anyhow::anyhow!("incentive claim inputs not in UTXO set")),
-        }
+        mempool
+            .admit_with_chain_fee(&chain, tx.clone())
+            .map_err(|e| anyhow::anyhow!("mempool rejected: {}", e))?;
     }
     if let Some(ref sender) = tx_submit {
         let _ = sender.try_send(tx);

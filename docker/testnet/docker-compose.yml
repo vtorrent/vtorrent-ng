@@ -139,6 +139,12 @@ services:
 
   btc:
     image: bitcoin/bitcoin:26
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-regtest", "-rpcuser=vtr", "-rpcpassword=vtrtest", "getblockchaininfo"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     security_opt:
       - apparmor=unconfined
     container_name: vtr-btc-regtest

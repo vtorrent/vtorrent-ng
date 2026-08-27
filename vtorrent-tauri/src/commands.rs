@@ -1592,21 +1592,11 @@ pub async fn send_vtr(
     // Submit to mempool. Fee verified from the chain UTXO set (lock order:
     // chain → mempool, matching the node loop).
     {
-        let real_fee = {
-            let chain = handle.rpc_state.chain.lock().await;
-            chain.compute_tx_fee(&tx)
-        };
+        let chain = handle.rpc_state.chain.lock().await;
         let mut mempool = handle.rpc_state.mempool.lock().await;
-        match real_fee {
-            Some(fee) => mempool
-                .add_transaction_with_fee(tx, fee)
-                .map_err(|e| TauriError::NodeError(format!("Mempool rejected tx: {}", e)))?,
-            None => {
-                return Err(TauriError::NodeError(
-                    "Transaction inputs not found in UTXO set".into(),
-                ))
-            }
-        }
+        mempool
+            .admit_with_chain_fee(&chain, tx)
+            .map_err(|e| TauriError::NodeError(format!("Mempool rejected tx: {}", e)))?;
     }
 
     tracing::info!(
