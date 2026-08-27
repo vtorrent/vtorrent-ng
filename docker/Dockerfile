@@ -29,6 +29,7 @@ COPY vtorrent-onion ./vtorrent-onion
 COPY vtorrent-cli ./vtorrent-cli
 COPY vtorrent-btc ./vtorrent-btc
 COPY vtorrent-tauri ./vtorrent-tauri
+COPY vtorrent-wallet-service ./vtorrent-wallet-service
 
 RUN cargo build --release -p vtorrent-daemon
 
