@@ -49,6 +49,7 @@ rusty-leveldb     = { version = "1.0", default-features = false }
 
 [dev-dependencies]
 criterion = { workspace = true }
+tempfile = { workspace = true }
 
 [[bench]]
 name = "consensus_hotpath"

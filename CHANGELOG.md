@@ -39,8 +39,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `validate_p2pkh` on staking/swap/faucet recipient paths — foreign-network addresses rejected
 - SPV UTXO scan checkpoints only covered ranges and resumes to tip; SPV timestamp validation added
 
+**Foundation Refactor (Phase B)**
+- `node.rs` (2649L) split into `node/{mod,chain,p2p,mempool_bridge}.rs`; `handlers.rs` (2282L) split into `handlers/{mod,prelude,wallet,swap,torrent,staking}.rs`
+- Genesis snapshot array (59k lines) → `include_bytes!` binary blob (2.4 MB)
+- New `vtorrent-wallet-service` crate: single `build_payment` path for daemon/tauri (eliminates fee divergence)
+- `Mempool::admit_with_chain_fee` helper deduplicates 4 admission sites
+
+**Polish (Phase A)**
+- P2P V2 bincode wire format (version-gated, JSON fallback) — 2–5× smaller blocks/txs
+- Staking dashboard WebSocket push (instant status vs 5s polling)
+- Torrent empty-state UX + deterministic progress (SHA1-verified bytes)
+
+**Continuous Slices (Phase C)**
+- Benchmark regression gate in CI (`scripts/bench-gate.sh`, >25% threshold, 23 committed baselines)
+- `cargo machete` CI job for unused dependency detection
+- Explorer/faucet deferral policy (`docs/explorer-faucet-policy.md`)
+- Backup policy (`docs/backup-policy.md`)
+- CLI BTC subcommands (`btc status|address|send`) — full RPC parity
+- Graceful shutdown flushes mempool to disk
+- AGENTS.md synced with current state (19 crates, 539 tests, 3 seeds, ops features)
+
 **Testing & Verification**
-- 531 workspace tests (was ~523 at beta.2 start of session): reorg-persistence integration test, store self-heal/reconciliation tests, mempool-regression test, fee-floor lock-step test, BIP-152 duplicate-id regression
+- 539 workspace tests (was 523 at beta.2): reorg-persistence integration test, store self-heal/reconciliation tests, mempool-regression test, fee-floor lock-step test, BIP-152 duplicate-id regression, swap-guard unit tests, genesis snapshot integrity test, node-split import test, wallet-service build_payment test
 - 25-hour fuzz marathon across all four targets: 60+ billion executions, zero crashes
 - Upgrade/downgrade drill passed on a live soak node; full VTR↔BTC atomic swap E2E executed against BTC regtest (fund/claim/refund paths confirmed on-chain)
 - cargo audit: zero vulnerabilities
