@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Network magic bytes for vTorrent 2.0 mainnet.
-pub const NETWORK_MAGIC: [u8; 4] = [0x56, 0x54, 0x52, 0x32]; // "VTR2"
+pub const NETWORK_MAGIC: [u8; 4] = [0x56, 0x54, 0x52, 0x4E]; // "VTRN"
 
 /// Maximum allowed message payload size (4 MB).
 ///

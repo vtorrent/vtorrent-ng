@@ -48,7 +48,7 @@ New crate `vtorrent-wallet-service` extracting the duplicated payment path:
 ## 3. Phase 2 — Polish (after foundation, breaking window)
 
 ### P2P wire JSON→bincode
-- Add `V2` command set behind `PROTOCOL_VERSION` bump (magic `0x56 0x54 0x52 0x32` unchanged). Old seeds ignore unknown commands (already validated).
+- Add `V2` command set behind `PROTOCOL_VERSION` bump (magic `0x56 0x54 0x52 0x4E` unchanged). Old seeds ignore unknown commands (already validated).
 - 47 `serde_json` call sites in `node.rs` block/tx inv path become `bincode` (2–5× smaller). Requires coordinated seed restart via `deploy/provision-seed.sh`.
 - Fallback: unknown-version peers get JSON path for one release.
 

@@ -12,7 +12,7 @@
 - [x] **Consensus parameter sign-off**: all values frozen and documented in
       `docs/consensus-parameters.md` (network magic, ports, address/WIF prefixes,
       PoS rules, genesis hash, snapshot totals).
-- [x] **Network magic + port freeze**: magic `0x56 0x54 0x52 0x32` ("VTR2"),
+- [x] **Network magic + port freeze**: magic `0x56 0x54 0x52 0x4E` ("VTRN"),
       P2P 22526, RPC 22527 (daemon defaults to 22525). See
       `docs/consensus-parameters.md`.
 - [x] **Address/WIF prefix audit**: prefix 70 (`V...`) + WIF 198 (`7...`)

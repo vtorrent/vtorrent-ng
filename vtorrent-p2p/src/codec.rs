@@ -148,7 +148,7 @@ mod tests {
     #[test]
     fn test_partial_message_returns_none() {
         let mut codec = VtrCodec;
-        let mut buf = BytesMut::from(&b"VTR2"[..]);
+        let mut buf = BytesMut::from(&b"VTRN"[..]);
         let result = codec.decode(&mut buf).expect("Should not error");
         assert!(result.is_none());
     }
