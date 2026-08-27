@@ -261,9 +261,125 @@ export function useDexOrders(intervalMs = 10_000) {
   return usePoll<DexOrder[]>(fetchDexOrders, [], intervalMs)
 }
 
-/** Poll staking status every 8 s. */
-export function useStakingStatus(intervalMs = 8_000) {
-  return usePoll<StakingStatus | null>(fetchStakingStatus, null, intervalMs)
+/**
+ * Live staking status via WebSocket — replaces 5 s polling with instant push.
+ * Subscribes to `staking_reward` events on `ws://RPC_BASE/ws`; falls back to
+ * polling when WS is unavailable (Tauri or connection failure).
+ */
+export function useStakingStatus(_intervalMs = 8_000): {
+  data: StakingStatus | null
+  loading: boolean
+  error: string | null
+  refresh: () => void
+} {
+  const [data, setData] = useState<StakingStatus | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const wsRef = useRef<WebSocket | null>(null)
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const mountedRef = useRef(true)
+
+  const refresh = useCallback(async () => {
+    try {
+      const result = await fetchStakingStatus()
+      if (!mountedRef.current) return
+      setData(result)
+      setError(null)
+    } catch (e) {
+      if (!mountedRef.current) return
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      if (mountedRef.current) setLoading(false)
+    }
+  }, [])
+
+  const applyRewardEvent = useCallback(
+    (_evData: Record<string, unknown>) => {
+      void _evData
+      setData(prev => {
+        if (!prev) return prev
+        return { ...prev, blocksStaked: prev.blocksStaked + 1, lastStakeTime: Math.floor(Date.now() / 1000) }
+      })
+      refresh()
+    },
+    [refresh],
+  )
+
+  useEffect(() => {
+    mountedRef.current = true
+    refresh()
+    if (isTauri()) {
+      pollTimerRef.current = setInterval(refresh, _intervalMs)
+      return () => {
+        mountedRef.current = false
+        if (pollTimerRef.current) clearInterval(pollTimerRef.current)
+      }
+    }
+    let closedIntentionally = false
+    const getWsUrl = () => `${RPC_BASE.replace(/^http/, 'ws')}/ws`
+    const connect = () => {
+      if (closedIntentionally || !mountedRef.current) return
+      try {
+        const ws = new WebSocket(getWsUrl())
+        wsRef.current = ws
+        ws.onopen = () => {
+          try {
+            ws.send(JSON.stringify({ subscribe: ['staking_reward'] }))
+          } catch {
+            /* ignore */
+          }
+        }
+        ws.onmessage = e => {
+          try {
+            const ev = JSON.parse((e as MessageEvent).data as string)
+            const eventType: string | undefined = ev.event ?? ev.type ?? ev.Event
+            const payload = ev.data ?? ev.payload ?? ev.Data ?? ev
+            const normalized = (eventType ?? '').toLowerCase()
+            if (normalized === 'staking_reward' || normalized === 'stakingreward') {
+              if (payload && typeof payload === 'object') applyRewardEvent(payload as Record<string, unknown>)
+              else refresh()
+            }
+          } catch {
+            /* ignore */
+          }
+        }
+        ws.onclose = () => {
+          wsRef.current = null
+          if (!closedIntentionally && mountedRef.current) {
+            if (!pollTimerRef.current) pollTimerRef.current = setInterval(refresh, _intervalMs)
+            reconnectTimerRef.current = setTimeout(() => {
+              if (pollTimerRef.current) {
+                clearInterval(pollTimerRef.current)
+                pollTimerRef.current = null
+              }
+              connect()
+            }, 3000)
+          }
+        }
+      } catch {
+        if (!pollTimerRef.current) pollTimerRef.current = setInterval(refresh, _intervalMs)
+        reconnectTimerRef.current = setTimeout(connect, 3000)
+      }
+    }
+    connect()
+    return () => {
+      mountedRef.current = false
+      closedIntentionally = true
+      if (wsRef.current) {
+        try {
+          wsRef.current.close()
+        } catch {
+          /* ignore */
+        }
+        wsRef.current = null
+      }
+      if (pollTimerRef.current) clearInterval(pollTimerRef.current)
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
+    }
+  }, [refresh, _intervalMs, applyRewardEvent])
+
+  return { data, loading, error, refresh }
 }
 
 // ─── Torrent actions ──────────────────────────────────────────────────────────
