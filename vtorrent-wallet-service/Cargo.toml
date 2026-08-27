@@ -1,0 +1,12 @@
+[package]
+name = "vtorrent-wallet-service"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+vtorrent-wallet = { path = "../vtorrent-wallet" }
+vtorrent-core = { path = "../vtorrent-core" }
+vtorrent-node = { path = "../vtorrent-node" }
+thiserror = { workspace = true }

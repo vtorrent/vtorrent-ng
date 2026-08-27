@@ -1545,8 +1545,6 @@ pub async fn send_vtr(
     to_address: String,
     amount_satoshis: u64,
 ) -> Result<String> {
-    use vtorrent_wallet::tx_builder::TxBuilder;
-
     // Get the WIF and from-address from the unlocked wallet.
     let (wif, from_address) = {
         let guard = state.wallet.lock().unwrap();
@@ -1579,14 +1577,15 @@ pub async fn send_vtr(
         let mempool = handle.rpc_state.mempool.lock().await;
         mempool.recommended_fee_rate().max(1)
     };
-    let tx = TxBuilder::new()
-        .recipient(&to_address, amount_satoshis)
-        .fee_rate(fee_rate)
-        .min_absolute_fee(vtorrent_wallet::tx_builder::MIN_ABSOLUTE_FEE_SATS)
-        .change_address(&from_address)
-        .sign_with_wif(&wif)
-        .build(&utxos)
-        .map_err(|e| TauriError::NodeError(format!("Transaction build failed: {}", e)))?;
+    let tx = vtorrent_wallet_service::build_payment(
+        &utxos,
+        &to_address,
+        &from_address,
+        amount_satoshis,
+        fee_rate,
+        &wif,
+    )
+    .map_err(|e| TauriError::NodeError(format!("Transaction build failed: {}", e)))?;
 
     let txid = hex::encode(tx.txid());
 

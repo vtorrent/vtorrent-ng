@@ -907,8 +907,6 @@ async fn build_incentive_payment(
     tx_submit: &Option<tokio::sync::mpsc::Sender<vtorrent_node::block::Transaction>>,
     payment: &vtorrent_torrent::payment::PaymentDue,
 ) -> anyhow::Result<String> {
-    use vtorrent_wallet::tx_builder::TxBuilder;
-
     let wif = wallet_wif
         .read()
         .await
@@ -933,14 +931,15 @@ async fn build_incentive_payment(
         mempool.recommended_fee_rate().max(1)
     };
 
-    let tx = TxBuilder::new()
-        .recipient(&payment.peer_address, payment.amount_satoshis)
-        .change_address(&change_address)
-        .fee_rate(fee_rate)
-        .min_absolute_fee(vtorrent_wallet::tx_builder::MIN_ABSOLUTE_FEE_SATS)
-        .sign_with_wif(&wif)
-        .build(&utxos)
-        .map_err(|e| anyhow::anyhow!("tx build failed: {}", e))?;
+    let tx = vtorrent_wallet_service::build_payment(
+        &utxos,
+        &payment.peer_address,
+        &change_address,
+        payment.amount_satoshis,
+        fee_rate,
+        &wif,
+    )
+    .map_err(|e| anyhow::anyhow!("tx build failed: {}", e))?;
 
     let txid = hex::encode(tx.txid());
     {

@@ -20,6 +20,7 @@ vtorrent-onion    = { path = "../vtorrent-onion" }
 vtorrent-btc      = { path = "../vtorrent-btc" }
 vtorrent-torrent  = { path = "../vtorrent-torrent" }
 vtorrent-wallet   = { path = "../vtorrent-wallet" }
+vtorrent-wallet-service = { path = "../vtorrent-wallet-service" }
 
 # Async runtime
 tokio             = { version = "1", features = ["full"] }
