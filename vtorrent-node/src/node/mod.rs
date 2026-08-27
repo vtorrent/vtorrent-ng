@@ -35,9 +35,10 @@ use vtorrent_p2p::{
     },
     dht::{discover_peers_via_doh, discover_peers_via_github, DhtBootstrap},
     message::{
-        AddrMsg, BlockTxnMsg, CmpctBlockMsg, FeeFilterMsg, GetBlockTxnMsg, GetBlocksMsg,
-        GetHeadersMsg, HeaderEntry, HeadersMsg, InvItem, InvMsg, InvType, NetMessage, PingMsg,
-        SendCmpctMsg, VersionMsg, MAX_PAYLOAD_SIZE,
+        decode_for_peer, encode_for_peer, encode_v2, is_v2_peer, AddrMsg, BlockTxnMsg,
+        CmpctBlockMsg, FeeFilterMsg, GetBlockTxnMsg, GetBlocksMsg, GetHeadersMsg, HeaderEntry,
+        HeadersMsg, InvItem, InvMsg, InvType, NetMessage, PingMsg, SendCmpctMsg, VersionMsg,
+        MAX_PAYLOAD_SIZE, PROTOCOL_VERSION,
     },
     peer::{PeerCommand, PeerEvent},
     peer_manager::{PeerManager, DEFAULT_PORT, TARGET_OUTBOUND},
@@ -197,6 +198,10 @@ pub struct Node {
     peer_ping_nonces: std::collections::HashMap<std::net::SocketAddr, u64>,
     /// Per-peer message counts for flood rate limiting: (count, window start).
     peer_msg_counts: std::collections::HashMap<std::net::SocketAddr, (u64, u64)>,
+    /// Per-peer advertised protocol version (for V2 bincode sniffing).
+    /// V2 peers (`PROTOCOL_VERSION = 2`, bincode) vs legacy (`70001`, JSON).
+    /// Unknown commands are ignored to allow rolling upgrades.
+    pub(crate) peer_versions: std::collections::HashMap<std::net::SocketAddr, u32>,
     /// Shared DEX order book (set by the daemon; used for gossip).
     order_book: Option<Arc<RwLock<SwapOrderBook>>>,
     /// Order IDs already seen via gossip, for deduplication.
@@ -326,6 +331,7 @@ impl Node {
             peer_fee_filters: std::collections::HashMap::new(),
             peer_ping_nonces: std::collections::HashMap::new(),
             peer_msg_counts: std::collections::HashMap::new(),
+            peer_versions: std::collections::HashMap::new(),
             order_book: None,
             seen_orders: HashSet::new(),
             tx_submit_rx,
@@ -388,6 +394,7 @@ impl Node {
             peer_fee_filters: std::collections::HashMap::new(),
             peer_ping_nonces: std::collections::HashMap::new(),
             peer_msg_counts: std::collections::HashMap::new(),
+            peer_versions: std::collections::HashMap::new(),
             order_book: None,
             seen_orders: HashSet::new(),
             tx_submit_rx,
@@ -427,13 +434,24 @@ impl Node {
     pub async fn broadcast_order(&mut self, order: &crate::atomic_swap::SwapOrder) {
         let ann = OrderAnnouncement::from_order(order);
         self.seen_orders.insert(order.order_id);
-        let payload = match serde_json::to_vec(&ann) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!("Failed to serialize order announcement: {}", e);
-                return;
+        let payload = if self.peer_versions.values().any(|v| is_v2_peer(*v)) {
+            encode_v2(&ann).unwrap_or_else(|e| {
+                tracing::warn!("Failed to bincode order announcement: {}", e);
+                Vec::new()
+            })
+        } else {
+            match serde_json::to_vec(&ann) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("Failed to serialize order announcement: {}", e);
+                    return;
+                }
             }
         };
+        // Empty payload means serialization failed — skip broadcast
+        if payload.is_empty() {
+            return;
+        }
         self.peer_manager
             .broadcast(NetMessage::new("dexorder", payload))
             .await;
@@ -634,19 +652,31 @@ impl Node {
                             if !already_admitted {
                                 self.emit(NodeEvent::TxUnconfirmed { txid, fee_sats, size_bytes });
                             }
-                            let payload = match serde_json::to_vec(&InvMsg {
+                            let inv_msg = InvMsg {
                                 items: vec![InvItem {
                                     inv_type: InvType::Transaction,
                                     hash: txid,
                                 }],
-                            }) {
-                                Ok(p) => p,
-                                Err(e) => {
-                                    tracing::warn!("Failed to serialize inv message: {}", e);
-                                    drop(mp);
-                                    return Ok(());
+                            };
+                            let payload = if self.peer_versions.values().any(|v| is_v2_peer(*v)) {
+                                encode_v2(&inv_msg).unwrap_or_else(|e| {
+                                    tracing::warn!("Failed to bincode inv: {}", e);
+                                    Vec::new()
+                                })
+                            } else {
+                                match serde_json::to_vec(&inv_msg) {
+                                    Ok(p) => p,
+                                    Err(e) => {
+                                        tracing::warn!("Failed to serialize inv message: {}", e);
+                                        drop(mp);
+                                        return Ok(());
+                                    }
                                 }
                             };
+                            if payload.is_empty() {
+                                drop(mp);
+                                return Ok(());
+                            }
                             drop(mp);
                             self.peer_manager.broadcast(
                                 NetMessage::new("inv", payload)
@@ -665,18 +695,29 @@ impl Node {
                 // Locally-minted blocks from the regtest faucet
                 Some(block) = self.block_submit_rx.recv() => {
                     let block_hash = block.hash();
-                    let payload = match serde_json::to_vec(&InvMsg {
+                    let inv_msg = InvMsg {
                         items: vec![InvItem {
                             inv_type: InvType::Block,
                             hash: block_hash,
                         }],
-                    }) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            tracing::warn!("Failed to serialize block inv: {}", e);
-                            continue;
+                    };
+                    let payload = if self.peer_versions.values().any(|v| is_v2_peer(*v)) {
+                        encode_v2(&inv_msg).unwrap_or_else(|e| {
+                            tracing::warn!("Failed to bincode block inv: {}", e);
+                            Vec::new()
+                        })
+                    } else {
+                        match serde_json::to_vec(&inv_msg) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                tracing::warn!("Failed to serialize block inv: {}", e);
+                                continue;
+                            }
                         }
                     };
+                    if payload.is_empty() {
+                        continue;
+                    }
                     self.peer_manager.broadcast(
                         NetMessage::new("inv", payload)
                     ).await;
@@ -846,11 +887,14 @@ impl Node {
         match event {
             PeerEvent::HandshakeComplete { peer_addr, version } => {
                 tracing::info!(
-                    "Peer {} handshake complete: {} (height {})",
+                    "Peer {} handshake complete: {} (height {}) v{}",
                     peer_addr,
                     version.user_agent,
-                    version.start_height
+                    version.start_height,
+                    version.version
                 );
+                // Track advertised version for V2 bincode sniffing (2 = bincode, 70001 = JSON fallback)
+                self.peer_versions.insert(peer_addr, version.version);
                 self.emit(NodeEvent::PeerConnected {
                     addr: peer_addr,
                     user_agent: version.user_agent.clone(),
@@ -859,14 +903,22 @@ impl Node {
                 });
                 // Negotiate compact block relay (BIP-152)
                 // We use low-bandwidth mode (0) by default; high-bandwidth (1) is for the 3 fastest peers
-                let sendcmpct_payload = match serde_json::to_vec(&SendCmpctMsg {
-                    high_bandwidth: false,
-                    version: 1,
-                }) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        tracing::warn!("Failed to serialize sendcmpct: {}", e);
-                        return Ok(());
+                let sendcmpct_payload = if is_v2_peer(version.version) {
+                    encode_v2(&SendCmpctMsg {
+                        high_bandwidth: false,
+                        version: 1,
+                    })
+                    .unwrap_or_default()
+                } else {
+                    match serde_json::to_vec(&SendCmpctMsg {
+                        high_bandwidth: false,
+                        version: 1,
+                    }) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            tracing::warn!("Failed to serialize sendcmpct: {}", e);
+                            return Ok(());
+                        }
                     }
                 };
                 self.peer_manager
@@ -885,12 +937,16 @@ impl Node {
                         let chain = self.chain.lock().await;
                         chain.best_hash().unwrap_or([0u8; 32])
                     };
-                    let payload = serde_json::to_vec(&GetBlocksMsg {
-                        version: 70001,
+                    let msg_payload = GetBlocksMsg {
+                        version: PROTOCOL_VERSION,
                         block_locator_hashes: vec![best_hash],
                         hash_stop: [0u8; 32],
-                    })
-                    .unwrap_or_default();
+                    };
+                    let payload = if is_v2_peer(version.version) {
+                        encode_v2(&msg_payload).unwrap_or_default()
+                    } else {
+                        serde_json::to_vec(&msg_payload).unwrap_or_default()
+                    };
                     let msg = NetMessage::new("getblocks", payload);
                     self.peer_manager.broadcast(msg).await;
                 }
@@ -915,6 +971,7 @@ impl Node {
                 self.peer_fee_filters.remove(&peer_addr);
                 self.peer_ping_nonces.remove(&peer_addr);
                 self.peer_msg_counts.remove(&peer_addr);
+                self.peer_versions.remove(&peer_addr);
             }
         }
         Ok(())
@@ -984,6 +1041,7 @@ impl Node {
                     self.compact_peers.remove(&peer_addr);
                     self.peer_fee_filters.remove(&peer_addr);
                     self.peer_ping_nonces.remove(&peer_addr);
+                    self.peer_versions.remove(&peer_addr);
                     self.emit(NodeEvent::PeerDisconnected { addr: peer_addr });
                 }
             }
@@ -996,8 +1054,9 @@ impl Node {
 
                 match msg.command_str() {
                     "version" => {
-                        let version: VersionMsg =
-                            serde_json::from_slice(&msg.payload).map_err(|e| {
+                        let version: VersionMsg = bincode::deserialize::<VersionMsg>(&msg.payload)
+                            .or_else(|_| serde_json::from_slice(&msg.payload))
+                            .map_err(|e| {
                                 NodeError::Chain(format!("Invalid overlay version message: {}", e))
                             })?;
                         self.peer_manager
@@ -1031,6 +1090,14 @@ impl Node {
         msg: NetMessage,
     ) -> Result<()> {
         use vtorrent_p2p::ban_manager::Misbehaviour;
+
+        // V2 wire sniffing: bincode for V2 peers (>=2, not legacy 70001), JSON fallback.
+        // Unknown commands are ignored (not banned) to allow rolling upgrades.
+        let peer_version = self
+            .peer_versions
+            .get(&peer_addr)
+            .copied()
+            .unwrap_or(vtorrent_p2p::message::LEGACY_PROTOCOL_VERSION);
 
         // Per-peer flood rate limiting: a peer that exceeds the message budget
         // within a window is banned and disconnected.
@@ -1075,9 +1142,9 @@ impl Node {
                 tracing::debug!("PEX: Sent addr response to {}", peer_addr);
             }
 
-            // ── Inventory ─────────────────────────────────────────────────────
+            // ── Inventory (V2 bincode with JSON fallback) ─────────────────────
             "inv" => {
-                if let Ok(inv) = serde_json::from_slice::<InvMsg>(&msg.payload) {
+                if let Ok(inv) = decode_for_peer::<InvMsg>(&msg.payload, peer_version) {
                     let mut want = Vec::new();
                     for item in &inv.items {
                         match item.inv_type {
@@ -1097,9 +1164,10 @@ impl Node {
                         }
                     }
                     if !want.is_empty() {
-                        let payload =
-                            serde_json::to_vec(&vtorrent_p2p::message::GetDataMsg { items: want })
-                                .unwrap_or_default();
+                        let payload = encode_for_peer(
+                            &vtorrent_p2p::message::GetDataMsg { items: want },
+                            peer_version,
+                        );
                         self.peer_manager
                             .broadcast(NetMessage::new("getdata", payload))
                             .await;
@@ -1207,13 +1275,13 @@ impl Node {
                                     BlockAcceptance::Duplicate => false,
                                 };
                                 if should_relay {
-                                    let payload = serde_json::to_vec(&InvMsg {
+                                    let inv_msg = InvMsg {
                                         items: vec![InvItem {
                                             inv_type: InvType::Block,
                                             hash,
                                         }],
-                                    })
-                                    .unwrap_or_default();
+                                    };
+                                    let payload = encode_for_peer(&inv_msg, peer_version);
                                     drop(chain);
                                     self.peer_manager
                                         .broadcast_except(
@@ -1265,13 +1333,13 @@ impl Node {
                                 fee_sats,
                                 size_bytes,
                             });
-                            let payload = serde_json::to_vec(&InvMsg {
+                            let inv_msg = InvMsg {
                                 items: vec![InvItem {
                                     inv_type: InvType::Transaction,
                                     hash: txid,
                                 }],
-                            })
-                            .unwrap_or_default();
+                            };
+                            let payload = encode_for_peer(&inv_msg, peer_version);
                             drop(mp);
                             self.peer_manager
                                 .broadcast_except(peer_addr, NetMessage::new("inv", payload))
@@ -1299,7 +1367,7 @@ impl Node {
             },
 
             "getblocks" => {
-                if let Ok(req) = serde_json::from_slice::<GetBlocksMsg>(&msg.payload) {
+                if let Ok(req) = decode_for_peer::<GetBlocksMsg>(&msg.payload, peer_version) {
                     // Bound the locator: an unbounded list turns this handler
                     // into O(locator × height) hash work per message.
                     const MAX_LOCATOR_HASHES: usize = 64;
@@ -1341,7 +1409,8 @@ impl Node {
                         }
 
                         if !items.is_empty() {
-                            let payload = serde_json::to_vec(&InvMsg { items }).unwrap_or_default();
+                            let inv_msg = InvMsg { items };
+                            let payload = encode_for_peer(&inv_msg, peer_version);
                             drop(chain);
                             self.peer_manager
                                 .send_to(peer_addr, NetMessage::new("inv", payload))
@@ -1866,10 +1935,10 @@ impl Node {
                 }
             }
 
-            // ── getdata: serve blocks and transactions to requesting peers ──────
+            // ── getdata: serve blocks and transactions to requesting peers (V2 bincode) ──────
             "getdata" => {
                 if let Ok(req) =
-                    serde_json::from_slice::<vtorrent_p2p::message::GetDataMsg>(&msg.payload)
+                    decode_for_peer::<vtorrent_p2p::message::GetDataMsg>(&msg.payload, peer_version)
                 {
                     for item in &req.items {
                         match item.inv_type {
@@ -1879,32 +1948,28 @@ impl Node {
                                     chain.get_block(&item.hash).cloned()
                                 };
                                 if let Some(block) = maybe_block {
-                                    match serde_json::to_vec(&block) {
-                                        Ok(payload) => {
-                                            self.peer_manager
-                                                .send_to(
-                                                    peer_addr,
-                                                    NetMessage::new("block", payload),
-                                                )
-                                                .await;
-                                            tracing::debug!(
-                                                "getdata: served block {} to {}",
-                                                hex::encode(item.hash),
-                                                peer_addr
-                                            );
-                                        }
-                                        Err(e) => tracing::warn!(
-                                            "getdata: failed to serialize block {}: {}",
+                                    let payload =
+                                        self.serialize_block_for_peer(&block, peer_version);
+                                    // payload is never empty for valid block; bincode fallback handled inside
+                                    if !payload.is_empty() {
+                                        self.peer_manager
+                                            .send_to(peer_addr, NetMessage::new("block", payload))
+                                            .await;
+                                        tracing::debug!(
+                                            "getdata: served block {} to {} (v2={})",
                                             hex::encode(item.hash),
-                                            e
-                                        ),
+                                            peer_addr,
+                                            crate::node::p2p::is_v2_peer_version(peer_version)
+                                        );
                                     }
                                 } else {
                                     // Block not found — reply with notfound
-                                    let nf = serde_json::to_vec(&InvMsg {
-                                        items: vec![item.clone()],
-                                    })
-                                    .unwrap_or_default();
+                                    let nf = encode_for_peer(
+                                        &InvMsg {
+                                            items: vec![item.clone()],
+                                        },
+                                        peer_version,
+                                    );
                                     self.peer_manager
                                         .send_to(peer_addr, NetMessage::new("notfound", nf))
                                         .await;
@@ -1916,28 +1981,25 @@ impl Node {
                                     mp.get_transaction(&item.hash).cloned()
                                 };
                                 if let Some(tx) = maybe_tx {
-                                    match serde_json::to_vec(&tx) {
-                                        Ok(payload) => {
-                                            self.peer_manager
-                                                .send_to(peer_addr, NetMessage::new("tx", payload))
-                                                .await;
-                                            tracing::debug!(
-                                                "getdata: served tx {} to {}",
-                                                hex::encode(item.hash),
-                                                peer_addr
-                                            );
-                                        }
-                                        Err(e) => tracing::warn!(
-                                            "getdata: failed to serialize tx {}: {}",
+                                    let payload = self.serialize_tx_for_peer(&tx, peer_version);
+                                    if !payload.is_empty() {
+                                        self.peer_manager
+                                            .send_to(peer_addr, NetMessage::new("tx", payload))
+                                            .await;
+                                        tracing::debug!(
+                                            "getdata: served tx {} to {} (v2={})",
                                             hex::encode(item.hash),
-                                            e
-                                        ),
+                                            peer_addr,
+                                            crate::node::p2p::is_v2_peer_version(peer_version)
+                                        );
                                     }
                                 } else {
-                                    let nf = serde_json::to_vec(&InvMsg {
-                                        items: vec![item.clone()],
-                                    })
-                                    .unwrap_or_default();
+                                    let nf = encode_for_peer(
+                                        &InvMsg {
+                                            items: vec![item.clone()],
+                                        },
+                                        peer_version,
+                                    );
                                     self.peer_manager
                                         .send_to(peer_addr, NetMessage::new("notfound", nf))
                                         .await;
@@ -1949,9 +2011,9 @@ impl Node {
                 }
             }
 
-            // ── Header sync (getheaders / headers) ────────────────────────────
+            // ── Header sync (getheaders / headers) — V2 bincode ────────────────────────────
             "getheaders" => {
-                if let Ok(req) = serde_json::from_slice::<GetHeadersMsg>(&msg.payload) {
+                if let Ok(req) = decode_for_peer::<GetHeadersMsg>(&msg.payload, peer_version) {
                     // Same locator bound as getblocks (amplification guard).
                     const MAX_LOCATOR_HASHES: usize = 64;
                     if req.block_locator_hashes.len() > MAX_LOCATOR_HASHES {
@@ -2005,8 +2067,8 @@ impl Node {
                         }
 
                         if !headers.is_empty() {
-                            let payload =
-                                serde_json::to_vec(&HeadersMsg { headers }).unwrap_or_default();
+                            let headers_msg = HeadersMsg { headers };
+                            let payload = encode_for_peer(&headers_msg, peer_version);
                             drop(chain);
                             self.peer_manager
                                 .send_to(peer_addr, NetMessage::new("headers", payload))
@@ -2017,7 +2079,7 @@ impl Node {
             }
 
             "headers" => {
-                if let Ok(resp) = serde_json::from_slice::<HeadersMsg>(&msg.payload) {
+                if let Ok(resp) = decode_for_peer::<HeadersMsg>(&msg.payload, peer_version) {
                     let count = resp.headers.len();
                     if count == 0 {
                         return Ok(());
@@ -2046,9 +2108,10 @@ impl Node {
                     };
 
                     if !want.is_empty() {
-                        let payload =
-                            serde_json::to_vec(&vtorrent_p2p::message::GetDataMsg { items: want })
-                                .unwrap_or_default();
+                        let payload = encode_for_peer(
+                            &vtorrent_p2p::message::GetDataMsg { items: want },
+                            peer_version,
+                        );
                         self.peer_manager
                             .send_to(peer_addr, NetMessage::new("getdata", payload))
                             .await;
@@ -2057,12 +2120,12 @@ impl Node {
                     // If we got a full batch, there may be more — send another getheaders
                     if count == HEADERS_PER_BATCH {
                         let last_hash = decoded.last().map(|hdr| hdr.hash()).unwrap_or([0u8; 32]);
-                        let payload = serde_json::to_vec(&GetHeadersMsg {
-                            version: 70001,
+                        let gh_msg = GetHeadersMsg {
+                            version: PROTOCOL_VERSION,
                             block_locator_hashes: vec![last_hash],
                             hash_stop: [0u8; 32],
-                        })
-                        .unwrap_or_default();
+                        };
+                        let payload = encode_for_peer(&gh_msg, peer_version);
                         self.peer_manager
                             .send_to(peer_addr, NetMessage::new("getheaders", payload))
                             .await;
@@ -2097,10 +2160,8 @@ impl Node {
             }
 
             cmd => {
-                tracing::trace!("Unhandled message '{}' from {}", cmd, peer_addr);
-                self.peer_manager
-                    .record_misbehaviour(peer_addr, Misbehaviour::UnknownMessage)
-                    .await;
+                // Unknown commands are ignored (not banned) — forward compatibility for V2 rollout
+                tracing::trace!("Unknown command '{}' from {} — ignored", cmd, peer_addr);
             }
         }
         Ok(())

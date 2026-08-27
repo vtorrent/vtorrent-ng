@@ -153,8 +153,10 @@ pub async fn run_peer(
 
                         match cmd.as_str() {
                             "version" => {
-                                // Parse and store peer version
-                                if let Ok(v) = serde_json::from_slice::<VersionMsg>(&msg.payload) {
+                                // Parse and store peer version (V2 bincode with JSON fallback)
+                                let parsed = bincode::deserialize::<VersionMsg>(&msg.payload)
+                                    .or_else(|_| serde_json::from_slice(&msg.payload));
+                                if let Ok(v) = parsed {
                                     // Self-connection detection: if their
                                     // nonce is one WE recently sent, this
                                     // socket loops back to us.
@@ -186,9 +188,13 @@ pub async fn run_peer(
                                 }
                             }
                             "ping" => {
-                                // Respond with pong
-                                if let Ok(ping) = serde_json::from_slice::<PingMsg>(&msg.payload) {
+                                // Respond with pong (V2 bincode with JSON fallback — ping is tiny so JSON size is fine, but handle both)
+                                let ping = bincode::deserialize::<PingMsg>(&msg.payload)
+                                    .or_else(|_| serde_json::from_slice(&msg.payload));
+                                if let Ok(ping) = ping {
                                     let pong = PingMsg { nonce: ping.nonce };
+                                    // Keep pong as JSON for maximum compatibility (peer may be legacy)
+                                    // Try bincode if peer already advertised V2, else JSON — but at peer level we don't know version yet, so send JSON
                                     if let Ok(payload) = serde_json::to_vec(&pong) {
                                         let _ = framed.send(NetMessage::new("pong", payload)).await;
                                     }

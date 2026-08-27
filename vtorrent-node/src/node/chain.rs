@@ -31,17 +31,41 @@ pub fn persist_block() {
 }
 
 impl super::Node {
-    /// Deserialize a block from raw bytes.
-    /// Currently uses JSON for simplicity; will be replaced with binary encoding.
+    /// Deserialize a block from raw bytes (V2 bincode with JSON fallback).
     /// Lock order `chain → mempool` not needed (pure decode).
     pub(crate) fn deserialize_block(&self, bytes: &[u8]) -> Result<Block> {
+        // Try V2 bincode first (2-5x smaller), then JSON fallback for legacy peers
+        if let Ok(block) = bincode::deserialize::<Block>(bytes) {
+            return Ok(block);
+        }
         serde_json::from_slice(bytes)
             .map_err(|e| NodeError::Chain(format!("Block deserialization failed: {}", e)))
     }
 
-    /// Deserialize a transaction from raw bytes.
+    /// Deserialize a transaction from raw bytes (V2 bincode with JSON fallback).
     pub(crate) fn deserialize_tx(&self, bytes: &[u8]) -> Result<Transaction> {
+        if let Ok(tx) = bincode::deserialize::<Transaction>(bytes) {
+            return Ok(tx);
+        }
         serde_json::from_slice(bytes)
             .map_err(|e| NodeError::Chain(format!("TX deserialization failed: {}", e)))
+    }
+
+    /// Serialize a block for wire transport (V2 bincode with JSON fallback for legacy peers).
+    pub(crate) fn serialize_block_for_peer(&self, block: &Block, peer_version: u32) -> Vec<u8> {
+        if crate::node::p2p::is_v2_peer_version(peer_version) {
+            bincode::serialize(block).unwrap_or_default()
+        } else {
+            serde_json::to_vec(block).unwrap_or_default()
+        }
+    }
+
+    /// Serialize a transaction for wire transport (V2 bincode with JSON fallback).
+    pub(crate) fn serialize_tx_for_peer(&self, tx: &Transaction, peer_version: u32) -> Vec<u8> {
+        if crate::node::p2p::is_v2_peer_version(peer_version) {
+            bincode::serialize(tx).unwrap_or_default()
+        } else {
+            serde_json::to_vec(tx).unwrap_or_default()
+        }
     }
 }

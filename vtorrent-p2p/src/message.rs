@@ -94,8 +94,62 @@ pub const NODE_NETWORK: u64 = 1;
 pub const NODE_TORRENT: u64 = 2;
 pub const NODE_DEX: u64 = 4;
 
-/// Current protocol version.
-pub const PROTOCOL_VERSION: u32 = 70001;
+/// Current protocol version — V2 bincode wire format (2-5x smaller than JSON).
+///
+/// Legacy peers advertised 70001 (JSON). V2 peers advertise 2 and use `bincode`
+/// for `inv`/`getdata`/`block`/`tx`. Fallback to JSON is retained for one
+/// release so old seeds remain reachable; unknown commands are ignored.
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// Legacy protocol version (JSON wire format) — retained for fallback.
+pub const LEGACY_PROTOCOL_VERSION: u32 = 70001;
+
+/// Encode a message using V2 bincode wire format.
+pub fn encode_v2<T: serde::Serialize>(msg: &T) -> crate::error::Result<Vec<u8>> {
+    bincode::serialize(msg).map_err(|e| crate::error::P2pError::Decode(e.to_string()))
+}
+
+/// Decode a message using V2 bincode wire format.
+pub fn decode_v2<T: for<'de> serde::Deserialize<'de>>(bytes: &[u8]) -> crate::error::Result<T> {
+    bincode::deserialize(bytes).map_err(|e| crate::error::P2pError::Decode(e.to_string()))
+}
+
+/// Returns `true` if the peer supports the V2 bincode wire format.
+pub fn is_v2_peer(version: u32) -> bool {
+    version >= PROTOCOL_VERSION && version != LEGACY_PROTOCOL_VERSION
+}
+
+/// Encode a message using the appropriate wire format for `peer_version`.
+///
+/// - V2 peers (`>= PROTOCOL_VERSION` except legacy) → bincode
+/// - Legacy peers (`LEGACY_PROTOCOL_VERSION` or <2) → JSON
+pub fn encode_for_peer<T: serde::Serialize>(msg: &T, peer_version: u32) -> Vec<u8> {
+    if is_v2_peer(peer_version) {
+        encode_v2(msg).unwrap_or_default()
+    } else {
+        serde_json::to_vec(msg).unwrap_or_default()
+    }
+}
+
+/// Decode a message using the appropriate wire format for `peer_version`.
+///
+/// V2 path tries bincode first with a JSON fallback so a rolling upgrade
+/// does not strand peers whose `version` already advertises 2 but still send
+/// JSON.
+pub fn decode_for_peer<T: for<'de> serde::Deserialize<'de>>(
+    bytes: &[u8],
+    peer_version: u32,
+) -> crate::error::Result<T> {
+    if is_v2_peer(peer_version) {
+        match decode_v2(bytes) {
+            Ok(v) => Ok(v),
+            Err(_) => serde_json::from_slice(bytes)
+                .map_err(|e| crate::error::P2pError::Decode(e.to_string())),
+        }
+    } else {
+        serde_json::from_slice(bytes).map_err(|e| crate::error::P2pError::Decode(e.to_string()))
+    }
+}
 
 /// Inventory vector types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,20 +164,20 @@ pub enum InvType {
 }
 
 /// An inventory item (type + 32-byte hash).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InvItem {
     pub inv_type: InvType,
     pub hash: [u8; 32],
 }
 
 /// Inventory message — announces new transactions or blocks.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InvMsg {
     pub items: Vec<InvItem>,
 }
 
 /// GetData message — requests specific items by inventory.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDataMsg {
     pub items: Vec<InvItem>,
 }
@@ -272,5 +326,18 @@ mod tests {
         assert_eq!(v.start_height, 100);
         assert!(v.services & NODE_NETWORK != 0);
         assert!(v.services & NODE_TORRENT != 0);
+    }
+
+    #[test]
+    fn v2_bincode_roundtrip() {
+        let msg = InvMsg {
+            items: vec![InvItem {
+                inv_type: InvType::Block,
+                hash: [7u8; 32],
+            }],
+        };
+        let v2 = encode_v2(&msg).unwrap();
+        assert!(v2.len() < serde_json::to_vec(&msg).unwrap().len());
+        assert_eq!(decode_v2::<InvMsg>(&v2).unwrap(), msg);
     }
 }
