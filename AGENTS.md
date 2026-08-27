@@ -10,7 +10,7 @@ and legacy wallet recovery. Desktop UI is React + TypeScript + Tailwind, package
 
 ## Repository Layout
 
-This is a Cargo workspace with 16 crates plus a frontend:
+This is a Cargo workspace with 19 crates plus a frontend:
 
 | Crate | Purpose |
 |---|---|
@@ -30,6 +30,7 @@ This is a Cargo workspace with 16 crates plus a frontend:
 | `vtorrent-onion` | Tor / I2P privacy transport |
 | `vtorrent-cli` | Command-line client |
 | `vtorrent-torrent` | BitTorrent client (metainfo, tracker, peer wire, incentives) |
+| `vtorrent-wallet-service` | Shared payment builder (single `build_payment` path for daemon/tauri) |
 | `vtorrent-ui` | React + TypeScript + Tailwind frontend (not a crate) |
 
 ## Build & Test Commands
@@ -38,7 +39,7 @@ This is a Cargo workspace with 16 crates plus a frontend:
 # Build the whole workspace
 cargo build --workspace
 
-# Run all tests (456 tests currently pass)
+# Run all tests (539 tests currently pass)
 cargo test --workspace
 
 # Formatting and linting (enforced in CI)
@@ -79,10 +80,10 @@ cd vtorrent-ui && pnpm lint
 - **Address format**: Base58Check prefix `70` (`V...`); WIF prefix `198` (`7...`).
 - **Genesis**: deterministic, embeds a legacy UTXO snapshot (59,375 addresses,
   11,589,746.63 VTR) for old-holder claims.
-- **DNS seeds**: `seed1.vtorrent.org` (Falkenstein DE) and `seed2.vtorrent.org`
-  (Helsinki FI), managed at IONOS. Bootstrap peers also published via
-  `bootstrap/peers.txt` (GitHub-hosted) and `BOOTSTRAP_PEERS`
-  (see `docs/dns-seeds.md`).
+- **DNS seeds**: `seed1.vtorrent.org` (Falkenstein DE), `seed2.vtorrent.org`
+  (Helsinki FI), and `seed3.vtorrent.org` (Ashburn US), managed at IONOS.
+  Bootstrap peers also published via `bootstrap/peers.txt` (GitHub-hosted)
+  and `BOOTSTRAP_PEERS` (see `docs/dns-seeds.md`).
 
 ## Performance
 
@@ -118,7 +119,36 @@ GitHub Actions (`.github/workflows/build.yml`) runs on every push/PR:
 1. `cargo test --workspace --all-features`
 2. `cargo fmt --all -- --check` + `cargo clippy ... -D warnings`
 3. `cargo audit` (weekly + on push)
-4. Desktop builds (Linux/macOS/Windows) only on `v*` tags.
+4. `cargo machete` (unused dependency detection)
+5. Benchmark regression gate (`scripts/bench-gate.sh`, >25% threshold)
+6. Desktop builds (Linux/macOS/Windows) only on `v*` tags.
+
+## Key Docs
+
+| Doc | Purpose |
+|---|---|
+| `docs/mainnet-readiness.md` | Launch checklist (consensus, soak, seeds, release) |
+| `docs/oncall-runbook.md` | On-call procedures (restart, reorg, ban, recovery) |
+| `docs/explorer-faucet-policy.md` | Explorer deferral + faucet policy |
+| `docs/backup-policy.md` | Seed node backup + genesis/snapshot archival |
+| `docs/rpc-api.md` | Complete RPC reference (43 endpoints) |
+| `docs/dns-seeds.md` | DNS seed deployment guide |
+| `docs/atomic-swap-protocol.md` | Cross-chain HTLC flow + timing |
+
+## Operational Features
+
+- **Mempool persistence**: `mempool.json` saved every 60s + on graceful shutdown;
+  re-verified against UTXO set on reload via `admit_with_chain_fee`.
+- **Staking auto-resume**: `staking.json` persists intent; auto-resumes on
+  wallet unlock after restart.
+- **Wallet persistence**: Encrypted wallet (Argon2id + ChaCha20-Poly1305) at
+  `<data-dir>/wallet.json` (0600, atomic); restored locked on startup.
+- **Reorg persistence**: `rollback_tip` + fork-block appends; store self-heals
+  corrupt tails at startup.
+- **Event-bridge lag reconciliation**: Dropped `NewBlock` events trigger full
+  store rebuild from in-memory chain.
+- **Release overflow-checks**: `[profile.release] overflow-checks = true` —
+  consensus arithmetic panics (rejects block) instead of silently wrapping.
 
 ## Never Commit
 
