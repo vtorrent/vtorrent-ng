@@ -228,7 +228,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Address format**: Legacy `V...` addresses (Base58Check prefix 75) are preserved in the snapshot; new chain uses the same prefix for continuity
 - **WIF format**: Legacy `7...` WIF keys (prefix 203) are imported and re-encoded for the new chain
-- **Network magic**: New `0x56 0x54 0x52 0x4E` (`"VTRN"`); legacy was `0x19 0x3b 0x2f 0x5a`
+- **Network magic**: New `0x56 0x54 0x52 0x58` (`"VTRX"`); legacy was `0x19 0x3b 0x2f 0x5a`
 - **P2P port**: `22526`; RPC port `22525`
 
 ### Removed

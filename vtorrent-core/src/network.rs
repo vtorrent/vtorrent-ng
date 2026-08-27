@@ -40,7 +40,7 @@ pub mod mainnet {
     pub const SECRET_KEY_PREFIX: u8 = 198;
 
     /// New network magic bytes.
-    pub const NETWORK_MAGIC: [u8; 4] = [0x56, 0x54, 0x52, 0x4E]; // "VTRN"
+    pub const NETWORK_MAGIC: [u8; 4] = [0x56, 0x54, 0x52, 0x58]; // "VTRX"
 
     /// New P2P port.
     pub const P2P_PORT: u16 = 22526;
@@ -48,7 +48,7 @@ pub mod mainnet {
     /// New RPC port.
     pub const RPC_PORT: u16 = 22527;
 
-    /// Maximum supply of new VTRN (20 million coins, 8 decimal places).
+    /// Maximum supply of new VTRX (20 million coins, 8 decimal places).
     /// Mirrors the legacy supply for 1:1 claim ratio.
     pub const MAX_SUPPLY: u64 = 20_000_000 * 100_000_000;
 

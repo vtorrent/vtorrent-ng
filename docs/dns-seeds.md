@@ -128,7 +128,7 @@ git clone https://github.com/sipa/bitcoin-seeder.git
 cd bitcoin-seeder
 
 # Configure for vTorrent
-# Edit main.cpp: change port to 22526 and magic bytes to 0x5654524E ("VTRN")
+# Edit main.cpp: change port to 22526 and magic bytes to 0x56545258 ("VTRX")
 
 make
 ./dnsseed -h dnsseed.vtorrent.org -n vps1.vtorrent.org -m admin@vtorrent.org
@@ -140,7 +140,7 @@ make
 |---|---|
 | **P2P Port** | 22526 |
 | **RPC Port** | 22525 (localhost only) |
-| **Network Magic** | `0x56 0x54 0x52 0x4E` (`"VTRN"`) |
+| **Network Magic** | `0x56 0x54 0x52 0x58` (`"VTRX"`) |
 | **Chain ID** | `vtorrent-mainnet` |
 
 ## Testnet

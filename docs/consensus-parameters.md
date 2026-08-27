@@ -7,7 +7,7 @@
 
 | Parameter | Value | Source |
 |---|---|---|
-| Network magic | `0x56 0x54 0x52 0x4E` (`"VTRN"`) | `vtorrent-core/src/network.rs:43` |
+| Network magic | `0x56 0x54 0x52 0x58` (`"VTRX"`) | `vtorrent-core/src/network.rs:43` |
 | P2P port | `22526` | `vtorrent-core/src/network.rs:46` |
 | RPC port | `22527` (daemon default `22525`) | `vtorrent-core/src/network.rs:49` |
 | Protocol version | `2` (V2 bincode wire) | `vtorrent-p2p/src/message.rs:102` |

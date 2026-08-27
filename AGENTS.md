@@ -73,7 +73,7 @@ cd vtorrent-ui && pnpm lint
 
 ## Key Details
 
-- **Network magic**: `0x56 0x54 0x52 0x4E` (`"VTRN"`); legacy was `0x19 0x3b 0x2f 0x5a`.
+- **Network magic**: `0x56 0x54 0x52 0x58` (`"VTRX"`); legacy was `0x19 0x3b 0x2f 0x5a`.
 - **Ports**: P2P `22526`, RPC `22525` (testnet uses the same defaults).
 - **Consensus**: Proof-of-Stake, 60s target block time, 5% annual reward, min stake 1 VTR,
   min stake age 6 hours (max stake age 6 days), max supply 20,000,000 VTR.
