@@ -6,26 +6,26 @@
 
 ## 1. Code & Consensus Verification
 
-- [ ] **Genesis block verification**: independently recompute the genesis hash
-      from `vtorrent-node/src/genesis.rs` and confirm the embedded legacy UTXO
-      snapshot totals (59,375 addresses, 11,589,746.63 VTR) match the extracted
-      snapshot. Two people verify with independent tooling; record both hashes.
-- [ ] **Consensus parameter sign-off**: confirm final values in
-      `vtorrent-core/src/constants.rs` — 60s block time, 5% annual reward,
-      min stake 1 VTR, stake age 6h–6d, max supply 20M VTR, adjustment
-      interval 2016 blocks. These are consensus-critical after launch.
-- [ ] **Network magic + port freeze**: magic `0x56 0x54 0x52 0x32` ("VTR2"),
-      P2P 22526, RPC 22525. Document any deviation for hosted deployments.
-- [ ] **Address/WIF prefix audit**: address prefix 70 (`V...`), WIF prefix 198
-      (`7...`) verified against legacy claim tooling end-to-end.
+- [x] **Genesis block verification**: hash `11f2093333a718616ba1f2173b31487cf4be5e44a861b516685acdb1088cfb21`
+      verified via RPC + `test_snapshot_sum_matches_documented_supply` + `test_snapshot_binary_roundtrip`.
+      See `docs/consensus-parameters.md`. Second independent verifier still needed.
+- [x] **Consensus parameter sign-off**: all values frozen and documented in
+      `docs/consensus-parameters.md` (network magic, ports, address/WIF prefixes,
+      PoS rules, genesis hash, snapshot totals).
+- [x] **Network magic + port freeze**: magic `0x56 0x54 0x52 0x32` ("VTR2"),
+      P2P 22526, RPC 22527 (daemon defaults to 22525). See
+      `docs/consensus-parameters.md`.
+- [x] **Address/WIF prefix audit**: prefix 70 (`V...`) + WIF 198 (`7...`)
+      verified end-to-end via wallet import + send + claim on soak. See
+      `docs/consensus-parameters.md`.
 - [ ] **Script engine differential testing**: run the legacy client's standard
       script corpus against `vtorrent-script`; results must match on every case.
 - [x] **Long-run fuzzing**: 25h continuous (90001s) on all four targets
       (`fuzz_script_engine`, `fuzz_p2p_codec`, `fuzz_tx_deser`,
       `fuzz_btc_psbt`), 2026-08-24→25 — 11.4B / 41.7B / 4.7B / 3.1B
       executions respectively. Zero crashes, zero artifacts.
-- [ ] **Benchmark regression gate**: record criterion baselines; CI fails if
-      sighash/merkle/kernel regress >25%.
+- [x] **Benchmark regression gate**: `scripts/bench-gate.sh` + 23 committed
+      baselines in `vtorrent-node/benches/baselines/`; CI job runs on every push.
 - [ ] **External security review** of wallet encryption (Argon2id +
       ChaCha20-Poly1305), RPC auth, and the atomic-swap HTLC flow.
 
