@@ -7,5 +7,6 @@ pub mod error;
 pub mod events;
 pub mod genesis;
 pub mod mempool;
+#[path = "node/mod.rs"]
 pub mod node;
 pub mod staking;
