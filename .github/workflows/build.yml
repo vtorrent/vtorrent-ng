@@ -93,6 +93,27 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  # ─── Unused dependency detection ────────────────────────────────────────────
+  machete:
+    name: Cargo Machete (unused deps)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@cargo-machete
+      - name: Detect unused dependencies
+        run: cargo machete
+
+  # ─── Benchmark regression gate ──────────────────────────────────────────────
+  bench-gate:
+    name: Benchmark Regression Gate (>25%)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run benchmark gate
+        run: bash scripts/bench-gate.sh
+
   # ─── Desktop builds ─────────────────────────────────────────────────────────
   build-desktop:
     name: Build (${{ matrix.platform }})

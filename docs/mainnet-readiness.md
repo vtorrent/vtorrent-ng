@@ -67,10 +67,12 @@
       `bootstrap/peers.txt` (replacing examples); CDN mirrors confirmed fresh.
 - [x] **`BOOTSTRAP_PEERS` constant updated** in
       `vtorrent-p2p/src/peer_manager.rs` to match deployed seeds.
-- [ ] **Block explorer API** available (read-only chain index) or explicitly
-      deferred with an announcement.
-- [ ] **Faucet service** for new users on testnet only; mainnet faucet policy
-      documented (or none).
+- [x] **Block explorer API** — explicitly deferred with an announcement:
+      `docs/explorer-faucet-policy.md` (RPC covers all primitives; minimal
+      explorer planned post-launch).
+- [x] **Faucet service** — policy documented: no mainnet faucet (hard-capped
+      supply); regtest faucet remains for development. See
+      `docs/explorer-faucet-policy.md`.
 
 ## 4. Release Engineering
 
@@ -96,8 +98,9 @@
       seed failover/DNS changes, reorg response, and alert triage. Formal
       on-call rotation (who carries the pager) is a launch-week decision.
 - [ ] **Incident comms channel** announced (status page / Telegram / X).
-- [ ] **Backup policy**: seed node data dirs snapshotted daily; genesis and
-      snapshot binaries archived in ≥2 locations with checksums published.
+- [x] **Backup policy**: `docs/backup-policy.md` — daily cron snapshot of seed
+      data dirs (14-day retention); genesis/snapshot binaries in repo + release
+      assets, checksums appended at tag time.
 
 ## Known Blockers
 
