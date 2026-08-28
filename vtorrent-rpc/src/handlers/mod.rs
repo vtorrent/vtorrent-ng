@@ -49,22 +49,37 @@ pub(crate) async fn broadcast_btc(state: &AppState, raw: &[u8]) -> RpcResult<[u8
             .await
             .ok()
             .and_then(|mut it| it.next())
-            .ok_or_else(|| RpcError::Internal(format!("BTC peer {} unresolved", host)))?;
+            .ok_or_else(|| {
+                RpcError::Internal(format!(
+                    "BTC peer {} DNS resolution failed — check btc_peer config",
+                    host
+                ))
+            })?;
         vtorrent_btc::sync::broadcast_tx_to(raw, network, &[addr])
             .await
-            .map_err(|e| RpcError::Internal(format!("BTC broadcast failed: {}", e)))
+            .map_err(|e| RpcError::Internal(format!("BTC broadcast to {} failed: {}", host, e)))
     } else {
-        vtorrent_btc::sync::broadcast_tx(raw)
-            .await
-            .map_err(|e| RpcError::Internal(format!("BTC broadcast failed: {}", e)))
+        vtorrent_btc::sync::broadcast_tx(raw).await.map_err(|e| {
+            RpcError::Internal(format!("BTC broadcast (no peer configured) failed: {}", e))
+        })
     }
 }
 
 pub(crate) fn parse_hash32(value: &str, field: &str) -> RpcResult<[u8; 32]> {
-    let bytes =
-        hex::decode(value).map_err(|_| RpcError::BadRequest(format!("Invalid {} hex", field)))?;
+    let bytes = hex::decode(value).map_err(|_| {
+        RpcError::BadRequest(format!(
+            "Invalid {} hex: expected 64 hex characters, got \"{}\"",
+            field,
+            &value[..value.len().min(64)]
+        ))
+    })?;
     if bytes.len() != 32 {
-        return Err(RpcError::BadRequest(format!("{} must be 32 bytes", field)));
+        return Err(RpcError::BadRequest(format!(
+            "{} must be exactly 32 bytes (64 hex chars), got {} bytes ({} hex chars)",
+            field,
+            bytes.len(),
+            value.len()
+        )));
     }
     let mut hash = [0u8; 32];
     hash.copy_from_slice(&bytes);
@@ -153,7 +168,13 @@ pub(crate) fn transaction_lookup_response(
 pub fn validate_p2pkh(addr: &str) -> RpcResult<()> {
     vtorrent_core::address::validate_p2pkh(addr)
         .map(|_| ())
-        .map_err(|e| RpcError::BadRequest(format!("Invalid address: {}", e)))
+        .map_err(|e| {
+            RpcError::BadRequest(format!(
+                "Invalid address: must be a VTR address with prefix V, got \"{}\": {}",
+                &addr[..addr.len().min(80)],
+                e
+            ))
+        })
 }
 
 /// Verify the hot wallet passphrase (and TOTP code if 2FA is enabled) and
@@ -165,21 +186,28 @@ pub(crate) async fn verify_wallet_auth(
     otp_code: Option<&str>,
 ) -> RpcResult<String> {
     let encrypted = state.wallet_encrypted.read().await.clone().ok_or_else(|| {
-        RpcError::BadRequest("No wallet imported. Call POST /api/v1/wallet/import first.".into())
+        RpcError::BadRequest("No wallet imported. Call POST /api/v1/wallet/import first. (hint: import a WIF key before unlocking)".into())
     })?;
 
-    let plaintext = vtorrent_wallet::encryption::decrypt_wallet(&encrypted, passphrase)
-        .map_err(|_| RpcError::Unauthorized("Incorrect passphrase".into()))?;
-    let wif = String::from_utf8(plaintext)
-        .map_err(|_| RpcError::Internal("Wallet decryption produced invalid data".into()))?;
+    let plaintext =
+        vtorrent_wallet::encryption::decrypt_wallet(&encrypted, passphrase).map_err(|_| {
+            RpcError::Unauthorized("Incorrect passphrase — wallet decryption failed".into())
+        })?;
+    let wif = String::from_utf8(plaintext).map_err(|_| {
+        RpcError::Internal(
+            "Wallet decryption produced invalid UTF-8 data — key may be corrupted".into(),
+        )
+    })?;
 
     if let Some(secret) = state.wallet_totp_secret.read().await.as_ref() {
-        let code = otp_code
-            .filter(|c| !c.is_empty())
-            .ok_or_else(|| RpcError::Unauthorized("TOTP code required".into()))?;
-        secret
-            .verify_or_error(code)
-            .map_err(|_| RpcError::Unauthorized("Invalid TOTP code".into()))?;
+        let code = otp_code.filter(|c| !c.is_empty()).ok_or_else(|| {
+            RpcError::Unauthorized(
+                "TOTP code required — 2FA is enabled on this wallet, provide otp_code".into(),
+            )
+        })?;
+        secret.verify_or_error(code).map_err(|_| {
+            RpcError::Unauthorized("Invalid TOTP code — check your authenticator app".into())
+        })?;
     }
 
     Ok(wif)
@@ -289,10 +317,13 @@ pub async fn get_block_by_hash(
     let chain = state.chain.lock().await;
     let height = chain
         .block_height(&hash)
-        .ok_or_else(|| RpcError::NotFound(format!("Active-chain block {} not found", hash_hex)))?;
-    let block = chain
-        .get_block(&hash)
-        .ok_or_else(|| RpcError::Internal(format!("Indexed block {} is missing", hash_hex)))?;
+        .ok_or_else(|| RpcError::NotFound(format!("Block not found at hash {}", hash_hex)))?;
+    let block = chain.get_block(&hash).ok_or_else(|| {
+        RpcError::Internal(format!(
+            "Block at height {} indexed but block data missing — store may be corrupt",
+            height
+        ))
+    })?;
     Ok(Json(block_response(hash, height, block)))
 }
 
@@ -302,11 +333,18 @@ pub async fn get_block_by_height(
     Path(height): Path<u32>,
 ) -> RpcResult<Json<BlockResponse>> {
     let chain = state.chain.lock().await;
-    let hash = chain
-        .block_hash_at_height(height)
-        .ok_or_else(|| RpcError::NotFound(format!("Block at height {} not found", height)))?;
+    let hash = chain.block_hash_at_height(height).ok_or_else(|| {
+        RpcError::NotFound(format!(
+            "Block not found at height {} (chain tip is at {})",
+            height,
+            chain.best_height()
+        ))
+    })?;
     let block = chain.get_block_at_height(height).ok_or_else(|| {
-        RpcError::Internal(format!("Indexed block at height {} is missing", height))
+        RpcError::Internal(format!(
+            "Block at height {} has hash but block data missing — store may be corrupt",
+            height
+        ))
     })?;
     Ok(Json(block_response(hash, height, block)))
 }
@@ -331,9 +369,12 @@ pub async fn get_transaction_by_id(
     }
 
     let mempool = state.mempool.lock().await;
-    let tx = mempool
-        .get_transaction(&txid)
-        .ok_or_else(|| RpcError::NotFound(format!("Transaction {} not found", txid_hex)))?;
+    let tx = mempool.get_transaction(&txid).ok_or_else(|| {
+        RpcError::NotFound(format!(
+            "Transaction {} not found in chain or mempool",
+            txid_hex
+        ))
+    })?;
     Ok(Json(transaction_lookup_response(txid, tx, None, None)))
 }
 
@@ -345,18 +386,27 @@ pub async fn broadcast_transaction(
     const MAX_RAW_TX_BYTES: usize = 1_000_000;
 
     if req.raw_tx.is_empty() {
-        return Err(RpcError::BadRequest("raw_tx is required".into()));
+        return Err(RpcError::BadRequest(
+            "raw_tx is required — provide a hex-encoded signed transaction".into(),
+        ));
     }
-    let raw = hex::decode(&req.raw_tx)
-        .map_err(|_| RpcError::BadRequest("raw_tx must be hexadecimal".into()))?;
+    let raw = hex::decode(&req.raw_tx).map_err(|_| {
+        RpcError::BadRequest(format!(
+            "raw_tx must be valid hexadecimal, got {} chars starting with \"{}\"",
+            req.raw_tx.len(),
+            &req.raw_tx[..req.raw_tx.len().min(16)]
+        ))
+    })?;
     if raw.len() > MAX_RAW_TX_BYTES {
         return Err(RpcError::BadRequest(format!(
-            "raw_tx exceeds the {} byte limit",
+            "raw_tx is {} bytes, exceeds the {} byte limit",
+            raw.len(),
             MAX_RAW_TX_BYTES
         )));
     }
-    let tx: vtorrent_node::block::Transaction = bincode::deserialize(&raw)
-        .map_err(|_| RpcError::BadRequest("raw_tx is not a valid vTorrent transaction".into()))?;
+    let tx: vtorrent_node::block::Transaction = bincode::deserialize(&raw).map_err(|e| {
+        RpcError::BadRequest(format!("raw_tx is not a valid vTorrent transaction: {}", e))
+    })?;
     let txid = tx.txid();
 
     {
@@ -368,7 +418,13 @@ pub async fn broadcast_transaction(
         let mut mempool = state.mempool.lock().await;
         mempool
             .admit_with_chain_fee(&chain, tx.clone())
-            .map_err(|e| RpcError::BadRequest(format!("Mempool rejected transaction: {}", e)))?;
+            .map_err(|e| {
+                RpcError::BadRequest(format!(
+                    "Mempool rejected transaction {}: {}",
+                    hex::encode(txid),
+                    e
+                ))
+            })?;
     }
 
     let relayed = match &state.tx_submit {
@@ -439,15 +495,22 @@ pub async fn add_spv_headers(
 
     let mut headers: Vec<SpvHeader> = Vec::with_capacity(req.headers.len());
     for h in req.headers {
-        let prev_hash_bytes = hex::decode(&h.prev_hash)
-            .map_err(|_| RpcError::BadRequest(format!("invalid prev_hash hex: {}", h.prev_hash)))?;
+        let prev_hash_bytes = hex::decode(&h.prev_hash).map_err(|_| {
+            RpcError::BadRequest(format!(
+                "invalid prev_hash hex \"{}\": must be 64 hex characters",
+                &h.prev_hash[..h.prev_hash.len().min(64)]
+            ))
+        })?;
         let merkle_root_bytes = hex::decode(&h.merkle_root).map_err(|_| {
-            RpcError::BadRequest(format!("invalid merkle_root hex: {}", h.merkle_root))
+            RpcError::BadRequest(format!(
+                "invalid merkle_root hex \"{}\": must be 64 hex characters",
+                &h.merkle_root[..h.merkle_root.len().min(64)]
+            ))
         })?;
 
         if prev_hash_bytes.len() != 32 || merkle_root_bytes.len() != 32 {
             return Err(RpcError::BadRequest(
-                "prev_hash and merkle_root must be 32 bytes (64 hex chars)".into(),
+                format!("prev_hash ({} bytes) and merkle_root ({} bytes) must each be exactly 32 bytes (64 hex chars)", prev_hash_bytes.len(), merkle_root_bytes.len()),
             ));
         }
 
@@ -469,9 +532,9 @@ pub async fn add_spv_headers(
 
     let added = {
         let mut chain = state.spv_chain.write().await;
-        chain
-            .add_headers(headers)
-            .map_err(|e| RpcError::BadRequest(format!("SPV header validation failed: {}", e)))?
+        chain.add_headers(headers).map_err(|e| {
+            RpcError::BadRequest(format!("SPV header chain rejected batch of headers: {}", e))
+        })?
     };
 
     let chain = state.spv_chain.read().await;
@@ -542,11 +605,13 @@ pub async fn get_btc_address(State(state): State<Arc<AppState>>) -> RpcResult<Js
     // wallet's address index (a GET must not mutate state).
     let btc = state.btc_wallet.read().await;
     match &*btc {
-        None => Err(RpcError::BadRequest("BTC wallet not initialized".into())),
+        None => Err(RpcError::BadRequest(
+            "BTC wallet not initialized — call POST /api/v1/btc/init first".into(),
+        )),
         Some(w) => {
             let address = w
                 .current_address()
-                .map_err(|e| RpcError::Internal(e.to_string()))?;
+                .map_err(|e| RpcError::Internal(format!("Failed to derive BTC address: {}", e)))?;
             Ok(Json(json!({ "address": address })))
         }
     }
@@ -558,10 +623,14 @@ pub async fn send_btc(
     Json(req): Json<BtcSendRequest>,
 ) -> RpcResult<Json<BtcSendResponse>> {
     if req.amount_satoshis == 0 {
-        return Err(RpcError::BadRequest("Amount must be non-zero".into()));
+        return Err(RpcError::BadRequest(
+            "Amount must be non-zero — provide a positive satoshi amount".into(),
+        ));
     }
     if req.to_address.trim().is_empty() {
-        return Err(RpcError::BadRequest("Recipient address is required".into()));
+        return Err(RpcError::BadRequest(
+            "Recipient address is required — provide a valid Bitcoin address".into(),
+        ));
     }
     let fee = req.fee_satoshis.unwrap_or(1_000);
 
@@ -571,11 +640,19 @@ pub async fn send_btc(
     // it onto the network).
     let (txid_hex, raw, spent_utxos) = {
         let mut btc = state.btc_wallet.write().await;
-        let w = btc
-            .as_mut()
-            .ok_or_else(|| RpcError::BadRequest("BTC wallet not initialized".into()))?;
+        let w = btc.as_mut().ok_or_else(|| {
+            RpcError::BadRequest(
+                "BTC wallet not initialized — call POST /api/v1/btc/init first".into(),
+            )
+        })?;
         w.send_to(&req.to_address, req.amount_satoshis, fee)
-            .map_err(|e| RpcError::BadRequest(e.to_string()))?
+            .map_err(|e| {
+                RpcError::BadRequest(format!(
+                    "BTC send_to {} failed: {}",
+                    &req.to_address[..req.to_address.len().min(64)],
+                    e
+                ))
+            })?
     };
 
     // Broadcast to the Bitcoin network.
@@ -607,25 +684,34 @@ pub async fn faucet(
         ));
     }
     if req.address.trim().is_empty() {
-        return Err(RpcError::BadRequest("Address is required".into()));
+        return Err(RpcError::BadRequest(
+            "Address is required — provide a valid VTR address".into(),
+        ));
     }
     let amount = req
         .amount_satoshis
         .unwrap_or(100 * vtorrent_node::consensus::COIN);
     if amount == 0 {
-        return Err(RpcError::BadRequest("Amount must be non-zero".into()));
+        return Err(RpcError::BadRequest(
+            "Amount must be non-zero — provide a positive satoshi amount".into(),
+        ));
     }
 
     let (txid, height, block) = {
         let mut chain = state.chain.lock().await;
-        let txid = chain
-            .mint_to_address(&req.address, amount)
-            .map_err(|e| RpcError::Internal(e.to_string()))?;
+        let txid = chain.mint_to_address(&req.address, amount).map_err(|e| {
+            RpcError::Internal(format!(
+                "Failed to mint {} sats to {}: {}",
+                amount,
+                &req.address[..req.address.len().min(64)],
+                e
+            ))
+        })?;
         let height = chain.best_height();
         let block = chain
             .get_block_at_height(height)
             .cloned()
-            .ok_or_else(|| RpcError::Internal("minted block not found".into()))?;
+            .ok_or_else(|| RpcError::Internal(format!("Minted block at height {} not found immediately after mint — chain state inconsistent", height)))?;
         (txid, height, block)
     };
 
@@ -659,12 +745,18 @@ pub async fn debug_order_preimage(
         ));
     }
     let order_book = state.order_book.read().await;
-    let order = order_book
-        .get_order(&order_id)
-        .ok_or_else(|| RpcError::NotFound(format!("Order {} not found", order_id)))?;
-    let preimage = order
-        .preimage
-        .ok_or_else(|| RpcError::BadRequest("Order has no preimage".into()))?;
+    let order = order_book.get_order(&order_id).ok_or_else(|| {
+        RpcError::NotFound(format!(
+            "Order {} not found — check the order_id and ensure the order exists",
+            order_id
+        ))
+    })?;
+    let preimage = order.preimage.ok_or_else(|| {
+        RpcError::BadRequest(format!(
+            "Order {} has no preimage — only maker-created orders have preimages",
+            order_id
+        ))
+    })?;
     Ok(Json(json!({
         "order_id": order_id,
         "preimage": hex::encode(preimage),
@@ -687,15 +779,15 @@ pub async fn debug_mocktime(
         ));
     }
     let ts = req.get("timestamp").cloned();
-    let new_time = match ts {
-        None | Some(Value::Null) => None,
-        Some(Value::Number(n)) => n.as_u64(),
-        _ => {
-            return Err(RpcError::BadRequest(
-                "timestamp must be a number or null".into(),
-            ))
-        }
-    };
+    let new_time =
+        match ts {
+            None | Some(Value::Null) => None,
+            Some(Value::Number(n)) => n.as_u64(),
+            _ => return Err(RpcError::BadRequest(
+                "timestamp must be a number (unix seconds) or null to reset — got unexpected type"
+                    .into(),
+            )),
+        };
     *state.mock_time.write().await = new_time;
     Ok(Json(json!({ "mock_time": new_time })))
 }

@@ -585,6 +585,48 @@ impl Engine {
                                 push_arith_result(&mut self.stack, a.checked_sub(b))?;
                             }
                         }
+                        0x95 => {
+                            // OP_MUL
+                            if executing {
+                                let b = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                let a = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                push_arith_result(&mut self.stack, a.checked_mul(b))?;
+                            }
+                        }
+                        0x96 => {
+                            // OP_DIV
+                            if executing {
+                                let b = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                let a = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                push_arith_result(&mut self.stack, a.checked_div(b))?;
+                            }
+                        }
+                        0x97 => {
+                            // OP_MOD
+                            if executing {
+                                let b = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                let a = decode_script_num(
+                                    &self.stack.pop().ok_or(ScriptError::EmptyStack)?,
+                                    MAX_ARITH_NUM_LEN,
+                                )?;
+                                push_arith_result(&mut self.stack, a.checked_rem(b))?;
+                            }
+                        }
                         0x8b => {
                             // OP_1ADD
                             if executing {
@@ -1854,5 +1896,165 @@ mod tests {
         let mut e = Engine::new(ScriptEnv::default());
         e.execute(&sig, &sp)
             .expect("OP_1NEGATE + OP_ABS should succeed");
+    }
+
+    #[test]
+    fn test_op_within_true() {
+        let sig = Script::new();
+        let mut sp = Script::new();
+        sp.push_data(&5i64.to_le_bytes()[..1]).unwrap(); // x = 5
+        sp.push_data(&1i64.to_le_bytes()[..1]).unwrap(); // min = 1
+        sp.push_data(&10i64.to_le_bytes()[..1]).unwrap(); // max = 10
+        sp.push_opcode(0xa5); // OP_WITHIN → 1 (1 <= 5 < 10)
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp)
+            .expect("5 within [1,10) should succeed");
+    }
+
+    #[test]
+    fn test_op_within_false_below_min() {
+        let sig = Script::new();
+        let mut sp = Script::new();
+        sp.push_data(&0i64.to_le_bytes()[..1]).unwrap(); // x = 0
+        sp.push_data(&1i64.to_le_bytes()[..1]).unwrap(); // min = 1
+        sp.push_data(&10i64.to_le_bytes()[..1]).unwrap(); // max = 10
+        sp.push_opcode(0xa5); // OP_WITHIN → 0 (0 < 1)
+        sp.push_opcode(0x51); // OP_1 (for execute final check)
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp)
+            .expect("0 within [1,10) should evaluate without error");
+    }
+
+    #[test]
+    fn test_op_ripemd160() {
+        let sig = Script::new();
+        let mut sp = Script::new();
+        sp.push_data(b"hello").unwrap();
+        sp.push_opcode(0xa6); // OP_RIPEMD160
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp).expect("OP_RIPEMD160 should succeed");
+        let result = e.stack.last().unwrap();
+        assert_eq!(result.len(), 20);
+        let expected: [u8; 20] = [
+            0x10, 0x8f, 0x07, 0xb8, 0x38, 0x24, 0x12, 0x61, 0x2c, 0x04, 0x8d, 0x07, 0xd1, 0x3f,
+            0x81, 0x41, 0x18, 0x44, 0x5a, 0xcd,
+        ];
+        assert_eq!(result.as_slice(), &expected);
+    }
+
+    #[test]
+    fn test_op_sha1() {
+        let sig = Script::new();
+        let mut sp = Script::new();
+        sp.push_data(b"hello").unwrap();
+        sp.push_opcode(0xa7); // OP_SHA1
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp).expect("OP_SHA1 should succeed");
+        let result = e.stack.last().unwrap();
+        assert_eq!(result.len(), 20);
+        let expected: [u8; 20] = [
+            0xaa, 0xf4, 0xc6, 0x1d, 0xdc, 0xc5, 0xe8, 0xa2, 0xda, 0xbe, 0xde, 0x0f, 0x3b, 0x48,
+            0x2c, 0xd9, 0xae, 0xa9, 0x43, 0x4d,
+        ];
+        assert_eq!(result.as_slice(), &expected);
+    }
+
+    #[test]
+    fn test_op_hash160() {
+        let sig = Script::new();
+        let mut sp = Script::new();
+        sp.push_data(b"hello").unwrap();
+        sp.push_opcode(0xa9); // OP_HASH160
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp).expect("OP_HASH160 should succeed");
+        let result = e.stack.last().unwrap();
+        assert_eq!(result.len(), 20);
+        let expected: [u8; 20] = [
+            0xb6, 0xa9, 0xc8, 0xc2, 0x30, 0x72, 0x2b, 0x7c, 0x74, 0x83, 0x31, 0xa8, 0xb4, 0x50,
+            0xf0, 0x55, 0x66, 0xdc, 0x7d, 0x0f,
+        ];
+        assert_eq!(result.as_slice(), &expected);
+    }
+
+    #[test]
+    fn test_op_hash256() {
+        let sig = Script::new();
+        let mut sp = Script::new();
+        sp.push_data(b"hello").unwrap();
+        sp.push_opcode(0xaa); // OP_HASH256
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp).expect("OP_HASH256 should succeed");
+        let result = e.stack.last().unwrap();
+        assert_eq!(result.len(), 32);
+        let expected: [u8; 32] = [
+            0x95, 0x95, 0xc9, 0xdf, 0x90, 0x07, 0x51, 0x48, 0xeb, 0x06, 0x86, 0x03, 0x65, 0xdf,
+            0x33, 0x58, 0x4b, 0x75, 0xbf, 0xf7, 0x82, 0xa5, 0x10, 0xc6, 0xcd, 0x48, 0x83, 0xa4,
+            0x19, 0x83, 0x3d, 0x50,
+        ];
+        assert_eq!(result.as_slice(), &expected);
+    }
+
+    #[test]
+    fn test_op_equalverify_pass() {
+        let sig = Script::new();
+        let mut sp = Script::new();
+        sp.push_data(b"abc").unwrap();
+        sp.push_data(b"abc").unwrap();
+        sp.push_opcode(0x88); // OP_EQUALVERIFY
+        sp.push_opcode(0x51); // OP_1 (leave truthy for execute)
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp)
+            .expect("OP_EQUALVERIFY on equal items should pass");
+    }
+
+    #[test]
+    fn test_op_equalverify_fail() {
+        let sig = Script::new();
+        let mut sp = Script::new();
+        sp.push_data(b"abc").unwrap();
+        sp.push_data(b"xyz").unwrap();
+        sp.push_opcode(0x88); // OP_EQUALVERIFY
+        sp.push_opcode(0x51); // OP_1 (never reached)
+        let mut e = Engine::new(ScriptEnv::default());
+        assert!(
+            e.execute(&sig, &sp).is_err(),
+            "OP_EQUALVERIFY on different items must fail"
+        );
+    }
+
+    #[test]
+    fn test_op_mul() {
+        let sig = Script::new();
+        let mut sp = Script::new();
+        sp.push_opcode(0x53); // 3
+        sp.push_opcode(0x54); // 4
+        sp.push_opcode(0x95); // OP_MUL → 12
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp).expect("OP_MUL should succeed");
+        assert_eq!(e.stack.last().unwrap(), &vec![12]);
+    }
+
+    #[test]
+    fn test_op_div() {
+        let sig = Script::new();
+        let mut sp = Script::new();
+        sp.push_opcode(0x5a); // 10
+        sp.push_opcode(0x53); // 3
+        sp.push_opcode(0x96); // OP_DIV → 3 (integer division)
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp).expect("OP_DIV should succeed");
+        assert_eq!(e.stack.last().unwrap(), &vec![3]);
+    }
+
+    #[test]
+    fn test_op_mod() {
+        let sig = Script::new();
+        let mut sp = Script::new();
+        sp.push_opcode(0x5a); // 10
+        sp.push_opcode(0x53); // 3
+        sp.push_opcode(0x97); // OP_MOD → 1
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp).expect("OP_MOD should succeed");
+        assert_eq!(e.stack.last().unwrap(), &vec![1]);
     }
 }

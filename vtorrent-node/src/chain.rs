@@ -509,7 +509,16 @@ impl Chain {
                 prev_block.header.bits,
                 prev_block.header.stake_modifier,
                 prev_hash,
-            )?;
+            )
+            .map_err(|e| {
+                tracing::warn!(
+                    height = %(height - 1),
+                    hash = %hex::encode(block_hash),
+                    reason = %e,
+                    "Block validation failed on main chain"
+                );
+                e
+            })?;
 
             let parent_work = self.cumulative_work.get(&prev_hash).copied().unwrap_or(0);
             self.cumulative_work.insert(block_hash, parent_work + 1);
@@ -542,14 +551,18 @@ impl Chain {
                 self.journals.pop_front();
             }
 
+            let tx_count = block.transactions.len();
+            let block_timestamp = block.header.timestamp;
             self.index_block_transactions(block_hash, &block);
             self.blocks.insert(block_hash, block);
             self.height_index.push(block_hash);
 
             tracing::info!(
-                "Main chain extended to height {} ({})",
-                height,
-                hex::encode(block_hash)
+                height = %height,
+                hash = %hex::encode(block_hash),
+                tx_count = %tx_count,
+                timestamp = %block_timestamp,
+                "Block accepted on main chain"
             );
 
             Ok(BlockAcceptance::MainChain {
@@ -631,6 +644,11 @@ impl Chain {
             }
         } else {
             // Parent not known — orphan block, reject for now
+            tracing::warn!(
+                hash = %hex::encode(block_hash),
+                parent = %hex::encode(prev_hash),
+                "Orphan block rejected: parent not found"
+            );
             Err(NodeError::InvalidBlock(format!(
                 "Orphan block {}: parent {} not found",
                 hex::encode(block_hash),

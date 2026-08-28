@@ -113,7 +113,7 @@ pub async fn get_wallet_utxos(
             .clone()
             .ok_or_else(|| {
                 RpcError::BadRequest(
-                    "address query parameter is required when no wallet is imported".into(),
+                    "address query parameter is required when no wallet is imported — import a wallet first or provide ?address=".into(),
                 )
             })?,
     };
@@ -188,26 +188,49 @@ pub async fn import_wallet(
     use vtorrent_wallet::tx_builder::pubkey_to_vtorrent_address;
 
     if req.wif.is_empty() {
-        return Err(RpcError::BadRequest("WIF private key is required".into()));
+        return Err(RpcError::BadRequest(
+            "WIF private key is required — provide a base58-encoded WIF string".into(),
+        ));
     }
     if req.passphrase.is_empty() {
-        return Err(RpcError::BadRequest("Passphrase is required".into()));
+        return Err(RpcError::BadRequest(
+            "Passphrase is required — used for Argon2id + ChaCha20-Poly1305 wallet encryption"
+                .into(),
+        ));
     }
 
     // Validate the WIF key and derive the address.
-    let key = PrivateKey::from_wif(&req.wif)
-        .map_err(|e| RpcError::BadRequest(format!("Invalid WIF key: {}", e)))?;
+    let key = PrivateKey::from_wif(&req.wif).map_err(|e| {
+        RpcError::BadRequest(format!(
+            "Invalid WIF key: {} — expected base58 with valid checksum",
+            e
+        ))
+    })?;
     let secp = Secp256k1::new();
-    let secret_key = SecretKey::from_slice(key.as_bytes())
-        .map_err(|e| RpcError::BadRequest(format!("Invalid key bytes: {}", e)))?;
+    let secret_key = SecretKey::from_slice(key.as_bytes()).map_err(|e| {
+        RpcError::BadRequest(format!(
+            "Invalid key bytes: {} — WIF decoded but secret key is malformed",
+            e
+        ))
+    })?;
     let pubkey = secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
-    let address = pubkey_to_vtorrent_address(&pubkey.serialize())
-        .map_err(|e| RpcError::Internal(e.to_string()))?;
+    let address = pubkey_to_vtorrent_address(&pubkey.serialize()).map_err(|e| {
+        RpcError::Internal(format!(
+            "Failed to derive VTR address from public key: {}",
+            e
+        ))
+    })?;
 
     // Encrypt the WIF with the passphrase so unlock/send can verify it.
     let encrypted =
-        vtorrent_wallet::encryption::encrypt_wallet(req.wif.as_bytes(), &req.passphrase)
-            .map_err(|e| RpcError::Internal(format!("Wallet encryption failed: {}", e)))?;
+        vtorrent_wallet::encryption::encrypt_wallet(req.wif.as_bytes(), &req.passphrase).map_err(
+            |e| {
+                RpcError::Internal(format!(
+                    "Wallet encryption failed (Argon2id + ChaCha20-Poly1305): {}",
+                    e
+                ))
+            },
+        )?;
 
     *state.wallet_encrypted.write().await = Some(encrypted);
     *state.wallet_change_address.write().await = Some(address.clone());
@@ -216,7 +239,12 @@ pub async fn import_wallet(
         .as_deref()
         .map(vtorrent_wallet::otp::TotpSecret::from_base32)
         .transpose()
-        .map_err(|e| RpcError::BadRequest(format!("Invalid TOTP secret: {}", e)))?;
+        .map_err(|e| {
+            RpcError::BadRequest(format!(
+                "Invalid TOTP secret: {} — expected base32-encoded secret",
+                e
+            ))
+        })?;
     // The wallet starts locked; the WIF is only decrypted into memory on unlock.
     *state.wallet_wif.write().await = None;
     *state.wallet_unlock_expiry.write().await = None;
@@ -246,17 +274,25 @@ async fn persist_wallet(state: &AppState) -> RpcResult<()> {
     let blob = serde_json::json!({ "version": 1u8, "wallet": encrypted });
 
     let tmp = path.with_extension("json.tmp");
-    let bytes = serde_json::to_vec_pretty(&blob)
-        .map_err(|e| RpcError::Internal(format!("Wallet serialize failed: {}", e)))?;
-    std::fs::write(&tmp, &bytes)
-        .map_err(|e| RpcError::Internal(format!("Wallet write failed: {}", e)))?;
+    let bytes = serde_json::to_vec_pretty(&blob).map_err(|e| {
+        RpcError::Internal(format!("Wallet serialize failed (JSON encoding): {}", e))
+    })?;
+    std::fs::write(&tmp, &bytes).map_err(|e| {
+        RpcError::Internal(format!("Wallet write to {} failed: {}", tmp.display(), e))
+    })?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
     }
-    std::fs::rename(&tmp, path)
-        .map_err(|e| RpcError::Internal(format!("Wallet rename failed: {}", e)))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        RpcError::Internal(format!(
+            "Wallet rename from {} to {} failed: {}",
+            tmp.display(),
+            path.display(),
+            e
+        ))
+    })?;
     tracing::info!("Encrypted wallet persisted to {}", path.display());
     Ok(())
 }
@@ -281,10 +317,14 @@ pub async fn send_vtr(
         return Err(RpcError::WalletLocked);
     }
     if req.amount_satoshis == 0 {
-        return Err(RpcError::BadRequest("Amount must be greater than 0".into()));
+        return Err(RpcError::BadRequest(
+            "Amount must be greater than 0 — provide a positive satoshi amount".into(),
+        ));
     }
     if req.to_address.is_empty() {
-        return Err(RpcError::BadRequest("Recipient address is required".into()));
+        return Err(RpcError::BadRequest(
+            "Recipient address is required — provide a valid VTR address".into(),
+        ));
     }
 
     // Re-verify the passphrase (and TOTP if 2FA is enabled) before signing.
@@ -296,7 +336,7 @@ pub async fn send_vtr(
         .read()
         .await
         .clone()
-        .ok_or_else(|| RpcError::Internal("Change address not set".into()))?;
+        .ok_or_else(|| RpcError::Internal("Change address not set — wallet imported but no change address derived (state inconsistent)".into()))?;
 
     // Collect all UTXOs from the chain that belong to the hot wallet address.
     let utxos: Vec<vtorrent_node::chain::Utxo> = {
@@ -305,9 +345,10 @@ pub async fn send_vtr(
     };
 
     if utxos.is_empty() {
-        return Err(RpcError::BadRequest(
-            "No UTXOs available for this wallet address. Fund the address first.".into(),
-        ));
+        return Err(RpcError::BadRequest(format!(
+            "No UTXOs available for wallet address {} — fund the address first by sending VTR to it",
+            &change_address[..change_address.len().min(64)]
+        )));
     }
 
     // Build and sign the transaction using the mempool's recommended fee
@@ -324,7 +365,15 @@ pub async fn send_vtr(
         .min_absolute_fee(vtorrent_wallet::tx_builder::MIN_ABSOLUTE_FEE_SATS)
         .sign_with_wif(&wif)
         .build(&utxos)
-        .map_err(|e| RpcError::BadRequest(format!("Transaction build failed: {}", e)))?;
+        .map_err(|e| {
+            RpcError::BadRequest(format!(
+                "Transaction build failed ({} inputs, {} sats to {}): {}",
+                utxos.len(),
+                req.amount_satoshis,
+                &req.to_address[..req.to_address.len().min(64)],
+                e
+            ))
+        })?;
 
     let txid = hex::encode(tx.txid());
     // Actual fee = selected inputs − outputs. Summing the whole wallet UTXO
@@ -349,7 +398,15 @@ pub async fn send_vtr(
         let mut mempool = state.mempool.lock().await;
         mempool
             .admit_with_chain_fee(&chain, tx.clone())
-            .map_err(|e| RpcError::BadRequest(format!("Mempool rejected transaction: {}", e)))?;
+            .map_err(|e| {
+                RpcError::BadRequest(format!(
+                    "Mempool rejected transaction {} ({} sats to {}): {}",
+                    txid,
+                    req.amount_satoshis,
+                    &req.to_address[..req.to_address.len().min(64)],
+                    e
+                ))
+            })?;
     }
     // If a live P2P node is attached, submit the tx for network broadcast.
     if let Some(ref sender) = state.tx_submit {
@@ -375,7 +432,9 @@ pub async fn unlock_wallet(
     Json(req): Json<UnlockRequest>,
 ) -> RpcResult<Json<UnlockResponse>> {
     if req.passphrase.is_empty() {
-        return Err(RpcError::BadRequest("Passphrase is required".into()));
+        return Err(RpcError::BadRequest(
+            "Passphrase is required — provide the wallet encryption passphrase".into(),
+        ));
     }
 
     // Verify the passphrase (and TOTP if 2FA is enabled) and decrypt the WIF

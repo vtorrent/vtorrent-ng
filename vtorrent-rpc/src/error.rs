@@ -62,7 +62,7 @@ pub type RpcResult<T> = std::result::Result<T, RpcError>;
 impl From<vtorrent_node::error::NodeError> for RpcError {
     fn from(e: vtorrent_node::error::NodeError) -> Self {
         tracing::error!("Node error: {}", e);
-        RpcError::NodeError("Node operation failed".into())
+        RpcError::NodeError(format!("Node operation failed: {}", e))
     }
 }
 
@@ -71,11 +71,11 @@ impl From<vtorrent_wallet::error::WalletError> for RpcError {
         match e {
             vtorrent_wallet::error::WalletError::WalletLocked => RpcError::WalletLocked,
             vtorrent_wallet::error::WalletError::IncorrectPassphrase => {
-                RpcError::Unauthorized("Incorrect passphrase".into())
+                RpcError::Unauthorized("Incorrect passphrase — wallet decryption failed".into())
             }
             other => {
                 tracing::error!("Wallet error: {}", other);
-                RpcError::Internal("Wallet operation failed".into())
+                RpcError::Internal(format!("Wallet operation failed: {}", other))
             }
         }
     }
@@ -84,6 +84,6 @@ impl From<vtorrent_wallet::error::WalletError> for RpcError {
 impl From<vtorrent_btc::error::BtcError> for RpcError {
     fn from(e: vtorrent_btc::error::BtcError) -> Self {
         tracing::error!("BTC error: {}", e);
-        RpcError::Internal("Bitcoin operation failed".into())
+        RpcError::Internal(format!("Bitcoin operation failed: {}", e))
     }
 }

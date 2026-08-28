@@ -327,11 +327,40 @@ impl Mempool {
         chain: &crate::chain::Chain,
         tx: Transaction,
     ) -> Result<u64> {
-        let fee = chain
-            .compute_tx_fee(&tx)
-            .ok_or_else(|| NodeError::Chain("Transaction inputs not found in UTXO set".into()))?;
-        self.add_transaction_with_fee(tx, fee)?;
-        Ok(fee)
+        let txid = tx.txid();
+        let fee = match chain.compute_tx_fee(&tx) {
+            Some(f) => f,
+            None => {
+                tracing::warn!(
+                    txid = %hex::encode(txid),
+                    mempool_size = %self.entries.len(),
+                    "Rejected: inputs not found in UTXO set"
+                );
+                return Err(NodeError::Chain(
+                    "Transaction inputs not found in UTXO set".into(),
+                ));
+            }
+        };
+        match self.add_transaction_with_fee(tx, fee) {
+            Ok(()) => {
+                tracing::info!(
+                    txid = %hex::encode(txid),
+                    fee_sats = %fee,
+                    mempool_size = %self.entries.len(),
+                    "Admitted transaction to mempool"
+                );
+                Ok(fee)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    txid = %hex::encode(txid),
+                    reason = %e,
+                    mempool_size = %self.entries.len(),
+                    "Rejected transaction"
+                );
+                Err(e)
+            }
+        }
     }
 
     /// Persist all entries to `path` as JSON. Best-effort durability for

@@ -46,12 +46,15 @@ pub async fn place_dex_order(
         return Err(RpcError::WalletLocked);
     }
     if req.offer_amount_satoshis == 0 || req.request_amount_satoshis == 0 {
-        return Err(RpcError::BadRequest(
-            "DEX order amounts must be greater than zero".into(),
-        ));
+        return Err(RpcError::BadRequest(format!(
+            "DEX order amounts must be greater than zero (offer: {} sats, request: {} sats)",
+            req.offer_amount_satoshis, req.request_amount_satoshis
+        )));
     }
     if req.request_asset.trim().is_empty() {
-        return Err(RpcError::BadRequest("Requested asset is required".into()));
+        return Err(RpcError::BadRequest(
+            "Requested asset is required — specify the target asset (e.g. \"BTC\")".into(),
+        ));
     }
     if vtorrent_core::address::validate_p2pkh(&req.maker_address).is_err() {
         return Err(RpcError::BadRequest(format!(
@@ -65,12 +68,15 @@ pub async fn place_dex_order(
     } else if req.expiry_secs <= u32::MAX as u64 {
         req.expiry_secs as u32
     } else {
-        return Err(RpcError::BadRequest("DEX order expiry is too large".into()));
+        return Err(RpcError::BadRequest(format!(
+            "DEX order expiry {} seconds is too large — must fit in u32",
+            req.expiry_secs
+        )));
     };
     if !(MIN_HTLC_LOCKTIME..=MAX_HTLC_LOCKTIME).contains(&locktime) {
         return Err(RpcError::BadRequest(format!(
-            "DEX order expiry must be between {} and {} seconds",
-            MIN_HTLC_LOCKTIME, MAX_HTLC_LOCKTIME
+            "DEX order expiry {} seconds is outside valid range [{}, {}] seconds",
+            locktime, MIN_HTLC_LOCKTIME, MAX_HTLC_LOCKTIME
         )));
     }
 
@@ -109,17 +115,28 @@ pub async fn cancel_dex_order(
         let order_book = state.order_book.read().await;
         order_book.get_order(&id).cloned()
     };
-    let order = order.ok_or_else(|| RpcError::NotFound(format!("Order {} not found", id)))?;
+    let order = order.ok_or_else(|| {
+        RpcError::NotFound(format!(
+            "Order {} not found — check the order_id and ensure it exists on this node",
+            id
+        ))
+    })?;
     if let Some(maker) = maker {
         if order.maker_address != maker {
-            return Err(RpcError::Unauthorized(
-                "Only the maker may cancel this order".into(),
-            ));
+            return Err(RpcError::Unauthorized(format!(
+                "Only the maker ({}) may cancel order {} — your wallet address ({}) does not match",
+                &order.maker_address[..order.maker_address.len().min(64)],
+                id,
+                &maker[..maker.len().min(64)]
+            )));
         }
     }
     let cancelled = state.order_book.write().await.cancel_order(&id);
     if !cancelled {
-        return Err(RpcError::NotFound(format!("Order {} not found", id)));
+        return Err(RpcError::NotFound(format!(
+            "Order {} could not be cancelled — it may have already been cancelled or filled",
+            id
+        )));
     }
     Ok(Json(
         json!({ "success": true, "message": format!("Order {} cancelled", id) }),
@@ -162,20 +179,38 @@ pub async fn submit_claim(
     use vtorrent_wallet::tx_builder::{p2pkh_script_pubkey, pubkey_to_vtorrent_address};
 
     if req.wif_private_key.is_empty() {
-        return Err(RpcError::BadRequest("WIF private key is required".into()));
+        return Err(RpcError::BadRequest(
+            "WIF private key is required — provide the legacy address's WIF key to prove ownership"
+                .into(),
+        ));
     }
     if req.recipient_address.is_empty() {
-        return Err(RpcError::BadRequest("Recipient address is required".into()));
+        return Err(RpcError::BadRequest(
+            "Recipient address is required — provide a valid VTR address to receive the claim"
+                .into(),
+        ));
     }
 
-    let key = PrivateKey::from_wif(&req.wif_private_key)
-        .map_err(|e| RpcError::BadRequest(format!("Invalid WIF key: {}", e)))?;
+    let key = PrivateKey::from_wif(&req.wif_private_key).map_err(|e| {
+        RpcError::BadRequest(format!(
+            "Invalid WIF key: {} — expected base58 with valid checksum",
+            e
+        ))
+    })?;
     let secp = Secp256k1::new();
-    let secret_key = SecretKey::from_slice(key.as_bytes())
-        .map_err(|e| RpcError::BadRequest(format!("Invalid key bytes: {}", e)))?;
+    let secret_key = SecretKey::from_slice(key.as_bytes()).map_err(|e| {
+        RpcError::BadRequest(format!(
+            "Invalid key bytes: {} — WIF decoded but secret key is malformed",
+            e
+        ))
+    })?;
     let pubkey = secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
-    let derived_address = pubkey_to_vtorrent_address(&pubkey.serialize())
-        .map_err(|e| RpcError::Internal(e.to_string()))?;
+    let derived_address = pubkey_to_vtorrent_address(&pubkey.serialize()).map_err(|e| {
+        RpcError::Internal(format!(
+            "Failed to derive VTR address from public key: {}",
+            e
+        ))
+    })?;
 
     let claimable = get_legacy_balance(&derived_address);
     if claimable == 0 {
@@ -195,8 +230,13 @@ pub async fn submit_claim(
         }
     }
 
-    let script_pubkey = p2pkh_script_pubkey(&req.recipient_address)
-        .map_err(|e| RpcError::BadRequest(format!("Invalid recipient address: {}", e)))?;
+    let script_pubkey = p2pkh_script_pubkey(&req.recipient_address).map_err(|e| {
+        RpcError::BadRequest(format!(
+            "Invalid recipient address {}: {}",
+            &req.recipient_address[..req.recipient_address.len().min(64)],
+            e
+        ))
+    })?;
 
     let msg_hash = vtorrent_node::consensus::claim_message_hash(&derived_address);
     let msg = secp256k1::Message::from_digest(msg_hash);
@@ -223,9 +263,15 @@ pub async fn submit_claim(
     {
         let chain = state.chain.lock().await;
         let mut mempool = state.mempool.lock().await;
-        mempool
-            .admit_with_chain_fee(&chain, tx)
-            .map_err(|e| RpcError::BadRequest(format!("Mempool rejected claim: {}", e)))?;
+        mempool.admit_with_chain_fee(&chain, tx).map_err(|e| {
+            RpcError::BadRequest(format!(
+                "Mempool rejected claim {} for {} ({} sats): {}",
+                txid,
+                &derived_address[..derived_address.len().min(64)],
+                claimable,
+                e
+            ))
+        })?;
     }
 
     tracing::info!(

@@ -138,6 +138,9 @@ pub struct NodeConfig {
     /// When `true`, the node operates in regtest mode:
     /// - A faucet RPC endpoint mints coins to arbitrary addresses
     pub regtest: bool,
+    /// When `true` and `regtest` is also true, lower min/max stake age
+    /// for rapid regtest soak testing (60s min, 1h max).
+    pub regtest_fast_stake: bool,
     /// Outbound routing policy for clearnet, Tor SOCKS5, and I2P SAM peers.
     pub transport: TransportConfig,
 }
@@ -158,6 +161,7 @@ impl Default for NodeConfig {
             use_overlay: true,
             testnet: false,
             regtest: false,
+            regtest_fast_stake: false,
             transport: TransportConfig::default(),
         }
     }
@@ -250,13 +254,15 @@ impl Node {
         let (overlay_tx, overlay_rx) = mpsc::channel(256);
 
         let staking = if config.staking_enabled {
-            config
-                .staking_address
-                .as_ref()
-                .map(|addr| match &config.staking_wif {
+            config.staking_address.as_ref().map(|addr| {
+                let fast = config.regtest && config.regtest_fast_stake;
+                match &config.staking_wif {
+                    Some(wif) if fast => StakingEngine::with_wif_fast(addr.clone(), wif.clone()),
                     Some(wif) => StakingEngine::with_wif(addr.clone(), wif.clone()),
+                    None if fast => StakingEngine::new_fast(addr.clone()),
                     None => StakingEngine::new(addr.clone()),
-                })
+                }
+            })
         } else {
             None
         };
@@ -313,13 +319,15 @@ impl Node {
         let (overlay_tx, overlay_rx) = mpsc::channel(256);
 
         let staking = if config.staking_enabled {
-            config
-                .staking_address
-                .as_ref()
-                .map(|addr| match &config.staking_wif {
+            config.staking_address.as_ref().map(|addr| {
+                let fast = config.regtest && config.regtest_fast_stake;
+                match &config.staking_wif {
+                    Some(wif) if fast => StakingEngine::with_wif_fast(addr.clone(), wif.clone()),
                     Some(wif) => StakingEngine::with_wif(addr.clone(), wif.clone()),
+                    None if fast => StakingEngine::new_fast(addr.clone()),
                     None => StakingEngine::new(addr.clone()),
-                })
+                }
+            })
         } else {
             None
         };
@@ -680,9 +688,12 @@ impl Node {
                 Some(cmd) = self.staking_rx.recv() => {
                     match cmd {
                         StakingCommand::Start { address, wif } => {
-                            self.staking = Some(match wif {
-                                Some(w) => StakingEngine::with_wif(address, w),
-                                None => StakingEngine::new(address),
+                            let fast = self.config.regtest && self.config.regtest_fast_stake;
+                            self.staking = Some(match (wif, fast) {
+                                (Some(w), true) => StakingEngine::with_wif_fast(address, w),
+                                (Some(w), false) => StakingEngine::with_wif(address, w),
+                                (None, true) => StakingEngine::new_fast(address),
+                                (None, false) => StakingEngine::new(address),
                             });
                             tracing::info!("Staking enabled via runtime control");
                         }

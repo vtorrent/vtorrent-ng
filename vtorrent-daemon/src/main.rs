@@ -132,6 +132,10 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     regtest: bool,
 
+    /// Lower stake age for regtest soak testing (60s min, 1h max).
+    #[arg(long, default_value_t = false)]
+    regtest_fast_stake: bool,
+
     /// Optional API key required for sensitive RPC endpoints.
     ///
     /// When set, wallet, staking, torrent, DEX, claim and broadcast endpoints
@@ -218,6 +222,7 @@ async fn main() -> anyhow::Result<()> {
         use_overlay: true,
         testnet: cli.testnet,
         regtest: cli.regtest,
+        regtest_fast_stake: cli.regtest_fast_stake,
         transport,
     };
 

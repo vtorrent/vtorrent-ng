@@ -38,6 +38,7 @@ services:
       - --data-dir
       - /data/node1
       - --regtest
+      - --regtest-fast-stake
       - --isolated
       - --btc-regtest
       - --btc-peer
@@ -84,6 +85,7 @@ services:
       - "node1:22526"
       - --no-dht
       - --regtest
+      - --regtest-fast-stake
       - --isolated
       - --log-level
       - info
@@ -124,6 +126,7 @@ services:
       - "node1:22526"
       - --no-dht
       - --regtest
+      - --regtest-fast-stake
       - --isolated
       - --log-level
       - info

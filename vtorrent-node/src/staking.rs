@@ -37,12 +37,21 @@ pub struct StakingEngine {
     pub address: String,
     /// The WIF-encoded private key used to sign the coinstake input.
     pub wif: Option<String>,
+    /// Minimum coin age in seconds for UTXO eligibility.
+    pub min_stake_age: u64,
+    /// Maximum coin age in seconds for UTXO eligibility.
+    pub max_stake_age: u64,
 }
 
 impl StakingEngine {
     /// Create a new staking engine for the given address.
     pub fn new(address: String) -> Self {
-        Self { address, wif: None }
+        Self {
+            address,
+            wif: None,
+            min_stake_age: MIN_STAKE_AGE,
+            max_stake_age: MAX_STAKE_AGE,
+        }
     }
 
     /// Create a new staking engine with a signing key.
@@ -50,6 +59,31 @@ impl StakingEngine {
         Self {
             address,
             wif: Some(wif),
+            min_stake_age: MIN_STAKE_AGE,
+            max_stake_age: MAX_STAKE_AGE,
+        }
+    }
+
+    /// Create a fast staking engine for regtest soak testing.
+    ///
+    /// Lowers min stake age to 60s and max stake age to 3600s (1 hour) so
+    /// blocks are produced rapidly with few UTXOs.
+    pub fn new_fast(address: String) -> Self {
+        Self {
+            address,
+            wif: None,
+            min_stake_age: 60,
+            max_stake_age: 3600,
+        }
+    }
+
+    /// Create a fast staking engine with a signing key for regtest.
+    pub fn with_wif_fast(address: String, wif: String) -> Self {
+        Self {
+            address,
+            wif: Some(wif),
+            min_stake_age: 60,
+            max_stake_age: 3600,
         }
     }
 
@@ -79,8 +113,8 @@ impl StakingEngine {
                     u.vout,
                     u.value,
                     age,
-                    MIN_STAKE_AGE,
-                    MAX_STAKE_AGE
+                    self.min_stake_age,
+                    self.max_stake_age
                 );
             }
         }
@@ -103,11 +137,15 @@ impl StakingEngine {
                     coinstake,
                     pending_txs,
                 );
+                let block_hash = block.hash();
                 tracing::info!(
-                    "Found stake kernel: utxo {}:{} at height {}",
-                    hex::encode(utxo.txid),
-                    utxo.vout,
-                    height
+                    height = %height,
+                    stake_utxo = %format!("{}:{}", hex::encode(utxo.txid), utxo.vout),
+                    stake_value = %utxo.value,
+                    timestamp = %timestamp,
+                    block_hash = %hex::encode(block_hash),
+                    tx_count = %block.transactions.len(),
+                    "Successfully staked block"
                 );
                 return Some(block);
             }
@@ -125,13 +163,13 @@ impl StakingEngine {
 
         // Must have minimum coin age
         let coin_age_seconds = current_timestamp.saturating_sub(utxo.timestamp);
-        if (coin_age_seconds as u64) < MIN_STAKE_AGE {
+        if (coin_age_seconds as u64) < self.min_stake_age {
             return false;
         }
 
         // Must not exceed maximum coin age (prevents very old coins from
         // dominating the staking weight indefinitely).
-        if (coin_age_seconds as u64) > MAX_STAKE_AGE {
+        if (coin_age_seconds as u64) > self.max_stake_age {
             return false;
         }
 

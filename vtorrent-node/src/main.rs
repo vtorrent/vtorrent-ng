@@ -135,6 +135,7 @@ async fn main() -> anyhow::Result<()> {
         use_overlay: true,
         testnet: cli.testnet,
         regtest: false,
+        regtest_fast_stake: false,
         transport,
     };
 
