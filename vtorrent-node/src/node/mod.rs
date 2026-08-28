@@ -10,6 +10,7 @@
 /// - Mempool (vtorrent-node)
 pub mod chain;
 pub mod mempool_bridge;
+pub mod overlay;
 pub mod p2p;
 
 pub use chain::handle_block;
@@ -38,7 +39,7 @@ use vtorrent_p2p::{
         decode_for_peer, encode_for_peer, encode_v2, is_v2_peer, AddrMsg, BlockTxnMsg,
         CmpctBlockMsg, FeeFilterMsg, GetBlockTxnMsg, GetBlocksMsg, GetHeadersMsg, HeaderEntry,
         HeadersMsg, InvItem, InvMsg, InvType, NetMessage, PingMsg, SendCmpctMsg, VersionMsg,
-        MAX_PAYLOAD_SIZE, PROTOCOL_VERSION,
+        PROTOCOL_VERSION,
     },
     peer::{PeerCommand, PeerEvent},
     peer_manager::{PeerManager, DEFAULT_PORT, TARGET_OUTBOUND},
@@ -87,12 +88,18 @@ const DHT_REANNOUNCE_SECS: u64 = 1800;
 /// Number of headers to request per batch during header sync.
 const HEADERS_PER_BATCH: usize = 2000;
 
-/// Current Unix timestamp in seconds.
+/// Current Unix timestamp as u64.
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+/// Current Unix timestamp as u32 (valid until year 2106).
+#[allow(clippy::cast_possible_truncation)]
+fn now_timestamp_u32() -> u32 {
+    now_secs() as u32
 }
 
 /// Node configuration.
@@ -222,64 +229,7 @@ pub struct Node {
     staking_control_tx: mpsc::Sender<StakingCommand>,
 }
 
-/// Encode a P2P message for transport inside the encrypted overlay payload.
-///
-/// Envelope: fixed 12-byte command, little-endian payload length, then payload.
-fn encode_overlay_message(msg: &NetMessage) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(16 + msg.payload.len());
-    bytes.extend_from_slice(&msg.command);
-    bytes.extend_from_slice(&(msg.payload.len() as u32).to_le_bytes());
-    bytes.extend_from_slice(&msg.payload);
-    bytes
-}
-
-/// Decode and validate an encrypted overlay payload before P2P dispatch.
-fn decode_overlay_message(bytes: &[u8]) -> Result<NetMessage> {
-    if bytes.len() < 16 {
-        return Err(NodeError::Chain(
-            "Overlay message is shorter than its envelope".into(),
-        ));
-    }
-
-    let mut command = [0u8; 12];
-    command.copy_from_slice(&bytes[..12]);
-    let command_len = command.iter().position(|byte| *byte == 0).unwrap_or(12);
-    std::str::from_utf8(&command[..command_len])
-        .map_err(|_| NodeError::Chain("Overlay message command is not UTF-8".into()))?;
-    if command_len == 0 || command[command_len..].iter().any(|byte| *byte != 0) {
-        return Err(NodeError::Chain(
-            "Overlay message command is malformed".into(),
-        ));
-    }
-
-    let payload_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
-    if payload_len > MAX_PAYLOAD_SIZE as usize || bytes.len() != 16 + payload_len {
-        return Err(NodeError::Chain(
-            "Overlay message payload length is invalid".into(),
-        ));
-    }
-
-    Ok(NetMessage {
-        command,
-        payload: bytes[16..].to_vec(),
-    })
-}
-
-/// Derive a stable private virtual address from an overlay node ID.
-fn overlay_peer_addr(node_id: &str) -> Result<std::net::SocketAddr> {
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
-    let bytes = hex::decode(node_id)
-        .map_err(|_| NodeError::Chain("Overlay node ID is not hexadecimal".into()))?;
-    if bytes.len() != 32 {
-        return Err(NodeError::Chain("Overlay node ID must be 32 bytes".into()));
-    }
-    let port = 1_024 + (u16::from_le_bytes([bytes[2], bytes[3]]) % (u16::MAX - 1_024));
-    Ok(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::new(198, 18 + (bytes[0] & 1), bytes[1], bytes[4])),
-        port,
-    ))
-}
+use overlay::*;
 
 impl Node {
     /// Create a new node.
@@ -2200,10 +2150,7 @@ impl Node {
             return Err(NodeError::Chain("No UTXOs available for staking".into()));
         }
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as u32;
+        let now = now_timestamp_u32();
 
         if now <= best_timestamp + TARGET_BLOCK_TIME as u32 {
             return Err(NodeError::Chain("Too soon to stake".into()));

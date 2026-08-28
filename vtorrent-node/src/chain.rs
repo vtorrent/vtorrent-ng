@@ -13,7 +13,17 @@ use crate::{
 /// Supports chain reorganization (reorg) when a competing fork accumulates
 /// more cumulative work than the current main chain.
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::{SystemTime, UNIX_EPOCH};
 use vtorrent_script::{Engine, Script, ScriptEnv};
+
+/// Current Unix timestamp as u32 (valid until year 2106).
+#[allow(clippy::cast_possible_truncation)]
+fn now_timestamp_u32() -> u32 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as u32
+}
 
 /// Compute the net supply change a transaction contributes to the chain.
 ///
@@ -256,10 +266,7 @@ impl Chain {
             .get_block_at_height(self.best_height())
             .map(|b| b.header.timestamp)
             .unwrap_or(0);
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as u32;
+        let timestamp = now_timestamp_u32();
         let timestamp = timestamp.max(prev_timestamp + 1);
 
         let coinbase = Transaction {
@@ -1815,11 +1822,7 @@ mod tests {
                 version: 1,
                 prev_block_hash: funded_hash,
                 merkle_root: [0u8; 32],
-                timestamp: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as u32
-                    + 1,
+                timestamp: now_timestamp_u32() + 1,
                 bits: crate::genesis::GENESIS_BITS,
                 nonce: 42,
                 stake_modifier: compute_stake_modifier(funded_stake_modifier, &funded_hash),

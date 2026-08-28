@@ -25,6 +25,16 @@
 ///   --log-level <LEVEL>       Log level: error|warn|info|debug|trace [default: info]
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Current Unix timestamp as u32 (valid until year 2106).
+#[allow(clippy::cast_possible_truncation)]
+fn now_timestamp_u32() -> u32 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as u32
+}
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
@@ -678,10 +688,7 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!("DEX maintenance: expired {} stale orders", expired);
             }
             // Sweep expired swaps to Refunded.
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as u32;
+            let now = now_timestamp_u32();
             let mut swaps = swaps_for_maintenance.write().await;
             let mut swept = 0;
             for (id, swap) in swaps.iter_mut() {

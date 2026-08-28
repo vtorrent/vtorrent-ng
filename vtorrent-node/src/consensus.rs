@@ -6,11 +6,22 @@ use secp256k1::{Message, PublicKey, Secp256k1};
 /// chain's design. Key parameters are preserved from the legacy chain.
 use sha2::{Digest as Sha2Digest, Sha256};
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use crate::{
     block::{Block, Transaction, TxType},
     chain::Utxo,
     error::{NodeError, Result},
 };
+
+/// Current Unix timestamp as u32 (valid until year 2106).
+#[allow(clippy::cast_possible_truncation)]
+fn now_timestamp_u32() -> u32 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as u32
+}
 
 /// Maximum block size in bytes.
 pub const MAX_BLOCK_SIZE: usize = 1_000_000; // 1 MB
@@ -204,10 +215,7 @@ pub fn validate_block(
     }
 
     // Check block timestamp is not too far in the future (2 hours tolerance)
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as u32;
+    let now = now_timestamp_u32();
 
     if block.header.timestamp > now + 7200 {
         return Err(NodeError::InvalidBlock(format!(

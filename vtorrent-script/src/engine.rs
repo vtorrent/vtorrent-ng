@@ -1586,20 +1586,9 @@ mod tests {
     // ── Differential / coverage tests for previously-untested opcodes ──────
 
     fn run_op(opcode: u8) -> Result<()> {
-        let mut script_sig = Script::new();
+        let script_sig = Script::new();
         let mut script_pubkey = Script::new();
         script_pubkey.push_opcode(opcode);
-        let env = ScriptEnv::default();
-        let mut engine = Engine::new(env);
-        engine.execute(&script_sig, &script_pubkey)
-    }
-
-    fn run_ops(opcodes: &[u8]) -> Result<()> {
-        let mut script_sig = Script::new();
-        let mut script_pubkey = Script::new();
-        for &op in opcodes {
-            script_pubkey.push_opcode(op);
-        }
         let env = ScriptEnv::default();
         let mut engine = Engine::new(env);
         engine.execute(&script_sig, &script_pubkey)
@@ -1613,27 +1602,19 @@ mod tests {
 
     #[test]
     fn test_op_verify_succeeds() {
-        // OP_1 OP_VERIFY — top is true, verify passes, stack empty
         let mut sig = Script::new();
-        let mut pk = Script::new();
-        pk.push_opcode(0x51); // OP_1
-        pk.push_opcode(0x69); // OP_VERIFY
-        let mut e = Engine::new(ScriptEnv::default());
-        // execute checks top-of-stack after scriptPubKey; VERIFY consumed it → empty → fail
-        // So use run-equivalent: push via scriptSig, verify via scriptPubKey
-        sig.push_opcode(0x51);
-        let mut e = Engine::new(ScriptEnv::default());
-        // We need to test VERIFY itself — use a script that leaves something after
+        sig.push_opcode(0x51); // OP_1
         let mut sp = Script::new();
         sp.push_opcode(0x51); // OP_1
         sp.push_opcode(0x69); // OP_VERIFY (consumes 1, passes)
         sp.push_opcode(0x51); // OP_1 (leaves 1 for execute's final check)
+        let mut e = Engine::new(ScriptEnv::default());
         e.execute(&sig, &sp).expect("OP_VERIFY on true should pass");
     }
 
     #[test]
     fn test_op_verify_fails_on_false() {
-        let mut sig = Script::new();
+        let sig = Script::new();
         let mut sp = Script::new();
         sp.push_opcode(0x00); // OP_0
         sp.push_opcode(0x69); // OP_VERIFY (consumes 0, fails)
@@ -1866,7 +1847,7 @@ mod tests {
 
     #[test]
     fn test_op_1negate_abs() {
-        let mut sig = Script::new();
+        let sig = Script::new();
         let mut sp = Script::new();
         sp.push_opcode(0x4f); // OP_1NEGATE → -1
         sp.push_opcode(0x90); // OP_ABS → 1

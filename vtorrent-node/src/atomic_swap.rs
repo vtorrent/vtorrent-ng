@@ -19,6 +19,16 @@
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Current Unix timestamp as u32 (valid until year 2106).
+/// Block timestamps are u32 per Bitcoin convention.
+#[allow(clippy::cast_possible_truncation)]
+fn now_timestamp_u32() -> u32 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as u32
+}
+
 use crate::{
     block::{Transaction, TxInput, TxOutput, TxType},
     error::{NodeError, Result},
@@ -89,10 +99,7 @@ impl Htlc {
             )));
         }
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as u32;
+        let now = now_timestamp_u32();
         let expiry = now.checked_add(locktime_seconds).ok_or_else(|| {
             NodeError::AtomicSwap(
                 "HTLC expiry overflow: timestamp + locktime exceeds u32::MAX".into(),
@@ -323,10 +330,7 @@ impl Htlc {
         refund_sig: &[u8],
         fee: u64,
     ) -> Result<Transaction> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as u32;
+        let now = now_timestamp_u32();
         if now < self.expiry {
             return Err(NodeError::AtomicSwap(format!(
                 "HTLC has not expired yet. Expires at {}, current time {}",
@@ -384,19 +388,13 @@ impl Htlc {
 
     /// Check if the HTLC has expired.
     pub fn is_expired(&self) -> bool {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as u32;
+        let now = now_timestamp_u32();
         now >= self.expiry
     }
 
     /// Seconds remaining until expiry (0 if already expired).
     pub fn seconds_until_expiry(&self) -> u32 {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as u32;
+        let now = now_timestamp_u32();
         self.expiry.saturating_sub(now)
     }
 }
@@ -569,10 +567,7 @@ impl SwapOrder {
         target_amount: u64,
         locktime_seconds: u32,
     ) -> Self {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as u32;
+        let now = now_timestamp_u32();
 
         // Compute order ID as SHA256 of the order's identifying fields.
         let mut data = Vec::new();
@@ -638,10 +633,7 @@ impl SwapOrderBook {
 
     /// Evict expired and cancelled orders, keeping the most recently updated.
     fn evict(&mut self) {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as u32;
+        let now = now_timestamp_u32();
         // Remove cancelled orders first, then expired ones
         self.orders.retain(|o| {
             o.status != OrderStatus::Cancelled && (now < o.expiry || o.status != OrderStatus::Open)
@@ -714,10 +706,7 @@ impl SwapOrderBook {
     /// Expire all orders whose expiry timestamp has passed.
     /// Returns the number of orders expired.
     pub fn expire_orders(&mut self) -> usize {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as u32;
+        let now = now_timestamp_u32();
         let mut count = 0;
         for order in self.orders.iter_mut() {
             if order.status == OrderStatus::Open && now >= order.expiry {
@@ -1102,10 +1091,7 @@ mod tests {
 
     impl SwapOrder {
         fn is_expired(&self) -> bool {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as u32;
+            let now = now_timestamp_u32();
             now >= self.expiry
         }
     }
