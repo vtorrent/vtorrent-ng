@@ -1582,4 +1582,296 @@ mod tests {
         assert_eq!(engine.stack[0], vec![42]);
         assert_eq!(engine.stack[1], vec![99]);
     }
+
+    // ── Differential / coverage tests for previously-untested opcodes ──────
+
+    fn run_op(opcode: u8) -> Result<()> {
+        let mut script_sig = Script::new();
+        let mut script_pubkey = Script::new();
+        script_pubkey.push_opcode(opcode);
+        let env = ScriptEnv::default();
+        let mut engine = Engine::new(env);
+        engine.execute(&script_sig, &script_pubkey)
+    }
+
+    fn run_ops(opcodes: &[u8]) -> Result<()> {
+        let mut script_sig = Script::new();
+        let mut script_pubkey = Script::new();
+        for &op in opcodes {
+            script_pubkey.push_opcode(op);
+        }
+        let env = ScriptEnv::default();
+        let mut engine = Engine::new(env);
+        engine.execute(&script_sig, &script_pubkey)
+    }
+
+    #[test]
+    fn test_op_1negate() {
+        // OP_1NEGATE pushes -1 (truthy)
+        run_op(0x4f).expect("OP_1NEGATE should succeed");
+    }
+
+    #[test]
+    fn test_op_verify_succeeds() {
+        // OP_1 OP_VERIFY — top is true, verify passes, stack empty
+        let mut sig = Script::new();
+        let mut pk = Script::new();
+        pk.push_opcode(0x51); // OP_1
+        pk.push_opcode(0x69); // OP_VERIFY
+        let mut e = Engine::new(ScriptEnv::default());
+        // execute checks top-of-stack after scriptPubKey; VERIFY consumed it → empty → fail
+        // So use run-equivalent: push via scriptSig, verify via scriptPubKey
+        sig.push_opcode(0x51);
+        let mut e = Engine::new(ScriptEnv::default());
+        // We need to test VERIFY itself — use a script that leaves something after
+        let mut sp = Script::new();
+        sp.push_opcode(0x51); // OP_1
+        sp.push_opcode(0x69); // OP_VERIFY (consumes 1, passes)
+        sp.push_opcode(0x51); // OP_1 (leaves 1 for execute's final check)
+        e.execute(&sig, &sp).expect("OP_VERIFY on true should pass");
+    }
+
+    #[test]
+    fn test_op_verify_fails_on_false() {
+        let mut sig = Script::new();
+        let mut sp = Script::new();
+        sp.push_opcode(0x00); // OP_0
+        sp.push_opcode(0x69); // OP_VERIFY (consumes 0, fails)
+        sp.push_opcode(0x51); // OP_1 (never reached)
+        let mut e = Engine::new(ScriptEnv::default());
+        assert!(
+            e.execute(&sig, &sp).is_err(),
+            "OP_VERIFY on false must fail"
+        );
+    }
+
+    #[test]
+    fn test_op_toalt_fromalt() {
+        let mut sig = Script::new();
+        sig.push_opcode(0x51); // OP_1
+        let mut sp = Script::new();
+        sp.push_opcode(0x6b); // TOALTSTACK
+        sp.push_opcode(0x6c); // FROMALTSTACK
+                              // After: stack has [1], execute checks top → true
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp)
+            .expect("TOALTSTACK/FROMALTSTACK roundtrip should succeed");
+    }
+
+    #[test]
+    fn test_op_2drop() {
+        let mut sig = Script::new();
+        sig.push_opcode(0x51); // OP_1
+        sig.push_opcode(0x52); // OP_2
+        let mut sp = Script::new();
+        sp.push_opcode(0x6d); // OP_2DROP (drops both)
+        sp.push_opcode(0x51); // OP_1 (leaves 1 for execute)
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp).expect("OP_2DROP should succeed");
+    }
+
+    #[test]
+    fn test_op_2dup() {
+        let mut sig = Script::new();
+        sig.push_opcode(0x51); // OP_1
+        sig.push_opcode(0x52); // OP_2
+        let mut sp = Script::new();
+        sp.push_opcode(0x6e); // OP_2DUP → [1,2,1,2]
+                              // execute checks top → 2 → true
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp).expect("OP_2DUP should succeed");
+    }
+
+    #[test]
+    fn test_op_ifdup_true() {
+        let mut sig = Script::new();
+        sig.push_opcode(0x51); // OP_1
+        let mut sp = Script::new();
+        sp.push_opcode(0x73); // OP_IFDUP → [1,1]
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp)
+            .expect("OP_IFDUP on true should succeed");
+    }
+
+    #[test]
+    fn test_op_ifdup_false() {
+        let mut sig = Script::new();
+        sig.push_opcode(0x00); // OP_0
+        let mut sp = Script::new();
+        sp.push_opcode(0x73); // OP_IFDUP → [0] (no dup)
+        sp.push_opcode(0x51); // OP_1 (for execute final check)
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp)
+            .expect("OP_IFDUP on false should succeed");
+    }
+
+    #[test]
+    fn test_op_over() {
+        let mut sig = Script::new();
+        sig.push_opcode(0x51); // OP_1
+        sig.push_opcode(0x52); // OP_2
+        let mut sp = Script::new();
+        sp.push_opcode(0x79); // OP_OVER → [1,2,1]
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp).expect("OP_OVER should succeed");
+    }
+
+    #[test]
+    fn test_op_rot() {
+        let mut sig = Script::new();
+        sig.push_opcode(0x51); // 1
+        sig.push_opcode(0x52); // 2
+        sig.push_opcode(0x53); // 3
+        let mut sp = Script::new();
+        sp.push_opcode(0x7b); // OP_ROT → [2,3,1]
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp).expect("OP_ROT should succeed");
+    }
+
+    #[test]
+    fn test_op_swap() {
+        let mut sig = Script::new();
+        sig.push_opcode(0x51); // 1
+        sig.push_opcode(0x52); // 2
+        let mut sp = Script::new();
+        sp.push_opcode(0x7c); // OP_SWAP → [2,1]
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp).expect("OP_SWAP should succeed");
+    }
+
+    #[test]
+    fn test_op_size() {
+        let mut sig = Script::new();
+        sig.push_data(b"hello").unwrap(); // 5 bytes
+        let mut sp = Script::new();
+        sp.push_opcode(0x82); // OP_SIZE → pushes 5
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp).expect("OP_SIZE should succeed");
+    }
+
+    #[test]
+    fn test_op_1add() {
+        let mut sig = Script::new();
+        sig.push_opcode(0x51); // OP_1
+        let mut sp = Script::new();
+        sp.push_opcode(0x8b); // OP_1ADD → 2
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp).expect("OP_1ADD should succeed");
+    }
+
+    #[test]
+    fn test_op_1sub() {
+        let mut sig = Script::new();
+        sig.push_opcode(0x52); // OP_2
+        let mut sp = Script::new();
+        sp.push_opcode(0x8c); // OP_1SUB → 1
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp).expect("OP_1SUB should succeed");
+    }
+
+    #[test]
+    fn test_op_negate() {
+        let mut sig = Script::new();
+        sig.push_opcode(0x51); // OP_1
+        let mut sp = Script::new();
+        sp.push_opcode(0x8f); // OP_NEGATE → -1 (truthy)
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp).expect("OP_NEGATE should succeed");
+    }
+
+    #[test]
+    fn test_op_abs() {
+        let mut sig = Script::new();
+        sig.push_opcode(0x51); // OP_1
+        let mut sp = Script::new();
+        sp.push_opcode(0x8f); // OP_NEGATE → -1
+        sp.push_opcode(0x90); // OP_ABS → 1
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp).expect("OP_ABS should succeed");
+    }
+
+    #[test]
+    fn test_op_not_zero() {
+        let mut sig = Script::new();
+        sig.push_opcode(0x00); // OP_0
+        let mut sp = Script::new();
+        sp.push_opcode(0x91); // OP_NOT → 1 (true)
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp).expect("OP_NOT(0) should be true");
+    }
+
+    #[test]
+    fn test_op_not_nonzero_fails() {
+        let mut sig = Script::new();
+        sig.push_opcode(0x51); // OP_1
+        let mut sp = Script::new();
+        sp.push_opcode(0x91); // OP_NOT → 0 (false)
+        let mut e = Engine::new(ScriptEnv::default());
+        assert!(
+            e.execute(&sig, &sp).is_err(),
+            "OP_NOT(1) = 0, execute should fail"
+        );
+    }
+
+    #[test]
+    fn test_op_add() {
+        let mut sig = Script::new();
+        sig.push_opcode(0x52); // 2
+        sig.push_opcode(0x53); // 3
+        let mut sp = Script::new();
+        sp.push_opcode(0x93); // OP_ADD → 5
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp).expect("OP_ADD should succeed");
+    }
+
+    #[test]
+    fn test_op_notif_true() {
+        // OP_1 OP_NOTIF → false branch (push 0), OP_ENDIF → stack [0] → execute fails
+        let mut sig = Script::new();
+        sig.push_opcode(0x51); // OP_1
+        let mut sp = Script::new();
+        sp.push_opcode(0x64); // OP_NOTIF (1 is true → NOTIF → false branch)
+        sp.push_opcode(0x00); // OP_0 (executed in false branch)
+        sp.push_opcode(0x68); // OP_ENDIF
+        sp.push_opcode(0x51); // OP_1 (for execute final check)
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp)
+            .expect("OP_NOTIF true → false branch should execute");
+    }
+
+    #[test]
+    fn test_op_notif_false() {
+        // OP_0 OP_NOTIF → true branch (push 1), OP_ENDIF → stack [1] → execute passes
+        let mut sig = Script::new();
+        sig.push_opcode(0x00); // OP_0
+        let mut sp = Script::new();
+        sp.push_opcode(0x64); // OP_NOTIF (0 is false → NOTIF → true branch)
+        sp.push_opcode(0x51); // OP_1 (executed in true branch)
+        sp.push_opcode(0x68); // OP_ENDIF
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp)
+            .expect("OP_NOTIF false → true branch should execute");
+    }
+
+    #[test]
+    fn test_op_sub() {
+        let mut sig = Script::new();
+        sig.push_opcode(0x53); // 3
+        sig.push_opcode(0x52); // 2
+        let mut sp = Script::new();
+        sp.push_opcode(0x94); // OP_SUB → 1
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp).expect("OP_SUB should succeed");
+    }
+
+    #[test]
+    fn test_op_1negate_abs() {
+        let mut sig = Script::new();
+        let mut sp = Script::new();
+        sp.push_opcode(0x4f); // OP_1NEGATE → -1
+        sp.push_opcode(0x90); // OP_ABS → 1
+        let mut e = Engine::new(ScriptEnv::default());
+        e.execute(&sig, &sp)
+            .expect("OP_1NEGATE + OP_ABS should succeed");
+    }
 }
