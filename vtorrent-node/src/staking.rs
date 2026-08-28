@@ -73,7 +73,7 @@ impl StakingEngine {
             address,
             wif: None,
             min_stake_age: 60,
-            max_stake_age: 3600,
+            max_stake_age: u64::MAX,
         }
     }
 
@@ -83,7 +83,7 @@ impl StakingEngine {
             address,
             wif: Some(wif),
             min_stake_age: 60,
-            max_stake_age: 3600,
+            max_stake_age: u64::MAX,
         }
     }
 
