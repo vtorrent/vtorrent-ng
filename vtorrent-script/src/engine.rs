@@ -2235,4 +2235,62 @@ mod tests {
             .execute(&script_sig, &script_pubkey)
             .expect("P2SH roundtrip should succeed");
     }
+    #[test]
+    fn test_cltv_passes_with_sufficient_sequence() {
+        let mut script = Script::new();
+        script.push_data(&int_to_bytes(50)).unwrap();
+        script.push_opcode(0xb1); // OP_CHECKLOCKTIMEVERIFY
+        script.push_opcode(0x75); // OP_DROP
+        script.push_opcode(0x51); // OP_1
+        let env = ScriptEnv {
+            tx_lock_time: 100,
+            input_sequence: 0,
+            ..Default::default()
+        };
+        let mut engine = Engine::new(env);
+        engine
+            .run(&script)
+            .expect("CLTV should pass with sufficient tx_lock_time");
+    }
+
+    #[test]
+    fn test_cltv_fails_with_insufficient_sequence() {
+        let mut script = Script::new();
+        script.push_data(&int_to_bytes(500)).unwrap();
+        script.push_opcode(0xb1); // OP_CHECKLOCKTIMEVERIFY
+        script.push_opcode(0x75); // OP_DROP
+        script.push_opcode(0x51); // OP_1
+
+        let env = ScriptEnv {
+            tx_lock_time: 100,
+            input_sequence: 0,
+            ..Default::default()
+        };
+        let mut engine = Engine::new(env);
+        assert!(matches!(
+            engine.run(&script),
+            Err(ScriptError::HtlcLocktimeNotExpired)
+        ));
+    }
+
+    #[test]
+    fn test_cltv_with_absolute_locktime() {
+        let locktime: i64 = 1_700_000_000;
+        let tx_lock_time: u32 = 1_700_000_100;
+        let mut script = Script::new();
+        script.push_data(&int_to_bytes(locktime)).unwrap();
+        script.push_opcode(0xb1); // OP_CHECKLOCKTIMEVERIFY
+        script.push_opcode(0x75); // OP_DROP
+        script.push_opcode(0x51); // OP_1
+
+        let env = ScriptEnv {
+            tx_lock_time,
+            input_sequence: 0,
+            ..Default::default()
+        };
+        let mut engine = Engine::new(env);
+        engine
+            .run(&script)
+            .expect("CLTV with absolute locktime should pass");
+    }
 }

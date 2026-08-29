@@ -273,4 +273,50 @@ mod tests {
         let dk_empty = derive_key("", &salt).expect("Key derivation failed");
         assert_eq!(dk_empty.key.len(), 32);
     }
+
+    #[test]
+    fn test_pubkey_to_vtorrent_address_roundtrip() {
+        use std::str::FromStr;
+        use vtorrent_core::{address::Address, keys::PrivateKey, network::mainnet};
+
+        // Generate a random private key
+        let mut bytes = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+        let privkey = PrivateKey::from_bytes(bytes, true).expect("valid private key");
+        let pubkey = privkey.public_key().expect("public key derivation");
+
+        // Derive address
+        let address = Address::from_pubkey(&pubkey, true, mainnet::PUBKEY_ADDRESS_PREFIX);
+        let address_str = address.to_string();
+
+        // Verify it starts with 'V'
+        assert!(
+            address_str.starts_with('V'),
+            "Address should start with 'V', got: {}",
+            address_str
+        );
+
+        // Verify it round-trips through FromStr
+        let parsed = Address::from_str(&address_str).expect("valid address string");
+        assert_eq!(parsed.to_string(), address_str);
+    }
+
+    #[test]
+    fn test_wif_roundtrip() {
+        use vtorrent_core::{keys::PrivateKey, network::mainnet};
+
+        // Generate a random private key
+        let mut bytes = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+        let privkey = PrivateKey::from_bytes(bytes, true).expect("valid private key");
+
+        // Encode to WIF
+        let wif = privkey.to_wif(mainnet::SECRET_KEY_PREFIX);
+        assert!(!wif.is_empty());
+
+        // Decode back from WIF
+        let decoded = PrivateKey::from_wif(&wif).expect("valid WIF");
+        assert_eq!(decoded.as_bytes(), privkey.as_bytes());
+        assert_eq!(decoded.is_compressed(), privkey.is_compressed());
+    }
 }
