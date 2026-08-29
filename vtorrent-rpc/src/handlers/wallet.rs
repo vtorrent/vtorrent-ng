@@ -440,7 +440,22 @@ pub async fn unlock_wallet(
     // Verify the passphrase (and TOTP if 2FA is enabled) and decrypt the WIF
     // into memory. The wallet stays locked unless the credentials are correct.
     let wif = verify_wallet_auth(&state, &req.passphrase, req.otp_code.as_deref()).await?;
-    *state.wallet_wif.write().await = Some(wif);
+    *state.wallet_wif.write().await = Some(wif.clone());
+
+    // Re-derive the change address from the decrypted key. After a daemon
+    // restart the wallet is restored from disk (locked); unlock must restore
+    // the change address too, otherwise send/balance fail until re-import.
+    {
+        let key = vtorrent_core::keys::PrivateKey::from_wif(&wif)
+            .map_err(|e| RpcError::Internal(format!("Decrypted WIF is invalid: {}", e)))?;
+        let secret_key = secp256k1::SecretKey::from_slice(key.as_bytes())
+            .map_err(|_| RpcError::Internal("Decrypted key is malformed".into()))?;
+        let secp = secp256k1::Secp256k1::new();
+        let pubkey = secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
+        let address = vtorrent_wallet::tx_builder::pubkey_to_vtorrent_address(&pubkey.serialize())
+            .map_err(|e| RpcError::Internal(format!("Failed to derive change address: {}", e)))?;
+        *state.wallet_change_address.write().await = Some(address);
+    }
 
     let expires_at = if req.timeout_secs == 0 {
         Some(0u64)
