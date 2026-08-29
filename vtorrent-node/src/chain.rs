@@ -1,11 +1,10 @@
+mod chain_reorg;
+
 use crate::{
     block::{Block, Transaction},
-    consensus::{
-        check_stake_kernel, compute_pos_reward, compute_stake_modifier, validate_block,
-        validate_legacy_claim,
-    },
+    consensus::{compute_stake_modifier, validate_block},
     error::{NodeError, Result},
-    genesis::{create_genesis_block, get_legacy_balance},
+    genesis::create_genesis_block,
 };
 /// Blockchain state manager.
 ///
@@ -14,7 +13,6 @@ use crate::{
 /// more cumulative work than the current main chain.
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
-use vtorrent_script::{Engine, Script, ScriptEnv};
 
 /// Current Unix timestamp as u32 (valid until year 2106).
 #[allow(clippy::cast_possible_truncation)]
@@ -32,7 +30,7 @@ fn now_timestamp_u32() -> u32 {
 /// claims are funded by the snapshot already counted in the genesis supply,
 /// so a user claim (which carries a claim_address) contributes nothing; the
 /// genesis distribution tx (claim_address = None) establishes the supply.
-fn compute_supply_delta(tx: &Transaction, total_input: u64, total_output: u64) -> u64 {
+pub(crate) fn compute_supply_delta(tx: &Transaction, total_input: u64, total_output: u64) -> u64 {
     if tx.is_legacy_claim() && tx.claim_address.is_some() {
         0
     } else {
@@ -49,27 +47,6 @@ pub struct Utxo {
     pub script_pubkey: Vec<u8>,
     pub height: u32,
     pub timestamp: u32,
-}
-
-/// A snapshot of a UTXO change for reorg rollback.
-#[derive(Debug, Clone)]
-enum UtxoChange {
-    /// A UTXO was added (created by an output).
-    Added { key: ([u8; 32], u32) },
-    /// A UTXO was removed (spent by an input). Store the full UTXO for restoration.
-    Removed { key: ([u8; 32], u32), utxo: Utxo },
-}
-
-/// A journal of UTXO changes for a single block, used for rollback.
-#[derive(Debug, Clone)]
-struct BlockJournal {
-    block_hash: [u8; 32],
-    height: u32,
-    changes: Vec<UtxoChange>,
-    claimed_addresses: Vec<String>,
-    /// Net value minted by this block (outputs created minus UTXO-set inputs
-    /// spent). Used to track total supply and enforce the MAX_SUPPLY cap.
-    supply_delta: u64,
 }
 
 /// The result of processing a new block.
@@ -169,7 +146,7 @@ pub struct Chain {
     /// Set of legacy addresses that have already been claimed.
     claimed_addresses: HashSet<String>,
     /// Per-block UTXO journals for rollback (main chain only, in order).
-    journals: VecDeque<BlockJournal>,
+    journals: VecDeque<chain_reorg::BlockJournal>,
     /// Maximum number of journals to keep (limits reorg depth).
     max_reorg_depth: u32,
     /// Cumulative work for each known block hash.
@@ -532,12 +509,12 @@ impl Chain {
             let mut utxos_removed: Vec<([u8; 32], u32)> = Vec::new();
             for change in &journal.changes {
                 match change {
-                    UtxoChange::Added { key } => {
+                    chain_reorg::UtxoChange::Added { key } => {
                         if let Some(utxo) = self.utxo_set.get(key) {
                             utxos_added.push(utxo.clone());
                         }
                     }
-                    UtxoChange::Removed { key, .. } => {
+                    chain_reorg::UtxoChange::Removed { key, .. } => {
                         utxos_removed.push(*key);
                     }
                 }
@@ -666,11 +643,6 @@ impl Chain {
     }
 
     /// Reorganize the main chain to make `new_tip` the best tip.
-    ///
-    /// Algorithm:
-    /// 1. Walk back from both tips to find the common ancestor.
-    /// 2. Roll back the main chain to the fork point.
-    /// 3. Apply the fork chain forward to the new tip.
     fn reorganize_to(
         &mut self,
         new_tip: [u8; 32],
@@ -680,474 +652,27 @@ impl Chain {
         Vec<RolledBackBlock>,
         Vec<AppliedForkBlock>,
     )> {
-        let old_tip = self.best_hash().unwrap_or([0u8; 32]);
-
-        // Build the path from new_tip back to genesis
-        let new_chain = self.ancestors(new_tip);
-        // Build the path from old_tip back to genesis
-        let old_chain = self.ancestors(old_tip);
-
-        // Find the common ancestor (first hash in both chains)
-        let new_set: HashSet<[u8; 32]> = new_chain.iter().copied().collect();
-        let mut fork_point = [0u8; 32];
-        for hash in &old_chain {
-            if new_set.contains(hash) {
-                fork_point = *hash;
-                break;
-            }
-        }
-
-        if fork_point == [0u8; 32] {
-            return Err(NodeError::Chain(
-                "No common ancestor found during reorg".into(),
-            ));
-        }
-
-        let fork_height = self
-            .block_height(&fork_point)
-            .ok_or_else(|| NodeError::Chain("Fork point not on main chain".into()))?;
-
-        tracing::info!("Reorg: fork point at height {}", fork_height);
-
-        // ── Step 1: Roll back main chain to fork point ────────────────────
-        let mut applied_fork_blocks: Vec<AppliedForkBlock> = Vec::new();
-        let mut rolled_back_txs: Vec<Transaction> = Vec::new();
-        let mut rolled_back_blocks: Vec<RolledBackBlock> = Vec::new();
-        while self.best_height() > fork_height {
-            let (txs, rb) = self.rollback_one_block()?;
-            rolled_back_txs.extend(txs);
-            rolled_back_blocks.push(rb);
-        }
-
-        // ── Step 2: Apply new fork chain from fork_point+1 to new_tip ────
-        // Collect blocks to apply in order (fork_point+1 ... new_tip)
-        let mut to_apply: Vec<[u8; 32]> = Vec::new();
-        let mut cursor = new_tip;
-        while cursor != fork_point {
-            to_apply.push(cursor);
-            cursor = self
-                .parent_map
-                .get(&cursor)
-                .copied()
-                .ok_or_else(|| NodeError::Chain("Missing parent during reorg apply".into()))?;
-        }
-        to_apply.reverse(); // now in ascending order
-
-        for (i, hash) in to_apply.iter().enumerate() {
-            let height = fork_height + 1 + i as u32;
-            let block = self
-                .blocks
-                .get(hash)
-                .ok_or_else(|| {
-                    NodeError::Chain(format!("Missing block {} during reorg", hex::encode(hash)))
-                })?
-                .clone();
-
-            let journal = self.apply_block_journaled(&block, height)?;
-            self.index_block_transactions(*hash, &block);
-            let claimed_addresses = journal.claimed_addresses.clone();
-            let (utxos_added, utxos_removed): (Vec<Utxo>, Vec<([u8; 32], u32)>) =
-                journal.changes.iter().fold(
-                    (Vec::new(), Vec::new()),
-                    |(mut added, mut removed), c| match c {
-                        UtxoChange::Added { key } => {
-                            // Reconstruct the full UTXO from the chain state.
-                            if let Some(u) = self.utxo_set.get(key) {
-                                added.push(u.clone());
-                            }
-                            removed.retain(|(t, v)| t != &key.0 || v != &key.1);
-                            (added, removed)
-                        }
-                        UtxoChange::Removed { key, .. } => {
-                            removed.push(*key);
-                            (added, removed)
-                        }
-                    },
-                );
-            applied_fork_blocks.push(AppliedForkBlock {
-                block: block.clone(),
-                height,
-                utxos_added,
-                utxos_removed,
-                claimed_addresses,
-            });
-            self.journals.push_back(journal);
-            self.height_index.push(*hash);
-        }
-
-        // Sanity check
-        if self.best_hash() != Some(new_tip) || self.best_height() != new_tip_height {
-            return Err(NodeError::Chain(format!(
-                "reorg verification failed: expected tip {:?} at height {}, got {:?} at height {}",
-                new_tip,
-                new_tip_height,
-                self.best_hash(),
-                self.best_height()
-            )));
-        }
-
-        Ok((rolled_back_txs, rolled_back_blocks, applied_fork_blocks))
-    }
-
-    /// Walk the parent_map from `tip` back to genesis, returning hashes in
-    /// descending order (tip first).
-    fn ancestors(&self, mut tip: [u8; 32]) -> Vec<[u8; 32]> {
-        let mut chain = Vec::new();
-        let genesis = self.height_index[0];
-        loop {
-            chain.push(tip);
-            if tip == genesis {
-                break;
-            }
-            match self.parent_map.get(&tip) {
-                Some(&parent) => tip = parent,
-                None => break,
-            }
-        }
-        chain
+        chain_reorg::reorganize_to(self, new_tip, new_tip_height)
     }
 
     /// Roll back the most recent main chain block, restoring the UTXO set.
+    #[cfg(test)]
     fn rollback_one_block(&mut self) -> Result<(Vec<Transaction>, RolledBackBlock)> {
-        let journal = self
-            .journals
-            .pop_back()
-            .ok_or_else(|| NodeError::Chain("No journal to roll back".into()))?;
-
-        // Capture the block's transactions so callers can re-inject them into
-        // the mempool (their inputs become spendable again after rollback).
-        let rolled_back_txs: Vec<Transaction> = self
-            .blocks
-            .get(&journal.block_hash)
-            .map(|b| b.transactions.clone())
-            .unwrap_or_default();
-
-        // Undo data for the persistence layer, extracted before the journal
-        // is consumed.
-        let mut utxos_to_remove: Vec<([u8; 32], u32)> = Vec::new();
-        let mut utxos_to_restore: Vec<Utxo> = Vec::new();
-        for change in &journal.changes {
-            match change {
-                UtxoChange::Added { key } => utxos_to_remove.push(*key),
-                UtxoChange::Removed { key, utxo } => {
-                    utxos_to_remove.push(*key);
-                    utxos_to_restore.push(utxo.clone());
-                }
-            }
-        }
-        let claimed_to_remove = journal.claimed_addresses.clone();
-
-        // Apply changes in reverse.  The journal is consumed here — use
-        // into_iter() to move UTXOs instead of cloning them.
-        for change in journal.changes.into_iter().rev() {
-            match change {
-                UtxoChange::Added { key } => {
-                    self.utxo_set.remove(&key);
-                }
-                UtxoChange::Removed { key, utxo } => {
-                    self.utxo_set.insert(key, utxo);
-                }
-            }
-        }
-
-        // Restore claimed addresses (move out of the consumed journal).
-        for addr in &claimed_to_remove {
-            self.claimed_addresses.remove(addr);
-        }
-
-        // Restore total supply.
-        self.total_supply = self.total_supply.saturating_sub(journal.supply_delta);
-
-        self.remove_block_transactions(journal.block_hash);
-
-        // Remove from height index
-        self.height_index.pop();
-
-        tracing::debug!(
-            "Rolled back block {} at height {}",
-            hex::encode(journal.block_hash),
-            journal.height
-        );
-
-        Ok((
-            rolled_back_txs,
-            RolledBackBlock {
-                hash: journal.block_hash,
-                height: journal.height,
-                utxos_to_remove,
-                utxos_to_restore,
-                claimed_to_remove,
-            },
-        ))
+        chain_reorg::rollback_one_block(self)
     }
 
     /// Add all transactions from an active main-chain block to the transaction index.
     fn index_block_transactions(&mut self, block_hash: [u8; 32], block: &Block) {
-        for (tx_offset, tx) in block.transactions.iter().enumerate() {
-            self.tx_index.insert(tx.txid(), (block_hash, tx_offset));
-        }
-    }
-
-    /// Remove all transactions belonging to a disconnected main-chain block.
-    fn remove_block_transactions(&mut self, block_hash: [u8; 32]) {
-        let txids: Vec<[u8; 32]> = self
-            .blocks
-            .get(&block_hash)
-            .map(|block| block.transactions.iter().map(Transaction::txid).collect())
-            .unwrap_or_default();
-        for txid in txids {
-            self.tx_index.remove(&txid);
-        }
+        chain_reorg::index_block_transactions(self, block_hash, block);
     }
 
     /// Apply a block's transactions to the UTXO set, recording a journal for rollback.
-    ///
-    /// If any transaction fails validation, the partial changes already applied
-    /// are rolled back so the UTXO set is left unchanged. Without this, a
-    /// rejected block would permanently delete the inputs it spent.
-    fn apply_block_journaled(&mut self, block: &Block, height: u32) -> Result<BlockJournal> {
-        let mut journal = BlockJournal {
-            block_hash: block.hash(),
-            height,
-            changes: Vec::new(),
-            claimed_addresses: Vec::new(),
-            supply_delta: 0,
-        };
-
-        // The coinstake kernel is validated against the *parent* block's stake
-        // modifier (the tip at stake time). Genesis (height 0) has no parent.
-        let parent_modifier = if height == 0 {
-            0
-        } else {
-            self.blocks
-                .get(&block.header.prev_block_hash)
-                .map(|b| b.header.stake_modifier)
-                .ok_or_else(|| {
-                    NodeError::Chain("Parent block not found for stake modifier".into())
-                })?
-        };
-
-        for tx in &block.transactions {
-            if let Err(e) = self.apply_transaction_journaled(
-                tx,
-                height,
-                block.header.timestamp,
-                parent_modifier,
-                &mut journal,
-            ) {
-                self.rollback_journal(&journal);
-                return Err(e);
-            }
-        }
-
-        // Enforce the maximum supply cap: a block may not mint value that would
-        // push the total coin supply past MAX_SUPPLY.
-        let new_supply = self.total_supply.saturating_add(journal.supply_delta);
-        if new_supply > crate::consensus::MAX_SUPPLY {
-            self.rollback_journal(&journal);
-            return Err(NodeError::InvalidBlock(format!(
-                "Block would exceed maximum supply: {} + {} > {}",
-                self.total_supply,
-                journal.supply_delta,
-                crate::consensus::MAX_SUPPLY
-            )));
-        }
-        self.total_supply = new_supply;
-
-        Ok(journal)
-    }
-
-    /// Reverse the UTXO-set and claimed-address changes recorded in a journal.
-    ///
-    /// Used to undo a partially-applied block when a later transaction (or the
-    /// supply cap) fails, so a rejected block leaves no trace in the UTXO set.
-    fn rollback_journal(&mut self, journal: &BlockJournal) {
-        for change in journal.changes.iter().rev() {
-            match change {
-                UtxoChange::Added { key } => {
-                    self.utxo_set.remove(key);
-                }
-                UtxoChange::Removed { key, utxo } => {
-                    self.utxo_set.insert(*key, utxo.clone());
-                }
-            }
-        }
-        for addr in journal.claimed_addresses.iter().rev() {
-            self.claimed_addresses.remove(addr);
-        }
-    }
-
-    /// Apply a transaction to the UTXO set, recording changes in the journal.
-    fn apply_transaction_journaled(
+    fn apply_block_journaled(
         &mut self,
-        tx: &Transaction,
+        block: &Block,
         height: u32,
-        timestamp: u32,
-        parent_stake_modifier: u64,
-        journal: &mut BlockJournal,
-    ) -> Result<()> {
-        let txid = tx.txid();
-
-        // Spend inputs (except for coinbase)
-        let mut total_input: u64 = 0;
-        // For coinstake: the staked UTXO that satisfies the kernel check.
-        let mut stake_input: Option<Utxo> = None;
-        if !tx.is_coinbase() {
-            for (input_index, input) in tx.inputs.iter().enumerate() {
-                let key = (input.prev_txid, input.prev_vout);
-                if let Some(utxo) = self.utxo_set.remove(&key) {
-                    total_input = total_input.saturating_add(utxo.value);
-
-                    // Extract data before moving utxo into the journal.
-                    let script_bytes = utxo.script_pubkey.clone();
-                    let stake_value = utxo.value;
-                    let stake_height = utxo.height;
-                    let stake_timestamp = utxo.timestamp;
-
-                    // ── Script verification ──────────────────────────────────
-                    if !tx.is_legacy_claim() {
-                        let tx_hash = tx.sighash(input_index, &utxo.script_pubkey);
-                        let env = ScriptEnv {
-                            tx_hash,
-                            block_height: height,
-                            block_time: timestamp,
-                            tx_lock_time: tx.lock_time,
-                            input_sequence: input.sequence,
-                        };
-                        let mut engine = Engine::new(env);
-                        let script_sig =
-                            Script::from_bytes(input.script_sig.clone()).map_err(|e| {
-                                NodeError::InvalidTransaction(format!("Invalid scriptSig: {}", e))
-                            })?;
-                        let script_pubkey =
-                            Script::from_bytes(script_bytes.clone()).map_err(|e| {
-                                NodeError::InvalidTransaction(format!(
-                                    "Invalid scriptPubKey: {}",
-                                    e
-                                ))
-                            })?;
-                        engine.execute(&script_sig, &script_pubkey).map_err(|e| {
-                            NodeError::InvalidTransaction(format!(
-                                "Script verification failed for input {}:{}: {}",
-                                hex::encode(input.prev_txid),
-                                input.prev_vout,
-                                e
-                            ))
-                        })?;
-                    }
-
-                    // Save coinstake kernel data before the move.
-                    if tx.is_coinstake() && input_index == 0 {
-                        stake_input = Some(Utxo {
-                            txid: utxo.txid,
-                            vout: utxo.vout,
-                            value: stake_value,
-                            script_pubkey: script_bytes,
-                            height: stake_height,
-                            timestamp: stake_timestamp,
-                        });
-                    }
-
-                    journal.changes.push(UtxoChange::Removed { key, utxo });
-                } else if !tx.is_legacy_claim() {
-                    return Err(NodeError::InvalidTransaction(format!(
-                        "Input {}:{} not found in UTXO set",
-                        hex::encode(input.prev_txid),
-                        input.prev_vout
-                    )));
-                }
-            }
-        }
-
-        // Track claimed legacy addresses. The genesis distribution tx is also a
-        // LegacyClaim but carries no per-address signature (`claim_address` is
-        // None), so only signed, address-bearing claims are validated here.
-        if tx.is_legacy_claim() {
-            if let Some(addr) = &tx.claim_address {
-                if self.claimed_addresses.contains(addr) {
-                    return Err(NodeError::ClaimAlreadyProcessed(addr.clone()));
-                }
-                let snapshot_balance = get_legacy_balance(addr);
-                validate_legacy_claim(tx, snapshot_balance).map_err(|e| {
-                    NodeError::InvalidTransaction(format!("Invalid legacy claim: {}", e))
-                })?;
-                self.claimed_addresses.insert(addr.clone());
-                journal.claimed_addresses.push(addr.clone());
-            }
-        }
-
-        // Add outputs to UTXO set
-        for (vout, output) in tx.outputs.iter().enumerate() {
-            let key = (txid, vout as u32);
-            self.utxo_set.insert(
-                key,
-                Utxo {
-                    txid,
-                    vout: vout as u32,
-                    value: output.value,
-                    script_pubkey: output.script_pubkey.clone(),
-                    height,
-                    timestamp,
-                },
-            );
-            journal.changes.push(UtxoChange::Added { key });
-        }
-
-        // Value conservation: a standard transaction must not create value.
-        // Coinbase/coinstake mint the block reward (no inputs), and legacy
-        // claims are funded by the snapshot (validated separately), so both
-        // are exempt here.
-        if !tx.is_coinbase() && !tx.is_coinstake() && !tx.is_legacy_claim() {
-            let total_output = tx.total_output();
-            if total_output > total_input {
-                return Err(NodeError::InvalidTransaction(format!(
-                    "Transaction creates value: inputs {} < outputs {}",
-                    total_input, total_output
-                )));
-            }
-        }
-
-        // Coinstake reward cap: the block reward minted by a coinstake is
-        // bounded by the PoS formula for the staked amount and coin age.
-        // Without this, a block could mint an unbounded reward.
-        if tx.is_coinstake() {
-            let staked = stake_input.ok_or_else(|| {
-                NodeError::InvalidTransaction("Coinstake must spend a stake input".into())
-            })?;
-            let coin_age = timestamp.saturating_sub(staked.timestamp);
-            // The stake kernel must satisfy the PoS difficulty requirement.
-            // Without this check an attacker could forge a coinstake block
-            // without meeting the stake target.
-            if !check_stake_kernel(parent_stake_modifier, &staked, timestamp) {
-                return Err(NodeError::InvalidTransaction(
-                    "Coinstake kernel hash does not meet the stake target".into(),
-                ));
-            }
-            let max_reward = compute_pos_reward(staked.value, coin_age as u64);
-            let minted = tx.total_output().saturating_sub(staked.value);
-            if minted > max_reward {
-                return Err(NodeError::InvalidTransaction(format!(
-                    "Coinstake mints {} above the allowed reward {}",
-                    minted, max_reward
-                )));
-            }
-        }
-
-        // Net supply change: value created by this transaction (outputs minus
-        // UTXO-set inputs spent). Standard transactions are value-conserving
-        // (checked above), so only coinbase/coinstake rewards contribute.
-        //
-        // Legacy claims are funded by the snapshot embedded in the genesis
-        // block, whose full value is already counted in total_supply. A user
-        // claim (which carries a claim_address) mints new coins without
-        // spending inputs, so excluding it here prevents the snapshot value
-        // from being double-counted. The genesis distribution tx itself
-        // (claim_address = None) establishes the initial supply and is kept.
-        let total_output = tx.total_output();
-        let supply_delta = compute_supply_delta(tx, total_input, total_output);
-        journal.supply_delta = journal.supply_delta.saturating_add(supply_delta);
-
-        Ok(())
+    ) -> Result<chain_reorg::BlockJournal> {
+        chain_reorg::apply_block_journaled(self, block, height)
     }
 }
 
@@ -1155,6 +680,7 @@ impl Chain {
 mod tests {
     use super::*;
     use crate::block::{Block, BlockHeader, Transaction, TxInput, TxOutput, TxType};
+    use crate::consensus::{check_stake_kernel, compute_pos_reward};
 
     fn make_block(prev_hash: [u8; 32], prev_stake_modifier: u64, height: u32) -> Block {
         let transactions = vec![Transaction {
