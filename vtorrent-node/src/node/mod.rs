@@ -44,7 +44,7 @@ use vtorrent_p2p::{
 use crate::{
     atomic_swap::{OrderAnnouncement, SwapOrderBook},
     block::{Block, Transaction},
-    chain::Chain,
+    chain::{Chain, Utxo},
     consensus::TARGET_BLOCK_TIME,
     error::{NodeError, Result},
     events::{EventSender, NodeEvent},
@@ -650,6 +650,59 @@ impl Node {
                 // Locally-minted blocks from the regtest faucet
                 Some(block) = self.block_submit_rx.recv() => {
                     let block_hash = block.hash();
+                    // Faucet blocks are minted directly into the chain via
+                    // Chain::mint_to_address. Emit the NewBlock event so the
+                    // daemon's event bridge persists them to the block store —
+                    // without this, faucet blocks exist only in memory and the
+                    // store replay fails on restart (height gap → truncation).
+                    {
+                        let chain = self.chain.lock().await;
+                        let height = chain.block_height(&block_hash).unwrap_or(0);
+                        let chain_ref = &*chain;
+                        let utxos_added: Vec<crate::chain::Utxo> = block
+                            .transactions
+                            .iter()
+                            .flat_map(|tx| {
+                                let txid = tx.txid();
+                                tx.outputs.iter().enumerate().filter_map(move |(vout, _)| {
+                                    let vout = vout as u32;
+                                    chain_ref.get_utxo(&txid, vout).map(|u| Utxo {
+                                        txid,
+                                        vout,
+                                        value: u.value,
+                                        script_pubkey: u.script_pubkey.clone(),
+                                        height,
+                                        timestamp: u.timestamp,
+                                    })
+                                })
+                            })
+                            .collect();
+                        let utxos_removed: Vec<([u8; 32], u32)> = block
+                            .transactions
+                            .iter()
+                            .flat_map(|tx| {
+                                tx.inputs
+                                    .iter()
+                                    .map(|i| (i.prev_txid, i.prev_vout))
+                            })
+                            .collect();
+                        let claimed = block
+                            .transactions
+                            .iter()
+                            .filter_map(|tx| tx.claim_address.clone())
+                            .collect();
+                        self.emit(NodeEvent::NewBlock {
+                            height,
+                            hash: block_hash,
+                            tx_count: block.transactions.len(),
+                            timestamp: block.header.timestamp,
+                            size_bytes: serde_json::to_vec(&block).map(|v| v.len()).unwrap_or(0),
+                            block: std::sync::Arc::new(block.clone()),
+                            utxos_added,
+                            utxos_removed,
+                            claimed_addresses: claimed,
+                        });
+                    }
                     let inv_msg = InvMsg {
                         items: vec![InvItem {
                             inv_type: InvType::Block,
