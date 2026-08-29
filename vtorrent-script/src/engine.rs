@@ -1071,7 +1071,7 @@ fn is_p2sh(script: &Script) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::standard::build_p2pkh;
+    use crate::standard::{build_p2ms, build_p2pkh};
     use secp256k1::{Message, Secp256k1, SecretKey};
     use sha2::{Digest, Sha256};
 
@@ -2056,5 +2056,183 @@ mod tests {
         let mut e = Engine::new(ScriptEnv::default());
         e.execute(&sig, &sp).expect("OP_MOD should succeed");
         assert_eq!(e.stack.last().unwrap(), &vec![1]);
+    }
+
+    // ── Multisig / P2SH tests ────────────────────────────────────────────────
+
+    fn make_keypair_seed(seed: u8) -> (SecretKey, secp256k1::PublicKey) {
+        let secp = Secp256k1::new();
+        let sk = SecretKey::from_slice(&[seed; 32]).unwrap();
+        let pk = secp256k1::PublicKey::from_secret_key(&secp, &sk);
+        (sk, pk)
+    }
+
+    #[test]
+    fn test_2of3_multisig() {
+        let (_, pk1) = make_keypair_seed(1);
+        let (_, pk2) = make_keypair_seed(2);
+        let (_, pk3) = make_keypair_seed(3);
+
+        let tx_hash = [0xcd_u8; 32];
+
+        let script_pubkey = build_p2ms(
+            2,
+            &[
+                pk1.serialize().to_vec(),
+                pk2.serialize().to_vec(),
+                pk3.serialize().to_vec(),
+            ],
+        )
+        .unwrap();
+
+        let sig1 = sign_tx(&make_keypair_seed(1).0, &tx_hash);
+        let sig2 = sign_tx(&make_keypair_seed(2).0, &tx_hash);
+
+        let mut script_sig = Script::new();
+        script_sig.push_opcode(0x00); // OP_0 dummy (Bitcoin CHECKMULTISIG bug)
+        script_sig.push_data(&sig1).unwrap();
+        script_sig.push_data(&sig2).unwrap();
+
+        let env = ScriptEnv {
+            tx_hash,
+            ..Default::default()
+        };
+        let mut engine = Engine::new(env);
+        engine
+            .execute(&script_sig, &script_pubkey)
+            .expect("2-of-3 multisig should succeed");
+    }
+
+    #[test]
+    fn test_1of2_multisig() {
+        let (_, pk1) = make_keypair_seed(10);
+        let (_, pk2) = make_keypair_seed(20);
+
+        let tx_hash = [0xef_u8; 32];
+
+        let script_pubkey =
+            build_p2ms(1, &[pk1.serialize().to_vec(), pk2.serialize().to_vec()]).unwrap();
+
+        let sig = sign_tx(&make_keypair_seed(10).0, &tx_hash);
+
+        let mut script_sig = Script::new();
+        script_sig.push_opcode(0x00); // OP_0 dummy
+        script_sig.push_data(&sig).unwrap();
+
+        let env = ScriptEnv {
+            tx_hash,
+            ..Default::default()
+        };
+        let mut engine = Engine::new(env);
+        engine
+            .execute(&script_sig, &script_pubkey)
+            .expect("1-of-2 multisig should succeed");
+    }
+
+    #[test]
+    fn test_multisig_wrong_keys_fails() {
+        let (_, pk1) = make_keypair_seed(1);
+        let (_, pk2) = make_keypair_seed(2);
+        let (_, pk3) = make_keypair_seed(3);
+
+        let tx_hash = [0xab_u8; 32];
+
+        let script_pubkey = build_p2ms(
+            2,
+            &[
+                pk1.serialize().to_vec(),
+                pk2.serialize().to_vec(),
+                pk3.serialize().to_vec(),
+            ],
+        )
+        .unwrap();
+
+        // Sign with wrong keys (seeds 4 and 5, not part of the multisig)
+        let sig1 = sign_tx(&make_keypair_seed(4).0, &tx_hash);
+        let sig2 = sign_tx(&make_keypair_seed(5).0, &tx_hash);
+
+        let mut script_sig = Script::new();
+        script_sig.push_opcode(0x00); // OP_0 dummy
+        script_sig.push_data(&sig1).unwrap();
+        script_sig.push_data(&sig2).unwrap();
+
+        let env = ScriptEnv {
+            tx_hash,
+            ..Default::default()
+        };
+        let mut engine = Engine::new(env);
+        assert!(
+            engine.execute(&script_sig, &script_pubkey).is_err(),
+            "multisig with wrong keys must fail"
+        );
+    }
+
+    #[test]
+    fn test_multisig_insufficient_sigs_fails() {
+        let (_, pk1) = make_keypair_seed(1);
+        let (_, pk2) = make_keypair_seed(2);
+        let (_, pk3) = make_keypair_seed(3);
+
+        let tx_hash = [0xde_u8; 32];
+
+        let script_pubkey = build_p2ms(
+            2,
+            &[
+                pk1.serialize().to_vec(),
+                pk2.serialize().to_vec(),
+                pk3.serialize().to_vec(),
+            ],
+        )
+        .unwrap();
+
+        // Only 1 signature for a 2-of-3
+        let sig = sign_tx(&make_keypair_seed(1).0, &tx_hash);
+
+        let mut script_sig = Script::new();
+        script_sig.push_opcode(0x00); // OP_0 dummy
+        script_sig.push_data(&sig).unwrap();
+
+        let env = ScriptEnv {
+            tx_hash,
+            ..Default::default()
+        };
+        let mut engine = Engine::new(env);
+        assert!(
+            engine.execute(&script_sig, &script_pubkey).is_err(),
+            "multisig with insufficient sigs must fail"
+        );
+    }
+
+    #[test]
+    fn test_p2sh_roundtrip() {
+        use ripemd::Ripemd160;
+
+        // Build a simple redeem script: OP_1 (always true)
+        let mut redeem_script = Script::new();
+        redeem_script.push_opcode(0x51); // OP_1
+
+        let redeem_bytes = redeem_script.as_bytes().to_vec();
+
+        // Hash the redeem script: HASH160(redeem_script)
+        let script_hash: [u8; 20] = {
+            let sha = Sha256::digest(&redeem_bytes);
+            Ripemd160::digest(sha).into()
+        };
+
+        // Build P2SH scriptPubKey: OP_HASH160 <hash> OP_EQUAL
+        let mut script_pubkey = Script::new();
+        script_pubkey.push_opcode(0xa9); // OP_HASH160
+        script_pubkey.push_data(&script_hash).unwrap();
+        script_pubkey.push_opcode(0x87); // OP_EQUAL
+
+        // scriptSig: push the redeem script
+        let mut script_sig = Script::new();
+        script_sig.push_data(&redeem_bytes).unwrap();
+
+        let env = ScriptEnv::default();
+        let mut engine = Engine::new(env);
+        engine
+            .execute(&script_sig, &script_pubkey)
+            .expect("P2SH roundtrip should succeed");
     }
 }

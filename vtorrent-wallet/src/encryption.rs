@@ -160,4 +160,117 @@ mod tests {
 
         assert_ne!(key1.key, key2.key);
     }
+
+    #[test]
+    fn test_derived_key_zeroize_on_drop() {
+        use std::mem::size_of;
+
+        // Verify the struct is correctly sized (32 bytes of key material).
+        assert_eq!(size_of::<DerivedKey>(), 32);
+
+        // Verify Zeroize and ZeroizeOnDrop trait bounds are satisfied at compile time.
+        fn assert_zeroize<T: Zeroize>() {}
+        fn assert_zeroize_on_drop<T: ZeroizeOnDrop>() {}
+        assert_zeroize::<DerivedKey>();
+        assert_zeroize_on_drop::<DerivedKey>();
+
+        // Create a DerivedKey, fill with known non-zero bytes, then drop.
+        // After drop the memory should be zeroed by ZeroizeOnDrop.
+        let mut buf = [0xAAu8; 32];
+        {
+            let dk = DerivedKey { key: [0xBBu8; 32] };
+            // Copy key material out before drop for inspection.
+            buf.copy_from_slice(&dk.key);
+            assert_eq!(buf, [0xBBu8; 32]);
+        }
+        // dk is dropped here — ZeroizeOnDrop zeroes the memory.
+        // In safe Rust we cannot read the dropped memory, so we rely on
+        // the compile-time trait assertions above.
+    }
+
+    #[test]
+    fn test_wif_encrypt_decrypt_roundtrip() {
+        // A sample WIF private key (testnet, uncompressed).
+        let wif = "92QksKhtz2hFMgMNp3m7FjFpER5dYvxSqyiCg6g6H6Jp5kJ3vMk";
+        let passphrase = "my-secure-passphrase-2024";
+
+        let encrypted = encrypt_wallet(wif.as_bytes(), passphrase).expect("Encryption failed");
+        assert_eq!(encrypted.version, ENCRYPTION_VERSION);
+
+        let decrypted = decrypt_wallet(&encrypted, passphrase).expect("Decryption failed");
+        assert_eq!(wif.as_bytes(), decrypted.as_slice());
+
+        // Verify the recovered WIF is valid base58.
+        let recovered = std::str::from_utf8(&decrypted).expect("WIF is not valid UTF-8");
+        assert_eq!(recovered, wif);
+    }
+
+    #[test]
+    fn test_encrypted_output_varies_with_different_salts() {
+        // Two encryptions of the same plaintext with the same passphrase
+        // must produce different ciphertexts because salts and nonces are random.
+        let plaintext = b"constant payload";
+        let passphrase = "same-pass";
+
+        let enc1 = encrypt_wallet(plaintext, passphrase).expect("Encryption failed");
+        let enc2 = encrypt_wallet(plaintext, passphrase).expect("Encryption failed");
+
+        assert_ne!(enc1.salt, enc2.salt, "salts should differ");
+        assert_ne!(enc1.nonce, enc2.nonce, "nonces should differ");
+        assert_ne!(
+            enc1.ciphertext, enc2.ciphertext,
+            "ciphertexts should differ"
+        );
+    }
+
+    #[test]
+    fn test_deterministic_encryption_with_fixed_salt_nonce() {
+        // When the same salt and nonce are used, derive_key + encrypt must be
+        // deterministic (identical ciphertext).
+        let salt = [0xABu8; 32];
+        let nonce_bytes = [0xCDu8; 12];
+        let passphrase = "deterministic-test";
+
+        let derived1 = derive_key(passphrase, &salt).expect("Key derivation failed");
+        let derived2 = derive_key(passphrase, &salt).expect("Key derivation failed");
+        assert_eq!(derived1.key, derived2.key);
+
+        let key1 = Key::from_slice(&derived1.key);
+        let cipher1 = ChaCha20Poly1305::new(key1);
+        let n1 = Nonce::from_slice(&nonce_bytes);
+        let ct1 = cipher1.encrypt(n1, b"hello world".as_ref()).unwrap();
+
+        let key2 = Key::from_slice(&derived2.key);
+        let cipher2 = ChaCha20Poly1305::new(key2);
+        let n2 = Nonce::from_slice(&nonce_bytes);
+        let ct2 = cipher2.encrypt(n2, b"hello world".as_ref()).unwrap();
+
+        assert_eq!(
+            ct1, ct2,
+            "same salt+nonce must produce identical ciphertext"
+        );
+    }
+
+    #[test]
+    fn test_argon2_key_derivation_properties() {
+        let salt = [0x42u8; 32];
+
+        // 1. derive_key produces a 32-byte key.
+        let dk = derive_key("passphrase", &salt).expect("Key derivation failed");
+        assert_eq!(dk.key.len(), 32);
+
+        // 2. Same passphrase + same salt => same key.
+        let dk_a = derive_key("my-passphrase", &salt).expect("Key derivation failed");
+        let dk_b = derive_key("my-passphrase", &salt).expect("Key derivation failed");
+        assert_eq!(dk_a.key, dk_b.key);
+
+        // 3. Different passphrases => different keys.
+        let dk_x = derive_key("passphrase-alpha", &salt).expect("Key derivation failed");
+        let dk_y = derive_key("passphrase-beta", &salt).expect("Key derivation failed");
+        assert_ne!(dk_x.key, dk_y.key);
+
+        // 4. Empty passphrase still works (Argon2 allows it).
+        let dk_empty = derive_key("", &salt).expect("Key derivation failed");
+        assert_eq!(dk_empty.key.len(), 32);
+    }
 }

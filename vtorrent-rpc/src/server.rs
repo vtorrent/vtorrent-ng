@@ -1,5 +1,6 @@
 use crate::handlers::*;
 use crate::metrics::metrics_handler;
+use crate::ratelimit::ip_rate_limit;
 use crate::state::AppState;
 use crate::ws::ws_handler;
 use axum::{
@@ -75,10 +76,6 @@ async fn rate_limit(
 /// Build the Axum router with all API routes.
 pub fn build_router(state: AppState) -> Router {
     let state = Arc::new(state);
-    // Restrict CORS to local origins. The RPC server is meant to be accessed
-    // from the local machine (Tauri frontend, CLI, local tools); allowing any
-    // origin would let a malicious website drive the local RPC (CSRF / DNS
-    // rebinding), including wallet-funding endpoints.
     let cors = CorsLayer::new()
         .allow_origin([
             "http://localhost".parse().unwrap(),
@@ -93,8 +90,6 @@ pub fn build_router(state: AppState) -> Router {
     let limiter: Arc<ConcurrencyLimiter> = Arc::new(tokio::sync::Semaphore::new(5));
     let rate = middleware::from_fn_with_state(Arc::clone(&limiter), rate_limit);
 
-    // Routes that manage funds, keys, or broadcast to the network require the
-    // API key when one is configured.
     let protected = Router::new()
         .route("/api/v1/wallet/import", post(import_wallet))
         .route("/api/v1/wallet/send", post(send_vtr))
@@ -118,10 +113,23 @@ pub fn build_router(state: AppState) -> Router {
         .layer(auth)
         .layer(rate);
 
+    let public_routes = Router::new()
+        .route("/api/v1/wallet/balance", get(get_balance))
+        .route("/api/v1/wallet/addresses", get(get_addresses))
+        .route("/api/v1/wallet/utxos", get(get_wallet_utxos))
+        .route("/api/v1/wallet/transactions", get(get_transactions))
+        .route("/api/v1/staking/status", get(get_staking_status))
+        .route("/api/v1/torrent/sessions", get(list_torrent_sessions))
+        .route("/api/v1/dex/orders", get(get_dex_orders))
+        .route("/api/v1/claim/check", post(check_claim))
+        .route("/api/v1/faucet", post(faucet))
+        .layer(middleware::from_fn_with_state(
+            Arc::clone(&state.rate_limiter),
+            ip_rate_limit,
+        ));
+
     Router::new()
-        // Node info
         .route("/api/v1/info", get(get_node_info))
-        // Blockchain (read-only)
         .route("/api/v1/blockchain/height", get(get_block_height))
         .route(
             "/api/v1/blockchain/block/height/:height",
@@ -131,39 +139,18 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/blockchain/tx/:txid", get(get_transaction_by_id))
         .route("/api/v1/mempool", get(get_mempool))
         .route("/api/v1/fee/estimate", get(get_fee_estimate))
-        // Wallet (read-only)
-        .route("/api/v1/wallet/balance", get(get_balance))
-        .route("/api/v1/wallet/addresses", get(get_addresses))
-        .route("/api/v1/wallet/utxos", get(get_wallet_utxos))
-        .route("/api/v1/wallet/transactions", get(get_transactions))
-        // Staking (read-only)
-        .route("/api/v1/staking/status", get(get_staking_status))
-        // Torrent
-        .route("/api/v1/torrent/sessions", get(list_torrent_sessions))
-        // DEX
-        .route("/api/v1/dex/orders", get(get_dex_orders))
-        // Bitcoin wallet
         .route("/api/v1/btc/status", get(get_btc_status))
         .route("/api/v1/btc/address", get(get_btc_address))
-        // Legacy claim
-        .route("/api/v1/claim/check", post(check_claim))
-        // Regtest faucet (mints coins to an address; regtest only)
-        .route("/api/v1/faucet", post(faucet))
-        // Regtest debug: reveal an order's preimage (regtest only)
         .route(
             "/api/v1/debug/order/:id/preimage",
             get(debug_order_preimage),
         )
-        // Regtest debug: set the mock clock (regtest only)
         .route("/api/v1/debug/mocktime", post(debug_mocktime))
-        // SPV light client
         .route("/api/v1/spv/status", get(get_spv_status))
-        // Peers
         .route("/api/v1/peers", get(get_peers))
-        // WebSocket event stream
         .route("/ws", get(ws_handler))
-        // Prometheus metrics
         .route("/metrics", get(metrics_handler))
+        .merge(public_routes)
         .merge(protected)
         .layer(cors)
         .with_state(state)
@@ -177,7 +164,11 @@ pub async fn start_server(
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     tracing::info!("vTorrent RPC server listening on {}", bind_addr);
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 

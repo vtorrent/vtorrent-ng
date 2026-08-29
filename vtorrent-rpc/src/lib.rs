@@ -27,6 +27,7 @@ pub mod error;
 pub mod handlers;
 pub mod metrics;
 pub mod models;
+pub mod ratelimit;
 pub mod server;
 pub mod state;
 pub mod ws;

@@ -1,3 +1,4 @@
+use crate::ratelimit::SharedRateLimiter;
 use crate::ws::EventBroadcaster;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -122,6 +123,8 @@ pub struct AppState {
     /// Regtest mock time (Unix timestamp). When set, time-dependent checks
     /// (e.g. HTLC expiry) use this instead of the wall clock. `None` = real time.
     pub mock_time: Arc<RwLock<Option<u64>>>,
+    /// Per-IP rate limiter (sliding window, 100 req/min).
+    pub rate_limiter: SharedRateLimiter,
 }
 
 impl AppState {
@@ -171,6 +174,7 @@ impl AppState {
             regtest: false,
             network: "vtorrent-mainnet".to_string(),
             mock_time: Arc::new(RwLock::new(None)),
+            rate_limiter: crate::ratelimit::new_shared_limiter(),
         }
     }
 
@@ -221,6 +225,7 @@ impl AppState {
             regtest: false,
             network: "vtorrent-mainnet".to_string(),
             mock_time: Arc::new(RwLock::new(None)),
+            rate_limiter: crate::ratelimit::new_shared_limiter(),
         }
     }
 
