@@ -110,8 +110,12 @@ impl Mempool {
         };
         let rbf = tx.signals_rbf();
 
+        // Legacy claims spend snapshot outputs (no inputs) and carry no fee;
+        // exempt them from the relay fee floor so holders can still claim.
+        let fee_exempt = tx.is_legacy_claim();
+
         // Enforce minimum absolute fee
-        if fee_sats < MIN_RELAY_FEE {
+        if !fee_exempt && fee_sats < MIN_RELAY_FEE {
             return Err(NodeError::PolicyRejected(format!(
                 "Fee too low: {} sat < {} sat minimum",
                 fee_sats, MIN_RELAY_FEE
@@ -119,7 +123,7 @@ impl Mempool {
         }
 
         // Enforce dynamic minimum fee rate
-        if fee_rate < self.min_fee_rate {
+        if !fee_exempt && fee_rate < self.min_fee_rate {
             return Err(NodeError::PolicyRejected(format!(
                 "Fee rate too low: {} sat/byte < {} sat/byte minimum",
                 fee_rate, self.min_fee_rate
@@ -728,5 +732,63 @@ mod tests {
         );
         assert!(!mp.spent_inputs.contains_key(&outpoint_a));
         assert!(!mp.spent_inputs.contains_key(&([7u8; 32], 5)));
+    }
+
+    fn make_claim_tx(address: &str) -> Transaction {
+        Transaction {
+            version: 1,
+            tx_type: TxType::LegacyClaim,
+            inputs: vec![],
+            outputs: vec![TxOutput {
+                value: 1_000_000,
+                script_pubkey: vec![0x76, 0xa9, 0x14, 0x00, 0x88, 0xac],
+            }],
+            lock_time: 0,
+            claim_address: Some(address.to_string()),
+            claim_signature: Some(vec![0x1B; 65]),
+        }
+    }
+
+    #[test]
+    fn test_legacy_claim_admitted_without_fee() {
+        let mut mp = Mempool::new(100);
+        let tx = make_claim_tx("VTestClaimAddr1");
+        // Claims spend snapshot outputs (no inputs) so fee is 0 — must not
+        // be rejected by the relay fee floor.
+        mp.add_transaction(tx).unwrap();
+        assert_eq!(mp.size(), 1);
+    }
+
+    #[test]
+    fn test_evict_stale_removes_only_old_entries() {
+        let mut mp = Mempool::new(100);
+        let now = 1_000_000u64;
+
+        let fresh = make_tx(MIN_RELAY_FEE, 1, false);
+        let fresh_txid = fresh.txid();
+        mp.add_transaction_with_fee(fresh, MIN_RELAY_FEE).unwrap();
+        // Backdate the received_at of the fresh entry to simulate age.
+        mp.entries.get_mut(&fresh_txid).unwrap().received_at = now - 49 * 60 * 60;
+
+        let claim = make_claim_tx("VTestClaimAddr2");
+        let claim_txid = claim.txid();
+        mp.add_transaction(claim).unwrap();
+        mp.entries.get_mut(&claim_txid).unwrap().received_at = now - 47 * 60 * 60;
+
+        let evicted = mp.evict_stale(now);
+        assert_eq!(evicted, 1);
+        assert!(
+            mp.get_transaction(&fresh_txid).is_none(),
+            "stale tx evicted"
+        );
+        assert!(
+            mp.get_transaction(&claim_txid).is_some(),
+            "fresh tx retained"
+        );
+        // spent_inputs cleaned up for the evicted entry
+        assert!(
+            !mp.spent_inputs.contains_key(&([1u8; 32], 0)),
+            "evicted entry must release its spent-input reservation"
+        );
     }
 }

@@ -634,12 +634,12 @@ impl Chain {
         }
     }
 
-    /// Find the height of a block on the main chain by its hash.
+    /// Find the height of a known block by its hash (O(1)).
+    ///
+    /// Covers main-chain and fork blocks; `tx_index` and RPC callers only
+    /// pass main-chain hashes, so the broader scope is safe.
     pub fn block_height(&self, hash: &[u8; 32]) -> Option<u32> {
-        self.height_index
-            .iter()
-            .position(|h| h == hash)
-            .map(|i| i as u32)
+        self.block_heights.get(hash).copied()
     }
 
     /// Reorganize the main chain to make `new_tip` the best tip.

@@ -558,6 +558,10 @@ pub async fn get_txout(
             params.txid, params.vout
         ))
     })?;
+    let coinbase = chain
+        .get_transaction(&txid_bytes)
+        .map(|(tx, _, _)| tx.is_coinbase() || tx.is_coinstake())
+        .unwrap_or(false);
 
     Ok(Json(GetTxOutResponse {
         txid: params.txid,
@@ -565,6 +569,6 @@ pub async fn get_txout(
         value_satoshis: utxo.value,
         script_pubkey: hex::encode(&utxo.script_pubkey),
         height: utxo.height,
-        coinbase: false,
+        coinbase,
     }))
 }

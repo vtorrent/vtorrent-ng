@@ -189,7 +189,19 @@ impl Transaction {
             .map(|i| 32 + 4 + 4 + i.script_sig.len())
             .sum();
         let outputs_size: usize = self.outputs.iter().map(|o| 8 + o.script_pubkey.len()).sum();
-        base + inputs_size + outputs_size
+        // Claim fields are part of the txid hash and wire format; count them
+        // so fee-rate and block-size accounting reflect the real footprint.
+        let claim_size = self
+            .claim_address
+            .as_ref()
+            .map(|a| 1 + a.len())
+            .unwrap_or(0)
+            + self
+                .claim_signature
+                .as_ref()
+                .map(|s| 1 + s.len())
+                .unwrap_or(0);
+        base + inputs_size + outputs_size + claim_size
     }
 
     /// Returns true if this transaction signals Replace-By-Fee (BIP-125).
@@ -464,5 +476,33 @@ mod tests {
         let old = sighash_reference(&tx_no_claim, 0, &subscript);
         let new = tx_no_claim.sighash(0, &subscript);
         assert_eq!(old, new, "sighash mismatch for None claim fields");
+    }
+
+    #[test]
+    fn test_serialized_size_includes_claim_fields() {
+        let base = Transaction {
+            version: 1,
+            tx_type: TxType::Standard,
+            inputs: vec![],
+            outputs: vec![TxOutput {
+                value: 1_000,
+                script_pubkey: vec![0x76, 0xa9, 0x14, 0x00, 0x88, 0xac],
+            }],
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        };
+        let base_size = base.serialized_size();
+
+        let claim = Transaction {
+            tx_type: TxType::LegacyClaim,
+            claim_address: Some("VTestAddr123".into()),
+            claim_signature: Some(vec![0xDE; 65]),
+            ..base
+        };
+        let claim_size = claim.serialized_size();
+
+        // 1 (tag) + 12 (address) + 1 (tag) + 65 (sig) = 79 extra bytes
+        assert_eq!(claim_size, base_size + 79);
     }
 }

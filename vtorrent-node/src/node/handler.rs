@@ -30,11 +30,27 @@ use super::Node;
 /// Handle an `inv` message — announce inventory to the peer manager.
 pub(crate) async fn handle_inv(
     node: &mut Node,
-    _peer_addr: SocketAddr,
+    peer_addr: SocketAddr,
     msg: &NetMessage,
     peer_version: u32,
 ) -> Result<()> {
     if let Ok(inv) = decode_for_peer::<InvMsg>(&msg.payload, peer_version) {
+        // Bound the inventory announcement: an unbounded list makes us issue
+        // one getdata per unknown item, amplifying a peer's bandwidth into
+        // full block/tx fetches (DoS vector).
+        const MAX_INV_ITEMS: usize = 1_000;
+        if inv.items.len() > MAX_INV_ITEMS {
+            tracing::debug!(
+                "inv from {} with {} items — rejecting (max {})",
+                peer_addr,
+                inv.items.len(),
+                MAX_INV_ITEMS
+            );
+            node.peer_manager
+                .record_misbehaviour(peer_addr, Misbehaviour::OversizedMessage)
+                .await;
+            return Ok(());
+        }
         let mut want = Vec::new();
         for item in &inv.items {
             match item.inv_type {
@@ -519,24 +535,18 @@ pub(crate) async fn handle_getblocktxn(
 ) -> Result<()> {
     if let Ok(req) = serde_json::from_slice::<BlockTxnReq>(&msg.payload) {
         let chain = node.chain.lock().await;
-        let our_height = chain.best_height();
         let mut found_txs: Option<Vec<Vec<u8>>> = None;
-        'outer: for h in 0..=our_height {
-            if let Some(block) = chain.get_block_at_height(h) {
-                if block.hash() == req.block_hash {
-                    let mut txs = Vec::new();
-                    for &idx in &req.indexes {
-                        let idx = idx as usize;
-                        if idx < block.transactions.len() {
-                            if let Ok(bytes) = serde_json::to_vec(&block.transactions[idx]) {
-                                txs.push(bytes);
-                            }
-                        }
+        if let Some(block) = chain.get_block(&req.block_hash) {
+            let mut txs = Vec::new();
+            for &idx in &req.indexes {
+                let idx = idx as usize;
+                if idx < block.transactions.len() {
+                    if let Ok(bytes) = serde_json::to_vec(&block.transactions[idx]) {
+                        txs.push(bytes);
                     }
-                    found_txs = Some(txs);
-                    break 'outer;
                 }
             }
+            found_txs = Some(txs);
         }
         if let Some(txs) = found_txs {
             let resp = BlockTxnMsg {
@@ -721,6 +731,21 @@ pub(crate) async fn handle_getdata(
     peer_version: u32,
 ) -> Result<()> {
     if let Ok(req) = decode_for_peer::<GetDataMsg>(&msg.payload, peer_version) {
+        // Bound the request: each item can trigger a full block (up to 1 MB)
+        // or transaction response, so a large list is a bandwidth DoS vector.
+        const MAX_GETDATA_ITEMS: usize = 500;
+        if req.items.len() > MAX_GETDATA_ITEMS {
+            tracing::debug!(
+                "getdata from {} with {} items — rejecting (max {})",
+                peer_addr,
+                req.items.len(),
+                MAX_GETDATA_ITEMS
+            );
+            node.peer_manager
+                .record_misbehaviour(peer_addr, Misbehaviour::OversizedMessage)
+                .await;
+            return Ok(());
+        }
         for item in &req.items {
             match item.inv_type {
                 InvType::Block => {
