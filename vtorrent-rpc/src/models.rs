@@ -520,6 +520,19 @@ pub struct SwapActionResponse {
     pub status: String,
 }
 
+// ─── GetTxOut ─────────────────────────────────────────────────────────────────
+
+/// Response for `GET /api/v1/blockchain/utxo/:txid/:vout`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GetTxOutResponse {
+    pub txid: String,
+    pub vout: u32,
+    pub value_satoshis: u64,
+    pub script_pubkey: String,
+    pub height: u32,
+    pub coinbase: bool,
+}
+
 // ─── Regtest Faucet ───────────────────────────────────────────────────────────
 
 /// Request body for `POST /api/v1/faucet` (regtest only).

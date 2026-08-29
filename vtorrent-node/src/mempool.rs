@@ -400,6 +400,30 @@ impl Mempool {
         self.entries.len()
     }
 
+    /// Maximum age for mempool transactions before they are evicted as stale.
+    pub const STALE_TX_TTL_SECS: u64 = 48 * 60 * 60; // 48 hours
+
+    /// Evict transactions older than [`STALE_TX_TTL_SECS`].
+    ///
+    /// Stale transactions are unlikely to be mined and waste mempool space.
+    /// Returns the number of evicted transactions.
+    pub fn evict_stale(&mut self, now_secs: u64) -> usize {
+        let stale: Vec<[u8; 32]> = self
+            .entries
+            .iter()
+            .filter(|(_, e)| now_secs.saturating_sub(e.received_at) > Self::STALE_TX_TTL_SECS)
+            .map(|(txid, _)| *txid)
+            .collect();
+        let count = stale.len();
+        for txid in &stale {
+            self.remove_entry(txid);
+        }
+        if count > 0 {
+            tracing::info!(evicted = count, "Mempool: evicted stale transactions");
+        }
+        count
+    }
+
     /// Returns the current dynamic minimum fee rate (sat/byte).
     pub fn min_fee_rate(&self) -> u64 {
         self.min_fee_rate

@@ -688,6 +688,23 @@ pub async fn faucet(
             "Address is required — provide a valid VTR address".into(),
         ));
     }
+
+    // Per-address cooldown: 10 seconds between claims from the same address.
+    const FAUCET_COOLDOWN_SECS: u64 = 10;
+    {
+        let mut cooldowns = state.faucet_cooldowns.write().await;
+        if let Some(last) = cooldowns.get(&req.address) {
+            let elapsed = last.elapsed().as_secs();
+            if elapsed < FAUCET_COOLDOWN_SECS {
+                return Err(RpcError::BadRequest(format!(
+                    "Faucet cooldown: wait {} more seconds before claiming again",
+                    FAUCET_COOLDOWN_SECS - elapsed,
+                )));
+            }
+        }
+        cooldowns.insert(req.address.clone(), std::time::Instant::now());
+    }
+
     let amount = req
         .amount_satoshis
         .unwrap_or(100 * vtorrent_node::consensus::COIN);

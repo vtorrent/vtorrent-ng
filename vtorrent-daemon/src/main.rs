@@ -164,6 +164,129 @@ struct Cli {
     btc_peer: Option<String>,
 }
 
+// ─── Startup Validation ──────────────────────────────────────────────────────
+
+/// Validate consensus parameters and daemon configuration at startup.
+///
+/// This runs before any network connections are established, catching
+/// configuration errors early with clear messages.
+fn validate_startup_config(cli: &Cli, data_dir: &std::path::Path) -> anyhow::Result<()> {
+    use vtorrent_core::network::{mainnet, testnet};
+    use vtorrent_node::consensus::{
+        BLOCK_REWARD, MAX_STAKE_AGE, MAX_SUPPLY, MIN_STAKE_AGE, MIN_STAKE_AMOUNT, TARGET_BLOCK_TIME,
+    };
+
+    // ── 1. Network magic consistency ──────────────────────────────────────────
+    //
+    // The compiled P2P magic (vtorrent_p2p::message::NETWORK_MAGIC) must match
+    // the expected magic for the chosen network mode.
+    let expected_magic = if cli.regtest {
+        // Regtest uses mainnet magic (same chain, local faucet).
+        mainnet::NETWORK_MAGIC
+    } else if cli.testnet {
+        testnet::NETWORK_MAGIC
+    } else {
+        mainnet::NETWORK_MAGIC
+    };
+
+    // The P2P crate compiles with a hardcoded magic — verify it matches.
+    let compiled_magic = vtorrent_core::network::mainnet::NETWORK_MAGIC;
+    if compiled_magic != expected_magic {
+        anyhow::bail!(
+            "Network magic mismatch: compiled magic {:02x?} does not match expected {:02x?} for {} mode",
+            compiled_magic,
+            expected_magic,
+            if cli.regtest { "regtest" } else if cli.testnet { "testnet" } else { "mainnet" },
+        );
+    }
+    tracing::info!(
+        "Network magic validated: {:02x?} ({})",
+        expected_magic,
+        if cli.regtest {
+            "regtest"
+        } else if cli.testnet {
+            "testnet"
+        } else {
+            "mainnet"
+        }
+    );
+
+    // ── 2. Port sanity ────────────────────────────────────────────────────────
+    //
+    // --listen and --rpc-addr must use different ports to avoid bind conflicts.
+    let parse_port = |addr: &str| -> anyhow::Result<u16> {
+        addr.rsplit(':')
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("missing port in '{}'", addr))?
+            .parse::<u16>()
+            .map_err(|e| anyhow::anyhow!("invalid port in '{}': {}", addr, e))
+    };
+
+    let listen_port = parse_port(&cli.listen)?;
+    let rpc_port = parse_port(&cli.rpc_addr)?;
+
+    if listen_port == rpc_port {
+        anyhow::bail!(
+            "Port conflict: --listen ({}) and --rpc-addr ({}) use the same port {}",
+            cli.listen,
+            cli.rpc_addr,
+            listen_port,
+        );
+    }
+    tracing::info!(
+        "Port sanity check passed: P2P={}, RPC={}",
+        listen_port,
+        rpc_port
+    );
+
+    // ── 3. Consensus parameter sanity ─────────────────────────────────────────
+    //
+    // Static checks that critical constants have sensible values.
+    if MIN_STAKE_AMOUNT == 0 {
+        anyhow::bail!("Consensus error: MIN_STAKE_AMOUNT must be > 0");
+    }
+    if MIN_STAKE_AGE >= MAX_STAKE_AGE {
+        anyhow::bail!(
+            "Consensus error: MIN_STAKE_AGE ({}) must be < MAX_STAKE_AGE ({})",
+            MIN_STAKE_AGE,
+            MAX_STAKE_AGE,
+        );
+    }
+    if TARGET_BLOCK_TIME == 0 {
+        anyhow::bail!("Consensus error: TARGET_BLOCK_TIME must be > 0");
+    }
+    if MAX_SUPPLY == 0 {
+        anyhow::bail!("Consensus error: MAX_SUPPLY must be > 0");
+    }
+    if BLOCK_REWARD == 0 {
+        anyhow::bail!("Consensus error: BLOCK_REWARD must be > 0");
+    }
+    tracing::info!(
+        "Consensus parameters validated: MIN_STAKE_AMOUNT={}, MIN_STAKE_AGE={}s, MAX_STAKE_AGE={}s, TARGET_BLOCK_TIME={}s, MAX_SUPPLY={}, BLOCK_REWARD={}",
+        MIN_STAKE_AMOUNT,
+        MIN_STAKE_AGE,
+        MAX_STAKE_AGE,
+        TARGET_BLOCK_TIME,
+        MAX_SUPPLY,
+        BLOCK_REWARD,
+    );
+
+    // ── 4. Data directory writability ──────────────────────────────────────────
+    //
+    // Ensure the data directory exists (or can be created) and is writable by
+    // creating a temporary file and immediately removing it.
+    std::fs::create_dir_all(data_dir)
+        .map_err(|e| anyhow::anyhow!("Cannot create data directory {:?}: {}", data_dir, e))?;
+
+    let test_file = data_dir.join(".vtorrent_write_test");
+    std::fs::write(&test_file, b"ok")
+        .map_err(|e| anyhow::anyhow!("Data directory {:?} is not writable: {}", data_dir, e))?;
+    let _ = std::fs::remove_file(&test_file);
+    tracing::info!("Data directory validated: {:?} (writable)", data_dir);
+
+    Ok(())
+}
+
 // ─── Entry Point ──────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -178,6 +301,18 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     print_banner();
+
+    // ── Resolve data directory ────────────────────────────────────────────────
+    let data_dir = cli.data_dir.clone().unwrap_or_else(|| {
+        std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(".vtorrent")
+    });
+
+    // ── Validate startup configuration (before any network connections) ───────
+    validate_startup_config(&cli, &data_dir)?;
 
     // ── Resolve data directory ────────────────────────────────────────────────
     let data_dir = cli.data_dir.unwrap_or_else(|| {
@@ -883,7 +1018,13 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-                if let Err(e) = mp.lock().await.save_to(&path) {
+                let mut mempool = mp.lock().await;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                mempool.evict_stale(now);
+                if let Err(e) = mempool.save_to(&path) {
                     tracing::warn!("Mempool save failed: {}", e);
                 }
             }

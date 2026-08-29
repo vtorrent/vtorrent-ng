@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     Json,
 };
 use serde_json::{json, Value};
@@ -532,4 +532,39 @@ pub async fn get_transactions(
         .collect();
 
     Ok(Json(result))
+}
+
+// ─── GET /api/v1/blockchain/utxo/:txid/:vout ─────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct GetTxOutParams {
+    pub txid: String,
+    pub vout: u32,
+}
+
+pub async fn get_txout(
+    State(state): State<Arc<AppState>>,
+    Path(params): Path<GetTxOutParams>,
+) -> RpcResult<Json<GetTxOutResponse>> {
+    let txid_bytes: [u8; 32] = hex::decode(&params.txid)
+        .ok()
+        .and_then(|b| b.try_into().ok())
+        .ok_or_else(|| RpcError::BadRequest("Invalid txid hex".into()))?;
+
+    let chain = state.chain.lock().await;
+    let utxo = chain.get_utxo(&txid_bytes, params.vout).ok_or_else(|| {
+        RpcError::NotFound(format!(
+            "UTXO {}:{} not found or already spent",
+            params.txid, params.vout
+        ))
+    })?;
+
+    Ok(Json(GetTxOutResponse {
+        txid: params.txid,
+        vout: utxo.vout,
+        value_satoshis: utxo.value,
+        script_pubkey: hex::encode(&utxo.script_pubkey),
+        height: utxo.height,
+        coinbase: false,
+    }))
 }

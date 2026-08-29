@@ -176,7 +176,11 @@ pub(crate) async fn handle_block(
                 Err(e) => {
                     tracing::warn!("Rejected block from {}: {}", peer_addr, e);
                     node.peer_manager
-                        .record_misbehaviour(peer_addr, Misbehaviour::InvalidBlock)
+                        .ban_peer_with_duration(
+                            peer_addr,
+                            std::time::Duration::from_secs(3600),
+                            format!("Invalid block: {}", e),
+                        )
                         .await;
                 }
             }

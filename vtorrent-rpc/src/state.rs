@@ -125,6 +125,10 @@ pub struct AppState {
     pub mock_time: Arc<RwLock<Option<u64>>>,
     /// Per-IP rate limiter (sliding window, 100 req/min).
     pub rate_limiter: SharedRateLimiter,
+    /// Faucet per-address cooldown (address → last claim time). Prevents
+    /// draining the regtest faucet by repeated requests from the same address.
+    pub faucet_cooldowns:
+        Arc<tokio::sync::RwLock<std::collections::HashMap<String, std::time::Instant>>>,
 }
 
 impl AppState {
@@ -175,6 +179,7 @@ impl AppState {
             network: "vtorrent-mainnet".to_string(),
             mock_time: Arc::new(RwLock::new(None)),
             rate_limiter: crate::ratelimit::new_shared_limiter(),
+            faucet_cooldowns: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         }
     }
 
@@ -226,6 +231,7 @@ impl AppState {
             network: "vtorrent-mainnet".to_string(),
             mock_time: Arc::new(RwLock::new(None)),
             rate_limiter: crate::ratelimit::new_shared_limiter(),
+            faucet_cooldowns: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         }
     }
 

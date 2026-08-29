@@ -54,6 +54,11 @@ pub const MAX_MONEY: u64 = MAX_SUPPLY;
 /// Block time target (60 seconds).
 pub const TARGET_BLOCK_TIME: u64 = 60;
 
+/// Base block reward in satoshis. Actual reward scales with stake amount and
+/// coin age via [`compute_pos_reward`], but this constant provides a sensible
+/// floor for daemon startup sanity checks.
+pub const BLOCK_REWARD: u64 = COIN;
+
 /// Difficulty adjustment interval (every 2016 blocks, ~1.4 days).
 pub const DIFFICULTY_ADJUSTMENT_INTERVAL: u32 = 2016;
 

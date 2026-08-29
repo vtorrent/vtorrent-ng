@@ -119,6 +119,19 @@ impl PeerScore {
     }
 }
 
+/// Escalating ban durations for repeated connection failures.
+///
+/// After `CONSECUTIVE_FAILURE_THRESHOLD` failures from the same IP, the peer
+/// is banned for increasing durations: 5 min → 15 min → 1 hour.
+const ESCALATING_BAN_DURATIONS: &[u64] = &[
+    5 * 60,  // 5 minutes
+    15 * 60, // 15 minutes
+    60 * 60, // 1 hour
+];
+
+/// Number of consecutive connection failures before escalating bans kick in.
+pub const CONSECUTIVE_FAILURE_THRESHOLD: u32 = 5;
+
 /// The ban manager — tracks scores and bans for all peers.
 #[derive(Debug)]
 pub struct BanManager {
@@ -130,6 +143,8 @@ pub struct BanManager {
     ban_threshold: u32,
     /// How long bans last.
     ban_duration: Duration,
+    /// Consecutive connection failure count per IP.
+    consecutive_failures: HashMap<IpAddr, u32>,
 }
 
 impl Default for BanManager {
@@ -146,6 +161,7 @@ impl BanManager {
             bans: HashMap::new(),
             ban_threshold,
             ban_duration,
+            consecutive_failures: HashMap::new(),
         }
     }
 
@@ -189,6 +205,79 @@ impl BanManager {
             BanRecord {
                 banned_at: Instant::now(),
                 duration: self.ban_duration,
+                reason,
+            },
+        );
+        // Reset score after ban
+        self.scores.remove(&ip);
+    }
+
+    /// Record a connection failure for an IP address.
+    ///
+    /// After `CONSECUTIVE_FAILURE_THRESHOLD` failures, the peer is banned for
+    /// an escalating duration (5 min → 15 min → 1 hour). Returns `true` if
+    /// the peer was banned as a result.
+    pub fn record_connection_failure(&mut self, ip: IpAddr) -> bool {
+        let count = self.consecutive_failures.entry(ip).or_insert(0);
+        *count += 1;
+        let current_count = *count;
+
+        tracing::debug!(
+            "Connection failure for {}: {} consecutive failures",
+            ip,
+            current_count
+        );
+
+        if current_count >= CONSECUTIVE_FAILURE_THRESHOLD {
+            let duration_idx = ((current_count - CONSECUTIVE_FAILURE_THRESHOLD) as usize)
+                .min(ESCALATING_BAN_DURATIONS.len() - 1);
+            let ban_secs = ESCALATING_BAN_DURATIONS[duration_idx];
+            let duration = Duration::from_secs(ban_secs);
+
+            tracing::warn!(
+                "Banning peer {} for {} consecutive connection failures (ban duration: {}s)",
+                ip,
+                current_count,
+                ban_secs
+            );
+
+            self.bans.insert(
+                ip,
+                BanRecord {
+                    banned_at: Instant::now(),
+                    duration,
+                    reason: format!("{} consecutive connection failures", current_count),
+                },
+            );
+            // Reset score after ban
+            self.scores.remove(&ip);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Clear consecutive failure count for an IP (called on successful connection).
+    pub fn clear_consecutive_failures(&mut self, ip: IpAddr) {
+        self.consecutive_failures.remove(&ip);
+    }
+
+    /// Ban an IP with a specific duration and reason.
+    ///
+    /// Used for immediate bans on severe protocol violations (e.g., invalid
+    /// blocks, invalid transactions) that should not wait for score threshold.
+    pub fn ban_ip_with_duration(&mut self, ip: IpAddr, duration: Duration, reason: String) {
+        tracing::warn!(
+            "Banning peer {} for {}s: {}",
+            ip,
+            duration.as_secs(),
+            reason
+        );
+        self.bans.insert(
+            ip,
+            BanRecord {
+                banned_at: Instant::now(),
+                duration,
                 reason,
             },
         );

@@ -260,11 +260,18 @@ impl PeerManager {
         // Record the attempt in the address book
         self.addr_book.record_attempt(sock_addr);
 
-        let (stream, transport_mode) = self
-            .transport
-            .connect(addr)
-            .await
-            .map_err(|e| P2pError::Transport(e.to_string()))?;
+        let (stream, transport_mode) = match self.transport.connect(addr).await {
+            Ok(result) => result,
+            Err(e) => {
+                // Track connection failure — bans Tor/I2P synthetic addresses
+                // harmlessly (they don't match real peer IPs).
+                self.ban_manager
+                    .write()
+                    .await
+                    .record_connection_failure(sock_addr.ip());
+                return Err(P2pError::Transport(e.to_string()));
+            }
+        };
         // SOCKS5 and I2P streams report their local proxy endpoint as `peer_addr`.
         // Retain a deterministic synthetic socket key for anonymous destinations so
         // the existing peer lifecycle map remains usable without leaking a proxy IP.
@@ -351,6 +358,12 @@ impl PeerManager {
                         continue;
                     }
 
+                    // Clear consecutive failure count — the peer connected successfully
+                    self.ban_manager
+                        .write()
+                        .await
+                        .clear_consecutive_failures(ip);
+
                     if let Some(peer) = self.peers.get_mut(peer_addr) {
                         peer.state = PeerState::Connected;
                         peer.best_height = version.start_height;
@@ -405,6 +418,33 @@ impl PeerManager {
         let ip = addr.ip();
         self.ban_manager.write().await.ban_ip(ip, reason.clone());
         tracing::warn!("Manually banned peer {}: {}", addr, reason);
+        // Disconnect if currently connected
+        if let Some(peer) = self.peers.get(&addr) {
+            let _ = peer.cmd_tx.try_send(PeerCommand::Disconnect);
+        }
+    }
+
+    /// Ban a peer IP with a specific duration and reason.
+    ///
+    /// Used for immediate bans on severe protocol violations (e.g., invalid
+    /// blocks for 1 hour, invalid transactions for 30 minutes).
+    pub async fn ban_peer_with_duration(
+        &mut self,
+        addr: SocketAddr,
+        duration: Duration,
+        reason: String,
+    ) {
+        let ip = addr.ip();
+        self.ban_manager
+            .write()
+            .await
+            .ban_ip_with_duration(ip, duration, reason.clone());
+        tracing::warn!(
+            "Banned peer {} for {}s: {}",
+            addr,
+            duration.as_secs(),
+            reason
+        );
         // Disconnect if currently connected
         if let Some(peer) = self.peers.get(&addr) {
             let _ = peer.cmd_tx.try_send(PeerCommand::Disconnect);
