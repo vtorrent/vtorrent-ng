@@ -14,7 +14,12 @@ fn persist_staking_intent(state: &AppState, address: Option<&str>) {
         Some(addr) => {
             let blob = serde_json::json!({ "enabled": true, "address": addr });
             if let Ok(bytes) = serde_json::to_vec_pretty(&blob) {
-                if let Err(e) = std::fs::write(path, bytes) {
+                // Atomic write: a crash mid-write would otherwise leave a
+                // truncated staking.json that fails to parse on resume.
+                let tmp = path.with_extension("json.tmp");
+                if let Err(e) = std::fs::write(&tmp, &bytes) {
+                    tracing::warn!("Could not persist staking intent: {}", e);
+                } else if let Err(e) = std::fs::rename(&tmp, path) {
                     tracing::warn!("Could not persist staking intent: {}", e);
                 }
             }

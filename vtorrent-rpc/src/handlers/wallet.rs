@@ -277,14 +277,27 @@ async fn persist_wallet(state: &AppState) -> RpcResult<()> {
     let bytes = serde_json::to_vec_pretty(&blob).map_err(|e| {
         RpcError::Internal(format!("Wallet serialize failed (JSON encoding): {}", e))
     })?;
+    // Create the temp file with 0600 BEFORE writing content: setting the
+    // mode after the write leaves a window where the encrypted wallet is
+    // world-readable (default umask).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)
+            .and_then(|mut f| std::io::Write::write_all(&mut f, &bytes))
+            .map_err(|e| {
+                RpcError::Internal(format!("Wallet write to {} failed: {}", tmp.display(), e))
+            })?;
+    }
+    #[cfg(not(unix))]
     std::fs::write(&tmp, &bytes).map_err(|e| {
         RpcError::Internal(format!("Wallet write to {} failed: {}", tmp.display(), e))
     })?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-    }
     std::fs::rename(&tmp, path).map_err(|e| {
         RpcError::Internal(format!(
             "Wallet rename from {} to {} failed: {}",
