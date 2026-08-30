@@ -916,6 +916,20 @@ pub(crate) async fn handle_headers(
         if count == 0 {
             return Ok(());
         }
+        // Bound the batch: each header triggers a getdata item (full block
+        // fetch), so an oversized announcement is a bandwidth DoS vector.
+        if count > super::HEADERS_PER_BATCH {
+            tracing::debug!(
+                "headers from {} with {} entries — rejecting (max {})",
+                peer_addr,
+                count,
+                super::HEADERS_PER_BATCH
+            );
+            node.peer_manager
+                .record_misbehaviour(peer_addr, Misbehaviour::OversizedMessage)
+                .await;
+            return Ok(());
+        }
         tracing::debug!("headers: received {} headers from {}", count, peer_addr);
 
         let decoded: Vec<BlockHeader> = resp
