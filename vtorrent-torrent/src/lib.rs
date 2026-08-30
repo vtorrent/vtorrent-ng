@@ -10,6 +10,7 @@
 pub mod bencode_guard;
 pub mod dht;
 pub mod engine;
+pub mod engine_disk;
 pub mod error;
 pub mod incentive;
 pub mod metadata;
