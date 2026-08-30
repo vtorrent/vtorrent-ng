@@ -350,6 +350,14 @@ impl TxBuilder {
         // Build outputs.
         let mut outputs: Vec<TxOutput> = Vec::new();
         for (addr, amount) in &self.recipients {
+            // Reject dust recipients: an output below the dust threshold costs
+            // more to spend than it is worth and would linger in the UTXO set.
+            if *amount < DUST_SATOSHIS {
+                return Err(WalletError::BuildError(format!(
+                    "Recipient amount {} sat is below the dust threshold {} sat",
+                    amount, DUST_SATOSHIS
+                )));
+            }
             outputs.push(TxOutput {
                 value: *amount,
                 script_pubkey: p2pkh_script_pubkey(addr)?,
@@ -573,6 +581,39 @@ mod tests {
     fn test_address_from_pubkey_starts_with_v() {
         let (_, addr) = random_wif();
         assert!(addr.starts_with('V'), "Expected 'V' prefix, got: {}", addr);
+    }
+
+    #[test]
+    fn test_dust_recipient_rejected() {
+        let (wif, change_addr) = random_wif();
+        let script = p2pkh_script_pubkey(&change_addr).unwrap();
+        let utxos = vec![make_utxo(1, 0, 50_000_000_000, script)];
+        let result = TxBuilder::new()
+            .recipient(&change_addr, DUST_SATOSHIS - 1)
+            .change_address(&change_addr)
+            .sign_with_wif(&wif)
+            .build(&utxos);
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("below the dust threshold"),
+            "dust recipient must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_recipient_exactly_dust_accepted() {
+        let (wif, change_addr) = random_wif();
+        let script = p2pkh_script_pubkey(&change_addr).unwrap();
+        let utxos = vec![make_utxo(2, 0, 50_000_000_000, script)];
+        let tx = TxBuilder::new()
+            .recipient(&change_addr, DUST_SATOSHIS)
+            .change_address(&change_addr)
+            .sign_with_wif(&wif)
+            .build(&utxos)
+            .unwrap();
+        assert!(tx.outputs.iter().any(|o| o.value == DUST_SATOSHIS));
     }
 
     #[test]

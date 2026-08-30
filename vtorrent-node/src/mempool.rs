@@ -99,6 +99,19 @@ impl Mempool {
     pub fn add_transaction_with_fee(&mut self, tx: Transaction, fee_sats: u64) -> Result<()> {
         validate_transaction(&tx)?;
 
+        // Relay policy: reject dust outputs. They cost more to spend than they
+        // are worth and permanently bloat the UTXO set. Standardness rule
+        // (not consensus) so existing chain history stays valid.
+        const DUST_SATOSHIS: u64 = 546;
+        for output in &tx.outputs {
+            if output.value < DUST_SATOSHIS {
+                return Err(NodeError::PolicyRejected(format!(
+                    "Output value {} sat is below the dust threshold {} sat",
+                    output.value, DUST_SATOSHIS
+                )));
+            }
+        }
+
         let txid = tx.txid();
 
         // Compute size and fee rate.

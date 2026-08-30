@@ -76,6 +76,18 @@ pub async fn match_dex_order(
     )
     .map_err(|e| RpcError::BadRequest(format!("Unable to construct HTLC: {}", e)))?;
 
+    // Reserve the order BEFORE building/signing the funding transaction: two
+    // concurrent match calls would otherwise both select the same UTXO and
+    // both admit competing funding txs to the mempool. Reserving first means
+    // the loser exits here without touching the mempool.
+    let reserved = state.order_book.write().await.begin_funding(&req.order_id);
+    if reserved.is_none() {
+        return Err(RpcError::NotFound(format!(
+            "Order {} is no longer open",
+            req.order_id
+        )));
+    }
+
     // Use a verified wallet UTXO large enough to fund this single-input HTLC.
     // A fixed 10,000-satoshi fee is intentionally conservative for the custom
     // script size and is recorded as an authoritative local mempool fee.
@@ -87,36 +99,54 @@ pub async fn match_dex_order(
             .into_iter()
             .filter(|utxo| utxo.value >= order.vtr_amount.saturating_add(FUNDING_FEE_SATOSHIS))
             .max_by_key(|utxo| utxo.value)
-            .ok_or_else(|| {
-                RpcError::BadRequest("No single wallet UTXO can fund this HTLC".into())
-            })?
     };
-    let unsigned_funding = htlc
-        .build_funding_tx(
-            funding_utxo.txid,
-            funding_utxo.vout,
-            funding_utxo.value,
-            FUNDING_FEE_SATOSHIS,
-        )
-        .map_err(|e| {
-            RpcError::BadRequest(format!("Unable to build HTLC funding transaction: {}", e))
-        })?;
+    let Some(funding_utxo) = funding_utxo else {
+        state
+            .order_book
+            .write()
+            .await
+            .release_funding(&req.order_id);
+        return Err(RpcError::BadRequest(
+            "No single wallet UTXO can fund this HTLC".into(),
+        ));
+    };
+    let unsigned_funding = htlc.build_funding_tx(
+        funding_utxo.txid,
+        funding_utxo.vout,
+        funding_utxo.value,
+        FUNDING_FEE_SATOSHIS,
+    );
+    let unsigned_funding = match unsigned_funding {
+        Ok(tx) => tx,
+        Err(e) => {
+            state
+                .order_book
+                .write()
+                .await
+                .release_funding(&req.order_id);
+            return Err(RpcError::BadRequest(format!(
+                "Unable to build HTLC funding transaction: {}",
+                e
+            )));
+        }
+    };
     let funding_tx =
-        sign_custom_transaction(unsigned_funding, std::slice::from_ref(&funding_utxo), &wif)
-            .map_err(|e| {
-                RpcError::BadRequest(format!("Unable to sign HTLC funding transaction: {}", e))
-            })?;
+        sign_custom_transaction(unsigned_funding, std::slice::from_ref(&funding_utxo), &wif);
+    let funding_tx = match funding_tx {
+        Ok(tx) => tx,
+        Err(e) => {
+            state
+                .order_book
+                .write()
+                .await
+                .release_funding(&req.order_id);
+            return Err(RpcError::BadRequest(format!(
+                "Unable to sign HTLC funding transaction: {}",
+                e
+            )));
+        }
+    };
     let funding_txid = funding_tx.txid();
-
-    // Reserve the order immediately before mempool admission so a second taker
-    // cannot create a competing funding transaction for the same order.
-    let reserved = state.order_book.write().await.begin_funding(&req.order_id);
-    if reserved.is_none() {
-        return Err(RpcError::NotFound(format!(
-            "Order {} is no longer open",
-            req.order_id
-        )));
-    }
 
     let admission = {
         let mut mempool = state.mempool.lock().await;
