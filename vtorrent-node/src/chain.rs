@@ -351,17 +351,9 @@ impl Chain {
 
     /// Convert a vTorrent address to a P2PKH scriptPubKey for UTXO matching.
     fn address_to_p2pkh_script(&self, address: &str) -> Vec<u8> {
-        let Ok(addr) = vtorrent_core::address::Address::parse(address) else {
-            return Vec::new();
-        };
-        let mut script = Vec::with_capacity(25);
-        script.push(0x76); // OP_DUP
-        script.push(0xa9); // OP_HASH160
-        script.push(0x14); // push 20 bytes
-        script.extend_from_slice(&addr.hash);
-        script.push(0x88); // OP_EQUALVERIFY
-        script.push(0xac); // OP_CHECKSIG
-        script
+        vtorrent_core::address::Address::parse(address)
+            .map(|addr| addr.p2pkh_script_pubkey())
+            .unwrap_or_default()
     }
 
     /// Get the full UTXO set.

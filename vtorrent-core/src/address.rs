@@ -72,6 +72,19 @@ impl Address {
     pub fn is_legacy(&self) -> bool {
         self.version == crate::network::legacy::PUBKEY_ADDRESS_PREFIX
     }
+
+    /// Build the standard 25-byte P2PKH scriptPubKey locking to this address:
+    /// `OP_DUP OP_HASH160 <20-byte hash> OP_EQUALVERIFY OP_CHECKSIG`.
+    pub fn p2pkh_script_pubkey(&self) -> Vec<u8> {
+        let mut script = Vec::with_capacity(25);
+        script.push(0x76); // OP_DUP
+        script.push(0xa9); // OP_HASH160
+        script.push(0x14); // push 20 bytes
+        script.extend_from_slice(&self.hash);
+        script.push(0x88); // OP_EQUALVERIFY
+        script.push(0xac); // OP_CHECKSIG
+        script
+    }
 }
 
 impl std::str::FromStr for Address {
@@ -86,6 +99,16 @@ impl std::fmt::Display for Address {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.encode())
     }
+}
+
+/// Build the standard 25-byte P2PKH scriptPubKey from a 20-byte hash160:
+/// `OP_DUP OP_HASH160 <hash> OP_EQUALVERIFY OP_CHECKSIG`.
+pub fn p2pkh_script_pubkey(hash160: &[u8; 20]) -> Vec<u8> {
+    Address {
+        hash: *hash160,
+        version: 0,
+    }
+    .p2pkh_script_pubkey()
 }
 
 /// Validate that a Base58Check address decodes to a vTorrent P2PKH address

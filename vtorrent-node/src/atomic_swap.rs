@@ -879,15 +879,9 @@ fn address_to_hash160(address: &str) -> Option<[u8; 20]> {
 /// Build a standard P2PKH scriptPubKey from an address.
 /// Returns `None` if the address is invalid.
 fn p2pkh_script(address: &str) -> Option<Vec<u8>> {
-    let hash160 = address_to_hash160(address)?;
-    let mut script = Vec::with_capacity(25);
-    script.push(0x76); // OP_DUP
-    script.push(0xa9); // OP_HASH160
-    script.push(0x14); // push 20 bytes
-    script.extend_from_slice(&hash160);
-    script.push(0x88); // OP_EQUALVERIFY
-    script.push(0xac); // OP_CHECKSIG
-    Some(script)
+    Some(vtorrent_core::address::p2pkh_script_pubkey(
+        &address_to_hash160(address)?,
+    ))
 }
 
 #[cfg(test)]

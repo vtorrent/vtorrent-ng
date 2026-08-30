@@ -105,58 +105,15 @@ pub fn select_coins(
 /// Format: OP_DUP OP_HASH160 <20-byte hash160> OP_EQUALVERIFY OP_CHECKSIG
 pub fn p2pkh_script_pubkey(address: &str) -> Result<Vec<u8>> {
     let hash160 = address_to_hash160(address)?;
-    let mut script = Vec::with_capacity(25);
-    script.push(0x76); // OP_DUP
-    script.push(0xa9); // OP_HASH160
-    script.push(0x14); // push 20 bytes
-    script.extend_from_slice(&hash160);
-    script.push(0x88); // OP_EQUALVERIFY
-    script.push(0xac); // OP_CHECKSIG
-    Ok(script)
+    Ok(vtorrent_core::address::p2pkh_script_pubkey(&hash160))
 }
 
 /// Decode a vTorrent/Bitcoin Base58Check address to its 20-byte Hash160.
 fn address_to_hash160(address: &str) -> Result<[u8; 20]> {
-    let decoded = bs58::decode(address)
-        .into_vec()
-        .map_err(|_| WalletError::InvalidAddress(address.to_string()))?;
-
-    // Exact: 1 version byte + 20 hash bytes + 4 checksum bytes = 25 bytes.
-    // Reject longer payloads to prevent trailing garbage from passing validation.
-    if decoded.len() != 25 {
-        return Err(WalletError::InvalidAddress(format!(
-            "Address too short: {}",
-            address
-        )));
-    }
-
-    // Verify checksum.
-    let (payload, check) = decoded.split_at(decoded.len() - 4);
-    let expected = double_sha256_checksum(payload);
-    if check != expected {
-        return Err(WalletError::InvalidAddress(format!(
-            "Address checksum mismatch: {}",
-            address
-        )));
-    }
-
-    // The version byte must be the vTorrent mainnet P2PKH prefix (70).
-    // Without this check a Base58Check address from any other network
-    // (e.g. a Bitcoin `1...` address) passes validation and funds sent to
-    // it are unrecoverable on the VTR chain.
-    if payload[0] != vtorrent_core::network::legacy::PUBKEY_ADDRESS_PREFIX {
-        return Err(WalletError::InvalidAddress(format!(
-            "Address {} is not a vTorrent mainnet address (version byte {})",
-            address, payload[0]
-        )));
-    }
-
-    // payload[1..21] is the hash160.
-    let mut hash = [0u8; 20];
-    hash.copy_from_slice(&payload[1..21]);
-    Ok(hash)
+    let addr = vtorrent_core::address::Address::parse(address)
+        .map_err(|e| WalletError::InvalidAddress(format!("{}: {}", address, e)))?;
+    Ok(addr.hash)
 }
-
 fn double_sha256_checksum(data: &[u8]) -> [u8; 4] {
     let h1 = Sha256::digest(data);
     let h2 = Sha256::digest(h1);
