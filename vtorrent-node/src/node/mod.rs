@@ -30,6 +30,7 @@ use tokio::time::{interval, Duration};
 
 use std::path::PathBuf;
 
+use vtorrent_core::time::now_secs;
 use vtorrent_onion::TransportConfig;
 use vtorrent_overlay::{Overlay, OverlayConfig, OverlayEvent};
 
@@ -84,20 +85,6 @@ const DHT_REANNOUNCE_SECS: u64 = 1800;
 
 /// Number of headers to request per batch during header sync.
 const HEADERS_PER_BATCH: usize = 2000;
-
-/// Current Unix timestamp as u64.
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-/// Current Unix timestamp as u32 (valid until year 2106).
-#[allow(clippy::cast_possible_truncation)]
-fn now_timestamp_u32() -> u32 {
-    now_secs() as u32
-}
 
 /// Node configuration.
 #[derive(Debug, Clone)]

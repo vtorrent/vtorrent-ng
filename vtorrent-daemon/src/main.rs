@@ -25,16 +25,7 @@
 ///   --log-level <LEVEL>       Log level: error|warn|info|debug|trace [default: info]
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-/// Current Unix timestamp as u32 (valid until year 2106).
-#[allow(clippy::cast_possible_truncation)]
-fn now_timestamp_u32() -> u32 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as u32
-}
+use vtorrent_core::time::now_timestamp_u32;
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;

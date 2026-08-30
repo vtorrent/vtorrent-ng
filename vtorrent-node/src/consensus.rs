@@ -6,7 +6,7 @@ use secp256k1::{Message, PublicKey, Secp256k1};
 /// chain's design. Key parameters are preserved from the legacy chain.
 use sha2::{Digest as Sha2Digest, Sha256};
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use vtorrent_core::time::now_timestamp_u32;
 
 use crate::{
     block::{Block, Transaction, TxType},
@@ -16,13 +16,6 @@ use crate::{
 
 /// Current Unix timestamp as u32 (valid until year 2106).
 #[allow(clippy::cast_possible_truncation)]
-fn now_timestamp_u32() -> u32 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as u32
-}
-
 /// Maximum block size in bytes.
 pub const MAX_BLOCK_SIZE: usize = 1_000_000; // 1 MB
 

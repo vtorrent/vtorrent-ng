@@ -11,5 +11,6 @@ pub mod crypto;
 pub mod error;
 pub mod keys;
 pub mod network;
+pub mod time;
 pub mod transaction;
 pub mod utxo;

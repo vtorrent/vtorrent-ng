@@ -1,10 +1,10 @@
 use axum::{extract::State, Json};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::{RpcError, RpcResult};
 use crate::models::*;
 use crate::state::AppState;
 use std::sync::Arc;
+use vtorrent_core::time::now_secs;
 
 pub mod blockchain;
 pub mod btc;
@@ -24,13 +24,6 @@ pub use staking::*;
 pub use swap::*;
 pub use torrent::*;
 pub use wallet::*;
-
-pub(crate) fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
 
 /// Current time in seconds, honoring the regtest mock clock if set.
 pub(crate) async fn now_secs_mock(state: &AppState) -> u64 {

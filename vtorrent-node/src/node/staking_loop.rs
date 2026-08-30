@@ -12,7 +12,8 @@ use crate::{
     events::NodeEvent,
 };
 
-use super::{now_timestamp_u32, Node};
+use super::Node;
+use vtorrent_core::time::now_timestamp_u32;
 
 impl Node {
     /// Attempt to produce a new PoS block.

@@ -18,16 +18,7 @@
 /// This module implements the VTR side of the swap.
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-/// Current Unix timestamp as u32 (valid until year 2106).
-/// Block timestamps are u32 per Bitcoin convention.
-#[allow(clippy::cast_possible_truncation)]
-fn now_timestamp_u32() -> u32 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as u32
-}
+use vtorrent_core::time::now_timestamp_u32;
 
 use crate::{
     block::{Transaction, TxInput, TxOutput, TxType},

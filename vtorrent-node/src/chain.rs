@@ -12,17 +12,10 @@ use crate::{
 /// Supports chain reorganization (reorg) when a competing fork accumulates
 /// more cumulative work than the current main chain.
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::time::{SystemTime, UNIX_EPOCH};
+use vtorrent_core::time::now_timestamp_u32;
 
 /// Current Unix timestamp as u32 (valid until year 2106).
 #[allow(clippy::cast_possible_truncation)]
-fn now_timestamp_u32() -> u32 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as u32
-}
-
 /// Compute the net supply change a transaction contributes to the chain.
 ///
 /// Standard transactions are value-conserving (outputs <= inputs), so they
