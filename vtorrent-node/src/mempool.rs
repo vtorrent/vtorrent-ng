@@ -101,14 +101,19 @@ impl Mempool {
 
         // Relay policy: reject dust outputs. They cost more to spend than they
         // are worth and permanently bloat the UTXO set. Standardness rule
-        // (not consensus) so existing chain history stays valid.
+        // (not consensus) so existing chain history stays valid. Claims are
+        // exempt: they spend snapshot outputs whose value is fixed by the
+        // genesis snapshot, and some legacy balances may be below the
+        // threshold — rejecting them would make those funds unclaimable.
         const DUST_SATOSHIS: u64 = 546;
-        for output in &tx.outputs {
-            if output.value < DUST_SATOSHIS {
-                return Err(NodeError::PolicyRejected(format!(
-                    "Output value {} sat is below the dust threshold {} sat",
-                    output.value, DUST_SATOSHIS
-                )));
+        if !tx.is_legacy_claim() {
+            for output in &tx.outputs {
+                if output.value < DUST_SATOSHIS {
+                    return Err(NodeError::PolicyRejected(format!(
+                        "Output value {} sat is below the dust threshold {} sat",
+                        output.value, DUST_SATOSHIS
+                    )));
+                }
             }
         }
 
