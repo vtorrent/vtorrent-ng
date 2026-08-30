@@ -85,11 +85,7 @@ impl TorTransport {
             .ok()?;
 
         // Authenticate
-        let auth_cmd = if self.config.tor_control_password.is_empty() {
-            "AUTHENTICATE\r\n".to_string()
-        } else {
-            format!("AUTHENTICATE \"{}\"\r\n", self.config.tor_control_password)
-        };
+        let auth_cmd = build_auth_command(&self.config.tor_control_password);
 
         timed_io(stream.write_all(auth_cmd.as_bytes())).await.ok()?;
         let mut buf = [0u8; 4096];
@@ -129,11 +125,7 @@ impl TorTransport {
             })?;
 
         // Authenticate
-        let auth_cmd = if self.config.tor_control_password.is_empty() {
-            "AUTHENTICATE\r\n".to_string()
-        } else {
-            format!("AUTHENTICATE \"{}\"\r\n", self.config.tor_control_password)
-        };
+        let auth_cmd = build_auth_command(&self.config.tor_control_password);
         timed_io(stream.write_all(auth_cmd.as_bytes())).await?;
         let mut buf = vec![0u8; 4096];
         let n = timed_io(stream.read(&mut buf)).await?;
@@ -193,11 +185,7 @@ impl TorTransport {
                 OnionError::HiddenServiceError(format!("Control port unavailable: {}", e))
             })?;
 
-        let auth_cmd = if self.config.tor_control_password.is_empty() {
-            "AUTHENTICATE\r\n".to_string()
-        } else {
-            format!("AUTHENTICATE \"{}\"\r\n", self.config.tor_control_password)
-        };
+        let auth_cmd = build_auth_command(&self.config.tor_control_password);
         stream.write_all(auth_cmd.as_bytes()).await?;
         read_control_reply(&mut stream).await?;
 
@@ -209,6 +197,20 @@ impl TorTransport {
 }
 
 /// Read one bounded, line-oriented Tor control-port response.
+/// Build the Tor control-port `AUTHENTICATE` command for the configured password.
+///
+/// The password is hex-encoded: the control protocol's quoted strings treat
+/// `"XX"` pairs as raw bytes, so this survives passwords containing quotes,
+/// backslashes, or newlines.
+fn build_auth_command(password: &str) -> String {
+    if password.is_empty() {
+        "AUTHENTICATE\r\n".to_string()
+    } else {
+        let hex_pw: String = password.bytes().map(|b| format!("{:02X}", b)).collect();
+        format!("AUTHENTICATE \"{}\"\r\n", hex_pw)
+    }
+}
+
 async fn read_control_reply(stream: &mut TcpStream) -> Result<()> {
     const MAX_CONTROL_REPLY: usize = 4096;
     let mut response = Vec::new();
@@ -368,6 +370,28 @@ mod tests {
     #[test]
     fn test_split_host_port_no_port() {
         assert!(split_host_port("abc.onion").is_err());
+    }
+
+    #[test]
+    fn test_auth_command_empty_password() {
+        assert_eq!(build_auth_command(""), "AUTHENTICATE\r\n");
+    }
+
+    #[test]
+    fn test_auth_command_hex_encodes_password() {
+        // Plain password → hex-encoded per Tor control-spec quoted strings.
+        assert_eq!(build_auth_command("abc"), "AUTHENTICATE \"616263\"\r\n");
+    }
+
+    #[test]
+    fn test_auth_command_survives_quotes_and_newlines() {
+        // A password containing a quote or newline must not break the command.
+        let cmd = build_auth_command("pa\"ss\nword");
+        assert_eq!(cmd, "AUTHENTICATE \"70612273730A776F7264\"\r\n");
+        assert!(
+            !cmd.contains("\"ss"),
+            "raw quote must not appear in payload"
+        );
     }
 
     #[tokio::test]
