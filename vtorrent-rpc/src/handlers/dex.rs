@@ -121,15 +121,21 @@ pub async fn cancel_dex_order(
             id
         ))
     })?;
-    if let Some(maker) = maker {
-        if order.maker_address != maker {
-            return Err(RpcError::Unauthorized(format!(
-                "Only the maker ({}) may cancel order {} — your wallet address ({}) does not match",
-                &order.maker_address[..order.maker_address.len().min(64)],
-                id,
-                &maker[..maker.len().min(64)]
-            )));
-        }
+    // Ownership must be verifiable: with the wallet locked (or not imported)
+    // the maker address is unknown, so cancellation is refused rather than
+    // silently allowed for any caller.
+    let maker = maker.ok_or_else(|| {
+        RpcError::Unauthorized(
+            "Wallet locked — unlock the maker's wallet to cancel this order".into(),
+        )
+    })?;
+    if order.maker_address != maker {
+        return Err(RpcError::Unauthorized(format!(
+            "Only the maker ({}) may cancel order {} — your wallet address ({}) does not match",
+            &order.maker_address[..order.maker_address.len().min(64)],
+            id,
+            &maker[..maker.len().min(64)]
+        )));
     }
     let cancelled = state.order_book.write().await.cancel_order(&id);
     if !cancelled {

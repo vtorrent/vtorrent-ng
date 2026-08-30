@@ -221,6 +221,26 @@ mod tests {
         (status, body)
     }
 
+    async fn delete(app: axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, body)
+    }
+
     #[tokio::test]
     async fn test_get_node_info() {
         let app = build_router(AppState::new());
@@ -516,6 +536,124 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"], true);
+    }
+
+    /// Regression: btc-fund on an order whose VTR leg was never funded must be
+    /// rejected (previously it passed the lifecycle guard and let the taker
+    /// lock BTC into an HTLC for an unfunded order).
+    #[tokio::test]
+    async fn test_swap_btc_fund_requires_vtr_funded() {
+        let app = build_router(AppState::new());
+
+        // Import + unlock the maker wallet.
+        let (status, _) = post_json(
+            app.clone(),
+            "/api/v1/wallet/import",
+            serde_json::json!({
+                "wif": "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS",
+                "passphrase": "testpassphrase"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = post_json(
+            app.clone(),
+            "/api/v1/wallet/unlock",
+            serde_json::json!({ "passphrase": "testpassphrase", "timeout_secs": 300 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // Place an order (maker = the imported wallet's address).
+        let (status, body) = post_json(
+            app.clone(),
+            "/api/v1/dex/order",
+            serde_json::json!({
+                "maker_address": "VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k",
+                "offer_asset": "VTR",
+                "offer_amount_satoshis": 1_000_000,
+                "request_asset": "BTC",
+                "request_amount_satoshis": 1_000,
+                "expiry_secs": 3600,
+                "passphrase": "testpassphrase",
+                "maker_btc_address": "bcrt1qtest"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let order_id = body["order_id"].as_str().unwrap().to_string();
+
+        // btc-fund without a prior match: swap state does not exist → 400.
+        let (status, body) = post_json(
+            app,
+            "/api/v1/swap/btc-fund",
+            serde_json::json!({ "order_id": order_id, "btc_refund_address": "bcrt1qtest" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap()
+                .contains("VTR leg not funded"),
+            "unexpected error: {}",
+            body["message"]
+        );
+    }
+
+    /// Regression: cancelling a DEX order with the wallet locked must be
+    /// refused — previously the ownership check was skipped when the maker
+    /// address was unknown, letting any caller cancel any order.
+    #[tokio::test]
+    async fn test_dex_cancel_requires_unlocked_wallet() {
+        let app = build_router(AppState::new());
+
+        // Import + unlock + place an order.
+        let (status, _) = post_json(
+            app.clone(),
+            "/api/v1/wallet/import",
+            serde_json::json!({
+                "wif": "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS",
+                "passphrase": "testpassphrase"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = post_json(
+            app.clone(),
+            "/api/v1/wallet/unlock",
+            serde_json::json!({ "passphrase": "testpassphrase", "timeout_secs": 300 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, body) = post_json(
+            app.clone(),
+            "/api/v1/dex/order",
+            serde_json::json!({
+                "maker_address": "VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k",
+                "offer_asset": "VTR",
+                "offer_amount_satoshis": 1_000_000,
+                "request_asset": "BTC",
+                "request_amount_satoshis": 1_000,
+                "expiry_secs": 3600,
+                "passphrase": "testpassphrase"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let order_id = body["order_id"].as_str().unwrap().to_string();
+
+        // Lock the wallet — cancellation must now be refused.
+        let (status, _) =
+            post_json(app.clone(), "/api/v1/wallet/lock", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, body) = delete(app, &format!("/api/v1/dex/order/{}", order_id)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(
+            body["message"].as_str().unwrap().contains("Wallet locked"),
+            "unexpected error: {}",
+            body["message"]
+        );
     }
 
     #[tokio::test]

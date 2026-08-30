@@ -211,18 +211,23 @@ pub async fn btc_fund(
         .clone()
         .ok_or_else(|| RpcError::BadRequest("Order has no maker BTC address".into()))?;
 
-    // Lifecycle guard: the BTC HTLC must not already be funded, and a
-    // finished swap (claimed/refunded) can never be funded again.
+    // Lifecycle guard: the VTR leg must be funded first — locking BTC into an
+    // HTLC for an unfunded order would strand the taker's BTC until refund.
+    // The BTC HTLC must not already be funded, and a finished swap
+    // (claimed/refunded) can never be funded again.
     {
         let swaps = state.swaps.read().await;
-        require_swap_stage(
-            swaps.get(&req.order_id),
-            &[
-                SwapStatus::BtcFunded,
-                SwapStatus::Claimed,
-                SwapStatus::Refunded,
-            ],
-        )?;
+        let swap = swaps.get(&req.order_id).ok_or_else(|| {
+            RpcError::BadRequest(
+                "VTR leg not funded yet — call /api/v1/dex/match to fund the order first".into(),
+            )
+        })?;
+        if swap.status != SwapStatus::VtrFunded {
+            return Err(RpcError::BadRequest(format!(
+                "Swap is in state {:?}; BTC funding requires VtrFunded",
+                swap.status
+            )));
+        }
     }
 
     // The BTC amount the taker must lock is the order's target amount.
