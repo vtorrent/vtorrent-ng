@@ -885,3 +885,132 @@ fn test_pos_block_includes_mempool_txs() {
         crate::block::TxType::Coinstake
     );
 }
+
+/// A transaction with an invalid signature must be rejected by
+/// verify_tx_scripts — the mempool admission gate that prevents
+/// script-invalid txs from poisoning stakers' block templates.
+#[test]
+fn test_verify_tx_scripts_rejects_bad_signature() {
+    use secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+    let secp = Secp256k1::new();
+    let mut key_bytes = [0u8; 32];
+    key_bytes[31] = 11;
+    let secret = SecretKey::from_slice(&key_bytes).unwrap();
+    let pubkey = PublicKey::from_secret_key(&secp, &secret);
+    let addr = vtorrent_core::address::Address::from_pubkey(&pubkey, true, 70);
+
+    let mut chain = Chain::new().expect("Chain init failed");
+    let funding_txid = chain
+        .mint_to_address(&addr.to_string(), 100_000)
+        .expect("mint should succeed");
+    let funding_script = chain
+        .get_utxo(&funding_txid, 0)
+        .unwrap()
+        .script_pubkey
+        .clone();
+    let height = chain.best_height();
+    let timestamp = chain
+        .get_block_at_height(height)
+        .map(|b| b.header.timestamp)
+        .unwrap_or(0);
+
+    // Spend with a signature from the WRONG key.
+    let mut wrong_key = [0u8; 32];
+    wrong_key[31] = 12;
+    let wrong_secret = SecretKey::from_slice(&wrong_key).unwrap();
+    let mut tx = Transaction {
+        version: 1,
+        tx_type: TxType::Standard,
+        inputs: vec![TxInput {
+            prev_txid: funding_txid,
+            prev_vout: 0,
+            script_sig: vec![],
+            sequence: 0xffff_ffff,
+        }],
+        outputs: vec![TxOutput {
+            value: 90_000,
+            script_pubkey: vec![0x51],
+        }],
+        lock_time: 0,
+        claim_address: None,
+        claim_signature: None,
+    };
+    let sighash = tx.sighash(0, &funding_script);
+    let msg = secp256k1::Message::from_digest(sighash);
+    let sig = secp.sign_ecdsa(&msg, &wrong_secret);
+    let mut der = sig.serialize_der().to_vec();
+    der.push(0x01); // SIGHASH_ALL
+    let mut script_sig = Vec::new();
+    script_sig.push(der.len() as u8);
+    script_sig.extend_from_slice(&der);
+    script_sig.push(pubkey.serialize().len() as u8);
+    script_sig.extend_from_slice(&pubkey.serialize());
+    tx.inputs[0].script_sig = script_sig;
+
+    assert!(
+        chain.verify_tx_scripts(&tx, height, timestamp).is_err(),
+        "bad signature must fail script verification"
+    );
+}
+
+/// A valid P2PKH spend passes verify_tx_scripts.
+#[test]
+fn test_verify_tx_scripts_accepts_valid_signature() {
+    use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
+
+    let secp = Secp256k1::new();
+    let mut key_bytes = [0u8; 32];
+    key_bytes[31] = 12;
+    let secret = SecretKey::from_slice(&key_bytes).unwrap();
+    let pubkey = PublicKey::from_secret_key(&secp, &secret);
+    let addr = vtorrent_core::address::Address::from_pubkey(&pubkey, true, 70);
+
+    let mut chain = Chain::new().expect("Chain init failed");
+    let funding_txid = chain
+        .mint_to_address(&addr.to_string(), 100_000)
+        .expect("mint should succeed");
+    let funding_script = chain
+        .get_utxo(&funding_txid, 0)
+        .unwrap()
+        .script_pubkey
+        .clone();
+    let height = chain.best_height();
+    let timestamp = chain
+        .get_block_at_height(height)
+        .map(|b| b.header.timestamp)
+        .unwrap_or(0);
+
+    let mut tx = Transaction {
+        version: 1,
+        tx_type: TxType::Standard,
+        inputs: vec![TxInput {
+            prev_txid: funding_txid,
+            prev_vout: 0,
+            script_sig: vec![],
+            sequence: 0xffff_ffff,
+        }],
+        outputs: vec![TxOutput {
+            value: 90_000,
+            script_pubkey: vec![0x51],
+        }],
+        lock_time: 0,
+        claim_address: None,
+        claim_signature: None,
+    };
+    let sighash = tx.sighash(0, &funding_script);
+    let msg = Message::from_digest(sighash);
+    let sig = secp.sign_ecdsa(&msg, &secret);
+    let mut der = sig.serialize_der().to_vec();
+    der.push(0x01);
+    let mut script_sig = Vec::new();
+    script_sig.push(der.len() as u8);
+    script_sig.extend_from_slice(&der);
+    script_sig.push(pubkey.serialize().len() as u8);
+    script_sig.extend_from_slice(&pubkey.serialize());
+    tx.inputs[0].script_sig = script_sig;
+
+    chain
+        .verify_tx_scripts(&tx, height, timestamp)
+        .expect("valid P2PKH spend must pass script verification");
+}

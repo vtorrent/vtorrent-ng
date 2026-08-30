@@ -358,6 +358,18 @@ impl Mempool {
                 ));
             }
         };
+        // Script verification against the current chain state: without this a
+        // script-invalid tx (bad signature, unsatisfied timelock) is relayed
+        // network-wide and poisons stakers' block templates until the TTL
+        // evicts it.
+        let (height, timestamp) = (
+            chain.best_height(),
+            chain
+                .get_block_at_height(chain.best_height())
+                .map(|b| b.header.timestamp)
+                .unwrap_or(0),
+        );
+        chain.verify_tx_scripts(&tx, height, timestamp)?;
         match self.add_transaction_with_fee(tx, fee) {
             Ok(()) => {
                 tracing::info!(

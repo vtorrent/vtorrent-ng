@@ -145,8 +145,17 @@ async fn test_broadcast_raw_transaction_and_lookup() {
         claim_address: None,
         claim_signature: None,
     };
-    // Sign the input so the mempool's script validation accepts it.
-    let sighash = tx.sighash(0, &[]);
+    // Sign the input so the mempool's script validation accepts it. The
+    // subscript is the funding UTXO's P2PKH scriptPubKey (same script the
+    // chain uses at validation time).
+    let funding_script = {
+        let chain = state.chain.lock().await;
+        chain
+            .get_utxo(&funding_txid, 0)
+            .map(|u| u.script_pubkey.clone())
+            .unwrap_or_default()
+    };
+    let sighash = tx.sighash(0, &funding_script);
     let msg = Message::from_digest(sighash);
     let sig = secp.sign_ecdsa(&msg, &secret);
     let mut sig_der = sig.serialize_der().to_vec();

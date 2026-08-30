@@ -342,6 +342,58 @@ impl Chain {
         total_input.checked_sub(total_output)
     }
 
+    /// Verify every input's scriptSig against its UTXO's scriptPubKey using
+    /// the script engine, against the current chain state.
+    ///
+    /// Used at mempool admission so script-invalid transactions (bad
+    /// signature, unsatisfied timelock) cannot be relayed network-wide and
+    /// poison stakers' block templates. Mirrors the per-input checks in
+    /// `apply_transaction_journaled`.
+    pub fn verify_tx_scripts(&self, tx: &Transaction, height: u32, timestamp: u32) -> Result<()> {
+        use vtorrent_script::{Engine, Script, ScriptEnv};
+
+        if tx.is_coinbase() || tx.is_coinstake() || tx.is_legacy_claim() {
+            return Ok(());
+        }
+        for (input_index, input) in tx.inputs.iter().enumerate() {
+            let utxo = self
+                .utxo_set
+                .get(&(input.prev_txid, input.prev_vout))
+                .ok_or_else(|| {
+                    NodeError::InvalidTransaction(format!(
+                        "input {}:{} not in UTXO set",
+                        hex::encode(input.prev_txid),
+                        input.prev_vout
+                    ))
+                })?;
+            let tx_hash = tx.sighash(input_index, &utxo.script_pubkey);
+            let env = ScriptEnv {
+                tx_hash,
+                block_height: height,
+                block_time: timestamp,
+                tx_lock_time: tx.lock_time,
+                input_sequence: input.sequence,
+                utxo_height: utxo.height,
+                utxo_timestamp: utxo.timestamp,
+            };
+            let mut engine = Engine::new(env);
+            let script_sig = Script::from_bytes(input.script_sig.clone())
+                .map_err(|e| NodeError::InvalidTransaction(format!("Invalid scriptSig: {}", e)))?;
+            let script_pubkey = Script::from_bytes(utxo.script_pubkey.clone()).map_err(|e| {
+                NodeError::InvalidTransaction(format!("Invalid scriptPubkey: {}", e))
+            })?;
+            engine.execute(&script_sig, &script_pubkey).map_err(|e| {
+                NodeError::InvalidTransaction(format!(
+                    "Script verification failed for input {}:{}: {}",
+                    hex::encode(input.prev_txid),
+                    input.prev_vout,
+                    e
+                ))
+            })?;
+        }
+        Ok(())
+    }
+
     /// Get all UTXOs for a specific scriptPubKey.
     pub fn get_utxos_for_script(&self, script: &[u8]) -> Vec<&Utxo> {
         self.utxo_set
