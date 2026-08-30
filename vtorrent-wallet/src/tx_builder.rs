@@ -126,10 +126,6 @@ fn double_sha256_checksum(data: &[u8]) -> [u8; 4] {
 ///
 /// Delegates to `Transaction::sighash` in `vtorrent-node` so the signer and the
 /// chain's verifier use the identical message.
-fn compute_sighash(tx: &Transaction, input_index: usize, subscript: &[u8]) -> Result<[u8; 32]> {
-    Ok(tx.sighash(input_index, subscript))
-}
-
 /// Build a DER-encoded ECDSA signature + SIGHASH_ALL byte.
 fn sign_input(secret_key_bytes: &[u8; 32], sighash: &[u8; 32]) -> Result<Vec<u8>> {
     let secp = Secp256k1::new();
@@ -345,7 +341,7 @@ impl TxBuilder {
             let subscript = utxo.script_pubkey.clone();
 
             // Compute sighash.
-            let sighash = compute_sighash(&tx, input_index, &subscript)?;
+            let sighash = tx.sighash(input_index, &subscript);
 
             // Match the signing key to this UTXO's P2PKH script. Fall back to
             // the sole key for single-key wallets; error when a UTXO cannot be
@@ -406,7 +402,7 @@ pub fn sign_custom_transaction(
                 "Transaction input does not match its signing UTXO".into(),
             ));
         }
-        let sighash = compute_sighash(&tx, input_index, &utxo.script_pubkey)?;
+        let sighash = tx.sighash(input_index, &utxo.script_pubkey);
         let signature = sign_input(key.as_bytes(), &sighash)?;
         tx.inputs[input_index].script_sig = build_script_sig(&signature, &pubkey);
     }
@@ -434,7 +430,7 @@ pub fn sign_input_over_subscript(
         .serialize()
         .to_vec();
 
-    let sighash = compute_sighash(tx, input_index, subscript)?;
+    let sighash = tx.sighash(input_index, subscript);
     let signature = sign_input(key.as_bytes(), &sighash)?;
     Ok((signature, pubkey))
 }

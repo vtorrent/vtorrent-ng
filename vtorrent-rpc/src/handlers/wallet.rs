@@ -561,10 +561,8 @@ pub async fn get_txout(
     State(state): State<Arc<AppState>>,
     Path(params): Path<GetTxOutParams>,
 ) -> RpcResult<Json<GetTxOutResponse>> {
-    let txid_bytes: [u8; 32] = hex::decode(&params.txid)
-        .ok()
-        .and_then(|b| b.try_into().ok())
-        .ok_or_else(|| RpcError::BadRequest("Invalid txid hex".into()))?;
+    let txid_bytes: [u8; 32] = super::parse_hash32(&params.txid, "txid")
+        .map_err(|_| RpcError::BadRequest("Invalid txid hex".into()))?;
 
     let chain = state.chain.lock().await;
     let utxo = chain.get_utxo(&txid_bytes, params.vout).ok_or_else(|| {
