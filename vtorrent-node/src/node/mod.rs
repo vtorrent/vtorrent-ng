@@ -816,7 +816,19 @@ impl Node {
         match msg.command_str() {
             // ── PEX: Peer Exchange ────────────────────────────────────────────
             "addr" => {
-                if let Ok(addr_msg) = serde_json::from_slice::<AddrMsg>(&msg.payload) {
+                if let Ok(mut addr_msg) = serde_json::from_slice::<AddrMsg>(&msg.payload) {
+                    // Truncate oversized announcements: the address book caps
+                    // at 10k entries anyway, so anything beyond MAX_ADDR_PER_MSG
+                    // per message is wasted parse work from an untrusted peer.
+                    if addr_msg.addrs.len() > vtorrent_p2p::pex::MAX_ADDR_PER_MSG {
+                        tracing::debug!(
+                            "addr from {} with {} entries — truncating to {}",
+                            peer_addr,
+                            addr_msg.addrs.len(),
+                            vtorrent_p2p::pex::MAX_ADDR_PER_MSG
+                        );
+                        addr_msg.addrs.truncate(vtorrent_p2p::pex::MAX_ADDR_PER_MSG);
+                    }
                     let count = addr_msg.addrs.len();
                     self.peer_manager.handle_addr_msg(&addr_msg);
                     tracing::debug!("PEX: Received {} addresses from {}", count, peer_addr);
