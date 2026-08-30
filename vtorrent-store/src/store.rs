@@ -859,4 +859,81 @@ mod tests {
             assert_eq!(store.utxo_count().unwrap(), 1);
         }
     }
+
+    /// Regression test for the faucet-persistence bug: faucet-minted blocks
+    /// must persist contiguously so a restart replays cleanly instead of
+    /// truncating to genesis. Mirrors the daemon event bridge: mint into a
+    /// Chain, append each block with its UTXO diff, reopen, verify replay.
+    #[test]
+    fn test_faucet_blocks_persist_and_replay() {
+        use vtorrent_node::chain::Chain;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("chain.db");
+
+        {
+            let store = BlockStore::open(&path).unwrap();
+            let mut chain = Chain::new().unwrap();
+
+            // Mint two faucet blocks (regtest faucet path).
+            chain
+                .mint_to_address("VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k", 1_000_000)
+                .unwrap();
+            let h1 = chain.best_height();
+            let b1 = chain.get_block_at_height(h1).cloned().unwrap();
+
+            chain
+                .mint_to_address("VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k", 2_000_000)
+                .unwrap();
+            let h2 = chain.best_height();
+            let b2 = chain.get_block_at_height(h2).cloned().unwrap();
+
+            // Event-bridge behavior: append each NewBlock with its UTXO diff.
+            for (height, block) in [(h1, &b1), (h2, &b2)] {
+                let utxos_added: Vec<Utxo> = block
+                    .transactions
+                    .iter()
+                    .flat_map(|tx| {
+                        let txid = tx.txid();
+                        tx.outputs
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(vout, _)| {
+                                let vout = vout as u32;
+                                chain.get_utxo(&txid, vout).map(|u| Utxo {
+                                    txid,
+                                    vout,
+                                    value: u.value,
+                                    script_pubkey: u.script_pubkey.clone(),
+                                    height,
+                                    timestamp: u.timestamp,
+                                })
+                            })
+                            .collect::<Vec<Utxo>>()
+                    })
+                    .collect();
+                let utxos_removed: Vec<([u8; 32], u32)> = block
+                    .transactions
+                    .iter()
+                    .flat_map(|tx| tx.inputs.iter().map(|i| (i.prev_txid, i.prev_vout)))
+                    .collect();
+                let claimed: Vec<String> = block
+                    .transactions
+                    .iter()
+                    .filter_map(|tx| tx.claim_address.clone())
+                    .collect();
+                store
+                    .append_block(block, height, &utxos_added, &utxos_removed, &claimed)
+                    .unwrap();
+            }
+            assert_eq!(store.best_height().unwrap(), 2);
+        }
+
+        // Reopen: replay must reach height 2 (pre-fix, faucet blocks were
+        // never appended, replay hit a height gap and truncated to 0).
+        let store = BlockStore::open(&path).unwrap();
+        assert_eq!(store.best_height().unwrap(), 2);
+        assert!(store.get_block_at_height(1).unwrap().is_some());
+        assert!(store.get_block_at_height(2).unwrap().is_some());
+    }
 }

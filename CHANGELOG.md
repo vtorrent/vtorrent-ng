@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Since v2.0.0-beta.2 (44 commits)
 
+**Edge-Case Audit Fixes (session of 2026-08-30)**
+- Legacy snapshot claims were rejected by the mempool relay fee floor (claims carry no fee by design) — every claim would have failed; now fee-exempt
+- Faucet-minted blocks were never persisted to the block store (announced to peers but no `NewBlock` event) — restart hit a height gap and truncated the chain to genesis; now persisted via the event bridge
+- `unlock_wallet` did not re-derive the change address after a daemon restart — send/balance failed until re-import
+- `Transaction::serialized_size` omitted claim address/signature fields (~79 bytes), undercounting fee-rate and block-size accounting for claims
+- `Chain::block_height` O(n) linear scan → O(1) map lookup (hot path for every tx lookup and getblock-by-hash RPC)
+- `inv` capped at 1000 items, `getdata` at 500 (unbounded lists were a bandwidth-amplification DoS vector)
+- `getblocktxn` O(height) scan → O(1) hash lookup
+- `gettxout` RPC returned hardcoded `coinbase: false`; now derived from the transaction
+- New: mempool TTL evicts transactions older than 48 h; `GET /api/v1/blockchain/utxo/:txid/:vout`; faucet per-address 10 s cooldown; P2P escalating bans for repeated connection failures (5 m → 15 m → 1 h)
+
 **Mainnet Infrastructure**
 - Three geographically distributed seed nodes deployed and verified: `vtr-seed1` (Falkenstein DE), `vtr-seed2` (Helsinki FI), `vtr-seed3` (Ashburn US); DNS seeds `seed1/2/3.vtorrent.org` live at IONOS
 - Bootstrap surfaces active: hardcoded `BOOTSTRAP_PEERS`, GitHub-hosted `bootstrap/peers.txt` with CDN mirrors, DNS seeds
@@ -60,7 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - AGENTS.md synced with current state (19 crates, 539 tests, 3 seeds, ops features)
 
 **Testing & Verification**
-- 539 workspace tests (was 523 at beta.2): reorg-persistence integration test, store self-heal/reconciliation tests, mempool-regression test, fee-floor lock-step test, BIP-152 duplicate-id regression, swap-guard unit tests, genesis snapshot integrity test, node-split import test, wallet-service build_payment test
+- 595 workspace tests (was 523 at beta.2): reorg-persistence integration test, store self-heal/reconciliation tests, mempool-regression test (incl. claim fee exemption + stale eviction), fee-floor lock-step test, BIP-152 duplicate-id regression, swap-guard unit tests, genesis snapshot integrity test, node-split import test, wallet-service build_payment test, faucet-block persistence regression
 - 25-hour fuzz marathon across all four targets: 60+ billion executions, zero crashes
 - Upgrade/downgrade drill passed on a live soak node; full VTR↔BTC atomic swap E2E executed against BTC regtest (fund/claim/refund paths confirmed on-chain)
 - cargo audit: zero vulnerabilities

@@ -47,6 +47,22 @@ Returns block by height.
 
 Returns transaction details by txid.
 
+### GET /api/v1/blockchain/utxo/:txid/:vout
+
+Returns a single unspent transaction output. 404 if spent or unknown.
+
+**Response:**
+```json
+{
+  "txid": "<64-hex>",
+  "vout": 0,
+  "value_satoshis": 100000000,
+  "script_pubkey": "<hex>",
+  "height": 42,
+  "coinbase": false
+}
+```
+
 ### POST /api/v1/blockchain/broadcast
 
 Broadcast a signed transaction.
@@ -362,12 +378,24 @@ Returns connected peers with score, ban status, and protocol version.
 
 ### POST /api/v1/faucet
 
-Request testnet VTR.
+Mint regtest VTR to an address (regtest only). Rate-limited to one claim
+per address every 10 seconds.
 
 **Request:**
 ```json
 {
-  "address": "V..."
+  "address": "V...",
+  "amount_satoshis": 10000000000
+}
+```
+
+**Response:**
+```json
+{
+  "address": "V...",
+  "amount_satoshis": 10000000000,
+  "txid": "<64-hex>",
+  "block_height": 1
 }
 ```
 
