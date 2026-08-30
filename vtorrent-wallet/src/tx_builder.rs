@@ -893,6 +893,91 @@ mod tests {
         engine.execute(&script_sig, &script_pubkey).unwrap();
     }
 
+    /// The VTR HTLC claim branch requires an exactly-32-byte preimage
+    /// (OP_SIZE guard, matching the BTC-side script). A hand-crafted scriptSig
+    /// with a different-length preimage must fail script execution.
+    #[test]
+    fn test_htlc_claim_rejects_non_32_byte_preimage() {
+        use vtorrent_node::atomic_swap::Htlc;
+        use vtorrent_script::{Engine, Script, ScriptEnv};
+
+        let (taker_wif, taker_addr) = random_wif();
+        let (_, maker_addr) = random_wif();
+
+        // 20-byte preimage (wrong length) whose SHA256 is the hash lock.
+        let preimage = [7u8; 20];
+        let hash_lock = {
+            use sha2::Digest;
+            let mut h = Sha256::new();
+            h.update(preimage);
+            let d = h.finalize();
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&d);
+            out
+        };
+
+        let htlc = Htlc::new(
+            hash_lock,
+            taker_addr.clone(),
+            maker_addr.clone(),
+            vtorrent_node::atomic_swap::DEFAULT_HTLC_LOCKTIME,
+            100_000_000,
+        )
+        .unwrap();
+        let htlc_script = htlc.build_script().unwrap();
+
+        // Build a minimal claim tx manually (the sighash covers the HTLC
+        // script but not the scriptSig, so the preimage length is free here —
+        // exactly the case the OP_SIZE guard defends against).
+        let unsigned = Transaction {
+            version: 1,
+            tx_type: vtorrent_node::block::TxType::AtomicSwap,
+            inputs: vec![vtorrent_node::block::TxInput {
+                prev_txid: [1u8; 32],
+                prev_vout: 0,
+                script_sig: Vec::new(),
+                sequence: 0xffff_ffff,
+            }],
+            outputs: vec![vtorrent_node::block::TxOutput {
+                value: 100_000_000 - 10_000,
+                script_pubkey: p2pkh_script_pubkey(&taker_addr).unwrap(),
+            }],
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        };
+        let (sig, pubkey) =
+            sign_input_over_subscript(&unsigned, 0, &htlc_script, &taker_wif).unwrap();
+
+        let mut script_sig = Vec::new();
+        script_sig.push(sig.len() as u8);
+        script_sig.extend_from_slice(&sig);
+        script_sig.push(pubkey.len() as u8);
+        script_sig.extend_from_slice(&pubkey);
+        script_sig.push(preimage.len() as u8);
+        script_sig.extend_from_slice(&preimage);
+        script_sig.push(0x51);
+
+        let mut claim_tx = unsigned;
+        claim_tx.inputs[0].script_sig = script_sig;
+
+        let tx_hash = claim_tx.sighash(0, &htlc_script);
+        let env = ScriptEnv {
+            tx_hash,
+            block_height: 1,
+            block_time: 1_700_000_000,
+            tx_lock_time: claim_tx.lock_time,
+            input_sequence: 0xffff_ffff,
+        };
+        let mut engine = Engine::new(env);
+        let script_sig = Script::from_bytes(claim_tx.inputs[0].script_sig.clone()).unwrap();
+        let script_pubkey = Script::from_bytes(htlc_script).unwrap();
+        assert!(
+            engine.execute(&script_sig, &script_pubkey).is_err(),
+            "non-32-byte preimage must fail the OP_SIZE guard"
+        );
+    }
+
     #[test]
     fn test_htlc_refund_verifies_against_script_engine() {
         use vtorrent_node::atomic_swap::Htlc;

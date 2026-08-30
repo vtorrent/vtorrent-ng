@@ -237,6 +237,11 @@ async fn receive_loop(
     const PUNCH_BURST: u32 = 20;
     const PUNCH_RATE: u32 = 10; // tokens per second
     let mut punch_tokens: HashMap<std::net::IpAddr, (f64, std::time::Instant)> = HashMap::new();
+    // Prune stale token-bucket entries periodically: each unique source IP
+    // inserts an entry, so without pruning a spoofed-UDP flood leaks memory.
+    const PUNCH_PRUNE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
+    const PUNCH_ENTRY_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+    let mut last_prune = std::time::Instant::now();
 
     loop {
         let (n, from) = match socket.recv_from(&mut buf).await {
@@ -249,6 +254,12 @@ async fn receive_loop(
 
         if n == 0 {
             continue;
+        }
+
+        if last_prune.elapsed() >= PUNCH_PRUNE_INTERVAL {
+            let now = std::time::Instant::now();
+            punch_tokens.retain(|_, (_, seen)| now.duration_since(*seen) < PUNCH_ENTRY_TTL);
+            last_prune = now;
         }
 
         let tag = buf[0];

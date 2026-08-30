@@ -171,11 +171,17 @@ impl Htlc {
         })?;
         let expiry_bytes = self.expiry.to_le_bytes();
 
-        let mut script = Vec::new();
-
-        // OP_IF branch (claim with preimage)
-        script.push(0x63); // OP_IF
-        script.push(0xa8); // OP_SHA256
+        // OP_IF branch (claim with preimage). OP_SIZE 32 pins the preimage
+        // length to match the BTC-side HTLC so a revealing party cannot
+        // satisfy one chain's hash-lock with an encoding the other rejects.
+        let mut script = vec![
+            0x63, // OP_IF
+            0x82, // OP_SIZE
+            0x01, // push 1 byte
+            0x20, // 32
+            0x88, // OP_EQUALVERIFY
+            0xa8, // OP_SHA256
+        ];
         script.push(0x20); // push 32 bytes
         script.extend_from_slice(&self.hash_lock);
         script.push(0x88); // OP_EQUALVERIFY

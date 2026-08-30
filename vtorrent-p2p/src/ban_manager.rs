@@ -347,6 +347,11 @@ impl BanManager {
                 self.scores.remove(&ip);
             }
         }
+
+        // Bound the connection-failure tracker: IPs with no active ban and no
+        // recorded misbehaviour score no longer need their failure count.
+        self.consecutive_failures
+            .retain(|ip, _| self.bans.contains_key(ip) || self.scores.contains_key(ip));
     }
 
     /// Returns the number of currently banned IPs.
