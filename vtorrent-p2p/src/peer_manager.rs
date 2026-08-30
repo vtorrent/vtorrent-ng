@@ -470,7 +470,13 @@ impl PeerManager {
         user_agent: String,
         cmd_tx: mpsc::Sender<PeerCommand>,
     ) -> Result<()> {
-        if self.peers.len() >= MAX_PEERS && !self.peers.contains_key(&addr) {
+        if self.peers.contains_key(&addr) {
+            return Err(P2pError::Protocol(format!(
+                "Peer {} already registered",
+                addr
+            )));
+        }
+        if self.peers.len() >= MAX_PEERS {
             return Err(P2pError::TooManyPeers(MAX_PEERS));
         }
         self.peers.insert(
@@ -651,4 +657,125 @@ fn anonymous_peer_key(addr: &str) -> SocketAddr {
     let fourth = (hash >> 24) as u8;
     let port = 1_024 + (hash as u16 % (u16::MAX - 1_024));
     SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, second, third, fourth)), port)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::message::NetMessage;
+
+    fn manager() -> PeerManager {
+        PeerManager::new_testnet(0, "127.0.0.1:22526")
+    }
+
+    fn test_addr(port: u16) -> SocketAddr {
+        format!("127.0.0.1:{}", port).parse().unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_register_and_remove_virtual_peer() {
+        let mut pm = PeerManager::new_testnet(0, "127.0.0.1:22526");
+        let addr = test_addr(11111);
+        let (tx, _rx) = mpsc::channel(8);
+
+        pm.register_virtual_peer(addr, "/vTorrent:test/".into(), tx)
+            .unwrap();
+        assert_eq!(pm.peer_count(), 1, "virtual peer registered as connected");
+
+        pm.remove_virtual_peer(addr);
+        assert_eq!(pm.peer_count(), 0, "removed peer no longer counted");
+    }
+
+    #[tokio::test]
+    async fn test_duplicate_virtual_peer_registration_rejected() {
+        let mut pm = PeerManager::new_testnet(0, "127.0.0.1:22526");
+        let addr = test_addr(11112);
+        let (tx, _rx) = mpsc::channel(8);
+
+        pm.register_virtual_peer(addr, "/vTorrent:test/".into(), tx.clone())
+            .unwrap();
+        assert!(pm
+            .register_virtual_peer(addr, "/vTorrent:test/".into(), tx)
+            .is_err());
+        assert_eq!(pm.peer_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_misbehaviour_ban_and_prune() {
+        let mut pm = PeerManager::new_testnet(0, "127.0.0.1:22526");
+        let addr = test_addr(22222);
+
+        // Enough offences to cross the ban threshold (100 points).
+        for _ in 0..10 {
+            pm.record_misbehaviour(addr, Misbehaviour::InvalidBlockHeader)
+                .await;
+        }
+        assert!(
+            pm.is_banned(addr).await,
+            "10 × 20 points must trigger a ban"
+        );
+
+        // Prune with no elapsed time: the ban must survive.
+        pm.prune_bans().await;
+        assert!(pm.is_banned(addr).await);
+    }
+
+    #[tokio::test]
+    async fn test_network_best_height_tracks_handshakes() {
+        let mut pm = PeerManager::new_testnet(0, "127.0.0.1:22526");
+        assert_eq!(pm.network_best_height(), 0);
+
+        let addr = test_addr(22222);
+        let (tx, _rx) = mpsc::channel(8);
+        pm.register_virtual_peer(addr, "/vTorrent:test/".into(), tx)
+            .unwrap();
+
+        // Simulate a handshake-complete event through the manager's own
+        // event channel, then process it.
+        pm.event_tx
+            .send(PeerEvent::HandshakeComplete {
+                peer_addr: addr,
+                version: crate::message::VersionMsg::new(42, "127.0.0.1:1"),
+            })
+            .await
+            .unwrap();
+        let _ = pm.process_events().await;
+        assert_eq!(pm.network_best_height(), 42);
+        assert_eq!(pm.peer_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_reaches_connected_peers_only() {
+        let mut pm = PeerManager::new_testnet(0, "127.0.0.1:22526");
+        let a = test_addr(33331);
+        let b = test_addr(33334);
+        let (tx_a, mut rx_a) = mpsc::channel(8);
+        let (tx_b, mut rx_b) = mpsc::channel(8);
+        pm.register_virtual_peer(a, "/vA/".into(), tx_a).unwrap();
+        pm.register_virtual_peer(b, "/vB/".into(), tx_b).unwrap();
+
+        pm.broadcast(NetMessage::new("ping", vec![])).await;
+        assert!(
+            rx_a.try_recv().is_ok(),
+            "connected peer A receives broadcast"
+        );
+        assert!(
+            rx_b.try_recv().is_ok(),
+            "connected peer B receives broadcast"
+        );
+
+        // broadcast_except skips the excluded peer.
+        pm.broadcast_except(a, NetMessage::new("ping", vec![]))
+            .await;
+        assert!(rx_a.try_recv().is_err(), "excluded peer gets nothing");
+        assert!(rx_b.try_recv().is_ok(), "other peer still receives");
+    }
+
+    #[tokio::test]
+    async fn test_send_to_unknown_peer_is_noop() {
+        let pm = manager();
+        // Must not panic or error on an unknown address.
+        pm.send_to(test_addr(44444), NetMessage::new("ping", vec![]))
+            .await;
+    }
 }
