@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — vTorrent 2.0.0
 
-### Since v2.0.0-beta.2 (44 commits)
+### Since v2.0.0-beta.2 (114 commits)
 
 **Edge-Case Audit Fixes (session of 2026-08-30)**
 - Legacy snapshot claims were rejected by the mempool relay fee floor (claims carry no fee by design) — every claim would have failed; now fee-exempt
@@ -19,6 +19,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `getblocktxn` O(height) scan → O(1) hash lookup
 - `gettxout` RPC returned hardcoded `coinbase: false`; now derived from the transaction
 - New: mempool TTL evicts transactions older than 48 h; `GET /api/v1/blockchain/utxo/:txid/:vout`; faucet per-address 10 s cooldown; P2P escalating bans for repeated connection failures (5 m → 15 m → 1 h)
+
+**Security Audit Fixes (12 passes, 2026-08-30)**
+- **CRITICAL — CLTV/CSV ignored chain state**: timelock opcodes only compared the spender's self-declared `nLockTime`/`nSequence`; a spender could spend a time-locked output (HTLC refund) before expiry. Now enforces BIP-65/BIP-68 chain-state checks (`ScriptEnv` gains `utxo_height`/`utxo_timestamp`)
+- **CRITICAL — script-invalid txs admitted to mempool**: relay checked only fee/UTXO existence; a bad-signature tx poisoned all stakers' block templates for up to 48 h. `Chain::verify_tx_scripts` now gates admission
+- **CRITICAL — blocktxn index mapping**: responses were mapped positionally instead of by absolute block index; compact-block reconstruction never worked for real block shapes (coinbase always prefilled)
+- `cancel_dex_order` skipped the ownership check when the wallet was locked — any caller could cancel any order
+- `btc_fund` did not require the VTR leg to be funded first — takers could lock BTC into an HTLC for an unfunded order
+- DEX funding race: concurrent `match` calls both admitted competing funding txs; reservation now precedes build/sign
+- VTR HTLC claim branch lacked the OP_SIZE 32-byte preimage guard (BTC side had it)
+- Tor control password injected raw into `AUTHENTICATE` — quotes/backslashes broke auth; now hex-encoded
+- I2P destinations charset-validated (SAM command injection via peer-supplied addresses)
+- Compact-block short-id retry budget (infinite loop guard); blocktxn responses mapped positionally→absolute (relay was non-functional for real block shapes)
+- Torrent upload dedup was dead code (counter self-decayed) + unbounded tracker responses (4 MB cap)
+- Incentive payments retried on failure (were dropped after settlement reset counters); LRU eviction no longer destroys pending earnings; BTC seed zeroized on drop
+- Dust policy: mempool rejects <546 sat outputs (claims exempt); wallet rejects dust recipients; `mint_to_address` enforces MAX_SUPPLY
+- Expired DEX orders no longer matchable; `peers.txt` capped at 1000; headers batch capped at 2000; WS subscriptions capped at 64; peer user_agent truncated to 128
+- Wallet file created 0600 before content (was chmod-after-write); staking.json atomic tmp+rename
+- Dead code removed: `vtorrent_core::utxo`/`transaction` modules (confusing duplicate Utxo type), empty `mempool_bridge` shim
+
+**Refactoring**
+- `node/mod.rs` 1583→1230L (peering, staking_loop extracted); `chain.rs` 1568→680L (tests extracted); `handlers/mod.rs` 862→391L (blockchain/btc/regtest split); `server.rs` 857→177L (tests extracted); `chain.rs` 1568→680L; `atomic_swap.rs` 1103→903L; torrent `engine_disk.rs` split; daemon `config.rs` split
+- Deduplication: `vtorrent-core::time` (8 copies of time helpers), canonical P2PKH builder in `core::address`, inline base58 decode replaced by `Address::parse`
 
 **Mainnet Infrastructure**
 - Three geographically distributed seed nodes deployed and verified: `vtr-seed1` (Falkenstein DE), `vtr-seed2` (Helsinki FI), `vtr-seed3` (Ashburn US); DNS seeds `seed1/2/3.vtorrent.org` live at IONOS
