@@ -168,7 +168,7 @@ impl Mempool {
                     .entries
                     .get(conflict_txid)
                     .ok_or_else(|| NodeError::Chain("Conflict entry missing".into()))?;
-                if fee_rate < conflict.fee_rate() + MIN_RBF_FEE_BUMP {
+                if fee_rate < conflict.fee_rate().saturating_add(MIN_RBF_FEE_BUMP) {
                     return Err(NodeError::Chain(format!(
                         "RBF replacement fee rate {} sat/byte must exceed {} + {} sat/byte",
                         fee_rate,

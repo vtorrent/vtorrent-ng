@@ -215,7 +215,7 @@ pub fn validate_block(
     // Check block timestamp is not too far in the future (2 hours tolerance)
     let now = now_timestamp_u32();
 
-    if block.header.timestamp > now + 7200 {
+    if block.header.timestamp > now.saturating_add(7200) {
         return Err(NodeError::InvalidBlock(format!(
             "Block timestamp {} is too far in the future (now: {})",
             block.header.timestamp, now

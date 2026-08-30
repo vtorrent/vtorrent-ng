@@ -237,7 +237,18 @@ impl Chain {
             .map(|b| b.header.timestamp)
             .unwrap_or(0);
         let timestamp = now_timestamp_u32();
-        let timestamp = timestamp.max(prev_timestamp + 1);
+        let timestamp = timestamp.max(prev_timestamp.saturating_add(1));
+
+        // Supply cap: the faucet is regtest-only, but mint_to_address is a
+        // public Chain API — enforce the consensus supply ceiling regardless.
+        if self.total_supply.saturating_add(amount) > crate::consensus::MAX_SUPPLY {
+            return Err(NodeError::Chain(format!(
+                "Mint would exceed maximum supply: {} + {} > {}",
+                self.total_supply,
+                amount,
+                crate::consensus::MAX_SUPPLY
+            )));
+        }
 
         let coinbase = Transaction {
             version: 1,

@@ -647,6 +647,8 @@ fn test_p2pkh_spend_through_chain() {
         block_time: 1_700_000_002,
         tx_lock_time: tx.lock_time,
         input_sequence: 0xffff_fffe,
+        utxo_height: 0,
+        utxo_timestamp: 0,
     };
     let mut engine = vtorrent_script::Engine::new(env);
     let sig_script = vtorrent_script::Script::from_bytes(tx.inputs[0].script_sig.clone()).unwrap();

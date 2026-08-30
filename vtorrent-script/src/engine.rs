@@ -49,6 +49,10 @@ pub struct ScriptEnv {
     pub tx_lock_time: u32,
     /// The input's nSequence (for OP_CHECKLOCKTIMEVERIFY finality check).
     pub input_sequence: u32,
+    /// Height at which the UTXO being spent was created (for OP_CHECKSEQUENCEVERIFY).
+    pub utxo_height: u32,
+    /// Timestamp at which the UTXO being spent was created (for OP_CHECKSEQUENCEVERIFY).
+    pub utxo_timestamp: u32,
 }
 
 /// The script execution engine.
@@ -518,6 +522,19 @@ impl Engine {
                                 if self.env.tx_lock_time < locktime {
                                     return Err(ScriptError::HtlcLocktimeNotExpired);
                                 }
+                                // Chain-state check (BIP-65): the spend is only
+                                // valid once the blockchain itself has reached
+                                // the locktime. Without this, a spender could
+                                // self-declare tx.lock_time >= expiry and spend
+                                // a time-locked output before it expires.
+                                let chain_reached = if locktime_is_time {
+                                    self.env.block_time >= locktime
+                                } else {
+                                    self.env.block_height >= locktime
+                                };
+                                if !chain_reached {
+                                    return Err(ScriptError::HtlcLocktimeNotExpired);
+                                }
                             }
                         }
                         0xb2 => {
@@ -550,6 +567,29 @@ impl Engine {
                                     let arg = seq & mask;
                                     let input = self.env.input_sequence & mask;
                                     if input < arg {
+                                        return Err(ScriptError::UnsatisfiedSequence);
+                                    }
+                                    // Chain-state check (BIP-68): the spent
+                                    // output must actually be `arg` blocks or
+                                    // 512-second units old. Without this a
+                                    // spender could self-declare nSequence and
+                                    // spend a relative-locked output early.
+                                    let age_satisfied = if seq_is_time {
+                                        let arg_secs = u64::from(arg) * 512;
+                                        let age_secs = self
+                                            .env
+                                            .block_time
+                                            .saturating_sub(self.env.utxo_timestamp)
+                                            as u64;
+                                        u64::from(input) * 512 >= arg_secs && age_secs >= arg_secs
+                                    } else {
+                                        let age_blocks = self
+                                            .env
+                                            .block_height
+                                            .saturating_sub(self.env.utxo_height);
+                                        age_blocks >= arg
+                                    };
+                                    if !age_satisfied {
                                         return Err(ScriptError::UnsatisfiedSequence);
                                     }
                                 }

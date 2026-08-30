@@ -775,6 +775,8 @@ mod tests {
             block_time: 1_700_000_000,
             tx_lock_time: tx.lock_time,
             input_sequence: 0xffff_fffe,
+            utxo_height: 0,
+            utxo_timestamp: 0,
         };
         let mut engine = Engine::new(env);
         let script_sig = Script::from_bytes(input.script_sig.clone()).unwrap();
@@ -839,6 +841,8 @@ mod tests {
             block_time: 1_700_000_000,
             tx_lock_time: claim_tx.lock_time,
             input_sequence: 0xffff_ffff,
+            utxo_height: 0,
+            utxo_timestamp: 0,
         };
         let mut engine = Engine::new(env);
         let script_sig = Script::from_bytes(claim_tx.inputs[0].script_sig.clone()).unwrap();
@@ -921,6 +925,8 @@ mod tests {
             block_time: 1_700_000_000,
             tx_lock_time: claim_tx.lock_time,
             input_sequence: 0xffff_ffff,
+            utxo_height: 0,
+            utxo_timestamp: 0,
         };
         let mut engine = Engine::new(env);
         let script_sig = Script::from_bytes(claim_tx.inputs[0].script_sig.clone()).unwrap();
@@ -986,10 +992,80 @@ mod tests {
             block_time: htlc.expiry + 1,
             tx_lock_time: refund_tx.lock_time,
             input_sequence: 0xffff_fffe,
+            utxo_height: 0,
+            utxo_timestamp: 0,
         };
         let mut engine = Engine::new(env);
         let script_sig = Script::from_bytes(refund_tx.inputs[0].script_sig.clone()).unwrap();
         let script_pubkey = Script::from_bytes(htlc_script).unwrap();
         engine.execute(&script_sig, &script_pubkey).unwrap();
+    }
+
+    /// CLTV must consult the chain state, not just the spender's self-declared
+    /// tx.lock_time: a refund attempted before the HTLC expiry (block_time <
+    /// expiry) must fail even when tx.lock_time is set >= expiry.
+    #[test]
+    fn test_htlc_refund_before_expiry_rejected_by_chain_state() {
+        use vtorrent_node::atomic_swap::Htlc;
+        use vtorrent_script::{Engine, Script, ScriptEnv};
+
+        let (maker_wif, maker_addr) = random_wif();
+        let (_, taker_addr) = random_wif();
+
+        let preimage = [42u8; 32];
+        let hash_lock = {
+            use sha2::Digest;
+            let mut h = Sha256::new();
+            h.update(preimage);
+            let d = h.finalize();
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&d);
+            out
+        };
+
+        let htlc = Htlc::new(
+            hash_lock,
+            taker_addr.clone(),
+            maker_addr.clone(),
+            vtorrent_node::atomic_swap::MIN_HTLC_LOCKTIME,
+            100_000_000,
+        )
+        .unwrap();
+        let htlc_script = htlc.build_script().unwrap();
+
+        let unsigned = htlc.build_refund_tx_unsigned([1u8; 32], 10_000).unwrap();
+        let (sig, pubkey) =
+            sign_input_over_subscript(&unsigned, 0, &htlc_script, &maker_wif).unwrap();
+
+        let mut script_sig = Vec::new();
+        script_sig.push(sig.len() as u8);
+        script_sig.extend_from_slice(&sig);
+        script_sig.push(pubkey.len() as u8);
+        script_sig.extend_from_slice(&pubkey);
+        script_sig.push(0x00);
+
+        let mut refund_tx = unsigned;
+        refund_tx.inputs[0].script_sig = script_sig;
+        // Self-declare a lock_time that satisfies the script's CLTV value.
+        refund_tx.lock_time = htlc.expiry;
+
+        let tx_hash = refund_tx.sighash(0, &htlc_script);
+        let env = ScriptEnv {
+            tx_hash,
+            block_height: 1,
+            // Chain state is BEFORE the expiry — the decisive check.
+            block_time: htlc.expiry.saturating_sub(1),
+            tx_lock_time: refund_tx.lock_time,
+            input_sequence: 0xffff_fffe,
+            utxo_height: 0,
+            utxo_timestamp: 0,
+        };
+        let mut engine = Engine::new(env);
+        let script_sig = Script::from_bytes(refund_tx.inputs[0].script_sig.clone()).unwrap();
+        let script_pubkey = Script::from_bytes(htlc_script).unwrap();
+        assert!(
+            engine.execute(&script_sig, &script_pubkey).is_err(),
+            "refund before expiry must fail via chain-state CLTV check"
+        );
     }
 }

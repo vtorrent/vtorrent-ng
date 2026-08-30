@@ -470,6 +470,7 @@ fn test_csv_succeeds_when_sequence_sufficient() {
     script.push_opcode(0x51);
     let env = ScriptEnv {
         input_sequence: 0x0002_0002,
+        block_height: 2,
         ..Default::default()
     };
     let mut engine = Engine::new(env);
@@ -484,6 +485,48 @@ fn test_csv_fails_when_sequence_insufficient() {
     script.push_opcode(0xb2);
     let env = ScriptEnv {
         input_sequence: 0x0001_0001,
+        ..Default::default()
+    };
+    let mut engine = Engine::new(env);
+    assert!(matches!(
+        engine.run(&script),
+        Err(ScriptError::UnsatisfiedSequence)
+    ));
+}
+
+/// CSV must consult the chain state, not just the spender's self-declared
+/// nSequence: a young UTXO (age 0) cannot satisfy a 2-block relative lock
+/// even when nSequence claims otherwise.
+#[test]
+fn test_csv_fails_when_utxo_too_young() {
+    let mut script = Script::new();
+    script.push_opcode(0x52); // 2
+    script.push_opcode(0xb2); // OP_CHECKSEQUENCEVERIFY
+    let env = ScriptEnv {
+        input_sequence: 0x0002_0002, // claims 2-block relative lock
+        block_height: 1,             // chain at height 1
+        utxo_height: 1,              // UTXO created this block → age 0
+        ..Default::default()
+    };
+    let mut engine = Engine::new(env);
+    assert!(matches!(
+        engine.run(&script),
+        Err(ScriptError::UnsatisfiedSequence)
+    ));
+}
+
+/// The time-type CSV variant must compare against the UTXO's age in
+/// 512-second units (BIP-68), not just the declared nSequence.
+#[test]
+fn test_csv_time_type_requires_real_utxo_age() {
+    let mut script = Script::new();
+    script.push_opcode(0x52); // 2
+    script.push_opcode(0xb2); // OP_CHECKSEQUENCEVERIFY
+                              // seq = 2 | TYPE_FLAG (time units): requires 2 × 512 = 1024s age.
+    let env = ScriptEnv {
+        input_sequence: 0x0040_0002,
+        block_time: 1_000,   // chain time
+        utxo_timestamp: 900, // UTXO is 100s old — too young
         ..Default::default()
     };
     let mut engine = Engine::new(env);
@@ -1172,6 +1215,7 @@ fn test_cltv_passes_with_sufficient_sequence() {
     let env = ScriptEnv {
         tx_lock_time: 100,
         input_sequence: 0,
+        block_height: 50,
         ..Default::default()
     };
     let mut engine = Engine::new(env);
@@ -1213,6 +1257,7 @@ fn test_cltv_with_absolute_locktime() {
     let env = ScriptEnv {
         tx_lock_time,
         input_sequence: 0,
+        block_time: locktime as u32,
         ..Default::default()
     };
     let mut engine = Engine::new(env);

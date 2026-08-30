@@ -218,6 +218,8 @@ fn apply_transaction_journaled(
                         block_time: timestamp,
                         tx_lock_time: tx.lock_time,
                         input_sequence: input.sequence,
+                        utxo_height: utxo.height,
+                        utxo_timestamp: utxo.timestamp,
                     };
                     let mut engine = Engine::new(env);
                     let script_sig = Script::from_bytes(input.script_sig.clone()).map_err(|e| {
