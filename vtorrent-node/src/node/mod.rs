@@ -11,14 +11,12 @@
 pub mod bootstrap;
 pub mod chain;
 pub(crate) mod handler;
-pub mod mempool_bridge;
 pub mod overlay;
 pub mod p2p;
 pub(crate) mod peering;
 pub(crate) mod staking_loop;
 
 pub use chain::handle_block;
-pub use mempool_bridge::{assemble_pending_filter, handle_confirmed_block};
 pub use p2p::handle_peer_event;
 
 use std::{

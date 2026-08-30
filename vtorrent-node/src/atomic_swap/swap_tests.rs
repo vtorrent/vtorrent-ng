@@ -198,3 +198,37 @@ impl SwapOrder {
         now >= self.expiry
     }
 }
+
+/// An order past its expiry must not be matched even while reserved for
+/// funding — the maker's deadline is binding.
+#[test]
+fn test_fund_and_match_rejects_expired_order() {
+    let mut book = SwapOrderBook::new();
+    let mut order = SwapOrder::new(
+        "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string(),
+        1_000_000,
+        "BTC".to_string(),
+        100_000,
+        DEFAULT_HTLC_LOCKTIME,
+    );
+    // Force the order into the past.
+    order.expiry = 1; // unix epoch — always expired
+    let order_id = hex::encode(order.order_id);
+    book.add_order(order);
+
+    assert!(book.begin_funding(&order_id).is_some());
+    assert!(
+        book.fund_and_match_order(
+            &order_id,
+            "VU3QSqAqM7tP3QXZ8sT7v8sQSdAxUZvqdS".to_string(),
+            [7u8; 32],
+            [8u8; 32],
+            [9u8; 32],
+        )
+        .is_none(),
+        "expired order must not be matched"
+    );
+    // The order is cancelled, not left in Funding.
+    let order = book.get_order(&order_id).unwrap();
+    assert_eq!(order.status, OrderStatus::Cancelled);
+}

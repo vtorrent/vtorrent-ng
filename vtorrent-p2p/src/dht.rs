@@ -687,8 +687,14 @@ pub fn discover_peers_via_github(port: u16) -> Vec<std::net::SocketAddr> {
 /// Lines with an invalid port are re-parsed using the provided default port.
 fn parse_peers_txt(text: &str, default_port: u16) -> Vec<std::net::SocketAddr> {
     let mut result = Vec::new();
+    // Cap the parsed list: a compromised mirror could return an arbitrarily
+    // large file; the connection logic only tries a handful anyway.
+    const MAX_PEERS: usize = 1_000;
 
     for line in text.lines() {
+        if result.len() >= MAX_PEERS {
+            break;
+        }
         let line = line.trim();
         // Skip comments and blank lines
         if line.is_empty() || line.starts_with('#') {

@@ -754,6 +754,14 @@ impl SwapOrderBook {
             .orders
             .iter_mut()
             .find(|o| hex::encode(o.order_id) == order_id && o.status == OrderStatus::Funding)?;
+        // An expired order must not be matched: the maker posted a deadline
+        // and may have repriced or withdrawn. The taker's funding HTLC is
+        // still refundable after its own expiry, so refusing here only
+        // prevents an unwanted trade.
+        if now_timestamp_u32() >= order.expiry {
+            order.status = OrderStatus::Cancelled;
+            return None;
+        }
 
         order.status = OrderStatus::Matched;
         order.hash_lock = Some(hash_lock);
