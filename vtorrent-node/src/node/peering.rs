@@ -29,10 +29,14 @@ impl Node {
     pub(crate) async fn handle_peer_event(&mut self, event: PeerEvent) -> Result<()> {
         match event {
             PeerEvent::HandshakeComplete { peer_addr, version } => {
+                // Cap the user agent: it is an unbounded peer-supplied string
+                // that gets stored and logged per peer.
+                let mut user_agent = version.user_agent;
+                user_agent.truncate(128);
                 tracing::info!(
                     "Peer {} handshake complete: {} (height {}) v{}",
                     peer_addr,
-                    version.user_agent,
+                    user_agent,
                     version.start_height,
                     version.version
                 );
@@ -40,7 +44,7 @@ impl Node {
                 self.peer_versions.insert(peer_addr, version.version);
                 self.emit(NodeEvent::PeerConnected {
                     addr: peer_addr,
-                    user_agent: version.user_agent.clone(),
+                    user_agent,
                     version: version.version,
                     height: version.start_height,
                 });
