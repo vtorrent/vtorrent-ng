@@ -155,12 +155,18 @@ async fn handle_ws_connection(mut socket: WebSocket, state: Arc<AppState>) {
             msg = socket.recv() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
-                        if let Ok(sub) = serde_json::from_str::<SubscribeMsg>(&text) {
-                            for event_type in sub.subscribe {
-                                if !subscribed.contains(&event_type) {
-                                    subscribed.push(event_type);
-                                }
-                            }
+                if let Ok(sub) = serde_json::from_str::<SubscribeMsg>(&text) {
+                    // Cap subscriptions: the set is scanned per event and a
+                    // malicious client could otherwise grow it without bound.
+                    const MAX_SUBSCRIPTIONS: usize = 64;
+                    for event_type in sub.subscribe {
+                        if subscribed.len() >= MAX_SUBSCRIPTIONS {
+                            break;
+                        }
+                        if !subscribed.contains(&event_type) {
+                            subscribed.push(event_type);
+                        }
+                    }
                             let ack = serde_json::json!({
                                 "status": "subscribed",
                                 "subscriptions": &subscribed

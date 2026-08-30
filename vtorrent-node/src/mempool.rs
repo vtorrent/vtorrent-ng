@@ -417,6 +417,11 @@ impl Mempool {
         self.entries.len()
     }
 
+    /// Returns the total serialized size of all mempool transactions in bytes.
+    pub fn total_bytes(&self) -> u64 {
+        self.entries.values().map(|e| e.size_bytes as u64).sum()
+    }
+
     /// Maximum age for mempool transactions before they are evicted as stale.
     pub const STALE_TX_TTL_SECS: u64 = 48 * 60 * 60; // 48 hours
 
@@ -543,6 +548,20 @@ mod tests {
         let tx = make_tx(MIN_RELAY_FEE, 1, false);
         assert!(mp.add_transaction(tx).is_ok());
         assert_eq!(mp.size(), 1);
+    }
+
+    #[test]
+    fn test_total_bytes_tracks_serialized_size() {
+        let mut mp = Mempool::new(100);
+        assert_eq!(mp.total_bytes(), 0);
+        let tx = make_tx(MIN_RELAY_FEE, 1, false);
+        let expected = tx.serialized_size() as u64;
+        mp.add_transaction(tx).unwrap();
+        assert_eq!(mp.total_bytes(), expected);
+        let tx2 = make_tx(MIN_RELAY_FEE, 2, false);
+        let expected2 = tx2.serialized_size() as u64;
+        mp.add_transaction(tx2).unwrap();
+        assert_eq!(mp.total_bytes(), expected + expected2);
     }
 
     #[test]

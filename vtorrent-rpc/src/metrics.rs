@@ -76,8 +76,7 @@ async fn collect_metrics(state: &AppState) -> String {
     let (mempool_size, mempool_bytes) = {
         let mempool = state.mempool.lock().await;
         let size = mempool.size() as u64;
-        // Estimate bytes: average tx is ~250 bytes
-        let bytes = size * 250;
+        let bytes = mempool.total_bytes();
         (size, bytes)
     };
     write_gauge(
