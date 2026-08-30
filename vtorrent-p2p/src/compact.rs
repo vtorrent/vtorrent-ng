@@ -141,7 +141,7 @@ impl CompactBlockEncoder {
         nonce: u32,
         txids: &[[u8; 32]],
         coinbase_tx_bytes: Vec<u8>,
-    ) -> CmpctBlockMsg {
+    ) -> Result<CmpctBlockMsg, CompactBlockEncodeError> {
         use rand::Rng;
 
         // Build header bytes for key derivation
@@ -155,7 +155,10 @@ impl CompactBlockEncoder {
 
         // BIP-152 §4: the sender must guarantee short IDs are unique. On a
         // SipHash collision, retry with fresh nonces (probability of needing
-        // more than a handful of rounds is negligible).
+        // more than a handful of rounds is negligible). The retry cap guards
+        // against a caller passing duplicate txids, which would loop forever.
+        const MAX_SHORTID_RETRIES: u32 = 64;
+        let mut retries: u32 = 0;
         let mut siphash_nonce: u64 = rand::thread_rng().gen();
         let short_ids = loop {
             let (k0, k1) = derive_siphash_keys(&header_bytes, siphash_nonce);
@@ -168,7 +171,11 @@ impl CompactBlockEncoder {
             if unique == ids.len() {
                 break ids;
             }
-            siphash_nonce = rand::thread_rng().gen();
+            retries += 1;
+            if retries >= MAX_SHORTID_RETRIES {
+                return Err(CompactBlockEncodeError::ShortIdCollision);
+            }
+            siphash_nonce = siphash_nonce.wrapping_add(1);
         };
 
         // Coinbase is always prefilled at index 0
@@ -177,7 +184,7 @@ impl CompactBlockEncoder {
             tx_bytes: coinbase_tx_bytes,
         }];
 
-        CmpctBlockMsg {
+        Ok(CmpctBlockMsg {
             version,
             prev_block_hash,
             merkle_root,
@@ -187,12 +194,20 @@ impl CompactBlockEncoder {
             siphash_nonce,
             short_ids,
             prefilled_txs,
-        }
+        })
     }
 }
 
 /// Compact block decoder — reconstructs a full block from a compact block message.
 pub struct CompactBlockDecoder;
+
+/// Error produced when a compact block cannot be encoded.
+#[derive(Debug)]
+pub enum CompactBlockEncodeError {
+    /// Short IDs could not be made unique after the retry budget — the input
+    /// transaction list almost certainly contains duplicate txids.
+    ShortIdCollision,
+}
 
 /// Error produced when a compact block cannot be fully reconstructed locally.
 #[derive(Debug)]
@@ -404,7 +419,8 @@ mod tests {
             7,
             &[[3u8; 32], [4u8; 32]],
             vec![0x51],
-        );
+        )
+        .unwrap();
         // Force a duplicate short id (simulating a malicious or buggy sender).
         let mut bad = cmpct.clone();
         let dup = *bad.short_ids.first().unwrap_or(&42);
@@ -413,6 +429,28 @@ mod tests {
             CompactBlockDecoder::decode(&bad, &std::collections::HashMap::new()),
             Err(CompactBlockDecodeError::DuplicateShortId)
         ));
+    }
+
+    /// Duplicate txids in the input make unique short IDs impossible; the
+    /// encoder must give up after the retry budget instead of looping forever.
+    #[test]
+    fn duplicate_txids_shortid_collision_error() {
+        let result = CompactBlockEncoder::encode(
+            1,
+            [1u8; 32],
+            [2u8; 32],
+            12345,
+            0x1e0fffff,
+            7,
+            // First entry is the coinbase (skipped); the two identical
+            // non-coinbase txids can never produce unique short IDs.
+            &[[9u8; 32], [9u8; 32], [9u8; 32]],
+            vec![0x51],
+        );
+        assert!(
+            matches!(result, Err(CompactBlockEncodeError::ShortIdCollision)),
+            "duplicate txids must surface as ShortIdCollision"
+        );
     }
 
     #[test]
@@ -459,7 +497,8 @@ mod tests {
             42,
             &txids,
             coinbase_bytes.clone(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(msg.short_ids.len(), 2); // tx1 and tx2
         assert_eq!(msg.prefilled_txs.len(), 1); // coinbase only
@@ -500,7 +539,8 @@ mod tests {
             42,
             &txids,
             vec![0xCB; 10],
-        );
+        )
+        .unwrap();
 
         // Empty mempool — tx1 is missing
         let mempool = HashMap::new();
@@ -557,7 +597,8 @@ mod tests {
             99,
             &all_txids,
             vec![0xCB; 10],
-        );
+        )
+        .unwrap();
 
         // Only provide txids [10] and [13] in mempool — rest are missing.
         let header_bytes = {
@@ -603,7 +644,8 @@ mod tests {
             0,
             &txids,
             vec![0xCB; 50],
-        );
+        )
+        .unwrap();
 
         assert_eq!(msg.short_ids.len(), 0, "no non-coinbase txs");
         assert_eq!(msg.prefilled_txs.len(), 1, "coinbase prefilled");
