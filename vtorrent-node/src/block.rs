@@ -87,6 +87,15 @@ impl Transaction {
     /// The output is bit-identical to the original bincode-based implementation.
     pub fn sighash(&self, input_index: usize, subscript: &[u8]) -> [u8; 32] {
         use sha2::Digest;
+        // An out-of-range index silently commits to an empty subscript for
+        // every input, masking caller bugs with a "valid" hash. Fail loudly
+        // in debug builds; in release the behavior is unchanged.
+        debug_assert!(
+            input_index < self.inputs.len(),
+            "sighash input_index {} out of range ({} inputs)",
+            input_index,
+            self.inputs.len()
+        );
         let mut h = Sha256::new();
 
         // bincode 1.x default: little-endian integers, u64 length prefix for Vec.
