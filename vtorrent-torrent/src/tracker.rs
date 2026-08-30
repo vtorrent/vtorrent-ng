@@ -134,10 +134,27 @@ impl HttpTracker {
             )));
         }
 
+        // Bound the response: a malicious tracker could return gigabytes.
+        // Legitimate announce responses are a few KB (peer lists).
+        const MAX_TRACKER_RESPONSE: u64 = 4 * 1024 * 1024;
+        if let Some(len) = response.content_length() {
+            if len > MAX_TRACKER_RESPONSE {
+                return Err(TorrentError::TrackerError(format!(
+                    "Tracker response too large: {} bytes",
+                    len
+                )));
+            }
+        }
         let bytes = response
             .bytes()
             .await
             .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
+        if bytes.len() as u64 > MAX_TRACKER_RESPONSE {
+            return Err(TorrentError::TrackerError(format!(
+                "Tracker response too large: {} bytes",
+                bytes.len()
+            )));
+        }
 
         parse_tracker_response(&bytes)
     }

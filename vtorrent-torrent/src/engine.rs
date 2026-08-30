@@ -584,9 +584,12 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
     // Track partial piece assembly across multiple blocks.
     let mut assemblers: std::collections::HashMap<u32, PieceAssembler> =
         std::collections::HashMap::new();
-    // Upload-side request throttling state (per peer task).
-    let served_requests: std::sync::Mutex<std::collections::HashMap<(u32, u32, u32), u32>> =
-        std::sync::Mutex::new(std::collections::HashMap::new());
+    // Upload-side request throttling state (per peer task): key → expiry.
+    // A repeated identical request inside the window is dropped; entries are
+    // evicted once expired so the map cannot grow without bound.
+    let served_requests: std::sync::Mutex<
+        std::collections::HashMap<(u32, u32, u32), std::time::Instant>,
+    > = std::sync::Mutex::new(std::collections::HashMap::new());
     let outstanding_served = std::sync::atomic::AtomicUsize::new(0);
     // Rolling-window counters for speed estimation.
     let mut downloaded_window: u64 = 0;
@@ -687,26 +690,26 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                 // in-flight requests so loops of the same Request don't each
                 // trigger a disk read + send.
                 let key = (index, begin, length);
+                const REQUEST_DEDUPE_WINDOW: std::time::Duration =
+                    std::time::Duration::from_secs(10);
                 let is_duplicate = {
                     let mut inflight = served_requests.lock().unwrap_or_else(|e| e.into_inner());
-                    let count = inflight.entry(key).or_insert(0);
-                    if *count >= 2 {
-                        true
-                    } else {
-                        *count += 1;
-                        false
+                    // Evict expired entries opportunistically so the map stays
+                    // bounded under adversarial request patterns.
+                    inflight.retain(|_, deadline| *deadline > std::time::Instant::now());
+                    let now = std::time::Instant::now();
+                    match inflight.get(&key) {
+                        Some(deadline) if *deadline > now => true,
+                        _ => {
+                            inflight.insert(key, now + REQUEST_DEDUPE_WINDOW);
+                            false
+                        }
                     }
                 };
                 if is_duplicate {
                     tracing::trace!("Dropping duplicate in-flight request {:?}", key);
                     continue;
                 }
-                // Entry decays after this window.
-                served_requests
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .entry(key)
-                    .and_modify(|c| *c = c.saturating_sub(1));
 
                 let outstanding = outstanding_served.fetch_add(1, Ordering::SeqCst);
                 if outstanding >= MAX_OUTSTANDING_PER_PEER {
