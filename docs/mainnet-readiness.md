@@ -40,9 +40,13 @@
 
 - [ ] **3+ node Docker testnet** (`docker/testnet/docker-compose.yml`) runs
       ≥7 days: blocks propagate between all nodes, no forks beyond expected
-      PoS reorg depth, no memory growth, no peer churn storms.
+      PoS reorg depth, no memory growth, no peer churn storms. *(Mechanics
+      verified 2026-08-30: 3 nodes mesh, faucet mints persist across
+      restarts, mesh self-heals after node restart; 7-day window in progress.)*
 - [ ] **Staking soak**: at least one node stakes continuously and produces
-      blocks at the expected ~60s average over the soak window.
+      blocks at the expected ~60s average over the soak window. *(Staking
+      verified end-to-end 2026-08-30: fast-stake kernel hits, reward minted,
+      all 3 nodes converged; continuous-window check pending.)*
 - [x] **Atomic swap E2E on testnet**: 2026-08-24 via compose stack — full
       VTR↔BTC cycle against BTC regtest: VTR HTLC funded (match), BTC HTLC
       funded and confirmed (P2WSH, block 127), taker claimed VTR revealing
