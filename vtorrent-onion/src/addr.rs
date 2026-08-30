@@ -55,6 +55,20 @@ impl OnionAddr {
                 )))
             }
         } else if host_lower.ends_with(".i2p") || host_lower.ends_with(".b32.i2p") {
+            // The destination is interpolated into SAM protocol commands;
+            // restrict it to base32/base64 charset so a peer-supplied address
+            // cannot inject newlines or spaces into the SAM session.
+            let label = host_lower.trim_end_matches(".i2p");
+            if label.is_empty()
+                || !label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'=' || b == b'.')
+            {
+                return Err(OnionError::InvalidOnionAddr(format!(
+                    "Invalid characters in I2P destination: {}",
+                    addr
+                )));
+            }
             Ok(OnionAddr::I2p {
                 dest: host_lower,
                 port,
@@ -138,6 +152,18 @@ mod tests {
         let parsed = OnionAddr::parse(addr).unwrap();
         assert!(parsed.is_i2p());
         assert_eq!(parsed.port(), 22526);
+    }
+
+    /// The I2P destination is interpolated into SAM protocol commands —
+    /// addresses containing newlines, spaces, or control characters must be
+    /// rejected so a peer-supplied value cannot inject SAM commands.
+    #[test]
+    fn test_parse_i2p_rejects_injection_characters() {
+        assert!(OnionAddr::parse("abc\nSTREAM X.i2p:1").is_err());
+        assert!(OnionAddr::parse("abc def.i2p:1").is_err());
+        assert!(OnionAddr::parse("abc\r\n.i2p:1").is_err());
+        // Legitimate base32 still parses.
+        assert!(OnionAddr::parse("abc123.b32.i2p:1").is_ok());
     }
 
     #[test]
