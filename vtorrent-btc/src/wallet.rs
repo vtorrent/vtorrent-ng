@@ -24,6 +24,13 @@ pub struct BtcWallet {
     rbf_enabled: bool,
 }
 
+impl Drop for BtcWallet {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.seed.zeroize();
+    }
+}
+
 impl BtcWallet {
     /// Create a wallet from a 64-byte BIP39 seed.
     pub fn new(seed: [u8; 64]) -> Self {

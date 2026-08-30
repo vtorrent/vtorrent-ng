@@ -160,13 +160,20 @@ impl TorrentSession {
         // First pass: remove accounts with no activity
         self.incentive_accounts
             .retain(|_, a| a.bytes_uploaded > 0 || a.bytes_downloaded > 0);
-        // If still over limit, remove the least-recently-active accounts.
+        // If still over limit, remove the least-recently-active accounts —
+        // but only those with no pending earnings: evicting an account with
+        // unsettled bandwidth would silently destroy what we owe the peer.
         if self.incentive_accounts.len() > MAX_INCENTIVE_ACCOUNTS {
             let mut entries: Vec<_> = self.incentive_accounts.iter().collect();
             entries.sort_by_key(|(_, a)| a.last_active);
             let excess = entries.len() - MAX_INCENTIVE_ACCOUNTS * 3 / 4;
             let to_remove: Vec<String> = entries
                 .into_iter()
+                .filter(|(_, a)| {
+                    a.bytes_uploaded == 0
+                        && a.bytes_downloaded == 0
+                        && a.total_earned_satoshis == a.total_paid_satoshis
+                })
                 .take(excess)
                 .map(|(addr, _)| addr.clone())
                 .collect();

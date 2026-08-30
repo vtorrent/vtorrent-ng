@@ -29,6 +29,7 @@ use vtorrent_core::time::now_timestamp_u32;
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
+use zeroize::Zeroize;
 
 use vtorrent_node::events as node_events;
 use vtorrent_node::node::{Node, NodeConfig};
@@ -469,7 +470,7 @@ async fn main() -> anyhow::Result<()> {
     if let Some(seed_hex) = &cli.btc_seed {
         let seed_bytes = hex::decode(seed_hex)
             .map_err(|e| anyhow::anyhow!("Invalid --btc-seed (expected 64-byte hex): {}", e))?;
-        let seed: [u8; 64] = seed_bytes
+        let mut seed: [u8; 64] = seed_bytes
             .try_into()
             .map_err(|_| anyhow::anyhow!("--btc-seed must be exactly 64 bytes (128 hex chars)"))?;
         let network = if cli.btc_regtest {
@@ -480,6 +481,9 @@ async fn main() -> anyhow::Result<()> {
         *rpc_state.btc_wallet.write().await =
             Some(vtorrent_btc::wallet::BtcWallet::with_network(seed, network));
         *rpc_state.btc_network.write().await = network;
+        // Zeroize the local seed material; the wallet holds its own copy
+        // (zeroized on drop) and the CLI string is process-lifetime anyway.
+        seed.zeroize();
         if let Some(peer) = &cli.btc_peer {
             // Store the host:port as given; it is resolved on every connection
             // attempt so peer IPs can change across container restarts.
