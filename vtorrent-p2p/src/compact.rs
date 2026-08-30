@@ -668,4 +668,72 @@ mod tests {
         assert_eq!(msg.block_hash, hash);
         assert!(msg.indexes.is_empty());
     }
+
+    /// Regression for the blocktxn index-mapping bug: the response lists
+    /// transactions positionally (in requested order) while decode_with_received
+    /// looks them up by absolute block index. With non-contiguous missing
+    /// indexes the mapping must place each tx at its absolute position.
+    #[test]
+    fn test_decode_with_received_maps_absolute_indexes() {
+        let coinbase_txid = [1u8; 32];
+        let txids: Vec<[u8; 32]> = (0..6).map(|i| [i as u8 + 20; 32]).collect();
+        let all_txids = std::iter::once(coinbase_txid)
+            .chain(txids.iter().copied())
+            .collect::<Vec<_>>();
+
+        let msg = CompactBlockEncoder::encode(
+            2,
+            [0xCC; 32],
+            [0xDD; 32],
+            6000,
+            0x1d00ffff,
+            42,
+            &all_txids,
+            vec![0xEE; 10],
+        )
+        .unwrap();
+
+        // Mempool has nothing — every non-coinbase tx is missing.
+        let missing: Vec<u16> = match CompactBlockDecoder::decode(&msg, &HashMap::new()) {
+            Err(CompactBlockDecodeError::MissingTransactions(indexes)) => indexes,
+            other => panic!("expected MissingTransactions, got {:?}", other.map(|_| ())),
+        };
+        // Absolute indexes 1..=6 (coinbase is prefilled).
+        assert_eq!(missing, vec![1u16, 2, 3, 4, 5, 6]);
+
+        // Simulate a blocktxn response: txs in REQUESTED order (positional).
+        let requested: Vec<usize> = missing.iter().map(|&i| i as usize).collect();
+        let mut received: HashMap<usize, Vec<u8>> = HashMap::new();
+        for (pos, &abs_index) in requested.iter().enumerate() {
+            // Distinct payload per absolute index so we can verify placement.
+            received.insert(pos, vec![abs_index as u8; 12]);
+        }
+
+        // Map positions to absolute indexes exactly as handle_blocktxn now does.
+        let mut mapped: HashMap<usize, Vec<u8>> = HashMap::new();
+        for (pos, &abs_index) in requested.iter().enumerate() {
+            if let Some(bytes) = received.get(&pos) {
+                mapped.insert(abs_index, bytes.clone());
+            }
+        }
+
+        let txs = CompactBlockDecoder::decode_with_received(&msg, &HashMap::new(), &mapped)
+            .expect("reconstruction must succeed with correctly mapped indexes");
+        assert_eq!(txs.len(), 7); // coinbase + 6
+                                  // Coinbase prefilled at 0; each absolute index carries its marker byte.
+        for (i, tx) in txs.iter().enumerate() {
+            if i == 0 {
+                assert_eq!(tx, &vec![0xEE; 10]);
+            } else {
+                assert_eq!(
+                    tx,
+                    &vec![i as u8; 12],
+                    "tx at absolute index {} misplaced",
+                    i
+                );
+            }
+        }
+    }
 }
+
+// (appended in tests module below)

@@ -6,6 +6,7 @@
 //! `handle_message` in `mod.rs` focused on the rate-limiting preamble
 //! and small message arms.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use vtorrent_p2p::{
@@ -607,9 +608,30 @@ pub(crate) async fn handle_blocktxn(
             }
             map
         };
+        // The blocktxn response lists transactions positionally in the order
+        // they were requested. Recompute the requested (absolute) indexes the
+        // same way the getblocktxn request was built, then map positions to
+        // absolute indexes — decode_with_received looks up by absolute index.
+        let requested_indexes: Vec<usize> = {
+            match CompactBlockDecoder::decode_with_received(&pending, &mempool_map, &HashMap::new())
+            {
+                Err(CompactBlockDecodeError::MissingTransactions(indexes)) => {
+                    indexes.into_iter().map(|i| i as usize).collect()
+                }
+                _ => {
+                    tracing::debug!(
+                        "blocktxn: pending block {} no longer missing txs",
+                        hex::encode(resp.block_hash)
+                    );
+                    return Ok(());
+                }
+            }
+        };
         let mut received_map = std::collections::HashMap::new();
-        for (i, tx_bytes) in resp.transactions.iter().enumerate() {
-            received_map.insert(i, tx_bytes.clone());
+        for (pos, tx_bytes) in resp.transactions.iter().enumerate() {
+            if let Some(&abs_index) = requested_indexes.get(pos) {
+                received_map.insert(abs_index, tx_bytes.clone());
+            }
         }
 
         match CompactBlockDecoder::decode_with_received(&pending, &mempool_map, &received_map) {
