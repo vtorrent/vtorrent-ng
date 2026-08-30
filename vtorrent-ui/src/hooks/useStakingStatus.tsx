@@ -11,6 +11,7 @@
  * transparently falls back to polling so the UI never stalls.
  */
 
+import { camel, isTauri, RPC_BASE, rpcGet, tauriInvoke } from '../api'
 import { useState, useEffect, useCallback, useRef } from 'react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -27,43 +28,16 @@ export interface StakingStatus {
 
 // ─── RPC helpers ──────────────────────────────────────────────────────────────
 
-const RPC_BASE = 'http://127.0.0.1:22525'
-
 function getWsUrl(): string {
   // RPC_BASE is http://host:port → ws://host:port/ws
   return `${RPC_BASE.replace(/^http/, 'ws')}/ws`
-}
-
-function isTauri(): boolean {
-  return typeof (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ !== 'undefined'
-}
-
-async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  const { invoke } = await import('@tauri-apps/api/core')
-  return invoke<T>(cmd, args)
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function camel(obj: any): any {
-  if (Array.isArray(obj)) return obj.map(camel)
-  if (obj && typeof obj === 'object') {
-    return Object.fromEntries(
-      Object.entries(obj).map(([k, v]) => [
-        k.replace(/_([a-z])/g, (_: string, c: string) => c.toUpperCase()),
-        camel(v),
-      ])
-    )
-  }
-  return obj
 }
 
 async function fetchStakingStatus(): Promise<StakingStatus> {
   if (isTauri()) {
     return tauriInvoke<StakingStatus>('get_staking_status')
   }
-  const res = await fetch(`${RPC_BASE}/api/v1/staking/status`)
-  if (!res.ok) throw new Error(`RPC /api/v1/staking/status → ${res.status}`)
-  return camel(await res.json()) as StakingStatus
+  return camel(await rpcGet<unknown>('/api/v1/staking/status')) as StakingStatus
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────

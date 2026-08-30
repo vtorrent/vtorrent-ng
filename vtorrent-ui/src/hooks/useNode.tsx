@@ -9,6 +9,7 @@
  * without a full page reload.
  */
 
+import { camel, isTauri, rpcDelete, rpcGet, rpcPost, tauriInvoke, RPC_BASE } from '../api'
 import { useState, useEffect, useCallback, useRef } from 'react'
 
 // ─── Type declarations ────────────────────────────────────────────────────────
@@ -89,82 +90,6 @@ export interface ClaimSubmitResult {
 }
 
 // ─── RPC base URL ─────────────────────────────────────────────────────────────
-
-const RPC_BASE = 'http://127.0.0.1:22525'
-
-/**
- * Optional RPC API key for browser (non-Tauri) mode.
- *
- * When the daemon is started with `--rpc-api-key`, sensitive endpoints require
- * the matching `X-API-Key` header. In the browser fallback there is no secure
- * way to store the key, so it is read from `localStorage` (set on the settings
- * screen or in devtools). Tauri IPC mode never sends the key.
- */
-function getRpcApiKey(): string | null {
-  if (isTauri()) return null
-  try {
-    return window.localStorage.getItem('vtorrent.rpc_api_key')
-  } catch {
-    return null
-  }
-}
-
-function authHeaders(): Record<string, string> {
-  const key = getRpcApiKey()
-  return key ? { 'X-API-Key': key } : {}
-}
-
-// ─── Tauri detection ──────────────────────────────────────────────────────────
-
-function isTauri(): boolean {
-  return typeof (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ !== 'undefined'
-}
-
-async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  const { invoke } = await import('@tauri-apps/api/core')
-  return invoke<T>(cmd, args)
-}
-
-// ─── Generic fetch helper ─────────────────────────────────────────────────────
-
-async function rpcGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${RPC_BASE}${path}`, { headers: authHeaders() })
-  if (!res.ok) throw new Error(`RPC ${path} → ${res.status}`)
-  return res.json() as Promise<T>
-}
-
-async function rpcPost<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${RPC_BASE}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify(body),
-  })
-  if (!res.ok) {
-    let msg = `RPC POST ${path} → ${res.status}`
-    try {
-      const err = await res.json()
-      if (err.error) msg = err.error
-    } catch { /* ignore */ }
-    throw new Error(msg)
-  }
-  return res.json() as Promise<T>
-}
-
-// ─── Snake → camel key normaliser (shallow) ───────────────────────────────────
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function camel(obj: any): any {
-  if (Array.isArray(obj)) return obj.map(camel)
-  if (obj && typeof obj === 'object') {
-    return Object.fromEntries(
-      Object.entries(obj).map(([k, v]) => [
-        k.replace(/_([a-z])/g, (_, c) => c.toUpperCase()),
-        camel(v),
-      ])
-    )
-  }
-  return obj
-}
 
 // ─── Fetch functions ──────────────────────────────────────────────────────────
 
@@ -392,21 +317,20 @@ export async function addTorrent(
   if (isTauri()) {
     return tauriInvoke('add_torrent', { source, sourceType, walletAddress })
   }
-  const res = await fetch(`${RPC_BASE}/api/v1/torrent/add`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source, source_type: sourceType, wallet_address: walletAddress }),
-  })
-  if (!res.ok) throw new Error(`add_torrent → ${res.status}`)
-  return camel(await res.json())
+  return camel(
+    await rpcPost<unknown>('/api/v1/torrent/add', {
+      source,
+      source_type: sourceType,
+      wallet_address: walletAddress,
+    })
+  ) as { sessionId: string; infoHash: string; name: string }
 }
 
 export async function removeTorrent(id: string): Promise<void> {
   if (isTauri()) {
     return tauriInvoke('remove_torrent', { id })
   }
-  const res = await fetch(`${RPC_BASE}/api/v1/torrent/${id}`, { method: 'DELETE' })
-  if (!res.ok) throw new Error(`remove_torrent → ${res.status}`)
+  await rpcDelete(`/api/v1/torrent/${id}`)
 }
 
 // ─── DEX actions ─────────────────────────────────────────────────────────────
@@ -424,10 +348,8 @@ export async function placeDexOrder(req: {
   if (isTauri()) {
     return tauriInvoke('place_dex_order', req)
   }
-  const res = await fetch(`${RPC_BASE}/api/v1/dex/order`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+  return camel(
+    await rpcPost<unknown>('/api/v1/dex/order', {
       maker_address: req.makerAddress,
       maker_btc_address: req.makerBtcAddress ?? null,
       offer_amount_satoshis: req.offerAmountSatoshis,
@@ -436,18 +358,15 @@ export async function placeDexOrder(req: {
       request_asset: req.requestAsset,
       expiry_secs: req.expirySecs,
       passphrase: req.passphrase,
-    }),
-  })
-  if (!res.ok) throw new Error(`place_dex_order → ${res.status}`)
-  return camel(await res.json())
+    })
+  )
 }
 
 export async function cancelDexOrder(id: string): Promise<void> {
   if (isTauri()) {
     return tauriInvoke('cancel_dex_order', { id })
   }
-  const res = await fetch(`${RPC_BASE}/api/v1/dex/order/${id}`, { method: 'DELETE' })
-  if (!res.ok) throw new Error(`cancel_dex_order → ${res.status}`)
+  await rpcDelete(`/api/v1/dex/order/${id}`)
 }
 
 // ─── Swap lifecycle actions ───────────────────────────────────────────────────

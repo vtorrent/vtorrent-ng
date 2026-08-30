@@ -1,15 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-
-// ─── Tauri detection ──────────────────────────────────────────────────────────
-
-function isTauri(): boolean {
-  return typeof (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ !== 'undefined'
-}
-
-async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  const { invoke } = await import('@tauri-apps/api/core')
-  return invoke<T>(cmd, args)
-}
+import { camel, isTauri, rpcGet, rpcPost, tauriInvoke } from '../api'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -21,39 +11,20 @@ export interface BtcStatus {
   synced: boolean
 }
 
-const RPC_BASE = 'http://127.0.0.1:22525'
-
-function camel<T>(obj: unknown): T {
-  if (Array.isArray(obj)) return obj.map(camel) as unknown as T
-  if (obj && typeof obj === 'object') {
-    const out: Record<string, unknown> = {}
-    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-      const key = k.replace(/_([a-z])/g, (_, c) => c.toUpperCase())
-      out[key] = camel(v)
-    }
-    return out as T
-  }
-  return obj as T
-}
-
 // ─── Fetch functions ──────────────────────────────────────────────────────────
 
 async function fetchBtcStatus(): Promise<BtcStatus> {
   if (isTauri()) {
     return tauriInvoke<BtcStatus>('get_btc_status')
   }
-  const res = await fetch(`${RPC_BASE}/api/v1/btc/status`)
-  if (!res.ok) throw new Error(`BTC status → ${res.status}`)
-  return camel<BtcStatus>(await res.json())
+  return camel(await rpcGet<unknown>('/api/v1/btc/status')) as BtcStatus
 }
 
 async function fetchBtcAddress(): Promise<string> {
   if (isTauri()) {
     return tauriInvoke<string>('get_btc_address')
   }
-  const res = await fetch(`${RPC_BASE}/api/v1/btc/address`)
-  if (!res.ok) throw new Error(`BTC address → ${res.status}`)
-  const data = await res.json()
+  const data = (await rpcGet<{ address: string }>('/api/v1/btc/address')) as { address: string }
   return data.address
 }
 
@@ -119,13 +90,10 @@ export function useSendBtc() {
       if (isTauri()) {
         return await tauriInvoke<string>('send_btc', { toAddress, amountSatoshis })
       }
-      const res = await fetch(`${RPC_BASE}/api/v1/btc/send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to_address: toAddress, amount_satoshis: amountSatoshis }),
-      })
-      if (!res.ok) throw new Error(`BTC send → ${res.status}`)
-      const data = await res.json()
+      const data = (await rpcPost<{ txid: string }>('/api/v1/btc/send', {
+        to_address: toAddress,
+        amount_satoshis: amountSatoshis,
+      })) as { txid: string }
       return data.txid
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
