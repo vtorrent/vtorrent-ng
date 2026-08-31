@@ -616,13 +616,17 @@ async fn main() -> anyhow::Result<()> {
     let payment_tx_submit = rpc_state.tx_submit.clone();
     tokio::spawn(async move {
         while let Some(payment) = payment_receiver.recv().await {
-            let result = build_incentive_payment(
+            let peer_address = payment.peer_address.clone();
+            let result = vtorrent_wallet_service::build_incentive_payment(
                 &payment_wif,
                 &payment_change,
                 &payment_chain,
                 &payment_mempool,
-                &payment_tx_submit,
-                &payment,
+                payment_tx_submit.as_ref(),
+                &vtorrent_wallet_service::IncentivePayment {
+                    peer_address,
+                    amount_satoshis: payment.amount_satoshis,
+                },
             )
             .await;
             match result {
@@ -811,63 +815,6 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Wait for Ctrl+C or SIGTERM.
-/// Build and broadcast a VTR payment for an incentive settlement.
-async fn build_incentive_payment(
-    wallet_wif: &Arc<tokio::sync::RwLock<Option<String>>>,
-    wallet_change_address: &Arc<tokio::sync::RwLock<Option<String>>>,
-    chain: &Arc<tokio::sync::Mutex<vtorrent_node::chain::Chain>>,
-    mempool: &Arc<tokio::sync::Mutex<vtorrent_node::mempool::Mempool>>,
-    tx_submit: &Option<tokio::sync::mpsc::Sender<vtorrent_node::block::Transaction>>,
-    payment: &vtorrent_torrent::payment::PaymentDue,
-) -> anyhow::Result<String> {
-    let wif = wallet_wif
-        .read()
-        .await
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("wallet not unlocked"))?;
-    let change_address = wallet_change_address
-        .read()
-        .await
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("change address not set"))?;
-
-    let utxos: Vec<vtorrent_node::chain::Utxo> = {
-        let chain = chain.lock().await;
-        chain.get_utxos_for_address(&change_address)
-    };
-    if utxos.is_empty() {
-        return Err(anyhow::anyhow!("no UTXOs available"));
-    }
-
-    let fee_rate = {
-        let mempool = mempool.lock().await;
-        mempool.recommended_fee_rate().max(1)
-    };
-
-    let tx = vtorrent_wallet_service::build_payment(
-        &utxos,
-        &payment.peer_address,
-        &change_address,
-        payment.amount_satoshis,
-        fee_rate,
-        &wif,
-    )
-    .map_err(|e| anyhow::anyhow!("tx build failed: {}", e))?;
-
-    let txid = hex::encode(tx.txid());
-    {
-        let chain = chain.lock().await;
-        let mut mempool = mempool.lock().await;
-        mempool
-            .admit_with_chain_fee(&chain, tx.clone())
-            .map_err(|e| anyhow::anyhow!("mempool rejected: {}", e))?;
-    }
-    if let Some(ref sender) = tx_submit {
-        let _ = sender.try_send(tx);
-    }
-    Ok(txid)
-}
-
 async fn shutdown_signal() {
     use tokio::signal;
 
