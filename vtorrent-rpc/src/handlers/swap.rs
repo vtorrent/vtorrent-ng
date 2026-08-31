@@ -312,8 +312,7 @@ pub async fn vtr_claim(
     State(state): State<Arc<AppState>>,
     Json(req): Json<VtrClaimRequest>,
 ) -> RpcResult<Json<SwapActionResponse>> {
-    use vtorrent_node::atomic_swap::{Htlc, SwapState, SwapStatus};
-    use vtorrent_wallet::tx_builder::sign_input_over_subscript;
+    use vtorrent_node::atomic_swap::{SwapState, SwapStatus};
 
     let preimage = parse_hash32(&req.preimage, "preimage")?;
     if req.taker_wif.is_empty() {
@@ -355,49 +354,31 @@ pub async fn vtr_claim(
         ));
     }
 
-    // Reconstruct the HTLC: the taker is the recipient (claims with preimage),
-    // the maker is the refund address. Use the exact funded expiry so the
-    // script matches the funding output.
-    let htlc = Htlc::with_expiry(
-        hash_lock,
-        taker_address.clone(),
-        order.maker_address.clone(),
-        order.expiry,
-        order.vtr_amount,
-    )
-    .map_err(|e| RpcError::BadRequest(format!("Unable to reconstruct HTLC: {}", e)))?;
-
-    const CLAIM_FEE_SATOSHIS: u64 = vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS;
-    let unsigned = htlc
-        .build_claim_tx_unsigned(funding_txid, &preimage, CLAIM_FEE_SATOSHIS)
-        .map_err(|e| RpcError::BadRequest(format!("Unable to build VTR claim tx: {}", e)))?;
-
-    // Sign over the HTLC script (the funding output's scriptPubKey).
-    let htlc_script = htlc
-        .build_script()
-        .map_err(|e| RpcError::BadRequest(format!("Invalid HTLC addresses: {}", e)))?;
-    let (sig, pubkey) = sign_input_over_subscript(&unsigned, 0, &htlc_script, &req.taker_wif)
-        .map_err(|e| RpcError::BadRequest(format!("Unable to sign VTR claim tx: {}", e)))?;
-
-    // Build the scriptSig: <sig> <pubkey> <preimage> OP_1.
-    let mut script_sig = Vec::new();
-    script_sig.push(sig.len() as u8);
-    script_sig.extend_from_slice(&sig);
-    script_sig.push(pubkey.len() as u8);
-    script_sig.extend_from_slice(&pubkey);
-    script_sig.push(0x20);
-    script_sig.extend_from_slice(&preimage);
-    script_sig.push(0x51); // OP_1
-
-    let mut claim_tx = unsigned;
-    claim_tx.inputs[0].script_sig = script_sig;
+    // Build and sign the claim via the shared service path (same builder as
+    // the Tauri frontend). Uses the exact funded expiry so the script matches
+    // the funding output.
+    let claim_tx =
+        vtorrent_wallet_service::build_vtr_htlc_claim(vtorrent_wallet_service::VtrClaimParams {
+            hash_lock,
+            taker_address: &taker_address,
+            maker_address: &order.maker_address,
+            expiry: order.expiry,
+            vtr_amount: order.vtr_amount,
+            funding_txid,
+            preimage,
+            taker_wif: &req.taker_wif,
+        })
+        .map_err(RpcError::BadRequest)?;
     let claim_txid = claim_tx.txid();
 
     // Admit to the mempool and broadcast.
     {
         let mut mempool = state.mempool.lock().await;
         mempool
-            .add_transaction_with_fee(claim_tx.clone(), CLAIM_FEE_SATOSHIS)
+            .add_transaction_with_fee(
+                claim_tx.clone(),
+                vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS,
+            )
             .map_err(|e| RpcError::BadRequest(format!("Mempool rejected VTR claim tx: {}", e)))?;
     }
     if let Some(sender) = &state.tx_submit {

@@ -386,8 +386,7 @@ pub async fn vtr_claim(
     preimage: String,
     taker_wif: String,
 ) -> Result<SwapActionResult> {
-    use vtorrent_node::atomic_swap::{Htlc, SwapState, SwapStatus};
-    use vtorrent_wallet::tx_builder::sign_input_over_subscript;
+    use vtorrent_node::atomic_swap::{SwapState, SwapStatus};
 
     let guard = state.node.lock().await;
     let handle = guard
@@ -437,43 +436,27 @@ pub async fn vtr_claim(
         ));
     }
 
-    let htlc = Htlc::with_expiry(
-        hash_lock,
-        taker_address.clone(),
-        order.maker_address.clone(),
-        order.expiry,
-        order.vtr_amount,
-    )
-    .map_err(|e| TauriError::InvalidInput(format!("Unable to reconstruct HTLC: {}", e)))?;
-
-    const CLAIM_FEE_SATOSHIS: u64 = vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS;
-    let unsigned = htlc
-        .build_claim_tx_unsigned(funding_txid, &preimage_bytes, CLAIM_FEE_SATOSHIS)
-        .map_err(|e| TauriError::InvalidInput(format!("Unable to build VTR claim tx: {}", e)))?;
-
-    let htlc_script = htlc
-        .build_script()
-        .map_err(|e| TauriError::InvalidInput(format!("Invalid HTLC addresses: {}", e)))?;
-    let (sig, pubkey) = sign_input_over_subscript(&unsigned, 0, &htlc_script, &taker_wif)
-        .map_err(|e| TauriError::InvalidInput(format!("Unable to sign VTR claim tx: {}", e)))?;
-
-    let mut script_sig = Vec::new();
-    script_sig.push(sig.len() as u8);
-    script_sig.extend_from_slice(&sig);
-    script_sig.push(pubkey.len() as u8);
-    script_sig.extend_from_slice(&pubkey);
-    script_sig.push(0x20);
-    script_sig.extend_from_slice(&preimage_bytes);
-    script_sig.push(0x51); // OP_1
-
-    let mut claim_tx = unsigned;
-    claim_tx.inputs[0].script_sig = script_sig;
+    let claim_tx =
+        vtorrent_wallet_service::build_vtr_htlc_claim(vtorrent_wallet_service::VtrClaimParams {
+            hash_lock,
+            taker_address: &taker_address,
+            maker_address: &order.maker_address,
+            expiry: order.expiry,
+            vtr_amount: order.vtr_amount,
+            funding_txid,
+            preimage: preimage_bytes,
+            taker_wif: &taker_wif,
+        })
+        .map_err(TauriError::InvalidInput)?;
     let claim_txid = claim_tx.txid();
 
     {
         let mut mempool = rpc.mempool.lock().await;
         mempool
-            .add_transaction_with_fee(claim_tx.clone(), CLAIM_FEE_SATOSHIS)
+            .add_transaction_with_fee(
+                claim_tx.clone(),
+                vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS,
+            )
             .map_err(|e| {
                 TauriError::InvalidInput(format!("Mempool rejected VTR claim tx: {}", e))
             })?;

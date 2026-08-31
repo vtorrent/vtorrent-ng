@@ -339,3 +339,89 @@ mod btc_funding_tests {
         assert!(utxo_select(&utxos, 20_000, 1_000).is_none());
     }
 }
+// ─── VTR HTLC claim (shared by RPC and Tauri swap flows) ────────────────────
+
+/// Build and sign a VTR HTLC claim transaction (taker reveals the preimage).
+///
+/// Shared by the RPC and Tauri `vtr_claim` flows. Reconstructs the HTLC
+/// exactly as funded, builds the claim tx, and signs over the HTLC script
+/// with the scriptSig `<sig> <pubkey> <preimage> OP_1`.
+///
+/// Returns the signed claim transaction; the caller admits it to the mempool
+/// and updates swap state.
+/// Parameters for a VTR HTLC claim.
+pub struct VtrClaimParams<'a> {
+    /// The HTLC hash lock.
+    pub hash_lock: [u8; 32],
+    /// The taker's VTR address (HTLC recipient / claimer).
+    pub taker_address: &'a str,
+    /// The maker's VTR address (HTLC refund address).
+    pub maker_address: &'a str,
+    /// The exact expiry the funding output was built with.
+    pub expiry: u32,
+    /// The swap amount in satoshis.
+    pub vtr_amount: u64,
+    /// The VTR funding txid (internal byte order).
+    pub funding_txid: [u8; 32],
+    /// The preimage revealing the hash lock.
+    pub preimage: [u8; 32],
+    /// The taker's WIF key for signing.
+    pub taker_wif: &'a str,
+}
+
+/// Build and sign a VTR HTLC claim transaction (taker reveals the preimage).
+///
+/// Shared by the RPC and Tauri `vtr_claim` flows. Reconstructs the HTLC
+/// exactly as funded, builds the claim tx, and signs over the HTLC script
+/// with the scriptSig `<sig> <pubkey> <preimage> OP_1`.
+///
+/// Returns the signed claim transaction; the caller admits it to the mempool
+/// and updates swap state.
+pub fn build_vtr_htlc_claim(
+    params: VtrClaimParams<'_>,
+) -> Result<vtorrent_node::block::Transaction, String> {
+    let VtrClaimParams {
+        hash_lock,
+        taker_address,
+        maker_address,
+        expiry,
+        vtr_amount,
+        funding_txid,
+        preimage,
+        taker_wif,
+    } = params;
+    use vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS;
+    use vtorrent_wallet::tx_builder::sign_input_over_subscript;
+
+    let htlc = vtorrent_node::atomic_swap::Htlc::with_expiry(
+        hash_lock,
+        taker_address.to_string(),
+        maker_address.to_string(),
+        expiry,
+        vtr_amount,
+    )
+    .map_err(|e| format!("Unable to reconstruct HTLC: {}", e))?;
+
+    let unsigned = htlc
+        .build_claim_tx_unsigned(funding_txid, &preimage, VTR_HTLC_FEE_SATOSHIS)
+        .map_err(|e| format!("Unable to build VTR claim tx: {}", e))?;
+
+    let htlc_script = htlc
+        .build_script()
+        .map_err(|e| format!("Invalid HTLC addresses: {}", e))?;
+    let (sig, pubkey) = sign_input_over_subscript(&unsigned, 0, &htlc_script, taker_wif)
+        .map_err(|e| format!("Unable to sign VTR claim tx: {}", e))?;
+
+    let mut script_sig = Vec::new();
+    script_sig.push(sig.len() as u8);
+    script_sig.extend_from_slice(&sig);
+    script_sig.push(pubkey.len() as u8);
+    script_sig.extend_from_slice(&pubkey);
+    script_sig.push(0x20);
+    script_sig.extend_from_slice(&preimage);
+    script_sig.push(0x51); // OP_1
+
+    let mut claim_tx = unsigned;
+    claim_tx.inputs[0].script_sig = script_sig;
+    Ok(claim_tx)
+}
