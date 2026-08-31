@@ -983,3 +983,343 @@ pub(crate) struct BlockTxnReq {
     pub block_hash: [u8; 32],
     pub indexes: Vec<u16>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::block::{BlockHeader, TxInput, TxOutput, TxType};
+    use crate::consensus::compute_stake_modifier;
+    use crate::node::NodeConfig;
+    use vtorrent_p2p::message::PROTOCOL_VERSION;
+
+    fn test_node() -> Node {
+        let config = NodeConfig {
+            isolated: true,
+            use_dht: false,
+            use_overlay: false,
+            ..NodeConfig::default()
+        };
+        Node::new(config).expect("test node creation failed")
+    }
+
+    fn coinbase_block(prev_hash: [u8; 32], prev_modifier: u64, height: u32) -> Block {
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::Coinbase,
+            inputs: vec![TxInput {
+                prev_txid: [0u8; 32],
+                prev_vout: 0xffffffff,
+                script_sig: vec![height as u8],
+                sequence: 0xffffffff,
+            }],
+            outputs: vec![TxOutput {
+                value: 1_000_000,
+                script_pubkey: vec![
+                    0x76, 0xa9, 0x14, 0xab, 0xcd, 0xef, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0x88, 0xac,
+                ],
+            }],
+            lock_time: height,
+            claim_address: None,
+            claim_signature: None,
+        };
+        let mut block = Block {
+            header: BlockHeader {
+                version: 1,
+                prev_block_hash: prev_hash,
+                merkle_root: [0u8; 32],
+                timestamp: 1_700_000_000 + height,
+                bits: crate::genesis::GENESIS_BITS,
+                nonce: height,
+                stake_modifier: compute_stake_modifier(prev_modifier, &prev_hash),
+            },
+            transactions: vec![tx],
+        };
+        block.header.merkle_root = block.compute_merkle_root();
+        block
+    }
+
+    fn v2_msg<T: serde::Serialize>(command: &str, body: &T) -> NetMessage {
+        NetMessage::new(command, vtorrent_p2p::message::encode_v2(body).unwrap())
+    }
+
+    fn peer(port: u16) -> SocketAddr {
+        format!("127.0.0.1:{}", port).parse().unwrap()
+    }
+
+    #[tokio::test]
+    async fn handle_block_accepts_valid_block_and_updates_chain() {
+        let mut node = test_node();
+        let genesis_hash = {
+            let chain = node.chain.lock().await;
+            chain.best_hash().unwrap()
+        };
+        let block = coinbase_block(genesis_hash, 0, 1);
+        let block_hash = block.hash();
+        let payload = node.serialize_block_for_peer(&block, PROTOCOL_VERSION);
+        let msg = NetMessage::new("block", payload);
+
+        handle_block(&mut node, peer(1), &msg, PROTOCOL_VERSION)
+            .await
+            .unwrap();
+
+        let chain = node.chain.lock().await;
+        assert_eq!(chain.best_height(), 1);
+        assert_eq!(chain.best_hash().unwrap(), block_hash);
+    }
+
+    #[tokio::test]
+    async fn handle_block_rejects_invalid_block_and_bans_peer() {
+        let mut node = test_node();
+        // A block whose parent is unknown (not the genesis hash) fails validation.
+        let block = coinbase_block([0xaa; 32], 0, 1);
+        let payload = node.serialize_block_for_peer(&block, PROTOCOL_VERSION);
+        let msg = NetMessage::new("block", payload);
+        let addr = peer(2);
+
+        handle_block(&mut node, addr, &msg, PROTOCOL_VERSION)
+            .await
+            .unwrap();
+
+        assert!(
+            node.peer_manager.is_banned(addr).await,
+            "peer sending an invalid block must be banned"
+        );
+        let chain = node.chain.lock().await;
+        assert_eq!(chain.best_height(), 0);
+    }
+
+    #[tokio::test]
+    async fn handle_block_malformed_payload_records_misbehaviour() {
+        let mut node = test_node();
+        let addr = peer(3);
+        let msg = NetMessage::new("block", vec![0xde, 0xad, 0xbe, 0xef]);
+
+        handle_block(&mut node, addr, &msg, PROTOCOL_VERSION)
+            .await
+            .unwrap();
+
+        let chain = node.chain.lock().await;
+        assert_eq!(chain.best_height(), 0);
+        assert!(!node.peer_manager.is_banned(addr).await);
+    }
+
+    #[tokio::test]
+    async fn handle_tx_adds_valid_transaction_to_mempool() {
+        let mut node = test_node();
+        // Fund an address via a coinbase block, then send a transfer spending it.
+        let genesis_hash = {
+            let chain = node.chain.lock().await;
+            chain.best_hash().unwrap()
+        };
+        let block = coinbase_block(genesis_hash, 0, 1);
+        {
+            let mut chain = node.chain.lock().await;
+            chain.add_block(block).unwrap();
+        }
+        let (coinbase_txid, utxo) = {
+            let chain = node.chain.lock().await;
+            let cb = chain.get_block_at_height(1).unwrap().transactions[0].clone();
+            let txid = cb.txid();
+            let utxo = chain.get_utxo(&txid, 0).unwrap().clone();
+            (txid, utxo)
+        };
+
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::Standard,
+            inputs: vec![TxInput {
+                prev_txid: coinbase_txid,
+                prev_vout: 0,
+                script_sig: Vec::new(),
+                sequence: u32::MAX,
+            }],
+            outputs: vec![TxOutput {
+                value: utxo.value - 1_000,
+                script_pubkey: utxo.script_pubkey.clone(),
+            }],
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        };
+        let payload = bincode::serialize(&tx).unwrap();
+        let msg = NetMessage::new("tx", payload);
+
+        handle_tx(&mut node, peer(3), &msg, PROTOCOL_VERSION)
+            .await
+            .unwrap();
+
+        let mp = node.mempool.lock().await;
+        assert!(
+            mp.get_transaction(&tx.txid()).is_some(),
+            "valid tx must be admitted to the mempool"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_tx_rejects_unknown_input_and_records_misbehaviour() {
+        let mut node = test_node();
+        let addr = peer(4);
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::Standard,
+            inputs: vec![TxInput {
+                prev_txid: [0x99; 32],
+                prev_vout: 0,
+                script_sig: Vec::new(),
+                sequence: u32::MAX,
+            }],
+            outputs: vec![TxOutput {
+                value: 1_000,
+                script_pubkey: vec![0x51],
+            }],
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        };
+        let payload = bincode::serialize(&tx).unwrap();
+        let msg = NetMessage::new("tx", payload);
+
+        handle_tx(&mut node, addr, &msg, PROTOCOL_VERSION)
+            .await
+            .unwrap();
+
+        let mp = node.mempool.lock().await;
+        assert!(mp.get_transaction(&tx.txid()).is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_inv_requests_unknown_blocks_and_txs() {
+        let mut node = test_node();
+        // Parent must exist: build block 1 on genesis first.
+        let genesis_hash = {
+            let chain = node.chain.lock().await;
+            chain.best_hash().unwrap()
+        };
+        let block = coinbase_block(genesis_hash, 0, 1);
+        {
+            let mut chain = node.chain.lock().await;
+            chain.add_block(block).unwrap();
+        }
+        let known_block_hash = {
+            let chain = node.chain.lock().await;
+            chain.get_block_at_height(1).unwrap().hash()
+        };
+        let unknown_block: [u8; 32] = [0x11; 32];
+        let unknown_tx: [u8; 32] = [0x22; 32];
+
+        let inv = InvMsg {
+            items: vec![
+                InvItem {
+                    inv_type: InvType::Block,
+                    hash: known_block_hash,
+                },
+                InvItem {
+                    inv_type: InvType::Block,
+                    hash: unknown_block,
+                },
+                InvItem {
+                    inv_type: InvType::Transaction,
+                    hash: unknown_tx,
+                },
+            ],
+        };
+        let msg = v2_msg("inv", &inv);
+
+        handle_inv(&mut node, peer(5), &msg, PROTOCOL_VERSION)
+            .await
+            .unwrap();
+        // No panic and no misbehaviour: the handler filters known items internally.
+        let score = node
+            .peer_manager
+            .ban_manager
+            .read()
+            .await
+            .score(peer(5).ip());
+        assert_eq!(score, 0);
+        assert!(!node.peer_manager.is_banned(peer(5)).await);
+    }
+
+    #[tokio::test]
+    async fn handle_inv_oversized_inventory_is_penalized() {
+        let mut node = test_node();
+        let addr = peer(6);
+        let items: Vec<InvItem> = (0u32..1_001)
+            .map(|i| InvItem {
+                inv_type: InvType::Transaction,
+                hash: [i as u8; 32],
+            })
+            .collect();
+        let msg = v2_msg("inv", &InvMsg { items });
+
+        handle_inv(&mut node, addr, &msg, PROTOCOL_VERSION)
+            .await
+            .unwrap();
+
+        // A single oversized inv scores 20 points (ban threshold is 100), so
+        // the peer is not banned outright but the misbehaviour is recorded.
+        let score = node.peer_manager.ban_manager.read().await.score(addr.ip());
+        assert_eq!(score, 20, "oversized inv must record misbehaviour");
+    }
+
+    #[tokio::test]
+    async fn handle_getheaders_returns_headers() {
+        let mut node = test_node();
+        let genesis_hash = {
+            let chain = node.chain.lock().await;
+            chain.best_hash().unwrap()
+        };
+        let block = coinbase_block(genesis_hash, 0, 1);
+        {
+            let mut chain = node.chain.lock().await;
+            chain.add_block(block).unwrap();
+        }
+
+        let msg = v2_msg(
+            "getheaders",
+            &GetHeadersMsg {
+                version: PROTOCOL_VERSION,
+                block_locator_hashes: vec![genesis_hash],
+                hash_stop: [0u8; 32],
+            },
+        );
+        handle_getheaders(&mut node, peer(7), &msg, PROTOCOL_VERSION)
+            .await
+            .unwrap();
+        // No panic and no ban: response goes through the peer manager.
+        assert!(!node.peer_manager.is_banned(peer(7)).await);
+    }
+
+    #[tokio::test]
+    async fn handle_getdata_unknown_item_is_tolerated() {
+        let mut node = test_node();
+        let msg = v2_msg(
+            "getdata",
+            &GetDataMsg {
+                items: vec![InvItem {
+                    inv_type: InvType::Block,
+                    hash: [0x33; 32],
+                }],
+            },
+        );
+        handle_getdata(&mut node, peer(8), &msg, PROTOCOL_VERSION)
+            .await
+            .unwrap();
+        assert!(!node.peer_manager.is_banned(peer(8)).await);
+    }
+
+    #[tokio::test]
+    async fn handle_blocktxn_without_pending_compact_block_is_tolerated() {
+        let mut node = test_node();
+        let msg = NetMessage::new(
+            "blocktxn",
+            serde_json::to_vec(&BlockTxnMsg {
+                block_hash: [0x44; 32],
+                transactions: vec![],
+            })
+            .unwrap(),
+        );
+        handle_blocktxn(&mut node, peer(9), &msg).await.unwrap();
+        assert!(!node.peer_manager.is_banned(peer(9)).await);
+    }
+}
