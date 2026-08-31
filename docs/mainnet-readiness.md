@@ -42,7 +42,9 @@
       ≥7 days: blocks propagate between all nodes, no forks beyond expected
       PoS reorg depth, no memory growth, no peer churn storms. *(Mechanics
       verified 2026-08-30: 3 nodes mesh, faucet mints persist across
-      restarts, mesh self-heals after node restart; 7-day window in progress.)*
+      restarts, mesh self-heals after node restart; 7-day window in progress.
+      2026-08-31: staking-wedge fix `2f8602d` deployed to soak — chain
+      advanced 2→33 within minutes after being stuck at height 2 for 2h.)*
 - [ ] **Staking soak**: at least one node stakes continuously and produces
       blocks at the expected ~60s average over the soak window. *(Staking
       verified end-to-end 2026-08-30: fast-stake kernel hits, reward minted,
@@ -54,8 +56,18 @@
       rejected pre-expiry / accepted post-expiry on both chains. Found+fixed:
       BTC txids reported in internal byte order (`915af74`). Follow-ups filed
       in Known Issues below.
-- [ ] **Legacy claim rehearsal**: import a legacy `wallet.dat`, check snapshot
-      balance, submit a claim on testnet, verify funds arrive.
+- [x] **Legacy claim rehearsal**: 2026-08-30 on soak — legacy `wallet.dat`
+      (700MB, 1.2M records, OTP-2FA build) fully decrypted via the recovered
+      OTP chain (`keyOTP` otaCrypt → mixedHash passphrase → master key);
+      117/118 ckeys pass pubkey-match validation. All 7 genesis-snapshot
+      addresses verified claimable via `claim/check` (686,314.02 VTR exact
+      balance match), one claim (`VXcPus6g...`, 317,449.52 VTR) submitted,
+      mined at height 3, double-claim protection verified
+      (`already_claimed: true`), wallet balance confirmed. Found+fixed during
+      rehearsal: staked blocks were rejected by conflicting mempool txs
+      (`2f8602d`) — staking had been wedged permanently; also fixed the
+      migrate tool's bogus-key extraction (compact-size prefix + pubkey
+      validation, `436eb09`).
 - [x] **Upgrade/downgrade drill**: 2026-08-24 on soak `vtr-node3` — binary
       swapped under the running container, restarted: chain state loaded from
       disk ("Resuming from persisted chain"), peers re-established, fleet tip
@@ -134,6 +146,46 @@
       works. Permanent option: migrate to apt `docker-ce`.
 - [x] ~~**BTC peer IP cached across restarts**~~ — FIXED `30ac2e1`: `--btc-peer`
       stored as hostname, resolved per sync cycle and per broadcast.
+- [x] ~~**Staked blocks rejected by conflicting mempool txs**~~ — FIXED
+      `2f8602d` (2026-08-31): a stale mempool tx spending the stake UTXO made
+      every staked block fail UTXO validation ("Input not found in UTXO
+      set"), wedging staking permanently — the engine rebuilt the same
+      invalid template every tick. `build_stake_block` now excludes pending
+      txs whose inputs collide with the coinstake. Found via the legacy-claim
+      rehearsal; regression test added.
+- [x] ~~**Migrate tool produced bogus WIFs**~~ — FIXED `436eb09`: ckey value
+      compact-size prefix was never stripped and validation only checked the
+      secp256k1 scalar range (random garbage passes ~100% of the time).
+      PKCS7 padding + pubkey-match validation now mandatory; OTP-enabled
+      wallets (keyOTP/otaCrypt/mixedHash) supported.
+- [x] ~~**Testnet daemon could not start**~~ — FIXED `8a2b5d8`: the startup
+      magic check compared the core mainnet constant against itself, so
+      `--testnet` always bailed ('VTRT' vs compiled 'VTRX').
+- [x] ~~**Ban manager maps grow without bound**~~ — FIXED `8a2b5d8`:
+      `prune_bans()` now runs on the PEX maintenance tick (was test-only).
+- [x] ~~**Local tx submissions fabricated fees**~~ — FIXED `8a2b5d8`: local
+      (RPC/wallet) submissions used `add_transaction` (trusts
+      `tx.fee_sats()`, which assumes every input is worth 100k sats) and
+      skipped script verification; now routed through `admit_with_chain_fee`
+      like the P2P path.
+- [x] ~~**Desktop swap flow broken end-to-end**~~ — FIXED `53b654d`:
+      Tauri `match_dex_order` never recorded swap state (btc_fund always
+      failed), `place_dex_order` skipped validation/hash_lock seeding,
+      funding reservation leaked on match failure, UTXO-selection TOCTOU,
+      cancel had no ownership check, sync_percent always 100%.
+- [x] ~~**Mempool capacity eviction orphaned descendants**~~ — FIXED
+      `8a2b5d8`: capacity eviction now removes descendants (mirrors the RBF
+      frontier eviction); attacker could pair a low-fee tx with a child to
+      permanently consume slots.
+- [x] ~~**Regtest nodes could reach production seeds**~~ — FIXED `8a2b5d8`:
+      regtest shares the mainnet magic/port; `--regtest` now forces
+      isolation so locally-minted non-PoS blocks can never reach the live
+      network's peer graph.
+- [x] ~~**Torrent engine per-peer Metainfo deep clones**~~ — FIXED
+      `aaa9a6e`: up to 200 full piece-hash-list copies per torrent; now
+      shared via `Arc<Metainfo>`. UDP trackers with hostnames were silently
+      skipped (SocketAddr::parse only accepts literal IPs) — now resolved
+      via lookup_host (`aaa9a6e`).
 
 > Resolved 2026-08-24: seed nodes deployed (vtr-seed1 DE, vtr-seed2 FI),
 > peers.txt published with real IPs, DNS seeds live on `vtorrent.org`.

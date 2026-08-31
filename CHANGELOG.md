@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Since v2.0.0-beta.2 (114 commits)
 
+**Legacy Claim Rehearsal + Staking Fix (2026-08-31)**
+- Legacy claim rehearsal PASSED on soak: all 7 genesis-snapshot addresses verified claimable (686,314.02 VTR), one claim mined at height 3, double-claim protection verified
+- **CRITICAL — staking permanently wedged**: a stale mempool tx spending the stake UTXO made every staked block fail UTXO validation; `build_stake_block` now excludes conflicting pending txs (regression test added). Found via the rehearsal — chain went 2→33 within minutes of the fix
+- Migrate tool: OTP-enabled wallets supported (keyOTP otaCrypt + mixedHash); ckey compact-size prefix + pubkey-match validation now mandatory (prior extraction produced bogus keys)
+- Legacy 2FA security finding: OTP secret is passphrase-recoverable offline; TOTP was UI-only (`docs/wallet-recovery.md`)
+
+**Code-Quality Session (2026-08-31, 12 commits)**
+- Desktop (Tauri) swap flow was broken end-to-end: match never recorded swap state, place_order skipped validation/hash_lock, funding reservation leaked, UTXO-selection TOCTOU, cancel had no ownership check, sync_percent always 100% — all fixed; RPC/Tauri now share the service layer
+- Swap flows extracted to `vtorrent-wallet-service`: BTC HTLC funding, VTR claim, BTC claim, VTR refund — each extraction surfaced real frontend drift (fees, lifecycle guards, mock clock, peer broadcast, missing VTR refund leg)
+
+**Code-Quality Audit (2 rounds, 2026-08-31)**
+- **CRITICAL — `--testnet` never started**: magic check compared the core mainnet constant against itself ('VTRT' vs compiled 'VTRX'); now compares the actual P2P constant
+- **CRITICAL — ban manager grew without bound**: `prune_bans()` had no production caller (remote-triggerable memory exhaustion via IP rotation); now runs on the PEX tick
+- **CRITICAL — local tx submissions fabricated fees**: RPC/wallet submissions trusted `tx.fee_sats()` (assumes every input = 100k sats) and skipped script verification; now routed through `admit_with_chain_fee` like the P2P path
+- Mempool capacity eviction now removes descendants (attacker could permanently consume slots with parent+child pairs); regression test added
+- Regtest forces network isolation (shares mainnet magic/port — could gossip minted blocks to production seeds)
+- Faucet: cooldown map pruned, cooldown only after successful mint, 1,000 VTR/request cap, UTF-8-safe address truncation
+- Torrent engine: per-peer Metainfo deep clones eliminated (up to 200 full copies/torrent → `Arc` sharing); UDP trackers with hostnames were silently skipped — now resolved; `announce_trackers()` extracted
+- Metrics: `vtorrent_blocks_staked_total` exported as a restart-resetting counter (spurious rate() spikes) → gauge labeled with `process_start_time`
+- Async I/O unblocked: wallet/staking file persistence moved to `spawn_blocking`
+- Dedup: swap fee constants unified (Tauri BTC refund used the VTR fee — 10× overpayment), address/P2PKH builders onto `vtorrent-core`, `btc_txid_hex`, `parse_hash32` reuse
+- `verify_claim_signature` returns typed errors; `vtorrent-btc` mutexes → `parking_lot`
+- Test coverage 644 → 657: P2P handlers (10), reorg conflicts/rollback (3), message dispatch (7), mempool descendant eviction, OTP vectors, utxo_select
+
 **Legacy Wallet Migration (2026-08-30)**
 - Migrated 700MB legacy wallet.dat (BerkeleyDB v5.3, 1.2M records, 117 encrypted keys)
 - db5.3_dump fallback parser: file-based output avoids pipe inheritance issues; accepts non-zero exit when output is valid
