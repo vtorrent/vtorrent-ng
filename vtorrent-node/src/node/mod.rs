@@ -34,10 +34,7 @@ use vtorrent_overlay::{Overlay, OverlayConfig, OverlayEvent};
 
 use vtorrent_p2p::{
     compact::CompactBlockPeerState,
-    message::{
-        encode_v2, is_v2_peer, AddrMsg, CmpctBlockMsg, FeeFilterMsg, InvItem, InvMsg, InvType,
-        NetMessage, PingMsg, SendCmpctMsg,
-    },
+    message::{encode_v2, is_v2_peer, CmpctBlockMsg, InvItem, InvMsg, InvType, NetMessage},
     peer_manager::{PeerManager, DEFAULT_PORT, TARGET_OUTBOUND},
 };
 
@@ -187,19 +184,19 @@ pub struct Node {
     /// Keyed by block hash; populated when `cmpctblock` reports missing txs.
     pub(crate) pending_compact_blocks: HashMap<[u8; 32], CmpctBlockMsg>,
     /// Per-peer minimum fee rate (from feefilter messages), satoshis per 1000 bytes.
-    peer_fee_filters: std::collections::HashMap<std::net::SocketAddr, u64>,
+    pub(crate) peer_fee_filters: std::collections::HashMap<std::net::SocketAddr, u64>,
     /// Per-peer last-seen ping nonce (for pong matching).
-    peer_ping_nonces: std::collections::HashMap<std::net::SocketAddr, u64>,
+    pub(crate) peer_ping_nonces: std::collections::HashMap<std::net::SocketAddr, u64>,
     /// Per-peer message counts for flood rate limiting: (count, window start).
-    peer_msg_counts: std::collections::HashMap<std::net::SocketAddr, (u64, u64)>,
+    pub(crate) peer_msg_counts: std::collections::HashMap<std::net::SocketAddr, (u64, u64)>,
     /// Per-peer advertised protocol version (for V2 bincode sniffing).
     /// V2 peers (`PROTOCOL_VERSION = 2`, bincode) vs legacy (`70001`, JSON).
     /// Unknown commands are ignored to allow rolling upgrades.
     pub(crate) peer_versions: std::collections::HashMap<std::net::SocketAddr, u32>,
     /// Shared DEX order book (set by the daemon; used for gossip).
-    order_book: Option<Arc<RwLock<SwapOrderBook>>>,
+    pub(crate) order_book: Option<Arc<RwLock<SwapOrderBook>>>,
     /// Order IDs already seen via gossip, for deduplication.
-    seen_orders: HashSet<[u8; 32]>,
+    pub(crate) seen_orders: HashSet<[u8; 32]>,
     /// Receiver for locally-submitted transactions (from RPC/wallet).
     /// When a transaction is placed here, the node broadcasts it to all peers.
     tx_submit_rx: mpsc::Receiver<Transaction>,
@@ -774,229 +771,16 @@ impl Node {
     }
 
     /// Handle a raw network message from a peer.
+    ///
+    /// Thin wrapper: rate limiting and command dispatch live in
+    /// `handler::dispatch_message` so the routing table is testable
+    /// independently of the connection loop.
     async fn handle_message(
         &mut self,
         peer_addr: std::net::SocketAddr,
         msg: NetMessage,
     ) -> Result<()> {
-        use vtorrent_p2p::ban_manager::Misbehaviour;
-
-        // V2 wire sniffing: bincode for V2 peers (>=2, not legacy 70001), JSON fallback.
-        // Unknown commands are ignored (not banned) to allow rolling upgrades.
-        let peer_version = self
-            .peer_versions
-            .get(&peer_addr)
-            .copied()
-            .unwrap_or(vtorrent_p2p::message::LEGACY_PROTOCOL_VERSION);
-
-        // Per-peer flood rate limiting: a peer that exceeds the message budget
-        // within a window is banned and disconnected.
-        let now = now_secs();
-        let (count, window_start) = self.peer_msg_counts.entry(peer_addr).or_insert((0, now));
-        if now.saturating_sub(*window_start) >= MSG_WINDOW_SECS {
-            *count = 0;
-            *window_start = now;
-        }
-        *count += 1;
-        if *count > MAX_MSGS_PER_WINDOW {
-            tracing::warn!(
-                "Peer {} exceeded {} messages/{}s; banning",
-                peer_addr,
-                MAX_MSGS_PER_WINDOW,
-                MSG_WINDOW_SECS
-            );
-            self.peer_manager
-                .record_misbehaviour(peer_addr, Misbehaviour::Custom(100))
-                .await;
-            return Ok(());
-        }
-
-        match msg.command_str() {
-            // ── PEX: Peer Exchange ────────────────────────────────────────────
-            "addr" => {
-                if let Ok(mut addr_msg) = serde_json::from_slice::<AddrMsg>(&msg.payload) {
-                    // Truncate oversized announcements: the address book caps
-                    // at 10k entries anyway, so anything beyond MAX_ADDR_PER_MSG
-                    // per message is wasted parse work from an untrusted peer.
-                    if addr_msg.addrs.len() > vtorrent_p2p::pex::MAX_ADDR_PER_MSG {
-                        tracing::debug!(
-                            "addr from {} with {} entries — truncating to {}",
-                            peer_addr,
-                            addr_msg.addrs.len(),
-                            vtorrent_p2p::pex::MAX_ADDR_PER_MSG
-                        );
-                        addr_msg.addrs.truncate(vtorrent_p2p::pex::MAX_ADDR_PER_MSG);
-                    }
-                    let count = addr_msg.addrs.len();
-                    self.peer_manager.handle_addr_msg(&addr_msg);
-                    tracing::debug!("PEX: Received {} addresses from {}", count, peer_addr);
-                } else {
-                    self.peer_manager
-                        .record_misbehaviour(peer_addr, Misbehaviour::MalformedMessage)
-                        .await;
-                }
-            }
-
-            "getaddr" => {
-                // Respond with our known peer list
-                let response = self.peer_manager.build_addr_response();
-                self.peer_manager.send_to(peer_addr, response).await;
-                tracing::debug!("PEX: Sent addr response to {}", peer_addr);
-            }
-
-            // ── Inventory (V2 bincode with JSON fallback) ─────────────────────
-            "inv" => {
-                handler::handle_inv(self, peer_addr, &msg, peer_version).await?;
-            }
-
-            "block" => {
-                handler::handle_block(self, peer_addr, &msg, peer_version).await?;
-            }
-
-            "tx" => {
-                handler::handle_tx(self, peer_addr, &msg, peer_version).await?;
-            }
-
-            "getblocks" => {
-                handler::handle_getblocks(self, peer_addr, &msg, peer_version).await?;
-            }
-
-            // ── Compact Block Relay (BIP-152) ─────────────────────────────────
-            "sendcmpct" => {
-                if let Ok(msg_data) = serde_json::from_slice::<SendCmpctMsg>(&msg.payload) {
-                    let state = self.compact_peers.entry(peer_addr).or_default();
-                    state.enabled = true;
-                    state.high_bandwidth = msg_data.high_bandwidth;
-                    state.version = msg_data.version;
-                    tracing::debug!(
-                        "Peer {} supports compact blocks (high_bw={}, v={})",
-                        peer_addr,
-                        msg_data.high_bandwidth,
-                        msg_data.version
-                    );
-                }
-            }
-
-            "cmpctblock" => {
-                handler::handle_cmpctblock(self, peer_addr, &msg).await?;
-            }
-
-            "getblocktxn" => {
-                handler::handle_getblocktxn(self, peer_addr, &msg).await?;
-            }
-
-            "blocktxn" => {
-                handler::handle_blocktxn(self, peer_addr, &msg).await?;
-            }
-
-            // ── Keepalive ─────────────────────────────────────────────────────
-            "ping" => {
-                // peer.rs already handles inbound ping→pong at the peer level;
-                // this arm handles any ping that bubbles up (e.g. from test harness).
-                if let Ok(ping) = serde_json::from_slice::<PingMsg>(&msg.payload) {
-                    let payload =
-                        serde_json::to_vec(&PingMsg { nonce: ping.nonce }).unwrap_or_default();
-                    self.peer_manager
-                        .send_to(peer_addr, NetMessage::new("pong", payload))
-                        .await;
-                }
-            }
-
-            "pong" => {
-                // Validate the nonce matches what we sent
-                if let Ok(pong) = serde_json::from_slice::<PingMsg>(&msg.payload) {
-                    if let Some(&expected) = self.peer_ping_nonces.get(&peer_addr) {
-                        if pong.nonce == expected {
-                            self.peer_ping_nonces.remove(&peer_addr);
-                            tracing::trace!(
-                                "Pong from {} confirmed (nonce={})",
-                                peer_addr,
-                                pong.nonce
-                            );
-                        } else {
-                            tracing::warn!(
-                                "Pong nonce mismatch from {}: expected {} got {}",
-                                peer_addr,
-                                expected,
-                                pong.nonce
-                            );
-                        }
-                    }
-                }
-            }
-
-            // ── Fee filter ────────────────────────────────────────────────────
-            "feefilter" => {
-                if let Ok(ff) = serde_json::from_slice::<FeeFilterMsg>(&msg.payload) {
-                    self.peer_fee_filters.insert(peer_addr, ff.feerate);
-                    tracing::debug!(
-                        "feefilter: peer {} min fee rate = {} sat/kB",
-                        peer_addr,
-                        ff.feerate
-                    );
-                }
-            }
-
-            // ── Not-found ─────────────────────────────────────────────────────
-            "notfound" => {
-                if let Ok(nf) = serde_json::from_slice::<InvMsg>(&msg.payload) {
-                    for item in &nf.items {
-                        tracing::debug!(
-                            "notfound: peer {} does not have {:?} {}",
-                            peer_addr,
-                            item.inv_type,
-                            hex::encode(item.hash)
-                        );
-                    }
-                }
-            }
-
-            // ── getdata: serve blocks and transactions to requesting peers (V2 bincode) ──────
-            "getdata" => {
-                handler::handle_getdata(self, peer_addr, &msg, peer_version).await?;
-            }
-
-            // ── Header sync (getheaders / headers) — V2 bincode ────────────────────────────
-            "getheaders" => {
-                handler::handle_getheaders(self, peer_addr, &msg, peer_version).await?;
-            }
-
-            "headers" => {
-                handler::handle_headers(self, peer_addr, &msg, peer_version).await?;
-            }
-
-            // ── DEX order gossip ─────────────────────────────────────────────
-            "dexorder" => {
-                if let Ok(ann) = serde_json::from_slice::<OrderAnnouncement>(&msg.payload) {
-                    let order_id = ann.order_id;
-                    if self.seen_orders.insert(order_id) {
-                        if let Some(book) = &self.order_book {
-                            book.write().await.add_order(ann.to_order());
-                        }
-                        // Re-broadcast to all peers except the sender.
-                        let payload = serde_json::to_vec(&ann).unwrap_or_default();
-                        for peer in self.peer_manager.connected_peers() {
-                            if peer != peer_addr {
-                                self.peer_manager
-                                    .send_to(peer, NetMessage::new("dexorder", payload.clone()))
-                                    .await;
-                            }
-                        }
-                        tracing::debug!("DEX gossip: received order {}", hex::encode(order_id));
-                    }
-                } else {
-                    self.peer_manager
-                        .record_misbehaviour(peer_addr, Misbehaviour::MalformedMessage)
-                        .await;
-                }
-            }
-
-            cmd => {
-                // Unknown commands are ignored (not banned) — forward compatibility for V2 rollout
-                tracing::trace!("Unknown command '{}' from {} — ignored", cmd, peer_addr);
-            }
-        }
-        Ok(())
+        handler::dispatch_message(self, peer_addr, msg).await
     }
 
     /// Request new blocks from peers if we are behind.

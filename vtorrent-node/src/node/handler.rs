@@ -1323,3 +1323,351 @@ mod tests {
         assert!(!node.peer_manager.is_banned(peer(9)).await);
     }
 }
+
+/// Rate-limit and dispatch an inbound P2P message.
+///
+/// Extracted from `Node::handle_message` so the routing table is testable
+/// independently of the connection loop. `MAX_MSGS_PER_WINDOW` and
+/// `MSG_WINDOW_SECS` are re-exported from `super`.
+pub(crate) async fn dispatch_message(
+    node: &mut Node,
+    peer_addr: SocketAddr,
+    msg: NetMessage,
+) -> Result<()> {
+    use super::{MAX_MSGS_PER_WINDOW, MSG_WINDOW_SECS};
+    use crate::atomic_swap::OrderAnnouncement;
+    use vtorrent_p2p::ban_manager::Misbehaviour;
+    use vtorrent_p2p::message::{AddrMsg, FeeFilterMsg, PingMsg, SendCmpctMsg};
+
+    // V2 wire sniffing: bincode for V2 peers (>=2, not legacy 70001), JSON fallback.
+    // Unknown commands are ignored (not banned) to allow rolling upgrades.
+    let peer_version = node
+        .peer_versions
+        .get(&peer_addr)
+        .copied()
+        .unwrap_or(vtorrent_p2p::message::LEGACY_PROTOCOL_VERSION);
+
+    // Per-peer flood rate limiting: a peer that exceeds the message budget
+    // within a window is banned and disconnected.
+    let now = super::now_secs();
+    let (count, window_start) = node.peer_msg_counts.entry(peer_addr).or_insert((0, now));
+    if now.saturating_sub(*window_start) >= MSG_WINDOW_SECS {
+        *count = 0;
+        *window_start = now;
+    }
+    *count += 1;
+    if *count > MAX_MSGS_PER_WINDOW {
+        tracing::warn!(
+            "Peer {} exceeded {} messages/{}s; banning",
+            peer_addr,
+            MAX_MSGS_PER_WINDOW,
+            MSG_WINDOW_SECS
+        );
+        node.peer_manager
+            .record_misbehaviour(peer_addr, Misbehaviour::Custom(100))
+            .await;
+        return Ok(());
+    }
+
+    match msg.command_str() {
+        // ── PEX: Peer Exchange ────────────────────────────────────────────
+        "addr" => {
+            if let Ok(mut addr_msg) = serde_json::from_slice::<AddrMsg>(&msg.payload) {
+                // Truncate oversized announcements: the address book caps
+                // at 10k entries anyway, so anything beyond MAX_ADDR_PER_MSG
+                // per message is wasted parse work from an untrusted peer.
+                if addr_msg.addrs.len() > vtorrent_p2p::pex::MAX_ADDR_PER_MSG {
+                    tracing::debug!(
+                        "addr from {} with {} entries — truncating to {}",
+                        peer_addr,
+                        addr_msg.addrs.len(),
+                        vtorrent_p2p::pex::MAX_ADDR_PER_MSG
+                    );
+                    addr_msg.addrs.truncate(vtorrent_p2p::pex::MAX_ADDR_PER_MSG);
+                }
+                let count = addr_msg.addrs.len();
+                node.peer_manager.handle_addr_msg(&addr_msg);
+                tracing::debug!("PEX: Received {} addresses from {}", count, peer_addr);
+            } else {
+                node.peer_manager
+                    .record_misbehaviour(peer_addr, Misbehaviour::MalformedMessage)
+                    .await;
+            }
+        }
+
+        "getaddr" => {
+            // Respond with our known peer list
+            let response = node.peer_manager.build_addr_response();
+            node.peer_manager.send_to(peer_addr, response).await;
+            tracing::debug!("PEX: Sent addr response to {}", peer_addr);
+        }
+
+        // ── Inventory (V2 bincode with JSON fallback) ─────────────────────
+        "inv" => {
+            handle_inv(node, peer_addr, &msg, peer_version).await?;
+        }
+
+        "block" => {
+            handle_block(node, peer_addr, &msg, peer_version).await?;
+        }
+
+        "tx" => {
+            handle_tx(node, peer_addr, &msg, peer_version).await?;
+        }
+
+        "getblocks" => {
+            handle_getblocks(node, peer_addr, &msg, peer_version).await?;
+        }
+
+        // ── Compact Block Relay (BIP-152) ─────────────────────────────────
+        "sendcmpct" => {
+            if let Ok(msg_data) = serde_json::from_slice::<SendCmpctMsg>(&msg.payload) {
+                let state = node.compact_peers.entry(peer_addr).or_default();
+                state.enabled = true;
+                state.high_bandwidth = msg_data.high_bandwidth;
+                state.version = msg_data.version;
+                tracing::debug!(
+                    "Peer {} supports compact blocks (high_bw={}, v={})",
+                    peer_addr,
+                    msg_data.high_bandwidth,
+                    msg_data.version
+                );
+            }
+        }
+
+        "cmpctblock" => {
+            handle_cmpctblock(node, peer_addr, &msg).await?;
+        }
+
+        "getblocktxn" => {
+            handle_getblocktxn(node, peer_addr, &msg).await?;
+        }
+
+        "blocktxn" => {
+            handle_blocktxn(node, peer_addr, &msg).await?;
+        }
+
+        // ── Keepalive ─────────────────────────────────────────────────────
+        "ping" => {
+            // peer.rs already handles inbound ping→pong at the peer level;
+            // this arm handles any ping that bubbles up (e.g. from test harness).
+            if let Ok(ping) = serde_json::from_slice::<PingMsg>(&msg.payload) {
+                let payload =
+                    serde_json::to_vec(&PingMsg { nonce: ping.nonce }).unwrap_or_default();
+                node.peer_manager
+                    .send_to(peer_addr, NetMessage::new("pong", payload))
+                    .await;
+            }
+        }
+
+        "pong" => {
+            // Validate the nonce matches what we sent
+            if let Ok(pong) = serde_json::from_slice::<PingMsg>(&msg.payload) {
+                if let Some(&expected) = node.peer_ping_nonces.get(&peer_addr) {
+                    if pong.nonce == expected {
+                        node.peer_ping_nonces.remove(&peer_addr);
+                        tracing::trace!("Pong from {} confirmed (nonce={})", peer_addr, pong.nonce);
+                    } else {
+                        tracing::warn!(
+                            "Pong nonce mismatch from {}: expected {} got {}",
+                            peer_addr,
+                            expected,
+                            pong.nonce
+                        );
+                    }
+                }
+            }
+        }
+
+        // ── Fee filter ────────────────────────────────────────────────────
+        "feefilter" => {
+            if let Ok(ff) = serde_json::from_slice::<FeeFilterMsg>(&msg.payload) {
+                node.peer_fee_filters.insert(peer_addr, ff.feerate);
+                tracing::debug!(
+                    "feefilter: peer {} min fee rate = {} sat/kB",
+                    peer_addr,
+                    ff.feerate
+                );
+            }
+        }
+
+        // ── Not-found ─────────────────────────────────────────────────────
+        "notfound" => {
+            if let Ok(nf) = serde_json::from_slice::<InvMsg>(&msg.payload) {
+                for item in &nf.items {
+                    tracing::debug!(
+                        "notfound: peer {} does not have {:?} {}",
+                        peer_addr,
+                        item.inv_type,
+                        hex::encode(item.hash)
+                    );
+                }
+            }
+        }
+
+        // ── getdata: serve blocks and transactions to requesting peers (V2 bincode) ──────
+        "getdata" => {
+            handle_getdata(node, peer_addr, &msg, peer_version).await?;
+        }
+
+        // ── Header sync (getheaders / headers) — V2 bincode ────────────────────────────
+        "getheaders" => {
+            handle_getheaders(node, peer_addr, &msg, peer_version).await?;
+        }
+
+        "headers" => {
+            handle_headers(node, peer_addr, &msg, peer_version).await?;
+        }
+
+        // ── DEX order gossip ─────────────────────────────────────────────
+        "dexorder" => {
+            if let Ok(ann) = serde_json::from_slice::<OrderAnnouncement>(&msg.payload) {
+                let order_id = ann.order_id;
+                if node.seen_orders.insert(order_id) {
+                    if let Some(book) = &node.order_book {
+                        book.write().await.add_order(ann.to_order());
+                    }
+                    // Re-broadcast to all peers except the sender.
+                    let payload = serde_json::to_vec(&ann).unwrap_or_default();
+                    for peer in node.peer_manager.connected_peers() {
+                        if peer != peer_addr {
+                            node.peer_manager
+                                .send_to(peer, NetMessage::new("dexorder", payload.clone()))
+                                .await;
+                        }
+                    }
+                    tracing::debug!("DEX gossip: received order {}", hex::encode(order_id));
+                }
+            } else {
+                node.peer_manager
+                    .record_misbehaviour(peer_addr, Misbehaviour::MalformedMessage)
+                    .await;
+            }
+        }
+
+        cmd => {
+            // Unknown commands are ignored (not banned) — forward compatibility for V2 rollout
+            tracing::trace!("Unknown command '{}' from {} — ignored", cmd, peer_addr);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use crate::node::{NodeConfig, MAX_MSGS_PER_WINDOW};
+    use vtorrent_p2p::message::{FeeFilterMsg, PingMsg};
+
+    fn test_node() -> Node {
+        let config = NodeConfig {
+            isolated: true,
+            use_dht: false,
+            use_overlay: false,
+            ..NodeConfig::default()
+        };
+        Node::new(config).expect("test node creation failed")
+    }
+
+    fn peer(port: u16) -> SocketAddr {
+        format!("127.0.0.1:{}", port).parse().unwrap()
+    }
+
+    #[tokio::test]
+    async fn dispatch_unknown_command_is_ignored_not_banned() {
+        let mut node = test_node();
+        let addr = peer(20);
+        let msg = NetMessage::new("totallyunknowncmd", vec![]);
+        dispatch_message(&mut node, addr, msg).await.unwrap();
+        let score = node
+            .peer_manager
+            .ban_manager
+            .read()
+            .await
+            .score(peer(20).ip());
+        assert_eq!(
+            score, 0,
+            "unknown commands must be ignored (rolling upgrades)"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_rate_limits_flooding_peers() {
+        let mut node = test_node();
+        let addr = peer(21);
+        let msg = NetMessage::new("ping", serde_json::to_vec(&PingMsg { nonce: 1 }).unwrap());
+
+        // MAX_MSGS_PER_WINDOW = 500; send 501 messages from the same peer.
+        for _ in 0..MAX_MSGS_PER_WINDOW {
+            dispatch_message(&mut node, addr, msg.clone())
+                .await
+                .unwrap();
+        }
+        // The next message trips the budget and bans the peer.
+        dispatch_message(&mut node, addr, msg).await.unwrap();
+        assert!(
+            node.peer_manager.is_banned(addr).await,
+            "peer exceeding the message budget must be banned"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_malformed_addr_scores_misbehaviour() {
+        let mut node = test_node();
+        let addr = peer(22);
+        let msg = NetMessage::new("addr", vec![0xff; 64]);
+        dispatch_message(&mut node, addr, msg).await.unwrap();
+        let score = node.peer_manager.ban_manager.read().await.score(addr.ip());
+        assert_eq!(score, 20, "malformed addr must score MalformedMessage (20)");
+    }
+
+    #[tokio::test]
+    async fn dispatch_getaddr_is_tolerated() {
+        let mut node = test_node();
+        let msg = NetMessage::new("getaddr", vec![]);
+        dispatch_message(&mut node, peer(22), msg).await.unwrap();
+        assert!(!node.peer_manager.is_banned(peer(22)).await);
+    }
+
+    #[tokio::test]
+    async fn dispatch_feefilter_records_peer_minimum() {
+        let mut node = test_node();
+        let addr = peer(23);
+        let msg = NetMessage::new(
+            "feefilter",
+            serde_json::to_vec(&FeeFilterMsg { feerate: 250 }).unwrap(),
+        );
+        dispatch_message(&mut node, addr, msg).await.unwrap();
+        assert_eq!(node.peer_fee_filters.get(&addr), Some(&250));
+    }
+
+    #[tokio::test]
+    async fn dispatch_pong_with_matching_nonce_clears_pending_ping() {
+        let mut node = test_node();
+        let addr = peer(23);
+        node.peer_ping_nonces.insert(addr, 4242);
+        let msg = NetMessage::new(
+            "pong",
+            serde_json::to_vec(&PingMsg { nonce: 4242 }).unwrap(),
+        );
+        dispatch_message(&mut node, addr, msg).await.unwrap();
+        assert!(
+            !node.peer_ping_nonces.contains_key(&addr),
+            "matching pong must clear the pending ping nonce"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_unknown_command_is_ignored() {
+        let mut node = test_node();
+        let msg = NetMessage::new("somefuturecmd", vec![0x01]);
+        dispatch_message(&mut node, peer(22), msg).await.unwrap();
+        let score = node
+            .peer_manager
+            .ban_manager
+            .read()
+            .await
+            .score(peer(22).ip());
+        assert_eq!(score, 0);
+    }
+}
