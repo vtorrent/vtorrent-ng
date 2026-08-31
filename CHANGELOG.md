@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Since v2.0.0-beta.2 (114 commits)
 
+**Legacy Wallet Migration (2026-08-30)**
+- Migrated 700MB legacy wallet.dat (BerkeleyDB v5.3, 1.2M records, 117 encrypted keys)
+- db5.3_dump fallback parser: file-based output avoids pipe inheritance issues; accepts non-zero exit when output is valid
+- ckey/mkey record format: strip compact-size length prefix before pubkey parsing
+- **OTP-enabled wallets now supported**: `keyOTP` record decrypted via the legacy otaCrypt scheme (SimpleCrypt-style XOR keyed on first 4 passphrase chars, CRC-16/X-25 big-endian checksum); effective passphrase = `hex(SHA256(otp_secret || passphrase))` per `crypter_otp.cpp mixedHash`. Auto-detected, no 2FA code required
+- **CRITICAL correctness fixes** (prior extraction produced bogus keys):
+  - ckey value compact-size prefix was never stripped — tool decrypted `0x30`-prefixed garbage
+  - Decrypted keys now validated against the record's public key (scalar-range check alone passes for random garbage ~100% of the time)
+  - Master key + ckey decryption switched to PKCS7 padding validation (wrong passphrase fails fast)
+- **Recovery result**: 686,314.02 VTR across 7 genesis-snapshot addresses confirmed claimable via 117 verified ckeys (balances cross-checked against `genesis_snapshot.bin`)
+- **Security finding**: Legacy 2FA/OTP secret is itself encrypted with only the passphrase (4-char-effective-key XOR) — a wallet.dat holder can recover it offline. The TOTP code was UI-only. Documented in `docs/wallet-recovery.md`
+- **Stealth addresses**: legacy client used stealth addresses as default receiving mechanism; one-time deposit addresses are not stored in wallet.dat. The 7 claimable addresses found are plain P2PKH outputs owned by ckeys. Documented in `docs/wallet-recovery.md`
+- **Address format mismatch**: Legacy chain used prefix 75 (`X...`) / WIF 203 (`7...`), vTorrent-NG uses prefix 70 (`V...`) / WIF 198 (`W...`). Genesis snapshot uses vTorrent-NG format.
+
 **Edge-Case Audit Fixes (session of 2026-08-30)**
 - Legacy snapshot claims were rejected by the mempool relay fee floor (claims carry no fee by design) — every claim would have failed; now fee-exempt
 - Faucet-minted blocks were never persisted to the block store (announced to peers but no `NewBlock` event) — restart hit a height gap and truncated the chain to genesis; now persisted via the event bridge

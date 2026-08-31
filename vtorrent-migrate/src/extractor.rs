@@ -1,5 +1,5 @@
 use crate::{
-    bdb::{decode_record_type, parse_wallet},
+    bdb::{decode_record_type, parse_wallet_with_path},
     crypter::{decrypt_master_key, decrypt_private_key, DecryptedMasterKey},
     error::{MigrateError, Result},
     types::{
@@ -22,8 +22,25 @@ use vtorrent_core::{address::Address, keys::PrivateKey, network::legacy};
 /// # Returns
 /// A `WalletExtraction` containing all extracted keys and metadata.
 pub fn extract_wallet(wallet_data: &[u8], passphrase: Option<&str>) -> Result<WalletExtraction> {
+    extract_wallet_inner(wallet_data, passphrase, None)
+}
+
+/// Extract all keys, optionally given the original file path for db5.3_dump.
+pub fn extract_wallet_with_path(
+    wallet_data: &[u8],
+    passphrase: Option<&str>,
+    file_path: Option<&std::path::Path>,
+) -> Result<WalletExtraction> {
+    extract_wallet_inner(wallet_data, passphrase, file_path)
+}
+
+fn extract_wallet_inner(
+    wallet_data: &[u8],
+    passphrase: Option<&str>,
+    file_path: Option<&std::path::Path>,
+) -> Result<WalletExtraction> {
     // Step 1: Parse all raw records from the BerkeleyDB file
-    let raw_records = parse_wallet(wallet_data)?;
+    let raw_records = parse_wallet_with_path(wallet_data, file_path)?;
 
     // Step 2: Categorize records
     let mut unencrypted_keys: Vec<KeyRecord> = Vec::new();
@@ -32,6 +49,7 @@ pub fn extract_wallet(wallet_data: &[u8], passphrase: Option<&str>) -> Result<Wa
     let mut labels: HashMap<String, String> = HashMap::new();
     let mut wallet_version: Option<u32> = None;
     let mut had_2fa = false;
+    let mut otp_record: Option<Vec<u8>> = None;
 
     for record in &raw_records {
         let Some((type_str, rest)) = decode_record_type(&record.key_data) else {
@@ -40,19 +58,21 @@ pub fn extract_wallet(wallet_data: &[u8], passphrase: Option<&str>) -> Result<Wa
 
         match RecordType::parse(&type_str) {
             RecordType::Key => {
-                // Key record: key_data = [type][pubkey], value_data = [privkey_bytes]
+                // Key record: rest = [pubkey], value_data = [privkey_bytes]
                 if let Some(key_rec) = parse_key_record(rest, &record.value_data) {
                     unencrypted_keys.push(key_rec);
                 }
             }
             RecordType::CKey => {
-                // CKey record: key_data = [type][pubkey], value_data = [encrypted_privkey]
-                if let Some(ckey_rec) = parse_ckey_record(rest, &record.value_data) {
+                // CKey record: rest = [compact-size len][pubkey], value_data = [encrypted_privkey]
+                // Strip the compact-size length prefix to get the raw pubkey.
+                let pubkey = strip_compact_size_prefix(rest);
+                if let Some(ckey_rec) = parse_ckey_record(pubkey, &record.value_data) {
                     encrypted_keys.push(ckey_rec);
                 }
             }
             RecordType::MKey => {
-                // MKey record: key_data = [type][master_key_id], value_data = [mkey_struct]
+                // MKey record: rest = [4-byte LE master_key_id], value_data = [mkey_struct]
                 if let Some((id, mkey)) = parse_mkey_record(rest, &record.value_data) {
                     master_keys.insert(id, mkey);
                 }
@@ -78,6 +98,7 @@ pub fn extract_wallet(wallet_data: &[u8], passphrase: Option<&str>) -> Result<Wa
             }
             RecordType::OtpSecret => {
                 had_2fa = true;
+                otp_record = Some(record.value_data.clone());
             }
             _ => {}
         }
@@ -116,29 +137,36 @@ pub fn extract_wallet(wallet_data: &[u8], passphrase: Option<&str>) -> Result<Wa
         let mut decrypted_master: Option<DecryptedMasterKey> = None;
         for id in &ordered_ids {
             let mkey = &master_keys[id];
-            match decrypt_master_key(mkey, passphrase) {
-                Ok(master) => {
-                    // Validate this candidate by checking whether it decrypts
-                    // at least one ckey below; keep the first candidate that
-                    // yields a usable key.
-                    let works = encrypted_keys.iter().any(|ckey_rec| {
-                        decrypt_private_key(
-                            &ckey_rec.encrypted_private_key,
-                            &ckey_rec.public_key,
-                            &master,
-                        )
-                        .is_ok()
-                    });
-                    if works {
-                        decrypted_master = Some(master);
-                        break;
-                    }
-                    // Remember the first decryptable candidate as fallback.
-                    if decrypted_master.is_none() {
-                        decrypted_master = Some(master);
-                    }
+            // OTP-enabled wallets (keyOTP record) never store the raw
+            // passphrase: the effective passphrase is
+            // hex(SHA256(otp_secret || passphrase)). Try the plain
+            // passphrase first, then the OTP-mixed variant.
+            let mut candidates: Vec<String> = vec![passphrase.to_string()];
+            if let Some(otp) = otp_record.as_deref() {
+                if let Some(mixed) = crate::crypter::derive_otp_mixed_passphrase(otp, passphrase) {
+                    candidates.push(mixed);
                 }
-                Err(_) => continue,
+            }
+            let mut works = false;
+            for candidate in &candidates {
+                let Ok(master) = decrypt_master_key(mkey, candidate) else {
+                    continue;
+                };
+                works = encrypted_keys.iter().any(|ckey_rec| {
+                    decrypt_private_key(
+                        &ckey_rec.encrypted_private_key,
+                        &ckey_rec.public_key,
+                        &master,
+                    )
+                    .is_ok()
+                });
+                if works {
+                    decrypted_master = Some(master);
+                    break;
+                }
+            }
+            if works {
+                break;
             }
         }
         let decrypted_master = decrypted_master.ok_or(MigrateError::IncorrectPassphrase)?;
@@ -198,9 +226,12 @@ fn parse_ckey_record(pubkey_data: &[u8], value_data: &[u8]) -> Option<CKeyRecord
     if value_data.is_empty() {
         return None;
     }
+    // The value is serialized as `[compact_size len][ciphertext]`; strip the
+    // prefix so decrypt_private_key receives only the AES ciphertext.
+    let encrypted = strip_compact_size_prefix(value_data);
     Some(CKeyRecord {
         public_key: pubkey_data.to_vec(),
-        encrypted_private_key: value_data.to_vec(),
+        encrypted_private_key: encrypted.to_vec(),
     })
 }
 
@@ -240,6 +271,29 @@ fn parse_mkey_record(id_data: &[u8], value_data: &[u8]) -> Option<(u32, MasterKe
             other_derivation_parameters: other,
         },
     ))
+}
+
+/// Strip a compact-size length prefix from a byte slice, returning the inner data.
+///
+/// In BDB wallet.dat, ckey keys store the public key with a compact-size
+/// length prefix: `[len][pubkey_bytes]`. This helper strips that prefix so
+/// the extractor passes the raw pubkey to the decryption path.
+fn strip_compact_size_prefix(data: &[u8]) -> &[u8] {
+    if data.is_empty() {
+        return data;
+    }
+    if data[0] < 0xfd {
+        let len = data[0] as usize;
+        if len < data.len() {
+            return &data[1..1 + len];
+        }
+    } else if data[0] == 0xfd && data.len() >= 3 {
+        let len = u16::from_le_bytes([data[1], data[2]]) as usize;
+        if 3 + len <= data.len() {
+            return &data[3..3 + len];
+        }
+    }
+    data
 }
 
 /// Read a compact-size prefixed byte array from a cursor.
@@ -354,7 +408,7 @@ mod tests {
     fn test_extract_wallet_with_no_keys() {
         // Build a minimal BerkeleyDB-style file via the parser's own writer
         // helpers if available; otherwise an empty valid page set.
-        let empty = parse_wallet(&[]).unwrap_or_default();
+        let empty = crate::bdb::parse_wallet(&[]).unwrap_or_default();
         assert!(empty.is_empty());
     }
 }

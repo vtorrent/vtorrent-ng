@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
-use vtorrent_migrate::extractor::extract_wallet;
+use vtorrent_migrate::extractor::extract_wallet_with_path;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -17,6 +17,13 @@ fn main() {
         eprintln!("Options:");
         eprintln!("  --passphrase <pass>   Passphrase for encrypted wallets");
         eprintln!("  --json                Output results as JSON");
+        eprintln!();
+        eprintln!("NOTE: The legacy vTorrent client (v1.x) used stealth addresses");
+        eprintln!("      (like Monero) as the default receiving mechanism. The actual");
+        eprintln!("      deposit addresses that received VTR are one-time stealth");
+        eprintln!("      addresses, NOT stored in the wallet.dat. This tool extracts");
+        eprintln!("      the pool/stealth key pairs, but NOT the derived deposit");
+        eprintln!("      addresses. See docs/wallet-recovery.md for details.");
         std::process::exit(1);
     }
 
@@ -62,7 +69,7 @@ fn main() {
     println!();
 
     println!("Parsing BerkeleyDB structure...");
-    match extract_wallet(&wallet_data, passphrase.as_deref()) {
+    match extract_wallet_with_path(&wallet_data, passphrase.as_deref(), Some(&wallet_path)) {
         Ok(extraction) => {
             if json_output {
                 match serde_json::to_string_pretty(&extraction) {
@@ -104,7 +111,24 @@ fn main() {
                     println!();
                 }
 
-                println!("Migration data ready. Use the vTorrent 2.0 client to claim your VTR.");
+                println!("╔══════════════════════════════════════════════════════╗");
+                println!("║                    IMPORTANT                         ║");
+                println!("╚══════════════════════════════════════════════════════╝");
+                println!();
+                println!("  The legacy vTorrent client used STEALTH ADDRESSES for");
+                println!("  receiving transactions. The addresses shown above are");
+                println!("  the pool/stealth key addresses, NOT the actual deposit");
+                println!("  addresses that received VTR.");
+                println!();
+                println!("  To claim your VTR on the new chain, you need:");
+                println!("    1. The original stealth scan/spend key pairs");
+                println!("    2. Access to the old chain's blockchain to scan");
+                println!("    3. Or: a list of the actual deposit addresses");
+                println!();
+                println!("  See docs/wallet-recovery.md for details.");
+                println!();
+                println!("  Legacy address format: X... (prefix 75)");
+                println!("  vTorrent-NG format:    V... (prefix 70)");
             }
         }
         Err(e) => {

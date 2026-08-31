@@ -49,6 +49,9 @@ pub enum MigrateError {
 
     #[error("Hex decode error: {0}")]
     HexDecode(#[from] hex::FromHexError),
+
+    #[error("{0}")]
+    Other(String),
 }
 
 pub type Result<T> = std::result::Result<T, MigrateError>;

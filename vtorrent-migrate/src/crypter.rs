@@ -68,6 +68,156 @@ pub fn derive_key_scrypt(passphrase: &[u8], salt: &[u8]) -> Result<[u8; 48]> {
     Ok(out)
 }
 
+/// Derive the effective wallet passphrase for OTP-enabled legacy wallets.
+///
+/// OTP builds (crypter_otp.cpp) store the TOTP secret in a `keyOTP` record,
+/// encrypted with a SimpleCrypt-style XOR cipher keyed by the first four
+/// characters of the raw passphrase. The wallet is then unlocked with
+/// `mixedHash(otp_secret, passphrase)` = `hex(SHA256(otp_secret || passphrase))`.
+///
+/// `otp_record` is the raw DB value: `[compact_size][base64 otaCrypt blob]`.
+/// Returns `None` when the record is malformed or the checksum fails
+/// (e.g. a different passphrase was used to encrypt the OTP secret).
+pub fn derive_otp_mixed_passphrase(otp_record: &[u8], passphrase: &str) -> Option<String> {
+    // Strip the CDataStream compact-size prefix around the stored string.
+    let stored_str = strip_compact_size(otp_record)?;
+    // The stored string is base64 of the otaCrypt blob.
+    let decoded = base64_decode(stored_str)?;
+    let blob = decoded.as_slice();
+    if blob.len() < 3 || blob[0] != 0x03 {
+        return None;
+    }
+    let flags = blob[1];
+    let body = &blob[2..];
+
+    // SimpleCrypt key: first 4 passphrase chars (lowercased), packed
+    // big-endian into a u64, then read little-endian into 8 key parts.
+    let mut l = [0u64; 4];
+    for (i, item) in l.iter_mut().enumerate().take(4) {
+        if let Some(b) = passphrase.as_bytes().get(i) {
+            *item = b.to_ascii_lowercase() as u64;
+        }
+    }
+    let m_key = (l[0] << 48) | (l[1] << 32) | (l[2] << 16) | l[3];
+    let key_parts: Vec<u8> = (0..8).map(|i| ((m_key >> (8 * i)) & 0xff) as u8).collect();
+
+    let mut ba = body.to_vec();
+    let mut last_char = 0u8;
+    for pos in 0..ba.len() {
+        let current = ba[pos];
+        ba[pos] = current ^ last_char ^ key_parts[pos % 8];
+        last_char = current;
+    }
+    // Drop the leading random char.
+    let ba = ba.get(1..)?;
+
+    let payload = if flags & 0x02 != 0 {
+        // CryptoFlagChecksum: 2-byte big-endian CRC-16/X-25 of the payload
+        // (QDataStream serializes quint16 big-endian).
+        if ba.len() < 2 {
+            return None;
+        }
+        let stored = u16::from_be_bytes([ba[0], ba[1]]);
+        let data = &ba[2..];
+        if crc16_x25(data) != stored {
+            return None;
+        }
+        data
+    } else {
+        ba
+    };
+
+    if flags & 0x01 != 0 {
+        // CryptoFlagCompression (qCompress) is never produced for the small
+        // OTP payloads in practice (CompressionAuto only compresses when it
+        // shrinks the input). Unsupported here.
+        return None;
+    }
+
+    // The payload is the base64 text of the OTP secret
+    // (encryptToString(otp_secret.toBase64())); the wallet unlocks with
+    // mixedHash over the *decoded* secret bytes.
+    let otp_secret = base64_decode(payload)?;
+    otp_mixed_hash(&otp_secret, passphrase)
+}
+
+fn otp_mixed_hash(otp_secret: &[u8], passphrase: &str) -> Option<String> {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(otp_secret);
+    hasher.update(passphrase.as_bytes());
+    let digest = hasher.finalize();
+    Some(digest.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+fn crc16_x25(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0xffff;
+    for &b in data {
+        crc ^= b as u16;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0x8408
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    crc ^ 0xffff
+}
+
+/// Minimal standard base64 decoder (no padding required).
+fn base64_decode(input: &[u8]) -> Option<Vec<u8>> {
+    fn val(b: u8) -> Option<u32> {
+        match b {
+            b'A'..=b'Z' => Some((b - b'A') as u32),
+            b'a'..=b'z' => Some((b - b'a' + 26) as u32),
+            b'0'..=b'9' => Some((b - b'0' + 52) as u32),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let trimmed: Vec<u8> = input
+        .iter()
+        .copied()
+        .filter(|&b| b != b'=' && b != b'\n' && b != b'\r')
+        .collect();
+    let mut out = Vec::with_capacity(trimmed.len() * 3 / 4);
+    for chunk in trimmed.chunks(4) {
+        if chunk.len() < 2 {
+            return None;
+        }
+        let mut acc: u32 = 0;
+        for (i, &b) in chunk.iter().enumerate() {
+            acc |= val(b)? << (18 - 6 * i);
+        }
+        out.push((acc >> 16) as u8);
+        if chunk.len() > 2 {
+            out.push((acc >> 8) as u8);
+        }
+        if chunk.len() > 3 {
+            out.push(acc as u8);
+        }
+    }
+    Some(out)
+}
+
+/// Strip a CDataStream compact-size length prefix (string serialization).
+fn strip_compact_size(data: &[u8]) -> Option<&[u8]> {
+    if data.is_empty() {
+        return None;
+    }
+    let first = data[0] as usize;
+    if first < 0xfd {
+        data.get(1..1 + first)
+    } else if first == 0xfd && data.len() >= 3 {
+        let len = u16::from_le_bytes([data[1], data[2]]) as usize;
+        data.get(3..3 + len)
+    } else {
+        None
+    }
+}
+
 /// Decrypt the master key using AES-256-CBC.
 pub fn decrypt_master_key(mkey: &MasterKey, passphrase: &str) -> Result<DecryptedMasterKey> {
     let passphrase_bytes = passphrase.as_bytes();
@@ -81,6 +231,16 @@ pub fn decrypt_master_key(mkey: &MasterKey, passphrase: &str) -> Result<Decrypte
             return Err(MigrateError::UnsupportedDerivationMethod(method));
         }
     };
+
+    if std::env::var("VTORRENT_MIGRATE_DEBUG").is_ok() {
+        eprintln!(
+            "[debug] derived key+iv: {}",
+            derived_key
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+    }
 
     // The IV for master key decryption is the second 16 bytes of the same
     // iterated SHA-512 output used for the key (EVP_BytesToKey semantics).
@@ -96,7 +256,7 @@ pub fn decrypt_master_key(mkey: &MasterKey, passphrase: &str) -> Result<Decrypte
 
     let decryptor = Decryptor::<Aes256>::new(&key.into(), &iv.into());
     let decrypted = decryptor
-        .decrypt_padded_mut::<cbc::cipher::block_padding::NoPadding>(&mut ciphertext)
+        .decrypt_padded_mut::<cbc::cipher::block_padding::Pkcs7>(&mut ciphertext)
         .map_err(|_| MigrateError::IncorrectPassphrase)?;
 
     if decrypted.len() < 32 {
@@ -130,7 +290,7 @@ pub fn decrypt_private_key(
 
     let decryptor = Decryptor::<Aes256>::new(&master_key.key.into(), &iv.into());
     let decrypted = decryptor
-        .decrypt_padded_mut::<cbc::cipher::block_padding::NoPadding>(&mut ciphertext)
+        .decrypt_padded_mut::<cbc::cipher::block_padding::Pkcs7>(&mut ciphertext)
         .map_err(|_| MigrateError::IncorrectPassphrase)?;
 
     if decrypted.len() < 32 {
@@ -139,7 +299,16 @@ pub fn decrypt_private_key(
 
     // Validate the decrypted key is a valid secp256k1 scalar
     let key_bytes: [u8; 32] = decrypted[..32].try_into().unwrap();
-    secp256k1::SecretKey::from_slice(&key_bytes).map_err(|_| MigrateError::IncorrectPassphrase)?;
+    let secret = secp256k1::SecretKey::from_slice(&key_bytes)
+        .map_err(|_| MigrateError::IncorrectPassphrase)?;
+
+    // Validate the derived public key matches the record's public key.
+    // Without this check, a wrong passphrase produces garbage that passes
+    // the scalar check and silently yields bogus WIFs.
+    let pubkey = secp256k1::PublicKey::from_secret_key(&secp256k1::Secp256k1::new(), &secret);
+    if pubkey.serialize().as_slice() != public_key {
+        return Err(MigrateError::IncorrectPassphrase);
+    }
 
     Ok(decrypted[..32].to_vec())
 }
@@ -173,10 +342,11 @@ mod tests {
         let plaintext = [0x42u8; 32];
         let key: [u8; 32] = derived[..32].try_into().unwrap();
         let iv: [u8; 16] = derived[32..48].try_into().unwrap();
-        let mut buf = plaintext.to_vec();
+        let mut buf = vec![0u8; 48];
+        buf[..32].copy_from_slice(&plaintext);
         let encryptor = Encryptor::<Aes256>::new(&key.into(), &iv.into());
         let ciphertext = encryptor
-            .encrypt_padded_mut::<cbc::cipher::block_padding::NoPadding>(&mut buf, plaintext.len())
+            .encrypt_padded_mut::<cbc::cipher::block_padding::Pkcs7>(&mut buf, plaintext.len())
             .unwrap()
             .to_vec();
 
@@ -190,5 +360,31 @@ mod tests {
 
         let decrypted = decrypt_master_key(&mkey, passphrase).unwrap();
         assert_eq!(decrypted.key, plaintext);
+    }
+}
+
+#[cfg(test)]
+mod otp_tests {
+    use super::*;
+
+    #[test]
+    fn test_otp_mixed_passphrase_real_vector() {
+        // From the legacy wallet: keyOTP record value
+        // 28 (compact size 40) + base64 otaCrypt blob
+        let mut rec = vec![0x28u8];
+        rec.extend_from_slice(b"AwKRzyl7fEl5KxV5HE1KLhdERHUGV1BlVAIoFR0=");
+        let mixed = derive_otp_mixed_passphrase(&rec, "U75kj321")
+            .expect("OTP record should decrypt with correct passphrase");
+        assert_eq!(
+            mixed,
+            "c859634caefa3fdd035b656077e572eddbed84fe31f373eea96660ecbb9aa3c9"
+        );
+    }
+
+    #[test]
+    fn test_otp_mixed_passphrase_wrong_pw() {
+        let mut rec = vec![0x28u8];
+        rec.extend_from_slice(b"AwKRzyl7fEl5KxV5HE1KLhdERHUGV1BlVAIoFR0=");
+        assert!(derive_otp_mixed_passphrase(&rec, "wrong").is_none());
     }
 }
