@@ -425,3 +425,151 @@ pub fn build_vtr_htlc_claim(
     claim_tx.inputs[0].script_sig = script_sig;
     Ok(claim_tx)
 }
+
+// ─── BTC HTLC claim (shared by RPC and Tauri swap flows) ────────────────────
+
+/// Parameters for a BTC HTLC claim (maker reclaims BTC with the preimage).
+pub struct BtcClaimParams<'a> {
+    /// The BTC funding txid (internal byte order).
+    pub funding_txid: [u8; 32],
+    /// The preimage revealed by the taker.
+    pub preimage: [u8; 32],
+    /// The maker's BTC address (HTLC recipient).
+    pub maker_btc_address: &'a str,
+    /// The taker's BTC refund address embedded in the witness script.
+    pub refund_address: &'a str,
+    /// The exact expiry the funding output was built with.
+    pub expiry: u32,
+    /// The swap amount in satoshis.
+    pub amount: u64,
+    /// The BTC network the HTLC was funded on.
+    pub network: bitcoin::Network,
+}
+
+/// Build and sign a BTC HTLC claim transaction.
+///
+/// Shared by the RPC and Tauri `btc_claim` flows. The maker's WIF is derived
+/// from the wallet seed at index 0. Returns the raw serialized tx and its
+/// internal txid; the caller broadcasts and updates swap state.
+pub fn build_btc_htlc_claim(
+    btc_wallet: &vtorrent_btc::wallet::BtcWallet,
+    params: BtcClaimParams<'_>,
+) -> Result<(Vec<u8>, [u8; 32]), String> {
+    use vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS;
+
+    let BtcClaimParams {
+        funding_txid,
+        preimage,
+        maker_btc_address,
+        refund_address,
+        expiry,
+        amount,
+        network,
+    } = params;
+
+    let hash_lock = {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(preimage);
+        let d = h.finalize();
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&d);
+        out
+    };
+
+    let htlc = vtorrent_btc::htlc::BtcHtlc {
+        hash_lock,
+        recipient: maker_btc_address.to_string(),
+        refund_address: refund_address.to_string(),
+        expiry,
+        amount,
+        network,
+    };
+
+    let unsigned = htlc
+        .build_claim_tx(funding_txid, &preimage, BTC_HTLC_FEE_SATOSHIS)
+        .map_err(|e| format!("Unable to build BTC claim tx: {}", e))?;
+    let maker_wif = btc_wallet.derive_wif(0).map_err(|e| e.to_string())?;
+    let signed = htlc
+        .sign_claim_tx(unsigned, &preimage, &maker_wif)
+        .map_err(|e| format!("Unable to sign BTC claim tx: {}", e))?;
+    let raw = bitcoin::consensus::encode::serialize(&signed);
+    let txid = {
+        use bitcoin::hashes::Hash;
+        signed.compute_txid().to_byte_array()
+    };
+    Ok((raw, txid))
+}
+
+// ─── VTR HTLC refund (shared by RPC and Tauri swap flows) ───────────────────
+
+/// Parameters for a VTR HTLC refund (maker reclaims VTR after expiry).
+pub struct VtrRefundParams<'a> {
+    /// The HTLC hash lock.
+    pub hash_lock: [u8; 32],
+    /// The taker's VTR address (HTLC recipient).
+    pub taker_address: &'a str,
+    /// The maker's VTR address (HTLC refund address / signer).
+    pub maker_address: &'a str,
+    /// The exact expiry the funding output was built with.
+    pub expiry: u32,
+    /// The swap amount in satoshis.
+    pub vtr_amount: u64,
+    /// The VTR funding txid (internal byte order).
+    pub funding_txid: [u8; 32],
+    /// The maker's WIF key for signing.
+    pub maker_wif: &'a str,
+}
+
+/// Build and sign a VTR HTLC refund transaction (maker reclaims after expiry).
+///
+/// Shared by the RPC and Tauri `swap_refund` VTR legs. scriptSig is
+/// `<sig> <pubkey> OP_0` (the false/timelock branch).
+///
+/// Returns the signed refund transaction.
+pub fn build_vtr_htlc_refund(
+    params: VtrRefundParams<'_>,
+) -> Result<vtorrent_node::block::Transaction, String> {
+    use vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS;
+    use vtorrent_wallet::tx_builder::sign_input_over_subscript;
+
+    let VtrRefundParams {
+        hash_lock,
+        taker_address,
+        maker_address,
+        expiry,
+        vtr_amount,
+        funding_txid,
+        maker_wif,
+    } = params;
+
+    let htlc = vtorrent_node::atomic_swap::Htlc::with_expiry(
+        hash_lock,
+        taker_address.to_string(),
+        maker_address.to_string(),
+        expiry,
+        vtr_amount,
+    )
+    .map_err(|e| format!("Unable to reconstruct HTLC: {}", e))?;
+
+    let unsigned = htlc
+        .build_refund_tx_unsigned(funding_txid, VTR_HTLC_FEE_SATOSHIS)
+        .map_err(|e| format!("Unable to build VTR refund tx: {}", e))?;
+
+    let htlc_script = htlc
+        .build_script()
+        .map_err(|e| format!("Invalid HTLC addresses: {}", e))?;
+    let (sig, pubkey) = sign_input_over_subscript(&unsigned, 0, &htlc_script, maker_wif)
+        .map_err(|e| format!("Unable to sign VTR refund tx: {}", e))?;
+
+    let mut script_sig = Vec::new();
+    script_sig.push(sig.len() as u8);
+    script_sig.extend_from_slice(&sig);
+    script_sig.push(pubkey.len() as u8);
+    script_sig.extend_from_slice(&pubkey);
+    script_sig.push(0x00); // OP_0
+
+    let mut refund_tx = unsigned;
+    refund_tx.inputs[0].script_sig = script_sig;
+    Ok(refund_tx)
+}

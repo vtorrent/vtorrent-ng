@@ -14,3 +14,4 @@ thiserror = { workspace = true }
 tokio = { version = "1", features = ["sync"] }
 hex = { workspace = true }
 bitcoin = { workspace = true }
+sha2 = { workspace = true }

@@ -451,45 +451,26 @@ pub async fn btc_claim(
         )
     };
 
-    // Reconstruct the HTLC and build/sign/broadcast the claim.
-    let btc_network = *state.btc_network.read().await;
-    let htlc = vtorrent_btc::htlc::BtcHtlc {
-        hash_lock: {
-            use sha2::{Digest, Sha256};
-            let mut h = Sha256::new();
-            h.update(preimage);
-            let d = h.finalize();
-            let mut out = [0u8; 32];
-            out.copy_from_slice(&d);
-            out
-        },
-        recipient: maker_btc_address.clone(),
-        refund_address,
-        expiry: btc_expiry,
-        amount: btc_amount,
-        network: btc_network,
-    };
-    const CLAIM_FEE_SATOSHIS: u64 = vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS;
-    let unsigned = htlc
-        .build_claim_tx(btc_funding_txid, &preimage, CLAIM_FEE_SATOSHIS)
-        .map_err(|e| RpcError::BadRequest(format!("Unable to build BTC claim tx: {}", e)))?;
-
-    // The maker's BTC key is derived from the wallet seed at index 0.
-    let maker_wif = {
+    // Build and sign the claim via the shared service path; the maker's BTC
+    // key is derived from the wallet seed at index 0 inside the service.
+    let (raw, txid) = {
         let btc = state.btc_wallet.read().await;
         let w = btc
             .as_ref()
             .ok_or_else(|| RpcError::BadRequest("BTC wallet not initialized".into()))?;
-        w.derive_wif(0)
-            .map_err(|e| RpcError::Internal(e.to_string()))?
-    };
-    let signed = htlc
-        .sign_claim_tx(unsigned, &preimage, &maker_wif)
-        .map_err(|e| RpcError::BadRequest(format!("Unable to sign BTC claim tx: {}", e)))?;
-    let raw = bitcoin::consensus::encode::serialize(&signed);
-    let txid = {
-        use bitcoin::hashes::Hash;
-        signed.compute_txid().to_byte_array()
+        vtorrent_wallet_service::build_btc_htlc_claim(
+            w,
+            vtorrent_wallet_service::BtcClaimParams {
+                funding_txid: btc_funding_txid,
+                preimage,
+                maker_btc_address: &maker_btc_address,
+                refund_address: &refund_address,
+                expiry: btc_expiry,
+                amount: btc_amount,
+                network: *state.btc_network.read().await,
+            },
+        )
+        .map_err(RpcError::BadRequest)?
     };
     broadcast_btc(&state, &raw).await?;
 
@@ -514,8 +495,7 @@ pub async fn swap_refund(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SwapRefundRequest>,
 ) -> RpcResult<Json<SwapActionResponse>> {
-    use vtorrent_node::atomic_swap::{Htlc, SwapState, SwapStatus};
-    use vtorrent_wallet::tx_builder::sign_input_over_subscript;
+    use vtorrent_node::atomic_swap::{SwapState, SwapStatus};
 
     let order = {
         let order_book = state.order_book.read().await;
@@ -543,23 +523,6 @@ pub async fn swap_refund(
         let taker_address = order.taker_address.clone();
         match (hash_lock, funding_txid, taker_address) {
             (Some(hash_lock), Some(funding_txid), Some(taker_address)) => {
-                // The maker is the refund address; the taker is the recipient.
-                let htlc = Htlc::with_expiry(
-                    hash_lock,
-                    taker_address,
-                    order.maker_address.clone(),
-                    order.expiry,
-                    order.vtr_amount,
-                )
-                .map_err(|e| RpcError::BadRequest(format!("Unable to reconstruct HTLC: {}", e)))?;
-
-                const REFUND_FEE_SATOSHIS: u64 = vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS;
-                let unsigned = htlc
-                    .build_refund_tx_unsigned(funding_txid, REFUND_FEE_SATOSHIS)
-                    .map_err(|e| {
-                        RpcError::BadRequest(format!("Unable to build VTR refund tx: {}", e))
-                    })?;
-
                 // The maker signs the refund (they are the refund address).
                 let maker_wif = state
                     .wallet_wif
@@ -567,30 +530,27 @@ pub async fn swap_refund(
                     .await
                     .clone()
                     .ok_or_else(|| RpcError::BadRequest("Maker wallet not unlocked".into()))?;
-                let htlc_script = htlc
-                    .build_script()
-                    .map_err(|e| RpcError::BadRequest(format!("Invalid HTLC addresses: {}", e)))?;
-                let (sig, pubkey) =
-                    sign_input_over_subscript(&unsigned, 0, &htlc_script, &maker_wif).map_err(
-                        |e| RpcError::BadRequest(format!("Unable to sign VTR refund tx: {}", e)),
-                    )?;
-
-                // scriptSig: <sig> <pubkey> OP_0 (false branch).
-                let mut script_sig = Vec::new();
-                script_sig.push(sig.len() as u8);
-                script_sig.extend_from_slice(&sig);
-                script_sig.push(pubkey.len() as u8);
-                script_sig.extend_from_slice(&pubkey);
-                script_sig.push(0x00); // OP_0
-
-                let mut refund_tx = unsigned;
-                refund_tx.inputs[0].script_sig = script_sig;
+                let refund_tx = vtorrent_wallet_service::build_vtr_htlc_refund(
+                    vtorrent_wallet_service::VtrRefundParams {
+                        hash_lock,
+                        taker_address: &taker_address,
+                        maker_address: &order.maker_address,
+                        expiry: order.expiry,
+                        vtr_amount: order.vtr_amount,
+                        funding_txid,
+                        maker_wif: &maker_wif,
+                    },
+                )
+                .map_err(RpcError::BadRequest)?;
                 let refund_txid = refund_tx.txid();
 
                 {
                     let mut mempool = state.mempool.lock().await;
                     mempool
-                        .add_transaction_with_fee(refund_tx.clone(), REFUND_FEE_SATOSHIS)
+                        .add_transaction_with_fee(
+                            refund_tx.clone(),
+                            vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS,
+                        )
                         .map_err(|e| {
                             RpcError::BadRequest(format!("Mempool rejected VTR refund tx: {}", e))
                         })?;

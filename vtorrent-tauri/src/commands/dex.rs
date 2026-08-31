@@ -527,45 +527,49 @@ pub async fn btc_claim(
         )
     };
 
-    let htlc = vtorrent_btc::htlc::BtcHtlc {
-        hash_lock: {
-            use sha2::{Digest, Sha256};
-            let mut h = Sha256::new();
-            h.update(preimage);
-            let d = h.finalize();
-            let mut out = [0u8; 32];
-            out.copy_from_slice(&d);
-            out
-        },
-        recipient: maker_btc_address.clone(),
-        refund_address,
-        expiry: btc_expiry,
-        amount: btc_amount,
-        network: *rpc.btc_network.read().await,
-    };
-    const CLAIM_FEE_SATOSHIS: u64 = vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS;
-    let unsigned = htlc
-        .build_claim_tx(btc_funding_txid, &preimage, CLAIM_FEE_SATOSHIS)
-        .map_err(|e| TauriError::InvalidInput(format!("Unable to build BTC claim tx: {}", e)))?;
-    let maker_wif = {
+    // Build and sign via the shared service path; broadcast honoring the
+    // daemon's configured BTC peer (mirrors the RPC handler).
+    let (raw, txid) = {
         let btc = rpc.btc_wallet.read().await;
         let w = btc
             .as_ref()
             .ok_or_else(|| TauriError::InvalidInput("BTC wallet not initialized".into()))?;
-        w.derive_wif(0)
-            .map_err(|e| TauriError::Internal(e.to_string()))?
+        vtorrent_wallet_service::build_btc_htlc_claim(
+            w,
+            vtorrent_wallet_service::BtcClaimParams {
+                funding_txid: btc_funding_txid,
+                preimage,
+                maker_btc_address: &maker_btc_address,
+                refund_address: &refund_address,
+                expiry: btc_expiry,
+                amount: btc_amount,
+                network: *rpc.btc_network.read().await,
+            },
+        )
+        .map_err(TauriError::InvalidInput)?
     };
-    let signed = htlc
-        .sign_claim_tx(unsigned, &preimage, &maker_wif)
-        .map_err(|e| TauriError::InvalidInput(format!("Unable to sign BTC claim tx: {}", e)))?;
-    let raw = bitcoin::consensus::encode::serialize(&signed);
-    let txid = {
-        use bitcoin::hashes::Hash;
-        signed.compute_txid().to_byte_array()
-    };
-    vtorrent_btc::sync::broadcast_tx(&raw)
-        .await
-        .map_err(|e| TauriError::Internal(format!("BTC broadcast failed: {}", e)))?;
+    {
+        let peer = rpc.btc_peer.read().await.clone();
+        let network = *rpc.btc_network.read().await;
+        if let Some(host) = peer {
+            let addr = tokio::net::lookup_host(&host)
+                .await
+                .ok()
+                .and_then(|mut it| it.next())
+                .ok_or_else(|| {
+                    TauriError::Internal(format!("BTC peer {} DNS resolution failed", host))
+                })?;
+            vtorrent_btc::sync::broadcast_tx_to(&raw, network, &[addr])
+                .await
+                .map_err(|e| {
+                    TauriError::Internal(format!("BTC broadcast to {} failed: {}", host, e))
+                })?;
+        } else {
+            vtorrent_btc::sync::broadcast_tx(&raw)
+                .await
+                .map_err(|e| TauriError::Internal(format!("BTC broadcast failed: {}", e)))?;
+        }
+    }
 
     {
         let mut swaps = rpc.swaps.write().await;
@@ -629,6 +633,58 @@ pub async fn swap_refund(
         }
     }
 
+    // ── VTR-side refund (the maker reclaims their VTR) ──────────────────────
+    // Mirrors the RPC handler: the desktop app previously skipped this leg
+    // entirely, so a desktop refund left the maker's VTR stranded in the HTLC.
+    let vtr_refund_txid = {
+        let (hash_lock, funding_txid, taker_address) = (
+            order.hash_lock,
+            order.funding_txid,
+            order.taker_address.clone(),
+        );
+        match (hash_lock, funding_txid, taker_address) {
+            (Some(hash_lock), Some(funding_txid), Some(taker_address)) => {
+                let maker_wif =
+                    rpc.wallet_wif.read().await.clone().ok_or_else(|| {
+                        TauriError::InvalidInput("Maker wallet not unlocked".into())
+                    })?;
+                let refund_tx = vtorrent_wallet_service::build_vtr_htlc_refund(
+                    vtorrent_wallet_service::VtrRefundParams {
+                        hash_lock,
+                        taker_address: &taker_address,
+                        maker_address: &order.maker_address,
+                        expiry: order.expiry,
+                        vtr_amount: order.vtr_amount,
+                        funding_txid,
+                        maker_wif: &maker_wif,
+                    },
+                )
+                .map_err(TauriError::InvalidInput)?;
+                let refund_txid = refund_tx.txid();
+
+                {
+                    let mut mempool = rpc.mempool.lock().await;
+                    mempool
+                        .add_transaction_with_fee(
+                            refund_tx.clone(),
+                            vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS,
+                        )
+                        .map_err(|e| {
+                            TauriError::InvalidInput(format!(
+                                "Mempool rejected VTR refund tx: {}",
+                                e
+                            ))
+                        })?;
+                }
+                if let Some(sender) = &rpc.tx_submit {
+                    let _ = sender.try_send(refund_tx);
+                }
+                Some(refund_txid)
+            }
+            _ => None,
+        }
+    };
+
     let btc_refund_txid = {
         let swaps = rpc.swaps.read().await;
         let swap = swaps.get(&order_id);
@@ -685,9 +741,11 @@ pub async fn swap_refund(
 
     Ok(SwapActionResult {
         order_id: order_id.clone(),
-        txid: btc_refund_txid
-            .map(|t| btc_txid_hex(&t))
-            .unwrap_or_else(|| hex::encode(order.order_id)),
+        txid: match (vtr_refund_txid, btc_refund_txid) {
+            (Some(vtr), _) => hex::encode(vtr),
+            (None, Some(btc)) => btc_txid_hex(&btc),
+            (None, None) => hex::encode(order.order_id),
+        },
         status: "Refunded".to_string(),
     })
 }
