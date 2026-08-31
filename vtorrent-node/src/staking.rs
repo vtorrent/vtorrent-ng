@@ -130,12 +130,35 @@ impl StakingEngine {
             if let Some(coinstake) =
                 self.try_stake_kernel(prev_stake_modifier, utxo, timestamp, height)
             {
+                // Drop pending txs whose inputs collide with the coinstake's
+                // stake input (or with each other). The mempool admits txs
+                // against the current UTXO set, but the coinstake consumes a
+                // UTXO inside this same block — a stale mempool tx spending
+                // the staked outpoint would otherwise make the block invalid
+                // and permanently wedge staking.
+                let stake_outpoint = (coinstake.inputs[0].prev_txid, coinstake.inputs[0].prev_vout);
+                let mut seen: std::collections::HashSet<([u8; 32], u32)> =
+                    std::collections::HashSet::new();
+                seen.insert(stake_outpoint);
+                let non_conflicting: Vec<Transaction> = pending_txs
+                    .into_iter()
+                    .filter(|tx| {
+                        let conflict = tx.inputs.iter().any(|i| !seen.insert((i.prev_txid, i.prev_vout)));
+                        if conflict {
+                            tracing::debug!(
+                                "Excluding mempool tx {} from block template: input conflicts with coinstake or earlier tx",
+                                hex::encode(tx.txid())
+                            );
+                        }
+                        !conflict
+                    })
+                    .collect();
                 let block = self.assemble_block(
                     prev_hash,
                     prev_stake_modifier,
                     timestamp,
                     coinstake,
-                    pending_txs,
+                    non_conflicting,
                 );
                 let block_hash = block.hash();
                 tracing::info!(
@@ -417,5 +440,86 @@ mod tests {
         assert_eq!(script.len(), 25);
         assert_eq!(&script[..3], &[0x76, 0xa9, 0x14]);
         assert_eq!(&script[23..], &[0x88, 0xac]);
+    }
+}
+
+#[cfg(test)]
+mod conflict_tests {
+    use super::*;
+    use crate::block::{Transaction, TxInput, TxOutput, TxType};
+    use crate::chain::Utxo;
+    use crate::consensus::COIN;
+
+    fn make_utxo(value: u64, age_seconds: u32) -> Utxo {
+        let now = 1_700_000_000u32;
+        Utxo {
+            txid: [1u8; 32],
+            vout: 0,
+            value,
+            script_pubkey: vec![0x76, 0xa9, 0x14],
+            height: 100,
+            timestamp: now - age_seconds,
+        }
+    }
+
+    fn transfer_spending(txid: [u8; 32], vout: u32) -> Transaction {
+        Transaction {
+            version: 1,
+            tx_type: TxType::Standard,
+            inputs: vec![TxInput {
+                prev_txid: txid,
+                prev_vout: vout,
+                script_sig: vec![],
+                sequence: u32::MAX,
+            }],
+            outputs: vec![TxOutput {
+                value: 1000,
+                script_pubkey: vec![],
+            }],
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        }
+    }
+
+    /// A pending mempool tx spending the same outpoint the coinstake spends
+    /// must be excluded from the block template — otherwise the block fails
+    /// UTXO validation and staking wedges forever.
+    #[test]
+    fn test_build_stake_block_excludes_conflicting_mempool_tx() {
+        let engine = StakingEngine::new_fast("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string());
+        let utxo = make_utxo(1000 * COIN, (MIN_STAKE_AGE as u32).saturating_add(3600));
+        // A stale mempool tx spending the exact outpoint the coinstake will spend.
+        let conflicting = transfer_spending([1u8; 32], 0);
+        // An unrelated pending tx that must be kept.
+        let unrelated = transfer_spending([9u8; 32], 3);
+
+        // Scan timestamps until a kernel hits so the block actually builds.
+        let prev_modifier = 0xdead_beef_u64;
+        let mut block = None;
+        for ts in 1_700_000_000..1_700_000_000 + 3600 {
+            block = engine.build_stake_block(
+                [2u8; 32],
+                prev_modifier,
+                101,
+                ts,
+                vec![utxo.clone()],
+                vec![conflicting.clone(), unrelated.clone()],
+            );
+            if block.is_some() {
+                break;
+            }
+        }
+        let block = block.expect("kernel should hit within an hour of timestamps");
+        assert_eq!(block.transactions[0].tx_type, TxType::Coinstake);
+        let txids: Vec<[u8; 32]> = block.transactions[1..].iter().map(|t| t.txid()).collect();
+        assert!(
+            !txids.contains(&conflicting.txid()),
+            "conflicting mempool tx must be excluded from the block"
+        );
+        assert!(
+            txids.contains(&unrelated.txid()),
+            "unrelated mempool tx must be included"
+        );
     }
 }
