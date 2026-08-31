@@ -208,26 +208,6 @@ pub(crate) async fn verify_wallet_auth(
     Ok(wif)
 }
 
-pub(crate) fn utxo_select(
-    utxos: &[vtorrent_btc::utxo::Utxo],
-    amount: u64,
-    fee: u64,
-) -> Option<Vec<vtorrent_btc::utxo::Utxo>> {
-    let required = amount.checked_add(fee)?;
-    let mut sorted: Vec<vtorrent_btc::utxo::Utxo> = utxos.to_vec();
-    sorted.sort_by(|a, b| b.value.cmp(&a.value));
-    let mut selected = Vec::new();
-    let mut sum = 0u64;
-    for u in sorted {
-        sum = sum.saturating_add(u.value);
-        selected.push(u);
-        if sum >= required {
-            return Some(selected);
-        }
-    }
-    None
-}
-
 pub async fn get_spv_status(
     State(state): State<Arc<AppState>>,
 ) -> RpcResult<Json<SpvStatusResponse>> {

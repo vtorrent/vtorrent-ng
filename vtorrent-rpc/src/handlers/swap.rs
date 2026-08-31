@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use super::{
     broadcast_btc, btc_txid_hex, now_secs, now_secs_mock, parse_hash32, require_swap_stage,
-    utxo_select, verify_wallet_auth,
+    verify_wallet_auth,
 };
 use crate::error::{RpcError, RpcResult};
 use crate::models::*;
@@ -268,75 +268,23 @@ pub async fn btc_fund(
 
     // Build the BTC HTLC: the maker is the recipient (claims with preimage),
     // the taker is the refund address.
-    let btc_network = {
-        let btc = state.btc_wallet.read().await;
-        btc.as_ref()
-            .map(|w| w.network())
-            .unwrap_or(bitcoin::Network::Bitcoin)
-    };
-    let htlc = vtorrent_btc::htlc::BtcHtlc::new_with_network(
-        hash_lock,
-        maker_btc_address.clone(),
-        req.btc_refund_address.clone(),
-        vtorrent_btc::htlc::DEFAULT_HTLC_LOCKTIME,
-        btc_amount,
-        btc_network,
-    )
-    .map_err(|e| RpcError::BadRequest(format!("Unable to construct BTC HTLC: {}", e)))?;
-
-    // Select a UTXO from the local BTC wallet to fund the HTLC.
-    const FUNDING_FEE_SATOSHIS: u64 = vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS;
-    let (funding_utxo, funder_wif, change_address) = {
+    let (btc_funding_txid, btc_expiry) = {
         let btc = state.btc_wallet.read().await;
         let w = btc
             .as_ref()
             .ok_or_else(|| RpcError::BadRequest("BTC wallet not initialized".into()))?;
-        let utxos = w.list_utxos();
-        let selected = utxo_select(&utxos, btc_amount, FUNDING_FEE_SATOSHIS)
-            .ok_or_else(|| RpcError::BadRequest("Insufficient BTC funds".into()))?;
-        // The funding tx has a single input; use the largest selected UTXO.
-        let utxo = selected
-            .into_iter()
-            .max_by_key(|u| u.value)
-            .ok_or_else(|| RpcError::BadRequest("No BTC UTXO available".into()))?;
-        let wif = w
-            .derive_wif(0)
-            .map_err(|e| RpcError::Internal(e.to_string()))?;
-        let change = w
-            .current_address()
-            .map_err(|e| RpcError::Internal(e.to_string()))?;
-        (utxo, wif, change)
-    };
-
-    let funding_txid_bytes: [u8; 32] = {
-        use bitcoin::hashes::Hash;
-        funding_utxo
-            .txid
-            .parse::<bitcoin::Txid>()
-            .map(|t| t.to_byte_array())
-            .map_err(|e| RpcError::BadRequest(format!("Invalid UTXO txid: {}", e)))?
-    };
-
-    let unsigned = htlc
-        .build_funding_tx(
-            funding_txid_bytes,
-            funding_utxo.vout,
-            funding_utxo.value,
-            FUNDING_FEE_SATOSHIS,
-            &change_address,
+        // Broadcast hook: use the daemon's configured peer when set.
+        vtorrent_wallet_service::build_btc_htlc_funding(
+            w,
+            hash_lock,
+            &maker_btc_address,
+            &req.btc_refund_address,
+            btc_amount,
+            async |raw: &[u8]| broadcast_btc(&state, raw).await.map_err(|e| e.to_string()),
         )
-        .map_err(|e| RpcError::BadRequest(format!("Unable to build BTC funding tx: {}", e)))?;
-    let signed = htlc
-        .sign_funding_tx(unsigned, funding_utxo.value, &funder_wif)
-        .map_err(|e| RpcError::BadRequest(format!("Unable to sign BTC funding tx: {}", e)))?;
-    let raw = bitcoin::consensus::encode::serialize(&signed);
-    let btc_funding_txid = {
-        use bitcoin::hashes::Hash;
-        signed.compute_txid().to_byte_array()
+        .await
+        .map_err(RpcError::BadRequest)?
     };
-
-    // Broadcast to the Bitcoin network.
-    broadcast_btc(&state, &raw).await?;
 
     // Record the swap state with the real funding txid.
     let mut swaps = state.swaps.write().await;
@@ -347,7 +295,7 @@ pub async fn btc_fund(
     swap.maker_btc_address = Some(maker_btc_address);
     swap.taker_btc_refund_address = Some(req.btc_refund_address);
     swap.btc_amount = btc_amount;
-    swap.btc_expiry = htlc.expiry;
+    swap.btc_expiry = btc_expiry;
     swap.status = SwapStatus::BtcFunded;
 
     Ok(Json(BtcFundResponse {

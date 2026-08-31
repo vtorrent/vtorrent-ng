@@ -197,3 +197,145 @@ mod tests {
         assert!(matches!(err, IncentivePaymentError::NoUtxos));
     }
 }
+
+// ─── BTC HTLC funding (shared by RPC and Tauri swap flows) ──────────────────
+
+/// Build, sign, and broadcast a BTC HTLC funding transaction.
+///
+/// Shared by the RPC and Tauri `btc_fund` flows. Selects a UTXO from the
+/// local BTC wallet, builds and signs the funding tx, and broadcasts it via
+/// the provided broadcast hook (the caller decides whether to use the
+/// daemon's configured peer or the default seed resolution).
+///
+/// Returns the internal (little-endian) funding txid.
+/// Build, sign, and broadcast a BTC HTLC funding transaction.
+///
+/// Shared by the RPC and Tauri `btc_fund` flows. Selects a UTXO from the
+/// local BTC wallet, builds and signs the funding tx, and broadcasts it via
+/// the provided broadcast hook (the caller decides whether to use the
+/// daemon's configured peer or the default seed resolution).
+///
+/// Returns the funding txid (internal byte order) and the HTLC expiry used.
+pub async fn build_btc_htlc_funding(
+    btc_wallet: &vtorrent_btc::wallet::BtcWallet,
+    hash_lock: [u8; 32],
+    maker_btc_address: &str,
+    btc_refund_address: &str,
+    btc_amount: u64,
+    broadcast: impl AsyncFnOnce(&[u8]) -> Result<[u8; 32], String>,
+) -> Result<([u8; 32], u32), String> {
+    use vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS;
+
+    let network = btc_wallet.network();
+    let htlc = vtorrent_btc::htlc::BtcHtlc::new_with_network(
+        hash_lock,
+        maker_btc_address.to_string(),
+        btc_refund_address.to_string(),
+        vtorrent_btc::htlc::DEFAULT_HTLC_LOCKTIME,
+        btc_amount,
+        network,
+    )
+    .map_err(|e| format!("Unable to construct BTC HTLC: {}", e))?;
+    let expiry = htlc.expiry;
+
+    let funding_utxo = {
+        let utxos = btc_wallet.list_utxos();
+        let selected = utxo_select(&utxos, btc_amount, BTC_HTLC_FEE_SATOSHIS)
+            .ok_or("Insufficient BTC funds")?;
+        selected
+            .into_iter()
+            .max_by_key(|u| u.value)
+            .ok_or("No BTC UTXO available")?
+    };
+    let funder_wif = btc_wallet.derive_wif(0).map_err(|e| e.to_string())?;
+    let change_address = btc_wallet.current_address().map_err(|e| e.to_string())?;
+
+    let funding_txid_bytes: [u8; 32] = {
+        use bitcoin::hashes::Hash;
+        funding_utxo
+            .txid
+            .parse::<bitcoin::Txid>()
+            .map(|t| t.to_byte_array())
+            .map_err(|e| format!("Invalid UTXO txid: {}", e))?
+    };
+
+    let unsigned = htlc
+        .build_funding_tx(
+            funding_txid_bytes,
+            funding_utxo.vout,
+            funding_utxo.value,
+            BTC_HTLC_FEE_SATOSHIS,
+            &change_address,
+        )
+        .map_err(|e| format!("Unable to build BTC funding tx: {}", e))?;
+    let signed = htlc
+        .sign_funding_tx(unsigned, funding_utxo.value, &funder_wif)
+        .map_err(|e| format!("Unable to sign BTC funding tx: {}", e))?;
+    let raw = bitcoin::consensus::encode::serialize(&signed);
+    let txid = {
+        use bitcoin::hashes::Hash;
+        signed.compute_txid().to_byte_array()
+    };
+    broadcast(&raw).await?;
+    Ok((txid, expiry))
+}
+
+/// Greedy single-UTXO selection: pick the smallest set of largest UTXOs
+/// covering `amount + fee`. Returns `None` when funds are insufficient.
+pub fn utxo_select(
+    utxos: &[vtorrent_btc::utxo::Utxo],
+    amount: u64,
+    fee: u64,
+) -> Option<Vec<vtorrent_btc::utxo::Utxo>> {
+    let required = amount.checked_add(fee)?;
+    let mut sorted: Vec<vtorrent_btc::utxo::Utxo> = utxos.to_vec();
+    sorted.sort_by(|a, b| b.value.cmp(&a.value));
+    let mut selected = Vec::new();
+    let mut sum = 0u64;
+    for u in sorted {
+        sum = sum.saturating_add(u.value);
+        selected.push(u);
+        if sum >= required {
+            return Some(selected);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod btc_funding_tests {
+    use super::*;
+
+    fn btc_utxo(value: u64) -> vtorrent_btc::utxo::Utxo {
+        vtorrent_btc::utxo::Utxo {
+            txid: format!("{:064x}", value),
+            vout: 0,
+            value,
+            address: String::new(),
+            height: 800_000,
+        }
+    }
+
+    #[test]
+    fn utxo_select_prefers_largest_first() {
+        let utxos = vec![btc_utxo(1_000), btc_utxo(50_000), btc_utxo(10_000)];
+        let selected = utxo_select(&utxos, 20_000, 1_000).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].value, 50_000);
+    }
+
+    #[test]
+    fn utxo_select_combines_when_single_utxo_insufficient() {
+        let utxos = vec![btc_utxo(15_000), btc_utxo(10_000)];
+        let selected = utxo_select(&utxos, 20_000, 1_000).unwrap();
+        assert_eq!(selected.len(), 2);
+        let total: u64 = selected.iter().map(|u| u.value).sum();
+        assert!(total >= 21_000);
+    }
+
+    #[test]
+    fn utxo_select_returns_none_when_insufficient() {
+        let utxos = vec![btc_utxo(10_000), btc_utxo(5_000)];
+        assert!(utxo_select(&utxos, 20_000, 1_000).is_none());
+    }
+}
