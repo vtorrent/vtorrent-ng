@@ -545,10 +545,14 @@ impl Mempool {
     }
 
     /// Find the txid of the entry with the lowest fee rate.
+    ///
+    /// Ties are broken by txid so eviction is deterministic: with random
+    /// tie-breaking (HashMap order), two nodes with identical mempools could
+    /// evict different entries and build divergent block templates.
     fn lowest_fee_rate_txid(&self) -> Option<[u8; 32]> {
         self.entries
             .iter()
-            .min_by_key(|(_, e)| e.fee_rate())
+            .min_by_key(|(_, e)| (e.fee_rate(), e.tx.serialized_size()))
             .map(|(txid, _)| *txid)
     }
 }
@@ -875,8 +879,10 @@ mod tests {
         let parent_txid = parent.txid();
         mp.add_transaction(parent).unwrap();
 
-        // Child spends the parent's output (fee rate same as parent's).
-        let mut child = make_tx(MIN_RELAY_FEE, 71, false);
+        // Child spends the parent's output at a strictly higher fee rate so
+        // the parent is deterministically the lowest-fee-rate entry (ties in
+        // min_by_key are resolved by HashMap order, which is random).
+        let mut child = make_tx(MIN_RELAY_FEE * 2, 71, false);
         child.inputs[0].prev_txid = parent_txid;
         child.inputs[0].prev_vout = 0;
         let child_txid = child.txid();

@@ -222,11 +222,25 @@ impl SpvChain {
     }
 
     /// Add multiple headers in sequence (e.g., from a `headers` P2P message).
+    /// Add multiple headers in sequence (e.g., from a `headers` P2P message).
+    ///
+    /// Stops at the first invalid header and returns how many were accepted —
+    /// the prefix that validated stays committed, so a peer sending a valid
+    /// prefix followed by garbage still contributes the valid part (and the
+    /// caller can re-request from the new tip instead of restarting sync).
     pub fn add_headers(&mut self, headers: Vec<SpvHeader>) -> Result<usize> {
         let mut added = 0;
         for h in headers {
-            self.add_header(h)?;
-            added += 1;
+            match self.add_header(h) {
+                Ok(()) => added += 1,
+                Err(e) => {
+                    if added == 0 {
+                        return Err(e);
+                    }
+                    tracing::debug!("SPV: stopped after {} valid headers: {}", added, e);
+                    break;
+                }
+            }
         }
         Ok(added)
     }

@@ -7,25 +7,41 @@ use serde_json::Value;
 /// A blocking HTTP client for the vTorrent RPC API.
 pub struct RpcClient {
     base_url: String,
+    api_key: Option<String>,
     client: reqwest::blocking::Client,
 }
 
 impl RpcClient {
     /// Create a new RPC client pointing at the given base URL.
-    pub fn new(base_url: String) -> Self {
+    ///
+    /// `api_key` is sent as the `X-API-Key` header on every request; the
+    /// daemon rejects wallet/staking/DEX/claim/broadcast calls without it
+    /// when `--rpc-api-key` is configured. Read from the
+    /// `VTORRENT_RPC_API_KEY` environment variable by the CLI entry point.
+    pub fn new(base_url: String, api_key: Option<String>) -> Self {
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("failed to build HTTP client");
-        Self { base_url, client }
+        Self {
+            base_url,
+            api_key,
+            client,
+        }
+    }
+
+    fn auth(&self) -> Option<(&'static str, String)> {
+        self.api_key.as_ref().map(|k| ("X-API-Key", k.clone()))
     }
 
     /// Make a GET request and return the JSON response.
     pub fn get(&self, path: &str) -> Result<Value> {
         let url = format!("{}{}", self.base_url, path);
-        let response = self
-            .client
-            .get(&url)
+        let mut request = self.client.get(&url);
+        if let Some((name, value)) = self.auth() {
+            request = request.header(name, value);
+        }
+        let response = request
             .send()
             .with_context(|| format!("Failed to connect to RPC server at {}", self.base_url))?;
 
@@ -48,9 +64,11 @@ impl RpcClient {
     /// Make a GET request and return the raw text response.
     pub fn get_text(&self, path: &str) -> Result<String> {
         let url = format!("{}{}", self.base_url, path);
-        let response = self
-            .client
-            .get(&url)
+        let mut request = self.client.get(&url);
+        if let Some((name, value)) = self.auth() {
+            request = request.header(name, value);
+        }
+        let response = request
             .send()
             .with_context(|| format!("Failed to connect to RPC server at {}", self.base_url))?;
 
@@ -68,10 +86,11 @@ impl RpcClient {
     /// Make a POST request with a JSON body and return the JSON response.
     pub fn post(&self, path: &str, body: &Value) -> Result<Value> {
         let url = format!("{}{}", self.base_url, path);
-        let response = self
-            .client
-            .post(&url)
-            .json(body)
+        let mut request = self.client.post(&url).json(body);
+        if let Some((name, value)) = self.auth() {
+            request = request.header(name, value);
+        }
+        let response = request
             .send()
             .with_context(|| format!("Failed to connect to RPC server at {}", self.base_url))?;
 
@@ -94,9 +113,11 @@ impl RpcClient {
     /// Make a DELETE request and return the JSON response.
     pub fn delete(&self, path: &str) -> Result<Value> {
         let url = format!("{}{}", self.base_url, path);
-        let response = self
-            .client
-            .delete(&url)
+        let mut request = self.client.delete(&url);
+        if let Some((name, value)) = self.auth() {
+            request = request.header(name, value);
+        }
+        let response = request
             .send()
             .with_context(|| format!("Failed to connect to RPC server at {}", self.base_url))?;
 
@@ -118,14 +139,32 @@ mod tests {
 
     #[test]
     fn test_client_creation() {
-        let client = RpcClient::new("http://127.0.0.1:22525".to_string());
+        let client = RpcClient::new("http://127.0.0.1:22525".to_string(), None);
         assert!(client.base_url.contains("22525"));
+        assert!(client.api_key.is_none());
+    }
+
+    #[test]
+    fn test_client_with_api_key() {
+        let client = RpcClient::new(
+            "http://127.0.0.1:22525".to_string(),
+            Some("secret-key".to_string()),
+        );
+        let (name, value) = client.auth().expect("api key must be set");
+        assert_eq!(name, "X-API-Key");
+        assert_eq!(value, "secret-key");
+    }
+
+    #[test]
+    fn test_client_without_api_key_has_no_auth() {
+        let client = RpcClient::new("http://127.0.0.1:22525".to_string(), None);
+        assert!(client.auth().is_none());
     }
 
     #[test]
     fn test_client_connection_refused() {
         // Port 19999 should not be running
-        let client = RpcClient::new("http://127.0.0.1:19999".to_string());
+        let client = RpcClient::new("http://127.0.0.1:19999".to_string(), None);
         let result = client.get("/api/v1/info");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();

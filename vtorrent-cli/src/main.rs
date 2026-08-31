@@ -40,6 +40,7 @@ use serde_json::Value;
 ///   peers                    List connected P2P peers
 /// ```
 use std::process;
+use zeroize::Zeroize;
 
 mod client;
 mod format;
@@ -245,7 +246,10 @@ enum ClaimCommands {
 
 fn main() {
     let cli = Cli::parse();
-    let client = RpcClient::new(cli.rpc_url.clone());
+    // The daemon's --rpc-api-key gates wallet/staking/DEX/claim/broadcast
+    // endpoints; without the header those calls fail with 401.
+    let api_key = std::env::var("VTORRENT_RPC_API_KEY").ok();
+    let client = RpcClient::new(cli.rpc_url.clone(), api_key);
 
     let result = run_command(&cli, &client);
     match result {
@@ -351,7 +355,10 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                 "amount_satoshis": amount_sats,
                 "passphrase": passphrase,
             });
-            let data = client.post("/api/v1/wallet/send", &payload)?;
+            let data = client.post("/api/v1/wallet/send", &payload);
+            let mut passphrase = passphrase;
+            passphrase.zeroize();
+            let data = data?;
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&data)?);
             } else {
@@ -372,7 +379,10 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                 "passphrase": passphrase,
                 "timeout_secs": timeout,
             });
-            let data = client.post("/api/v1/wallet/unlock", &payload)?;
+            let data = client.post("/api/v1/wallet/unlock", &payload);
+            let mut owned = passphrase.clone();
+            owned.zeroize();
+            let data = data?;
             if data["success"].as_bool().unwrap_or(false) {
                 println!("{}", "Wallet unlocked.".green().bold());
             } else {
@@ -408,7 +418,10 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                         "passphrase": passphrase,
                         "timeout_secs": 300,
                     }),
-                )?;
+                );
+                let mut passphrase = passphrase;
+                passphrase.zeroize();
+                let unlock = unlock?;
                 if !unlock["success"].as_bool().unwrap_or(false) {
                     return Err(anyhow::anyhow!("Failed to unlock wallet"));
                 }
@@ -500,7 +513,10 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                     "expiry_secs": 0,
                     "passphrase": passphrase,
                 });
-                let data = client.post("/api/v1/dex/order", &payload)?;
+                let data = client.post("/api/v1/dex/order", &payload);
+                let mut passphrase = passphrase;
+                passphrase.zeroize();
+                let data = data?;
                 let id = data["order_id"].as_str().unwrap_or("unknown");
                 println!(
                     "{} {} (ID: {})",
@@ -531,7 +547,10 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                     "expiry_secs": 0,
                     "passphrase": passphrase,
                 });
-                let data = client.post("/api/v1/dex/order", &payload)?;
+                let data = client.post("/api/v1/dex/order", &payload);
+                let mut passphrase = passphrase;
+                passphrase.zeroize();
+                let data = data?;
                 let id = data["order_id"].as_str().unwrap_or("unknown");
                 println!(
                     "{} {} (ID: {})",
