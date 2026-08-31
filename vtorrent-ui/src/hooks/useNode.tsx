@@ -139,8 +139,11 @@ function usePoll<T>(
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const inFlightRef = useRef(false)
 
   const run = useCallback(async () => {
+    if (inFlightRef.current) return
+    inFlightRef.current = true
     try {
       const result = await fetcher()
       setData(result)
@@ -148,6 +151,7 @@ function usePoll<T>(
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
+      inFlightRef.current = false
       setLoading(false)
     }
   }, [fetcher])

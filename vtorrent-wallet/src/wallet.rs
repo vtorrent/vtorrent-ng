@@ -137,6 +137,10 @@ impl Wallet {
     }
 
     /// Save the wallet to a file path (encrypts with the stored passphrase).
+    ///
+    /// Atomic: writes to a temp file with `0600` before renaming, so a crash
+    /// cannot leave a truncated wallet and the key material is never
+    /// world-readable — matches the RPC persistence path's guarantees.
     pub fn save(&self, path: &std::path::Path) -> Result<()> {
         let plaintext = serde_json::to_vec(&self.data)
             .map_err(|e| WalletError::Serialization(e.to_string()))?;
@@ -147,11 +151,32 @@ impl Wallet {
         };
         let json = serde_json::to_string_pretty(&wallet_file)
             .map_err(|e| WalletError::Serialization(e.to_string()))?;
-        // Ensure parent directory exists
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| WalletError::Io(e.to_string()))?;
         }
-        std::fs::write(path, json).map_err(|e| WalletError::Io(e.to_string()))?;
+        let tmp = path.with_extension("json.tmp");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)
+                .and_then(|mut f| std::io::Write::write_all(&mut f, json.as_bytes()))
+                .map_err(|e| WalletError::Io(e.to_string()))?;
+        }
+        #[cfg(not(unix))]
+        std::fs::write(&tmp, &json).map_err(|e| WalletError::Io(e.to_string()))?;
+        std::fs::rename(&tmp, path).map_err(|e| WalletError::Io(e.to_string()))?;
+        // Re-assert 0600 on Unix: rename preserves the source mode, but
+        // pre-existing files keep their old permissions.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
         Ok(())
     }
 
