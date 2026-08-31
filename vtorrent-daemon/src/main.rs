@@ -106,7 +106,11 @@ async fn main() -> anyhow::Result<()> {
         max_mempool: 10_000,
         extra_seeds: cli.seeds.clone(),
         use_dht: !cli.no_dht,
-        isolated: cli.isolated,
+        // Regtest shares the mainnet magic and port, so an un-isolated regtest
+        // node can reach production seeds, ingest their peer view, and gossip
+        // locally-minted non-PoS blocks to the live network. Force isolation
+        // in regtest mode (mirrors the faucet: local-only by design).
+        isolated: cli.isolated || cli.regtest,
         public_addr: cli.public_addr.as_deref().and_then(|a| a.parse().ok()),
         data_dir: data_dir.clone(),
         use_overlay: true,

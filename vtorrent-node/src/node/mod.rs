@@ -565,6 +565,10 @@ impl Node {
                 // PEX: periodically send getaddr and self-announce
                 _ = pex_ticker.tick() => {
                     self.do_pex_maintenance().await;
+                    // Prune expired bans and decay misbehaviour scores.
+                    // Without this the ban manager's maps grow without bound
+                    // (remote-triggerable memory exhaustion via IP rotation).
+                    self.peer_manager.prune_bans().await;
                 }
 
                 // DHT: periodically re-announce ourselves
@@ -576,57 +580,60 @@ impl Node {
                 // Locally-submitted transactions from RPC/wallet
                 Some(tx) = self.tx_submit_rx.recv() => {
                     let txid = tx.txid();
-                    let fee_sats = tx.fee_sats();
                     let size_bytes = tx.serialized_size();
-                    let mut mp = self.mempool.lock().await;
-                    let already_admitted = mp.get_transaction(&txid).is_some();
-                    let admission = if already_admitted {
-                        Ok(())
-                    } else {
-                        mp.add_transaction(tx)
-                    };
-                    match admission {
-                        Ok(()) => {
-                            if !already_admitted {
-                                self.emit(NodeEvent::TxUnconfirmed { txid, fee_sats, size_bytes });
-                            }
-                            let inv_msg = InvMsg {
-                                items: vec![InvItem {
-                                    inv_type: InvType::Transaction,
-                                    hash: txid,
-                                }],
-                            };
-                            let payload = if self.peer_versions.values().any(|v| is_v2_peer(*v)) {
-                                encode_v2(&inv_msg).unwrap_or_else(|e| {
-                                    tracing::warn!("Failed to bincode inv: {}", e);
-                                    Vec::new()
-                                })
-                            } else {
-                                match serde_json::to_vec(&inv_msg) {
-                                    Ok(p) => p,
-                                    Err(e) => {
-                                        tracing::warn!("Failed to serialize inv message: {}", e);
-                                        drop(mp);
-                                        return Ok(());
-                                    }
+                    // Route through admit_with_chain_fee like the P2P path:
+                    // add_transaction would trust tx.fee_sats() (which assumes
+                    // every input is worth 100k sats, fabricating fees) and
+                    // skip script verification entirely.
+                    let admission_fee = {
+                        let mut mp = self.mempool.lock().await;
+                        if mp.get_transaction(&txid).is_some() {
+                            None
+                        } else {
+                            let chain = self.chain.lock().await;
+                            match mp.admit_with_chain_fee(&chain, tx) {
+                                Ok(fee) => Some(fee),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        txid = %hex::encode(txid),
+                                        "Local tx submission rejected: {}",
+                                        e
+                                    );
+                                    None
                                 }
-                            };
-                            if payload.is_empty() {
-                                drop(mp);
-                                return Ok(());
                             }
-                            drop(mp);
+                        }
+                    };
+                    if let Some(fee_sats) = admission_fee {
+                        self.emit(NodeEvent::TxUnconfirmed { txid, fee_sats, size_bytes });
+                        let inv_msg = InvMsg {
+                            items: vec![InvItem {
+                                inv_type: InvType::Transaction,
+                                hash: txid,
+                            }],
+                        };
+                        let payload = if self.peer_versions.values().any(|v| is_v2_peer(*v)) {
+                            encode_v2(&inv_msg).unwrap_or_else(|e| {
+                                tracing::warn!("Failed to bincode inv: {}", e);
+                                Vec::new()
+                            })
+                        } else {
+                            match serde_json::to_vec(&inv_msg) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    tracing::warn!("Failed to serialize inv message: {}", e);
+                                    Vec::new()
+                                }
+                            }
+                        };
+                        if !payload.is_empty() {
                             self.peer_manager.broadcast(
                                 NetMessage::new("inv", payload)
                             ).await;
                             tracing::info!(
-                                already_admitted,
                                 "Local tx {} announced to peers",
                                 hex::encode(txid)
                             );
-                        }
-                        Err(e) => {
-                            tracing::warn!("Local tx rejected by mempool: {}", e);
                         }
                     }
                 }

@@ -27,9 +27,12 @@ pub async fn faucet(
     }
 
     // Per-address cooldown: 10 seconds between claims from the same address.
+    // Entries older than the window are pruned on every call — without this
+    // the map grows by one entry per unique address for the node's lifetime.
     const FAUCET_COOLDOWN_SECS: u64 = 10;
     {
         let mut cooldowns = state.faucet_cooldowns.write().await;
+        cooldowns.retain(|_, last| last.elapsed().as_secs() < FAUCET_COOLDOWN_SECS);
         if let Some(last) = cooldowns.get(&req.address) {
             let elapsed = last.elapsed().as_secs();
             if elapsed < FAUCET_COOLDOWN_SECS {
@@ -39,7 +42,6 @@ pub async fn faucet(
                 )));
             }
         }
-        cooldowns.insert(req.address.clone(), std::time::Instant::now());
     }
 
     let amount = req
@@ -50,15 +52,26 @@ pub async fn faucet(
             "Amount must be non-zero — provide a positive satoshi amount".into(),
         ));
     }
+    // Cap per-request mints: without this a single request can mint the
+    // entire remaining supply headroom.
+    const FAUCET_MAX_PER_REQUEST: u64 = 1_000 * vtorrent_node::consensus::COIN;
+    if amount > FAUCET_MAX_PER_REQUEST {
+        return Err(RpcError::BadRequest(format!(
+            "Amount {} sats exceeds the per-request faucet cap of {} sats",
+            amount, FAUCET_MAX_PER_REQUEST
+        )));
+    }
+
+    // Truncate by chars: byte-slicing arbitrary UTF-8 text can split a
+    // multi-byte character and panic the handler task.
+    let address_display: String = req.address.chars().take(64).collect();
 
     let (txid, height, block) = {
         let mut chain = state.chain.lock().await;
         let txid = chain.mint_to_address(&req.address, amount).map_err(|e| {
             RpcError::Internal(format!(
                 "Failed to mint {} sats to {}: {}",
-                amount,
-                &req.address[..req.address.len().min(64)],
-                e
+                amount, address_display, e
             ))
         })?;
         let height = chain.best_height();
@@ -68,6 +81,14 @@ pub async fn faucet(
             .ok_or_else(|| RpcError::Internal(format!("Minted block at height {} not found immediately after mint — chain state inconsistent", height)))?;
         (txid, height, block)
     };
+
+    // Stamp the cooldown only after the mint succeeded — a failed mint
+    // (invalid address, supply cap) must not burn the caller's window.
+    state
+        .faucet_cooldowns
+        .write()
+        .await
+        .insert(req.address.clone(), std::time::Instant::now());
 
     // Announce the minted block to peers so a multi-node regtest network stays
     // in sync (the faucet mints directly into the chain, bypassing the node's

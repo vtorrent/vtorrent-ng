@@ -232,6 +232,28 @@ impl Mempool {
                         fee_rate
                     );
                     self.remove_entry(&lowest_txid);
+                    // Evict descendants of the removed entry too: without
+                    // this they are left spending a non-existent parent's
+                    // outputs, can never confirm, and occupy capacity until
+                    // the TTL — an attacker can permanently consume slots by
+                    // pairing a low-fee tx with a child (mirrors the RBF
+                    // frontier eviction above).
+                    let mut frontier: Vec<[u8; 32]> = vec![lowest_txid];
+                    while !frontier.is_empty() {
+                        let doomed: Vec<[u8; 32]> = self
+                            .spent_inputs
+                            .iter()
+                            .filter(|((prev_txid, _), _)| frontier.contains(prev_txid))
+                            .map(|(_, owner)| *owner)
+                            .collect();
+                        if doomed.is_empty() {
+                            break;
+                        }
+                        for txid in &doomed {
+                            self.remove_entry(txid);
+                        }
+                        frontier = doomed;
+                    }
                     // Raise the dynamic minimum fee rate
                     self.min_fee_rate = lowest_rate + 1;
                 } else {
@@ -839,5 +861,41 @@ mod tests {
             !mp.spent_inputs.contains_key(&([1u8; 32], 0)),
             "evicted entry must release its spent-input reservation"
         );
+    }
+    /// Capacity eviction must also remove descendants of the evicted entry:
+    /// orphans spend a non-existent parent's outputs, can never confirm, and
+    /// would occupy capacity until the TTL (attacker: pair a low-fee tx with
+    /// a child to permanently consume slots).
+    #[test]
+    fn test_capacity_eviction_removes_descendants() {
+        let mut mp = Mempool::new(2);
+
+        // Parent (low fee) at capacity.
+        let parent = make_tx(MIN_RELAY_FEE, 70, false);
+        let parent_txid = parent.txid();
+        mp.add_transaction(parent).unwrap();
+
+        // Child spends the parent's output (fee rate same as parent's).
+        let mut child = make_tx(MIN_RELAY_FEE, 71, false);
+        child.inputs[0].prev_txid = parent_txid;
+        child.inputs[0].prev_vout = 0;
+        let child_txid = child.txid();
+        mp.add_transaction(child).unwrap();
+        assert_eq!(mp.size(), 2);
+
+        // A higher-fee tx arrives; the parent is the lowest-fee-rate entry
+        // and gets evicted. The child must go with it.
+        let high_fee = make_tx(50_000, 72, false);
+        mp.add_transaction(high_fee).unwrap();
+
+        assert!(
+            mp.get_transaction(&parent_txid).is_none(),
+            "parent must be evicted"
+        );
+        assert!(
+            mp.get_transaction(&child_txid).is_none(),
+            "child must be evicted with its parent (orphan prevention)"
+        );
+        assert_eq!(mp.size(), 1);
     }
 }

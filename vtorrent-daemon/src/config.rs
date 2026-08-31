@@ -147,7 +147,9 @@ pub fn validate_startup_config(cli: &Cli, data_dir: &std::path::Path) -> anyhow:
     };
 
     // The P2P crate compiles with a hardcoded magic — verify it matches.
-    let compiled_magic = vtorrent_core::network::mainnet::NETWORK_MAGIC;
+    // (Comparing against the core mainnet constant instead was a tautology
+    // for mainnet/regtest and an unconditional failure for testnet.)
+    let compiled_magic = vtorrent_p2p::message::NETWORK_MAGIC;
     if compiled_magic != expected_magic {
         anyhow::bail!(
             "Network magic mismatch: compiled magic {:02x?} does not match expected {:02x?} for {} mode",
