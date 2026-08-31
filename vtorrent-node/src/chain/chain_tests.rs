@@ -1014,3 +1014,321 @@ fn test_verify_tx_scripts_accepts_valid_signature() {
         .verify_tx_scripts(&tx, height, timestamp)
         .expect("valid P2PKH spend must pass script verification");
 }
+
+// ─── Reorg deep-coverage tests (chain_reorg.rs paths) ────────────────────────
+
+use secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+fn addr_from_seed(seed: u8) -> String {
+    let secp = Secp256k1::new();
+    let mut sk_bytes = [0u8; 32];
+    sk_bytes[31] = seed;
+    let sk = SecretKey::from_slice(&sk_bytes).unwrap();
+    let pk = PublicKey::from_secret_key(&secp, &sk);
+    vtorrent_core::address::Address::from_pubkey(&pk, true, 70).to_string()
+}
+
+fn chain_addr_script(address: &str) -> Vec<u8> {
+    let addr = vtorrent_core::address::validate_p2pkh(address).unwrap();
+    vtorrent_core::address::p2pkh_script_pubkey(&addr.hash)
+}
+
+fn signed_transfer(
+    utxo: &crate::chain::Utxo,
+    recipient: &str,
+    value: u64,
+    secp: &Secp256k1<secp256k1::All>,
+    secret: &SecretKey,
+    pubkey: &PublicKey,
+) -> Transaction {
+    let mut tx = Transaction {
+        version: 1,
+        tx_type: TxType::Standard,
+        inputs: vec![TxInput {
+            prev_txid: utxo.txid,
+            prev_vout: utxo.vout,
+            script_sig: Vec::new(),
+            sequence: 0xffff_fffe,
+        }],
+        outputs: vec![TxOutput {
+            value,
+            script_pubkey: chain_addr_script(recipient),
+        }],
+        lock_time: 0,
+        claim_address: None,
+        claim_signature: None,
+    };
+    let sighash = tx.sighash(0, &utxo.script_pubkey);
+    let msg = secp256k1::Message::from_digest(sighash);
+    let sig = secp.sign_ecdsa(&msg, secret);
+    let mut der = sig.serialize_der().to_vec();
+    der.push(0x01);
+    let pk_bytes = pubkey.serialize();
+    let mut script_sig = Vec::with_capacity(2 + der.len() + pk_bytes.len());
+    script_sig.push(der.len() as u8);
+    script_sig.extend_from_slice(&der);
+    script_sig.push(pk_bytes.len() as u8);
+    script_sig.extend_from_slice(&pk_bytes);
+    tx.inputs[0].script_sig = script_sig;
+    tx
+}
+
+/// Build a block containing the given transactions on top of `prev_hash`.
+/// The coinbase is prepended automatically; the caller may override the nonce
+/// afterwards (recomputing merkle root is the caller's job).
+fn block_with_txs_on(
+    prev_modifier: u64,
+    prev_hash: [u8; 32],
+    height: u32,
+    timestamp: u32,
+    mut txs: Vec<Transaction>,
+) -> Block {
+    let coinbase = Transaction {
+        version: 1,
+        tx_type: TxType::Coinbase,
+        inputs: vec![TxInput {
+            prev_txid: [0u8; 32],
+            prev_vout: 0xffffffff,
+            script_sig: vec![height as u8],
+            sequence: 0xffffffff,
+        }],
+        outputs: vec![TxOutput {
+            value: crate::consensus::COIN,
+            script_pubkey: vec![
+                0x76, 0xa9, 0x14, 0xab, 0xcd, 0xef, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0x88, 0xac,
+            ],
+        }],
+        lock_time: height,
+        claim_address: None,
+        claim_signature: None,
+    };
+    txs.insert(0, coinbase);
+    let mut block = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block_hash: prev_hash,
+            merkle_root: [0u8; 32],
+            timestamp,
+            bits: crate::genesis::GENESIS_BITS,
+            nonce: height,
+            stake_modifier: compute_stake_modifier(prev_modifier, &prev_hash),
+        },
+        transactions: txs,
+    };
+    block.header.merkle_root = block.compute_merkle_root();
+    block
+}
+
+/// Two competing forks spending the same UTXO: the longer fork must win the
+/// reorg, and the UTXO set must reflect the winning fork's spend.
+#[test]
+fn test_reorg_conflicting_spends_longer_fork_wins() {
+    use secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+    let secp = Secp256k1::new();
+    let secret = SecretKey::from_slice(&[0xAB; 32]).unwrap();
+    let pubkey = PublicKey::from_secret_key(&secp, &secret);
+    let sender = {
+        let pk = PublicKey::from_secret_key(&secp, &secret);
+        vtorrent_core::address::Address::from_pubkey(&pk, true, 70).to_string()
+    };
+    let recipient_main = addr_from_seed(0xCD);
+    let recipient_fork = addr_from_seed(0xEF);
+
+    let mut chain = Chain::new().unwrap();
+    chain
+        .mint_to_address(&sender, 10 * crate::consensus::COIN)
+        .unwrap();
+    let funded_hash = chain.best_hash().unwrap();
+    let funded_modifier = chain.get_block_at_height(1).unwrap().header.stake_modifier;
+    let funded_ts = chain.get_block_at_height(1).unwrap().header.timestamp;
+    let utxo = chain.get_utxos_for_address(&sender)[0].clone();
+
+    // Main chain height 2: spends the minted UTXO to recipient_main.
+    let main_spend = signed_transfer(
+        &utxo,
+        &recipient_main,
+        5 * crate::consensus::COIN,
+        &secp,
+        &secret,
+        &pubkey,
+    );
+    let main_block = block_with_txs_on(
+        funded_modifier,
+        funded_hash,
+        2,
+        funded_ts + 1,
+        vec![main_spend],
+    );
+    chain.add_block(main_block).unwrap();
+    assert!(chain.get_utxos_for_address(&sender).is_empty());
+    assert_eq!(chain.get_utxos_for_address(&recipient_main).len(), 1);
+
+    // Fork height 2 (same parent, different coinbase → different hash):
+    // spends the SAME UTXO to recipient_fork. Stored as a fork.
+    let fork_spend = signed_transfer(
+        &utxo,
+        &recipient_fork,
+        4 * crate::consensus::COIN,
+        &secp,
+        &secret,
+        &pubkey,
+    );
+    let mut fork_block = block_with_txs_on(
+        funded_modifier,
+        funded_hash,
+        2,
+        funded_ts + 2,
+        vec![fork_spend],
+    );
+    fork_block.header.nonce = 777;
+    fork_block.header.merkle_root = fork_block.compute_merkle_root();
+    let fork_hash = fork_block.hash();
+    let fork_modifier = fork_block.header.stake_modifier;
+    let acceptance = chain.add_block(fork_block).unwrap();
+    assert!(
+        matches!(acceptance, super::BlockAcceptance::Fork { .. }),
+        "same-height competing block must be stored as a fork"
+    );
+    assert_eq!(chain.best_height(), 2);
+    assert!(chain.get_utxos_for_address(&recipient_fork).is_empty());
+
+    // Fork extension at height 3 → the fork becomes the main chain (reorg).
+    let ext_block = block_with_txs_on(fork_modifier, fork_hash, 3, funded_ts + 3, vec![]);
+    let ext_acceptance = chain.add_block(ext_block).unwrap();
+    assert!(
+        matches!(ext_acceptance, super::BlockAcceptance::Reorg { .. }),
+        "longer fork must trigger a reorg"
+    );
+    assert_eq!(chain.best_height(), 3);
+
+    // The winning fork's spend is now authoritative.
+    assert!(
+        chain.get_utxos_for_address(&recipient_main).is_empty(),
+        "main-chain spend must be rolled back"
+    );
+    let fork_utxos = chain.get_utxos_for_address(&recipient_fork);
+    assert_eq!(fork_utxos.len(), 1, "fork spend must be live after reorg");
+    assert_eq!(fork_utxos[0].value, 4 * crate::consensus::COIN);
+    // The spent UTXO's replacement reflects the fork's output value.
+    assert!(
+        chain.get_utxo(&utxo.txid, utxo.vout).is_none(),
+        "the disputed UTXO must remain spent after the reorg"
+    );
+    let _ = fork_hash;
+}
+
+/// Rolling back a block restores its spent inputs and removes its outputs —
+/// verified through the public UTXO interface.
+#[test]
+fn test_rollback_restores_spent_input_and_removes_outputs() {
+    use secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+    let secp = Secp256k1::new();
+    let secret = SecretKey::from_slice(&[0xAB; 32]).unwrap();
+    let pubkey = PublicKey::from_secret_key(&secp, &secret);
+    let sender = {
+        let pk = PublicKey::from_secret_key(&secp, &secret);
+        vtorrent_core::address::Address::from_pubkey(&pk, true, 70).to_string()
+    };
+    let recipient = addr_from_seed(0x11);
+
+    let mut chain = Chain::new().unwrap();
+    chain
+        .mint_to_address(&sender, 10 * crate::consensus::COIN)
+        .unwrap();
+    let utxo_before = chain.get_utxos_for_address(&sender)[0].clone();
+
+    let spend = signed_transfer(
+        &utxo_before,
+        &recipient,
+        5 * crate::consensus::COIN,
+        &secp,
+        &secret,
+        &pubkey,
+    );
+    let spend_txid = spend.txid();
+    let funded_ts = chain.get_block_at_height(1).unwrap().header.timestamp;
+    let block = block_with_txs_on(
+        chain.get_block_at_height(1).unwrap().header.stake_modifier,
+        chain.best_hash().unwrap(),
+        2,
+        funded_ts + 1,
+        vec![spend],
+    );
+    chain.add_block(block).unwrap();
+    assert!(chain.get_utxos_for_address(&sender).is_empty());
+    assert!(chain.get_transaction(&spend_txid).is_some());
+
+    chain.rollback_one_block().unwrap();
+
+    // The spent input is back, the recipient output is gone, and the tx is
+    // no longer indexed.
+    let restored = chain.get_utxos_for_address(&sender);
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].txid, utxo_before.txid);
+    assert!(chain.get_utxos_for_address(&recipient).is_empty());
+    assert!(chain.get_transaction(&spend_txid).is_none());
+    assert_eq!(chain.best_height(), 1);
+}
+
+/// A double-spend of the same input within one block must be rejected and
+/// leave the UTXO set untouched (journal rollback path).
+#[test]
+fn test_double_spend_within_block_rejected_and_rolled_back() {
+    use secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+    let secp = Secp256k1::new();
+    let secret = SecretKey::from_slice(&[0xAB; 32]).unwrap();
+    let pubkey = PublicKey::from_secret_key(&secp, &secret);
+    let sender = {
+        let pk = PublicKey::from_secret_key(&secp, &secret);
+        vtorrent_core::address::Address::from_pubkey(&pk, true, 70).to_string()
+    };
+    let r1 = addr_from_seed(0x21);
+    let r2 = addr_from_seed(0x22);
+
+    let mut chain = Chain::new().unwrap();
+    let genesis_hash = chain.best_hash().unwrap();
+    chain
+        .mint_to_address(&sender, 10 * crate::consensus::COIN)
+        .unwrap();
+    let utxo = chain.get_utxos_for_address(&sender)[0].clone();
+    let supply_before = chain.total_supply();
+
+    let tx1 = signed_transfer(
+        &utxo,
+        &r1,
+        5 * crate::consensus::COIN,
+        &secp,
+        &secret,
+        &pubkey,
+    );
+    let tx2 = signed_transfer(
+        &utxo,
+        &r2,
+        6 * crate::consensus::COIN,
+        &secp,
+        &secret,
+        &pubkey,
+    );
+
+    let funded_ts = chain.get_block_at_height(1).unwrap().header.timestamp;
+    let block = block_with_txs_on(
+        chain.get_block_at_height(1).unwrap().header.stake_modifier,
+        genesis_hash,
+        2,
+        funded_ts + 1,
+        vec![tx1, tx2],
+    );
+    assert!(chain.add_block(block).is_err());
+
+    // Journal rollback must have restored the pre-block state exactly.
+    assert_eq!(chain.best_height(), 1);
+    assert_eq!(chain.total_supply(), supply_before);
+    let sender_utxos = chain.get_utxos_for_address(&sender);
+    assert_eq!(sender_utxos.len(), 1, "input UTXO must be restored");
+    assert!(chain.get_utxos_for_address(&r1).is_empty());
+    assert!(chain.get_utxos_for_address(&r2).is_empty());
+}
