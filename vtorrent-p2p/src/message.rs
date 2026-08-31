@@ -110,8 +110,21 @@ pub fn encode_v2<T: serde::Serialize>(msg: &T) -> crate::error::Result<Vec<u8>> 
 }
 
 /// Decode a message using V2 bincode wire format.
+///
+/// Uses a bounded deserializer: bincode's default has no allocation limit, so
+/// a crafted payload declaring a huge `Vec` length makes it attempt the
+/// allocation before reading any data (memory-amplification DoS from a
+/// single datagram). The limit matches the codec's `MAX_PAYLOAD_SIZE` — no
+/// legitimate message body decodes larger than the frame that carried it.
 pub fn decode_v2<T: for<'de> serde::Deserialize<'de>>(bytes: &[u8]) -> crate::error::Result<T> {
-    bincode::deserialize(bytes).map_err(|e| crate::error::P2pError::Decode(e.to_string()))
+    use bincode::config::Options as _;
+    let options = bincode::options()
+        .with_fixint_encoding()
+        .allow_trailing_bytes()
+        .with_limit(crate::message::MAX_PAYLOAD_SIZE as u64);
+    options
+        .deserialize(bytes)
+        .map_err(|e| crate::error::P2pError::Decode(e.to_string()))
 }
 
 /// Returns `true` if the peer supports the V2 bincode wire format.
@@ -339,5 +352,45 @@ mod tests {
         let v2 = encode_v2(&msg).unwrap();
         assert!(v2.len() < serde_json::to_vec(&msg).unwrap().len());
         assert_eq!(decode_v2::<InvMsg>(&v2).unwrap(), msg);
+    }
+}
+
+#[cfg(test)]
+mod decode_limit_tests {
+    use super::*;
+
+    /// A bincode payload declaring a huge Vec length must fail the size limit
+    /// instead of attempting the allocation (memory-amplification DoS: one
+    /// datagram → multi-GB allocation before any payload byte is read).
+    #[test]
+    fn test_decode_v2_rejects_oversized_declared_length() {
+        // Hand-craft a bincode body for a struct with a Vec<u8> field:
+        // u64 LE length prefix = u64::MAX, followed by no data. The default
+        // deserializer would try to reserve u64::MAX bytes; the bounded one
+        // must reject it.
+        let mut crafted = Vec::new();
+        crafted.extend_from_slice(&u64::MAX.to_le_bytes());
+        // A few trailing bytes so the deserializer hits the limit check
+        // while "reserving" rather than erroring on EOF first.
+        crafted.extend_from_slice(&[0u8; 16]);
+
+        let result = decode_v2::<InvMsg>(&crafted);
+        assert!(
+            result.is_err(),
+            "oversized declared length must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_decode_v2_still_accepts_normal_messages() {
+        let msg = InvMsg {
+            items: vec![InvItem {
+                inv_type: InvType::Block,
+                hash: [7u8; 32],
+            }],
+        };
+        let encoded = encode_v2(&msg).unwrap();
+        let decoded = decode_v2::<InvMsg>(&encoded).unwrap();
+        assert_eq!(decoded, msg);
     }
 }

@@ -1671,3 +1671,44 @@ mod dispatch_tests {
         assert_eq!(score, 0);
     }
 }
+
+#[cfg(test)]
+mod deserialize_limit_tests {
+    use super::*;
+    use crate::node::NodeConfig;
+
+    fn test_node() -> Node {
+        let config = NodeConfig {
+            isolated: true,
+            use_dht: false,
+            use_overlay: false,
+            ..NodeConfig::default()
+        };
+        Node::new(config).expect("test node creation failed")
+    }
+
+    /// A bincode block payload declaring a huge Vec length must fail the size
+    /// limit instead of attempting the allocation (memory-amplification DoS).
+    #[tokio::test]
+    async fn test_deserialize_block_rejects_oversized_declared_length() {
+        let node = test_node();
+        // Hand-craft a bincode body declaring u64::MAX elements.
+        let mut crafted = Vec::new();
+        crafted.extend_from_slice(&u64::MAX.to_le_bytes());
+        crafted.extend_from_slice(&[0u8; 16]);
+
+        assert!(node.deserialize_block(&crafted).is_err());
+        assert!(node.deserialize_tx(&crafted).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_block_roundtrip_still_works() {
+        let node = test_node();
+        let block = crate::genesis::create_genesis_block();
+        let bytes = bincode::serialize(&block).unwrap();
+        let decoded = node
+            .deserialize_block(&bytes)
+            .expect("valid block must decode");
+        assert_eq!(decoded.hash(), block.hash());
+    }
+}

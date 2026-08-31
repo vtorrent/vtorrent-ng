@@ -34,8 +34,17 @@ impl super::Node {
     /// Deserialize a block from raw bytes (V2 bincode with JSON fallback).
     /// Lock order `chain → mempool` not needed (pure decode).
     pub(crate) fn deserialize_block(&self, bytes: &[u8]) -> Result<Block> {
-        // Try V2 bincode first (2-5x smaller), then JSON fallback for legacy peers
-        if let Ok(block) = bincode::deserialize::<Block>(bytes) {
+        // Try V2 bincode first (2-5x smaller), then JSON fallback for legacy
+        // peers. bincode's default deserializer has no allocation limit: a
+        // crafted payload declaring a huge Vec length makes it attempt the
+        // allocation before reading any data. Bound it to the consensus max
+        // block size (bincode overhead keeps decoded ≤ encoded here).
+        use bincode::config::Options as _;
+        let options = bincode::options()
+            .with_fixint_encoding()
+            .allow_trailing_bytes()
+            .with_limit(crate::consensus::MAX_BLOCK_SIZE as u64);
+        if let Ok(block) = options.deserialize(bytes) {
             return Ok(block);
         }
         serde_json::from_slice(bytes)
@@ -44,7 +53,12 @@ impl super::Node {
 
     /// Deserialize a transaction from raw bytes (V2 bincode with JSON fallback).
     pub(crate) fn deserialize_tx(&self, bytes: &[u8]) -> Result<Transaction> {
-        if let Ok(tx) = bincode::deserialize::<Transaction>(bytes) {
+        use bincode::config::Options as _;
+        let options = bincode::options()
+            .with_fixint_encoding()
+            .allow_trailing_bytes()
+            .with_limit(crate::consensus::MAX_BLOCK_SIZE as u64);
+        if let Ok(tx) = options.deserialize(bytes) {
             return Ok(tx);
         }
         serde_json::from_slice(bytes)
