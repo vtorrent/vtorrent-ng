@@ -172,10 +172,17 @@ pub async fn get_node_info(state: tauri::State<'_, AppState>) -> Result<NodeInfo
             let syncing = *rpc.syncing.read().await;
             let uptime = handle.start_time.elapsed().as_secs();
             let height = chain.best_height();
-            let blocks = height as f64;
-            let total = blocks.max(1.0);
+            let best_hash = chain.best_hash().map(hex::encode).unwrap_or_default();
+            let mempool_size = mempool.size();
+            drop(chain);
+            drop(mempool);
+            // Progress is measured against the best height advertised by our
+            // peers. Using our own height as the denominator always yields
+            // 100% — the bug this replaces.
+            let best_peer_height = *rpc.best_peer_height.read().await;
             let sync_pct = if syncing {
-                (blocks / total) * 100.0
+                let target = best_peer_height.max(1) as f64;
+                ((height as f64 / target) * 100.0).min(100.0)
             } else {
                 100.0
             };
@@ -183,11 +190,11 @@ pub async fn get_node_info(state: tauri::State<'_, AppState>) -> Result<NodeInfo
                 running: true,
                 version: env!("CARGO_PKG_VERSION").into(),
                 block_height: height as u64,
-                best_hash: chain.best_hash().map(hex::encode).unwrap_or_default(),
+                best_hash,
                 connections: peer_count,
                 syncing,
                 sync_percent: sync_pct,
-                mempool_size: mempool.size(),
+                mempool_size,
                 uptime_secs: uptime,
                 network: rpc.network.clone(),
             })

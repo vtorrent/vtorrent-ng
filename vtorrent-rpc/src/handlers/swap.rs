@@ -2,7 +2,7 @@ use axum::{extract::State, Json};
 use std::sync::Arc;
 
 use super::{
-    broadcast_btc, btc_txid_hex, now_secs, now_secs_mock, parse_hash32, require_swap_stage,
+    broadcast_btc, btc_txid_hex, now_secs_mock, parse_hash32, require_swap_stage,
     verify_wallet_auth,
 };
 use crate::error::{RpcError, RpcResult};
@@ -53,7 +53,9 @@ pub async fn match_dex_order(
         ));
     }
 
-    let now = now_secs() as u32;
+    // Mock-clock aware (mirrors swap_refund): regtest tests set mock_time
+    // and expect expiry math consistent with it.
+    let now = now_secs_mock(&state).await as u32;
     let remaining_locktime = order.expiry.saturating_sub(now);
     if remaining_locktime < MIN_HTLC_LOCKTIME {
         return Err(RpcError::BadRequest(
@@ -224,7 +226,7 @@ pub async fn btc_fund(
     State(state): State<Arc<AppState>>,
     Json(req): Json<BtcFundRequest>,
 ) -> RpcResult<Json<BtcFundResponse>> {
-    use vtorrent_node::atomic_swap::{SwapState, SwapStatus};
+    use vtorrent_node::atomic_swap::SwapStatus;
 
     let order = {
         let order_book = state.order_book.read().await;
@@ -286,11 +288,12 @@ pub async fn btc_fund(
         .map_err(RpcError::BadRequest)?
     };
 
-    // Record the swap state with the real funding txid.
+    // Record the swap state with the real funding txid. The lifecycle guard
+    // above guarantees the entry exists (VtrFunded), so get_mut is exact.
     let mut swaps = state.swaps.write().await;
     let swap = swaps
-        .entry(req.order_id.clone())
-        .or_insert_with(|| SwapState::new(order.order_id, hash_lock));
+        .get_mut(&req.order_id)
+        .ok_or_else(|| RpcError::Internal("Swap state disappeared after stage guard".into()))?;
     swap.btc_funding_txid = Some(btc_funding_txid);
     swap.maker_btc_address = Some(maker_btc_address);
     swap.taker_btc_refund_address = Some(req.btc_refund_address);

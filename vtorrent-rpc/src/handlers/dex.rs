@@ -62,6 +62,19 @@ pub async fn place_dex_order(
             req.maker_address
         )));
     }
+    // A malformed BTC address is only rejected during btc_fund — after the
+    // maker's VTR is already locked in the HTLC. Reject it up front.
+    if let Some(btc_addr) = &req.maker_btc_address {
+        if btc_addr
+            .parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>()
+            .is_err()
+        {
+            return Err(RpcError::BadRequest(format!(
+                "Invalid maker BTC address: {}",
+                btc_addr
+            )));
+        }
+    }
 
     let locktime = if req.expiry_secs == 0 {
         DEFAULT_HTLC_LOCKTIME

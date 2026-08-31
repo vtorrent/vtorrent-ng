@@ -68,21 +68,69 @@ pub async fn place_dex_order(
     target_asset: String,
     target_amount: u64,
 ) -> Result<DexOrderResult> {
-    use vtorrent_node::atomic_swap::SwapOrder;
+    use vtorrent_node::atomic_swap::{AtomicSwap, SwapOrder, MAX_HTLC_LOCKTIME, MIN_HTLC_LOCKTIME};
 
     let guard = state.node.lock().await;
     let handle = guard
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
-    let mut order_book = handle.rpc_state.order_book.write().await;
+    let rpc = &handle.rpc_state;
 
+    // Validation mirrors the RPC handler (previously the desktop app accepted
+    // zero-amount orders, invalid maker addresses, and unbounded expiry —
+    // producing orders that could never be funded or matched).
+    if !rpc.is_wallet_unlocked().await {
+        return Err(TauriError::WalletLocked);
+    }
+    if vtr_amount == 0 || target_amount == 0 {
+        return Err(TauriError::InvalidInput(format!(
+            "DEX order amounts must be greater than zero (offer: {} sats, request: {} sats)",
+            vtr_amount, target_amount
+        )));
+    }
+    if target_asset.trim().is_empty() {
+        return Err(TauriError::InvalidInput(
+            "Requested asset is required — specify the target asset (e.g. \"BTC\")".into(),
+        ));
+    }
+    if vtorrent_core::address::validate_p2pkh(&maker_address).is_err() {
+        return Err(TauriError::InvalidInput(format!(
+            "Invalid maker address: {}",
+            maker_address
+        )));
+    }
+    // A malformed BTC address is only rejected during btc_fund — after the
+    // maker's VTR is already locked in the HTLC. Reject it up front.
+    if let Some(btc_addr) = &maker_btc_address {
+        if btc_addr
+            .parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>()
+            .is_err()
+        {
+            return Err(TauriError::InvalidInput(format!(
+                "Invalid maker BTC address: {}",
+                btc_addr
+            )));
+        }
+    }
+    let locktime = 86400u32;
+    if !(MIN_HTLC_LOCKTIME..=MAX_HTLC_LOCKTIME).contains(&locktime) {
+        return Err(TauriError::InvalidInput(
+            "DEX order expiry outside valid range".into(),
+        ));
+    }
+
+    // Seed the order with a preimage/hash_lock so the HTLC legs can be built
+    // (orders without a hash lock strand the VTR funding at btc_fund time).
+    let swap = AtomicSwap::new();
     let mut order = SwapOrder::new(
         maker_address,
         vtr_amount,
         target_asset,
         target_amount,
-        86400,
+        locktime,
     );
+    order.hash_lock = Some(swap.hash_lock);
+    order.preimage = Some(swap.preimage);
     order.maker_btc_address = maker_btc_address;
     let result = DexOrderResult {
         id: hex::encode(order.order_id),
@@ -100,7 +148,7 @@ pub async fn place_dex_order(
         created_at: 0,
         expires_at: order.expiry,
     };
-    order_book.add_order(order);
+    rpc.order_book.write().await.add_order(order);
     Ok(result)
 }
 
@@ -110,7 +158,33 @@ pub async fn cancel_dex_order(state: tauri::State<'_, AppState>, order_id: Strin
     let handle = guard
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
-    let mut order_book = handle.rpc_state.order_book.write().await;
+    let rpc = &handle.rpc_state;
+
+    // Ownership check (mirrors the RPC handler): without this, any code path
+    // in the desktop app could cancel third-party orders.
+    if !rpc.is_wallet_unlocked().await {
+        return Err(TauriError::WalletLocked);
+    }
+    let wallet_address = rpc
+        .wallet_change_address
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| TauriError::Internal("Change address not set".into()))?;
+    let is_maker = {
+        let order_book = rpc.order_book.read().await;
+        order_book
+            .get_order(&order_id)
+            .map(|o| o.maker_address == wallet_address)
+            .unwrap_or(false)
+    };
+    if !is_maker {
+        return Err(TauriError::Unauthorized(
+            "Only the maker may cancel this order".into(),
+        ));
+    }
+
+    let mut order_book = rpc.order_book.write().await;
     Ok(order_book.cancel_order(&order_id))
 }
 
@@ -124,7 +198,7 @@ pub async fn match_dex_order(
     _passphrase: String,
     _otp_code: Option<String>,
 ) -> Result<vtorrent_rpc::models::MatchOrderResponse> {
-    use vtorrent_node::atomic_swap::{AtomicSwap, Htlc, MIN_HTLC_LOCKTIME};
+    use vtorrent_node::atomic_swap::{AtomicSwap, Htlc, SwapState, SwapStatus, MIN_HTLC_LOCKTIME};
     use vtorrent_wallet::tx_builder::sign_custom_transaction;
 
     let guard = state.node.lock().await;
@@ -205,32 +279,11 @@ pub async fn match_dex_order(
     .map_err(|e| TauriError::InvalidInput(format!("Unable to construct HTLC: {}", e)))?;
 
     const FUNDING_FEE_SATOSHIS: u64 = vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS;
-    let funding_utxo = {
-        let chain = rpc.chain.lock().await;
-        chain
-            .get_utxos_for_address(&wallet_address)
-            .into_iter()
-            .filter(|utxo| utxo.value >= order.vtr_amount.saturating_add(FUNDING_FEE_SATOSHIS))
-            .max_by_key(|utxo| utxo.value)
-            .ok_or_else(|| {
-                TauriError::InvalidInput("No single wallet UTXO can fund this HTLC".into())
-            })?
-    };
-    let unsigned_funding = htlc
-        .build_funding_tx(
-            funding_utxo.txid,
-            funding_utxo.vout,
-            funding_utxo.value,
-            FUNDING_FEE_SATOSHIS,
-        )
-        .map_err(|e| TauriError::InvalidInput(format!("Unable to build HTLC funding tx: {}", e)))?;
-    let funding_tx =
-        sign_custom_transaction(unsigned_funding, std::slice::from_ref(&funding_utxo), &wif)
-            .map_err(|e| {
-                TauriError::InvalidInput(format!("Unable to sign HTLC funding tx: {}", e))
-            })?;
-    let funding_txid = funding_tx.txid();
-
+    // Reserve the order BEFORE building/signing the funding transaction: two
+    // concurrent match calls would otherwise both select the same UTXO and
+    // both admit competing funding txs to the mempool (mirrors the RPC
+    // handler). Reserving first means the loser exits here without touching
+    // the mempool.
     let reserved = rpc.order_book.write().await.begin_funding(&order_id);
     if reserved.is_none() {
         return Err(TauriError::NotFound(format!(
@@ -238,6 +291,41 @@ pub async fn match_dex_order(
             order_id
         )));
     }
+    let funding_tx = match (async {
+        let funding_utxo = {
+            let chain = rpc.chain.lock().await;
+            chain
+                .get_utxos_for_address(&wallet_address)
+                .into_iter()
+                .filter(|utxo| utxo.value >= order.vtr_amount.saturating_add(FUNDING_FEE_SATOSHIS))
+                .max_by_key(|utxo| utxo.value)
+                .ok_or_else(|| {
+                    TauriError::InvalidInput("No single wallet UTXO can fund this HTLC".into())
+                })?
+        };
+        let unsigned_funding = htlc
+            .build_funding_tx(
+                funding_utxo.txid,
+                funding_utxo.vout,
+                funding_utxo.value,
+                FUNDING_FEE_SATOSHIS,
+            )
+            .map_err(|e| {
+                TauriError::InvalidInput(format!("Unable to build HTLC funding tx: {}", e))
+            })?;
+        sign_custom_transaction(unsigned_funding, std::slice::from_ref(&funding_utxo), &wif)
+            .map_err(|e| TauriError::InvalidInput(format!("Unable to sign HTLC funding tx: {}", e)))
+    })
+    .await
+    {
+        Ok(tx) => tx,
+        Err(e) => {
+            rpc.order_book.write().await.release_funding(&order_id);
+            return Err(e);
+        }
+    };
+    let funding_txid = funding_tx.txid();
+
     let admission = {
         let mut mempool = rpc.mempool.lock().await;
         mempool.add_transaction_with_fee(funding_tx.clone(), FUNDING_FEE_SATOSHIS)
@@ -249,15 +337,41 @@ pub async fn match_dex_order(
             e
         )));
     }
-    let matched = rpc
-        .order_book
-        .write()
-        .await
-        .fund_and_match_order(&order_id, taker_address, preimage, hash_lock, funding_txid)
-        .ok_or_else(|| TauriError::Internal("Funding reservation disappeared".into()))?;
+    let matched = match rpc.order_book.write().await.fund_and_match_order(
+        &order_id,
+        taker_address,
+        preimage,
+        hash_lock,
+        funding_txid,
+    ) {
+        Some(m) => m,
+        None => {
+            // Release the reservation so the order stays retryable; without
+            // this it is stuck in Funding forever (invisible to open-order
+            // listings and unmatchable).
+            rpc.order_book.write().await.release_funding(&order_id);
+            return Err(TauriError::Internal(
+                "Funding reservation disappeared".into(),
+            ));
+        }
+    };
 
     if let Some(sender) = &rpc.tx_submit {
         let _ = sender.try_send(funding_tx);
+    }
+
+    // Materialize the swap state in VtrFunded stage so lifecycle guards on
+    // btc-fund / claims / refunds operate from a known baseline. Without
+    // this, the desktop btc_fund always fails with "VTR leg not funded yet".
+    {
+        let mut swaps = rpc.swaps.write().await;
+        let swap = swaps
+            .entry(hex::encode(matched.order.order_id))
+            .or_insert_with(|| SwapState::new(matched.order.order_id, matched.hash_lock));
+        if swap.vtr_funding_txid.is_none() {
+            swap.vtr_funding_txid = Some(funding_txid);
+            swap.status = SwapStatus::VtrFunded;
+        }
     }
 
     Ok(vtorrent_rpc::models::MatchOrderResponse {
@@ -703,8 +817,11 @@ pub async fn swap_refund(
                     network: *rpc.btc_network.read().await,
                 };
                 const REFUND_FEE_SATOSHIS: u64 = vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS;
+                // Use the mock-clock-aware `now` (mirrors the RPC handler):
+                // build_refund_tx recomputes CLTV from the wall clock, which
+                // disagrees with the expiry precheck under regtest mocking.
                 let unsigned = htlc
-                    .build_refund_tx(funding_txid, REFUND_FEE_SATOSHIS)
+                    .build_refund_tx_at(funding_txid, REFUND_FEE_SATOSHIS, now)
                     .map_err(|e| {
                         TauriError::InvalidInput(format!("Unable to build BTC refund tx: {}", e))
                     })?;
@@ -724,9 +841,29 @@ pub async fn swap_refund(
                     use bitcoin::hashes::Hash;
                     signed.compute_txid().to_byte_array()
                 };
-                vtorrent_btc::sync::broadcast_tx(&raw)
-                    .await
-                    .map_err(|e| TauriError::Internal(format!("BTC broadcast failed: {}", e)))?;
+                // Broadcast honoring the configured BTC peer (mirrors btc_fund
+                // and btc_claim; previously public mainnet seeds only, so
+                // regtest refunds silently never landed).
+                let peer = rpc.btc_peer.read().await.clone();
+                let network = *rpc.btc_network.read().await;
+                if let Some(host) = peer {
+                    let addr = tokio::net::lookup_host(&host)
+                        .await
+                        .ok()
+                        .and_then(|mut it| it.next())
+                        .ok_or_else(|| {
+                            TauriError::Internal(format!("BTC peer {} DNS resolution failed", host))
+                        })?;
+                    vtorrent_btc::sync::broadcast_tx_to(&raw, network, &[addr])
+                        .await
+                        .map_err(|e| {
+                            TauriError::Internal(format!("BTC broadcast to {} failed: {}", host, e))
+                        })?;
+                } else {
+                    vtorrent_btc::sync::broadcast_tx(&raw).await.map_err(|e| {
+                        TauriError::Internal(format!("BTC broadcast failed: {}", e))
+                    })?;
+                }
                 Some(txid)
             }
             _ => None,

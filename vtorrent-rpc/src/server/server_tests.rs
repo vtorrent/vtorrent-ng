@@ -404,7 +404,7 @@ async fn test_swap_btc_fund_requires_vtr_funded() {
             "request_amount_satoshis": 1_000,
             "expiry_secs": 3600,
             "passphrase": "testpassphrase",
-            "maker_btc_address": "bcrt1qtest"
+            "maker_btc_address": "bcrt1q50rtrmj2f8vl9tem8qpfw36ylw5jg9j2dkku3w"
         }),
     )
     .await;
