@@ -299,11 +299,30 @@ pub async fn run_engine(
     let mut peers = Vec::new();
     for url in &trackers {
         if url.starts_with("udp://") {
-            // UDP tracker (BEP-15).
+            // UDP tracker (BEP-15). Resolve hostnames — tracker URLs are
+            // commonly `udp://tracker.example.org:6881`, and `SocketAddr::
+            // parse` only accepts literal IPs (those trackers were silently
+            // skipped before).
             let host_port = url.trim_start_matches("udp://");
             let addr: SocketAddr = match host_port.parse() {
                 Ok(a) => a,
-                Err(_) => continue,
+                Err(_) => {
+                    let (host, port) = match host_port.rsplit_once(':') {
+                        Some((h, p)) => (h, p),
+                        None => continue,
+                    };
+                    let port: u16 = match port.parse() {
+                        Ok(p) => p,
+                        Err(_) => continue,
+                    };
+                    match tokio::net::lookup_host((host, port)).await {
+                        Ok(mut it) => match it.next() {
+                            Some(a) => a,
+                            None => continue,
+                        },
+                        Err(_) => continue,
+                    }
+                }
             };
             let udp = crate::udp::UdpTracker::new(addr);
             let params = crate::udp::UdpAnnounceParams {
@@ -419,12 +438,12 @@ pub async fn run_engine(
 
     // Spawn one task per peer, capped at MAX_PEERS to prevent resource exhaustion.
     const MAX_PEERS: usize = 200;
-    // Wrap shared data in Arc so peer tasks clone only a pointer, not the
-    // entire metainfo/download_dir each time.
-    let shared_metainfo = Arc::new(metainfo.clone());
-    let shared_download_dir = Arc::new(download_dir.clone());
+    // Share the metainfo by reference: a full clone per peer would copy the
+    // entire piece hash list up to 200 times for large torrents.
+    let shared_metainfo = Arc::new(metainfo);
+    let shared_download_dir = Arc::new(download_dir);
     let shared_cancel = cancel.clone();
-    let shared_session_id = Arc::new(session_id.clone());
+    let shared_session_id = Arc::new(session_id);
     let mut peer_tasks = Vec::new();
     for peer in peers {
         if peer_tasks.len() >= MAX_PEERS {
@@ -444,7 +463,7 @@ pub async fn run_engine(
             run_peer_task(
                 addr,
                 PeerTaskContext {
-                    metainfo: (*metainfo).clone(),
+                    metainfo,
                     peer_id,
                     scheduler,
                     download_dir: (*download_dir).clone(),
@@ -462,22 +481,26 @@ pub async fn run_engine(
         let _ = task.await;
     }
 
-    // Persist the resume bitfield and update final state.
+    // Persist the resume bitfield and update final state. The shared Arcs
+    // are used here because the originals were moved into the spawn loop.
     let downloaded = {
         let sched = scheduler.lock().unwrap_or_else(|e| e.into_inner());
-        let resume_path = resume_file_path(&download_dir, &metainfo.info_hash);
+        let resume_path = resume_file_path(&shared_download_dir, &shared_metainfo.info_hash);
         let _ = std::fs::write(&resume_path, sched.tracker.serialize_have_bitfield());
         sched
             .tracker
-            .have_bytes(&|index| piece_length(&metainfo, index))
+            .have_bytes(&|index| piece_length(&shared_metainfo, index))
     };
 
-    // Final state update.
+    // Final state update. Note: "Seeding" here only marks the download as
+    // complete — the peer tasks have all exited, so nothing is actually
+    // serving uploads. A real seeder requires re-announcing and accepting
+    // inbound connections (not yet implemented).
     {
         let mut guard = sessions.write().await;
-        if let Ok(s) = guard.get_session_mut(&session_id) {
+        if let Ok(s) = guard.get_session_mut(&shared_session_id) {
             s.bytes_downloaded = downloaded;
-            s.state = if downloaded >= metainfo.total_size {
+            s.state = if downloaded >= shared_metainfo.total_size {
                 SessionState::Seeding
             } else {
                 SessionState::Downloading
@@ -491,8 +514,11 @@ pub async fn run_engine(
 }
 
 /// Shared context passed to each per-peer task.
+///
+/// `metainfo` is shared by reference (`Arc`) — a full clone per peer would
+/// copy the entire piece hash list up to 200 times for large torrents.
 struct PeerTaskContext {
-    metainfo: Metainfo,
+    metainfo: Arc<Metainfo>,
     peer_id: [u8; 20],
     scheduler: Arc<StdMutex<SchedulerState>>,
     download_dir: PathBuf,
@@ -855,7 +881,11 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
     }
 }
 
-/// Resume-file path keyed by info-hash hex (display names can collide across
+/// Fetch the full metainfo from a peer via the ut_metadata extension (BEP-9).
+///
+/// Used for magnet links, where the .torrent payload (piece hashes) must be
+/// retrieved from a peer before any piece can be requested. Returns `None`
+/// if the peer does not support the extension or the data fails validation.
 async fn fetch_metadata_from_peer(
     conn: &mut PeerConnection,
     expected_info_hash: [u8; 20],
