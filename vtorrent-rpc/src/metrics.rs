@@ -102,10 +102,16 @@ async fn collect_metrics(state: &AppState) -> String {
     );
 
     let blocks_staked = *state.blocks_staked.read().await;
-    write_counter(
+    // This is a per-session in-memory count, so it resets to 0 on restart.
+    // Exporting it as a `counter` makes Prometheus `rate()` show a spurious
+    // spike/dip across restarts; a gauge keyed by process start time keeps
+    // per-series semantics honest (each process is its own series).
+    write_gauge_with_label(
         &mut out,
         "vtorrent_blocks_staked_total",
-        "Total number of blocks staked this session",
+        "Blocks staked by this process (resets on restart)",
+        "process_start_time",
+        state.start_time,
         blocks_staked,
     );
 
@@ -174,11 +180,23 @@ fn write_gauge(out: &mut String, name: &str, help: &str, value: u64) {
     out.push_str(&format!("{} {}\n\n", name, value));
 }
 
-/// Write a Prometheus counter metric.
-fn write_counter(out: &mut String, name: &str, help: &str, value: u64) {
+/// Write a gauge with a distinguishing label, so per-process values that
+/// reset on restart form separate series instead of a single counter that
+/// appears to drop.
+fn write_gauge_with_label(
+    out: &mut String,
+    name: &str,
+    help: &str,
+    label_name: &str,
+    label_value: u64,
+    value: u64,
+) {
     out.push_str(&format!("# HELP {} {}\n", name, help));
-    out.push_str(&format!("# TYPE {} counter\n", name));
-    out.push_str(&format!("{} {}\n\n", name, value));
+    out.push_str(&format!("# TYPE {} gauge\n", name));
+    out.push_str(&format!(
+        "{}{{{}=\"{}\"}} {}\n\n",
+        name, label_name, label_value, value
+    ));
 }
 
 #[cfg(test)]
@@ -197,9 +215,16 @@ mod tests {
     #[test]
     fn test_write_counter_format() {
         let mut out = String::new();
-        write_counter(&mut out, "test_counter", "A test counter", 100);
-        assert!(out.contains("# TYPE test_counter counter"));
-        assert!(out.contains("test_counter 100"));
+        write_gauge_with_label(
+            &mut out,
+            "test_counter",
+            "A test counter",
+            "process_start_time",
+            12345,
+            100,
+        );
+        assert!(out.contains("# TYPE test_counter gauge"));
+        assert!(out.contains("test_counter{process_start_time=\"12345\"} 100"));
     }
 
     #[test]

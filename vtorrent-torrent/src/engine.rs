@@ -288,74 +288,11 @@ pub async fn run_engine(
     }
 
     // Announce to trackers (HTTP and UDP), collecting peers.
-    let tracker = match HttpTracker::new() {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::error!("Failed to create HTTP tracker client: {}", e);
-            return;
-        }
-    };
     let peer_id = [0x2du8; 20]; // "-VT0001-" style peer id
-    let mut peers = Vec::new();
-    for url in &trackers {
-        if url.starts_with("udp://") {
-            // UDP tracker (BEP-15). Resolve hostnames — tracker URLs are
-            // commonly `udp://tracker.example.org:6881`, and `SocketAddr::
-            // parse` only accepts literal IPs (those trackers were silently
-            // skipped before).
-            let host_port = url.trim_start_matches("udp://");
-            let addr: SocketAddr = match host_port.parse() {
-                Ok(a) => a,
-                Err(_) => {
-                    let (host, port) = match host_port.rsplit_once(':') {
-                        Some((h, p)) => (h, p),
-                        None => continue,
-                    };
-                    let port: u16 = match port.parse() {
-                        Ok(p) => p,
-                        Err(_) => continue,
-                    };
-                    match tokio::net::lookup_host((host, port)).await {
-                        Ok(mut it) => match it.next() {
-                            Some(a) => a,
-                            None => continue,
-                        },
-                        Err(_) => continue,
-                    }
-                }
-            };
-            let udp = crate::udp::UdpTracker::new(addr);
-            let params = crate::udp::UdpAnnounceParams {
-                info_hash: &metainfo.info_hash,
-                peer_id: &peer_id,
-                downloaded: 0,
-                left: metainfo.total_size,
-                uploaded: 0,
-                event: AnnounceEvent::Started,
-                port: 6881,
-            };
-            if let Ok(p) = udp.announce(&params).await {
-                peers = p;
-                break;
-            }
-        } else {
-            let req = AnnounceRequest {
-                tracker_url: url.clone(),
-                info_hash: metainfo.info_hash,
-                peer_id,
-                port: 6881,
-                uploaded: 0,
-                downloaded: 0,
-                left: metainfo.total_size,
-                event: AnnounceEvent::Started,
-                num_want: 50,
-            };
-            if let Ok(resp) = tracker.announce(&req).await {
-                peers = resp.peers;
-                break;
-            }
-        }
-    }
+    let mut peers = match announce_trackers(&trackers, &metainfo, peer_id).await {
+        Some(p) => p,
+        None => return,
+    };
 
     // If no peers were found via trackers, fall back to DHT (BEP-5).
     if peers.is_empty() {
@@ -988,6 +925,87 @@ async fn fetch_metadata_from_peer(
     wrapped.extend_from_slice(&info_dict);
     wrapped.extend_from_slice(b"e");
     Metainfo::from_bytes(&wrapped).ok()
+}
+
+/// Announce to every tracker (HTTP and UDP) until one returns peers.
+///
+/// UDP tracker URLs with hostnames are resolved via `lookup_host` —
+/// `SocketAddr::parse` only accepts literal IPs, which silently skipped
+/// the common `udp://tracker.example.org:6881` form.
+/// Returns `None` when the HTTP tracker client cannot be created.
+async fn announce_trackers(
+    trackers: &[String],
+    metainfo: &Metainfo,
+    peer_id: [u8; 20],
+) -> Option<Vec<crate::tracker::TrackerPeer>> {
+    let tracker = match HttpTracker::new() {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!("Failed to create HTTP tracker client: {}", e);
+            return None;
+        }
+    };
+    let mut peers = Vec::new();
+    for url in trackers {
+        if url.starts_with("udp://") {
+            // UDP tracker (BEP-15). Resolve hostnames — tracker URLs are
+            // commonly `udp://tracker.example.org:6881`, and `SocketAddr::
+            // parse` only accepts literal IPs (those trackers were silently
+            // skipped before).
+            let host_port = url.trim_start_matches("udp://");
+            let addr: SocketAddr = match host_port.parse() {
+                Ok(a) => a,
+                Err(_) => {
+                    let (host, port) = match host_port.rsplit_once(':') {
+                        Some((h, p)) => (h, p),
+                        None => continue,
+                    };
+                    let port: u16 = match port.parse() {
+                        Ok(p) => p,
+                        Err(_) => continue,
+                    };
+                    match tokio::net::lookup_host((host, port)).await {
+                        Ok(mut it) => match it.next() {
+                            Some(a) => a,
+                            None => continue,
+                        },
+                        Err(_) => continue,
+                    }
+                }
+            };
+            let udp = crate::udp::UdpTracker::new(addr);
+            let params = crate::udp::UdpAnnounceParams {
+                info_hash: &metainfo.info_hash,
+                peer_id: &peer_id,
+                downloaded: 0,
+                left: metainfo.total_size,
+                uploaded: 0,
+                event: AnnounceEvent::Started,
+                port: 6881,
+            };
+            if let Ok(p) = udp.announce(&params).await {
+                peers = p;
+                break;
+            }
+        } else {
+            let req = AnnounceRequest {
+                tracker_url: url.clone(),
+                info_hash: metainfo.info_hash,
+                peer_id,
+                port: 6881,
+                uploaded: 0,
+                downloaded: 0,
+                left: metainfo.total_size,
+                event: AnnounceEvent::Started,
+                num_want: 50,
+            };
+            if let Ok(resp) = tracker.announce(&req).await {
+                peers = resp.peers;
+                break;
+            }
+        }
+    }
+    Some(peers)
 }
 
 #[cfg(test)]
