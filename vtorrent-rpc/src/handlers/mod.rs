@@ -249,29 +249,8 @@ pub async fn add_spv_headers(
 
     let mut headers: Vec<SpvHeader> = Vec::with_capacity(req.headers.len());
     for h in req.headers {
-        let prev_hash_bytes = hex::decode(&h.prev_hash).map_err(|_| {
-            RpcError::BadRequest(format!(
-                "invalid prev_hash hex \"{}\": must be 64 hex characters",
-                &h.prev_hash[..h.prev_hash.len().min(64)]
-            ))
-        })?;
-        let merkle_root_bytes = hex::decode(&h.merkle_root).map_err(|_| {
-            RpcError::BadRequest(format!(
-                "invalid merkle_root hex \"{}\": must be 64 hex characters",
-                &h.merkle_root[..h.merkle_root.len().min(64)]
-            ))
-        })?;
-
-        if prev_hash_bytes.len() != 32 || merkle_root_bytes.len() != 32 {
-            return Err(RpcError::BadRequest(
-                format!("prev_hash ({} bytes) and merkle_root ({} bytes) must each be exactly 32 bytes (64 hex chars)", prev_hash_bytes.len(), merkle_root_bytes.len()),
-            ));
-        }
-
-        let mut ph = [0u8; 32];
-        let mut mr = [0u8; 32];
-        ph.copy_from_slice(&prev_hash_bytes);
-        mr.copy_from_slice(&merkle_root_bytes);
+        let ph = parse_hash32(&h.prev_hash, "prev_hash")?;
+        let mr = parse_hash32(&h.merkle_root, "merkle_root")?;
 
         headers.push(SpvHeader {
             version: h.version,

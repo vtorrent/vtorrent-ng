@@ -366,16 +366,7 @@ impl StakingEngine {
     /// Returns `None` if the address is invalid (avoids silent fund burn).
     fn address_to_script(&self, address: &str) -> Option<Vec<u8>> {
         let addr = vtorrent_core::address::validate_p2pkh(address).ok()?;
-
-        // Standard P2PKH: OP_DUP OP_HASH160 <20-byte-hash> OP_EQUALVERIFY OP_CHECKSIG
-        let mut script = Vec::with_capacity(25);
-        script.push(0x76); // OP_DUP
-        script.push(0xa9); // OP_HASH160
-        script.push(0x14); // push 20 bytes
-        script.extend_from_slice(&addr.hash);
-        script.push(0x88); // OP_EQUALVERIFY
-        script.push(0xac); // OP_CHECKSIG
-        Some(script)
+        Some(vtorrent_core::address::p2pkh_script_pubkey(&addr.hash))
     }
 }
 

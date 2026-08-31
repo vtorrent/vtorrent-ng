@@ -34,6 +34,19 @@ pub const MIN_HTLC_LOCKTIME: u32 = 3600;
 /// Maximum HTLC locktime: 7 days.
 pub const MAX_HTLC_LOCKTIME: u32 = 7 * 24 * 3600;
 
+/// Fixed fee for VTR-side HTLC transactions (funding, claim, refund).
+///
+/// The custom HTLC script is larger than a standard P2PKH input, so this is
+/// intentionally conservative. Shared by the RPC and Tauri frontends so both
+/// legs of a swap always agree on the fee.
+pub const VTR_HTLC_FEE_SATOSHIS: u64 = 10_000;
+
+/// Fixed fee for BTC-side HTLC transactions (funding, claim, refund).
+///
+/// BTC HTLC inputs are segwit-style with smaller witness data than the VTR
+/// custom-script path; 1,000 sats covers a single-input transaction.
+pub const BTC_HTLC_FEE_SATOSHIS: u64 = 1_000;
+
 /// An HTLC (Hash Time-Locked Contract) for atomic swaps.
 #[derive(Debug, Clone)]
 pub struct Htlc {

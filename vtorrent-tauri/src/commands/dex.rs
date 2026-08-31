@@ -5,11 +5,7 @@ use crate::{
     state::AppState,
 };
 
-fn btc_txid_hex(bytes: &[u8; 32]) -> String {
-    let mut display = *bytes;
-    display.reverse();
-    hex::encode(display)
-}
+use vtorrent_rpc::handlers::btc_txid_hex;
 
 #[derive(Debug, Serialize)]
 pub struct DexOrderResult {
@@ -175,10 +171,17 @@ pub async fn match_dex_order(
         ));
     }
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as u32;
+    // Honor the regtest mock clock when set (mirrors the RPC handler).
+    let now = {
+        let mock = rpc.mock_time.read().await;
+        match *mock {
+            Some(t) => t as u32,
+            None => std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as u32,
+        }
+    };
     let remaining_locktime = order.expiry.saturating_sub(now);
     if remaining_locktime < MIN_HTLC_LOCKTIME {
         return Err(TauriError::InvalidInput(
@@ -201,7 +204,7 @@ pub async fn match_dex_order(
     )
     .map_err(|e| TauriError::InvalidInput(format!("Unable to construct HTLC: {}", e)))?;
 
-    const FUNDING_FEE_SATOSHIS: u64 = 10_000;
+    const FUNDING_FEE_SATOSHIS: u64 = vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS;
     let funding_utxo = {
         let chain = rpc.chain.lock().await;
         chain
@@ -313,7 +316,7 @@ pub async fn btc_fund(
     )
     .map_err(|e| TauriError::InvalidInput(format!("Unable to construct BTC HTLC: {}", e)))?;
 
-    const FUNDING_FEE_SATOSHIS: u64 = 1_000;
+    const FUNDING_FEE_SATOSHIS: u64 = vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS;
     let (funding_utxo, funder_wif, change_address) = {
         let btc = rpc.btc_wallet.read().await;
         let w = btc
@@ -449,7 +452,7 @@ pub async fn vtr_claim(
     )
     .map_err(|e| TauriError::InvalidInput(format!("Unable to reconstruct HTLC: {}", e)))?;
 
-    const CLAIM_FEE_SATOSHIS: u64 = 10_000;
+    const CLAIM_FEE_SATOSHIS: u64 = vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS;
     let unsigned = htlc
         .build_claim_tx_unsigned(funding_txid, &preimage_bytes, CLAIM_FEE_SATOSHIS)
         .map_err(|e| TauriError::InvalidInput(format!("Unable to build VTR claim tx: {}", e)))?;
@@ -563,7 +566,7 @@ pub async fn btc_claim(
         amount: btc_amount,
         network: *rpc.btc_network.read().await,
     };
-    const CLAIM_FEE_SATOSHIS: u64 = 1_000;
+    const CLAIM_FEE_SATOSHIS: u64 = vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS;
     let unsigned = htlc
         .build_claim_tx(btc_funding_txid, &preimage, CLAIM_FEE_SATOSHIS)
         .map_err(|e| TauriError::InvalidInput(format!("Unable to build BTC claim tx: {}", e)))?;
@@ -621,12 +624,32 @@ pub async fn swap_refund(
             .cloned()
             .ok_or_else(|| TauriError::NotFound(format!("Order {} not found", order_id)))?
     };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as u32;
+    // Honor the regtest mock clock when set (mirrors the RPC handler).
+    let now = {
+        let mock = rpc.mock_time.read().await;
+        match *mock {
+            Some(t) => t as u32,
+            None => std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as u32,
+        }
+    };
     if now < order.expiry {
         return Err(TauriError::InvalidInput("Swap has not expired yet".into()));
+    }
+
+    // Lifecycle guard: each leg refunds independently; a completed refund is
+    // the only terminal state for this endpoint (mirrors the RPC handler).
+    {
+        let swaps = rpc.swaps.read().await;
+        if let Some(swap) = swaps.get(&order_id) {
+            if swap.status == SwapStatus::Refunded {
+                return Err(TauriError::InvalidInput(
+                    "Swap is in state Refunded; operation not allowed".into(),
+                ));
+            }
+        }
     }
 
     let btc_refund_txid = {
@@ -646,7 +669,7 @@ pub async fn swap_refund(
                     amount: s.btc_amount,
                     network: *rpc.btc_network.read().await,
                 };
-                const REFUND_FEE_SATOSHIS: u64 = 1_000;
+                const REFUND_FEE_SATOSHIS: u64 = vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS;
                 let unsigned = htlc
                     .build_refund_tx(funding_txid, REFUND_FEE_SATOSHIS)
                     .map_err(|e| {
@@ -686,11 +709,7 @@ pub async fn swap_refund(
     Ok(SwapActionResult {
         order_id: order_id.clone(),
         txid: btc_refund_txid
-            .map(|mut t| {
-                t.reverse();
-                t
-            })
-            .map(hex::encode)
+            .map(|t| btc_txid_hex(&t))
             .unwrap_or_else(|| hex::encode(order.order_id)),
         status: "Refunded".to_string(),
     })

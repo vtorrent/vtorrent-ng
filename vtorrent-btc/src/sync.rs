@@ -9,9 +9,10 @@ use bitcoin::hashes::Hash;
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::p2p::message_blockdata::{GetHeadersMessage, Inventory};
 use bitcoin::p2p::message_filter::GetCFilters;
+use parking_lot::Mutex;
 use std::net::SocketAddr;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Bitcoin DNS seeds (mainnet).
 pub const DNS_SEEDS: &[&str] = &[
@@ -117,7 +118,7 @@ impl BtcSync {
 
     /// Build a `getheaders` message from the current tip.
     pub fn build_getheaders(&self) -> GetHeadersMessage {
-        let headers = self.headers.lock().unwrap();
+        let headers = self.headers.lock();
         let locator = if let Some(best) = headers.best_hash() {
             vec![bitcoin::BlockHash::from_byte_array(best)]
         } else {
@@ -152,10 +153,10 @@ impl BtcSync {
                     for h in hdrs {
                         let raw = serialize(&h);
                         let height = {
-                            let chain = self.headers.lock().unwrap();
+                            let chain = self.headers.lock();
                             chain.best_height() + 1
                         };
-                        self.headers.lock().unwrap().add_header(&raw, height)?;
+                        self.headers.lock().add_header(&raw, height)?;
                         added += 1;
                     }
                     // Bitcoin Core caps each `headers` message at 2000 entries.
@@ -179,7 +180,7 @@ impl BtcSync {
 
     /// Record a confirmed output into the UTXO set.
     pub fn record_utxo(&self, txid: &str, vout: u32, value: u64, address: &str, height: u32) {
-        self.utxos.lock().unwrap().add(Utxo {
+        self.utxos.lock().add(Utxo {
             txid: txid.to_string(),
             vout,
             value,
@@ -198,7 +199,7 @@ impl BtcSync {
         for input in &tx.input {
             let prev_txid = input.previous_output.txid.to_string();
             let prev_vout = input.previous_output.vout;
-            self.utxos.lock().unwrap().remove(&prev_txid, prev_vout);
+            self.utxos.lock().remove(&prev_txid, prev_vout);
         }
 
         for (vout, out) in tx.output.iter().enumerate() {
@@ -225,7 +226,7 @@ impl BtcSync {
     pub async fn scan_utxos_bip158(&self, peer: &mut BtcPeer, start_height: u32) -> Result<usize> {
         use bitcoin::bip158::BlockFilter;
 
-        let hashes: Vec<[u8; 32]> = self.headers.lock().unwrap().hashes_from(start_height);
+        let hashes: Vec<[u8; 32]> = self.headers.lock().hashes_from(start_height);
         if hashes.is_empty() {
             return Ok(0);
         }
@@ -308,7 +309,7 @@ impl BtcSync {
                     }
                 };
                 let height = {
-                    let chain = self.headers.lock().unwrap();
+                    let chain = self.headers.lock();
                     // Look up the height by the block hash we actually
                     // downloaded (the cfilter's authoritative hash), not the
                     // header-chain hash, so outputs are attributed to the
@@ -363,7 +364,7 @@ mod tests {
             "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
             100,
         );
-        assert_eq!(utxos.lock().unwrap().total(), 5000);
+        assert_eq!(utxos.lock().total(), 5000);
     }
 
     #[test]
@@ -408,7 +409,7 @@ mod tests {
         };
 
         sync.record_matching_outputs(&tx, 42);
-        let set = utxos.lock().unwrap();
+        let set = utxos.lock();
         assert_eq!(set.list().len(), 1);
         assert_eq!(set.list()[0].value, 1234);
         assert_eq!(set.list()[0].height, 42);

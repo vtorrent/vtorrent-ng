@@ -5,8 +5,9 @@ use crate::headers::HeaderChain;
 use crate::keys::derive_address;
 use crate::utxo::{Utxo, UtxoSet};
 use bitcoin::Network;
+use parking_lot::Mutex;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// A Bitcoin SPV wallet.
 pub struct BtcWallet {
@@ -77,13 +78,13 @@ impl BtcWallet {
     /// is immediately saved to the new path.
     pub fn set_utxo_path(&mut self, path: PathBuf) -> std::io::Result<()> {
         self.utxo_path = Some(path.clone());
-        self.utxos.lock().unwrap().save(&path)
+        self.utxos.lock().save(&path)
     }
 
     /// Save the current UTXO set to disk (if a persistence path is set).
     fn save_utxos(&self) {
         if let Some(ref path) = self.utxo_path {
-            if let Err(e) = self.utxos.lock().unwrap().save(path) {
+            if let Err(e) = self.utxos.lock().save(path) {
                 tracing::warn!("Failed to save UTXO set: {}", e);
             }
         }
@@ -126,27 +127,27 @@ impl BtcWallet {
 
     /// Total confirmed balance in satoshis.
     pub fn balance(&self) -> u64 {
-        self.utxos.lock().unwrap().total()
+        self.utxos.lock().total()
     }
 
     /// List all UTXOs.
     pub fn list_utxos(&self) -> Vec<Utxo> {
-        self.utxos.lock().unwrap().list().to_vec()
+        self.utxos.lock().list().to_vec()
     }
 
     /// Best known header height.
     pub fn best_height(&self) -> u32 {
-        self.headers.lock().unwrap().best_height()
+        self.headers.lock().best_height()
     }
 
     /// Add a header to the chain.
     pub fn add_header(&self, raw: &[u8], height: u32) -> Result<()> {
-        self.headers.lock().unwrap().add_header(raw, height)
+        self.headers.lock().add_header(raw, height)
     }
 
     /// Add a UTXO.
     pub fn add_utxo(&self, utxo: Utxo) {
-        self.utxos.lock().unwrap().add(utxo);
+        self.utxos.lock().add(utxo);
         self.save_utxos();
     }
 
@@ -230,7 +231,7 @@ impl BtcWallet {
         use crate::tx::{build_and_sign, txid_of};
 
         let selected = {
-            let u = self.utxos.lock().unwrap();
+            let u = self.utxos.lock();
             match u.select(amount_sats, fee_sats) {
                 Some(s) => s,
                 None => {
@@ -281,7 +282,7 @@ impl BtcWallet {
         // later fails, the caller must roll back via [`BtcWallet::restore_utxos`]
         // using the returned selection — otherwise the wallet would forget
         // spendable outputs for a tx that never made it onto the network.
-        let mut set = self.utxos.lock().unwrap();
+        let mut set = self.utxos.lock();
         for u in &selected {
             set.remove(&u.txid, u.vout);
         }
@@ -303,7 +304,7 @@ impl BtcWallet {
     /// persist the restored set.
     pub fn restore_utxos(&self, utxos: &[Utxo]) {
         {
-            let mut set = self.utxos.lock().unwrap();
+            let mut set = self.utxos.lock();
             for u in utxos {
                 set.add(u.clone());
             }

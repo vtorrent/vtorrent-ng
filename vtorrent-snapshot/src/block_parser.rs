@@ -86,14 +86,10 @@ fn decode_script(script_type: u64, data: &[u8]) -> Result<Vec<u8>> {
             if data.len() < 20 {
                 return Err(SnapshotError::BlockParse("P2PKH script too short".into()));
             }
-            let mut script = Vec::with_capacity(25);
-            script.push(0x76); // OP_DUP
-            script.push(0xa9); // OP_HASH160
-            script.push(0x14); // push 20 bytes
-            script.extend_from_slice(&data[..20]);
-            script.push(0x88); // OP_EQUALVERIFY
-            script.push(0xac); // OP_CHECKSIG
-            Ok(script)
+            let hash: [u8; 20] = data[..20]
+                .try_into()
+                .map_err(|_| SnapshotError::BlockParse("P2PKH hash160 length".into()))?;
+            Ok(vtorrent_core::address::p2pkh_script_pubkey(&hash))
         }
         1 => {
             // P2SH: OP_HASH160 <20-byte-hash> OP_EQUAL

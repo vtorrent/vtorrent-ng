@@ -6,28 +6,49 @@ use crate::error::{RpcError, RpcResult};
 use crate::models::*;
 use crate::state::AppState;
 
-fn persist_staking_intent(state: &AppState, address: Option<&str>) {
+async fn persist_staking_intent(state: &AppState, address: Option<&str>) -> RpcResult<()> {
     let Some(path) = &state.staking_state_path else {
-        return;
+        return Ok(());
     };
-    match address {
+    let path = path.clone();
+    let address = address.map(|s| s.to_string());
+    // File I/O on the async runtime stalls all RPC processing on a slow
+    // disk; run on the blocking pool instead.
+    tokio::task::spawn_blocking(move || match address {
         Some(addr) => {
             let blob = serde_json::json!({ "enabled": true, "address": addr });
-            if let Ok(bytes) = serde_json::to_vec_pretty(&blob) {
-                // Atomic write: a crash mid-write would otherwise leave a
-                // truncated staking.json that fails to parse on resume.
-                let tmp = path.with_extension("json.tmp");
-                if let Err(e) = std::fs::write(&tmp, &bytes) {
-                    tracing::warn!("Could not persist staking intent: {}", e);
-                } else if let Err(e) = std::fs::rename(&tmp, path) {
-                    tracing::warn!("Could not persist staking intent: {}", e);
-                }
-            }
+            let bytes = serde_json::to_vec_pretty(&blob).map_err(|e| {
+                RpcError::Internal(format!("Staking intent serialize failed: {}", e))
+            })?;
+            // Atomic write: a crash mid-write would otherwise leave a
+            // truncated staking.json that fails to parse on resume.
+            let tmp = path.with_extension("json.tmp");
+            std::fs::write(&tmp, &bytes)
+                .and_then(|()| std::fs::rename(&tmp, &path))
+                .map_err(|e| {
+                    RpcError::Internal(format!(
+                        "Could not persist staking intent to {}: {}",
+                        path.display(),
+                        e
+                    ))
+                })
         }
         None => {
-            let _ = std::fs::remove_file(path);
+            // Removal is best-effort: a missing file is the desired state.
+            if let Err(e) = std::fs::remove_file(&path) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    return Err(RpcError::Internal(format!(
+                        "Could not remove staking intent {}: {}",
+                        path.display(),
+                        e
+                    )));
+                }
+            }
+            Ok(())
         }
-    }
+    })
+    .await
+    .map_err(|e| RpcError::Internal(format!("Staking persist task panicked: {}", e)))?
 }
 
 pub async fn get_staking_status(
@@ -95,7 +116,7 @@ pub async fn start_staking(
 
     *state.staking_enabled.write().await = true;
     *state.staking_address.write().await = Some(req.address.clone());
-    persist_staking_intent(&state, Some(&req.address));
+    persist_staking_intent(&state, Some(&req.address)).await?;
 
     Ok(Json(json!({
         "success": true,
@@ -109,7 +130,7 @@ pub async fn stop_staking(State(state): State<Arc<AppState>>) -> RpcResult<Json<
     }
     *state.staking_enabled.write().await = false;
     *state.staking_address.write().await = None;
-    persist_staking_intent(&state, None);
+    persist_staking_intent(&state, None).await?;
     Ok(Json(
         json!({ "success": true, "message": "Staking stopped" }),
     ))

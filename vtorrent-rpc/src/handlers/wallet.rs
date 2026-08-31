@@ -273,41 +273,48 @@ async fn persist_wallet(state: &AppState) -> RpcResult<()> {
     };
     let blob = serde_json::json!({ "version": 1u8, "wallet": encrypted });
 
-    let tmp = path.with_extension("json.tmp");
-    let bytes = serde_json::to_vec_pretty(&blob).map_err(|e| {
-        RpcError::Internal(format!("Wallet serialize failed (JSON encoding): {}", e))
-    })?;
-    // Create the temp file with 0600 BEFORE writing content: setting the
-    // mode after the write leaves a window where the encrypted wallet is
-    // world-readable (default umask).
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)
-            .and_then(|mut f| std::io::Write::write_all(&mut f, &bytes))
-            .map_err(|e| {
-                RpcError::Internal(format!("Wallet write to {} failed: {}", tmp.display(), e))
-            })?;
-    }
-    #[cfg(not(unix))]
-    std::fs::write(&tmp, &bytes).map_err(|e| {
-        RpcError::Internal(format!("Wallet write to {} failed: {}", tmp.display(), e))
-    })?;
-    std::fs::rename(&tmp, path).map_err(|e| {
-        RpcError::Internal(format!(
-            "Wallet rename from {} to {} failed: {}",
-            tmp.display(),
-            path.display(),
-            e
-        ))
-    })?;
-    tracing::info!("Encrypted wallet persisted to {}", path.display());
-    Ok(())
+    // File I/O on the async runtime stalls all RPC processing on a slow
+    // disk; run the write on the blocking pool instead.
+    let path = path.clone();
+    tokio::task::spawn_blocking(move || {
+        let tmp = path.with_extension("json.tmp");
+        let bytes = serde_json::to_vec_pretty(&blob).map_err(|e| {
+            RpcError::Internal(format!("Wallet serialize failed (JSON encoding): {}", e))
+        })?;
+        // Create the temp file with 0600 BEFORE writing content: setting the
+        // mode after the write leaves a window where the encrypted wallet is
+        // world-readable (default umask).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)
+                .and_then(|mut f| std::io::Write::write_all(&mut f, &bytes))
+                .map_err(|e| {
+                    RpcError::Internal(format!("Wallet write to {} failed: {}", tmp.display(), e))
+                })?;
+        }
+        #[cfg(not(unix))]
+        std::fs::write(&tmp, &bytes).map_err(|e| {
+            RpcError::Internal(format!("Wallet write to {} failed: {}", tmp.display(), e))
+        })?;
+        std::fs::rename(&tmp, &path).map_err(|e| {
+            RpcError::Internal(format!(
+                "Wallet rename from {} to {} failed: {}",
+                tmp.display(),
+                path.display(),
+                e
+            ))
+        })?;
+        tracing::info!("Encrypted wallet persisted to {}", path.display());
+        Ok(())
+    })
+    .await
+    .map_err(|e| RpcError::Internal(format!("Wallet persist task panicked: {}", e)))?
 }
 
 /// POST /api/v1/wallet/send
@@ -324,8 +331,6 @@ pub async fn send_vtr(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SendRequest>,
 ) -> RpcResult<Json<SendResponse>> {
-    use vtorrent_wallet::tx_builder::TxBuilder;
-
     if !state.is_wallet_unlocked().await {
         return Err(RpcError::WalletLocked);
     }
@@ -364,29 +369,31 @@ pub async fn send_vtr(
         )));
     }
 
-    // Build and sign the transaction using the mempool's recommended fee
-    // rate, with the relay floor enforced as an absolute minimum so small
-    // transfers are not rejected by our own node.
+    // Build and sign the transaction using the shared wallet-service path
+    // (same builder configuration as the daemon and Tauri frontends), with
+    // the mempool's recommended fee rate floored at 1 so small transfers
+    // are not rejected by our own node.
     let fee_rate = {
         let mempool = state.mempool.lock().await;
         mempool.recommended_fee_rate().max(1)
     };
-    let tx = TxBuilder::new()
-        .recipient(&req.to_address, req.amount_satoshis)
-        .change_address(&change_address)
-        .fee_rate(fee_rate)
-        .min_absolute_fee(vtorrent_wallet::tx_builder::MIN_ABSOLUTE_FEE_SATS)
-        .sign_with_wif(&wif)
-        .build(&utxos)
-        .map_err(|e| {
-            RpcError::BadRequest(format!(
-                "Transaction build failed ({} inputs, {} sats to {}): {}",
-                utxos.len(),
-                req.amount_satoshis,
-                &req.to_address[..req.to_address.len().min(64)],
-                e
-            ))
-        })?;
+    let tx = vtorrent_wallet_service::build_payment(
+        &utxos,
+        &req.to_address,
+        &change_address,
+        req.amount_satoshis,
+        fee_rate,
+        &wif,
+    )
+    .map_err(|e| {
+        RpcError::BadRequest(format!(
+            "Transaction build failed ({} inputs, {} sats to {}): {}",
+            utxos.len(),
+            req.amount_satoshis,
+            &req.to_address[..req.to_address.len().min(64)],
+            e
+        ))
+    })?;
 
     let txid = hex::encode(tx.txid());
     // Actual fee = selected inputs − outputs. Summing the whole wallet UTXO
@@ -482,7 +489,13 @@ pub async fn unlock_wallet(
     // intent file records the address; signing now works because the wallet
     // is unlocked.
     if let Some(path) = &state.staking_state_path {
-        if let Ok(blob) = std::fs::read_to_string(path) {
+        // File I/O on the blocking pool: a slow disk must not stall RPC.
+        let path = path.clone();
+        let blob = tokio::task::spawn_blocking(move || std::fs::read_to_string(path))
+            .await
+            .ok()
+            .and_then(|r| r.ok());
+        if let Some(blob) = blob {
             let enabled = serde_json::from_str::<serde_json::Value>(&blob)
                 .ok()
                 .and_then(|v| {

@@ -10,6 +10,7 @@ repository.workspace = true
 vtorrent-core    = { path = "../vtorrent-core" }
 vtorrent-node    = { path = "../vtorrent-node" }
 vtorrent-wallet  = { path = "../vtorrent-wallet" }
+vtorrent-wallet-service = { path = "../vtorrent-wallet-service" }
 vtorrent-torrent = { path = "../vtorrent-torrent" }
 vtorrent-spv     = { path = "../vtorrent-spv" }
 vtorrent-btc     = { path = "../vtorrent-btc" }

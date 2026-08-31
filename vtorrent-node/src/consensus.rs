@@ -1,4 +1,3 @@
-use ripemd::Ripemd160;
 use secp256k1::{Message, PublicKey, Secp256k1};
 /// Consensus rules for the vTorrent 2.0 chain.
 ///
@@ -364,12 +363,12 @@ pub fn validate_legacy_claim(tx: &Transaction, snapshot_balance: u64) -> Result<
 pub fn verify_claim_signature(
     claim_address: &str,
     sig_bytes: &[u8],
-) -> std::result::Result<(), String> {
+) -> std::result::Result<(), NodeError> {
     if sig_bytes.len() != 65 {
-        return Err(format!(
+        return Err(NodeError::InvalidClaim(format!(
             "Expected 65-byte compact signature, got {}",
             sig_bytes.len()
-        ));
+        )));
     }
 
     // ── Step 1: Build the signed message hash ────────────────────────────────
@@ -385,25 +384,27 @@ pub fn verify_claim_signature(
     let compressed = (recovery_id_byte.wrapping_sub(27)) >= 4;
 
     let rec_id = secp256k1::ecdsa::RecoveryId::from_i32(rec_id_raw as i32)
-        .map_err(|e| format!("Invalid recovery id: {}", e))?;
+        .map_err(|e| NodeError::InvalidClaim(format!("Invalid recovery id: {}", e)))?;
 
     let rec_sig = secp256k1::ecdsa::RecoverableSignature::from_compact(&sig_bytes[1..65], rec_id)
-        .map_err(|e| format!("Invalid recoverable signature: {}", e))?;
+        .map_err(|e| {
+        NodeError::InvalidClaim(format!("Invalid recoverable signature: {}", e))
+    })?;
 
     let secp = Secp256k1::verification_only();
     let recovered_pubkey = secp
         .recover_ecdsa(&msg, &rec_sig)
-        .map_err(|e| format!("Key recovery failed: {}", e))?;
+        .map_err(|e| NodeError::InvalidClaim(format!("Key recovery failed: {}", e)))?;
 
     // ── Step 3: Derive the address from the recovered public key ─────────────
     let derived_address = pubkey_to_vtorrent_address(&recovered_pubkey, compressed);
 
     // ── Step 4: Compare to the claimed address ───────────────────────────────
     if derived_address != claim_address {
-        return Err(format!(
+        return Err(NodeError::InvalidClaim(format!(
             "Address mismatch: signature recovers {} but claim is for {}",
             derived_address, claim_address
-        ));
+        )));
     }
 
     Ok(())
@@ -464,23 +465,11 @@ fn pubkey_to_vtorrent_address(pubkey: &PublicKey, compressed: bool) -> String {
     } else {
         pubkey.serialize_uncompressed().to_vec()
     };
-
-    // Hash160 = RIPEMD160(SHA256(pubkey))
-    let sha256_hash = Sha256::digest(&pubkey_bytes);
-    let ripemd_hash = Ripemd160::digest(sha256_hash);
-
+    let hash160 = vtorrent_core::crypto::hash160(&pubkey_bytes);
     // Version byte 70 = vTorrent mainnet P2PKH
-    let version: u8 = 70;
-    let mut payload = Vec::with_capacity(21);
-    payload.push(version);
-    payload.extend_from_slice(&ripemd_hash);
-
-    // Checksum = first 4 bytes of SHA256d(payload)
-    let check1 = Sha256::digest(&payload);
-    let check2 = Sha256::digest(check1);
-    payload.extend_from_slice(&check2[..4]);
-
-    bs58::encode(payload).into_string()
+    vtorrent_core::address::Address::from_hash160(&hash160, 70)
+        .map(|a| a.to_string())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

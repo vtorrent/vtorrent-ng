@@ -28,7 +28,7 @@
 
 use crate::error::{Result, WalletError};
 use secp256k1::{Message, Secp256k1, SecretKey};
-use sha2::{Digest, Sha256};
+
 use vtorrent_node::block::{Transaction, TxInput, TxOutput, TxType};
 use vtorrent_node::chain::Utxo;
 
@@ -113,11 +113,6 @@ fn address_to_hash160(address: &str) -> Result<[u8; 20]> {
     let addr = vtorrent_core::address::Address::parse(address)
         .map_err(|e| WalletError::InvalidAddress(format!("{}: {}", address, e)))?;
     Ok(addr.hash)
-}
-fn double_sha256_checksum(data: &[u8]) -> [u8; 4] {
-    let h1 = Sha256::digest(data);
-    let h2 = Sha256::digest(h1);
-    [h2[0], h2[1], h2[2], h2[3]]
 }
 
 // ─── Signing ──────────────────────────────────────────────────────────────────
@@ -446,43 +441,14 @@ impl Default for TxBuilder {
 /// Derive a vTorrent address (version byte 70 → starts with 'V') from a
 /// compressed public key.
 pub fn pubkey_to_vtorrent_address(compressed_pubkey: &[u8]) -> Result<String> {
-    use ripemd::Digest as RipemdDigest;
-    use ripemd::Ripemd160;
-    use sha2::Sha256;
-
-    // Hash160 = RIPEMD160(SHA256(pubkey))
-    let sha256_hash = Sha256::digest(compressed_pubkey);
-    let hash160 = Ripemd160::digest(sha256_hash);
-
+    let hash160 = vtorrent_core::crypto::hash160(compressed_pubkey);
     // Version byte 70 gives addresses starting with 'V'.
-    let mut payload = Vec::with_capacity(25);
-    payload.push(70u8); // version byte
-    payload.extend_from_slice(&hash160);
-
-    // 4-byte checksum.
-    let checksum = double_sha256_checksum(&payload);
-    payload.extend_from_slice(&checksum);
-
-    Ok(bs58::encode(payload).into_string())
+    Ok(vtorrent_core::address::Address::from_hash160(&hash160, 70)?.to_string())
 }
 
 /// Build the standard P2PKH scriptPubKey for a compressed public key.
 fn pubkey_to_p2pkh_script(compressed_pubkey: &[u8]) -> Vec<u8> {
-    use ripemd::Digest as _;
-    use ripemd::Ripemd160;
-    use sha2::Sha256;
-
-    let sha256_hash = Sha256::digest(compressed_pubkey);
-    let hash160 = Ripemd160::digest(sha256_hash);
-
-    let mut script = Vec::with_capacity(25);
-    script.push(0x76); // OP_DUP
-    script.push(0xa9); // OP_HASH160
-    script.push(0x14); // push 20 bytes
-    script.extend_from_slice(&hash160);
-    script.push(0x88); // OP_EQUALVERIFY
-    script.push(0xac); // OP_CHECKSIG
-    script
+    vtorrent_core::address::p2pkh_script_pubkey(&vtorrent_core::crypto::hash160(compressed_pubkey))
 }
 
 /// Find the signing key whose P2PKH script matches the given scriptPubKey.
@@ -794,7 +760,7 @@ mod tests {
 
         let preimage = [42u8; 32];
         let hash_lock = {
-            use sha2::Digest;
+            use sha2::{Digest, Sha256};
             let mut h = Sha256::new();
             h.update(preimage);
             let d = h.finalize();
@@ -864,7 +830,7 @@ mod tests {
         // 20-byte preimage (wrong length) whose SHA256 is the hash lock.
         let preimage = [7u8; 20];
         let hash_lock = {
-            use sha2::Digest;
+            use sha2::{Digest, Sha256};
             let mut h = Sha256::new();
             h.update(preimage);
             let d = h.finalize();
@@ -947,7 +913,7 @@ mod tests {
 
         let preimage = [42u8; 32];
         let hash_lock = {
-            use sha2::Digest;
+            use sha2::{Digest, Sha256};
             let mut h = Sha256::new();
             h.update(preimage);
             let d = h.finalize();
@@ -1014,7 +980,7 @@ mod tests {
 
         let preimage = [42u8; 32];
         let hash_lock = {
-            use sha2::Digest;
+            use sha2::{Digest, Sha256};
             let mut h = Sha256::new();
             h.update(preimage);
             let d = h.finalize();

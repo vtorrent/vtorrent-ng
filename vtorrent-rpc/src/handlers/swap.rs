@@ -91,7 +91,7 @@ pub async fn match_dex_order(
     // Use a verified wallet UTXO large enough to fund this single-input HTLC.
     // A fixed 10,000-satoshi fee is intentionally conservative for the custom
     // script size and is recorded as an authoritative local mempool fee.
-    const FUNDING_FEE_SATOSHIS: u64 = 10_000;
+    const FUNDING_FEE_SATOSHIS: u64 = vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS;
     let funding_utxo = {
         let chain = state.chain.lock().await;
         chain
@@ -285,7 +285,7 @@ pub async fn btc_fund(
     .map_err(|e| RpcError::BadRequest(format!("Unable to construct BTC HTLC: {}", e)))?;
 
     // Select a UTXO from the local BTC wallet to fund the HTLC.
-    const FUNDING_FEE_SATOSHIS: u64 = 1_000;
+    const FUNDING_FEE_SATOSHIS: u64 = vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS;
     let (funding_utxo, funder_wif, change_address) = {
         let btc = state.btc_wallet.read().await;
         let w = btc
@@ -419,7 +419,7 @@ pub async fn vtr_claim(
     )
     .map_err(|e| RpcError::BadRequest(format!("Unable to reconstruct HTLC: {}", e)))?;
 
-    const CLAIM_FEE_SATOSHIS: u64 = 10_000;
+    const CLAIM_FEE_SATOSHIS: u64 = vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS;
     let unsigned = htlc
         .build_claim_tx_unsigned(funding_txid, &preimage, CLAIM_FEE_SATOSHIS)
         .map_err(|e| RpcError::BadRequest(format!("Unable to build VTR claim tx: {}", e)))?;
@@ -540,7 +540,7 @@ pub async fn btc_claim(
         amount: btc_amount,
         network: btc_network,
     };
-    const CLAIM_FEE_SATOSHIS: u64 = 1_000;
+    const CLAIM_FEE_SATOSHIS: u64 = vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS;
     let unsigned = htlc
         .build_claim_tx(btc_funding_txid, &preimage, CLAIM_FEE_SATOSHIS)
         .map_err(|e| RpcError::BadRequest(format!("Unable to build BTC claim tx: {}", e)))?;
@@ -624,7 +624,7 @@ pub async fn swap_refund(
                 )
                 .map_err(|e| RpcError::BadRequest(format!("Unable to reconstruct HTLC: {}", e)))?;
 
-                const REFUND_FEE_SATOSHIS: u64 = 10_000;
+                const REFUND_FEE_SATOSHIS: u64 = vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS;
                 let unsigned = htlc
                     .build_refund_tx_unsigned(funding_txid, REFUND_FEE_SATOSHIS)
                     .map_err(|e| {
@@ -693,7 +693,7 @@ pub async fn swap_refund(
                     amount: s.btc_amount,
                     network: *state.btc_network.read().await,
                 };
-                const REFUND_FEE_SATOSHIS: u64 = 1_000;
+                const REFUND_FEE_SATOSHIS: u64 = vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS;
                 let unsigned = htlc
                     .build_refund_tx_at(funding_txid, REFUND_FEE_SATOSHIS, now)
                     .map_err(|e| {
@@ -728,17 +728,15 @@ pub async fn swap_refund(
         .or_insert_with(|| SwapState::new(order.order_id, order.hash_lock.unwrap_or([0u8; 32])));
     swap.status = SwapStatus::Refunded;
 
+    let refund_txid_display = match (vtr_refund_txid, btc_refund_txid) {
+        (Some(vtr), _) => hex::encode(vtr),
+        (None, Some(btc)) => btc_txid_hex(&btc),
+        (None, None) => hex::encode(order.order_id),
+    };
+
     Ok(Json(SwapActionResponse {
         order_id: req.order_id,
-        txid: vtr_refund_txid
-            .or_else(|| {
-                btc_refund_txid.map(|mut t| {
-                    t.reverse();
-                    t
-                })
-            })
-            .map(hex::encode)
-            .unwrap_or_else(|| hex::encode(order.order_id)),
+        txid: refund_txid_display,
         status: "Refunded".to_string(),
     }))
 }
