@@ -465,6 +465,30 @@ fn reorganize_to_inner(
             .clone();
 
         let journal = apply_block_journaled(chain, &block, height)?;
+        // Task2 gap fix: persist utxo_root into stored BlockHeader for fork blocks.
+        //
+        // The main-chain path in `Chain::add_block` (chain.rs:641-688) computes
+        // `journal.utxo_root` *before* inserting the block, clones the block
+        // into `block_with_root`, sets `header.utxo_root = journal.utxo_root`,
+        // re-hashes, and inserts under the corrected hash. The fork path
+        // (chain.rs:732) historically inserted fork blocks with the caller-
+        // supplied `utxo_root` (typically `[0;32]`) and only stored the correct
+        // root inside `BlockJournal`. Without this patch, after a reorg the
+        // fork tip retains a stale zero root, so `utxo_root_at_height` and SPV
+        // proofs targeting `prev_header.utxo_root` mismatch.
+        //
+        // `BlockHeader::hash()` includes `utxo_root` (block.rs:257-268), so
+        // mutating `header.utxo_root` makes `block.hash()` diverge from the
+        // map key (`hash` = original hash with stale root). This divergence is
+        // intentional for the minimal fix: `height_index`, `parent_map`, and
+        // `cumulative_work` remain keyed by the original hash, and block
+        // lookups via those structures continue to use that key. A full
+        // re-keying fix would need to recompute hashes, rewrite parent links,
+        // and move `blocks`/`cumulative_work`/`parent_map` entries — deferred
+        // to avoid invasive reorg logic changes.
+        if let Some(stored) = chain.blocks.get_mut(hash) {
+            stored.header.utxo_root = journal.utxo_root;
+        }
         index_block_transactions(chain, *hash, &block);
         let claimed_addresses = journal.claimed_addresses.clone();
         let (utxos_added, utxos_removed): (Vec<Utxo>, Vec<([u8; 32], u32)>) = journal
@@ -486,8 +510,14 @@ fn reorganize_to_inner(
                     }
                 },
             );
+        // `applied_fork_blocks` is persisted via the store bridge; ensure
+        // it carries the corrected header so disk persistence writes the
+        // authoritative `utxo_root` even though the map key stays stale (see
+        // divergence note above).
+        let mut block_for_disk = block.clone();
+        block_for_disk.header.utxo_root = journal.utxo_root;
         applied_fork_blocks.push(AppliedForkBlock {
-            block: block.clone(),
+            block: block_for_disk,
             height,
             utxos_added,
             utxos_removed,

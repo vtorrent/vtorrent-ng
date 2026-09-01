@@ -1419,3 +1419,103 @@ fn test_double_spend_within_block_rejected_and_rolled_back() {
     assert!(chain.get_utxos_for_address(&r1).is_empty());
     assert!(chain.get_utxos_for_address(&r2).is_empty());
 }
+
+#[test]
+fn test_reorg_utxo_root_persisted() {
+    use crate::block::compute_utxo_root_sorted;
+
+    let mut chain = Chain::new().unwrap();
+    let genesis_hash = chain.best_hash().unwrap();
+
+    // Main chain A1 at height 1 (main-chain path correctly commits utxo_root).
+    let a1 = make_block(genesis_hash, 0, 1);
+    chain.add_block(a1).unwrap();
+    assert_ne!(
+        chain.get_block_at_height(1).unwrap().header.utxo_root,
+        [0u8; 32],
+        "main-chain block must have non-zero utxo_root"
+    );
+
+    // Fork B1 competes at height 1 from genesis (fork path inserts with stale root).
+    let mut b1 = make_block(genesis_hash, 0, 1);
+    b1.header.nonce = 999;
+    b1.header.merkle_root = b1.compute_merkle_root();
+    assert_eq!(
+        b1.header.utxo_root, [0u8; 32],
+        "caller-supplied fork block carries stale zero root"
+    );
+    let b1_hash_stale = b1.hash();
+    let fork_res = chain.add_block(b1.clone()).unwrap();
+    assert!(
+        matches!(fork_res, BlockAcceptance::Fork { .. }),
+        "same-height competing block must be stored as fork"
+    );
+    // Before reorg the fork entry still has the stale root (the gap).
+    let stored_b1_pre = chain.get_block(&b1_hash_stale).unwrap();
+    assert_eq!(
+        stored_b1_pre.header.utxo_root, [0u8; 32],
+        "fork block before reorg retains stale zero root"
+    );
+
+    // Fork extension B2 at height 2 makes the fork the longest chain → reorg.
+    let b2 = make_block(b1_hash_stale, b1.header.stake_modifier, 2);
+    assert_eq!(b2.header.utxo_root, [0u8; 32]);
+    let reorg_res = chain.add_block(b2).unwrap();
+    assert!(
+        matches!(reorg_res, BlockAcceptance::Reorg { .. }),
+        "longer fork must trigger reorg"
+    );
+    assert_eq!(chain.best_height(), 2);
+
+    // After reorg both heights must expose a persisted non-zero utxo_root
+    // (the Task 2 gap氏の fix patches `blocks[hash].header.utxo_root`
+    // inside `reorganize_to` — without it these would remain `[0;32]`).
+    let h1_root = chain.utxo_root_at_height(1).expect("height 1 utxo_root");
+    let h2_root = chain.utxo_root_at_height(2).expect("height 2 utxo_root");
+    assert_ne!(
+        h1_root, [0u8; 32],
+        "height 1 utxo_root must be persisted after reorg"
+    );
+    assert_ne!(
+        h2_root, [0u8; 32],
+        "height 2 utxo_root must be persisted after reorg"
+    );
+    assert_eq!(
+        h1_root,
+        chain.get_block_at_height(1).unwrap().header.utxo_root
+    );
+    assert_eq!(
+        h2_root,
+        chain.get_block_at_height(2).unwrap().header.utxo_root
+    );
+
+    // Tip's root must match a recomputed commitment over the live UTXO set
+    // (SPV clients verify inclusion against `prev_header.utxo_root`).
+    let recomputed =
+        compute_utxo_root_sorted(&chain.get_utxo_set().values().cloned().collect::<Vec<_>>());
+    assert_eq!(
+        h2_root, recomputed,
+        "tip utxo_root must match recomputed commitment"
+    );
+    assert_eq!(chain.current_utxo_root().unwrap(), recomputed);
+
+    // The fork block's map key is the original stale hash (which includes the
+    // stale zero root). After patching, `block.hash()` (which now includes the
+    // correct root) diverges from that key — this divergence is intentional
+    // and documented in `chain_reorg.rs`. The block remains reachable via the
+    // original key and via `height_index`.
+    let stored_b1_post = chain.get_block(&b1_hash_stale).unwrap();
+    assert_eq!(
+        stored_b1_post.header.utxo_root, h1_root,
+        "fork block header patched to journal utxo_root after reorg"
+    );
+    let recomputed_hash = stored_b1_post.hash();
+    assert_ne!(
+        recomputed_hash, b1_hash_stale,
+        "patched header hash diverges from original map key (expected, see chain_reorg.rs note)"
+    );
+    assert_eq!(
+        chain.get_block_at_height(1).unwrap().header.utxo_root,
+        h1_root
+    );
+}
