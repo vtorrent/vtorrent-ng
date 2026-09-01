@@ -18,6 +18,7 @@ pub mod bloom;
 pub mod error;
 pub mod merkle;
 pub mod spv_chain;
+pub mod stake;
 
 pub use bloom::BloomFilter;
 pub use error::SpvError;

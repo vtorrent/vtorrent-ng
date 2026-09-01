@@ -15,7 +15,7 @@ fn hash256(data: &[u8]) -> [u8; 32] {
 }
 
 /// Hash two child nodes together to produce their parent node.
-fn combine(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+pub fn combine(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     let mut buf = [0u8; 64];
     buf[..32].copy_from_slice(left);
     buf[32..].copy_from_slice(right);
@@ -111,7 +111,7 @@ impl MerkleTree {
 }
 
 /// A single node in a Merkle proof path.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProofNode {
     /// The sibling hash at this level.
     pub hash: [u8; 32],
@@ -120,7 +120,7 @@ pub struct ProofNode {
 }
 
 /// A Merkle inclusion proof: proves that `txid` is in the block with `root`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MerkleProof {
     /// The transaction ID being proven.
     pub txid: [u8; 32],
