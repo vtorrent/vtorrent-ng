@@ -1,6 +1,7 @@
 //! Top-level Bitcoin wallet facade.
 
 use crate::error::Result;
+use crate::filters::FilterHeaderStore;
 use crate::headers::HeaderChain;
 use crate::keys::derive_address;
 use crate::utxo::{Utxo, UtxoSet};
@@ -15,11 +16,12 @@ pub struct BtcWallet {
     network: Network,
     headers: Arc<Mutex<HeaderChain>>,
     utxos: Arc<Mutex<UtxoSet>>,
+    filter_headers: Arc<Mutex<FilterHeaderStore>>,
     /// Optional path for persisting the UTXO set to disk.
     utxo_path: Option<PathBuf>,
     next_index: u32,
     synced: bool,
-    /// Height up to which the UTXO scan has completed (incremental checkpoint).
+    /// Next block height to scan (incremental checkpoint).
     last_scanned_height: u32,
     /// Whether new transactions signal RBF (Replace-By-Fee).
     rbf_enabled: bool,
@@ -45,6 +47,7 @@ impl BtcWallet {
             network,
             headers: Arc::new(Mutex::new(HeaderChain::anchored(network))),
             utxos: Arc::new(Mutex::new(UtxoSet::new())),
+            filter_headers: Arc::new(Mutex::new(FilterHeaderStore::default())),
             utxo_path: None,
             next_index: 0,
             synced: false,
@@ -66,6 +69,7 @@ impl BtcWallet {
             network,
             headers: Arc::new(Mutex::new(HeaderChain::anchored(network))),
             utxos: Arc::new(Mutex::new(utxos)),
+            filter_headers: Arc::new(Mutex::new(FilterHeaderStore::default())),
             utxo_path: Some(utxo_path),
             next_index: 0,
             synced: false,
@@ -163,9 +167,10 @@ impl BtcWallet {
 
     /// Run a sync pass against a peer, updating headers and the synced flag.
     pub async fn sync(&mut self, peer: &mut crate::p2p::BtcPeer) -> Result<usize> {
-        let sync = crate::sync::BtcSync::new(
+        let sync = crate::sync::BtcSync::new_with_filter_headers(
             self.headers.clone(),
             self.utxos.clone(),
+            self.filter_headers.clone(),
             self.watch_addresses(self.next_index)?,
             self.network,
         );
@@ -184,21 +189,22 @@ impl BtcWallet {
         peer: &mut crate::p2p::BtcPeer,
         start_height: u32,
     ) -> Result<usize> {
-        let sync = crate::sync::BtcSync::new(
+        let sync = crate::sync::BtcSync::new_with_filter_headers(
             self.headers.clone(),
             self.utxos.clone(),
+            self.filter_headers.clone(),
             self.watch_addresses(self.next_index)?,
             self.network,
         );
         sync.scan_utxos_bip158(peer, start_height).await
     }
 
-    /// The height up to which the UTXO scan has completed.
+    /// The next block height to scan.
     pub fn last_scanned_height(&self) -> u32 {
         self.last_scanned_height
     }
 
-    /// Advance the UTXO scan checkpoint.
+    /// Set the next block height to scan.
     pub fn set_last_scanned_height(&mut self, height: u32) {
         self.last_scanned_height = height;
     }

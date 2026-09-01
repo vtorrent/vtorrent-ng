@@ -5,6 +5,7 @@
 //! and a minimal Bitcoin P2P client.
 
 pub mod error;
+mod filters;
 pub mod headers;
 pub mod htlc;
 pub mod keys;

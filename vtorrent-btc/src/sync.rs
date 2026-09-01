@@ -1,6 +1,9 @@
 //! Live Bitcoin header sync and Bloom-filter UTXO scan.
 
 use crate::error::{BtcError, Result};
+use crate::filters::{
+    FilterHeaderStore, CFHEADERS_RANGE_LIMIT, CFILTERS_RANGE_LIMIT, CHECKPOINT_INTERVAL,
+};
 use crate::headers::HeaderChain;
 use crate::p2p::BtcPeer;
 use crate::utxo::{Utxo, UtxoSet};
@@ -8,7 +11,7 @@ use bitcoin::consensus::encode::serialize;
 use bitcoin::hashes::Hash;
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::p2p::message_blockdata::{GetHeadersMessage, Inventory};
-use bitcoin::p2p::message_filter::GetCFilters;
+use bitcoin::p2p::message_filter::{GetCFCheckpt, GetCFHeaders, GetCFilters};
 use parking_lot::Mutex;
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -97,6 +100,7 @@ pub async fn broadcast_tx_to(
 pub struct BtcSync {
     headers: Arc<Mutex<HeaderChain>>,
     utxos: Arc<Mutex<UtxoSet>>,
+    filter_headers: Arc<Mutex<FilterHeaderStore>>,
     addresses: Vec<String>,
     network: bitcoin::Network,
 }
@@ -111,6 +115,23 @@ impl BtcSync {
         Self {
             headers,
             utxos,
+            filter_headers: Arc::new(Mutex::new(FilterHeaderStore::default())),
+            addresses,
+            network,
+        }
+    }
+
+    pub(crate) fn new_with_filter_headers(
+        headers: Arc<Mutex<HeaderChain>>,
+        utxos: Arc<Mutex<UtxoSet>>,
+        filter_headers: Arc<Mutex<FilterHeaderStore>>,
+        addresses: Vec<String>,
+        network: bitcoin::Network,
+    ) -> Self {
+        Self {
+            headers,
+            utxos,
+            filter_headers,
             addresses,
             network,
         }
@@ -216,6 +237,136 @@ impl BtcSync {
         }
     }
 
+    async fn authenticate_filter_headers(
+        &self,
+        peer: &mut BtcPeer,
+        start_height: u32,
+    ) -> Result<()> {
+        use bitcoin::bip158::FilterHeader;
+
+        if !peer.supports_compact_filters() {
+            return Err(BtcError::Sync(format!(
+                "peer {} does not advertise compact-filter support",
+                peer.addr()
+            )));
+        }
+        let (tip_height, tip_hash) = {
+            let chain = self.headers.lock();
+            let hash = chain
+                .best_hash()
+                .ok_or_else(|| BtcError::Sync("Bitcoin header chain is empty".into()))?;
+            (
+                chain.best_height(),
+                bitcoin::BlockHash::from_byte_array(hash),
+            )
+        };
+
+        const FILTER_TYPE_BASIC: u8 = 0;
+        peer.send(NetworkMessage::GetCFCheckpt(GetCFCheckpt {
+            filter_type: FILTER_TYPE_BASIC,
+            stop_hash: tip_hash,
+        }))
+        .await?;
+        let checkpoints = loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), peer.recv()).await {
+                Err(_) => return Err(BtcError::Sync("compact-filter checkpoint timeout".into())),
+                Ok(Err(error)) => return Err(error),
+                Ok(Ok(NetworkMessage::CFCheckpt(checkpoints))) => break checkpoints,
+                Ok(Ok(NetworkMessage::Ping(nonce))) => {
+                    peer.send(NetworkMessage::Pong(nonce)).await?;
+                }
+                Ok(Ok(_)) => continue,
+            }
+        };
+        if checkpoints.filter_type != FILTER_TYPE_BASIC || checkpoints.stop_hash != tip_hash {
+            return Err(BtcError::Sync(
+                "compact-filter checkpoint response does not match request".into(),
+            ));
+        }
+        let mut candidate = FilterHeaderStore::default();
+        candidate.reconcile_checkpoints(
+            tip_hash.to_byte_array(),
+            tip_height,
+            &checkpoints.filter_headers,
+        )?;
+
+        let checkpoint_height = start_height
+            .saturating_sub(1)
+            .checked_div(CHECKPOINT_INTERVAL)
+            .unwrap_or(0)
+            * CHECKPOINT_INTERVAL;
+        let (request_start, mut previous_header) = if checkpoint_height > 0 {
+            let header = candidate
+                .checkpoint(checkpoint_height)
+                .ok_or_else(|| BtcError::Sync("missing compact-filter checkpoint anchor".into()))?;
+            (checkpoint_height + 1, header)
+        } else {
+            (0, FilterHeader::all_zeros())
+        };
+        let block_hashes = self.headers.lock().hashes_from(request_start);
+        if block_hashes.len() != tip_height.saturating_sub(request_start) as usize + 1 {
+            return Err(BtcError::Sync(
+                "Bitcoin main-chain header range is not contiguous".into(),
+            ));
+        }
+
+        for (chunk_index, chunk) in block_hashes.chunks(CFHEADERS_RANGE_LIMIT).enumerate() {
+            let chunk_start = request_start + (chunk_index * CFHEADERS_RANGE_LIMIT) as u32;
+            let stop_hash = bitcoin::BlockHash::from_byte_array(*chunk.last().unwrap());
+            peer.send(NetworkMessage::GetCFHeaders(GetCFHeaders {
+                filter_type: FILTER_TYPE_BASIC,
+                start_height: chunk_start,
+                stop_hash,
+            }))
+            .await?;
+            let response = loop {
+                match tokio::time::timeout(std::time::Duration::from_secs(10), peer.recv()).await {
+                    Err(_) => return Err(BtcError::Sync("compact-filter header timeout".into())),
+                    Ok(Err(error)) => return Err(error),
+                    Ok(Ok(NetworkMessage::CFHeaders(headers))) => break headers,
+                    Ok(Ok(NetworkMessage::Ping(nonce))) => {
+                        peer.send(NetworkMessage::Pong(nonce)).await?;
+                    }
+                    Ok(Ok(_)) => continue,
+                }
+            };
+            if response.filter_type != FILTER_TYPE_BASIC
+                || response.stop_hash != stop_hash
+                || response.previous_filter_header != previous_header
+                || response.filter_hashes.len() != chunk.len()
+            {
+                return Err(BtcError::Sync(format!(
+                    "invalid compact-filter header response for heights {}..{}",
+                    chunk_start,
+                    chunk_start + chunk.len() as u32 - 1
+                )));
+            }
+            previous_header = candidate.apply_range(
+                chunk_start,
+                chunk,
+                &response.filter_hashes,
+                previous_header,
+            )?;
+        }
+
+        let required = if self.network == bitcoin::Network::Regtest {
+            1
+        } else {
+            2
+        };
+        let agreement =
+            self.filter_headers
+                .lock()
+                .observe_candidate(peer.addr(), candidate, required)?;
+        if agreement < required {
+            return Err(BtcError::Sync(format!(
+                "compact-filter headers require agreement from {} peers (have {})",
+                required, agreement
+            )));
+        }
+        Ok(())
+    }
+
     /// Scan blocks from `start_height` to the tip using BIP-158 compact block
     /// filters (the modern, privacy-preserving alternative to BIP-37).
     ///
@@ -247,104 +398,114 @@ impl BtcSync {
             return Ok(0);
         }
 
+        self.authenticate_filter_headers(peer, start_height).await?;
+
         // BIP-158 basic filter type is 0x00.
         const FILTER_TYPE_BASIC: u8 = 0x00;
 
-        // Request the full range of filters in one `getcfilters` message. The
-        // peer replies with one `cfilter` per block, in ascending height order.
-        let stop_hash = bitcoin::BlockHash::from_byte_array(*hashes.last().unwrap());
-        peer.send(NetworkMessage::GetCFilters(GetCFilters {
-            filter_type: FILTER_TYPE_BASIC,
-            start_height,
-            stop_hash,
-        }))
-        .await?;
-
         let mut scanned = 0usize;
-        for hash in hashes {
-            let expected_block_hash = bitcoin::BlockHash::from_byte_array(hash);
-            // Read the next cfilter response (in order). The peer's blockfilter
-            // index can lag behind the tip, so it may send fewer filters than
-            // requested; time out rather than block forever.
-            let filter = loop {
-                match tokio::time::timeout(std::time::Duration::from_secs(10), peer.recv()).await {
-                    Err(_) => return Ok(scanned),
-                    Ok(Err(e)) => return Err(e),
-                    Ok(Ok(NetworkMessage::CFilter(cf))) => break cf,
-                    Ok(Ok(NetworkMessage::Ping(nonce))) => {
-                        peer.send(NetworkMessage::Pong(nonce)).await?;
-                    }
-                    Ok(Ok(_)) => continue,
-                }
-            };
+        for (chunk_index, chunk) in hashes.chunks(CFILTERS_RANGE_LIMIT).enumerate() {
+            let chunk_start = start_height + (chunk_index * CFILTERS_RANGE_LIMIT) as u32;
+            let stop_hash = bitcoin::BlockHash::from_byte_array(*chunk.last().unwrap());
+            peer.send(NetworkMessage::GetCFilters(GetCFilters {
+                filter_type: FILTER_TYPE_BASIC,
+                start_height: chunk_start,
+                stop_hash,
+            }))
+            .await?;
 
-            if filter.block_hash != expected_block_hash {
-                return Err(BtcError::Sync(format!(
-                    "compact filter block hash {} does not match requested {}",
-                    filter.block_hash, expected_block_hash
-                )));
-            }
-
-            // The cfilter response carries the authoritative block hash, which
-            // is the SipHash key for the filter. Use it (not our header-chain
-            // hash) so the match is keyed correctly.
-            let block_hash = filter.block_hash;
-            let bf = BlockFilter::new(&filter.filter);
-            let matched = bf
-                .match_any(&block_hash, watched.iter().map(|s| s.as_slice()))
-                .map_err(|e| BtcError::Sync(e.to_string()))?;
-            tracing::debug!(
-                "BTC BIP-158: block {} (cfilter hash {}) filter {} bytes, matched={}",
-                hex::encode(hash),
-                hex::encode(filter.block_hash.to_byte_array()),
-                filter.filter.len(),
-                matched
-            );
-
-            if matched {
-                // Download the full block and record matching outputs.
-                peer.send(NetworkMessage::GetData(vec![Inventory::WitnessBlock(
-                    block_hash,
-                )]))
-                .await?;
-                let block = loop {
-                    match peer.recv().await? {
-                        NetworkMessage::Block(b) => break b,
-                        NetworkMessage::Ping(nonce) => {
+            for hash in chunk {
+                let expected_block_hash = bitcoin::BlockHash::from_byte_array(*hash);
+                // Read the next cfilter response (in order). The peer's blockfilter
+                // index can lag behind the tip, so it may send fewer filters than
+                // requested; time out rather than block forever.
+                let filter = loop {
+                    match tokio::time::timeout(std::time::Duration::from_secs(10), peer.recv())
+                        .await
+                    {
+                        Err(_) => return Ok(scanned),
+                        Ok(Err(e)) => return Err(e),
+                        Ok(Ok(NetworkMessage::CFilter(cf))) => break cf,
+                        Ok(Ok(NetworkMessage::Ping(nonce))) => {
                             peer.send(NetworkMessage::Pong(nonce)).await?;
                         }
-                        _ => continue,
+                        Ok(Ok(_)) => continue,
                     }
                 };
-                if block.block_hash() != block_hash {
+
+                if filter.filter_type != FILTER_TYPE_BASIC
+                    || filter.block_hash != expected_block_hash
+                {
                     return Err(BtcError::Sync(format!(
-                        "received block {} while requesting {}",
-                        block.block_hash(),
-                        block_hash
+                        "compact filter type/hash {} does not match requested {}",
+                        filter.block_hash, expected_block_hash
                     )));
                 }
-                if !block.check_merkle_root() || !block.check_witness_commitment() {
-                    return Err(BtcError::Sync(format!(
-                        "block {} has an invalid transaction commitment",
-                        block_hash
-                    )));
-                }
-                let height = {
-                    let chain = self.headers.lock();
-                    // Look up the height by the block hash we actually
-                    // downloaded (the cfilter's authoritative hash), not the
-                    // header-chain hash, so outputs are attributed to the
-                    // correct height even if the chains diverge.
-                    let h: [u8; 32] = block_hash.to_byte_array();
-                    chain.get(&h).map(|h| h.height)
-                };
-                if let Some(height) = height {
-                    for tx in &block.txdata {
-                        self.record_matching_outputs(tx, height);
+                self.filter_headers
+                    .lock()
+                    .verify_filter(hash, &filter.filter)?;
+
+                // The cfilter response carries the authoritative block hash, which
+                // is the SipHash key for the filter. Use it (not our header-chain
+                // hash) so the match is keyed correctly.
+                let block_hash = filter.block_hash;
+                let bf = BlockFilter::new(&filter.filter);
+                let matched = bf
+                    .match_any(&block_hash, watched.iter().map(|s| s.as_slice()))
+                    .map_err(|e| BtcError::Sync(e.to_string()))?;
+                tracing::debug!(
+                    "BTC BIP-158: block {} (cfilter hash {}) filter {} bytes, matched={}",
+                    hex::encode(hash),
+                    hex::encode(filter.block_hash.to_byte_array()),
+                    filter.filter.len(),
+                    matched
+                );
+
+                if matched {
+                    // Download the full block and record matching outputs.
+                    peer.send(NetworkMessage::GetData(vec![Inventory::WitnessBlock(
+                        block_hash,
+                    )]))
+                    .await?;
+                    let block = loop {
+                        match peer.recv().await? {
+                            NetworkMessage::Block(b) => break b,
+                            NetworkMessage::Ping(nonce) => {
+                                peer.send(NetworkMessage::Pong(nonce)).await?;
+                            }
+                            _ => continue,
+                        }
+                    };
+                    if block.block_hash() != block_hash {
+                        return Err(BtcError::Sync(format!(
+                            "received block {} while requesting {}",
+                            block.block_hash(),
+                            block_hash
+                        )));
+                    }
+                    if !block.check_merkle_root() || !block.check_witness_commitment() {
+                        return Err(BtcError::Sync(format!(
+                            "block {} has an invalid transaction commitment",
+                            block_hash
+                        )));
+                    }
+                    let height = {
+                        let chain = self.headers.lock();
+                        // Look up the height by the block hash we actually
+                        // downloaded (the cfilter's authoritative hash), not the
+                        // header-chain hash, so outputs are attributed to the
+                        // correct height even if the chains diverge.
+                        let h: [u8; 32] = block_hash.to_byte_array();
+                        chain.get(&h).map(|h| h.height)
+                    };
+                    if let Some(height) = height {
+                        for tx in &block.txdata {
+                            self.record_matching_outputs(tx, height);
+                        }
                     }
                 }
+                scanned += 1;
             }
-            scanned += 1;
         }
         Ok(scanned)
     }

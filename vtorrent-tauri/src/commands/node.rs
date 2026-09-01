@@ -88,7 +88,7 @@ pub async fn start_node(state: tauri::State<'_, AppState>) -> Result<NodeInfoRes
             utxo_path.clone(),
         ) {
             Ok(mut wallet) => {
-                wallet.set_last_scanned_height(wallet.best_height());
+                wallet.set_last_scanned_height(wallet.best_height().saturating_add(1));
                 *rpc_state.btc_wallet.write().await = Some(wallet);
                 tracing::info!(
                     "BTC wallet loaded with UTXO persistence: {}",

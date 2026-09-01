@@ -17,7 +17,9 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// A single connection to a Bitcoin peer.
 pub struct BtcPeer {
     stream: TcpStream,
+    addr: SocketAddr,
     network: bitcoin::Network,
+    services: ServiceFlags,
     /// Peer's advertised minimum fee rate in satoshis per kilobyte (BIP133).
     /// Updated when we receive a `feefilter` message.
     feefilter_sats_per_kb: i64,
@@ -67,7 +69,9 @@ impl BtcPeer {
         // those until we see the verack.
         let mut peer = Self {
             stream,
+            addr,
             network,
+            services: ServiceFlags::NONE,
             feefilter_sats_per_kb: 1_000, // default 1 sat/byte
         };
         let mut got_version = false;
@@ -78,7 +82,8 @@ impl BtcPeer {
                 .map_err(|_| BtcError::P2p("handshake timed out".into()))??;
             tracing::debug!("BTC handshake: received {:?}", msg);
             match msg {
-                NetworkMessage::Version(_) => {
+                NetworkMessage::Version(version) => {
+                    peer.services = version.services;
                     got_version = true;
                     peer.send(NetworkMessage::Verack).await?;
                 }
@@ -153,6 +158,14 @@ impl BtcPeer {
     /// The peer's advertised minimum fee rate in sat/kB (BIP133).
     pub fn feefilter_sats_per_kb(&self) -> i64 {
         self.feefilter_sats_per_kb
+    }
+
+    pub fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    pub fn supports_compact_filters(&self) -> bool {
+        self.services.has(ServiceFlags::COMPACT_FILTERS)
     }
 
     /// Read one raw network message.

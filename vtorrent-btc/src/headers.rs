@@ -217,14 +217,25 @@ impl HeaderChain {
     ///
     /// Used to request `merkleblock`s for a UTXO scan from a checkpoint.
     pub fn hashes_from(&self, start_height: u32) -> Vec<[u8; 32]> {
-        let mut entries: Vec<(&u32, &[u8; 32])> = self
-            .headers
-            .iter()
-            .filter(|(_, h)| h.height >= start_height)
-            .map(|(hash, h)| (&h.height, hash))
-            .collect();
-        entries.sort_by_key(|(height, _)| **height);
-        entries.into_iter().map(|(_, hash)| *hash).collect()
+        let Some(mut hash) = self.best_hash else {
+            return Vec::new();
+        };
+        let mut hashes = Vec::new();
+        loop {
+            let Some(stored) = self.headers.get(&hash) else {
+                return Vec::new();
+            };
+            if stored.height < start_height {
+                break;
+            }
+            hashes.push(hash);
+            if stored.height == 0 {
+                break;
+            }
+            hash = stored.header.prev_blockhash.to_byte_array();
+        }
+        hashes.reverse();
+        hashes
     }
 }
 
@@ -379,5 +390,27 @@ mod tests {
 
         let from_99 = chain.hashes_from(99);
         assert!(from_99.is_empty());
+    }
+
+    #[test]
+    fn test_hashes_from_only_returns_best_chain() {
+        let mut chain = HeaderChain::unanchored_for_tests();
+        let h0 = make_header([0u8; 32], 0);
+        let h0_hash = h0.block_hash().to_byte_array();
+        chain.add_header(&serialize(&h0), 0).unwrap();
+
+        let main_h1 = make_header(h0_hash, 1);
+        chain.add_header(&serialize(&main_h1), 1).unwrap();
+        let fork_h1 = make_header(h0_hash, 20);
+        let fork_h1_hash = fork_h1.block_hash().to_byte_array();
+        chain.add_header(&serialize(&fork_h1), 1).unwrap();
+        let fork_h2 = make_header(fork_h1_hash, 30);
+        let fork_h2_hash = fork_h2.block_hash().to_byte_array();
+        chain.add_header(&serialize(&fork_h2), 2).unwrap();
+
+        assert_eq!(
+            chain.hashes_from(0),
+            vec![h0_hash, fork_h1_hash, fork_h2_hash]
+        );
     }
 }

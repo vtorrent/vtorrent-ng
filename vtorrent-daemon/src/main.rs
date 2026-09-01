@@ -739,7 +739,7 @@ async fn main() -> anyhow::Result<()> {
                             loop {
                                 let start = w.last_scanned_height();
                                 let tip = w.best_height();
-                                if start >= tip {
+                                if start > tip {
                                     break;
                                 }
                                 match w.scan_utxos_bip158(&mut peer, start).await {
@@ -750,9 +750,9 @@ async fn main() -> anyhow::Result<()> {
                                         tracing::info!(
                                             "BTC UTXO scan (BIP-158): {} blocks (through height {})",
                                             n,
-                                            done
+                                            done.saturating_sub(1)
                                         );
-                                        if done >= tip {
+                                        if done > tip {
                                             break;
                                         }
                                     }
