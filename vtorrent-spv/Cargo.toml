@@ -9,7 +9,6 @@ description = "SPV (Simplified Payment Verification) and Bloom filter support fo
 
 [dependencies]
 vtorrent-core  = { path = "../vtorrent-core" }
-vtorrent-node  = { path = "../vtorrent-node" }
 
 # Serialization
 serde          = { version = "1", features = ["derive"] }
@@ -28,4 +27,5 @@ anyhow         = "1"
 tracing        = "0.1"
 
 [dev-dependencies]
+vtorrent-node  = { path = "../vtorrent-node" }
 tokio          = { version = "1", features = ["full"] }

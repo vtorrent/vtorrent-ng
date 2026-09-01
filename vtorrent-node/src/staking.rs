@@ -10,13 +10,19 @@
 /// A full implementation would use the stake modifier from the chain.
 use crate::{
     block::{
-        compute_merkle_root_from_txids, Block, BlockHeader, Transaction, TxInput, TxOutput, TxType,
+        compute_merkle_root_from_txids, compute_utxo_root_sorted, Block, BlockHeader, Transaction,
+        TxInput, TxOutput, TxType,
     },
     chain::Utxo,
     consensus::{
         check_stake_kernel, compute_pos_reward, compute_stake_modifier, stake_kernel_hash,
         MAX_STAKE_AGE, MIN_STAKE_AGE, MIN_STAKE_AMOUNT,
     },
+};
+use vtorrent_spv::merkle::MerkleTree as ProofMerkleTree;
+use vtorrent_spv::stake::{
+    hash_utxo, SpvUtxo, StakeProof, Transaction as SpvTransaction, TxInput as SpvTxInput,
+    TxOutput as SpvTxOutput, TxType as SpvTxType, UtxoInclusionProof,
 };
 
 /// Runtime staking control command sent from RPC/tauri to the node.
@@ -99,12 +105,44 @@ impl StakingEngine {
         utxos: Vec<Utxo>,
         pending_txs: Vec<Transaction>,
     ) -> Option<Block> {
+        self.build_stake_block_with_proof(
+            prev_hash,
+            prev_stake_modifier,
+            height,
+            timestamp,
+            utxos,
+            pending_txs,
+        )
+        .map(|(block, _)| block)
+    }
+
+    /// Try to build a valid PoS block and emit a self-contained [`StakeProof`].
+    ///
+    /// The proof commits to the staked UTXO's inclusion in the pre-block UTXO
+    /// set (`prev_header.utxo_root`) and the coinstake's inclusion in the block
+    /// (`header.merkle_root`), letting SPV light clients verify PoS blocks
+    /// without a full UTXO set.
+    ///
+    /// Returns `Some((block, proof))` if a valid stake kernel was found.
+    pub fn build_stake_block_with_proof(
+        &self,
+        prev_hash: [u8; 32],
+        prev_stake_modifier: u64,
+        height: u32,
+        timestamp: u32,
+        utxos: Vec<Utxo>,
+        pending_txs: Vec<Transaction>,
+    ) -> Option<(Block, StakeProof)> {
+        // Sort UTXOs by (txid, vout) — canonical leaf order for the UTXO tree.
+        let mut sorted_utxos = utxos;
+        sorted_utxos.sort_by(|a, b| a.txid.cmp(&b.txid).then(a.vout.cmp(&b.vout)));
+
         // Filter eligible UTXOs
-        let eligible: Vec<&Utxo> = utxos
+        let eligible: Vec<&Utxo> = sorted_utxos
             .iter()
             .filter(|u| self.is_eligible(u, timestamp))
             .collect();
-        for u in &utxos {
+        for u in &sorted_utxos {
             if !self.is_eligible(u, timestamp) {
                 let age = timestamp.saturating_sub(u.timestamp);
                 tracing::debug!(
@@ -123,6 +161,21 @@ impl StakingEngine {
             tracing::debug!("No eligible UTXOs for staking at height {}", height);
             return None;
         }
+
+        // Build the pre-block UTXO commitment tree (leaves in canonical order).
+        let spv_utxos: Vec<SpvUtxo> = sorted_utxos
+            .iter()
+            .map(|u| SpvUtxo {
+                txid: u.txid,
+                vout: u.vout,
+                value: u.value,
+                script_pubkey: u.script_pubkey.clone(),
+                height: u.height,
+                timestamp: u.timestamp,
+            })
+            .collect();
+        let utxo_leaves: Vec<[u8; 32]> = spv_utxos.iter().map(hash_utxo).collect();
+        let utxo_tree = ProofMerkleTree::build(&utxo_leaves);
 
         // Try each eligible UTXO as a stake kernel.  Move pending_txs on
         // the first (and only) success — the function returns immediately.
@@ -153,13 +206,72 @@ impl StakingEngine {
                         !conflict
                     })
                     .collect();
-                let block = self.assemble_block(
+                let mut block = self.assemble_block(
                     prev_hash,
                     prev_stake_modifier,
                     timestamp,
-                    coinstake,
+                    coinstake.clone(),
                     non_conflicting,
                 );
+
+                // Commit to the post-apply UTXO set: staked UTXO removed,
+                // coinstake outputs added. The chain recomputes and overwrites
+                // this root on add_block; the producer must already match it.
+                let staked_key = (utxo.txid, utxo.vout);
+                let mut post_apply: Vec<Utxo> = sorted_utxos
+                    .iter()
+                    .filter(|u| (u.txid, u.vout) != staked_key)
+                    .cloned()
+                    .collect();
+                let coinstake_txid = coinstake.txid();
+                // The chain journals every output (including the zero-value
+                // marker) into the UTXO set, so the producer must too or the
+                // commitment roots diverge.
+                for (vout, out) in coinstake.outputs.iter().enumerate() {
+                    post_apply.push(Utxo {
+                        txid: coinstake_txid,
+                        vout: vout as u32,
+                        value: out.value,
+                        script_pubkey: out.script_pubkey.clone(),
+                        height,
+                        timestamp,
+                    });
+                }
+                block.header.utxo_root = compute_utxo_root_sorted(&post_apply);
+
+                // UTXO inclusion proof for the staked UTXO against the
+                // pre-block root (canonical leaf position).
+                let leaf_index = sorted_utxos
+                    .iter()
+                    .position(|u| u.txid == utxo.txid && u.vout == utxo.vout)
+                    .expect("winning utxo came from the sorted list");
+                let utxo_proof_mp = utxo_tree.proof(leaf_index)?;
+                let utxo_proof = UtxoInclusionProof {
+                    leaf_index,
+                    siblings: utxo_proof_mp.siblings,
+                    root: utxo_tree.root(),
+                };
+
+                // Transaction Merkle proof: coinstake is always index 0.
+                let txids: Vec<[u8; 32]> = block.transactions.iter().map(|tx| tx.txid()).collect();
+                let tx_tree = ProofMerkleTree::build(&txids);
+                let tx_merkle_proof = tx_tree.proof(0)?;
+
+                let proof = StakeProof {
+                    coinstake: spv_transaction_mirror(&coinstake),
+                    tx_merkle_proof,
+                    utxo: SpvUtxo {
+                        txid: utxo.txid,
+                        vout: utxo.vout,
+                        value: utxo.value,
+                        script_pubkey: utxo.script_pubkey.clone(),
+                        height: utxo.height,
+                        timestamp: utxo.timestamp,
+                    },
+                    utxo_proof,
+                    prev_stake_modifier,
+                };
+
                 let block_hash = block.hash();
                 tracing::info!(
                     height = %height,
@@ -170,7 +282,7 @@ impl StakingEngine {
                     tx_count = %block.transactions.len(),
                     "Successfully staked block"
                 );
-                return Some(block);
+                return Some((block, proof));
             }
         }
 
@@ -371,6 +483,42 @@ impl StakingEngine {
     }
 }
 
+/// Mirror a node `Transaction` into the bit-identical SPV `Transaction`.
+fn spv_transaction_mirror(tx: &Transaction) -> SpvTransaction {
+    SpvTransaction {
+        version: tx.version,
+        tx_type: match tx.tx_type {
+            TxType::Standard => SpvTxType::Standard,
+            TxType::Coinbase => SpvTxType::Coinbase,
+            TxType::Coinstake => SpvTxType::Coinstake,
+            TxType::LegacyClaim => SpvTxType::LegacyClaim,
+            TxType::AtomicSwap => SpvTxType::AtomicSwap,
+            TxType::TorrentIncentive => SpvTxType::TorrentIncentive,
+        },
+        inputs: tx
+            .inputs
+            .iter()
+            .map(|i| SpvTxInput {
+                prev_txid: i.prev_txid,
+                prev_vout: i.prev_vout,
+                script_sig: i.script_sig.clone(),
+                sequence: i.sequence,
+            })
+            .collect(),
+        outputs: tx
+            .outputs
+            .iter()
+            .map(|o| SpvTxOutput {
+                value: o.value,
+                script_pubkey: o.script_pubkey.clone(),
+            })
+            .collect(),
+        lock_time: tx.lock_time,
+        claim_address: tx.claim_address.clone(),
+        claim_signature: tx.claim_signature.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,6 +580,188 @@ mod tests {
         assert_eq!(script.len(), 25);
         assert_eq!(&script[..3], &[0x76, 0xa9, 0x14]);
         assert_eq!(&script[23..], &[0x88, 0xac]);
+    }
+}
+
+#[cfg(test)]
+mod proof_tests {
+    use super::*;
+    use crate::block::compute_utxo_root_sorted;
+    use crate::chain::Utxo;
+    use crate::consensus::{COIN, MIN_STAKE_AGE};
+    use vtorrent_spv::stake::{hash_utxo, StakeProof};
+
+    fn make_utxo(value: u64, age_seconds: u32) -> Utxo {
+        let now = 1_700_000_000u32;
+        Utxo {
+            txid: [1u8; 32],
+            vout: 0,
+            value,
+            script_pubkey: vec![0x76, 0xa9, 0x14],
+            height: 100,
+            timestamp: now - age_seconds,
+        }
+    }
+
+    /// build_stake_block_with_proof must emit a StakeProof whose tx Merkle
+    /// proof verifies against the block header, whose UTXO inclusion proof
+    /// verifies against the pre-block UTXO root, and which carries the
+    /// staked UTXO and previous stake modifier.
+    #[test]
+    fn test_build_stake_block_produces_verifiable_proof() {
+        let engine = StakingEngine::with_wif_fast(
+            "VMLVUkkn4hJ6Pex3w9RdmdU4BRUarszhHH".to_string(),
+            "WHqoPmvQULJ4ePseyRWP8XdzuwC67p49gSPuWTxJ5tyYPugbYLn4".to_string(),
+        );
+        let utxo = make_utxo(1000 * COIN, MIN_STAKE_AGE as u32 + 100);
+        let prev_modifier = 0xdead_beef_u64;
+
+        let mut result: Option<(Block, StakeProof)> = None;
+        for ts in 1_700_000_000..1_700_000_000 + 3600 {
+            result = engine.build_stake_block_with_proof(
+                [2u8; 32],
+                prev_modifier,
+                101,
+                ts,
+                vec![utxo.clone()],
+                vec![],
+            );
+            if result.is_some() {
+                break;
+            }
+        }
+        let (block, proof) = result.expect("kernel should hit within an hour of timestamps");
+
+        // tx inclusion: coinstake at index 0 proven against header merkle root
+        assert!(proof
+            .tx_merkle_proof
+            .verify(&block.header.merkle_root)
+            .is_ok());
+
+        // utxo inclusion: staked UTXO proven against pre-block utxo root
+        let utxos = vec![utxo.clone()];
+        let prev_root = compute_utxo_root_sorted(&utxos);
+        assert!(proof
+            .utxo_proof
+            .verify(&prev_root, &hash_utxo(&proof.utxo))
+            .is_ok());
+
+        // proof carries the staked UTXO and previous modifier
+        assert_eq!(proof.utxo.value, utxo.value);
+        assert_eq!(proof.prev_stake_modifier, prev_modifier);
+
+        // coinstake spends the staked outpoint
+        assert_eq!(proof.coinstake.inputs[0].prev_txid, utxo.txid);
+        assert_eq!(proof.coinstake.inputs[0].prev_vout, utxo.vout);
+    }
+
+    /// The producer's post-apply utxo_root must match what the chain journals
+    /// on add_block — otherwise stored headers and block hashes diverge.
+    #[test]
+    fn test_producer_utxo_root_matches_chain_journal() {
+        use crate::chain::Chain;
+        use secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+        let secp_ctx = Secp256k1::new();
+        let mut key_bytes = [0u8; 32];
+        key_bytes[31] = 42;
+        let key = vtorrent_core::keys::PrivateKey::from_bytes(key_bytes, true).unwrap();
+        let wif = key.to_wif(198);
+        let secret = SecretKey::from_slice(key.as_bytes()).unwrap();
+        let pubkey = PublicKey::from_secret_key(&secp_ctx, &secret);
+        let addr = vtorrent_core::address::Address::from_pubkey(&pubkey, true, 70);
+        let address = addr.to_string();
+
+        let mut chain = Chain::new().expect("Chain init failed");
+        let genesis_hash = chain.best_hash().unwrap();
+
+        let funding_ts = 1_700_000_001u32;
+        let script = vtorrent_core::address::validate_p2pkh(&address)
+            .map(|a| vtorrent_core::address::p2pkh_script_pubkey(&a.hash))
+            .expect("valid address");
+        let funding_block = {
+            use crate::block::{TxInput, TxOutput, TxType};
+            let transactions = vec![Transaction {
+                version: 1,
+                tx_type: TxType::Coinbase,
+                inputs: vec![TxInput {
+                    prev_txid: [0u8; 32],
+                    prev_vout: 0xffffffff,
+                    script_sig: vec![1],
+                    sequence: 0xffffffff,
+                }],
+                outputs: vec![TxOutput {
+                    value: 100 * COIN,
+                    script_pubkey: script,
+                }],
+                lock_time: 1,
+                claim_address: None,
+                claim_signature: None,
+            }];
+            let mut block = Block {
+                header: BlockHeader {
+                    version: 1,
+                    prev_block_hash: genesis_hash,
+                    merkle_root: [0u8; 32],
+                    utxo_root: [0u8; 32],
+                    timestamp: funding_ts,
+                    bits: crate::genesis::GENESIS_BITS,
+                    nonce: 1,
+                    stake_modifier: compute_stake_modifier(0, &genesis_hash),
+                },
+                transactions,
+            };
+            block.header.merkle_root = block.compute_merkle_root();
+            block
+        };
+        chain.add_block(funding_block).unwrap();
+
+        let utxos = chain.get_utxos_for_address(&address);
+        assert!(!utxos.is_empty());
+        let prev_modifier = chain.get_block_at_height(1).unwrap().header.stake_modifier;
+
+        let engine = StakingEngine::with_wif(address, wif);
+        let mut found: Option<(Block, StakeProof)> = None;
+        let mut ts = funding_ts + crate::consensus::MIN_STAKE_AGE as u32;
+        for _ in 0..100_000 {
+            if let Some(r) = engine.build_stake_block_with_proof(
+                chain.best_hash().unwrap(),
+                prev_modifier,
+                2,
+                ts,
+                utxos.clone(),
+                vec![],
+            ) {
+                found = Some(r);
+                break;
+            }
+            ts += 1;
+        }
+        let (block, proof) = found.expect("should find stake kernel");
+
+        // Producer's header commitment must equal the pre-block UTXO root.
+        let prev_root = compute_utxo_root_sorted(&utxos);
+        assert!(
+            proof
+                .utxo_proof
+                .verify(&prev_root, &hash_utxo(&proof.utxo))
+                .is_ok(),
+            "utxo proof must verify against pre-block root"
+        );
+
+        let acceptance = chain.add_block(block).unwrap();
+        assert!(matches!(
+            acceptance,
+            crate::chain::BlockAcceptance::MainChain { height: 2, .. }
+        ));
+
+        // The stored tip header must carry the producer's post-apply root —
+        // chain overwrites with journal root, and both must already agree.
+        let stored = chain.get_block_at_height(2).unwrap();
+        assert_eq!(stored.header.utxo_root, {
+            let all: Vec<Utxo> = chain.get_utxo_set().values().cloned().collect();
+            compute_utxo_root_sorted(&all)
+        });
     }
 }
 
