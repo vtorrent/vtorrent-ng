@@ -12,7 +12,8 @@
 ///   Addresses:     59,375
 ///   UTXOs:         79,586
 ///   Transactions:  3,431,559
-use crate::block::{Block, BlockHeader, Transaction, TxOutput, TxType};
+use crate::block::{compute_utxo_root_sorted, Block, BlockHeader, Transaction, TxOutput, TxType};
+use crate::chain::Utxo;
 use std::sync::LazyLock;
 
 /// The genesis block message.
@@ -127,7 +128,7 @@ pub fn create_genesis_block() -> Block {
         claim_signature: None,
     };
 
-    let transactions = vec![coinbase, legacy_distribution];
+    let transactions = vec![coinbase.clone(), legacy_distribution.clone()];
 
     let mut header = BlockHeader {
         version: 1,
@@ -145,6 +146,30 @@ pub fn create_genesis_block() -> Block {
         transactions: transactions.clone(),
     };
     header.merkle_root = temp_block.compute_merkle_root();
+
+    let coinbase_txid = coinbase.txid();
+    let legacy_txid = legacy_distribution.txid();
+    let mut all_genesis_utxos: Vec<Utxo> =
+        Vec::with_capacity(1 + legacy_distribution.outputs.len());
+    all_genesis_utxos.push(Utxo {
+        txid: coinbase_txid,
+        vout: 0,
+        value: coinbase.outputs[0].value,
+        script_pubkey: coinbase.outputs[0].script_pubkey.clone(),
+        height: 0,
+        timestamp: GENESIS_TIMESTAMP,
+    });
+    for (i, o) in legacy_distribution.outputs.iter().enumerate() {
+        all_genesis_utxos.push(Utxo {
+            txid: legacy_txid,
+            vout: i as u32,
+            value: o.value,
+            script_pubkey: o.script_pubkey.clone(),
+            height: 0,
+            timestamp: GENESIS_TIMESTAMP,
+        });
+    }
+    header.utxo_root = compute_utxo_root_sorted(&all_genesis_utxos);
 
     Block {
         header,

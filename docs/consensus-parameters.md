@@ -38,7 +38,8 @@
 
 | Property | Value |
 |---|---|
-| Hash | `11f2093333a718616ba1f2173b31487cf4be5e44a861b516685acdb1088cfb21` |
+| Hash | `5f2284ad5fdebdda1efe2cd65b84161e86a43f23b845772a4ce2ed4aefad807f` |
+| UTXO root | `5cb9e18b72f9a7fd3237872295abb865dcb94eaa13eb676f422e772c78449c78` |
 | Snapshot addresses | 59,375 |
 | Snapshot total supply | 11,589,746.63 VTR (1,158,974,663,136,877 sats) |
 | Snapshot format | Binary blob (`genesis_snapshot.bin`, 2,493,754 bytes) |

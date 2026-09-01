@@ -318,6 +318,17 @@ impl Chain {
         self.height_index.get(height as usize).copied()
     }
 
+    /// Get the UTXO commitment root at a given height (main chain only).
+    pub fn utxo_root_at_height(&self, height: u32) -> Option<[u8; 32]> {
+        self.get_block_at_height(height).map(|b| b.header.utxo_root)
+    }
+
+    /// Current UTXO commitment root (tip's `utxo_root`).
+    pub fn current_utxo_root(&self) -> Option<[u8; 32]> {
+        self.get_block_at_height(self.best_height())
+            .map(|b| b.header.utxo_root)
+    }
+
     /// Look up a transaction that is currently part of the active main chain.
     ///
     /// Returns the transaction, its containing block hash, and its main-chain height.
@@ -627,12 +638,24 @@ impl Chain {
                 e
             })?;
 
-            let parent_work = self.cumulative_work.get(&prev_hash).copied().unwrap_or(0);
-            self.cumulative_work.insert(block_hash, parent_work + 1);
-            self.parent_map.insert(block_hash, prev_hash);
-            self.block_heights.insert(block_hash, height);
+            let mut journal = self.apply_block_journaled(&block, height)?;
 
-            let journal = self.apply_block_journaled(&block, height)?;
+            let mut block_with_root = block.clone();
+            block_with_root.header.utxo_root = journal.utxo_root;
+            let block_hash_with_root = block_with_root.hash();
+            journal.block_hash = block_hash_with_root;
+
+            if self.blocks.contains_key(&block_hash_with_root) {
+                crate::chain::chain_reorg::rollback_journal(self, &journal);
+                self.total_supply = self.total_supply.saturating_sub(journal.supply_delta);
+                return Ok(BlockAcceptance::Duplicate);
+            }
+
+            let parent_work = self.cumulative_work.get(&prev_hash).copied().unwrap_or(0);
+            self.cumulative_work
+                .insert(block_hash_with_root, parent_work + 1);
+            self.parent_map.insert(block_hash_with_root, prev_hash);
+            self.block_heights.insert(block_hash_with_root, height);
 
             // Extract UTXO diff from journal for persistence
             let mut utxos_added: Vec<Utxo> = Vec::new();
@@ -658,15 +681,15 @@ impl Chain {
                 self.journals.pop_front();
             }
 
-            let tx_count = block.transactions.len();
-            let block_timestamp = block.header.timestamp;
-            self.index_block_transactions(block_hash, &block);
-            self.blocks.insert(block_hash, block);
-            self.height_index.push(block_hash);
+            let tx_count = block_with_root.transactions.len();
+            let block_timestamp = block_with_root.header.timestamp;
+            self.index_block_transactions(block_hash_with_root, &block_with_root);
+            self.blocks.insert(block_hash_with_root, block_with_root);
+            self.height_index.push(block_hash_with_root);
 
             tracing::info!(
                 height = %height,
-                hash = %hex::encode(block_hash),
+                hash = %hex::encode(block_hash_with_root),
                 tx_count = %tx_count,
                 timestamp = %block_timestamp,
                 "Block accepted on main chain"

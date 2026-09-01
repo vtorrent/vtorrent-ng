@@ -318,6 +318,56 @@ pub fn compute_merkle_root_from_txids(txids: &mut [[u8; 32]]) -> [u8; 32] {
     buf[0]
 }
 
+/// Compute the leaf hash for a UTXO commitment.
+///
+/// Leaf preimage: SHA256d(txid || vout LE || value LE || varint(script.len) || script || height LE || timestamp LE)
+pub fn hash_utxo(utxo: &crate::chain::Utxo) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(utxo.txid);
+    h.update(utxo.vout.to_le_bytes());
+    h.update(utxo.value.to_le_bytes());
+    let len = utxo.script_pubkey.len() as u64;
+    if len < 0xfd {
+        h.update([len as u8]);
+    } else if len <= 0xffff {
+        h.update([0xfd]);
+        h.update((len as u16).to_le_bytes());
+    } else if len <= 0xffff_ffff {
+        h.update([0xfe]);
+        h.update((len as u32).to_le_bytes());
+    } else {
+        h.update([0xff]);
+        h.update(len.to_le_bytes());
+    }
+    h.update(&utxo.script_pubkey);
+    h.update(utxo.height.to_le_bytes());
+    h.update(utxo.timestamp.to_le_bytes());
+    let first = h.finalize();
+    let second = Sha256::digest(first);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&second);
+    out
+}
+
+/// Compute the UTXO commitment root over a sorted UTXO set.
+///
+/// Leaves are `hash_utxo` of each UTXO sorted by (txid, vout).
+/// Empty set yields [0;32].
+pub fn compute_utxo_root_sorted(utxos: &[crate::chain::Utxo]) -> [u8; 32] {
+    if utxos.is_empty() {
+        return [0u8; 32];
+    }
+    let mut sorted = utxos.to_vec();
+    sorted.sort_by(|a, b| a.txid.cmp(&b.txid).then(a.vout.cmp(&b.vout)));
+    let mut leaves: Vec<[u8; 32]> = sorted.iter().map(hash_utxo).collect();
+    compute_merkle_root_from_txids(&mut leaves)
+}
+
+/// Alias for `compute_utxo_root_sorted` (canonical).
+pub fn compute_utxo_root(utxos: &[crate::chain::Utxo]) -> [u8; 32] {
+    compute_utxo_root_sorted(utxos)
+}
+
 impl Block {
     /// Compute the block hash.
     pub fn hash(&self) -> [u8; 32] {

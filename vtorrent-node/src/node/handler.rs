@@ -1052,7 +1052,6 @@ mod tests {
             chain.best_hash().unwrap()
         };
         let block = coinbase_block(genesis_hash, 0, 1);
-        let block_hash = block.hash();
         let payload = node.serialize_block_for_peer(&block, PROTOCOL_VERSION);
         let msg = NetMessage::new("block", payload);
 
@@ -1062,7 +1061,9 @@ mod tests {
 
         let chain = node.chain.lock().await;
         assert_eq!(chain.best_height(), 1);
-        assert_eq!(chain.best_hash().unwrap(), block_hash);
+        let stored = chain.get_block_at_height(1).unwrap();
+        assert_ne!(stored.header.utxo_root, [0u8; 32]);
+        assert_eq!(chain.best_hash().unwrap(), stored.hash());
     }
 
     #[tokio::test]

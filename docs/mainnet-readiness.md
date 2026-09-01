@@ -6,7 +6,8 @@
 
 ## 1. Code & Consensus Verification
 
-- [x] **Genesis block verification**: hash `11f2093333a718616ba1f2173b31487cf4be5e44a861b516685acdb1088cfb21`
+- [x] **Genesis block verification**: hash `5f2284ad5fdebdda1efe2cd65b84161e86a43f23b845772a4ce2ed4aefad807f`
+      (`utxo_root 5cb9e18b72f9a7fd3237872295abb865dcb94eaa13eb676f422e772c78449c78`)
       verified via RPC + `test_snapshot_sum_matches_documented_supply` + `test_snapshot_binary_roundtrip`.
       See `docs/consensus-parameters.md`. Second independent verifier still needed.
 - [x] **Consensus parameter sign-off**: all values frozen and documented in

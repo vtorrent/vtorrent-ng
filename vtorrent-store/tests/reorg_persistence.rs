@@ -6,8 +6,10 @@
 //! runs, `load_into_chain` must replay the FORK chain — not a hybrid of two
 //! chains (the pre-fix failure mode that bricked nodes at startup).
 
-use vtorrent_node::block::{Block, BlockHeader, Transaction, TxInput, TxOutput, TxType};
-use vtorrent_node::chain::{BlockAcceptance, Chain};
+use vtorrent_node::block::{
+    compute_utxo_root_sorted, Block, BlockHeader, Transaction, TxInput, TxOutput, TxType,
+};
+use vtorrent_node::chain::{BlockAcceptance, Chain, Utxo};
 use vtorrent_store::store::BlockStore;
 
 fn make_block_value(
@@ -84,24 +86,95 @@ fn reorg_persistence_roundtrip() {
     // ── Main chain A: genesis → A1 → A2 ─────────────────────────────────────
     let a1 = make_block_value(genesis_hash, 0, 1, 1, 1_000_000);
     let acc = chain.add_block(a1.clone()).unwrap();
-    persist_main(&store, &a1, 1, &acc);
+    let a1_stored = chain.get_block_at_height(1).unwrap().clone();
+    persist_main(&store, &a1_stored, 1, &acc);
 
-    let a2 = make_block_value(a1.hash(), a1.header.stake_modifier, 2, 2, 1_000_000);
+    let a2 = make_block_value(
+        a1_stored.hash(),
+        a1_stored.header.stake_modifier,
+        2,
+        2,
+        1_000_000,
+    );
     let acc = chain.add_block(a2.clone()).unwrap();
-    persist_main(&store, &a2, 2, &acc);
-    let tip_a = a2.hash();
+    let a2_stored = chain.get_block_at_height(2).unwrap().clone();
+    persist_main(&store, &a2_stored, 2, &acc);
+    let tip_a = a2_stored.hash();
 
     // ── Fork B: B1 competes at height 1 (Fork acceptance — NOT persisted,
     // matching daemon behaviour), then B2 makes the fork longer ────────────
+    // Build fork chain with correct utxo_roots so reorg's sequential prev
+    // hashes (which become corrected after reorg) stay consistent.
+    let genesis_block = vtorrent_node::genesis::create_genesis_block();
+    let coinbase_txid = genesis_block.transactions[0].txid();
+    let legacy_txid = genesis_block.transactions[1].txid();
+    let mut genesis_utxos: Vec<Utxo> =
+        Vec::with_capacity(1 + genesis_block.transactions[1].outputs.len());
+    genesis_utxos.push(Utxo {
+        txid: coinbase_txid,
+        vout: 0,
+        value: genesis_block.transactions[0].outputs[0].value,
+        script_pubkey: genesis_block.transactions[0].outputs[0]
+            .script_pubkey
+            .clone(),
+        height: 0,
+        timestamp: vtorrent_node::genesis::GENESIS_TIMESTAMP,
+    });
+    for (i, o) in genesis_block.transactions[1].outputs.iter().enumerate() {
+        genesis_utxos.push(Utxo {
+            txid: legacy_txid,
+            vout: i as u32,
+            value: o.value,
+            script_pubkey: o.script_pubkey.clone(),
+            height: 0,
+            timestamp: vtorrent_node::genesis::GENESIS_TIMESTAMP,
+        });
+    }
+
     let mut b1 = make_block_value(genesis_hash, 0, 1, 77, 2_000_000);
     b1.header.timestamp += 1;
     b1.header.merkle_root = b1.compute_merkle_root();
+    {
+        let txid = b1.transactions[0].txid();
+        let mut utxos = genesis_utxos.clone();
+        utxos.push(Utxo {
+            txid,
+            vout: 0,
+            value: 2_000_000,
+            script_pubkey: b1.transactions[0].outputs[0].script_pubkey.clone(),
+            height: 1,
+            timestamp: b1.header.timestamp,
+        });
+        b1.header.utxo_root = compute_utxo_root_sorted(&utxos);
+    }
     let acc_b1 = chain.add_block(b1.clone()).unwrap();
     assert!(matches!(acc_b1, BlockAcceptance::Fork { .. }));
 
     let mut b2 = make_block_value(b1.hash(), b1.header.stake_modifier, 2, 78, 2_000_000);
     b2.header.timestamp += 1;
     b2.header.merkle_root = b2.compute_merkle_root();
+    {
+        let txid = b2.transactions[0].txid();
+        let mut utxos2 = genesis_utxos.clone();
+        let t1 = b1.transactions[0].txid();
+        utxos2.push(Utxo {
+            txid: t1,
+            vout: 0,
+            value: 2_000_000,
+            script_pubkey: b1.transactions[0].outputs[0].script_pubkey.clone(),
+            height: 1,
+            timestamp: b1.header.timestamp,
+        });
+        utxos2.push(Utxo {
+            txid,
+            vout: 0,
+            value: 2_000_000,
+            script_pubkey: b2.transactions[0].outputs[0].script_pubkey.clone(),
+            height: 2,
+            timestamp: b2.header.timestamp,
+        });
+        b2.header.utxo_root = compute_utxo_root_sorted(&utxos2);
+    }
     let acc_b2 = chain.add_block(b2.clone()).unwrap();
     assert!(matches!(acc_b2, BlockAcceptance::Fork { .. }));
 
@@ -109,6 +182,30 @@ fn reorg_persistence_roundtrip() {
     let mut b3 = make_block_value(b2.hash(), b2.header.stake_modifier, 3, 79, 2_000_000);
     b3.header.timestamp += 2;
     b3.header.merkle_root = b3.compute_merkle_root();
+    {
+        let txid = b3.transactions[0].txid();
+        let mut utxos3 = genesis_utxos.clone();
+        for (blk, h) in [(&b1, 1u32), (&b2, 2u32)] {
+            let tid = blk.transactions[0].txid();
+            utxos3.push(Utxo {
+                txid: tid,
+                vout: 0,
+                value: 2_000_000,
+                script_pubkey: blk.transactions[0].outputs[0].script_pubkey.clone(),
+                height: h,
+                timestamp: blk.header.timestamp,
+            });
+        }
+        utxos3.push(Utxo {
+            txid,
+            vout: 0,
+            value: 2_000_000,
+            script_pubkey: b3.transactions[0].outputs[0].script_pubkey.clone(),
+            height: 3,
+            timestamp: b3.header.timestamp,
+        });
+        b3.header.utxo_root = compute_utxo_root_sorted(&utxos3);
+    }
     let acc_b3 = chain.add_block(b3.clone()).unwrap();
 
     // ── Bridge simulation: undo abandoned blocks, persist fork blocks ──────
@@ -141,9 +238,10 @@ fn reorg_persistence_roundtrip() {
             .unwrap();
     }
     for fb in &applied_fork_blocks {
+        let corrected = chain.get_block_at_height(fb.height).unwrap().clone();
         store
             .append_block(
-                &fb.block,
+                &corrected,
                 fb.height,
                 &fb.utxos_added,
                 &fb.utxos_removed,
@@ -155,7 +253,7 @@ fn reorg_persistence_roundtrip() {
     // ── Verify: fresh load replays the FORK chain, not a hybrid ────────────
     let loaded = store.load_into_regtest_chain().unwrap();
     assert_eq!(loaded.best_height(), 3);
-    assert_eq!(loaded.best_hash(), Some(b3.hash()));
+    assert_eq!(loaded.best_hash(), chain.best_hash());
     assert_ne!(loaded.best_hash(), Some(tip_a));
 
     // The store's UTXO set must reflect the fork chain's coinbases.

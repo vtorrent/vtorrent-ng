@@ -164,7 +164,8 @@ fn test_duplicate_block_ignored() {
     let genesis_hash = chain.best_hash().unwrap();
     let block = make_block(genesis_hash, 0, 1);
     chain.add_block(block.clone()).unwrap();
-    let result = chain.add_block(block).unwrap();
+    let stored = chain.get_block_at_height(1).unwrap().clone();
+    let result = chain.add_block(stored).unwrap();
     assert_eq!(result, BlockAcceptance::Duplicate);
 }
 
@@ -1322,6 +1323,41 @@ fn test_rollback_restores_spent_input_and_removes_outputs() {
     assert!(chain.get_utxos_for_address(&recipient).is_empty());
     assert!(chain.get_transaction(&spend_txid).is_none());
     assert_eq!(chain.best_height(), 1);
+}
+
+#[test]
+fn test_utxo_root_deterministic_sorted() {
+    use crate::block::compute_utxo_root_sorted;
+    use crate::consensus::COIN;
+    let u1 = Utxo {
+        txid: [1u8; 32],
+        vout: 0,
+        value: 100 * COIN,
+        script_pubkey: vec![0x76, 0xa9, 0x14],
+        height: 1,
+        timestamp: 1_700_000_000,
+    };
+    let u2 = Utxo {
+        txid: [2u8; 32],
+        vout: 0,
+        value: 200 * COIN,
+        script_pubkey: vec![0x76, 0xa9, 0x14],
+        height: 1,
+        timestamp: 1_700_000_000,
+    };
+    let root_a = compute_utxo_root_sorted(&[u1.clone(), u2.clone()]);
+    let root_b = compute_utxo_root_sorted(&[u2, u1]);
+    assert_eq!(root_a, root_b, "root must be sorted canonical");
+    assert_ne!(root_a, [0u8; 32]);
+}
+
+#[test]
+fn test_genesis_utxo_root_nonzero() {
+    let genesis = crate::genesis::create_genesis_block();
+    assert_ne!(
+        genesis.header.utxo_root, [0u8; 32],
+        "genesis utxo_root must be non-zero"
+    );
 }
 
 /// A double-spend of the same input within one block must be rejected and

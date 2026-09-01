@@ -25,6 +25,7 @@ pub(crate) struct BlockJournal {
     pub(crate) changes: Vec<UtxoChange>,
     pub(crate) claimed_addresses: Vec<String>,
     pub(crate) supply_delta: u64,
+    pub(crate) utxo_root: [u8; 32],
 }
 
 pub(crate) fn ancestors(chain: &Chain, mut tip: [u8; 32]) -> Vec<[u8; 32]> {
@@ -135,6 +136,7 @@ pub(crate) fn apply_block_journaled(
         changes: Vec::new(),
         claimed_addresses: Vec::new(),
         supply_delta: 0,
+        utxo_root: [0u8; 32],
     };
 
     let parent_modifier = if height == 0 {
@@ -170,6 +172,12 @@ pub(crate) fn apply_block_journaled(
         )));
     }
     chain.total_supply = new_supply;
+
+    let utxo_root = {
+        let utxos: Vec<Utxo> = chain.utxo_set.values().cloned().collect();
+        crate::block::compute_utxo_root_sorted(&utxos)
+    };
+    journal.utxo_root = utxo_root;
 
     Ok(journal)
 }

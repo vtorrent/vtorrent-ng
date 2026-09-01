@@ -67,9 +67,10 @@ fn build_chain(n: u32) -> (Chain, Vec<Block>) {
     for i in 1..=n {
         let b = make_block_value(prev, modifier, i, i * 7, 1_000_000 + i as u64);
         chain.add_block(b.clone()).unwrap();
-        modifier = b.header.stake_modifier;
-        prev = b.hash();
-        blocks.push(b);
+        let stored = chain.get_block_at_height(i).unwrap().clone();
+        modifier = stored.header.stake_modifier;
+        prev = stored.hash();
+        blocks.push(stored);
     }
     (chain, blocks)
 }
