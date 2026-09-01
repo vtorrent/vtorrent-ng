@@ -259,6 +259,52 @@ fn test_reorg_to_longer_fork() {
 }
 
 #[test]
+fn test_invalid_fork_reorg_restores_original_state() {
+    let mut chain = Chain::new().unwrap();
+    let genesis_hash = chain.best_hash().unwrap();
+    let main = make_block(genesis_hash, 0, 1);
+    chain.add_block(main).unwrap();
+    let original_tip = chain.best_hash().unwrap();
+    let original_supply = chain.total_supply();
+    let original_utxos = chain.utxo_set.clone();
+
+    let invalid_spend = Transaction {
+        version: 1,
+        tx_type: TxType::Standard,
+        inputs: vec![TxInput {
+            prev_txid: [0x55; 32],
+            prev_vout: 0,
+            script_sig: vec![0x51],
+            sequence: u32::MAX,
+        }],
+        outputs: vec![TxOutput {
+            value: 1_000,
+            script_pubkey: vec![0x51],
+        }],
+        lock_time: 0,
+        claim_address: None,
+        claim_signature: None,
+    };
+    let mut fork = make_block(genesis_hash, 0, 1);
+    fork.header.nonce = 991;
+    fork.transactions.push(invalid_spend);
+    fork.header.merkle_root = fork.compute_merkle_root();
+    let fork_hash = fork.hash();
+    let fork_modifier = fork.header.stake_modifier;
+    assert!(matches!(
+        chain.add_block(fork).unwrap(),
+        BlockAcceptance::Fork { .. }
+    ));
+
+    let extension = make_block(fork_hash, fork_modifier, 2);
+    assert!(chain.add_block(extension).is_err());
+    assert_eq!(chain.best_hash(), Some(original_tip));
+    assert_eq!(chain.best_height(), 1);
+    assert_eq!(chain.total_supply(), original_supply);
+    assert_eq!(chain.utxo_set, original_utxos);
+}
+
+#[test]
 fn test_address_to_p2pkh_script() {
     let chain = Chain::new().expect("Chain init failed");
     let script = chain.address_to_p2pkh_script("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT");

@@ -18,8 +18,8 @@ use vtorrent_onion::{OnionTransport, TransportConfig, TransportMode};
 use crate::{
     ban_manager::{BanManager, Misbehaviour},
     error::{P2pError, Result},
-    message::{AddrMsg, NetMessage},
-    peer::{run_peer, Peer, PeerCommand, PeerEvent, PeerState},
+    message::{AddrMsg, NetMessage, NETWORK_MAGIC, TESTNET_NETWORK_MAGIC},
+    peer::{run_peer, Peer, PeerCommand, PeerEvent, PeerState, PeerTaskConfig},
     pex::AddrBook,
 };
 
@@ -79,6 +79,7 @@ pub struct PeerManager {
     inbound_tx: mpsc::Sender<(SocketAddr, mpsc::Sender<PeerCommand>)>,
     /// Version nonces we have sent, for self-connection detection.
     sent_version_nonces: crate::peer::SentNonceRegistry,
+    network_magic: [u8; 4],
 }
 
 impl PeerManager {
@@ -142,6 +143,11 @@ impl PeerManager {
             sent_version_nonces: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
             )),
+            network_magic: if testnet {
+                TESTNET_NETWORK_MAGIC
+            } else {
+                NETWORK_MAGIC
+            },
         }
     }
 
@@ -159,6 +165,7 @@ impl PeerManager {
         let inbound_tx = self.inbound_tx.clone();
         let accept_bans = self.ban_manager.clone();
         let accept_nonces = self.sent_version_nonces.clone();
+        let network_magic = self.network_magic;
 
         tokio::spawn(async move {
             loop {
@@ -199,11 +206,14 @@ impl PeerManager {
                             run_peer(
                                 stream,
                                 peer_addr,
-                                best_height,
-                                &addr,
-                                tx,
-                                cmd_rx,
-                                accept_nonces,
+                                PeerTaskConfig {
+                                    our_best_height: best_height,
+                                    our_addr: addr,
+                                    event_tx: tx,
+                                    cmd_rx,
+                                    sent_nonces: accept_nonces,
+                                    network_magic,
+                                },
                             )
                             .await;
                             count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
@@ -285,16 +295,20 @@ impl PeerManager {
         let best_height = self.best_height;
         let our_addr = self.listen_addr.clone();
         let nonces = self.sent_version_nonces.clone();
+        let network_magic = self.network_magic;
 
         tokio::spawn(async move {
             run_peer(
                 stream,
                 peer_addr,
-                best_height,
-                &our_addr,
-                event_tx,
-                cmd_rx,
-                nonces,
+                PeerTaskConfig {
+                    our_best_height: best_height,
+                    our_addr,
+                    event_tx,
+                    cmd_rx,
+                    sent_nonces: nonces,
+                    network_magic,
+                },
             )
             .await;
             tracing::debug!("Outbound peer task finished: {}", peer_addr);

@@ -43,7 +43,7 @@ impl BtcWallet {
         Self {
             seed,
             network,
-            headers: Arc::new(Mutex::new(HeaderChain::new())),
+            headers: Arc::new(Mutex::new(HeaderChain::anchored(network))),
             utxos: Arc::new(Mutex::new(UtxoSet::new())),
             utxo_path: None,
             next_index: 0,
@@ -64,7 +64,7 @@ impl BtcWallet {
         Ok(Self {
             seed,
             network,
-            headers: Arc::new(Mutex::new(HeaderChain::new())),
+            headers: Arc::new(Mutex::new(HeaderChain::anchored(network))),
             utxos: Arc::new(Mutex::new(utxos)),
             utxo_path: Some(utxo_path),
             next_index: 0,
@@ -248,7 +248,7 @@ impl BtcWallet {
 
         // Find the WIF whose derived address matches the selected UTXOs.
         let mut wif = None;
-        for idx in 0..self.next_index {
+        for idx in 0..=self.next_index {
             let addr = derive_address(&self.seed, idx, self.network)?;
             if selected.iter().any(|u| u.address == addr) {
                 if wif.is_some() {

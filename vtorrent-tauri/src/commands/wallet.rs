@@ -10,6 +10,23 @@ use crate::{
     state::AppState,
 };
 
+fn persist_wallet(state: &State<AppState>, wallet: &Wallet) -> Result<()> {
+    let path = state
+        .wallet_path
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or(TauriError::WalletNotInitialized)?;
+    wallet.save(&path).map_err(TauriError::from)
+}
+
+fn ensure_wallet_parent(path: &std::path::Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| TauriError::Io(error.to_string()))?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, Serialize)]
 pub struct ImportResult {
     pub keys_found: usize,
@@ -154,6 +171,7 @@ pub fn create_wallet(
     }
 
     let path = std::path::PathBuf::from(&wallet_path);
+    ensure_wallet_parent(&path)?;
     let wallet = Wallet::create(&passphrase).map_err(TauriError::from)?;
 
     wallet.save(&path).map_err(TauriError::from)?;
@@ -256,6 +274,7 @@ pub fn import_legacy_wallet(
     }
 
     let path = std::path::PathBuf::from(&new_wallet_path);
+    ensure_wallet_parent(&path)?;
     let mut new_wallet = Wallet::create(&new_wallet_passphrase).map_err(TauriError::from)?;
 
     let mut addresses = Vec::new();
@@ -292,9 +311,11 @@ pub fn generate_address(state: State<AppState>, label: Option<String>) -> Result
     let address = wallet
         .generate_key(label.as_deref())
         .map_err(TauriError::from)?;
+    let address_string = address.to_string();
+    persist_wallet(&state, wallet)?;
 
     Ok(AddressInfo {
-        address: address.to_string(),
+        address: address_string,
         label: label.unwrap_or_else(|| "New Address".into()),
         balance: 0,
         is_legacy_import: false,
@@ -351,6 +372,7 @@ pub fn enable_2fa(state: State<AppState>) -> Result<Enable2FAResult> {
     let wallet = guard.as_mut().ok_or(TauriError::WalletNotInitialized)?;
 
     let config = wallet.enable_2fa().map_err(TauriError::from)?;
+    persist_wallet(&state, wallet)?;
 
     Ok(Enable2FAResult {
         uri: config.to_uri("vTorrent-Wallet"),
@@ -378,6 +400,7 @@ pub fn disable_2fa(state: State<AppState>, code: String) -> Result<()> {
     }
 
     wallet.disable_2fa().map_err(TauriError::from)?;
+    persist_wallet(&state, wallet)?;
     Ok(())
 }
 
@@ -598,7 +621,8 @@ pub async fn submit_legacy_claim(
     let secret_key = secp256k1::SecretKey::from_slice(key.as_bytes())
         .map_err(|e| TauriError::InvalidInput(format!("Invalid key bytes: {}", e)))?;
     let pubkey = secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
-    let derived_address = pubkey_to_vtorrent_address(&pubkey.serialize())
+    let pubkey_bytes = vtorrent_core::keys::serialize_pubkey(&pubkey, key.is_compressed());
+    let derived_address = pubkey_to_vtorrent_address(&pubkey_bytes)
         .map_err(|e| TauriError::NodeError(e.to_string()))?;
 
     let claimable = get_legacy_balance(&derived_address);
@@ -633,7 +657,8 @@ pub async fn submit_legacy_claim(
         let msg = secp256k1::Message::from_digest(msg_hash);
         let rec_sig = secp.sign_ecdsa_recoverable(&msg, &secret_key);
         let (rec_id, sig64) = rec_sig.serialize_compact();
-        let mut sig_bytes = vec![27 + rec_id.to_i32() as u8 + 4];
+        let compression_flag = if key.is_compressed() { 4 } else { 0 };
+        let mut sig_bytes = vec![27 + rec_id.to_i32() as u8 + compression_flag];
         sig_bytes.extend_from_slice(&sig64);
 
         let tx = Transaction {

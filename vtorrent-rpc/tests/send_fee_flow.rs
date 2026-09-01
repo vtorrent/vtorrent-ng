@@ -4,7 +4,7 @@ use vtorrent_wallet::tx_builder::{TxBuilder, MIN_ABSOLUTE_FEE_SATS};
 
 #[test]
 fn send_path_fee_meets_relay_floor() {
-    let mut chain = Chain::new().unwrap();
+    let mut chain = Chain::new_regtest().unwrap();
     let addr = "VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k";
     chain.mint_to_address(addr, 50_000_000_000).unwrap();
 

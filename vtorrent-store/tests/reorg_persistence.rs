@@ -77,7 +77,7 @@ fn persist_main(store: &BlockStore, block: &Block, height: u32, acceptance: &Blo
 fn reorg_persistence_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let store = BlockStore::open(dir.path().join("chain.db")).unwrap();
-    let mut chain = Chain::new().unwrap();
+    let mut chain = Chain::new_regtest().unwrap();
     let genesis_hash = chain.best_hash().unwrap();
 
     // ── Main chain A: genesis → A1 → A2 ─────────────────────────────────────
@@ -152,7 +152,7 @@ fn reorg_persistence_roundtrip() {
     }
 
     // ── Verify: fresh load replays the FORK chain, not a hybrid ────────────
-    let loaded = store.load_into_chain().unwrap();
+    let loaded = store.load_into_regtest_chain().unwrap();
     assert_eq!(loaded.best_height(), 3);
     assert_eq!(loaded.best_hash(), Some(b3.hash()));
     assert_ne!(loaded.best_hash(), Some(tip_a));

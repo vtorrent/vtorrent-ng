@@ -224,7 +224,8 @@ pub async fn submit_claim(
         ))
     })?;
     let pubkey = secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
-    let derived_address = pubkey_to_vtorrent_address(&pubkey.serialize()).map_err(|e| {
+    let pubkey_bytes = vtorrent_core::keys::serialize_pubkey(&pubkey, key.is_compressed());
+    let derived_address = pubkey_to_vtorrent_address(&pubkey_bytes).map_err(|e| {
         RpcError::Internal(format!(
             "Failed to derive VTR address from public key: {}",
             e
@@ -261,7 +262,8 @@ pub async fn submit_claim(
     let msg = secp256k1::Message::from_digest(msg_hash);
     let rec_sig = secp.sign_ecdsa_recoverable(&msg, &secret_key);
     let (rec_id, sig64) = rec_sig.serialize_compact();
-    let mut sig_bytes = vec![27 + rec_id.to_i32() as u8 + 4];
+    let compression_flag = if key.is_compressed() { 4 } else { 0 };
+    let mut sig_bytes = vec![27 + rec_id.to_i32() as u8 + compression_flag];
     sig_bytes.extend_from_slice(&sig64);
 
     let tx = Transaction {

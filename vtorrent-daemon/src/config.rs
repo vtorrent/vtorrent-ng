@@ -146,18 +146,6 @@ pub fn validate_startup_config(cli: &Cli, data_dir: &std::path::Path) -> anyhow:
         mainnet::NETWORK_MAGIC
     };
 
-    // The P2P crate compiles with a hardcoded magic — verify it matches.
-    // (Comparing against the core mainnet constant instead was a tautology
-    // for mainnet/regtest and an unconditional failure for testnet.)
-    let compiled_magic = vtorrent_p2p::message::NETWORK_MAGIC;
-    if compiled_magic != expected_magic {
-        anyhow::bail!(
-            "Network magic mismatch: compiled magic {:02x?} does not match expected {:02x?} for {} mode",
-            compiled_magic,
-            expected_magic,
-            if cli.regtest { "regtest" } else if cli.testnet { "testnet" } else { "mainnet" },
-        );
-    }
     tracing::info!(
         "Network magic validated: {:02x?} ({})",
         expected_magic,
@@ -191,6 +179,20 @@ pub fn validate_startup_config(cli: &Cli, data_dir: &std::path::Path) -> anyhow:
             cli.rpc_addr,
             listen_port,
         );
+    }
+    let rpc_is_loopback = cli
+        .rpc_addr
+        .parse::<std::net::SocketAddr>()
+        .map(|addr| addr.ip().is_loopback())
+        .unwrap_or_else(|_| cli.rpc_addr.starts_with("localhost:"));
+    if !rpc_is_loopback
+        && cli
+            .rpc_api_key
+            .as_deref()
+            .map(str::is_empty)
+            .unwrap_or(true)
+    {
+        anyhow::bail!("--rpc-api-key is required when --rpc-addr is not bound to loopback");
     }
     tracing::info!(
         "Port sanity check passed: P2P={}, RPC={}",

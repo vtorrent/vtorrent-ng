@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useState, useCallback } from 'react'
+import React, { createContext, useContext, useState, useCallback, useEffect } from 'react'
+import { isTauri, tauriInvoke as invokeTauri } from '../api'
 
 // ─── Tauri IPC bridge ─────────────────────────────────────────────────────────
 // In the Tauri desktop app, `invoke` calls the Rust backend directly.
@@ -6,16 +7,9 @@ import React, { createContext, useContext, useState, useCallback } from 'react'
 
 type InvokeFn = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>
 
-function getTauriInvoke(): InvokeFn | null {
-  // @ts-expect-error — window.__TAURI__ is injected by Tauri at runtime
-  if (typeof window !== 'undefined' && window.__TAURI__) {
-    // @ts-expect-error — window.__TAURI__ is injected by Tauri at runtime
-    return window.__TAURI__.core?.invoke ?? window.__TAURI__.tauri?.invoke ?? null
-  }
-  return null
-}
-
-const tauriInvoke = getTauriInvoke()
+const tauriInvoke: InvokeFn | null = isTauri()
+  ? (cmd, args) => invokeTauri(cmd, args)
+  : null
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (tauriInvoke) {
@@ -180,10 +174,23 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
 
 // ─── Wallet data directory helper ─────────────────────────────────────────────
 
-function getWalletPath(): string {
-  // In Tauri, we use the app data directory. This path is resolved by the backend.
-  // The frontend just passes a relative name; the backend resolves the full path.
+async function getWalletPath(): Promise<string> {
+  if (isTauri()) {
+    const { appDataDir, join } = await import('@tauri-apps/api/path')
+    return join(await appDataDir(), 'wallet.vtr')
+  }
   return 'wallet.vtr'
+}
+
+function mapAddress(a: TauriAddressInfo): WalletKey {
+  return {
+    address: a.address,
+    label: a.label,
+    isLegacyImport: a.is_legacy_import,
+    legacyAddress: a.is_legacy_import ? a.address : undefined,
+    balance: a.balance,
+    createdAt: Date.now(),
+  }
 }
 
 // ─── Context & Provider ───────────────────────────────────────────────────────
@@ -199,18 +206,39 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     walletVersion: null,
   })
 
+  useEffect(() => {
+    if (!state.isUnlocked || !isTauri()) return
+    let cancelled = false
+    const refresh = async () => {
+      try {
+        const keys = (await invoke<TauriAddressInfo[]>('get_addresses')).map(mapAddress)
+        if (!cancelled) setState(prev => ({ ...prev, keys }))
+      } catch {
+        // The node may still be starting; the next refresh will retry.
+      }
+    }
+    void refresh()
+    const timer = window.setInterval(refresh, 10_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [state.isUnlocked])
+
   const unlock = useCallback(async (passphrase: string, otpCode?: string) => {
     const info = await invoke<TauriWalletInfo>('open_wallet', {
-      walletPath: getWalletPath(),
+      walletPath: await getWalletPath(),
       passphrase,
       otpCode: otpCode ?? null,
     })
+    const keys = (await invoke<TauriAddressInfo[]>('get_addresses')).map(mapAddress)
     setState(prev => ({
       ...prev,
       isUnlocked: info.is_unlocked,
       has2FA: info.has_2fa,
       defaultAddress: info.default_address,
       walletVersion: info.wallet_version,
+      keys,
     }))
     // Start the P2P node in the background after the wallet is unlocked.
     // Errors are non-fatal — the UI still works without a running node.
@@ -232,15 +260,24 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const createWallet = useCallback(async (passphrase: string) => {
     const info = await invoke<TauriWalletInfo>('create_wallet', {
       passphrase,
-      walletPath: getWalletPath(),
+      walletPath: await getWalletPath(),
     })
+    const keys = (await invoke<TauriAddressInfo[]>('get_addresses')).map(mapAddress)
     setState({
       isUnlocked: info.is_unlocked,
       has2FA: info.has_2fa,
-      keys: [],
+      keys,
       defaultAddress: info.default_address,
       walletVersion: info.wallet_version,
     })
+    try {
+      await invoke('start_node', {
+        stakingAddress: info.default_address ?? null,
+        dataDir: null,
+      })
+    } catch (e) {
+      console.warn('start_node failed after wallet creation:', e)
+    }
   }, [])
 
   const importLegacyWallet = useCallback(async (
@@ -252,19 +289,12 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       walletDatBase64,
       passphrase: legacyPassphrase ?? null,
       newWalletPassphrase: newPassphrase ?? legacyPassphrase ?? '',
-      newWalletPath: getWalletPath(),
+      newWalletPath: await getWalletPath(),
     })
 
     // Fetch the full address list from the backend
     const addrInfos = await invoke<TauriAddressInfo[]>('get_addresses')
-    const keys: WalletKey[] = addrInfos.map(a => ({
-      address: a.address,
-      label: a.label,
-      isLegacyImport: a.is_legacy_import,
-      legacyAddress: a.is_legacy_import ? a.address : undefined,
-      balance: a.balance,
-      createdAt: Date.now(),
-    }))
+    const keys: WalletKey[] = addrInfos.map(mapAddress)
 
     const defaultAddr = result.addresses[0] ?? null
 

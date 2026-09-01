@@ -116,7 +116,10 @@ async fn test_broadcast_raw_transaction_and_lookup() {
     use vtorrent_wallet::tx_builder::pubkey_to_vtorrent_address;
 
     // Fund a real UTXO so the broadcast path's fee verification passes.
-    let state = AppState::new();
+    let mut state = AppState::new();
+    state.chain = std::sync::Arc::new(tokio::sync::Mutex::new(
+        vtorrent_node::chain::Chain::new_regtest().unwrap(),
+    ));
     let secret = SecretKey::from_slice(&[42u8; 32]).unwrap();
     let secp = Secp256k1::new();
     let pubkey = secp256k1::PublicKey::from_secret_key(&secp, &secret);
@@ -527,7 +530,7 @@ async fn test_spv_add_headers() {
     // Genesis header: prev_hash = all zeros. Headers must satisfy their
     // own PoW target, so use the easiest target and mine a nonce.
     let bits = 0x207f_ffffu32;
-    let mut nonce = 0u32;
+    let mut nonce = 1u32;
     let meets_target = |nonce: u32| -> bool {
         use sha2::Digest as _;
         let mut buf = Vec::with_capacity(80);

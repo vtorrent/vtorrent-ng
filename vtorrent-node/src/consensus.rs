@@ -136,6 +136,26 @@ pub fn validate_block(
     prev_stake_modifier: u64,
     prev_block_hash: [u8; 32],
 ) -> Result<()> {
+    validate_block_inner(
+        block,
+        prev_height,
+        prev_timestamp,
+        prev_bits,
+        prev_stake_modifier,
+        prev_block_hash,
+        false,
+    )
+}
+
+pub(crate) fn validate_block_inner(
+    block: &Block,
+    prev_height: u32,
+    prev_timestamp: u32,
+    prev_bits: u32,
+    prev_stake_modifier: u64,
+    prev_block_hash: [u8; 32],
+    allow_pow: bool,
+) -> Result<()> {
     // Check block is not empty
     if block.transactions.is_empty() {
         return Err(NodeError::InvalidBlock("Block has no transactions".into()));
@@ -185,8 +205,8 @@ pub fn validate_block(
         )));
     }
 
-    // PoS blocks must use the consensus stake kernel: nonce 0 and the first
-    // transaction must be a coinstake. PoW blocks must have a non-zero nonce.
+    // vTorrent-NG is a PoS-only chain. The test-only PoW path exists for
+    // deterministic chain-state fixtures and is never enabled by production.
     let first_tx = &block.transactions[0];
     if block.header.is_pos() {
         if first_tx.tx_type != TxType::Coinstake {
@@ -194,10 +214,17 @@ pub fn validate_block(
                 "PoS block must begin with a coinstake transaction".into(),
             ));
         }
-    } else if first_tx.tx_type != TxType::Coinbase {
-        return Err(NodeError::InvalidBlock(
-            "PoW block must begin with a coinbase transaction".into(),
-        ));
+    } else {
+        if !allow_pow {
+            return Err(NodeError::InvalidBlock(
+                "Proof-of-Work blocks are not permitted".into(),
+            ));
+        }
+        if first_tx.tx_type != TxType::Coinbase {
+            return Err(NodeError::InvalidBlock(
+                "PoW test block must begin with a coinbase transaction".into(),
+            ));
+        }
     }
 
     // Exactly one coinbase/coinstake transaction is allowed per block.
@@ -244,23 +271,6 @@ pub fn validate_block(
 
 /// Validate a transaction against the consensus rules.
 pub fn validate_transaction(tx: &Transaction) -> Result<()> {
-    // Coinbase, coinstake, and legacy claims have no inputs to validate.
-    // Legacy claims are funded by the snapshot embedded in genesis.
-    if tx.is_coinbase() || tx.is_coinstake() || tx.is_legacy_claim() {
-        if tx.outputs.is_empty() {
-            return Err(NodeError::InvalidTransaction(
-                "Coinbase/coinstake/claim must have outputs".into(),
-            ));
-        }
-        return Ok(());
-    }
-
-    // Standard transactions must have inputs and outputs
-    if tx.inputs.is_empty() {
-        return Err(NodeError::InvalidTransaction(
-            "Transaction has no inputs".into(),
-        ));
-    }
     if tx.outputs.is_empty() {
         return Err(NodeError::InvalidTransaction(
             "Transaction has no outputs".into(),
@@ -268,8 +278,10 @@ pub fn validate_transaction(tx: &Transaction) -> Result<()> {
     }
 
     // Check for zero-value outputs and enforce the per-output money cap
-    for output in &tx.outputs {
-        if output.value == 0 {
+    for (index, output) in tx.outputs.iter().enumerate() {
+        let coinstake_marker =
+            tx.is_coinstake() && index == 0 && output.value == 0 && output.script_pubkey.is_empty();
+        if output.value == 0 && !coinstake_marker {
             return Err(NodeError::InvalidTransaction(
                 "Output value cannot be zero".into(),
             ));
@@ -282,7 +294,6 @@ pub fn validate_transaction(tx: &Transaction) -> Result<()> {
         }
     }
 
-    // Legacy claim transactions must have a claim address and signature
     if tx.is_legacy_claim() {
         if tx.claim_address.is_none() {
             return Err(NodeError::InvalidClaim("Missing claim address".into()));
@@ -290,6 +301,22 @@ pub fn validate_transaction(tx: &Transaction) -> Result<()> {
         if tx.claim_signature.is_none() {
             return Err(NodeError::InvalidClaim("Missing claim signature".into()));
         }
+        if !tx.inputs.is_empty() {
+            return Err(NodeError::InvalidClaim(
+                "Legacy claim must not have transaction inputs".into(),
+            ));
+        }
+        return Ok(());
+    }
+
+    if tx.is_coinbase() || tx.is_coinstake() {
+        return Ok(());
+    }
+
+    if tx.inputs.is_empty() {
+        return Err(NodeError::InvalidTransaction(
+            "Transaction has no inputs".into(),
+        ));
     }
 
     Ok(())
@@ -532,6 +559,41 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_legacy_claim_requires_identity_and_signature() {
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::LegacyClaim,
+            inputs: vec![],
+            outputs: vec![TxOutput {
+                value: COIN,
+                script_pubkey: vec![0x51],
+            }],
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        };
+        assert!(validate_transaction(&tx).is_err());
+    }
+
+    #[test]
+    fn test_production_validation_rejects_pow_blocks() {
+        let coinbase = Transaction {
+            version: 1,
+            tx_type: TxType::Coinbase,
+            inputs: vec![],
+            outputs: vec![TxOutput {
+                value: COIN,
+                script_pubkey: vec![0x51],
+            }],
+            lock_time: 1,
+            claim_address: None,
+            claim_signature: None,
+        };
+        let block = make_test_block(coinbase, 0x1e0fffff, 42);
+        assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0fffff, 0, [0u8; 32]).is_err());
+    }
+
+    #[test]
     fn test_claim_signature_round_trip() {
         let secp = Secp256k1::new();
         let secret_key = SecretKey::from_slice(&[7u8; 32]).unwrap();
@@ -628,9 +690,14 @@ mod tests {
         // make_test_block derives the modifier from (0, [0;32]).
         let block = make_test_block(coinbase, 0x1e0fffff, 42);
         // A different parent modifier must produce a mismatch and be rejected.
-        assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0fffff, 1, [0u8; 32]).is_err());
+        assert!(
+            validate_block_inner(&block, 0, 1_700_000_000, 0x1e0fffff, 1, [0u8; 32], true,)
+                .is_err()
+        );
         // The correct parent modifier is accepted.
-        assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0fffff, 0, [0u8; 32]).is_ok());
+        assert!(
+            validate_block_inner(&block, 0, 1_700_000_000, 0x1e0fffff, 0, [0u8; 32], true,).is_ok()
+        );
     }
 
     #[test]
@@ -649,9 +716,14 @@ mod tests {
         };
         let block = make_test_block(coinbase, 0x1e0fffff, 42);
         // Matching parent difficulty passes
-        assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0fffff, 0, [0u8; 32]).is_ok());
+        assert!(
+            validate_block_inner(&block, 0, 1_700_000_000, 0x1e0fffff, 0, [0u8; 32], true,).is_ok()
+        );
         // Lower (easier) difficulty rejected
-        assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0ffffe, 0, [0u8; 32]).is_err());
+        assert!(
+            validate_block_inner(&block, 0, 1_700_000_000, 0x1e0ffffe, 0, [0u8; 32], true,)
+                .is_err()
+        );
     }
 
     #[test]

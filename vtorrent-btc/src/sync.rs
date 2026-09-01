@@ -262,6 +262,7 @@ impl BtcSync {
 
         let mut scanned = 0usize;
         for hash in hashes {
+            let expected_block_hash = bitcoin::BlockHash::from_byte_array(hash);
             // Read the next cfilter response (in order). The peer's blockfilter
             // index can lag behind the tip, so it may send fewer filters than
             // requested; time out rather than block forever.
@@ -276,6 +277,13 @@ impl BtcSync {
                     Ok(Ok(_)) => continue,
                 }
             };
+
+            if filter.block_hash != expected_block_hash {
+                return Err(BtcError::Sync(format!(
+                    "compact filter block hash {} does not match requested {}",
+                    filter.block_hash, expected_block_hash
+                )));
+            }
 
             // The cfilter response carries the authoritative block hash, which
             // is the SipHash key for the filter. Use it (not our header-chain
@@ -308,6 +316,19 @@ impl BtcSync {
                         _ => continue,
                     }
                 };
+                if block.block_hash() != block_hash {
+                    return Err(BtcError::Sync(format!(
+                        "received block {} while requesting {}",
+                        block.block_hash(),
+                        block_hash
+                    )));
+                }
+                if !block.check_merkle_root() || !block.check_witness_commitment() {
+                    return Err(BtcError::Sync(format!(
+                        "block {} has an invalid transaction commitment",
+                        block_hash
+                    )));
+                }
                 let height = {
                     let chain = self.headers.lock();
                     // Look up the height by the block hash we actually
@@ -336,7 +357,7 @@ mod tests {
     #[test]
     fn test_build_getheaders_empty_locator() {
         let sync = BtcSync::new(
-            Arc::new(Mutex::new(HeaderChain::new())),
+            Arc::new(Mutex::new(HeaderChain::unanchored_for_tests())),
             Arc::new(Mutex::new(UtxoSet::new())),
             vec![],
             bitcoin::Network::Bitcoin,
@@ -352,7 +373,7 @@ mod tests {
     fn test_record_utxo() {
         let utxos = Arc::new(Mutex::new(UtxoSet::new()));
         let sync = BtcSync::new(
-            Arc::new(Mutex::new(HeaderChain::new())),
+            Arc::new(Mutex::new(HeaderChain::unanchored_for_tests())),
             utxos.clone(),
             vec![],
             bitcoin::Network::Bitcoin,
@@ -372,7 +393,7 @@ mod tests {
         let addr = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh";
         let utxos = Arc::new(Mutex::new(UtxoSet::new()));
         let sync = BtcSync::new(
-            Arc::new(Mutex::new(HeaderChain::new())),
+            Arc::new(Mutex::new(HeaderChain::unanchored_for_tests())),
             utxos.clone(),
             vec![addr.to_string()],
             bitcoin::Network::Bitcoin,

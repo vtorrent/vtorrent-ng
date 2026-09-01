@@ -74,25 +74,27 @@ pub struct Peer {
 /// dials etc.) and drop it.
 pub type SentNonceRegistry = std::sync::Arc<std::sync::Mutex<std::collections::HashSet<u64>>>;
 
-pub async fn run_peer(
-    stream: TcpStream,
-    addr: SocketAddr,
-    our_best_height: u32,
-    our_addr: &str,
-    event_tx: mpsc::Sender<PeerEvent>,
-    mut cmd_rx: mpsc::Receiver<PeerCommand>,
-    sent_nonces: SentNonceRegistry,
-) {
+pub struct PeerTaskConfig {
+    pub our_best_height: u32,
+    pub our_addr: String,
+    pub event_tx: mpsc::Sender<PeerEvent>,
+    pub cmd_rx: mpsc::Receiver<PeerCommand>,
+    pub sent_nonces: SentNonceRegistry,
+    pub network_magic: [u8; 4],
+}
+
+pub async fn run_peer(stream: TcpStream, addr: SocketAddr, config: PeerTaskConfig) {
     use futures::{SinkExt, StreamExt};
 
-    let mut framed = Framed::new(stream, VtrCodec);
+    let mut framed = Framed::new(stream, VtrCodec::new(config.network_magic));
+    let mut cmd_rx = config.cmd_rx;
 
     // Send our version message
-    let version = VersionMsg::new(our_best_height, our_addr);
+    let version = VersionMsg::new(config.our_best_height, &config.our_addr);
     // Record OUR nonce so a reflected self-connection (we receive a version
     // carrying a nonce we ourselves sent) is detected and dropped.
     {
-        let mut reg = sent_nonces.lock().unwrap_or_else(|e| e.into_inner());
+        let mut reg = config.sent_nonces.lock().unwrap_or_else(|e| e.into_inner());
         if reg.len() > 1024 {
             reg.clear();
         }
@@ -160,7 +162,8 @@ pub async fn run_peer(
                                     // Self-connection detection: if their
                                     // nonce is one WE recently sent, this
                                     // socket loops back to us.
-                                    let is_self = sent_nonces
+                                    let is_self = config
+                                        .sent_nonces
                                         .lock()
                                         .unwrap_or_else(|e| e.into_inner())
                                         .contains(&v.nonce);
@@ -180,7 +183,7 @@ pub async fn run_peer(
                                 if !handshake_done {
                                     handshake_done = true;
                                     if let Some(ref v) = peer_version {
-                                        let _ = event_tx.send(PeerEvent::HandshakeComplete {
+                                        let _ = config.event_tx.send(PeerEvent::HandshakeComplete {
                                             peer_addr: addr,
                                             version: v.clone(),
                                         }).await;
@@ -202,7 +205,7 @@ pub async fn run_peer(
                             }
                             _ => {
                                 // Forward all other messages to the node
-                                let _ = event_tx.send(PeerEvent::Message {
+                                let _ = config.event_tx.send(PeerEvent::Message {
                                     peer_addr: addr,
                                     msg,
                                 }).await;
@@ -249,7 +252,8 @@ pub async fn run_peer(
         }
     }
 
-    let _ = event_tx
+    let _ = config
+        .event_tx
         .send(PeerEvent::Disconnected { peer_addr: addr })
         .await;
     tracing::info!("Peer {} disconnected", addr);

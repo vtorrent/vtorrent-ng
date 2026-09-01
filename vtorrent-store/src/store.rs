@@ -397,13 +397,28 @@ impl BlockStore {
     /// For large chains this is fast because we skip validation on trusted
     /// stored data.
     pub fn load_into_chain(&self) -> Result<vtorrent_node::chain::Chain> {
+        self.load_into_chain_with_mode(false)
+    }
+
+    pub fn load_into_regtest_chain(&self) -> Result<vtorrent_node::chain::Chain> {
+        self.load_into_chain_with_mode(true)
+    }
+
+    fn load_into_chain_with_mode(&self, regtest: bool) -> Result<vtorrent_node::chain::Chain> {
         use vtorrent_node::chain::Chain;
 
         let height = self.best_height()?;
         tracing::info!("Loading chain from store: {} blocks", height + 1);
 
-        let mut chain =
-            Chain::new().map_err(|e| StoreError::Corrupted(format!("chain init failed: {}", e)))?;
+        let make_chain = || {
+            if regtest {
+                Chain::new_regtest()
+            } else {
+                Chain::new()
+            }
+            .map_err(|e| StoreError::Corrupted(format!("chain init failed: {}", e)))
+        };
+        let mut chain = make_chain()?;
 
         // Replay blocks from height 1 (genesis is already in Chain::new()).
         // On failure the store is truncated to the last good height and
@@ -426,8 +441,7 @@ impl BlockStore {
                     );
                     self.truncate_above(keep)?;
                     self.clear_derived_state()?;
-                    chain = Chain::new()
-                        .map_err(|e| StoreError::Corrupted(format!("chain init failed: {}", e)))?;
+                    chain = make_chain()?;
                     self.replay_and_repersist(&mut chain, 1, keep)?;
                     replay_height = keep;
                 }
@@ -445,7 +459,27 @@ impl BlockStore {
     /// complete in-memory block list. Used when event loss may have left the
     /// store behind the chain.
     pub fn rebuild_from_blocks(&self, blocks: &[vtorrent_node::block::Block]) -> Result<()> {
-        let mut chain = vtorrent_node::chain::Chain::new().map_err(|e| {
+        self.rebuild_from_blocks_with_mode(blocks, false)
+    }
+
+    pub fn rebuild_from_regtest_blocks(
+        &self,
+        blocks: &[vtorrent_node::block::Block],
+    ) -> Result<()> {
+        self.rebuild_from_blocks_with_mode(blocks, true)
+    }
+
+    fn rebuild_from_blocks_with_mode(
+        &self,
+        blocks: &[vtorrent_node::block::Block],
+        regtest: bool,
+    ) -> Result<()> {
+        let chain_result = if regtest {
+            vtorrent_node::chain::Chain::new_regtest()
+        } else {
+            vtorrent_node::chain::Chain::new()
+        };
+        let mut chain = chain_result.map_err(|e| {
             StoreError::Corrupted(format!("chain init failed during rebuild: {}", e))
         })?;
         self.truncate_above(0)?;
@@ -873,7 +907,7 @@ mod tests {
 
         {
             let store = BlockStore::open(&path).unwrap();
-            let mut chain = Chain::new().unwrap();
+            let mut chain = Chain::new_regtest().unwrap();
 
             // Mint two faucet blocks (regtest faucet path).
             chain

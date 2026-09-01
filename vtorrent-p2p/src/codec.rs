@@ -26,7 +26,21 @@ fn message_checksum(payload: &[u8]) -> [u8; 4] {
 }
 
 /// The vTorrent P2P message codec.
-pub struct VtrCodec;
+pub struct VtrCodec {
+    magic: [u8; 4],
+}
+
+impl VtrCodec {
+    pub fn new(magic: [u8; 4]) -> Self {
+        Self { magic }
+    }
+}
+
+impl Default for VtrCodec {
+    fn default() -> Self {
+        Self::new(NETWORK_MAGIC)
+    }
+}
 
 impl Decoder for VtrCodec {
     type Item = NetMessage;
@@ -42,7 +56,7 @@ impl Decoder for VtrCodec {
         }
 
         // Check magic bytes
-        if src[..4] != NETWORK_MAGIC {
+        if src[..4] != self.magic {
             return Err(P2pError::Protocol(format!(
                 "Invalid magic: {:02x}{:02x}{:02x}{:02x}",
                 src[0], src[1], src[2], src[3]
@@ -108,7 +122,7 @@ impl Encoder<NetMessage> for VtrCodec {
         dst.reserve(HEADER_SIZE + msg.payload.len());
 
         // Magic
-        dst.put_slice(&NETWORK_MAGIC);
+        dst.put_slice(&self.magic);
         // Command
         dst.put_slice(&msg.command);
         // Payload length (LE)
@@ -130,7 +144,7 @@ mod tests {
     fn test_encode_decode_roundtrip() {
         let original = NetMessage::new("ping", b"test payload".to_vec());
 
-        let mut codec = VtrCodec;
+        let mut codec = VtrCodec::default();
         let mut buf = BytesMut::new();
 
         codec
@@ -147,7 +161,7 @@ mod tests {
 
     #[test]
     fn test_partial_message_returns_none() {
-        let mut codec = VtrCodec;
+        let mut codec = VtrCodec::default();
         let mut buf = BytesMut::from(&b"VTRX"[..]);
         let result = codec.decode(&mut buf).expect("Should not error");
         assert!(result.is_none());

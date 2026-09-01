@@ -2,8 +2,11 @@
 
 use crate::error::{BtcError, Result};
 use bitcoin::blockdata::block::Header;
+use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::consensus::encode::deserialize;
+use bitcoin::consensus::params::Params;
 use bitcoin::hashes::Hash;
+use bitcoin::pow::{CompactTarget, Target};
 use std::collections::HashMap;
 
 /// A stored header with its height and cumulative chain work.
@@ -16,17 +19,51 @@ pub struct StoredHeader {
 }
 
 /// A lightweight Bitcoin header chain.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct HeaderChain {
     headers: HashMap<[u8; 32], StoredHeader>,
     best_hash: Option<[u8; 32]>,
     best_height: u32,
     best_work: u128,
+    network: Option<bitcoin::Network>,
 }
 
 impl HeaderChain {
     pub fn new() -> Self {
-        Self::default()
+        Self::anchored(bitcoin::Network::Bitcoin)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn unanchored_for_tests() -> Self {
+        Self {
+            headers: HashMap::new(),
+            best_hash: None,
+            best_height: 0,
+            best_work: 0,
+            network: None,
+        }
+    }
+
+    pub fn anchored(network: bitcoin::Network) -> Self {
+        let genesis = genesis_block(network);
+        let hash = genesis.block_hash().to_byte_array();
+        let work = header_work(genesis.header.bits);
+        let mut headers = HashMap::new();
+        headers.insert(
+            hash,
+            StoredHeader {
+                header: genesis.header,
+                height: 0,
+                work,
+            },
+        );
+        Self {
+            headers,
+            best_hash: Some(hash),
+            best_height: 0,
+            best_work: work,
+            network: Some(network),
+        }
     }
 
     /// Add a header (raw 80-byte serialization) at the given height.
@@ -45,6 +82,70 @@ impl HeaderChain {
         header
             .validate_pow(header.bits.into())
             .map_err(|e| BtcError::Bitcoin(format!("PoW validation failed: {}", e)))?;
+
+        if let Some(network) = self.network {
+            let params = Params::new(network);
+            let target = Target::from(header.bits);
+            if target > params.max_attainable_target {
+                return Err(BtcError::Bitcoin(
+                    "header target exceeds the network proof-of-work limit".into(),
+                ));
+            }
+            if height == 0 {
+                return Err(BtcError::Bitcoin(
+                    "anchored header chain already contains genesis".into(),
+                ));
+            }
+            let prev_hash = header.prev_blockhash.to_byte_array();
+            let parent = self.headers.get(&prev_hash).ok_or_else(|| {
+                BtcError::Bitcoin(format!("unknown parent {}", hex::encode(prev_hash)))
+            })?;
+            let interval = params.pow_target_timespan / params.pow_target_spacing;
+            let at_retarget = u64::from(height) % interval == 0;
+            let pow_limit = params.max_attainable_target.to_compact_lossy();
+            let expected = if at_retarget {
+                let boundary_height = height.saturating_sub(interval as u32);
+                let mut boundary_hash = prev_hash;
+                let boundary = loop {
+                    let stored = self.headers.get(&boundary_hash).ok_or_else(|| {
+                        BtcError::Bitcoin("missing retarget boundary header".into())
+                    })?;
+                    if stored.height == boundary_height {
+                        break stored;
+                    }
+                    boundary_hash = stored.header.prev_blockhash.to_byte_array();
+                };
+                CompactTarget::from_header_difficulty_adjustment(
+                    boundary.header,
+                    parent.header,
+                    &params,
+                )
+            } else if params.allow_min_difficulty_blocks
+                && u64::from(header.time)
+                    > u64::from(parent.header.time) + params.pow_target_spacing * 2
+            {
+                pow_limit
+            } else if params.allow_min_difficulty_blocks {
+                let mut cursor = parent;
+                while u64::from(cursor.height) % interval != 0 && cursor.header.bits == pow_limit {
+                    let cursor_parent = cursor.header.prev_blockhash.to_byte_array();
+                    cursor = self.headers.get(&cursor_parent).ok_or_else(|| {
+                        BtcError::Bitcoin("missing testnet difficulty ancestor".into())
+                    })?;
+                }
+                cursor.header.bits
+            } else {
+                parent.header.bits
+            };
+            if header.bits != expected {
+                return Err(BtcError::Bitcoin(format!(
+                    "unexpected difficulty at height {}: got {:08x}, expected {:08x}",
+                    height,
+                    header.bits.to_consensus(),
+                    expected.to_consensus()
+                )));
+            }
+        }
 
         let parent_work = if height > 0 {
             let prev: [u8; 32] = header.prev_blockhash.to_byte_array();
@@ -127,6 +228,12 @@ impl HeaderChain {
     }
 }
 
+impl Default for HeaderChain {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Compute the work contributed by a single header from its compact `bits`.
 ///
 /// Work is `2^256 / target`, the standard Bitcoin measure. A header with a
@@ -177,7 +284,7 @@ mod tests {
 
     #[test]
     fn test_pow_invalid_header_rejected() {
-        let mut chain = HeaderChain::new();
+        let mut chain = HeaderChain::unanchored_for_tests();
         // A header whose hash cannot meet a hard target must be rejected.
         let mut h = make_header([0u8; 32], 0);
         h.bits = bitcoin::CompactTarget::from_consensus(0x1b_00_00_01); // ~impossible
@@ -185,8 +292,40 @@ mod tests {
     }
 
     #[test]
+    fn test_default_chain_is_anchored_to_bitcoin_genesis() {
+        let chain = HeaderChain::new();
+        let genesis_hash = genesis_block(bitcoin::Network::Bitcoin)
+            .block_hash()
+            .to_byte_array();
+        assert_eq!(chain.len(), 1);
+        assert_eq!(chain.best_hash(), Some(genesis_hash));
+    }
+
+    #[test]
+    fn test_regtest_min_difficulty_child_is_accepted() {
+        let network = bitcoin::Network::Regtest;
+        let genesis = genesis_block(network);
+        let bits = genesis.header.bits;
+        let mut header = Header {
+            version: bitcoin::blockdata::block::Version::ONE,
+            prev_blockhash: genesis.block_hash(),
+            merkle_root: bitcoin::TxMerkleNode::all_zeros(),
+            time: genesis.header.time + 1,
+            bits,
+            nonce: 0,
+        };
+        while header.validate_pow(bits.into()).is_err() {
+            header.nonce = header.nonce.wrapping_add(1);
+        }
+
+        let mut chain = HeaderChain::anchored(network);
+        chain.add_header(&serialize(&header), 1).unwrap();
+        assert_eq!(chain.best_height(), 1);
+    }
+
+    #[test]
     fn test_add_genesis() {
-        let mut chain = HeaderChain::new();
+        let mut chain = HeaderChain::unanchored_for_tests();
         let h = make_header([0u8; 32], 0);
         chain.add_header(&serialize(&h), 0).unwrap();
         assert_eq!(chain.best_height(), 0);
@@ -195,7 +334,7 @@ mod tests {
 
     #[test]
     fn test_chain_of_headers() {
-        let mut chain = HeaderChain::new();
+        let mut chain = HeaderChain::unanchored_for_tests();
         let h0 = make_header([0u8; 32], 0);
         let h0_hash: [u8; 32] = h0.block_hash().to_byte_array();
         chain.add_header(&serialize(&h0), 0).unwrap();
@@ -208,7 +347,7 @@ mod tests {
 
     #[test]
     fn test_unknown_parent_rejected() {
-        let mut chain = HeaderChain::new();
+        let mut chain = HeaderChain::unanchored_for_tests();
         // The first header is accepted as the chain root (bootstrap), even
         // though its parent (genesis) is not stored.
         let h0 = make_header([0xffu8; 32], 1);
@@ -221,7 +360,7 @@ mod tests {
 
     #[test]
     fn test_hashes_from() {
-        let mut chain = HeaderChain::new();
+        let mut chain = HeaderChain::unanchored_for_tests();
         let h0 = make_header([0u8; 32], 0);
         let h0_hash: [u8; 32] = h0.block_hash().to_byte_array();
         chain.add_header(&serialize(&h0), 0).unwrap();

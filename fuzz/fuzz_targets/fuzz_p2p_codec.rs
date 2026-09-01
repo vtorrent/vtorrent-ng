@@ -5,6 +5,6 @@ use vtorrent_p2p::codec::VtrCodec;
 
 fuzz_target!(|data: &[u8]| {
     let mut buf = bytes::BytesMut::from(data);
-    let mut codec = VtrCodec;
+    let mut codec = VtrCodec::default();
     let _ = tokio_util::codec::Decoder::decode(&mut codec, &mut buf);
 });

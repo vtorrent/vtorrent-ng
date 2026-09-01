@@ -218,7 +218,11 @@ use overlay::*;
 impl Node {
     /// Create a new node.
     pub fn new(config: NodeConfig) -> Result<Self> {
-        let chain = Chain::new()?;
+        let chain = if config.regtest {
+            Chain::new_regtest()?
+        } else {
+            Chain::new()?
+        };
         let best_height = chain.best_height();
         let mempool = Mempool::new(config.max_mempool);
         let mut peer_manager = PeerManager::with_transport_config(

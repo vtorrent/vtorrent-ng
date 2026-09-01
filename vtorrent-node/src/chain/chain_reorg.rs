@@ -1,6 +1,9 @@
 use crate::{
     block::{Block, Transaction},
-    consensus::{check_stake_kernel, compute_pos_reward, validate_legacy_claim, MAX_SUPPLY},
+    consensus::{
+        check_stake_kernel, compute_pos_reward, validate_legacy_claim, MAX_STAKE_AGE, MAX_SUPPLY,
+        MIN_STAKE_AGE, MIN_STAKE_AMOUNT,
+    },
     error::{NodeError, Result},
     genesis::get_legacy_balance,
 };
@@ -261,7 +264,16 @@ fn apply_transaction_journaled(
     }
 
     if tx.is_legacy_claim() {
-        if let Some(addr) = &tx.claim_address {
+        if height == 0 && tx.claim_address.is_none() {
+            if tx.claim_signature.is_some() {
+                return Err(NodeError::InvalidTransaction(
+                    "Genesis distribution must not carry a claim signature".into(),
+                ));
+            }
+        } else {
+            let addr = tx.claim_address.as_ref().ok_or_else(|| {
+                NodeError::InvalidTransaction("Legacy claim is missing its address".into())
+            })?;
             if chain.claimed_addresses.contains(addr) {
                 return Err(NodeError::ClaimAlreadyProcessed(addr.clone()));
             }
@@ -305,6 +317,18 @@ fn apply_transaction_journaled(
             NodeError::InvalidTransaction("Coinstake must spend a stake input".into())
         })?;
         let coin_age = timestamp.saturating_sub(staked.timestamp);
+        if staked.value < MIN_STAKE_AMOUNT {
+            return Err(NodeError::InvalidTransaction(format!(
+                "Stake value {} is below minimum {}",
+                staked.value, MIN_STAKE_AMOUNT
+            )));
+        }
+        if coin_age < MIN_STAKE_AGE as u32 || coin_age > MAX_STAKE_AGE as u32 {
+            return Err(NodeError::InvalidTransaction(format!(
+                "Stake age {} is outside the allowed range {}..={}",
+                coin_age, MIN_STAKE_AGE, MAX_STAKE_AGE
+            )));
+        }
         if !check_stake_kernel(parent_stake_modifier, &staked, timestamp) {
             return Err(NodeError::InvalidTransaction(
                 "Coinstake kernel hash does not meet the stake target".into(),
@@ -336,6 +360,36 @@ pub(crate) fn reorganize_to(
     Vec<RolledBackBlock>,
     Vec<AppliedForkBlock>,
 )> {
+    let height_index = chain.height_index.clone();
+    let tx_index = chain.tx_index.clone();
+    let utxo_set = chain.utxo_set.clone();
+    let claimed_addresses = chain.claimed_addresses.clone();
+    let journals = chain.journals.clone();
+    let total_supply = chain.total_supply;
+
+    match reorganize_to_inner(chain, new_tip, new_tip_height) {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            chain.height_index = height_index;
+            chain.tx_index = tx_index;
+            chain.utxo_set = utxo_set;
+            chain.claimed_addresses = claimed_addresses;
+            chain.journals = journals;
+            chain.total_supply = total_supply;
+            Err(error)
+        }
+    }
+}
+
+fn reorganize_to_inner(
+    chain: &mut Chain,
+    new_tip: [u8; 32],
+    new_tip_height: u32,
+) -> Result<(
+    Vec<Transaction>,
+    Vec<RolledBackBlock>,
+    Vec<AppliedForkBlock>,
+)> {
     let old_tip = chain.best_hash().unwrap_or([0u8; 32]);
 
     let new_chain = ancestors(chain, new_tip);
@@ -359,6 +413,15 @@ pub(crate) fn reorganize_to(
     let fork_height = chain
         .block_height(&fork_point)
         .ok_or_else(|| NodeError::Chain("Fork point not on main chain".into()))?;
+
+    let rollback_depth = chain.best_height().saturating_sub(fork_height) as usize;
+    if rollback_depth > chain.journals.len() {
+        return Err(NodeError::Chain(format!(
+            "Reorg depth {} exceeds available rollback history {}",
+            rollback_depth,
+            chain.journals.len()
+        )));
+    }
 
     tracing::info!("Reorg: fork point at height {}", fork_height);
 

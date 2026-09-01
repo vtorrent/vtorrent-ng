@@ -555,8 +555,16 @@ pub async fn get_transactions(
         .unwrap_or(50)
         .min(500);
 
-    let chain = state.chain.lock().await;
-    let txs = chain.get_recent_transactions(limit);
+    let address = state.wallet_change_address.read().await.clone();
+    let txs = if let Some(address) = address {
+        state
+            .chain
+            .lock()
+            .await
+            .get_recent_transactions_for_addresses(&[address], limit)
+    } else {
+        Vec::new()
+    };
 
     let result = txs
         .into_iter()

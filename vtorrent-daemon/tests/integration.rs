@@ -292,7 +292,7 @@ async fn integration_spv_add_genesis_header() {
     // Headers must satisfy their own compact-target PoW now, so mine a nonce
     // against the easiest possible target (~2 attempts on average).
     let bits = 0x207f_ffffu32;
-    let mut nonce = 0u32;
+    let mut nonce = 1u32;
     let meets_target = |nonce: u32| -> bool {
         let mut buf = Vec::with_capacity(80);
         buf.extend_from_slice(&1u32.to_le_bytes());

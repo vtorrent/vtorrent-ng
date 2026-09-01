@@ -98,7 +98,9 @@ pub(crate) async fn handle_block(
             let size_bytes = serde_json::to_vec(&block).map(|v| v.len()).unwrap_or(0);
             let block_arc = std::sync::Arc::new(block);
             let mut chain = node.chain.lock().await;
-            match chain.add_block((*block_arc).clone()) {
+            let acceptance = chain.add_block((*block_arc).clone());
+            drop(chain);
+            match acceptance {
                 Ok(acceptance) => {
                     let should_relay = match acceptance {
                         BlockAcceptance::MainChain {
@@ -156,9 +158,7 @@ pub(crate) async fn handle_block(
                                 let chain = node.chain.lock().await;
                                 let mut mp = node.mempool.lock().await;
                                 for tx in rolled_back_txs {
-                                    if let Some(fee) = chain.compute_tx_fee(&tx) {
-                                        let _ = mp.add_transaction_with_fee(tx, fee);
-                                    }
+                                    let _ = mp.admit_with_chain_fee(&chain, tx);
                                 }
                             }
                             node.emit(NodeEvent::Reorg {
@@ -184,7 +184,6 @@ pub(crate) async fn handle_block(
                             }],
                         };
                         let payload = encode_for_peer(&inv_msg, peer_version);
-                        drop(chain);
                         node.peer_manager
                             .broadcast_except(peer_addr, NetMessage::new("inv", payload))
                             .await;
@@ -221,24 +220,19 @@ pub(crate) async fn handle_tx(
 ) -> Result<()> {
     match node.deserialize_tx(&msg.payload) {
         Ok(tx) => {
-            let real_fee = {
-                let chain = node.chain.lock().await;
-                chain.compute_tx_fee(&tx)
-            };
+            let chain = node.chain.lock().await;
             let mut mp = node.mempool.lock().await;
-            let result = match real_fee {
-                Some(fee) => mp.add_transaction_with_fee(tx.clone(), fee),
-                None => Err(NodeError::Chain("Inputs not found in UTXO set".into())),
-            };
+            let result = mp.admit_with_chain_fee(&chain, tx.clone());
+            drop(mp);
+            drop(chain);
             match result {
-                Ok(()) => {
+                Ok(fee) => {
                     let txid = tx.txid();
-                    let fee_sats = real_fee.unwrap_or(0);
                     let size_bytes = tx.serialized_size();
                     tracing::debug!("Accepted tx {}", hex::encode(txid));
                     node.emit(NodeEvent::TxUnconfirmed {
                         txid,
-                        fee_sats,
+                        fee_sats: fee,
                         size_bytes,
                     });
                     let inv_msg = InvMsg {
@@ -248,7 +242,6 @@ pub(crate) async fn handle_tx(
                         }],
                     };
                     let payload = encode_for_peer(&inv_msg, peer_version);
-                    drop(mp);
                     node.peer_manager
                         .broadcast_except(peer_addr, NetMessage::new("inv", payload))
                         .await;
@@ -1105,7 +1098,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_tx_adds_valid_transaction_to_mempool() {
+    async fn handle_tx_rejects_unsigned_transaction() {
         let mut node = test_node();
         // Fund an address via a coinbase block, then send a transfer spending it.
         let genesis_hash = {
@@ -1150,10 +1143,7 @@ mod tests {
             .unwrap();
 
         let mp = node.mempool.lock().await;
-        assert!(
-            mp.get_transaction(&tx.txid()).is_some(),
-            "valid tx must be admitted to the mempool"
-        );
+        assert!(mp.get_transaction(&tx.txid()).is_none());
     }
 
     #[tokio::test]

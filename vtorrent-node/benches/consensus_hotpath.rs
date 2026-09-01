@@ -57,7 +57,7 @@ fn make_pending_txs(count: usize) -> Vec<Transaction> {
 }
 
 fn funded_chain(coins: u64) -> Chain {
-    let mut chain = Chain::new().expect("genesis");
+    let mut chain = Chain::new_regtest().expect("genesis");
     chain
         .mint_to_address("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT", coins)
         .expect("mint");

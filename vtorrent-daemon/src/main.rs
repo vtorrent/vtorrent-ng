@@ -133,9 +133,12 @@ async fn main() -> anyhow::Result<()> {
         if store_height > 0 {
             tracing::info!("Resuming from persisted chain at height {}", store_height);
             // Load persisted chain into memory, then build the node with it.
-            let chain = block_store
-                .load_into_chain()
-                .map_err(|e| anyhow::anyhow!("Failed to load chain from store: {}", e))?;
+            let chain = if cli.regtest {
+                block_store.load_into_regtest_chain()
+            } else {
+                block_store.load_into_chain()
+            }
+            .map_err(|e| anyhow::anyhow!("Failed to load chain from store: {}", e))?;
             Node::new_with_chain(config.clone(), chain)
                 .map_err(|e| anyhow::anyhow!("Node::new_with_chain failed: {}", e))?
         } else {
@@ -332,7 +335,7 @@ async fn main() -> anyhow::Result<()> {
                             };
                             {
                                 let mut spv = spv_chain_ref.write().await;
-                                if let Err(e) = spv.add_header(spv_header) {
+                                if let Err(e) = spv.add_trusted_header(spv_header) {
                                     tracing::debug!(
                                         "SPV chain: could not add header at {}: {}",
                                         height,
@@ -533,7 +536,12 @@ async fn main() -> anyhow::Result<()> {
                                 .cloned()
                                 .collect()
                         };
-                        if let Err(e) = store_for_bridge.rebuild_from_blocks(&blocks) {
+                        let rebuild = if config.regtest {
+                            store_for_bridge.rebuild_from_regtest_blocks(&blocks)
+                        } else {
+                            store_for_bridge.rebuild_from_blocks(&blocks)
+                        };
+                        if let Err(e) = rebuild {
                             tracing::error!("Block store reconciliation failed: {}", e);
                         } else {
                             tracing::info!(

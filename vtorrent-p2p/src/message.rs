@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 /// Network magic bytes for vTorrent 2.0 mainnet.
 pub const NETWORK_MAGIC: [u8; 4] = [0x56, 0x54, 0x52, 0x58]; // "VTRX"
 
+/// Network magic bytes for vTorrent-NG testnet.
+pub const TESTNET_NETWORK_MAGIC: [u8; 4] = [0x56, 0x54, 0x52, 0x54]; // "VTRT"
+
 /// Maximum allowed message payload size (4 MB).
 ///
 /// Consensus blocks are capped at 1 MB (`MAX_BLOCK_SIZE`), so 4 MB leaves

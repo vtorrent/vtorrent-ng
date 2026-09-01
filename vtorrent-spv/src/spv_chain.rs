@@ -48,9 +48,9 @@ impl SpvHeader {
         Sha256::digest(first).into()
     }
 
-    /// Returns true if this is a PoS block (version bit 8 set, matching vtorrent-node).
+    /// Returns true if this is a PoS block, matching `vtorrent-node`.
     pub fn is_pos(&self) -> bool {
-        self.version & 0x100 != 0
+        self.nonce == 0
     }
 }
 
@@ -144,6 +144,20 @@ impl SpvChain {
     ///
     /// Validates that the header connects to the existing chain.
     pub fn add_header(&mut self, header: SpvHeader) -> Result<()> {
+        if header.is_pos() {
+            return Err(SpvError::HeaderValidation(
+                "PoS headers require full-block stake validation".into(),
+            ));
+        }
+        self.add_header_inner(header, false)
+    }
+
+    /// Add a header already validated by the local full node.
+    pub fn add_trusted_header(&mut self, header: SpvHeader) -> Result<()> {
+        self.add_header_inner(header, true)
+    }
+
+    fn add_header_inner(&mut self, header: SpvHeader, trusted: bool) -> Result<()> {
         let hash = header.hash();
 
         // Check for duplicate
@@ -152,7 +166,10 @@ impl SpvChain {
         }
 
         // Validate chain linkage (skip for genesis block at height 0)
-        if header.height > 0 && !self.headers.contains_key(&header.prev_hash) {
+        if header.height > 0
+            && !self.headers.contains_key(&header.prev_hash)
+            && !(trusted && self.headers.is_empty())
+        {
             return Err(SpvError::UnknownParent(hex::encode(header.prev_hash)));
         }
 
@@ -160,7 +177,7 @@ impl SpvChain {
         // the target encoded in `bits`. Without this a malicious peer could
         // fabricate a high-work fork out of thin air (each header claiming
         // an easy target yet contributing huge claimed work).
-        if !header.is_pos() && !hash_meets_target(&hash, header.bits) {
+        if !trusted && !hash_meets_target(&hash, header.bits) {
             return Err(SpvError::HeaderValidation(format!(
                 "hash {} does not meet target {:08x}",
                 hex::encode(hash),
@@ -181,7 +198,7 @@ impl SpvChain {
                 header.timestamp
             )));
         }
-        if header.height > 0 {
+        if header.height > 0 && self.headers.contains_key(&header.prev_hash) {
             let parent = &self.headers[&header.prev_hash];
             if header.timestamp <= parent.timestamp {
                 return Err(SpvError::HeaderValidation(
@@ -191,7 +208,7 @@ impl SpvChain {
         }
 
         // The height must be exactly one more than the parent's height.
-        if header.height > 0 {
+        if header.height > 0 && self.headers.contains_key(&header.prev_hash) {
             let parent = &self.headers[&header.prev_hash];
             if header.height != parent.height + 1 {
                 return Err(SpvError::HeightMismatch {
@@ -203,7 +220,7 @@ impl SpvChain {
 
         let height = header.height;
         // Cumulative work = parent's cumulative work + this header's work.
-        let parent_work = if height == 0 {
+        let parent_work = if height == 0 || !self.headers.contains_key(&header.prev_hash) {
             0
         } else {
             self.work[&header.prev_hash]
@@ -323,7 +340,7 @@ mod tests {
         // Maximum (easiest) target; mine a nonce that satisfies PoW (~2 tries
         // on average). Production sync validates real difficulty.
         let bits = 0x207f_ffff;
-        let mut nonce: u32 = 0;
+        let mut nonce: u32 = 1;
         loop {
             let h = SpvHeader {
                 version: 1,

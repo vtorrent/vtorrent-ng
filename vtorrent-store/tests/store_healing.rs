@@ -59,7 +59,7 @@ fn make_block_value(
 
 /// Build a valid chain of `n` blocks in memory, returning them plus the chain.
 fn build_chain(n: u32) -> (Chain, Vec<Block>) {
-    let mut chain = Chain::new().unwrap();
+    let mut chain = Chain::new_regtest().unwrap();
     let mut blocks = Vec::new();
     let mut prev = chain.best_hash().unwrap();
     let mut modifier = 0u64;
@@ -84,7 +84,7 @@ fn diverged_tail_is_truncated_and_rebuilt() {
     let (_chain, blocks) = build_chain(3);
 
     // Persist blocks 1..=3 with their real acceptance diffs.
-    let mut replay = Chain::new().unwrap();
+    let mut replay = Chain::new_regtest().unwrap();
     for (i, b) in blocks.iter().enumerate() {
         let h = i as u32 + 1;
         match replay.add_block(b.clone()).unwrap() {
@@ -119,7 +119,7 @@ fn diverged_tail_is_truncated_and_rebuilt() {
     assert_eq!(store.best_height().unwrap(), 4);
 
     // Heal: must succeed and land on the last GOOD block.
-    let loaded = store.load_into_chain().unwrap();
+    let loaded = store.load_into_regtest_chain().unwrap();
     assert_eq!(loaded.best_height(), 3);
     assert_eq!(loaded.best_hash(), Some(blocks[2].hash()));
 
@@ -154,7 +154,7 @@ fn rebuild_from_blocks_restores_derived_state() {
             &hex::encode(b.header.prev_block_hash)[..8]
         );
     }
-    store.rebuild_from_blocks(&blocks).unwrap();
+    store.rebuild_from_regtest_blocks(&blocks).unwrap();
 
     assert_eq!(store.best_height().unwrap(), 4);
     assert_eq!(
@@ -174,6 +174,6 @@ fn rebuild_from_blocks_restores_derived_state() {
     }
 
     // Idempotent: rebuilding twice lands in the same place.
-    store.rebuild_from_blocks(&blocks).unwrap();
+    store.rebuild_from_regtest_blocks(&blocks).unwrap();
     assert_eq!(store.best_height().unwrap(), 4);
 }

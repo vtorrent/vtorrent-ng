@@ -2,7 +2,7 @@ mod chain_reorg;
 
 use crate::{
     block::{Block, Transaction},
-    consensus::{compute_stake_modifier, validate_block},
+    consensus::{compute_stake_modifier, validate_block_inner, validate_legacy_claim},
     error::{NodeError, Result},
     genesis::create_genesis_block,
 };
@@ -153,6 +153,7 @@ pub struct Chain {
     /// Total coin supply on the main chain (satoshis), tracked incrementally
     /// as blocks are applied and rolled back. Bounded by `MAX_SUPPLY`.
     total_supply: u64,
+    allow_pow_test_blocks: bool,
 }
 
 impl Chain {
@@ -173,6 +174,7 @@ impl Chain {
             parent_map: HashMap::new(),
             block_heights: HashMap::new(),
             total_supply: 0,
+            allow_pow_test_blocks: cfg!(test),
         };
 
         chain.blocks.insert(genesis_hash, genesis.clone());
@@ -189,6 +191,12 @@ impl Chain {
             "Chain initialized with genesis block: {}",
             hex::encode(genesis_hash)
         );
+        Ok(chain)
+    }
+
+    pub fn new_regtest() -> Result<Self> {
+        let mut chain = Self::new()?;
+        chain.allow_pow_test_blocks = true;
         Ok(chain)
     }
 
@@ -352,7 +360,16 @@ impl Chain {
     pub fn verify_tx_scripts(&self, tx: &Transaction, height: u32, timestamp: u32) -> Result<()> {
         use vtorrent_script::{Engine, Script, ScriptEnv};
 
-        if tx.is_coinbase() || tx.is_coinstake() || tx.is_legacy_claim() {
+        if tx.is_legacy_claim() {
+            let address = tx.claim_address.as_ref().ok_or_else(|| {
+                NodeError::InvalidClaim("Legacy claim is missing its address".into())
+            })?;
+            if self.claimed_addresses.contains(address) {
+                return Err(NodeError::ClaimAlreadyProcessed(address.clone()));
+            }
+            return validate_legacy_claim(tx, crate::genesis::get_legacy_balance(address));
+        }
+        if tx.is_coinbase() || tx.is_coinstake() {
             return Ok(());
         }
         for (input_index, input) in tx.inputs.iter().enumerate() {
@@ -473,6 +490,70 @@ impl Chain {
         result
     }
 
+    pub fn get_recent_transactions_for_addresses(
+        &self,
+        addresses: &[String],
+        limit: usize,
+    ) -> Vec<(String, u32, u32, String, u64, u64)> {
+        let scripts: HashSet<Vec<u8>> = addresses
+            .iter()
+            .map(|address| self.address_to_p2pkh_script(address))
+            .filter(|script| !script.is_empty())
+            .collect();
+        if scripts.is_empty() {
+            return Vec::new();
+        }
+
+        let mut result = Vec::new();
+        for height in (0..=self.best_height()).rev() {
+            let Some(block) = self.get_block_at_height(height) else {
+                continue;
+            };
+            for tx in block.transactions.iter().rev() {
+                let received: u64 = tx
+                    .outputs
+                    .iter()
+                    .filter(|output| scripts.contains(&output.script_pubkey))
+                    .map(|output| output.value)
+                    .sum();
+                let sent: u64 = tx
+                    .inputs
+                    .iter()
+                    .filter_map(|input| {
+                        self.resolve_output(&input.prev_txid, input.prev_vout)
+                            .filter(|output| scripts.contains(&output.script_pubkey))
+                            .map(|output| output.value)
+                    })
+                    .sum();
+                if received == 0 && sent == 0 {
+                    continue;
+                }
+
+                let total_output = tx.total_output();
+                let fee = self.tx_fee(tx, total_output);
+                let (direction, amount) = if tx.is_coinstake() {
+                    ("stake", received.saturating_sub(sent))
+                } else if sent > 0 {
+                    ("send", sent.saturating_sub(received).saturating_sub(fee))
+                } else {
+                    ("receive", received)
+                };
+                result.push((
+                    hex::encode(tx.txid()),
+                    height,
+                    block.header.timestamp,
+                    direction.into(),
+                    amount,
+                    fee,
+                ));
+                if result.len() == limit {
+                    return result;
+                }
+            }
+        }
+        result
+    }
+
     /// Compute the fee for a transaction as (sum of spent input values) - (sum
     /// of outputs). Returns 0 for coinbase/legacy-claim transactions (no inputs)
     /// or when an input's previous output can no longer be resolved.
@@ -490,14 +571,13 @@ impl Chain {
 
     /// Resolve the value of a previous output (txid, vout) from the main chain.
     fn resolve_output_value(&self, txid: &[u8; 32], vout: u32) -> Option<u64> {
+        self.resolve_output(txid, vout).map(|output| output.value)
+    }
+
+    fn resolve_output(&self, txid: &[u8; 32], vout: u32) -> Option<&crate::block::TxOutput> {
         let (block_hash, offset) = self.tx_index.get(txid)?;
         let block = self.blocks.get(block_hash)?;
-        block
-            .transactions
-            .get(*offset)?
-            .outputs
-            .get(vout as usize)
-            .map(|o| o.value)
+        block.transactions.get(*offset)?.outputs.get(vout as usize)
     }
 
     /// Add a new block to the chain, handling forks and reorgs automatically.
@@ -527,13 +607,14 @@ impl Chain {
                 .get_block_at_height(height - 1)
                 .ok_or_else(|| NodeError::Chain("Previous block not found".into()))?;
 
-            validate_block(
+            validate_block_inner(
                 &block,
                 height - 1,
                 prev_block.header.timestamp,
                 prev_block.header.bits,
                 prev_block.header.stake_modifier,
                 prev_hash,
+                self.allow_pow_test_blocks,
             )
             .map_err(|e| {
                 tracing::warn!(
@@ -614,13 +695,14 @@ impl Chain {
             let parent_modifier = parent.header.stake_modifier;
 
             // Validate against the fork parent
-            validate_block(
+            validate_block_inner(
                 &block,
                 parent_height,
                 parent_timestamp,
                 parent_bits,
                 parent_modifier,
                 prev_hash,
+                self.allow_pow_test_blocks,
             )?;
 
             let parent_work = self.cumulative_work.get(&prev_hash).copied().unwrap_or(0);

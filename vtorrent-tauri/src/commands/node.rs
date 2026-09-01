@@ -52,12 +52,21 @@ pub async fn start_node(state: tauri::State<'_, AppState>) -> Result<NodeInfoRes
     let mut rpc_state = RpcAppState::new_with_shared(node.chain_arc(), node.mempool_arc());
 
     let btc_seed = {
+        use sha2::{Digest, Sha512};
         let wallet_guard = state.wallet.lock().map_err(|_| TauriError::WalletLocked)?;
-        wallet_guard
-            .as_ref()
-            .and_then(|w| w.mnemonic())
-            .and_then(|m| vtorrent_wallet::hd::Mnemonic::from_phrase(m).ok())
-            .and_then(|m| m.to_seed().ok())
+        wallet_guard.as_ref().and_then(|wallet| {
+            wallet
+                .mnemonic()
+                .and_then(|m| vtorrent_wallet::hd::Mnemonic::from_phrase(m).ok())
+                .and_then(|m| m.to_seed().ok())
+                .or_else(|| {
+                    let wif = wallet.get_default_wif()?;
+                    let mut hasher = Sha512::new();
+                    hasher.update(b"vtorrent-ng-btc-seed-v1");
+                    hasher.update(wif.as_bytes());
+                    Some(hasher.finalize().into())
+                })
+        })
     };
     if let Some(seed) = btc_seed {
         let utxo_path = {
@@ -207,26 +216,40 @@ pub async fn get_transactions(
     state: tauri::State<'_, AppState>,
     limit: Option<usize>,
 ) -> Result<Vec<TxResult>> {
+    let addresses: Vec<String> = state
+        .wallet
+        .lock()
+        .map_err(|_| TauriError::WalletLocked)?
+        .as_ref()
+        .ok_or(TauriError::WalletNotInitialized)?
+        .list_addresses()
+        .into_iter()
+        .map(|(address, _, _, _)| address)
+        .collect();
     let guard = state.node.lock().await;
     let handle = guard
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
     let chain = handle.rpc_state.chain.lock().await;
     let limit = limit.unwrap_or(50);
-    let txs = chain.get_recent_transactions(limit);
+    let txs = chain.get_recent_transactions_for_addresses(&addresses, limit);
     let best = chain.best_height();
     Ok(txs
         .into_iter()
         .map(|(txid, height, ts, dir, amount, fee)| {
             let display = format!(
                 "{} {} VTR",
-                if dir == "receive" { "Received" } else { "Sent" },
+                match dir.as_str() {
+                    "receive" => "Received",
+                    "stake" => "Staked",
+                    _ => "Sent",
+                },
                 amount as f64 / 100_000_000.0
             );
             TxResult {
                 txid,
                 block_height: height,
-                confirmations: best.saturating_sub(height),
+                confirmations: best.saturating_sub(height).saturating_add(1),
                 timestamp: ts,
                 tx_type: dir,
                 amount_satoshis: amount,
