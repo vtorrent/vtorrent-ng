@@ -242,6 +242,8 @@ pub struct BlockHeader {
     pub prev_block_hash: [u8; 32],
     /// Merkle root of all transactions.
     pub merkle_root: [u8; 32],
+    /// UTXO set commitment (Merkle root over sorted UTXO leaves after this block).
+    pub utxo_root: [u8; 32],
     /// Unix timestamp.
     pub timestamp: u32,
     /// Difficulty target (nBits).
@@ -361,6 +363,7 @@ mod tests {
                 version: 1,
                 prev_block_hash: [0u8; 32],
                 merkle_root: [0u8; 32],
+                utxo_root: [0u8; 32],
                 timestamp: 0,
                 bits: 0,
                 nonce: 0,
@@ -378,6 +381,7 @@ mod tests {
             version: 1,
             prev_block_hash: [0u8; 32],
             merkle_root: [0u8; 32],
+            utxo_root: [0u8; 32],
             timestamp: 1700000000,
             bits: 0x1d00ffff,
             nonce: 42,
@@ -513,5 +517,22 @@ mod tests {
 
         // 1 (tag) + 12 (address) + 1 (tag) + 65 (sig) = 79 extra bytes
         assert_eq!(claim_size, base_size + 79);
+    }
+
+    #[test]
+    fn test_block_header_hash_includes_utxo_root() {
+        let h1 = BlockHeader {
+            version: 2,
+            prev_block_hash: [1u8; 32],
+            merkle_root: [2u8; 32],
+            utxo_root: [3u8; 32],
+            timestamp: 1_700_000_001,
+            bits: 0x1e0fffff,
+            nonce: 0,
+            stake_modifier: 99,
+        };
+        let mut h2 = h1.clone();
+        h2.utxo_root = [4u8; 32];
+        assert_ne!(h1.hash(), h2.hash(), "utxo_root must affect header hash");
     }
 }

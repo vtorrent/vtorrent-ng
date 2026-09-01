@@ -282,6 +282,7 @@ impl Chain {
                 version: 1,
                 prev_block_hash: prev_hash,
                 merkle_root: [0u8; 32],
+                utxo_root: [0u8; 32],
                 timestamp,
                 bits: crate::genesis::GENESIS_BITS,
                 nonce: height,

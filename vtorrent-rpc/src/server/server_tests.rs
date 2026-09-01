@@ -533,10 +533,11 @@ async fn test_spv_add_headers() {
     let mut nonce = 1u32;
     let meets_target = |nonce: u32| -> bool {
         use sha2::Digest as _;
-        let mut buf = Vec::with_capacity(80);
+        let mut buf = Vec::with_capacity(112);
         buf.extend_from_slice(&1u32.to_le_bytes());
         buf.extend_from_slice(&[0u8; 32]);
         buf.extend_from_slice(&[0x01u8; 32]);
+        buf.extend_from_slice(&[0u8; 32]);
         buf.extend_from_slice(&1_700_000_000u32.to_le_bytes());
         buf.extend_from_slice(&bits.to_le_bytes());
         buf.extend_from_slice(&nonce.to_le_bytes());

@@ -236,6 +236,7 @@ pub async fn add_spv_headers(
             version: h.version,
             prev_hash: ph,
             merkle_root: mr,
+            utxo_root: [0u8; 32],
             timestamp: h.timestamp,
             bits: h.bits,
             nonce: h.nonce,

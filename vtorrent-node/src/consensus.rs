@@ -653,6 +653,7 @@ mod tests {
                 version: 1,
                 prev_block_hash: [0u8; 32],
                 merkle_root: [0u8; 32],
+                utxo_root: [0u8; 32],
                 timestamp: 1_700_000_001,
                 bits,
                 nonce,

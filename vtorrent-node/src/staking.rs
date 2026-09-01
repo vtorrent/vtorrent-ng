@@ -349,6 +349,7 @@ impl StakingEngine {
             version: 2,
             prev_block_hash: prev_hash,
             merkle_root,
+            utxo_root: [0u8; 32],
             timestamp,
             bits: 0x1e0fffff,
             nonce: 0,

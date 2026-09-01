@@ -328,6 +328,7 @@ async fn main() -> anyhow::Result<()> {
                                 version: block.header.version,
                                 prev_hash: block.header.prev_block_hash,
                                 merkle_root: block.header.merkle_root,
+                                utxo_root: [0u8; 32],
                                 timestamp: block.header.timestamp,
                                 bits: block.header.bits,
                                 nonce: block.header.nonce,

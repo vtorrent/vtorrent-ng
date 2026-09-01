@@ -208,6 +208,7 @@ fn bench_merkle_root(c: &mut Criterion) {
                 version: 2,
                 prev_block_hash: [0u8; 32],
                 merkle_root: [0u8; 32],
+                utxo_root: [0u8; 32],
                 timestamp: 1_700_000_000,
                 bits: 0x1e0fffff,
                 nonce: 0,

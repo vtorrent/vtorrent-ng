@@ -42,6 +42,7 @@ fn make_block_value(
             version: 1,
             prev_block_hash: prev_hash,
             merkle_root: [0u8; 32],
+            utxo_root: [0u8; 32],
             timestamp: 1_700_000_000 + height,
             bits: vtorrent_node::genesis::GENESIS_BITS,
             nonce,

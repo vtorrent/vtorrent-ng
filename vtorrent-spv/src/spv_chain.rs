@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
-/// A compact block header (80 bytes on the wire, similar to Bitcoin).
+/// A compact block header (112 bytes on the wire, similar to Bitcoin plus UTXO commitment).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SpvHeader {
     /// Block version.
@@ -24,6 +24,8 @@ pub struct SpvHeader {
     pub prev_hash: [u8; 32],
     /// Merkle root of all transactions in the block.
     pub merkle_root: [u8; 32],
+    /// UTXO set commitment (Merkle root over sorted UTXO leaves after this block).
+    pub utxo_root: [u8; 32],
     /// Block timestamp (Unix seconds).
     pub timestamp: u32,
     /// Compact target / difficulty bits.
@@ -37,10 +39,11 @@ pub struct SpvHeader {
 impl SpvHeader {
     /// Compute the double-SHA256 hash of this header.
     pub fn hash(&self) -> [u8; 32] {
-        let mut buf = Vec::with_capacity(80);
+        let mut buf = Vec::with_capacity(112);
         buf.extend_from_slice(&self.version.to_le_bytes());
         buf.extend_from_slice(&self.prev_hash);
         buf.extend_from_slice(&self.merkle_root);
+        buf.extend_from_slice(&self.utxo_root);
         buf.extend_from_slice(&self.timestamp.to_le_bytes());
         buf.extend_from_slice(&self.bits.to_le_bytes());
         buf.extend_from_slice(&self.nonce.to_le_bytes());
@@ -346,6 +349,7 @@ mod tests {
                 version: 1,
                 prev_hash: prev,
                 merkle_root: merkle,
+                utxo_root: [0u8; 32],
                 timestamp: 1_700_000_000 + height,
                 bits,
                 nonce,
@@ -446,5 +450,22 @@ mod tests {
     fn test_header_hash_deterministic() {
         let h = make_header(5, [0xabu8; 32], [0xcdu8; 32]);
         assert_eq!(h.hash(), h.hash());
+    }
+
+    #[test]
+    fn test_spv_header_hash_includes_utxo_root() {
+        let h1 = SpvHeader {
+            version: 2,
+            prev_hash: [1u8; 32],
+            merkle_root: [2u8; 32],
+            utxo_root: [3u8; 32],
+            timestamp: 1_700_000_001,
+            bits: 0x1e0fffff,
+            nonce: 0,
+            height: 1,
+        };
+        let mut h2 = h1.clone();
+        h2.utxo_root = [4u8; 32];
+        assert_ne!(h1.hash(), h2.hash());
     }
 }

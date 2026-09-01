@@ -133,6 +133,7 @@ pub fn create_genesis_block() -> Block {
         version: 1,
         prev_block_hash: [0u8; 32],
         merkle_root: [0u8; 32],
+        utxo_root: [0u8; 32],
         timestamp: GENESIS_TIMESTAMP,
         bits: GENESIS_BITS,
         nonce: 0,

@@ -673,6 +673,7 @@ mod tests {
                 version: 1,
                 prev_block_hash: prev_hash,
                 merkle_root: merkle,
+                utxo_root: [0u8; 32],
                 timestamp: 1_700_000_000 + height,
                 bits: vtorrent_node::genesis::GENESIS_BITS,
                 nonce: height, // PoW-style: non-zero nonce for a coinbase block
