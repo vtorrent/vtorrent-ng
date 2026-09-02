@@ -13,11 +13,11 @@ def rpc_get(url, path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--expect-converged", action="store_true")
-    ap.add_argument("--rpc", nargs="*", default=["http://localhost:22525","http://localhost:22526","http://localhost:22527"])
+    ap.add_argument("--rpc", nargs="*", default=["http://localhost:22625","http://localhost:22627","http://localhost:22629"])
     args = ap.parse_args()
     tips = []
     for url in args.rpc:
-        data = rpc_get(url, "/api/v1/blockchain/info")
+        data = rpc_get(url, "/api/v1/info")
         if data:
             tips.append(data.get("best_hash") or data.get("tip") or str(data)[:16])
             print(f"{url}: {tips[-1]}")
