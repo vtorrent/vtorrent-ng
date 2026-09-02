@@ -333,13 +333,15 @@ pub(crate) async fn handle_cmpctblock(
     use vtorrent_p2p::message::CmpctBlockMsg;
 
     if let Ok(cmpct) = serde_json::from_slice::<CmpctBlockMsg>(&msg.payload) {
-        let mut header_bytes = Vec::with_capacity(80);
+        let mut header_bytes = Vec::with_capacity(120);
         header_bytes.extend_from_slice(&cmpct.version.to_le_bytes());
         header_bytes.extend_from_slice(&cmpct.prev_block_hash);
         header_bytes.extend_from_slice(&cmpct.merkle_root);
+        header_bytes.extend_from_slice(&cmpct.utxo_root);
         header_bytes.extend_from_slice(&cmpct.timestamp.to_le_bytes());
         header_bytes.extend_from_slice(&cmpct.bits.to_le_bytes());
         header_bytes.extend_from_slice(&cmpct.nonce.to_le_bytes());
+        header_bytes.extend_from_slice(&cmpct.stake_modifier.to_le_bytes());
         let (k0, k1) = derive_siphash_keys(&header_bytes, cmpct.siphash_nonce);
 
         let mempool_map = {
@@ -581,13 +583,15 @@ pub(crate) async fn handle_blocktxn(
             peer_addr
         );
 
-        let mut header_bytes = Vec::with_capacity(80);
+        let mut header_bytes = Vec::with_capacity(120);
         header_bytes.extend_from_slice(&pending.version.to_le_bytes());
         header_bytes.extend_from_slice(&pending.prev_block_hash);
         header_bytes.extend_from_slice(&pending.merkle_root);
+        header_bytes.extend_from_slice(&pending.utxo_root);
         header_bytes.extend_from_slice(&pending.timestamp.to_le_bytes());
         header_bytes.extend_from_slice(&pending.bits.to_le_bytes());
         header_bytes.extend_from_slice(&pending.nonce.to_le_bytes());
+        header_bytes.extend_from_slice(&pending.stake_modifier.to_le_bytes());
         let (k0, k1) = derive_siphash_keys(&header_bytes, pending.siphash_nonce);
 
         let mempool_map = {
