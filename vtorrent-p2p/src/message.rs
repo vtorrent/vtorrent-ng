@@ -97,12 +97,12 @@ pub const NODE_NETWORK: u64 = 1;
 pub const NODE_TORRENT: u64 = 2;
 pub const NODE_DEX: u64 = 4;
 
-/// Current protocol version — V2 bincode wire format (2-5x smaller than JSON).
+/// Current protocol version — V3 bincode wire format with UTXO commitment.
 ///
-/// Legacy peers advertised 70001 (JSON). V2 peers advertise 2 and use `bincode`
-/// for `inv`/`getdata`/`block`/`tx`. Fallback to JSON is retained for one
-/// release so old seeds remain reachable; unknown commands are ignored.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// V3 adds `utxo_root` + `stake_modifier` to headers (PoS light-client proofs).
+/// Legacy peers advertised 70001 (JSON). V2 peers advertise 2 (bincode). V3 peers
+/// advertise 3 and understand `utxo_root`; V2 fallback retained.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Legacy protocol version (JSON wire format) — retained for fallback.
 pub const LEGACY_PROTOCOL_VERSION: u32 = 70001;
@@ -130,9 +130,9 @@ pub fn decode_v2<T: for<'de> serde::Deserialize<'de>>(bytes: &[u8]) -> crate::er
         .map_err(|e| crate::error::P2pError::Decode(e.to_string()))
 }
 
-/// Returns `true` if the peer supports the V2 bincode wire format.
+/// Returns `true` if the peer supports the V2/V3 bincode wire format.
 pub fn is_v2_peer(version: u32) -> bool {
-    version >= PROTOCOL_VERSION && version != LEGACY_PROTOCOL_VERSION
+    version >= 2 && version != LEGACY_PROTOCOL_VERSION
 }
 
 /// Encode a message using the appropriate wire format for `peer_version`.
@@ -250,9 +250,11 @@ pub struct CmpctBlockMsg {
     pub version: u32,
     pub prev_block_hash: [u8; 32],
     pub merkle_root: [u8; 32],
+    pub utxo_root: [u8; 32],
     pub timestamp: u32,
     pub bits: u32,
     pub nonce: u32,
+    pub stake_modifier: u64,
     /// Random nonce used in the SipHash key derivation.
     pub siphash_nonce: u64,
     /// Short transaction IDs (6 bytes each, packed into u64 with upper 2 bytes zero).
@@ -317,6 +319,26 @@ pub struct HeaderEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeadersMsg {
     pub headers: Vec<HeaderEntry>,
+}
+
+/// `getproof` — request a StakeProof for a PoS block header.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetProofMsg {
+    pub block_hash: [u8; 32],
+}
+
+/// `proof` — response carrying an optional StakeProof (bincode bytes of `vtorrent-spv::stake::StakeProof`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProofMsg {
+    pub block_hash: [u8; 32],
+    pub proof: Option<Vec<u8>>,
+}
+
+/// `headerswithproof` — headers plus paired StakeProofs (None for PoW).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeadersWithProofMsg {
+    pub headers: Vec<HeaderEntry>,
+    pub proofs: Vec<Option<Vec<u8>>>,
 }
 
 #[cfg(test)]

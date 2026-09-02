@@ -424,6 +424,13 @@ pub struct SpvAddHeadersResponse {
     pub best_hash: String,
 }
 
+/// Response for `GET /api/v1/spv/proof/:hash` — PoS StakeProof (if available).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SpvProofResponse {
+    pub block_hash: String,
+    pub proof: Option<serde_json::Value>,
+}
+
 // ─── Generic ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize)]

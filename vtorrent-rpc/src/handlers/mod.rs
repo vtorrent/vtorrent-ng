@@ -273,6 +273,36 @@ pub async fn add_spv_headers(
     }))
 }
 
+/// GET /api/v1/spv/proof/:hash — retrieve a stored StakeProof for a PoS header (if available).
+pub async fn spv_get_proof(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(hash_hex): axum::extract::Path<String>,
+) -> RpcResult<Json<SpvProofResponse>> {
+    let hash = parse_hash32(&hash_hex, "hash")?;
+    let chain = state.spv_chain.read().await;
+    let header = chain.get_header(&hash).cloned();
+    drop(chain);
+    if header.is_none() {
+        return Err(RpcError::NotFound(format!("header {} not found", hash_hex)));
+    }
+    let proof = if let Some(ref h) = header {
+        if h.is_pos() {
+            // Full node would reconstruct proof from its UTXO set and block store;
+            // light-client stub returns empty proof indicating “not cached” — callers
+            // should request via P2P `getproof` if needed.
+            None
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    Ok(Json(SpvProofResponse {
+        block_hash: hash_hex,
+        proof,
+    }))
+}
+
 // ─── Peers ────────────────────────────────────────────────────────────────────
 
 /// GET /api/v1/peers

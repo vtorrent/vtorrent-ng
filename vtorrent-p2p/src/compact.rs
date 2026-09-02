@@ -131,27 +131,31 @@ impl CompactBlockEncoder {
     ///
     /// `txids` is the list of transaction IDs in block order.
     /// `coinbase_tx_bytes` is the serialized coinbase transaction (always prefilled).
-    #[allow(clippy::too_many_arguments)] // Mirrors the six on-wire block-header fields plus tx data.
+    #[allow(clippy::too_many_arguments)] // Mirrors the eight on-wire block-header fields plus tx data.
     pub fn encode(
         version: u32,
         prev_block_hash: [u8; 32],
         merkle_root: [u8; 32],
+        utxo_root: [u8; 32],
         timestamp: u32,
         bits: u32,
         nonce: u32,
+        stake_modifier: u64,
         txids: &[[u8; 32]],
         coinbase_tx_bytes: Vec<u8>,
     ) -> Result<CmpctBlockMsg, CompactBlockEncodeError> {
         use rand::Rng;
 
-        // Build header bytes for key derivation
-        let mut header_bytes = Vec::with_capacity(80);
+        // Build header bytes for key derivation (mirrors SpvHeader::hash 120-byte preimage)
+        let mut header_bytes = Vec::with_capacity(120);
         header_bytes.extend_from_slice(&version.to_le_bytes());
         header_bytes.extend_from_slice(&prev_block_hash);
         header_bytes.extend_from_slice(&merkle_root);
+        header_bytes.extend_from_slice(&utxo_root);
         header_bytes.extend_from_slice(&timestamp.to_le_bytes());
         header_bytes.extend_from_slice(&bits.to_le_bytes());
         header_bytes.extend_from_slice(&nonce.to_le_bytes());
+        header_bytes.extend_from_slice(&stake_modifier.to_le_bytes());
 
         // BIP-152 §4: the sender must guarantee short IDs are unique. On a
         // SipHash collision, retry with fresh nonces (probability of needing
@@ -188,9 +192,11 @@ impl CompactBlockEncoder {
             version,
             prev_block_hash,
             merkle_root,
+            utxo_root,
             timestamp,
             bits,
             nonce,
+            stake_modifier,
             siphash_nonce,
             short_ids,
             prefilled_txs,
@@ -414,9 +420,11 @@ mod tests {
             1,
             [1u8; 32],
             [2u8; 32],
+            [0u8; 32],
             12345,
             0x1e0fffff,
             7,
+            0,
             &[[3u8; 32], [4u8; 32]],
             vec![0x51],
         )
@@ -439,9 +447,11 @@ mod tests {
             1,
             [1u8; 32],
             [2u8; 32],
+            [0u8; 32],
             12345,
             0x1e0fffff,
             7,
+            0,
             // First entry is the coinbase (skipped); the two identical
             // non-coinbase txids can never produce unique short IDs.
             &[[9u8; 32], [9u8; 32], [9u8; 32]],
@@ -492,9 +502,11 @@ mod tests {
             1,
             [0u8; 32],
             [0u8; 32],
+            [0u8; 32],
             1000,
             0x1d00ffff,
             42,
+            0,
             &txids,
             coinbase_bytes.clone(),
         )
@@ -504,13 +516,15 @@ mod tests {
         assert_eq!(msg.prefilled_txs.len(), 1); // coinbase only
 
         // Build mempool with short IDs
-        let mut header_bytes = Vec::with_capacity(80);
+        let mut header_bytes = Vec::with_capacity(120);
         header_bytes.extend_from_slice(&msg.version.to_le_bytes());
         header_bytes.extend_from_slice(&msg.prev_block_hash);
         header_bytes.extend_from_slice(&msg.merkle_root);
+        header_bytes.extend_from_slice(&msg.utxo_root);
         header_bytes.extend_from_slice(&msg.timestamp.to_le_bytes());
         header_bytes.extend_from_slice(&msg.bits.to_le_bytes());
         header_bytes.extend_from_slice(&msg.nonce.to_le_bytes());
+        header_bytes.extend_from_slice(&msg.stake_modifier.to_le_bytes());
         let (k0, k1) = derive_siphash_keys(&header_bytes, msg.siphash_nonce);
 
         let mut mempool = HashMap::new();
@@ -534,9 +548,11 @@ mod tests {
             1,
             [0u8; 32],
             [0u8; 32],
+            [0u8; 32],
             1000,
             0x1d00ffff,
             42,
+            0,
             &txids,
             vec![0xCB; 10],
         )
@@ -592,9 +608,11 @@ mod tests {
             2,
             [0xAA; 32],
             [0xBB; 32],
+            [0u8; 32],
             5000,
             0x1d00ffff,
             99,
+            0,
             &all_txids,
             vec![0xCB; 10],
         )
@@ -602,13 +620,15 @@ mod tests {
 
         // Only provide txids [10] and [13] in mempool — rest are missing.
         let header_bytes = {
-            let mut h = Vec::with_capacity(80);
+            let mut h = Vec::with_capacity(120);
             h.extend_from_slice(&msg.version.to_le_bytes());
             h.extend_from_slice(&msg.prev_block_hash);
             h.extend_from_slice(&msg.merkle_root);
+            h.extend_from_slice(&msg.utxo_root);
             h.extend_from_slice(&msg.timestamp.to_le_bytes());
             h.extend_from_slice(&msg.bits.to_le_bytes());
             h.extend_from_slice(&msg.nonce.to_le_bytes());
+            h.extend_from_slice(&msg.stake_modifier.to_le_bytes());
             h
         };
         let (k0, k1) = derive_siphash_keys(&header_bytes, msg.siphash_nonce);
@@ -639,8 +659,10 @@ mod tests {
             1,
             [0u8; 32],
             [0u8; 32],
+            [0u8; 32],
             1000,
             0x1d00ffff,
+            0,
             0,
             &txids,
             vec![0xCB; 50],
@@ -685,9 +707,11 @@ mod tests {
             2,
             [0xCC; 32],
             [0xDD; 32],
+            [0u8; 32],
             6000,
             0x1d00ffff,
             42,
+            0,
             &all_txids,
             vec![0xEE; 10],
         )
