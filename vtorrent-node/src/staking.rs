@@ -19,6 +19,9 @@ use crate::{
         MAX_STAKE_AGE, MIN_STAKE_AGE, MIN_STAKE_AMOUNT,
     },
 };
+use secp256k1::{All, Secp256k1};
+use std::sync::LazyLock;
+use vtorrent_script::{classify_script, Script, ScriptType};
 use vtorrent_spv::merkle::MerkleTree as ProofMerkleTree;
 use vtorrent_spv::stake::{
     hash_utxo, SpvUtxo, StakeProof, Transaction as SpvTransaction, TxInput as SpvTxInput,
@@ -137,10 +140,13 @@ impl StakingEngine {
         let mut sorted_utxos = utxos;
         sorted_utxos.sort_by(|a, b| a.txid.cmp(&b.txid).then(a.vout.cmp(&b.vout)));
 
-        // Filter eligible UTXOs
+        // Filter eligible UTXOs: staking candidates must be spendable — an
+        // unspendable output (e.g. a genesis OP_RETURN legacy-distribution
+        // leaf) would win the kernel race on raw value yet produce a
+        // coinstake the chain rejects.
         let eligible: Vec<&Utxo> = sorted_utxos
             .iter()
-            .filter(|u| self.is_eligible(u, timestamp))
+            .filter(|u| self.is_eligible(u, timestamp) && is_spendable(u))
             .collect();
         for u in &sorted_utxos {
             if !self.is_eligible(u, timestamp) {
@@ -214,28 +220,40 @@ impl StakingEngine {
                     non_conflicting,
                 );
 
-                // Commit to the post-apply UTXO set: staked UTXO removed,
-                // coinstake outputs added. The chain recomputes and overwrites
-                // this root on add_block; the producer must already match it.
+                // Commit to the post-apply UTXO set. The chain journals every
+                // tx in the block — the staked UTXO removed, every output
+                // (including the zero-value coinstake marker) added, and each
+                // pending tx's inputs removed and outputs added in block
+                // order. The producer must reproduce that exactly or the
+                // commitment root (and therefore the block hash) diverges
+                // from the stored canonical hash.
                 let staked_key = (utxo.txid, utxo.vout);
                 let mut post_apply: Vec<Utxo> = sorted_utxos
                     .iter()
                     .filter(|u| (u.txid, u.vout) != staked_key)
                     .cloned()
                     .collect();
-                let coinstake_txid = coinstake.txid();
-                // The chain journals every output (including the zero-value
-                // marker) into the UTXO set, so the producer must too or the
-                // commitment roots diverge.
-                for (vout, out) in coinstake.outputs.iter().enumerate() {
-                    post_apply.push(Utxo {
-                        txid: coinstake_txid,
-                        vout: vout as u32,
-                        value: out.value,
-                        script_pubkey: out.script_pubkey.clone(),
-                        height,
-                        timestamp,
-                    });
+                let block_height = block.height();
+                let block_ts = timestamp;
+                // Chain order: coinstake first, then pending txs. Mirror the
+                // journal: remove each tx's inputs that exist in the working
+                // set, then add every output as a UTXO.
+                for tx in std::iter::once(&coinstake).chain(block.transactions[1..].iter()) {
+                    let txid = tx.txid();
+                    for input in &tx.inputs {
+                        post_apply
+                            .retain(|u| (u.txid, u.vout) != (input.prev_txid, input.prev_vout));
+                    }
+                    for (vout, out) in tx.outputs.iter().enumerate() {
+                        post_apply.push(Utxo {
+                            txid,
+                            vout: vout as u32,
+                            value: out.value,
+                            script_pubkey: out.script_pubkey.clone(),
+                            height: block_height,
+                            timestamp: block_ts,
+                        });
+                    }
                 }
                 block.header.utxo_root = compute_utxo_root_sorted(&post_apply);
 
@@ -245,7 +263,9 @@ impl StakingEngine {
                     .iter()
                     .position(|u| u.txid == utxo.txid && u.vout == utxo.vout)
                     .expect("winning utxo came from the sorted list");
-                let utxo_proof_mp = utxo_tree.proof(leaf_index)?;
+                let utxo_proof_mp = utxo_tree
+                    .proof(leaf_index)
+                    .expect("winning utxo leaf index is in-bounds");
                 let utxo_proof = UtxoInclusionProof {
                     leaf_index,
                     siblings: utxo_proof_mp.siblings,
@@ -255,7 +275,9 @@ impl StakingEngine {
                 // Transaction Merkle proof: coinstake is always index 0.
                 let txids: Vec<[u8; 32]> = block.transactions.iter().map(|tx| tx.txid()).collect();
                 let tx_tree = ProofMerkleTree::build(&txids);
-                let tx_merkle_proof = tx_tree.proof(0)?;
+                let tx_merkle_proof = tx_tree
+                    .proof(0)
+                    .expect("block has at least the coinstake tx");
 
                 let proof = StakeProof {
                     coinstake: spv_transaction_mirror(&coinstake),
@@ -400,12 +422,12 @@ impl StakingEngine {
         utxo: &Utxo,
         wif: &str,
     ) -> Option<Vec<u8>> {
-        use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
+        use secp256k1::{Message, PublicKey, SecretKey};
 
         let key = vtorrent_core::keys::PrivateKey::from_wif(wif).ok()?;
         let secret_key = SecretKey::from_slice(key.as_bytes()).ok()?;
-        let secp = Secp256k1::new();
-        let pubkey = PublicKey::from_secret_key(&secp, &secret_key);
+        let secp = &*SECP_CTX;
+        let pubkey = PublicKey::from_secret_key(secp, &secret_key);
 
         // The subscript is the previous output's scriptPubKey (P2PKH).
         let sighash = coinstake.sighash(0, &utxo.script_pubkey);
@@ -480,6 +502,22 @@ impl StakingEngine {
     fn address_to_script(&self, address: &str) -> Option<Vec<u8>> {
         let addr = vtorrent_core::address::validate_p2pkh(address).ok()?;
         Some(vtorrent_core::address::p2pkh_script_pubkey(&addr.hash))
+    }
+}
+
+/// Shared signing context — `Secp256k1::new()` re-seeds the global RNG on
+/// every construction, so the coinstake hot path reuses a single instance.
+static SECP_CTX: LazyLock<Secp256k1<All>> = LazyLock::new(Secp256k1::new);
+
+/// A UTXO is a staking candidate only if its script can actually be spent.
+///
+/// Unspendable outputs (genesis OP_RETURN legacy-distribution leaves) hold
+/// enormous value and would dominate the kernel race, but a coinstake
+/// spending one is rejected by script verification.
+fn is_spendable(utxo: &Utxo) -> bool {
+    match Script::from_bytes(utxo.script_pubkey.clone()) {
+        Ok(script) => classify_script(&script) != ScriptType::OpReturn,
+        Err(_) => false,
     }
 }
 
@@ -764,6 +802,9 @@ mod proof_tests {
         });
     }
 }
+
+#[cfg(test)]
+mod root_parity_tests;
 
 #[cfg(test)]
 mod conflict_tests {

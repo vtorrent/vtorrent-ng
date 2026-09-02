@@ -641,6 +641,14 @@ impl Chain {
             let mut journal = self.apply_block_journaled(&block, height)?;
 
             let mut block_with_root = block.clone();
+            if block_with_root.header.utxo_root != journal.utxo_root {
+                tracing::warn!(
+                    height = %height,
+                    supplied = %hex::encode(block_with_root.header.utxo_root),
+                    journal = %hex::encode(journal.utxo_root),
+                    "Producer-supplied utxo_root does not match journal root; overwriting"
+                );
+            }
             block_with_root.header.utxo_root = journal.utxo_root;
             let block_hash_with_root = block_with_root.hash();
             journal.block_hash = block_hash_with_root;

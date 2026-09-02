@@ -30,7 +30,11 @@ impl Node {
             let best_block = chain.get_block_at_height(best_height);
             let best_timestamp = best_block.map(|b| b.header.timestamp).unwrap_or(0);
             let best_stake_modifier = best_block.map(|b| b.header.stake_modifier).unwrap_or(0);
-            let utxos = chain.get_utxos_for_address(&staking.address);
+            // The block's utxo_root commitment must match the journal root the
+            // chain recomputes on add_block, which spans the FULL UTXO set —
+            // not just the staker's coins. Kernel eligibility (age/amount/
+            // spendability) is filtered inside the staking engine.
+            let utxos = chain.get_utxo_set().values().cloned().collect::<Vec<_>>();
             (
                 best_height,
                 best_hash,

@@ -1519,3 +1519,40 @@ fn test_reorg_utxo_root_persisted() {
         h1_root
     );
 }
+
+/// A producer-supplied stale `utxo_root` must not poison the chain: the
+/// main-chain path recomputes the journal root and overwrites the header
+/// (with a warn + debug_assert on mismatch), so the stored tip always carries
+/// the canonical commitment.
+#[test]
+fn test_add_block_overwrites_stale_producer_utxo_root() {
+    use crate::block::compute_utxo_root_sorted;
+
+    let mut chain = Chain::new().expect("Chain init failed");
+    let genesis_hash = chain.best_hash().unwrap();
+
+    let mut block = make_block(genesis_hash, 0, 1);
+    // Simulate a stale producer root (a real producer bug or fork remnant).
+    block.header.utxo_root = [0xab; 32];
+    block.header.merkle_root = block.compute_merkle_root();
+
+    let acceptance = chain.add_block(block).unwrap();
+    assert!(matches!(
+        acceptance,
+        BlockAcceptance::MainChain { height: 1, .. }
+    ));
+
+    let stored = chain.get_block_at_height(1).unwrap();
+    let journal_root = {
+        let all: Vec<Utxo> = chain.get_utxo_set().values().cloned().collect();
+        compute_utxo_root_sorted(&all)
+    };
+    assert_eq!(
+        stored.header.utxo_root, journal_root,
+        "stored header must carry the recomputed journal root, not the producer's stale value"
+    );
+    assert_ne!(
+        stored.header.utxo_root, [0xab; 32],
+        "stale producer root must be overwritten"
+    );
+}
