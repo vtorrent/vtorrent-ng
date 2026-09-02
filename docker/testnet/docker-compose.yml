@@ -38,6 +38,8 @@ services:
       - "0.0.0.0:22526"
       - --rpc-addr
       - "0.0.0.0:22525"
+      - --rpc-api-key
+      - "testnet-soak-key"
       - --data-dir
       - /data/node1
       - --regtest
@@ -85,6 +87,8 @@ services:
       - "0.0.0.0:22526"
       - --rpc-addr
       - "0.0.0.0:22525"
+      - --rpc-api-key
+      - "testnet-soak-key"
       - --data-dir
       - /data/node2
       - --seed
@@ -129,6 +133,8 @@ services:
       - "0.0.0.0:22526"
       - --rpc-addr
       - "0.0.0.0:22525"
+      - --rpc-api-key
+      - "testnet-soak-key"
       - --data-dir
       - /data/node3
       - --seed
