@@ -16,6 +16,9 @@ name: vtorrent-testnet
 services:
   node1:
     image: vtorrent/node:soak
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
     security_opt:
       - apparmor=unconfined
     healthcheck:
@@ -60,6 +63,9 @@ services:
 
   node2:
     image: vtorrent/node:soak
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
     security_opt:
       - apparmor=unconfined
     healthcheck:
@@ -101,6 +107,9 @@ services:
 
   node3:
     image: vtorrent/node:soak
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
     security_opt:
       - apparmor=unconfined
     healthcheck:
