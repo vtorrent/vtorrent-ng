@@ -18,6 +18,7 @@ bincode        = "1"
 # Crypto
 sha2           = "0.10"
 hex            = "0.4"
+secp256k1      = { workspace = true }
 
 # Error handling
 thiserror      = "1"

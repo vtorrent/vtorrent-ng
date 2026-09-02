@@ -236,10 +236,16 @@ pub async fn add_spv_headers(
             version: h.version,
             prev_hash: ph,
             merkle_root: mr,
-            utxo_root: [0u8; 32],
+            utxo_root: h
+                .utxo_root
+                .as_deref()
+                .map(|s| parse_hash32(s, "utxo_root"))
+                .transpose()?
+                .unwrap_or([0u8; 32]),
             timestamp: h.timestamp,
             bits: h.bits,
             nonce: h.nonce,
+            stake_modifier: h.stake_modifier.unwrap_or(0),
             height: h.height,
         });
     }

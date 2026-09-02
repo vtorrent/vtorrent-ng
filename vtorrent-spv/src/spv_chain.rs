@@ -11,11 +11,14 @@
 
 use crate::error::{Result, SpvError};
 use crate::merkle::MerkleProof;
+use crate::stake::{
+    check_stake_kernel, compute_pos_reward, compute_stake_modifier, hash_utxo, StakeProof,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
-/// A compact block header (112 bytes on the wire, similar to Bitcoin plus UTXO commitment).
+/// A compact block header (120 bytes on the wire, similar to Bitcoin plus UTXO commitment + stake modifier).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SpvHeader {
     /// Block version.
@@ -30,16 +33,18 @@ pub struct SpvHeader {
     pub timestamp: u32,
     /// Compact target / difficulty bits.
     pub bits: u32,
-    /// Nonce (PoW) or stake modifier (PoS).
+    /// Nonce (PoW) — 0 for PoS blocks.
     pub nonce: u32,
-    /// Block height (not part of the 80-byte header but stored for convenience).
+    /// For PoS blocks: the stake modifier.
+    pub stake_modifier: u64,
+    /// Block height (not part of the wire header but stored for convenience).
     pub height: u32,
 }
 
 impl SpvHeader {
-    /// Compute the double-SHA256 hash of this header.
+    /// Compute the double-SHA256 hash of this header (mirrors BlockHeader::hash via bincode, but explicit).
     pub fn hash(&self) -> [u8; 32] {
-        let mut buf = Vec::with_capacity(112);
+        let mut buf = Vec::with_capacity(120);
         buf.extend_from_slice(&self.version.to_le_bytes());
         buf.extend_from_slice(&self.prev_hash);
         buf.extend_from_slice(&self.merkle_root);
@@ -47,6 +52,7 @@ impl SpvHeader {
         buf.extend_from_slice(&self.timestamp.to_le_bytes());
         buf.extend_from_slice(&self.bits.to_le_bytes());
         buf.extend_from_slice(&self.nonce.to_le_bytes());
+        buf.extend_from_slice(&self.stake_modifier.to_le_bytes());
         let first = Sha256::digest(&buf);
         Sha256::digest(first).into()
     }
@@ -122,6 +128,60 @@ pub fn hash_meets_target(hash: &[u8; 32], bits: u32) -> bool {
     true
 }
 
+fn verify_p2pkh_signature(
+    coinstake: &crate::stake::Transaction,
+    utxo: &crate::stake::SpvUtxo,
+) -> Result<()> {
+    use secp256k1::{ecdsa::Signature, Message, PublicKey, Secp256k1};
+    let script_sig = &coinstake.inputs[0].script_sig;
+    if script_sig.len() < 2 {
+        return Err(SpvError::HeaderValidation("script_sig too short".into()));
+    }
+    let len_sig = script_sig[0] as usize;
+    if script_sig.len() < 1 + len_sig + 1 {
+        return Err(SpvError::HeaderValidation(
+            "script_sig truncated sig".into(),
+        ));
+    }
+    let sig_bytes = &script_sig[1..1 + len_sig];
+    if sig_bytes.is_empty() || sig_bytes[sig_bytes.len() - 1] != 0x01 {
+        return Err(SpvError::HeaderValidation("missing SIGHASH_ALL".into()));
+    }
+    let der = &sig_bytes[..sig_bytes.len() - 1];
+    let len_pk = script_sig[1 + len_sig] as usize;
+    if script_sig.len() != 1 + len_sig + 1 + len_pk {
+        return Err(SpvError::HeaderValidation("script_sig extra bytes".into()));
+    }
+    let pk_bytes = &script_sig[1 + len_sig + 1..];
+    if pk_bytes.len() != len_pk {
+        return Err(SpvError::HeaderValidation("pubkey length mismatch".into()));
+    }
+    let sighash = coinstake.sighash(0, &utxo.script_pubkey);
+    let msg = Message::from_digest(sighash);
+    let sig = Signature::from_der(der)
+        .map_err(|e| SpvError::HeaderValidation(format!("bad DER sig: {}", e)))?;
+    let pk = PublicKey::from_slice(pk_bytes)
+        .map_err(|e| SpvError::HeaderValidation(format!("bad pubkey: {}", e)))?;
+    let secp = Secp256k1::verification_only();
+    secp.verify_ecdsa(&msg, &sig, &pk)
+        .map_err(|e| SpvError::HeaderValidation(format!("sig verify failed: {}", e)))?;
+    // Verify P2PKH scriptPubKey matches pubkey hash160
+    if utxo.script_pubkey.len() != 25
+        || utxo.script_pubkey[0] != 0x76
+        || utxo.script_pubkey[1] != 0xa9
+        || utxo.script_pubkey[2] != 0x14
+        || utxo.script_pubkey[23] != 0x88
+        || utxo.script_pubkey[24] != 0xac
+    {
+        return Err(SpvError::HeaderValidation("utxo script not P2PKH".into()));
+    }
+    let expected_hash = vtorrent_core::crypto::hash160(pk_bytes);
+    if expected_hash != utxo.script_pubkey[3..23] {
+        return Err(SpvError::HeaderValidation("pubkey hash160 mismatch".into()));
+    }
+    Ok(())
+}
+
 /// A lightweight chain of block headers for SPV verification.
 #[derive(Debug, Default)]
 pub struct SpvChain {
@@ -158,6 +218,174 @@ impl SpvChain {
     /// Add a header already validated by the local full node.
     pub fn add_trusted_header(&mut self, header: SpvHeader) -> Result<()> {
         self.add_header_inner(header, true)
+    }
+
+    /// Add a PoS block header with a full stake proof.
+    ///
+    /// Validates linkage, stake modifier continuity, Merkle inclusion,
+    /// UTXO membership (against prev_header.utxo_root), amount/age,
+    /// kernel, signature, and reward — without a UTXO set.
+    pub fn add_pos_header(&mut self, header: SpvHeader, proof: StakeProof) -> Result<()> {
+        if !header.is_pos() {
+            return Err(SpvError::HeaderValidation(
+                "expected PoS header (nonce 0)".into(),
+            ));
+        }
+        let hash = header.hash();
+        if self.headers.contains_key(&hash) {
+            return Ok(());
+        }
+        if header.height == 0 {
+            return Err(SpvError::HeaderValidation("PoS genesis not allowed".into()));
+        }
+        let parent = self
+            .headers
+            .get(&header.prev_hash)
+            .ok_or_else(|| SpvError::UnknownParent(hex::encode(header.prev_hash)))?;
+
+        if header.height != parent.height + 1 {
+            return Err(SpvError::HeightMismatch {
+                expected: parent.height + 1,
+                got: header.height,
+            });
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+        if header.timestamp > now + 7200 {
+            return Err(SpvError::HeaderValidation(format!(
+                "header timestamp {} too far in the future",
+                header.timestamp
+            )));
+        }
+        if header.timestamp <= parent.timestamp {
+            return Err(SpvError::HeaderValidation(
+                "header timestamp must exceed parent timestamp".into(),
+            ));
+        }
+
+        let expected_modifier =
+            compute_stake_modifier(proof.prev_stake_modifier, &header.prev_hash);
+        if header.stake_modifier != expected_modifier {
+            return Err(SpvError::HeaderValidation(format!(
+                "stake modifier {} != expected {}",
+                header.stake_modifier, expected_modifier
+            )));
+        }
+        if proof.prev_stake_modifier != parent.stake_modifier {
+            return Err(SpvError::HeaderValidation(format!(
+                "prev_stake_modifier {} != parent {}",
+                proof.prev_stake_modifier, parent.stake_modifier
+            )));
+        }
+
+        if !proof.coinstake.is_coinstake() {
+            return Err(SpvError::HeaderValidation(
+                "coinstake must be Coinstake".into(),
+            ));
+        }
+        if proof.coinstake.inputs.len() != 1 {
+            return Err(SpvError::HeaderValidation(
+                "coinstake must have 1 input".into(),
+            ));
+        }
+        if proof.coinstake.outputs.is_empty()
+            || proof.coinstake.outputs[0].value != 0
+            || !proof.coinstake.outputs[0].script_pubkey.is_empty()
+        {
+            return Err(SpvError::HeaderValidation(
+                "coinstake first output must be empty marker".into(),
+            ));
+        }
+        if proof.coinstake.lock_time != header.height {
+            return Err(SpvError::HeaderValidation(format!(
+                "coinstake lock_time {} != height {}",
+                proof.coinstake.lock_time, header.height
+            )));
+        }
+
+        proof
+            .tx_merkle_proof
+            .verify(&header.merkle_root)
+            .map_err(|e| SpvError::HeaderValidation(format!("tx merkle proof: {}", e)))?;
+        if proof.tx_merkle_proof.txid != proof.coinstake.txid() {
+            return Err(SpvError::HeaderValidation(
+                "tx merkle proof txid mismatch".into(),
+            ));
+        }
+        if proof.tx_merkle_proof.index != 0 {
+            return Err(SpvError::HeaderValidation(
+                "coinstake must be index 0".into(),
+            ));
+        }
+
+        let leaf = hash_utxo(&proof.utxo);
+        proof
+            .utxo_proof
+            .verify(&parent.utxo_root, &leaf)
+            .map_err(|e| SpvError::HeaderValidation(format!("utxo proof: {}", e)))?;
+        let inp = &proof.coinstake.inputs[0];
+        if inp.prev_txid != proof.utxo.txid || inp.prev_vout != proof.utxo.vout {
+            return Err(SpvError::HeaderValidation(
+                "coinstake outpoint != utxo".into(),
+            ));
+        }
+
+        const COIN: u64 = 100_000_000;
+        const MIN_STAKE_AMOUNT: u64 = COIN;
+        const MIN_STAKE_AGE: u64 = 6 * 60 * 60;
+        const MAX_STAKE_AGE: u64 = 6 * 24 * 60 * 60;
+        if proof.utxo.value < MIN_STAKE_AMOUNT {
+            return Err(SpvError::HeaderValidation(format!(
+                "stake value {} below minimum {}",
+                proof.utxo.value, MIN_STAKE_AMOUNT
+            )));
+        }
+        let age = header.timestamp.saturating_sub(proof.utxo.timestamp);
+        if (age as u64) < MIN_STAKE_AGE || (age as u64) > MAX_STAKE_AGE {
+            return Err(SpvError::HeaderValidation(format!(
+                "stake age {} outside {}..={}",
+                age, MIN_STAKE_AGE, MAX_STAKE_AGE
+            )));
+        }
+
+        if !check_stake_kernel(
+            proof.prev_stake_modifier,
+            proof.utxo.value,
+            &proof.utxo.txid,
+            proof.utxo.vout,
+            header.timestamp,
+        ) {
+            return Err(SpvError::HeaderValidation(
+                "kernel hash does not meet stake target".into(),
+            ));
+        }
+
+        verify_p2pkh_signature(&proof.coinstake, &proof.utxo)?;
+
+        let minted = proof
+            .coinstake
+            .total_output()
+            .saturating_sub(proof.utxo.value);
+        let max_reward = compute_pos_reward(proof.utxo.value, age as u64);
+        if minted > max_reward {
+            return Err(SpvError::HeaderValidation(format!(
+                "minted {} exceeds max reward {}",
+                minted, max_reward
+            )));
+        }
+
+        let height = header.height;
+        let parent_work = self.work[&header.prev_hash];
+        let cumulative = parent_work.saturating_add(1); // PoS unit work
+        self.headers.insert(hash, header);
+        self.work.insert(hash, cumulative);
+        if self.best_hash.is_none() || cumulative > self.work[&self.best_hash.unwrap()] {
+            self.best_height = height;
+            self.best_hash = Some(hash);
+        }
+        Ok(())
     }
 
     fn add_header_inner(&mut self, header: SpvHeader, trusted: bool) -> Result<()> {
@@ -353,6 +581,7 @@ mod tests {
                 timestamp: 1_700_000_000 + height,
                 bits,
                 nonce,
+                stake_modifier: 0,
                 height,
             };
             if hash_meets_target(&h.hash(), bits) {
@@ -462,10 +691,260 @@ mod tests {
             timestamp: 1_700_000_001,
             bits: 0x1e0fffff,
             nonce: 0,
+            stake_modifier: 0,
             height: 1,
         };
         let mut h2 = h1.clone();
         h2.utxo_root = [4u8; 32];
         assert_ne!(h1.hash(), h2.hash());
+    }
+}
+
+#[cfg(test)]
+mod pos_tests {
+    use super::*;
+    use crate::merkle::MerkleTree;
+    use crate::stake::{
+        check_stake_kernel, compute_stake_modifier, hash_utxo, SpvUtxo, StakeProof, Transaction,
+        TxInput, TxOutput, TxType, UtxoInclusionProof,
+    };
+    use secp256k1::{Message, Secp256k1};
+    use vtorrent_core::crypto::hash160;
+
+    const COIN: u64 = 100_000_000;
+
+    struct TestKey {
+        secret: secp256k1::SecretKey,
+        pubkey: secp256k1::PublicKey,
+        script_pubkey: Vec<u8>,
+    }
+
+    fn make_key(seed: u8) -> TestKey {
+        let mut sk = [0u8; 32];
+        sk[30] = 0xab;
+        sk[31] = seed;
+        let secret = secp256k1::SecretKey::from_slice(&sk).unwrap();
+        let secp = Secp256k1::new();
+        let pubkey = secp256k1::PublicKey::from_secret_key(&secp, &secret);
+        let h = hash160(&pubkey.serialize());
+        let mut script_pubkey = vec![0x76, 0xa9, 0x14];
+        script_pubkey.extend_from_slice(&h);
+        script_pubkey.extend_from_slice(&[0x88, 0xac]);
+        TestKey {
+            secret,
+            pubkey,
+            script_pubkey,
+        }
+    }
+
+    /// Sign the coinstake input exactly like `StakingEngine::sign_coinstake_input`:
+    /// `script_sig = <len> <der_sig + 0x01> <len> <compressed_pubkey>`.
+    fn sign_coinstake(tx: &Transaction, utxo: &SpvUtxo, key: &TestKey) -> Vec<u8> {
+        let sighash = tx.sighash(0, &utxo.script_pubkey);
+        let secp = Secp256k1::new();
+        let sig = secp.sign_ecdsa(&Message::from_digest(sighash), &key.secret);
+        let mut der = sig.serialize_der().to_vec();
+        der.push(0x01);
+        let pk = key.pubkey.serialize();
+        let mut script = Vec::with_capacity(1 + der.len() + 1 + pk.len());
+        script.push(der.len() as u8);
+        script.extend_from_slice(&der);
+        script.push(pk.len() as u8);
+        script.extend_from_slice(&pk);
+        script
+    }
+
+    fn now_ts() -> u32 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32
+    }
+
+    struct PosFixture {
+        genesis: SpvHeader,
+        header: SpvHeader,
+        proof: StakeProof,
+    }
+
+    /// Build a genesis header committing to a single-UTXO set plus a PoS child
+    /// header with a fully valid `StakeProof` (real secp256k1 signature,
+    /// kernel-searched timestamp). `young` makes the staked UTXO younger than
+    /// MIN_STAKE_AGE for the age-violation test.
+    fn make_fixture(staked_value: u64, reward: u64, young: bool) -> PosFixture {
+        let key = make_key(7);
+        let now = now_ts();
+        let utxo_timestamp = if young { now - 100_000 } else { now - 200_000 };
+        let utxo = SpvUtxo {
+            txid: [0x42u8; 32],
+            vout: 0,
+            value: staked_value,
+            script_pubkey: key.script_pubkey.clone(),
+            height: 0,
+            timestamp: utxo_timestamp,
+        };
+
+        // Genesis header commits to the pre-apply UTXO set (single leaf:
+        // tree root == hash_utxo).
+        let utxo_root = hash_utxo(&utxo);
+        let genesis = SpvHeader {
+            version: 1,
+            prev_hash: [0u8; 32],
+            merkle_root: [1u8; 32],
+            utxo_root,
+            timestamp: utxo_timestamp,
+            bits: 0x207f_ffff,
+            nonce: 1,
+            stake_modifier: 0,
+            height: 0,
+        };
+        let genesis_hash = genesis.hash();
+
+        // Search for a kernel-passing timestamp (target = value / 1000).
+        // Kernel uses prev_stake_modifier (0 for genesis child), not the new header's modifier.
+        let prev_modifier = 0u64;
+        let modifier = compute_stake_modifier(prev_modifier, &genesis_hash);
+        let search_start = if young {
+            utxo_timestamp + 3600
+        } else {
+            now - 100_000
+        };
+        let mut header_timestamp = search_start;
+        while !check_stake_kernel(
+            prev_modifier,
+            staked_value,
+            &utxo.txid,
+            utxo.vout,
+            header_timestamp,
+        ) {
+            header_timestamp += 1;
+            // safety bound: if we scan far, eventually kernel hits (value large)
+            if header_timestamp > search_start + 1_000_000 {
+                panic!("kernel search exhausted");
+            }
+        }
+
+        // Coinstake spending the UTXO, minting `reward` on top.
+        let mut coinstake = Transaction {
+            version: 1,
+            tx_type: TxType::Coinstake,
+            inputs: vec![TxInput {
+                prev_txid: utxo.txid,
+                prev_vout: utxo.vout,
+                script_sig: Vec::new(),
+                sequence: 0xffff_ffff,
+            }],
+            outputs: vec![
+                TxOutput {
+                    value: 0,
+                    script_pubkey: Vec::new(),
+                },
+                TxOutput {
+                    value: staked_value + reward,
+                    script_pubkey: key.script_pubkey.clone(),
+                },
+            ],
+            lock_time: 1,
+            claim_address: None,
+            claim_signature: None,
+        };
+        coinstake.inputs[0].script_sig = sign_coinstake(&coinstake, &utxo, &key);
+
+        // Tx merkle proof: coinstake at index 0 plus a dummy second tx.
+        let txids = vec![coinstake.txid(), [0x99u8; 32]];
+        let tx_tree = MerkleTree::build(&txids);
+        let tx_merkle_proof = tx_tree.proof(0).unwrap();
+
+        let utxo_proof = UtxoInclusionProof {
+            leaf_index: 0,
+            siblings: Vec::new(),
+            root: utxo_root,
+        };
+
+        let header = SpvHeader {
+            version: 2,
+            prev_hash: genesis_hash,
+            merkle_root: tx_tree.root(),
+            utxo_root: [7u8; 32],
+            timestamp: header_timestamp,
+            bits: 0x1e0f_ffff,
+            nonce: 0,
+            stake_modifier: modifier,
+            height: 1,
+        };
+
+        let proof = StakeProof {
+            coinstake,
+            tx_merkle_proof,
+            utxo,
+            utxo_proof,
+            prev_stake_modifier: 0,
+        };
+
+        PosFixture {
+            genesis,
+            header,
+            proof,
+        }
+    }
+
+    fn seeded_chain(genesis: &SpvHeader) -> SpvChain {
+        let mut chain = SpvChain::new();
+        chain.add_trusted_header(genesis.clone()).unwrap();
+        chain
+    }
+
+    #[test]
+    fn test_add_pos_header_valid() {
+        let f = make_fixture(500 * COIN, 1_000, false);
+        let mut chain = seeded_chain(&f.genesis);
+        chain.add_pos_header(f.header, f.proof).unwrap();
+        assert_eq!(chain.best_height(), 1);
+        assert_eq!(chain.len(), 2);
+    }
+
+    #[test]
+    fn test_add_pos_header_bad_kernel_rejected() {
+        let mut f = make_fixture(500 * COIN, 1_000, false);
+        f.proof.prev_stake_modifier ^= 1;
+        let mut chain = seeded_chain(&f.genesis);
+        assert!(chain.add_pos_header(f.header, f.proof).is_err());
+    }
+
+    #[test]
+    fn test_add_pos_header_bad_utxo_proof_rejected() {
+        let mut f = make_fixture(500 * COIN, 1_000, false);
+        f.proof.utxo_proof.root = [0xffu8; 32];
+        let mut chain = seeded_chain(&f.genesis);
+        assert!(chain.add_pos_header(f.header, f.proof).is_err());
+    }
+
+    #[test]
+    fn test_add_pos_header_bad_signature_rejected() {
+        let mut f = make_fixture(500 * COIN, 1_000, false);
+        // Corrupt a byte inside the DER signature (after the 0x30 tag).
+        f.proof.coinstake.inputs[0].script_sig[5] ^= 0xff;
+        // Rebuild the tx merkle proof so inclusion passes and the failure
+        // isolates the signature check.
+        let txids = vec![f.proof.coinstake.txid(), [0x99u8; 32]];
+        let tree = MerkleTree::build(&txids);
+        f.proof.tx_merkle_proof = tree.proof(0).unwrap();
+        f.header.merkle_root = tree.root();
+        let mut chain = seeded_chain(&f.genesis);
+        assert!(chain.add_pos_header(f.header, f.proof).is_err());
+    }
+
+    #[test]
+    fn test_add_pos_header_reward_excess_rejected() {
+        let f = make_fixture(500 * COIN, 50 * COIN, false);
+        let mut chain = seeded_chain(&f.genesis);
+        assert!(chain.add_pos_header(f.header, f.proof).is_err());
+    }
+
+    #[test]
+    fn test_add_pos_header_age_violation_rejected() {
+        let f = make_fixture(1000 * COIN, 1_000, true);
+        let mut chain = seeded_chain(&f.genesis);
+        assert!(chain.add_pos_header(f.header, f.proof).is_err());
     }
 }

@@ -397,9 +397,13 @@ pub struct SpvHeaderInput {
     pub prev_hash: String,
     /// Hex-encoded Merkle root (64 hex chars).
     pub merkle_root: String,
+    #[serde(default)]
+    pub utxo_root: Option<String>,
     pub timestamp: u32,
     pub bits: u32,
     pub nonce: u32,
+    #[serde(default)]
+    pub stake_modifier: Option<u64>,
     pub height: u32,
 }
 

@@ -276,6 +276,77 @@ impl StakeProof {
     }
 }
 
+/// Consensus constants (mirrors vtorrent-node/src/consensus.rs)
+pub const COIN: u64 = 100_000_000;
+pub const MIN_STAKE_AMOUNT: u64 = COIN;
+pub const MIN_STAKE_AGE: u64 = 6 * 60 * 60;
+pub const MAX_STAKE_AGE: u64 = 6 * 24 * 60 * 60;
+pub const MAX_MONEY: u64 = 20_000_000 * COIN;
+
+/// Compute the stake modifier for the next block (SHA256d(prev_modifier LE || prev_hash)).
+pub fn compute_stake_modifier(prev_stake_modifier: u64, prev_block_hash: &[u8; 32]) -> u64 {
+    let mut data = Vec::with_capacity(40);
+    data.extend_from_slice(&prev_stake_modifier.to_le_bytes());
+    data.extend_from_slice(prev_block_hash);
+    let first = Sha256::digest(&data);
+    let second = Sha256::digest(first);
+    let mut out = [0u8; 8];
+    out.copy_from_slice(&second[..8]);
+    u64::from_le_bytes(out)
+}
+
+/// Compute stake kernel hash: SHA256d(stake_modifier LE || txid || vout LE || timestamp LE)
+pub fn stake_kernel_hash(
+    stake_modifier: u64,
+    txid: &[u8; 32],
+    vout: u32,
+    timestamp: u32,
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(stake_modifier.to_le_bytes());
+    hasher.update(txid);
+    hasher.update(vout.to_le_bytes());
+    hasher.update(timestamp.to_le_bytes());
+    let first = hasher.finalize();
+    let mut hasher2 = Sha256::new();
+    hasher2.update(first);
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&hasher2.finalize());
+    hash
+}
+
+/// Check whether a UTXO satisfies the stake kernel difficulty.
+pub fn check_stake_kernel(
+    stake_modifier: u64,
+    value: u64,
+    txid: &[u8; 32],
+    vout: u32,
+    timestamp: u32,
+) -> bool {
+    let kernel_hash = stake_kernel_hash(stake_modifier, txid, vout, timestamp);
+    let kernel_val = u32::from_le_bytes([
+        kernel_hash[0],
+        kernel_hash[1],
+        kernel_hash[2],
+        kernel_hash[3],
+    ]);
+    let target = (value / 1000).min(u32::MAX as u64) as u32;
+    kernel_val <= target
+}
+
+/// Check kernel for SpvUtxo directly.
+pub fn check_stake_kernel_for_utxo(stake_modifier: u64, utxo: &SpvUtxo, timestamp: u32) -> bool {
+    check_stake_kernel(stake_modifier, utxo.value, &utxo.txid, utxo.vout, timestamp)
+}
+
+/// Compute PoS reward: stake_amount * 5% * coin_age_days / 365, age capped at MAX_STAKE_AGE.
+pub fn compute_pos_reward(stake_amount: u64, coin_age_seconds: u64) -> u64 {
+    let coin_age_seconds = coin_age_seconds.min(MAX_STAKE_AGE);
+    let numerator = stake_amount as u128 * coin_age_seconds as u128 * 5;
+    let denominator = 100u128 * 86400 * 365;
+    (numerator / denominator) as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
