@@ -39,29 +39,24 @@ pub fn our_addr() -> Option<std::net::SocketAddr> {
     None
 }
 
-/// Returns `true` if the peer supports the V2 bincode wire format.
-///
-/// V2 peers advertise `PROTOCOL_VERSION` (2) and use bincode which is 2-5x
-/// smaller than JSON for `inv`/`getdata`/`block`/`tx`. Legacy peers
-/// (`LEGACY_PROTOCOL_VERSION` = 70001) remain on JSON for one release so
-/// rolling upgrades do not strand old seeds. Unknown commands are ignored
-/// (not banned) to allow forward compatibility.
+/// Returns `true` if a version uses the bincode wire format.
+/// Live handshakes accept only the current protocol version.
 pub fn is_v2_peer_version(version: u32) -> bool {
     is_v2_peer(version)
 }
 
 /// Encode a message for a peer using the appropriate wire format.
 ///
-/// - V2 (`version >= 2` except legacy 70001) → bincode (compact)
-/// - Legacy → JSON fallback
+/// Older branches are retained for isolated legacy decoding; connected peers
+/// use the current bincode protocol.
 pub fn encode_for_version<T: serde::Serialize>(msg: &T, peer_version: u32) -> Vec<u8> {
     encode_for_peer(msg, peer_version)
 }
 
 /// Decode a message from a peer using the appropriate wire format.
 ///
-/// V2 path tries bincode first with JSON fallback so mismatched upgrades
-/// do not drop messages.
+/// The current protocol uses bincode. JSON fallback only supports isolated
+/// legacy decoding.
 pub fn decode_for_version<T: for<'de> serde::Deserialize<'de>>(
     bytes: &[u8],
     peer_version: u32,
@@ -76,9 +71,8 @@ impl super::Node {
     /// faster than the legacy `getblocks` + `inv` approach during IBD.
     /// Lock order `chain → mempool` preserved — this path only locks `chain`.
     ///
-    /// V2 wire format: peers with `version >= PROTOCOL_VERSION` (2) except
-    /// legacy 70001 use bincode (2-5x smaller), legacy peers get JSON fallback.
-    /// Unknown commands are ignored to allow rolling upgrades.
+    /// Connected peers use the current bincode wire protocol. Unknown commands
+    /// are ignored for forward-compatible command additions.
     pub(crate) async fn request_blocks_from_peers(&mut self) {
         let our_height = {
             let chain = self.chain.lock().await;
@@ -126,9 +120,7 @@ impl super::Node {
                 block_locator_hashes: locator,
                 hash_stop: [0u8; 32],
             };
-            // Version-sniffing: if any connected peer is V2, use bincode; else JSON.
-            // Per-peer send would be more precise, but broadcast is used for
-            // getheaders fan-out — JSON fallback ensures legacy seeds still sync.
+            // Broadcast using the encoding negotiated by connected peers.
             let has_v2 = self.peer_versions.values().any(|v| is_v2_peer_version(*v));
             let payload = if has_v2 {
                 encode_v2(&msg).unwrap_or_default()
@@ -198,7 +190,7 @@ impl super::Node {
     ///
     /// Peers that have an outstanding unanswered ping from the *previous* cycle
     /// are disconnected (they failed to respond within 2 minutes).
-    /// V2 peers get bincode ping, legacy get JSON; unknown commands ignored elsewhere.
+    /// Current peers get bincode pings; unknown commands are ignored elsewhere.
     pub(crate) async fn send_keepalive_pings(&mut self) {
         let peers = self.peer_manager.connected_peers();
         let mut stale: Vec<std::net::SocketAddr> = Vec::new();

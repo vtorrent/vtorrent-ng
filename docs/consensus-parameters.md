@@ -10,7 +10,7 @@
 | Network magic | `0x56 0x54 0x52 0x58` (`"VTRX"`) | `vtorrent-core/src/network.rs:43` |
 | P2P port | `22526` | `vtorrent-core/src/network.rs:46` |
 | RPC port | `22527` (daemon default `22525`) | `vtorrent-core/src/network.rs:49` |
-| Protocol version | `2` (V2 bincode wire) | `vtorrent-p2p/src/message.rs:102` |
+| Protocol version | `3` (bincode wire; hard boundary for UTXO-committed headers) | `vtorrent-p2p/src/message.rs:102` |
 
 ## Address Format
 
@@ -38,8 +38,8 @@
 
 | Property | Value |
 |---|---|
-| Hash | `5f2284ad5fdebdda1efe2cd65b84161e86a43f23b845772a4ce2ed4aefad807f` |
-| UTXO root | `5cb9e18b72f9a7fd3237872295abb865dcb94eaa13eb676f422e772c78449c78` |
+| Hash | `36ca792aa45ca7850f2789ff2e62ec13e91bd5f2770d6fea8df81bc2da1da8f8` |
+| UTXO root | `65185f8a5c055c17bf7053c6b6c42993565bb5586689a8508017005b842f9105` |
 | Snapshot addresses | 59,375 |
 | Snapshot total supply | 11,589,746.63 VTR (1,158,974,663,136,877 sats) |
 | Snapshot format | Binary blob (`genesis_snapshot.bin`, 2,493,754 bytes) |

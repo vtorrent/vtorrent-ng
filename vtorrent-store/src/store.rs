@@ -22,6 +22,7 @@ const CLAIMED_ADDRS: TableDefinition<&str, u8> = TableDefinition::new("claimed_a
 
 /// Chain metadata: key/value string pairs.
 const META: TableDefinition<&str, &str> = TableDefinition::new("meta");
+const STORE_PROTOCOL_VERSION: &str = "3";
 
 // ─── BlockStore ───────────────────────────────────────────────────────────────
 
@@ -44,6 +45,31 @@ impl BlockStore {
             write_txn.open_table(UTXOS)?;
             write_txn.open_table(CLAIMED_ADDRS)?;
             write_txn.open_table(META)?;
+
+            let has_blocks = write_txn.open_table(HEIGHT_INDEX)?.len()? > 0;
+            let stored_protocol = write_txn
+                .open_table(META)?
+                .get("protocol_version")?
+                .map(|value| value.value().to_string());
+            match stored_protocol.as_deref() {
+                Some(STORE_PROTOCOL_VERSION) => {}
+                Some(other) => {
+                    return Err(StoreError::Corrupted(format!(
+                        "block store protocol {} is incompatible with required protocol {}; start with a new data directory",
+                        other, STORE_PROTOCOL_VERSION
+                    )));
+                }
+                None if has_blocks => {
+                    return Err(StoreError::Corrupted(
+                        "legacy block store predates protocol 3 UTXO commitments; start with a new data directory".into(),
+                    ));
+                }
+                None => {
+                    write_txn
+                        .open_table(META)?
+                        .insert("protocol_version", STORE_PROTOCOL_VERSION)?;
+                }
+            }
 
             // Backfill genesis on first open (and on stores created before
             // this convention): reorgs that roll back to height 0 need the
@@ -703,6 +729,30 @@ mod tests {
         assert!(store.best_hash().unwrap().is_some());
         assert_eq!(store.block_count().unwrap(), 1);
         assert_eq!(store.utxo_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_open_rejects_legacy_protocol_store() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("legacy.db");
+        {
+            let db = Database::create(&path).unwrap();
+            let write = db.begin_write().unwrap();
+            write.open_table(BLOCKS).unwrap();
+            write
+                .open_table(HEIGHT_INDEX)
+                .unwrap()
+                .insert(0, "legacy-hash")
+                .unwrap();
+            write.open_table(UTXOS).unwrap();
+            write.open_table(CLAIMED_ADDRS).unwrap();
+            write.open_table(META).unwrap();
+            write.commit().unwrap();
+        }
+        let error = BlockStore::open(path)
+            .err()
+            .expect("legacy store must fail");
+        assert!(error.to_string().contains("protocol 3"));
     }
 
     #[test]

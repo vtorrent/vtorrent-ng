@@ -48,6 +48,9 @@ use crate::{
     mempool::Mempool,
     staking::{StakingCommand, StakingEngine},
 };
+use vtorrent_spv::stake::StakeProof;
+
+const MAX_CACHED_STAKE_PROOFS: usize = 2048;
 
 /// Authenticated overlay notifications queued for the node event loop.
 pub(crate) enum OverlayIngress {
@@ -183,14 +186,15 @@ pub struct Node {
     /// Partial compact blocks awaiting `blocktxn` responses (BIP-152).
     /// Keyed by block hash; populated when `cmpctblock` reports missing txs.
     pub(crate) pending_compact_blocks: HashMap<[u8; 32], CmpctBlockMsg>,
+    pub(crate) stake_proofs: Arc<RwLock<HashMap<[u8; 32], StakeProof>>>,
     /// Per-peer minimum fee rate (from feefilter messages), satoshis per 1000 bytes.
     pub(crate) peer_fee_filters: std::collections::HashMap<std::net::SocketAddr, u64>,
     /// Per-peer last-seen ping nonce (for pong matching).
     pub(crate) peer_ping_nonces: std::collections::HashMap<std::net::SocketAddr, u64>,
     /// Per-peer message counts for flood rate limiting: (count, window start).
     pub(crate) peer_msg_counts: std::collections::HashMap<std::net::SocketAddr, (u64, u64)>,
-    /// Per-peer advertised protocol version (for V2 bincode sniffing).
-    /// V2 peers (`PROTOCOL_VERSION = 2`, bincode) vs legacy (`70001`, JSON).
+    /// Per-peer advertised protocol version. Completed live handshakes always
+    /// use the current hard-boundary protocol version.
     /// Unknown commands are ignored to allow rolling upgrades.
     pub(crate) peer_versions: std::collections::HashMap<std::net::SocketAddr, u32>,
     /// Shared DEX order book (set by the daemon; used for gossip).
@@ -268,6 +272,7 @@ impl Node {
             event_tx: None,
             compact_peers: std::collections::HashMap::new(),
             pending_compact_blocks: HashMap::new(),
+            stake_proofs: Arc::new(RwLock::new(HashMap::new())),
             peer_fee_filters: std::collections::HashMap::new(),
             peer_ping_nonces: std::collections::HashMap::new(),
             peer_msg_counts: std::collections::HashMap::new(),
@@ -333,6 +338,7 @@ impl Node {
             event_tx: None,
             compact_peers: std::collections::HashMap::new(),
             pending_compact_blocks: HashMap::new(),
+            stake_proofs: Arc::new(RwLock::new(HashMap::new())),
             peer_fee_filters: std::collections::HashMap::new(),
             peer_ping_nonces: std::collections::HashMap::new(),
             peer_msg_counts: std::collections::HashMap::new(),
@@ -358,6 +364,20 @@ impl Node {
     /// Used by vtorrent-daemon to share the live mempool with the RPC server.
     pub fn mempool_arc(&self) -> Arc<Mutex<Mempool>> {
         Arc::clone(&self.mempool)
+    }
+
+    pub fn stake_proofs_arc(&self) -> Arc<RwLock<HashMap<[u8; 32], StakeProof>>> {
+        Arc::clone(&self.stake_proofs)
+    }
+
+    pub(crate) async fn cache_stake_proof(&self, block_hash: [u8; 32], proof: StakeProof) {
+        let mut proofs = self.stake_proofs.write().await;
+        if proofs.len() >= MAX_CACHED_STAKE_PROOFS && !proofs.contains_key(&block_hash) {
+            if let Some(old) = proofs.keys().next().copied() {
+                proofs.remove(&old);
+            }
+        }
+        proofs.insert(block_hash, proof);
     }
 
     /// Attach an event sender so the node can emit live events to subscribers.

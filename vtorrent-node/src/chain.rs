@@ -11,7 +11,7 @@ use crate::{
 /// Manages the chain of blocks, UTXO set, and processes new blocks.
 /// Supports chain reorganization (reorg) when a competing fork accumulates
 /// more cumulative work than the current main chain.
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use vtorrent_core::time::now_timestamp_u32;
 
 /// Current Unix timestamp as u32 (valid until year 2106).
@@ -135,7 +135,7 @@ pub struct Chain {
     /// Fork-only transactions are intentionally excluded until their branch becomes active.
     tx_index: HashMap<[u8; 32], ([u8; 32], usize)>,
     /// UTXO set: (txid, vout) → Utxo.
-    utxo_set: HashMap<([u8; 32], u32), Utxo>,
+    utxo_set: BTreeMap<([u8; 32], u32), Utxo>,
     /// Set of legacy addresses that have already been claimed.
     claimed_addresses: HashSet<String>,
     /// Per-block UTXO journals for rollback (main chain only, in order).
@@ -166,7 +166,7 @@ impl Chain {
             blocks: HashMap::new(),
             height_index: Vec::new(),
             tx_index: HashMap::new(),
-            utxo_set: HashMap::new(),
+            utxo_set: BTreeMap::new(),
             claimed_addresses: HashSet::new(),
             journals: VecDeque::new(),
             max_reorg_depth: 100,
@@ -449,7 +449,7 @@ impl Chain {
     }
 
     /// Get the full UTXO set.
-    pub fn get_utxo_set(&self) -> &HashMap<([u8; 32], u32), Utxo> {
+    pub fn get_utxo_set(&self) -> &BTreeMap<([u8; 32], u32), Utxo> {
         &self.utxo_set
     }
 
@@ -638,32 +638,21 @@ impl Chain {
                 e
             })?;
 
-            let mut journal = self.apply_block_journaled(&block, height)?;
-
-            let mut block_with_root = block.clone();
-            if block_with_root.header.utxo_root != journal.utxo_root {
-                tracing::warn!(
-                    height = %height,
-                    supplied = %hex::encode(block_with_root.header.utxo_root),
-                    journal = %hex::encode(journal.utxo_root),
-                    "Producer-supplied utxo_root does not match journal root; overwriting"
-                );
-            }
-            block_with_root.header.utxo_root = journal.utxo_root;
-            let block_hash_with_root = block_with_root.hash();
-            journal.block_hash = block_hash_with_root;
-
-            if self.blocks.contains_key(&block_hash_with_root) {
+            let journal = self.apply_block_journaled(&block, height)?;
+            if block.header.is_pos() && block.header.utxo_root != journal.utxo_root {
                 crate::chain::chain_reorg::rollback_journal(self, &journal);
                 self.total_supply = self.total_supply.saturating_sub(journal.supply_delta);
-                return Ok(BlockAcceptance::Duplicate);
+                return Err(NodeError::InvalidBlock(format!(
+                    "UTXO root {} does not match computed post-state root {}",
+                    hex::encode(block.header.utxo_root),
+                    hex::encode(journal.utxo_root)
+                )));
             }
 
             let parent_work = self.cumulative_work.get(&prev_hash).copied().unwrap_or(0);
-            self.cumulative_work
-                .insert(block_hash_with_root, parent_work + 1);
-            self.parent_map.insert(block_hash_with_root, prev_hash);
-            self.block_heights.insert(block_hash_with_root, height);
+            self.cumulative_work.insert(block_hash, parent_work + 1);
+            self.parent_map.insert(block_hash, prev_hash);
+            self.block_heights.insert(block_hash, height);
 
             // Extract UTXO diff from journal for persistence
             let mut utxos_added: Vec<Utxo> = Vec::new();
@@ -689,15 +678,15 @@ impl Chain {
                 self.journals.pop_front();
             }
 
-            let tx_count = block_with_root.transactions.len();
-            let block_timestamp = block_with_root.header.timestamp;
-            self.index_block_transactions(block_hash_with_root, &block_with_root);
-            self.blocks.insert(block_hash_with_root, block_with_root);
-            self.height_index.push(block_hash_with_root);
+            let tx_count = block.transactions.len();
+            let block_timestamp = block.header.timestamp;
+            self.index_block_transactions(block_hash, &block);
+            self.blocks.insert(block_hash, block);
+            self.height_index.push(block_hash);
 
             tracing::info!(
                 height = %height,
-                hash = %hex::encode(block_hash_with_root),
+                hash = %hex::encode(block_hash),
                 tx_count = %tx_count,
                 timestamp = %block_timestamp,
                 "Block accepted on main chain"
@@ -750,7 +739,16 @@ impl Chain {
                 // ── Reorg: fork is now longer than main chain ─────────────
                 let old_tip = main_tip;
                 let (rolled_back_txs, rolled_back_blocks, applied_fork_blocks) =
-                    self.reorganize_to(block_hash, fork_height)?;
+                    match self.reorganize_to(block_hash, fork_height) {
+                        Ok(result) => result,
+                        Err(error) => {
+                            self.blocks.remove(&block_hash);
+                            self.cumulative_work.remove(&block_hash);
+                            self.parent_map.remove(&block_hash);
+                            self.block_heights.remove(&block_hash);
+                            return Err(error);
+                        }
+                    };
 
                 let depth =
                     (self.best_height() as i64 - fork_height as i64).unsigned_abs() as u32 + 1;

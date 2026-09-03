@@ -10,7 +10,7 @@ use tokio_util::codec::Framed;
 
 use crate::{
     codec::VtrCodec,
-    message::{NetMessage, PingMsg, VersionMsg},
+    message::{NetMessage, PingMsg, VersionMsg, PROTOCOL_VERSION},
 };
 
 /// Events emitted by a peer connection to the node.
@@ -155,10 +155,19 @@ pub async fn run_peer(stream: TcpStream, addr: SocketAddr, config: PeerTaskConfi
 
                         match cmd.as_str() {
                             "version" => {
-                                // Parse and store peer version (V2 bincode with JSON fallback)
+                                // Parse and enforce the current hard-boundary protocol version.
                                 let parsed = bincode::deserialize::<VersionMsg>(&msg.payload)
                                     .or_else(|_| serde_json::from_slice(&msg.payload));
                                 if let Ok(v) = parsed {
+                                    if v.version != PROTOCOL_VERSION {
+                                        tracing::warn!(
+                                            "Rejecting peer {} with incompatible protocol version {} (required {})",
+                                            addr,
+                                            v.version,
+                                            PROTOCOL_VERSION
+                                        );
+                                        break;
+                                    }
                                     // Self-connection detection: if their
                                     // nonce is one WE recently sent, this
                                     // socket loops back to us.
@@ -175,32 +184,40 @@ pub async fn run_peer(stream: TcpStream, addr: SocketAddr, config: PeerTaskConfi
                                         break;
                                     }
                                     peer_version = Some(v);
+                                    let _ = framed.send(NetMessage::new("verack", vec![])).await;
+                                } else {
+                                    tracing::warn!("Rejecting peer {} with malformed version", addr);
+                                    break;
                                 }
-                                // Send verack
-                                let _ = framed.send(NetMessage::new("verack", vec![])).await;
                             }
                             "verack" => {
                                 if !handshake_done {
+                                    let Some(ref v) = peer_version else {
+                                        tracing::warn!(
+                                            "Rejecting peer {} that sent verack before version",
+                                            addr
+                                        );
+                                        break;
+                                    };
                                     handshake_done = true;
-                                    if let Some(ref v) = peer_version {
-                                        let _ = config.event_tx.send(PeerEvent::HandshakeComplete {
+                                    let _ = config.event_tx.send(PeerEvent::HandshakeComplete {
                                             peer_addr: addr,
                                             version: v.clone(),
                                         }).await;
-                                    }
                                 }
                             }
                             "ping" => {
-                                // Respond with pong (V2 bincode with JSON fallback — ping is tiny so JSON size is fine, but handle both)
+                                // Respond using the negotiated encoding. Pre-handshake pings use JSON.
                                 let ping = bincode::deserialize::<PingMsg>(&msg.payload)
                                     .or_else(|_| serde_json::from_slice(&msg.payload));
                                 if let Ok(ping) = ping {
                                     let pong = PingMsg { nonce: ping.nonce };
-                                    // Keep pong as JSON for maximum compatibility (peer may be legacy)
-                                    // Try bincode if peer already advertised V2, else JSON — but at peer level we don't know version yet, so send JSON
-                                    if let Ok(payload) = serde_json::to_vec(&pong) {
-                                        let _ = framed.send(NetMessage::new("pong", payload)).await;
-                                    }
+                                    let payload = if peer_version.is_some() {
+                                        bincode::serialize(&pong).unwrap_or_default()
+                                    } else {
+                                        serde_json::to_vec(&pong).unwrap_or_default()
+                                    };
+                                    let _ = framed.send(NetMessage::new("pong", payload)).await;
                                 }
                             }
                             _ => {
@@ -257,4 +274,79 @@ pub async fn run_peer(stream: TcpStream, addr: SocketAddr, config: PeerTaskConfi
         .send(PeerEvent::Disconnected { peer_addr: addr })
         .await;
     tracing::info!("Peer {} disconnected", addr);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::{SinkExt, StreamExt};
+    use std::collections::HashSet;
+    use tokio::net::TcpListener;
+
+    async fn connected_peer() -> (
+        Framed<TcpStream, VtrCodec>,
+        mpsc::Receiver<PeerEvent>,
+        tokio::task::JoinHandle<()>,
+        mpsc::Sender<PeerCommand>,
+    ) {
+        let magic = [0x56, 0x54, 0x52, 0x58];
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener_addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(listener_addr).await.unwrap();
+        let client_addr = client.local_addr().unwrap();
+        let (server, _) = listener.accept().await.unwrap();
+        let (event_tx, event_rx) = mpsc::channel(8);
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        let task = tokio::spawn(run_peer(
+            server,
+            client_addr,
+            PeerTaskConfig {
+                our_best_height: 0,
+                our_addr: listener_addr.to_string(),
+                event_tx,
+                cmd_rx,
+                sent_nonces: std::sync::Arc::new(std::sync::Mutex::new(HashSet::new())),
+                network_magic: magic,
+            },
+        ));
+        let mut framed = Framed::new(client, VtrCodec::new(magic));
+        let version = framed.next().await.unwrap().unwrap();
+        assert_eq!(version.command_str(), "version");
+        (framed, event_rx, task, cmd_tx)
+    }
+
+    #[tokio::test]
+    async fn rejects_verack_before_version() {
+        let (mut framed, mut events, task, _cmd_tx) = connected_peer().await;
+        framed
+            .send(NetMessage::new("verack", Vec::new()))
+            .await
+            .unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event, PeerEvent::Disconnected { .. }));
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejects_incompatible_protocol_version() {
+        let (mut framed, mut events, task, _cmd_tx) = connected_peer().await;
+        let mut version = VersionMsg::new(0, "127.0.0.1:0");
+        version.version = PROTOCOL_VERSION - 1;
+        framed
+            .send(NetMessage::new(
+                "version",
+                bincode::serialize(&version).unwrap(),
+            ))
+            .await
+            .unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event, PeerEvent::Disconnected { .. }));
+        task.await.unwrap();
+    }
 }

@@ -79,10 +79,11 @@ and the swap + claim paths are now exercised end-to-end on testnet.
 
 ## Upgrade notes
 
-- Wire protocol is V2 (bincode) with V1 JSON fallback for rolling upgrades
+- Wire protocol v3 is a hard compatibility boundary because UTXO commitments
+  change the header layout and block hash; all peers must upgrade together
 - Seeds must run beta.3 for VTRX magic compatibility (beta.2 fleet already
   restarted)
-- No chain migration required; block store self-heals corrupt tails
+- Existing pre-v3 block stores are rejected; start v3 with a new data directory
 
 ## Checksums
 

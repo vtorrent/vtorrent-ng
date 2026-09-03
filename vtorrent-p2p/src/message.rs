@@ -97,22 +97,19 @@ pub const NODE_NETWORK: u64 = 1;
 pub const NODE_TORRENT: u64 = 2;
 pub const NODE_DEX: u64 = 4;
 
-/// Current protocol version — V3 bincode wire format with UTXO commitment.
-///
-/// V3 adds `utxo_root` + `stake_modifier` to headers (PoS light-client proofs).
-/// Legacy peers advertised 70001 (JSON). V2 peers advertise 2 (bincode). V3 peers
-/// advertise 3 and understand `utxo_root`; V2 fallback retained.
+/// Current protocol version. V3 is a hard protocol boundary because the UTXO
+/// commitment changes both the header layout and block hash.
 pub const PROTOCOL_VERSION: u32 = 3;
 
-/// Legacy protocol version (JSON wire format) — retained for fallback.
+/// Historical JSON protocol identifier, retained for decoding utilities and tests.
 pub const LEGACY_PROTOCOL_VERSION: u32 = 70001;
 
-/// Encode a message using V2 bincode wire format.
+/// Encode a message using the bincode wire format introduced in V2.
 pub fn encode_v2<T: serde::Serialize>(msg: &T) -> crate::error::Result<Vec<u8>> {
     bincode::serialize(msg).map_err(|e| crate::error::P2pError::Decode(e.to_string()))
 }
 
-/// Decode a message using V2 bincode wire format.
+/// Decode a message using the bincode wire format introduced in V2.
 ///
 /// Uses a bounded deserializer: bincode's default has no allocation limit, so
 /// a crafted payload declaring a huge `Vec` length makes it attempt the
@@ -130,15 +127,18 @@ pub fn decode_v2<T: for<'de> serde::Deserialize<'de>>(bytes: &[u8]) -> crate::er
         .map_err(|e| crate::error::P2pError::Decode(e.to_string()))
 }
 
-/// Returns `true` if the peer supports the V2/V3 bincode wire format.
+/// Returns `true` if a protocol version uses the bincode wire format.
 pub fn is_v2_peer(version: u32) -> bool {
     version >= 2 && version != LEGACY_PROTOCOL_VERSION
 }
 
 /// Encode a message using the appropriate wire format for `peer_version`.
 ///
-/// - V2 peers (`>= PROTOCOL_VERSION` except legacy) → bincode
-/// - Legacy peers (`LEGACY_PROTOCOL_VERSION` or <2) → JSON
+/// - Versions 2 and newer, except the historical JSON identifier, use bincode.
+/// - Older versions and the historical JSON identifier use JSON.
+///
+/// Live peer handshakes accept only [`PROTOCOL_VERSION`]; the older branches
+/// remain available solely for isolated decoding utilities and fixtures.
 pub fn encode_for_peer<T: serde::Serialize>(msg: &T, peer_version: u32) -> Vec<u8> {
     if is_v2_peer(peer_version) {
         encode_v2(msg).unwrap_or_default()
@@ -149,9 +149,8 @@ pub fn encode_for_peer<T: serde::Serialize>(msg: &T, peer_version: u32) -> Vec<u
 
 /// Decode a message using the appropriate wire format for `peer_version`.
 ///
-/// V2 path tries bincode first with a JSON fallback so a rolling upgrade
-/// does not strand peers whose `version` already advertises 2 but still send
-/// JSON.
+/// The bincode path retains JSON fallback for isolated legacy data imports.
+/// Live peers must advertise exactly [`PROTOCOL_VERSION`].
 pub fn decode_for_peer<T: for<'de> serde::Deserialize<'de>>(
     bytes: &[u8],
     peer_version: u32,

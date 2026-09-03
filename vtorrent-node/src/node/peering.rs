@@ -29,6 +29,15 @@ impl Node {
     pub(crate) async fn handle_peer_event(&mut self, event: PeerEvent) -> Result<()> {
         match event {
             PeerEvent::HandshakeComplete { peer_addr, version } => {
+                if version.version != PROTOCOL_VERSION {
+                    tracing::warn!(
+                        "Disconnecting peer {} with incompatible protocol version {}",
+                        peer_addr,
+                        version.version
+                    );
+                    self.peer_manager.disconnect(peer_addr).await;
+                    return Ok(());
+                }
                 // Cap the user agent: it is an unbounded peer-supplied string
                 // that gets stored and logged per peer.
                 let mut user_agent = version.user_agent;
@@ -40,7 +49,7 @@ impl Node {
                     version.start_height,
                     version.version
                 );
-                // Track advertised version for V2 bincode sniffing (2 = bincode, 70001 = JSON fallback)
+                // Track the exact version accepted by the hard-boundary handshake.
                 self.peer_versions.insert(peer_addr, version.version);
                 self.emit(NodeEvent::PeerConnected {
                     addr: peer_addr,

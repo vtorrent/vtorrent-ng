@@ -285,18 +285,14 @@ pub async fn spv_get_proof(
     if header.is_none() {
         return Err(RpcError::NotFound(format!("header {} not found", hash_hex)));
     }
-    let proof = if let Some(ref h) = header {
-        if h.is_pos() {
-            // Full node would reconstruct proof from its UTXO set and block store;
-            // light-client stub returns empty proof indicating “not cached” — callers
-            // should request via P2P `getproof` if needed.
-            None
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let proof = state
+        .stake_proofs
+        .read()
+        .await
+        .get(&hash)
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|e| RpcError::Internal(format!("serialize stake proof: {}", e)))?;
     Ok(Json(SpvProofResponse {
         block_hash: hash_hex,
         proof,

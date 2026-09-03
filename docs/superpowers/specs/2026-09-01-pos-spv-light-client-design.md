@@ -5,6 +5,10 @@
 **Author:** vTorrent Dev
 **Related:** `docs/consensus-parameters.md`, `docs/mainnet-readiness.md`, `vtorrent-spv/src/spv_chain.rs:20`, `vtorrent-node/src/block.rs:238`, `vtorrent-node/src/consensus.rs:81`
 
+> **Security status (2026-09-03):** Superseded. A membership proof against the
+> parent root does not authenticate the child root's state transition. Untrusted
+> PoS admission therefore fails closed pending an authenticated accumulator/update-proof design.
+
 ## 1. Overview
 
 Remote vTorrent PoS light clients currently cannot validate stake. `SpvHeader` (`vtorrent-spv/src/spv_chain.rs:20`) and `BlockHeader` (`vtorrent-node/src/block.rs:238`) commit only to `merkle_root`; `SpvChain::add_header:147` rejects PoS headers (`nonce==0`) because it cannot prove stake ownership, age, or that the UTXO remains unspent. Full nodes validate via `chain/chain_reorg.rs:193` + `consensus.rs:118` against the live `utxo_set` (`chain.rs:138`).
@@ -82,7 +86,7 @@ pub struct SpvHeader {
 
 **Tree:** Leaves sorted by `(txid, vout)` ascending, hashed to `[[u8;32]]`, then `compute_merkle_root_from_txids(&mut leaves)` (`block.rs:289`) in-place reduction with last-duplication for odd count, identical to `MerkleTree::build` (`merkle.rs:37`). Empty set => `[0u8;32]` (genesis before distribution is not empty; but canonical).
 
-**Genesis:** `create_genesis_block:96` derives `utxo_root` over 59,375 legacy outputs (sorted). Hash `11f2093333a718616ba1f2173b31487cf4be5e44a861b516685acdb1088cfb21` changes — consensus freeze doc `consensus-parameters.md` updated; new constant `GENESIS_UTXO_ROOT` added.
+**Genesis:** `create_genesis_block:96` derives `utxo_root` over the sorted legacy outputs. The corrected odd-level Merkle reduction produces genesis hash `36ca792aa45ca7850f2789ff2e62ec13e91bd5f2770d6fea8df81bc2da1da8f8` and UTXO root `65185f8a5c055c17bf7053c6b6c42993565bb5586689a8508017005b842f9105`.
 
 **Wire:** `bincode` header serialization grows 32 bytes (≈112 vs 80) and `SpvHeader::hash:39`/`BlockHeader::hash:257` double-SHA256 now covers `utxo_root`. P2P protocol version bump `vtorrent-p2p/src/message.rs:102` `2 → 3` signals `utxo_root`. `version >= 2` requires `utxo_root != [0;32]`; `version == 1` legacy headers carry zero root (rejected for PoS validation — treated as trusted-only via `add_trusted_header:156`).
 
@@ -214,4 +218,3 @@ Reuse `docker/testnet/docker-compose.yml` 3-node mesh, `scripts/spv-reorg-soak.s
 ## 11. Implementation Order
 
 Matches recommended sequence: (1) header commitment, (2) proof types + producer, (3) SPV verifier, (4) adversarial tests, (5) multi-node soak. Each step is independently reviewable; (1) without (2) is consensus-breaking, so flag-gated until (3) lands.
-

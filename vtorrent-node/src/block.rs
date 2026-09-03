@@ -302,7 +302,12 @@ pub fn compute_merkle_root_from_txids(txids: &mut [[u8; 32]]) -> [u8; 32] {
     let mut combined = [0u8; 64];
     while len > 1 {
         if len & 1 == 1 {
-            buf.push(buf[len - 1]);
+            let duplicate = buf[len - 1];
+            if buf.len() == len {
+                buf.push(duplicate);
+            } else {
+                buf[len] = duplicate;
+            }
             len += 1;
         }
         let half = len / 2;
@@ -360,6 +365,13 @@ pub fn compute_utxo_root_sorted(utxos: &[crate::chain::Utxo]) -> [u8; 32] {
     let mut sorted = utxos.to_vec();
     sorted.sort_by(|a, b| a.txid.cmp(&b.txid).then(a.vout.cmp(&b.vout)));
     let mut leaves: Vec<[u8; 32]> = sorted.iter().map(hash_utxo).collect();
+    compute_merkle_root_from_txids(&mut leaves)
+}
+
+pub fn compute_utxo_root_ordered<'a>(
+    utxos: impl IntoIterator<Item = &'a crate::chain::Utxo>,
+) -> [u8; 32] {
+    let mut leaves: Vec<[u8; 32]> = utxos.into_iter().map(hash_utxo).collect();
     compute_merkle_root_from_txids(&mut leaves)
 }
 
@@ -423,6 +435,14 @@ mod tests {
         };
         let root = block.compute_merkle_root();
         assert_eq!(root, tx.txid()); // Single tx: merkle root = txid
+    }
+
+    #[test]
+    fn test_merkle_root_odd_levels_matches_spv_tree() {
+        let hashes: Vec<[u8; 32]> = (0..7).map(|n| [n; 32]).collect();
+        let expected = vtorrent_spv::MerkleTree::build(&hashes).root();
+        let mut scratch = hashes;
+        assert_eq!(compute_merkle_root_from_txids(&mut scratch), expected);
     }
 
     #[test]

@@ -180,7 +180,9 @@ async fn main() -> anyhow::Result<()> {
     let tx_submit_sender = node.tx_submit_sender();
     let block_submit_sender = node.block_submit_sender();
     let staking_control_sender = node.staking_control();
+    let stake_proofs = node.stake_proofs_arc();
     let mut rpc_state = AppState::new_with_shared(chain_arc, mempool_arc);
+    rpc_state.stake_proofs = stake_proofs;
     // Wire the tx broadcast channel so RPC wallet can push txs into the P2P loop.
     rpc_state.tx_submit = Some(tx_submit_sender);
     // Wire the block broadcast channel so the regtest faucet can announce blocks.

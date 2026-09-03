@@ -298,6 +298,14 @@ fn test_producer_root_matches_full_set_without_pending() {
     }
     let (block, _proof) = found.expect("kernel should hit");
 
+    let mut tampered = block.clone();
+    tampered.header.utxo_root = [0xaa; 32];
+    let height_before = chain.best_height();
+    let utxos_before = chain.get_utxo_set().clone();
+    assert!(chain.add_block(tampered).is_err());
+    assert_eq!(chain.best_height(), height_before);
+    assert_eq!(chain.get_utxo_set(), &utxos_before);
+
     let acceptance = chain.add_block(block.clone()).unwrap();
     let height = match &acceptance {
         crate::chain::BlockAcceptance::MainChain { height, .. } => *height,

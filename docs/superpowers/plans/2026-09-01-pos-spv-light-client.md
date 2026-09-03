@@ -4,6 +4,10 @@
 
 **Goal:** Enable remote SPV clients to validate PoS stake without a UTXO set by adding a Merkle `utxo_root` to headers and verifying self-contained `StakeProof`s (coinstake + tx inclusion + UTXO inclusion + kernel/sig/reward).
 
+> **Security status (2026-09-03):** Superseded. The planned proof authenticates
+> membership in the parent state but not the child state transition. The current
+> implementation deliberately fails closed for untrusted PoS headers.
+
 **Architecture:** Merkle commitment over sorted `Utxo` leaves reused from `vtorrent-spv/src/merkle.rs:18` + `vtorrent-node/src/block.rs:289`. Full node computes `utxo_root` post-apply in `chain/chain_reorg.rs:127`; staking engine emits `StakeProof` targeting `prev_header.utxo_root`; `SpvChain::add_pos_header` verifies continuity, kernel (`consensus.rs:118`), age, amount, reward, and secp256k1 signature.
 
 **Tech Stack:** Rust 2021, `sha2 0.10` (SHA256d), `secp256k1 0.29`, `serde/bincode 1`, `tokio 1`, `redb 3` (store), `vtorrent-script` (P2PKH), `criterion` benches.
@@ -701,4 +705,3 @@ git commit -m "feat(soak): spv reorg + staking soak harness, 4-phase validation"
 **Placeholder scan:** No `TBD/TODO`, no `handle edge cases` without code — each step shows `cargo test` command and expected output, exact file paths with line hints, and code blocks for leaf hash, Merkle, header hash, sighash verify.
 
 **Type consistency:** `hash_utxo` signature `SpvUtxo -> [u8;32]` used in Task 2 `compute_utxo_root_sorted` and Task 3 `UtxoInclusionProof::verify`; `StakeProof { coinstake, tx_merkle_proof, utxo, utxo_proof, prev_stake_modifier }` same across Tasks 3–6; `SpvHeader { utxo_root }` same in Tasks 1,5,6; `BlockJournal.utxo_root` same in Task 2. No `clearLayers`/`clearFullLayers` mismatch.
-

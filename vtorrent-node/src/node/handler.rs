@@ -13,20 +13,36 @@ use vtorrent_p2p::{
     ban_manager::Misbehaviour,
     compact::{derive_siphash_keys, short_txid, CompactBlockDecodeError, CompactBlockDecoder},
     message::{
-        decode_for_peer, encode_for_peer, BlockTxnMsg, GetBlocksMsg, GetDataMsg, GetHeadersMsg,
-        HeaderEntry, HeadersMsg, InvItem, InvMsg, InvType, NetMessage, PROTOCOL_VERSION,
+        decode_for_peer, encode_for_peer, BlockTxnMsg, CmpctBlockMsg, GetBlocksMsg, GetDataMsg,
+        GetHeadersMsg, GetProofMsg, HeaderEntry, HeadersMsg, InvItem, InvMsg, InvType, NetMessage,
+        ProofMsg, PROTOCOL_VERSION,
     },
 };
 
 use crate::{
     block::{Block, BlockHeader, Transaction},
     chain::BlockAcceptance,
-    consensus::compute_stake_modifier,
     error::{NodeError, Result},
     events::NodeEvent,
 };
 
 use super::Node;
+
+fn reconstruct_compact_block(compact: &CmpctBlockMsg, transactions: Vec<Transaction>) -> Block {
+    Block {
+        header: BlockHeader {
+            version: compact.version,
+            prev_block_hash: compact.prev_block_hash,
+            merkle_root: compact.merkle_root,
+            utxo_root: compact.utxo_root,
+            timestamp: compact.timestamp,
+            bits: compact.bits,
+            nonce: compact.nonce,
+            stake_modifier: compact.stake_modifier,
+        },
+        transactions,
+    }
+}
 
 /// Handle an `inv` message — announce inventory to the peer manager.
 pub(crate) async fn handle_inv(
@@ -137,6 +153,15 @@ pub(crate) async fn handle_block(
                                     block_height: height,
                                     block_hash: hash,
                                 });
+                            }
+                            if block_arc.header.is_pos() {
+                                let payload = encode_for_peer(
+                                    &GetProofMsg { block_hash: hash },
+                                    peer_version,
+                                );
+                                node.peer_manager
+                                    .send_to(peer_addr, NetMessage::new("getproof", payload))
+                                    .await;
                             }
                             true
                         }
@@ -330,8 +355,6 @@ pub(crate) async fn handle_cmpctblock(
     peer_addr: SocketAddr,
     msg: &NetMessage,
 ) -> Result<()> {
-    use vtorrent_p2p::message::CmpctBlockMsg;
-
     if let Ok(cmpct) = serde_json::from_slice::<CmpctBlockMsg>(&msg.payload) {
         let mut header_bytes = Vec::with_capacity(120);
         header_bytes.extend_from_slice(&cmpct.version.to_le_bytes());
@@ -377,31 +400,7 @@ pub(crate) async fn handle_cmpctblock(
                     }
                 }
                 if all_ok {
-                    let stake_modifier = {
-                        let chain = node.chain.lock().await;
-                        chain
-                            .get_block(&cmpct.prev_block_hash)
-                            .map(|p| {
-                                compute_stake_modifier(
-                                    p.header.stake_modifier,
-                                    &cmpct.prev_block_hash,
-                                )
-                            })
-                            .unwrap_or(0)
-                    };
-                    let block = Block {
-                        header: BlockHeader {
-                            version: cmpct.version,
-                            prev_block_hash: cmpct.prev_block_hash,
-                            merkle_root: cmpct.merkle_root,
-                            utxo_root: [0u8; 32],
-                            timestamp: cmpct.timestamp,
-                            bits: cmpct.bits,
-                            nonce: cmpct.nonce,
-                            stake_modifier,
-                        },
-                        transactions: txs,
-                    };
+                    let block = reconstruct_compact_block(&cmpct, txs);
                     let hash = block.hash();
                     let tx_count = block.transactions.len();
                     let timestamp = block.header.timestamp;
@@ -460,28 +459,7 @@ pub(crate) async fn handle_cmpctblock(
                     missing_indexes.len(),
                     peer_addr
                 );
-                let stake_modifier = {
-                    let chain = node.chain.lock().await;
-                    chain
-                        .get_block(&cmpct.prev_block_hash)
-                        .map(|p| {
-                            compute_stake_modifier(p.header.stake_modifier, &cmpct.prev_block_hash)
-                        })
-                        .unwrap_or(0)
-                };
-                let probe_block_hash = {
-                    let hdr = crate::block::BlockHeader {
-                        version: cmpct.version,
-                        prev_block_hash: cmpct.prev_block_hash,
-                        merkle_root: cmpct.merkle_root,
-                        utxo_root: [0u8; 32],
-                        timestamp: cmpct.timestamp,
-                        bits: cmpct.bits,
-                        nonce: cmpct.nonce,
-                        stake_modifier,
-                    };
-                    hdr.hash()
-                };
+                let probe_block_hash = { reconstruct_compact_block(&cmpct, Vec::new()).hash() };
                 let block_hash = probe_block_hash;
                 let req = CompactBlockDecoder::build_getblocktxn(block_hash, missing_indexes);
                 let payload = serde_json::to_vec(&req).unwrap_or_default();
@@ -652,31 +630,7 @@ pub(crate) async fn handle_blocktxn(
                     }
                 }
                 if all_ok {
-                    let stake_modifier = {
-                        let chain = node.chain.lock().await;
-                        chain
-                            .get_block(&pending.prev_block_hash)
-                            .map(|p| {
-                                compute_stake_modifier(
-                                    p.header.stake_modifier,
-                                    &pending.prev_block_hash,
-                                )
-                            })
-                            .unwrap_or(0)
-                    };
-                    let block = Block {
-                        header: BlockHeader {
-                            version: pending.version,
-                            prev_block_hash: pending.prev_block_hash,
-                            merkle_root: pending.merkle_root,
-                            utxo_root: [0u8; 32],
-                            timestamp: pending.timestamp,
-                            bits: pending.bits,
-                            nonce: pending.nonce,
-                            stake_modifier,
-                        },
-                        transactions: txs,
-                    };
+                    let block = reconstruct_compact_block(&pending, txs);
                     let hash = block.hash();
                     let tx_count = block.transactions.len();
                     let timestamp = block.header.timestamp;
@@ -1048,6 +1002,26 @@ mod tests {
         format!("127.0.0.1:{}", port).parse().unwrap()
     }
 
+    #[test]
+    fn compact_reconstruction_preserves_committed_header() {
+        let compact = CmpctBlockMsg {
+            version: 3,
+            prev_block_hash: [1; 32],
+            merkle_root: [2; 32],
+            utxo_root: [3; 32],
+            timestamp: 1_700_000_000,
+            bits: crate::genesis::GENESIS_BITS,
+            nonce: 0,
+            stake_modifier: 42,
+            siphash_nonce: 7,
+            short_ids: Vec::new(),
+            prefilled_txs: Vec::new(),
+        };
+        let block = reconstruct_compact_block(&compact, Vec::new());
+        assert_eq!(block.header.utxo_root, compact.utxo_root);
+        assert_eq!(block.header.stake_modifier, compact.stake_modifier);
+    }
+
     #[tokio::test]
     async fn handle_block_accepts_valid_block_and_updates_chain() {
         let mut node = test_node();
@@ -1066,7 +1040,6 @@ mod tests {
         let chain = node.chain.lock().await;
         assert_eq!(chain.best_height(), 1);
         let stored = chain.get_block_at_height(1).unwrap();
-        assert_ne!(stored.header.utxo_root, [0u8; 32]);
         assert_eq!(chain.best_hash().unwrap(), stored.hash());
     }
 
@@ -1504,18 +1477,83 @@ pub(crate) async fn dispatch_message(
             }
         }
 
-        // ── getdata: serve blocks and transactions to requesting peers (V2 bincode) ──────
+        // ── getdata: serve blocks and transactions to requesting peers ──────
         "getdata" => {
             handle_getdata(node, peer_addr, &msg, peer_version).await?;
         }
 
-        // ── Header sync (getheaders / headers) — V2 bincode ────────────────────────────
+        // ── Header sync (getheaders / headers) ────────────────────────────
         "getheaders" => {
             handle_getheaders(node, peer_addr, &msg, peer_version).await?;
         }
 
         "headers" => {
             handle_headers(node, peer_addr, &msg, peer_version).await?;
+        }
+
+        "getproof" => {
+            if let Ok(req) = decode_for_peer::<GetProofMsg>(&msg.payload, peer_version) {
+                let proof = node
+                    .stake_proofs
+                    .read()
+                    .await
+                    .get(&req.block_hash)
+                    .and_then(|proof| bincode::serialize(proof).ok());
+                let payload = encode_for_peer(
+                    &ProofMsg {
+                        block_hash: req.block_hash,
+                        proof,
+                    },
+                    peer_version,
+                );
+                node.peer_manager
+                    .send_to(peer_addr, NetMessage::new("proof", payload))
+                    .await;
+            } else {
+                node.peer_manager
+                    .record_misbehaviour(peer_addr, Misbehaviour::MalformedMessage)
+                    .await;
+            }
+        }
+
+        "proof" => {
+            if let Ok(resp) = decode_for_peer::<ProofMsg>(&msg.payload, peer_version) {
+                if let Some(bytes) = resp.proof {
+                    use bincode::Options as _;
+                    let decoded = bincode::options()
+                        .with_fixint_encoding()
+                        .with_limit(crate::consensus::MAX_BLOCK_SIZE as u64)
+                        .deserialize::<vtorrent_spv::stake::StakeProof>(&bytes);
+                    if let Ok(proof) = decoded {
+                        let valid_for_known_block = {
+                            let chain = node.chain.lock().await;
+                            chain.get_block(&resp.block_hash).is_some_and(|block| {
+                                let parent_root = chain
+                                    .get_block(&block.header.prev_block_hash)
+                                    .map(|parent| parent.header.utxo_root);
+                                let leaf = vtorrent_spv::stake::hash_utxo(&proof.utxo);
+                                block.transactions.first().is_some_and(|coinstake| {
+                                    proof.coinstake.txid() == coinstake.txid()
+                                        && proof
+                                            .tx_merkle_proof
+                                            .verify(&block.header.merkle_root)
+                                            .is_ok()
+                                        && parent_root.is_some_and(|root| {
+                                            proof.utxo_proof.verify(&root, &leaf).is_ok()
+                                        })
+                                })
+                            })
+                        };
+                        if valid_for_known_block {
+                            node.cache_stake_proof(resp.block_hash, proof).await;
+                        }
+                    }
+                }
+            } else {
+                node.peer_manager
+                    .record_misbehaviour(peer_addr, Misbehaviour::MalformedMessage)
+                    .await;
+            }
         }
 
         // ── DEX order gossip ─────────────────────────────────────────────
@@ -1545,7 +1583,7 @@ pub(crate) async fn dispatch_message(
         }
 
         cmd => {
-            // Unknown commands are ignored (not banned) — forward compatibility for V2 rollout
+            // Unknown commands are ignored for forward-compatible command additions.
             tracing::trace!("Unknown command '{}' from {} — ignored", cmd, peer_addr);
         }
     }

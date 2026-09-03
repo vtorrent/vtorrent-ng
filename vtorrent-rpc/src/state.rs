@@ -8,6 +8,7 @@ use vtorrent_node::block::Transaction;
 use vtorrent_node::chain::Chain;
 use vtorrent_node::mempool::Mempool;
 use vtorrent_node::staking::StakingCommand;
+use vtorrent_spv::stake::StakeProof;
 use vtorrent_spv::SpvChain;
 use vtorrent_torrent::session::SessionManager;
 use vtorrent_wallet::encryption::EncryptedWallet;
@@ -51,6 +52,7 @@ pub struct AppState {
         Arc<RwLock<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>>,
     /// SPV header chain for light-client verification.
     pub spv_chain: Arc<RwLock<SpvChain>>,
+    pub stake_proofs: Arc<RwLock<std::collections::HashMap<[u8; 32], StakeProof>>>,
     /// Bitcoin SPV wallet (optional — created when a seed is available).
     pub btc_wallet: Arc<RwLock<Option<BtcWallet>>>,
     /// Bitcoin network the wallet operates on (mainnet or regtest).
@@ -150,6 +152,7 @@ impl AppState {
             download_dir: Arc::new(RwLock::new(std::path::PathBuf::from("downloads"))),
             torrent_cancels: Arc::new(RwLock::new(std::collections::HashMap::new())),
             spv_chain: Arc::new(RwLock::new(SpvChain::new())),
+            stake_proofs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             btc_wallet: Arc::new(RwLock::new(None)),
             btc_network: Arc::new(RwLock::new(bitcoin::Network::Bitcoin)),
             btc_peer: Arc::new(RwLock::new(None)),
@@ -202,6 +205,7 @@ impl AppState {
             download_dir: Arc::new(RwLock::new(std::path::PathBuf::from("downloads"))),
             torrent_cancels: Arc::new(RwLock::new(std::collections::HashMap::new())),
             spv_chain: Arc::new(RwLock::new(SpvChain::new())),
+            stake_proofs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             btc_wallet: Arc::new(RwLock::new(None)),
             btc_network: Arc::new(RwLock::new(bitcoin::Network::Bitcoin)),
             btc_peer: Arc::new(RwLock::new(None)),

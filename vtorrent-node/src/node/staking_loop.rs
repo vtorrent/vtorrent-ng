@@ -45,9 +45,9 @@ impl Node {
         };
 
         tracing::debug!(
-            "Stake tick: address {} holds {} UTXOs",
-            staking.address,
-            stake_utxos.len()
+            "Stake tick: evaluating {} committed UTXOs for address {}",
+            stake_utxos.len(),
+            staking.address
         );
         if stake_utxos.is_empty() {
             return Err(NodeError::Chain("No UTXOs available for staking".into()));
@@ -73,7 +73,7 @@ impl Node {
                 .collect()
         };
 
-        let block_opt = staking.build_stake_block(
+        let block_opt = staking.build_stake_block_with_proof(
             best_hash,
             best_stake_modifier,
             best_height + 1,
@@ -88,7 +88,7 @@ impl Node {
                 now
             );
         }
-        if let Some(block) = block_opt {
+        if let Some((block, proof)) = block_opt {
             let block_hash = block.hash();
             let tx_count = block.transactions.len();
             let timestamp = block.header.timestamp;
@@ -114,6 +114,7 @@ impl Node {
                 claimed_addresses,
             } = acceptance
             {
+                self.cache_stake_proof(block_hash, proof).await;
                 {
                     let confirmed: Vec<[u8; 32]> =
                         block_arc.transactions.iter().map(|tx| tx.txid()).collect();

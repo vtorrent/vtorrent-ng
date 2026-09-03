@@ -8,8 +8,8 @@
 //!   without revealing their exact addresses.
 //! - **Merkle proofs** — cryptographic proofs that a transaction is included in
 //!   a block without needing the full block.
-//! - **SPV chain** — a lightweight chain that stores only block headers (80 bytes
-//!   each) and validates proof-of-work/proof-of-stake without storing full blocks.
+//! - **SPV chain** — a lightweight header chain. Untrusted PoS header admission
+//!   remains disabled until the protocol has authenticated state-transition proofs.
 //!
 //! Note: compact block filters (BIP-157/158) are implemented in `vtorrent-btc`
 //! using the `bitcoin` crate's `bip158` module, not here.
