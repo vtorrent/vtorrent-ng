@@ -30,11 +30,7 @@ impl Node {
             let best_block = chain.get_block_at_height(best_height);
             let best_timestamp = best_block.map(|b| b.header.timestamp).unwrap_or(0);
             let best_stake_modifier = best_block.map(|b| b.header.stake_modifier).unwrap_or(0);
-            // The block's utxo_root commitment must match the journal root the
-            // chain recomputes on add_block, which spans the FULL UTXO set —
-            // not just the staker's coins. Kernel eligibility (age/amount/
-            // spendability) is filtered inside the staking engine.
-            let utxos = chain.get_utxo_set().values().cloned().collect::<Vec<_>>();
+            let utxos = chain.get_utxos_for_address(&staking.address);
             (
                 best_height,
                 best_hash,
@@ -45,7 +41,7 @@ impl Node {
         };
 
         tracing::trace!(
-            "Stake tick: evaluating {} committed UTXOs for address {}",
+            "Stake tick: evaluating {} wallet UTXOs for address {}",
             stake_utxos.len(),
             staking.address
         );
@@ -59,6 +55,20 @@ impl Node {
         if now <= best_timestamp + TARGET_BLOCK_TIME as u32 {
             return Ok(());
         }
+
+        let Some(kernel) = staking.find_stake_kernel(
+            best_stake_modifier,
+            best_height + 1,
+            now,
+            stake_utxos.iter(),
+        ) else {
+            tracing::trace!(
+                "Stake tick: no kernel met target (height {}, now {})",
+                best_height + 1,
+                now
+            );
+            return Ok(());
+        };
 
         // Only include pending txs whose inputs are still unspent in the
         // current UTXO set — mempool entries can go stale when a competing
@@ -74,21 +84,21 @@ impl Node {
                 .collect()
         };
 
-        let block_opt = staking.build_stake_block_with_proof(
-            best_hash,
-            best_stake_modifier,
-            best_height + 1,
-            now,
-            stake_utxos,
-            pending_txs,
-        );
-        if block_opt.is_none() {
-            tracing::trace!(
-                "Stake tick: no kernel met target (height {}, now {})",
+        let block_opt = {
+            let chain = self.chain.lock().await;
+            if chain.best_hash() != Some(best_hash) {
+                return Ok(());
+            }
+            staking.build_from_kernel_with_proof(
+                best_hash,
+                best_stake_modifier,
                 best_height + 1,
-                now
-            );
-        }
+                now,
+                chain.get_utxo_set(),
+                pending_txs,
+                kernel,
+            )
+        };
         if let Some((block, proof)) = block_opt {
             let block_hash = block.hash();
             let tx_count = block.transactions.len();

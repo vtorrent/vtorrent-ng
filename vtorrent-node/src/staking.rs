@@ -10,8 +10,8 @@
 /// A full implementation would use the stake modifier from the chain.
 use crate::{
     block::{
-        compute_merkle_root_from_txids, compute_utxo_root_sorted, Block, BlockHeader, Transaction,
-        TxInput, TxOutput, TxType,
+        compute_merkle_root_from_txids, hash_utxo as hash_node_utxo, Block, BlockHeader,
+        Transaction, TxInput, TxOutput, TxType,
     },
     chain::Utxo,
     consensus::{
@@ -21,11 +21,11 @@ use crate::{
     },
 };
 use secp256k1::{All, Secp256k1};
-use std::sync::LazyLock;
+use std::{collections::BTreeMap, sync::LazyLock};
 use vtorrent_script::{classify_script, Script, ScriptType};
 use vtorrent_spv::merkle::MerkleTree as ProofMerkleTree;
 use vtorrent_spv::stake::{
-    hash_utxo, SpvUtxo, StakeProof, Transaction as SpvTransaction, TxInput as SpvTxInput,
+    SpvUtxo, StakeProof, Transaction as SpvTransaction, TxInput as SpvTxInput,
     TxOutput as SpvTxOutput, TxType as SpvTxType, UtxoInclusionProof,
 };
 
@@ -51,6 +51,71 @@ pub struct StakingEngine {
     pub min_stake_age: u64,
     /// Maximum coin age in seconds for UTXO eligibility.
     pub max_stake_age: u64,
+}
+
+fn compute_post_apply_root(
+    utxos: &BTreeMap<([u8; 32], u32), Utxo>,
+    transactions: &[Transaction],
+    height: u32,
+    timestamp: u32,
+) -> [u8; 32] {
+    let mut removed = std::collections::HashSet::new();
+    let mut added = BTreeMap::new();
+
+    for tx in transactions {
+        for input in &tx.inputs {
+            let key = (input.prev_txid, input.prev_vout);
+            if added.remove(&key).is_none() {
+                removed.insert(key);
+            }
+        }
+        let txid = tx.txid();
+        for (vout, output) in tx.outputs.iter().enumerate() {
+            let key = (txid, vout as u32);
+            added.insert(
+                key,
+                Utxo {
+                    txid,
+                    vout: vout as u32,
+                    value: output.value,
+                    script_pubkey: output.script_pubkey.clone(),
+                    height,
+                    timestamp,
+                },
+            );
+        }
+    }
+
+    let mut leaves = Vec::with_capacity(
+        utxos
+            .len()
+            .saturating_sub(removed.len())
+            .saturating_add(added.len()),
+    );
+    let mut added_iter = added.iter().peekable();
+    for (key, utxo) in utxos {
+        while let Some((added_key, added_utxo)) = added_iter.peek() {
+            if *added_key >= key {
+                break;
+            }
+            leaves.push(hash_node_utxo(added_utxo));
+            added_iter.next();
+        }
+        if let Some((added_key, added_utxo)) = added_iter.peek() {
+            if *added_key == key {
+                leaves.push(hash_node_utxo(added_utxo));
+                added_iter.next();
+                continue;
+            }
+        }
+        if !removed.contains(key) {
+            leaves.push(hash_node_utxo(utxo));
+        }
+    }
+    for (_, utxo) in added_iter {
+        leaves.push(hash_node_utxo(utxo));
+    }
+    compute_merkle_root_from_txids(&mut leaves)
 }
 
 impl StakingEngine {
@@ -136,64 +201,100 @@ impl StakingEngine {
         utxos: Vec<Utxo>,
         pending_txs: Vec<Transaction>,
     ) -> Option<(Block, StakeProof)> {
-        let staking_script = self.address_to_script(&self.address)?;
-        let eligible: Vec<&Utxo> = utxos
-            .iter()
-            .filter(|u| {
-                u.script_pubkey == staking_script
-                    && self.is_eligible(u, timestamp)
-                    && is_spendable(u)
-            })
+        let kernel =
+            self.find_stake_kernel(prev_stake_modifier, height, timestamp, utxos.iter())?;
+        let ordered_utxos = utxos
+            .into_iter()
+            .map(|utxo| ((utxo.txid, utxo.vout), utxo))
             .collect();
+        self.build_from_kernel_with_proof(
+            prev_hash,
+            prev_stake_modifier,
+            height,
+            timestamp,
+            &ordered_utxos,
+            pending_txs,
+            kernel,
+        )
+    }
 
-        if eligible.is_empty() {
-            tracing::debug!("No eligible UTXOs for staking at height {}", height);
+    pub(crate) fn find_stake_kernel<'a>(
+        &self,
+        prev_stake_modifier: u64,
+        height: u32,
+        timestamp: u32,
+        utxos: impl IntoIterator<Item = &'a Utxo>,
+    ) -> Option<(Utxo, Transaction)> {
+        let staking_script = self.address_to_script(&self.address)?;
+        let mut any_eligible = false;
+        let kernel = utxos.into_iter().find_map(|candidate| {
+            if candidate.script_pubkey == staking_script
+                && self.is_eligible(candidate, timestamp)
+                && is_spendable(candidate)
+            {
+                any_eligible = true;
+                self.try_stake_kernel(prev_stake_modifier, candidate, timestamp, height)
+                    .map(|coinstake| (candidate.clone(), coinstake))
+            } else {
+                None
+            }
+        });
+        if !any_eligible {
+            tracing::trace!("No eligible UTXOs for staking at height {}", height);
+        }
+        kernel
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn build_from_kernel_with_proof(
+        &self,
+        prev_hash: [u8; 32],
+        prev_stake_modifier: u64,
+        height: u32,
+        timestamp: u32,
+        ordered_utxos: &BTreeMap<([u8; 32], u32), Utxo>,
+        pending_txs: Vec<Transaction>,
+        kernel: (Utxo, Transaction),
+    ) -> Option<(Block, StakeProof)> {
+        let (utxo, coinstake) = kernel;
+        let staked_key = (utxo.txid, utxo.vout);
+        if ordered_utxos.get(&staked_key) != Some(&utxo) {
             return None;
         }
 
-        let (utxo, coinstake) = eligible.into_iter().find_map(|candidate| {
-            self.try_stake_kernel(prev_stake_modifier, candidate, timestamp, height)
-                .map(|coinstake| (candidate.clone(), coinstake))
-        })?;
-
-        let mut sorted_utxos = utxos;
-        sorted_utxos.sort_by(|a, b| a.txid.cmp(&b.txid).then(a.vout.cmp(&b.vout)));
-        let spv_utxos: Vec<SpvUtxo> = sorted_utxos
+        let mut leaf_index = None;
+        let utxo_leaves: Vec<[u8; 32]> = ordered_utxos
             .iter()
-            .map(|u| SpvUtxo {
-                txid: u.txid,
-                vout: u.vout,
-                value: u.value,
-                script_pubkey: u.script_pubkey.clone(),
-                height: u.height,
-                timestamp: u.timestamp,
+            .enumerate()
+            .map(|(index, (key, current))| {
+                if *key == staked_key {
+                    leaf_index = Some(index);
+                }
+                hash_node_utxo(current)
             })
             .collect();
-        let utxo_leaves: Vec<[u8; 32]> = spv_utxos.iter().map(hash_utxo).collect();
         let utxo_tree = ProofMerkleTree::build(&utxo_leaves);
+        let leaf_index = leaf_index?;
 
-        // Drop pending txs whose inputs collide with the coinstake's
-        // stake input (or with each other). The mempool admits txs
-        // against the current UTXO set, but the coinstake consumes a
-        // UTXO inside this same block — a stale mempool tx spending
-        // the staked outpoint would otherwise make the block invalid
-        // and permanently wedge staking.
-        let stake_outpoint = (coinstake.inputs[0].prev_txid, coinstake.inputs[0].prev_vout);
+        let stake_outpoint = staked_key;
         let mut seen: std::collections::HashSet<([u8; 32], u32)> = std::collections::HashSet::new();
         seen.insert(stake_outpoint);
         let non_conflicting: Vec<Transaction> = pending_txs
-                    .into_iter()
-                    .filter(|tx| {
-                        let conflict = tx.inputs.iter().any(|i| !seen.insert((i.prev_txid, i.prev_vout)));
-                        if conflict {
-                            tracing::debug!(
-                                "Excluding mempool tx {} from block template: input conflicts with coinstake or earlier tx",
-                                hex::encode(tx.txid())
-                            );
-                        }
-                        !conflict
-                    })
-                    .collect();
+            .into_iter()
+            .filter(|tx| {
+                let conflict = tx
+                    .inputs
+                    .iter()
+                    .any(|i| !seen.insert((i.prev_txid, i.prev_vout)));
+                if conflict {
+                    tracing::debug!(
+                        "Excluding mempool tx {} from block template: input conflicts with coinstake or earlier tx",
+                        hex::encode(tx.txid())
+                    );
+                }
+                !conflict
+            })
+            .collect();
         let mut block = self.assemble_block(
             prev_hash,
             prev_stake_modifier,
@@ -201,49 +302,9 @@ impl StakingEngine {
             coinstake.clone(),
             non_conflicting,
         );
+        block.header.utxo_root =
+            compute_post_apply_root(ordered_utxos, &block.transactions, height, timestamp);
 
-        // Commit to the post-apply UTXO set. The chain journals every
-        // tx in the block — the staked UTXO removed, every output
-        // (including the zero-value coinstake marker) added, and each
-        // pending tx's inputs removed and outputs added in block
-        // order. The producer must reproduce that exactly or the
-        // commitment root (and therefore the block hash) diverges
-        // from the stored canonical hash.
-        let staked_key = (utxo.txid, utxo.vout);
-        let mut post_apply: Vec<Utxo> = sorted_utxos
-            .iter()
-            .filter(|u| (u.txid, u.vout) != staked_key)
-            .cloned()
-            .collect();
-        let block_height = block.height();
-        let block_ts = timestamp;
-        // Chain order: coinstake first, then pending txs. Mirror the
-        // journal: remove each tx's inputs that exist in the working
-        // set, then add every output as a UTXO.
-        for tx in std::iter::once(&coinstake).chain(block.transactions[1..].iter()) {
-            let txid = tx.txid();
-            for input in &tx.inputs {
-                post_apply.retain(|u| (u.txid, u.vout) != (input.prev_txid, input.prev_vout));
-            }
-            for (vout, out) in tx.outputs.iter().enumerate() {
-                post_apply.push(Utxo {
-                    txid,
-                    vout: vout as u32,
-                    value: out.value,
-                    script_pubkey: out.script_pubkey.clone(),
-                    height: block_height,
-                    timestamp: block_ts,
-                });
-            }
-        }
-        block.header.utxo_root = compute_utxo_root_sorted(&post_apply);
-
-        // UTXO inclusion proof for the staked UTXO against the
-        // pre-block root (canonical leaf position).
-        let leaf_index = sorted_utxos
-            .iter()
-            .position(|u| u.txid == utxo.txid && u.vout == utxo.vout)
-            .expect("winning utxo came from the sorted list");
         let utxo_proof_mp = utxo_tree
             .proof(leaf_index)
             .expect("winning utxo leaf index is in-bounds");
@@ -253,7 +314,6 @@ impl StakingEngine {
             root: utxo_tree.root(),
         };
 
-        // Transaction Merkle proof: coinstake is always index 0.
         let txids: Vec<[u8; 32]> = block.transactions.iter().map(|tx| tx.txid()).collect();
         let tx_tree = ProofMerkleTree::build(&txids);
         let tx_merkle_proof = tx_tree

@@ -48,7 +48,9 @@
       restarts, mesh self-heals after node restart. Fresh v3 run produced and
       propagated PoS block `a6b2a648…fab20` at height 2, then replayed it from
       node2's persistent store after restart; all three tips converged. The
-      7-day window restarted 2026-09-03.)*
+      7-day window restarted 2026-09-03. A staking allocation fix deployed
+      2026-09-04 reduced node1 from 207.7 MiB to 61.6 MiB after six kernel
+      hits; the continuous-window check remains pending.)*
 - [ ] **Staking soak**: at least one node stakes continuously and produces
       blocks at the expected ~60s average over the soak window. *(Staking
       verified end-to-end again 2026-09-03: fast-stake candidate passed chain
@@ -134,6 +136,21 @@
 
 ## Known Issues (found during soak/E2E, 2026-08-24)
 
+- [ ] **Orphan block announcements cause an immediate peer ban** — observed
+      2026-09-04 after restarting the staker: node1 produced height 385 before
+      its peers reconnected, then announced height 386. Node2/node3 did not
+      have the parent, treated the child as an invalid block, and banned node1
+      for one hour instead of requesting the missing parent. Add orphan-parent
+      recovery and reserve invalid-block penalties for blocks whose parent is
+      known.
+- [x] ~~**Staking ticks retained full UTXO-set clones**~~ — FIXED 2026-09-04:
+      the one-second fast-regtest loop cloned all ~59,000 genesis UTXOs and
+      their scripts before every kernel check. Tokio worker migration spread
+      the allocation high-water mark across glibc arenas, growing node1 to
+      207.7 MiB while non-staking peers stayed near 45 MiB. Kernel scanning now
+      touches only wallet UTXOs; full-set proof/root work runs only after a
+      hit and hashes borrowed canonical state. Live validation produced six
+      blocks with node1 at 61.6 MiB; workspace tests and strict clippy pass.
 - [x] ~~**v3 peers disconnected on every keepalive interval**~~ — FIXED
       2026-09-03: node-level ping/pong dispatch still decoded JSON after the
       v3 peer codec moved these payloads to bincode. Version-aware decoding

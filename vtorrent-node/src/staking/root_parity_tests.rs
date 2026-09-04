@@ -316,3 +316,53 @@ fn test_producer_root_matches_full_set_without_pending() {
     assert_eq!(block.header.utxo_root, stored.header.utxo_root);
     assert_eq!(block.hash(), stored.hash());
 }
+
+#[test]
+fn test_borrowed_chain_state_staking_path_matches_journal() {
+    let (address, wif) = staker_keys(44);
+    let mut chain = fund_chain(&address);
+    add_coinbase_block(&mut chain, &address, 500_000);
+    let prev_modifier = chain
+        .get_block_at_height(chain.best_height())
+        .unwrap()
+        .header
+        .stake_modifier;
+    let engine = StakingEngine::with_wif(address.clone(), wif);
+    let wallet_utxos = chain.get_utxos_for_address(&address);
+    let mut found = None;
+
+    for timestamp in
+        (FUNDING_TS + MIN_STAKE_AGE as u32 + 1)..(FUNDING_TS + MIN_STAKE_AGE as u32 + 10_000)
+    {
+        let Some(kernel) = engine.find_stake_kernel(
+            prev_modifier,
+            chain.best_height() + 1,
+            timestamp,
+            wallet_utxos.iter(),
+        ) else {
+            continue;
+        };
+        found = engine.build_from_kernel_with_proof(
+            chain.best_hash().unwrap(),
+            prev_modifier,
+            chain.best_height() + 1,
+            timestamp,
+            chain.get_utxo_set(),
+            vec![],
+            kernel,
+        );
+        if found.is_some() {
+            break;
+        }
+    }
+
+    let (block, _proof) = found.expect("kernel should hit");
+    let acceptance = chain.add_block(block.clone()).unwrap();
+    let height = match acceptance {
+        crate::chain::BlockAcceptance::MainChain { height, .. } => height,
+        other => panic!("expected MainChain, got {other:?}"),
+    };
+    let stored = chain.get_block_at_height(height).unwrap();
+    assert_eq!(block.header.utxo_root, stored.header.utxo_root);
+    assert_eq!(block.hash(), stored.hash());
+}
