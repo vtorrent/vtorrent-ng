@@ -10,6 +10,10 @@
 /// - Peer ban management (misbehaviour scoring and IP bans)
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::{
+    atomic::{AtomicU32, Ordering},
+    Arc,
+};
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -57,6 +61,7 @@ pub const DEFAULT_PORT: u16 = 22526;
 pub struct PeerManager {
     /// Our best known block height.
     pub best_height: u32,
+    advertised_height: Arc<AtomicU32>,
     /// Our listen address.
     pub listen_addr: String,
     /// Connected peers: addr → Peer.
@@ -127,6 +132,7 @@ impl PeerManager {
 
         Self {
             best_height,
+            advertised_height: Arc::new(AtomicU32::new(best_height)),
             listen_addr: listen_addr.to_string(),
             peers: HashMap::new(),
             event_rx,
@@ -159,7 +165,7 @@ impl PeerManager {
 
         // Spawn the accept loop
         let event_tx = self.event_tx.clone();
-        let best_height = self.best_height;
+        let advertised_height = Arc::clone(&self.advertised_height);
         let addr_str = listen_addr.clone();
         let inbound_count = self.inbound_count.clone();
         let inbound_tx = self.inbound_tx.clone();
@@ -200,6 +206,7 @@ impl PeerManager {
                         let addr = addr_str.clone();
                         let count = inbound_count.clone();
                         let accept_nonces = accept_nonces.clone();
+                        let best_height = advertised_height.load(Ordering::Relaxed);
                         // Register the inbound peer so broadcasts reach it.
                         let _ = inbound_tx.send((peer_addr, cmd_tx.clone())).await;
                         tokio::spawn(async move {
@@ -292,7 +299,7 @@ impl PeerManager {
 
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
         let event_tx = self.event_tx.clone();
-        let best_height = self.best_height;
+        let best_height = self.advertised_height.load(Ordering::Relaxed);
         let our_addr = self.listen_addr.clone();
         let nonces = self.sent_version_nonces.clone();
         let network_magic = self.network_magic;
@@ -579,6 +586,12 @@ impl PeerManager {
             .unwrap_or(0)
     }
 
+    /// Update the height advertised by future inbound and outbound handshakes.
+    pub fn set_best_height(&mut self, height: u32) {
+        self.best_height = height;
+        self.advertised_height.store(height, Ordering::Relaxed);
+    }
+
     /// Get a list of all connected peer addresses.
     pub fn connected_peers(&self) -> Vec<SocketAddr> {
         self.peers
@@ -756,6 +769,14 @@ mod tests {
         let _ = pm.process_events().await;
         assert_eq!(pm.network_best_height(), 42);
         assert_eq!(pm.peer_count(), 1);
+    }
+
+    #[test]
+    fn test_set_best_height_updates_future_handshakes() {
+        let mut pm = manager();
+        pm.set_best_height(42);
+        assert_eq!(pm.best_height, 42);
+        assert_eq!(pm.advertised_height.load(Ordering::Relaxed), 42);
     }
 
     #[tokio::test]

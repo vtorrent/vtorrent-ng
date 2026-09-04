@@ -136,13 +136,15 @@
 
 ## Known Issues (found during soak/E2E, 2026-08-24)
 
-- [ ] **Orphan block announcements cause an immediate peer ban** — observed
-      2026-09-04 after restarting the staker: node1 produced height 385 before
-      its peers reconnected, then announced height 386. Node2/node3 did not
-      have the parent, treated the child as an invalid block, and banned node1
-      for one hour instead of requesting the missing parent. Add orphan-parent
-      recovery and reserve invalid-block penalties for blocks whose parent is
-      known.
+- [x] ~~**Orphan block announcements cause an immediate peer ban**~~ — FIXED
+      2026-09-04: unknown-parent blocks now enter a 64-block/16 MiB bounded
+      orphan pool, request their parent from the sender without a penalty, and
+      drain recursively when dependencies arrive. The height advertised to new
+      peers is also updated while the node runs instead of remaining frozen at
+      startup. Live tests forced node2 one block behind: it first recovered
+      parent 396 and queued child 397 without banning node1, then independently
+      reconnected at 397, saw node1 advertise 398, and proactively caught up.
+      All three tips converged after both tests.
 - [x] ~~**Staking ticks retained full UTXO-set clones**~~ — FIXED 2026-09-04:
       the one-second fast-regtest loop cloned all ~59,000 genesis UTXOs and
       their scripts before every kernel check. Tokio worker migration spread

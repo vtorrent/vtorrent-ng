@@ -28,6 +28,87 @@ use crate::{
 
 use super::Node;
 
+fn queue_orphan(
+    node: &mut Node,
+    block: Block,
+    peer_addr: SocketAddr,
+    peer_version: u32,
+    size_bytes: usize,
+) -> bool {
+    let hash = block.hash();
+    if node.orphan_blocks.contains_key(&hash) || size_bytes > super::MAX_ORPHAN_BYTES {
+        return false;
+    }
+
+    while node.orphan_blocks.len() >= super::MAX_ORPHAN_BLOCKS
+        || node.orphan_bytes.saturating_add(size_bytes) > super::MAX_ORPHAN_BYTES
+    {
+        let Some(oldest) = node.orphan_order.pop_front() else {
+            break;
+        };
+        if let Some(removed) = node.orphan_blocks.remove(&oldest) {
+            node.orphan_bytes = node.orphan_bytes.saturating_sub(removed.size_bytes);
+        }
+    }
+
+    node.orphan_bytes = node.orphan_bytes.saturating_add(size_bytes);
+    node.orphan_order.push_back(hash);
+    node.orphan_blocks.insert(
+        hash,
+        super::OrphanBlock {
+            block,
+            peer_addr,
+            peer_version,
+            size_bytes,
+        },
+    );
+    true
+}
+
+fn take_orphan_children(node: &mut Node, parent_hash: [u8; 32]) -> Vec<super::OrphanBlock> {
+    let child_hashes: Vec<[u8; 32]> = node
+        .orphan_blocks
+        .iter()
+        .filter_map(|(hash, orphan)| {
+            (orphan.block.header.prev_block_hash == parent_hash).then_some(*hash)
+        })
+        .collect();
+    if child_hashes.is_empty() {
+        return Vec::new();
+    }
+
+    let child_set: std::collections::HashSet<[u8; 32]> = child_hashes.iter().copied().collect();
+    node.orphan_order.retain(|hash| !child_set.contains(hash));
+    child_hashes
+        .into_iter()
+        .filter_map(|hash| {
+            let orphan = node.orphan_blocks.remove(&hash)?;
+            node.orphan_bytes = node.orphan_bytes.saturating_sub(orphan.size_bytes);
+            Some(orphan)
+        })
+        .collect()
+}
+
+async fn request_orphan_parent(
+    node: &Node,
+    peer_addr: SocketAddr,
+    peer_version: u32,
+    parent_hash: [u8; 32],
+) {
+    let payload = encode_for_peer(
+        &GetDataMsg {
+            items: vec![InvItem {
+                inv_type: InvType::Block,
+                hash: parent_hash,
+            }],
+        },
+        peer_version,
+    );
+    node.peer_manager
+        .send_to(peer_addr, NetMessage::new("getdata", payload))
+        .await;
+}
+
 fn reconstruct_compact_block(compact: &CmpctBlockMsg, transactions: Vec<Transaction>) -> Block {
     Block {
         header: BlockHeader {
@@ -109,6 +190,22 @@ pub(crate) async fn handle_block(
     match node.deserialize_block(&msg.payload) {
         Ok(block) => {
             let hash = block.hash();
+            let parent_hash = block.header.prev_block_hash;
+            let dependency_known = {
+                let chain = node.chain.lock().await;
+                chain.get_block(&hash).is_some() || chain.get_block(&parent_hash).is_some()
+            };
+            if !dependency_known {
+                let queued = queue_orphan(node, block, peer_addr, peer_version, msg.payload.len());
+                tracing::info!(
+                    hash = %hex::encode(hash),
+                    parent = %hex::encode(parent_hash),
+                    queued,
+                    "Block parent unknown; requesting parent"
+                );
+                request_orphan_parent(node, peer_addr, peer_version, parent_hash).await;
+                return Ok(());
+            }
             let tx_count = block.transactions.len();
             let timestamp = block.header.timestamp;
             let size_bytes = serde_json::to_vec(&block).map(|v| v.len()).unwrap_or(0);
@@ -212,6 +309,18 @@ pub(crate) async fn handle_block(
                         node.peer_manager
                             .broadcast_except(peer_addr, NetMessage::new("inv", payload))
                             .await;
+                    }
+                    for orphan in take_orphan_children(node, hash) {
+                        let payload =
+                            node.serialize_block_for_peer(&orphan.block, orphan.peer_version);
+                        let child_msg = NetMessage::new("block", payload);
+                        Box::pin(handle_block(
+                            node,
+                            orphan.peer_addr,
+                            &child_msg,
+                            orphan.peer_version,
+                        ))
+                        .await?;
                     }
                 }
                 Err(e) => {
@@ -1046,8 +1155,12 @@ mod tests {
     #[tokio::test]
     async fn handle_block_rejects_invalid_block_and_bans_peer() {
         let mut node = test_node();
-        // A block whose parent is unknown (not the genesis hash) fails validation.
-        let block = coinbase_block([0xaa; 32], 0, 1);
+        let genesis_hash = {
+            let chain = node.chain.lock().await;
+            chain.best_hash().unwrap()
+        };
+        let mut block = coinbase_block(genesis_hash, 0, 1);
+        block.header.merkle_root = [0xaa; 32];
         let payload = node.serialize_block_for_peer(&block, PROTOCOL_VERSION);
         let msg = NetMessage::new("block", payload);
         let addr = peer(2);
@@ -1062,6 +1175,102 @@ mod tests {
         );
         let chain = node.chain.lock().await;
         assert_eq!(chain.best_height(), 0);
+    }
+
+    #[tokio::test]
+    async fn handle_block_queues_unknown_parent_without_banning_peer() {
+        let mut node = test_node();
+        let parent_hash = [0xaa; 32];
+        let block = coinbase_block(parent_hash, 0, 1);
+        let block_hash = block.hash();
+        let payload = node.serialize_block_for_peer(&block, PROTOCOL_VERSION);
+        let msg = NetMessage::new("block", payload);
+        let addr = peer(20);
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(4);
+        node.peer_manager
+            .register_virtual_peer(addr, "/vTorrent:test/".into(), command_tx)
+            .unwrap();
+
+        handle_block(&mut node, addr, &msg, PROTOCOL_VERSION)
+            .await
+            .unwrap();
+
+        let command = command_rx.recv().await.expect("parent request");
+        let vtorrent_p2p::peer::PeerCommand::Send(request) = command else {
+            panic!("expected parent getdata request");
+        };
+        assert_eq!(request.command_str(), "getdata");
+        let request: GetDataMsg = decode_for_peer(&request.payload, PROTOCOL_VERSION).unwrap();
+        assert_eq!(
+            request.items,
+            vec![InvItem {
+                inv_type: InvType::Block,
+                hash: parent_hash,
+            }]
+        );
+        assert!(!node.peer_manager.is_banned(addr).await);
+        assert!(node.orphan_blocks.contains_key(&block_hash));
+        let chain = node.chain.lock().await;
+        assert_eq!(chain.best_height(), 0);
+    }
+
+    #[tokio::test]
+    async fn handle_block_accepts_orphan_chain_after_parent_arrives() {
+        let mut node = test_node();
+        let genesis_hash = {
+            let chain = node.chain.lock().await;
+            chain.best_hash().unwrap()
+        };
+        let parent = coinbase_block(genesis_hash, 0, 1);
+        let child = coinbase_block(parent.hash(), parent.header.stake_modifier, 2);
+        let addr = peer(21);
+
+        let child_msg = NetMessage::new(
+            "block",
+            node.serialize_block_for_peer(&child, PROTOCOL_VERSION),
+        );
+        handle_block(&mut node, addr, &child_msg, PROTOCOL_VERSION)
+            .await
+            .unwrap();
+        assert_eq!(node.orphan_blocks.len(), 1);
+
+        let parent_msg = NetMessage::new(
+            "block",
+            node.serialize_block_for_peer(&parent, PROTOCOL_VERSION),
+        );
+        handle_block(&mut node, addr, &parent_msg, PROTOCOL_VERSION)
+            .await
+            .unwrap();
+
+        assert!(!node.peer_manager.is_banned(addr).await);
+        assert!(node.orphan_blocks.is_empty());
+        assert_eq!(node.orphan_bytes, 0);
+        let chain = node.chain.lock().await;
+        assert_eq!(chain.best_height(), 2);
+        assert_eq!(chain.best_hash(), Some(child.hash()));
+    }
+
+    #[test]
+    fn orphan_pool_is_bounded_by_count_and_bytes() {
+        let mut node = test_node();
+        let addr = peer(22);
+        for height in 1..=(super::super::MAX_ORPHAN_BLOCKS as u32 + 5) {
+            let block = coinbase_block([height as u8; 32], 0, height);
+            assert!(queue_orphan(&mut node, block, addr, PROTOCOL_VERSION, 1,));
+        }
+        assert_eq!(node.orphan_blocks.len(), super::super::MAX_ORPHAN_BLOCKS);
+        assert_eq!(node.orphan_order.len(), super::super::MAX_ORPHAN_BLOCKS);
+        assert_eq!(node.orphan_bytes, super::super::MAX_ORPHAN_BLOCKS);
+
+        let oversized = coinbase_block([0xff; 32], 0, 100);
+        assert!(!queue_orphan(
+            &mut node,
+            oversized,
+            addr,
+            PROTOCOL_VERSION,
+            super::super::MAX_ORPHAN_BYTES + 1,
+        ));
+        assert_eq!(node.orphan_blocks.len(), super::super::MAX_ORPHAN_BLOCKS);
     }
 
     #[tokio::test]

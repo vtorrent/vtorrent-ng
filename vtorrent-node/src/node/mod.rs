@@ -20,7 +20,8 @@ pub use chain::handle_block;
 pub use p2p::handle_peer_event;
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
+    net::SocketAddr,
     sync::Arc,
 };
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -51,6 +52,15 @@ use crate::{
 use vtorrent_spv::stake::StakeProof;
 
 const MAX_CACHED_STAKE_PROOFS: usize = 2048;
+const MAX_ORPHAN_BLOCKS: usize = 64;
+const MAX_ORPHAN_BYTES: usize = 16 * 1024 * 1024;
+
+pub(crate) struct OrphanBlock {
+    block: Block,
+    peer_addr: SocketAddr,
+    peer_version: u32,
+    size_bytes: usize,
+}
 
 /// Authenticated overlay notifications queued for the node event loop.
 pub(crate) enum OverlayIngress {
@@ -186,6 +196,9 @@ pub struct Node {
     /// Partial compact blocks awaiting `blocktxn` responses (BIP-152).
     /// Keyed by block hash; populated when `cmpctblock` reports missing txs.
     pub(crate) pending_compact_blocks: HashMap<[u8; 32], CmpctBlockMsg>,
+    pub(crate) orphan_blocks: HashMap<[u8; 32], OrphanBlock>,
+    pub(crate) orphan_order: VecDeque<[u8; 32]>,
+    pub(crate) orphan_bytes: usize,
     pub(crate) stake_proofs: Arc<RwLock<HashMap<[u8; 32], StakeProof>>>,
     /// Per-peer minimum fee rate (from feefilter messages), satoshis per 1000 bytes.
     pub(crate) peer_fee_filters: std::collections::HashMap<std::net::SocketAddr, u64>,
@@ -274,6 +287,9 @@ impl Node {
             event_tx: None,
             compact_peers: std::collections::HashMap::new(),
             pending_compact_blocks: HashMap::new(),
+            orphan_blocks: HashMap::new(),
+            orphan_order: VecDeque::new(),
+            orphan_bytes: 0,
             stake_proofs: Arc::new(RwLock::new(HashMap::new())),
             peer_fee_filters: std::collections::HashMap::new(),
             peer_ping_nonces: std::collections::HashMap::new(),
@@ -340,6 +356,9 @@ impl Node {
             event_tx: None,
             compact_peers: std::collections::HashMap::new(),
             pending_compact_blocks: HashMap::new(),
+            orphan_blocks: HashMap::new(),
+            orphan_order: VecDeque::new(),
+            orphan_bytes: 0,
             stake_proofs: Arc::new(RwLock::new(HashMap::new())),
             peer_fee_filters: std::collections::HashMap::new(),
             peer_ping_nonces: std::collections::HashMap::new(),
@@ -534,6 +553,11 @@ impl Node {
             tokio::select! {
                 // Poll peer events every 100ms
                 _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    let best_height = {
+                        let chain = self.chain.lock().await;
+                        chain.best_height()
+                    };
+                    self.peer_manager.set_best_height(best_height);
                     let events = self.peer_manager.process_events().await;
                     for event in events {
                         if let Err(e) = self.handle_peer_event(event).await {
