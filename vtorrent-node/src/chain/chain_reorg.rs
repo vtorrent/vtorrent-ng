@@ -1,8 +1,7 @@
 use crate::{
     block::{Block, Transaction},
     consensus::{
-        check_stake_kernel, compute_pos_reward, validate_legacy_claim, MAX_STAKE_AGE, MAX_SUPPLY,
-        MIN_STAKE_AGE, MIN_STAKE_AMOUNT,
+        check_stake_kernel, compute_pos_reward, validate_legacy_claim, MAX_SUPPLY, MIN_STAKE_AMOUNT,
     },
     error::{NodeError, Result},
     genesis::get_legacy_balance,
@@ -328,10 +327,11 @@ fn apply_transaction_journaled(
                 staked.value, MIN_STAKE_AMOUNT
             )));
         }
-        if coin_age < MIN_STAKE_AGE as u32 || coin_age > MAX_STAKE_AGE as u32 {
+        let coin_age = u64::from(coin_age);
+        if coin_age < chain.min_stake_age || coin_age > chain.max_stake_age {
             return Err(NodeError::InvalidTransaction(format!(
                 "Stake age {} is outside the allowed range {}..={}",
-                coin_age, MIN_STAKE_AGE, MAX_STAKE_AGE
+                coin_age, chain.min_stake_age, chain.max_stake_age
             )));
         }
         if !check_stake_kernel(parent_stake_modifier, &staked, timestamp) {
@@ -339,7 +339,7 @@ fn apply_transaction_journaled(
                 "Coinstake kernel hash does not meet the stake target".into(),
             ));
         }
-        let max_reward = compute_pos_reward(staked.value, coin_age as u64);
+        let max_reward = compute_pos_reward(staked.value, coin_age);
         let minted = tx.total_output().saturating_sub(staked.value);
         if minted > max_reward {
             return Err(NodeError::InvalidTransaction(format!(

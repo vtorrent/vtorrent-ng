@@ -44,19 +44,20 @@ impl Node {
             )
         };
 
-        tracing::debug!(
+        tracing::trace!(
             "Stake tick: evaluating {} committed UTXOs for address {}",
             stake_utxos.len(),
             staking.address
         );
         if stake_utxos.is_empty() {
-            return Err(NodeError::Chain("No UTXOs available for staking".into()));
+            tracing::trace!("Stake tick: no UTXOs available");
+            return Ok(());
         }
 
         let now = now_timestamp_u32();
 
         if now <= best_timestamp + TARGET_BLOCK_TIME as u32 {
-            return Err(NodeError::Chain("Too soon to stake".into()));
+            return Ok(());
         }
 
         // Only include pending txs whose inputs are still unspent in the
@@ -82,7 +83,7 @@ impl Node {
             pending_txs,
         );
         if block_opt.is_none() {
-            tracing::debug!(
+            tracing::trace!(
                 "Stake tick: no kernel met target (height {}, now {})",
                 best_height + 1,
                 now

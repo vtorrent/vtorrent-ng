@@ -34,22 +34,26 @@
 
 ## 2. Testnet Soak
 
-> **Run 1 started 2026-08-24** — `docker/testnet/docker-compose.yml` on the dev
-> workstation (3 regtest nodes, isolated bootstrap, node1 staking 500 VTR;
-> first stake blocks expected after the 6h min stake age). Check daily with
+> **Run 2 started 2026-09-03 UTC** — fresh consensus-v3 volumes on the dev
+> workstation using `docker/testnet/docker-compose.yml` (3 isolated regtest
+> nodes, node1 staking 500 VTR with 60s fast-regtest maturity). The previous
+> run used pre-v3 persisted blocks and does not count toward this window; its
+> volumes are retained with the `pre-v3-58b256c` suffix. Check daily with
 > `scripts/soak-status.sh`; Grafana at http://localhost:3300 (admin/admin).
 
 - [ ] **3+ node Docker testnet** (`docker/testnet/docker-compose.yml`) runs
       ≥7 days: blocks propagate between all nodes, no forks beyond expected
       PoS reorg depth, no memory growth, no peer churn storms. *(Mechanics
       verified 2026-08-30: 3 nodes mesh, faucet mints persist across
-      restarts, mesh self-heals after node restart; 7-day window in progress.
-      2026-08-31: staking-wedge fix `2f8602d` deployed to soak — chain
-      advanced 2→33 within minutes after being stuck at height 2 for 2h.)*
+      restarts, mesh self-heals after node restart. Fresh v3 run produced and
+      propagated PoS block `a6b2a648…fab20` at height 2, then replayed it from
+      node2's persistent store after restart; all three tips converged. The
+      7-day window restarted 2026-09-03.)*
 - [ ] **Staking soak**: at least one node stakes continuously and produces
       blocks at the expected ~60s average over the soak window. *(Staking
-      verified end-to-end 2026-08-30: fast-stake kernel hits, reward minted,
-      all 3 nodes converged; continuous-window check pending.)*
+      verified end-to-end again 2026-09-03: fast-stake candidate passed chain
+      admission, reward block persisted, and all 3 nodes converged; continuous-
+      window check pending.)*
 - [x] **Atomic swap E2E on testnet**: 2026-08-24 via compose stack — full
       VTR↔BTC cycle against BTC regtest: VTR HTLC funded (match), BTC HTLC
       funded and confirmed (P2WSH, block 127), taker claimed VTR revealing
@@ -130,6 +134,20 @@
 
 ## Known Issues (found during soak/E2E, 2026-08-24)
 
+- [x] ~~**v3 peers disconnected on every keepalive interval**~~ — FIXED
+      2026-09-03: node-level ping/pong dispatch still decoded JSON after the
+      v3 peer codec moved these payloads to bincode. Version-aware decoding
+      now clears pending nonces; the three-node mesh remained stable.
+- [x] ~~**Fast-regtest stakers built blocks that consensus rejected**~~ —
+      FIXED 2026-09-03: the staking engine used 60s maturity while chain
+      admission and persisted-chain replay still enforced the production 6h
+      minimum. Fast-regtest age rules now flow through production, peer
+      validation, store replay, and lag reconciliation; normal consensus is
+      unchanged.
+- [x] ~~**Isolated regtest still contacted the public overlay**~~ — FIXED
+      2026-09-04: isolated mode now suppresses overlay startup as well as DHT,
+      DoH, DNS, and GitHub bootstrap. Startup labels also report regtest and
+      the active fast-stake parameters accurately.
 - [x] ~~**Imported wallets are memory-only**~~ — FIXED `8a78acd`: encrypted
       wallet (Argon2id + ChaCha20-Poly1305) persists to `<data-dir>/wallet.json`
       (0600, atomic rename) and is restored locked on startup.

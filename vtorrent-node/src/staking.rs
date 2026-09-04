@@ -16,7 +16,8 @@ use crate::{
     chain::Utxo,
     consensus::{
         check_stake_kernel, compute_pos_reward, compute_stake_modifier, stake_kernel_hash,
-        MAX_STAKE_AGE, MIN_STAKE_AGE, MIN_STAKE_AMOUNT,
+        MAX_STAKE_AGE, MIN_STAKE_AGE, MIN_STAKE_AMOUNT, REGTEST_FAST_MAX_STAKE_AGE,
+        REGTEST_FAST_MIN_STAKE_AGE,
     },
 };
 use secp256k1::{All, Secp256k1};
@@ -75,14 +76,13 @@ impl StakingEngine {
 
     /// Create a fast staking engine for regtest soak testing.
     ///
-    /// Lowers min stake age to 60s and max stake age to 3600s (1 hour) so
-    /// blocks are produced rapidly with few UTXOs.
+    /// Lowers min stake age to 60s so blocks are produced rapidly with few UTXOs.
     pub fn new_fast(address: String) -> Self {
         Self {
             address,
             wif: None,
-            min_stake_age: 60,
-            max_stake_age: u64::MAX,
+            min_stake_age: REGTEST_FAST_MIN_STAKE_AGE,
+            max_stake_age: REGTEST_FAST_MAX_STAKE_AGE,
         }
     }
 
@@ -91,8 +91,8 @@ impl StakingEngine {
         Self {
             address,
             wif: Some(wif),
-            min_stake_age: 60,
-            max_stake_age: u64::MAX,
+            min_stake_age: REGTEST_FAST_MIN_STAKE_AGE,
+            max_stake_age: REGTEST_FAST_MAX_STAKE_AGE,
         }
     }
 
@@ -145,20 +145,6 @@ impl StakingEngine {
                     && is_spendable(u)
             })
             .collect();
-        for u in &utxos {
-            if !self.is_eligible(u, timestamp) {
-                let age = timestamp.saturating_sub(u.timestamp);
-                tracing::debug!(
-                    "UTXO {}:{} value={} REJECTED: age={}s (min {} max {})",
-                    hex::encode(u.txid),
-                    u.vout,
-                    u.value,
-                    age,
-                    self.min_stake_age,
-                    self.max_stake_age
-                );
-            }
-        }
 
         if eligible.is_empty() {
             tracing::debug!("No eligible UTXOs for staking at height {}", height);
@@ -290,14 +276,14 @@ impl StakingEngine {
         };
 
         let block_hash = block.hash();
-        tracing::info!(
+        tracing::debug!(
             height = %height,
             stake_utxo = %format!("{}:{}", hex::encode(utxo.txid), utxo.vout),
             stake_value = %utxo.value,
             timestamp = %timestamp,
             block_hash = %hex::encode(block_hash),
             tx_count = %block.transactions.len(),
-            "Successfully staked block"
+            "Built valid staking candidate"
         );
         Some((block, proof))
     }
@@ -345,7 +331,7 @@ impl StakingEngine {
                 kernel_hash[2],
                 kernel_hash[3],
             ]);
-            tracing::debug!(
+            tracing::trace!(
                 "Kernel miss: value={} target={} kernel_val={} modifier={}",
                 utxo.value,
                 (utxo.value / 1000).min(u32::MAX as u64),

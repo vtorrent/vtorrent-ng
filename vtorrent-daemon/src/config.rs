@@ -89,7 +89,7 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub regtest: bool,
 
-    /// Lower stake age for regtest soak testing (60s min, 1h max).
+    /// Lower the minimum stake age to 60 seconds for regtest soak testing.
     #[arg(long, default_value_t = false)]
     pub regtest_fast_stake: bool,
 
@@ -130,8 +130,13 @@ pub struct Cli {
 pub fn validate_startup_config(cli: &Cli, data_dir: &std::path::Path) -> anyhow::Result<()> {
     use vtorrent_core::network::{mainnet, testnet};
     use vtorrent_node::consensus::{
-        BLOCK_REWARD, MAX_STAKE_AGE, MAX_SUPPLY, MIN_STAKE_AGE, MIN_STAKE_AMOUNT, TARGET_BLOCK_TIME,
+        BLOCK_REWARD, MAX_STAKE_AGE, MAX_SUPPLY, MIN_STAKE_AGE, MIN_STAKE_AMOUNT,
+        REGTEST_FAST_MAX_STAKE_AGE, REGTEST_FAST_MIN_STAKE_AGE, TARGET_BLOCK_TIME,
     };
+
+    if cli.regtest_fast_stake && !cli.regtest {
+        anyhow::bail!("--regtest-fast-stake requires --regtest");
+    }
 
     // ── 1. Network magic consistency ──────────────────────────────────────────
     //
@@ -206,11 +211,16 @@ pub fn validate_startup_config(cli: &Cli, data_dir: &std::path::Path) -> anyhow:
     if MIN_STAKE_AMOUNT == 0 {
         anyhow::bail!("Consensus error: MIN_STAKE_AMOUNT must be > 0");
     }
-    if MIN_STAKE_AGE >= MAX_STAKE_AGE {
+    let (min_stake_age, max_stake_age) = if cli.regtest_fast_stake {
+        (REGTEST_FAST_MIN_STAKE_AGE, REGTEST_FAST_MAX_STAKE_AGE)
+    } else {
+        (MIN_STAKE_AGE, MAX_STAKE_AGE)
+    };
+    if min_stake_age >= max_stake_age {
         anyhow::bail!(
             "Consensus error: MIN_STAKE_AGE ({}) must be < MAX_STAKE_AGE ({})",
-            MIN_STAKE_AGE,
-            MAX_STAKE_AGE,
+            min_stake_age,
+            max_stake_age,
         );
     }
     if TARGET_BLOCK_TIME == 0 {
@@ -225,8 +235,8 @@ pub fn validate_startup_config(cli: &Cli, data_dir: &std::path::Path) -> anyhow:
     tracing::info!(
         "Consensus parameters validated: MIN_STAKE_AMOUNT={}, MIN_STAKE_AGE={}s, MAX_STAKE_AGE={}s, TARGET_BLOCK_TIME={}s, MAX_SUPPLY={}, BLOCK_REWARD={}",
         MIN_STAKE_AMOUNT,
-        MIN_STAKE_AGE,
-        MAX_STAKE_AGE,
+        min_stake_age,
+        max_stake_age,
         TARGET_BLOCK_TIME,
         MAX_SUPPLY,
         BLOCK_REWARD,

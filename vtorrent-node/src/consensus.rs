@@ -33,6 +33,12 @@ pub const MIN_STAKE_AGE: u64 = 6 * 60 * 60;
 /// Maximum coin age for staking (6 days in seconds).
 pub const MAX_STAKE_AGE: u64 = 6 * 24 * 60 * 60;
 
+/// Minimum coin age used only by explicitly enabled fast regtest networks.
+pub const REGTEST_FAST_MIN_STAKE_AGE: u64 = 60;
+
+/// Fast regtest coins remain eligible for the lifetime of a soak run.
+pub const REGTEST_FAST_MAX_STAKE_AGE: u64 = u64::MAX;
+
 /// Minimum stake amount (1 VTR).
 pub const MIN_STAKE_AMOUNT: u64 = COIN;
 

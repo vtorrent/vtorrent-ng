@@ -98,6 +98,7 @@ async fn main() -> anyhow::Result<()> {
         transport.i2p_enabled = true;
         transport.i2p_sam_addr = sam_addr.clone();
     }
+    let isolated = cli.isolated || cli.regtest;
     let config = NodeConfig {
         listen_addr: cli.listen.clone(),
         staking_enabled,
@@ -110,10 +111,10 @@ async fn main() -> anyhow::Result<()> {
         // node can reach production seeds, ingest their peer view, and gossip
         // locally-minted non-PoS blocks to the live network. Force isolation
         // in regtest mode (mirrors the faucet: local-only by design).
-        isolated: cli.isolated || cli.regtest,
+        isolated,
         public_addr: cli.public_addr.as_deref().and_then(|a| a.parse().ok()),
         data_dir: data_dir.clone(),
-        use_overlay: true,
+        use_overlay: !isolated,
         testnet: cli.testnet,
         regtest: cli.regtest,
         regtest_fast_stake: cli.regtest_fast_stake,
@@ -133,7 +134,9 @@ async fn main() -> anyhow::Result<()> {
         if store_height > 0 {
             tracing::info!("Resuming from persisted chain at height {}", store_height);
             // Load persisted chain into memory, then build the node with it.
-            let chain = if cli.regtest {
+            let chain = if cli.regtest && cli.regtest_fast_stake {
+                block_store.load_into_fast_regtest_chain()
+            } else if cli.regtest {
                 block_store.load_into_regtest_chain()
             } else {
                 block_store.load_into_chain()
@@ -540,7 +543,9 @@ async fn main() -> anyhow::Result<()> {
                                 .cloned()
                                 .collect()
                         };
-                        let rebuild = if config.regtest {
+                        let rebuild = if config.regtest && config.regtest_fast_stake {
+                            store_for_bridge.rebuild_from_fast_regtest_blocks(&blocks)
+                        } else if config.regtest {
                             store_for_bridge.rebuild_from_regtest_blocks(&blocks)
                         } else {
                             store_for_bridge.rebuild_from_blocks(&blocks)
@@ -569,7 +574,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("  Data dir:        {}", data_dir.display());
     tracing::info!(
         "  DHT bootstrap:   {}",
-        if config.use_dht {
+        if config.use_dht && !config.isolated {
             "enabled"
         } else {
             "disabled"
@@ -577,7 +582,13 @@ async fn main() -> anyhow::Result<()> {
     );
     tracing::info!(
         "  Network:         {}",
-        if config.testnet { "TESTNET" } else { "mainnet" }
+        if config.regtest {
+            "regtest"
+        } else if config.testnet {
+            "testnet"
+        } else {
+            "mainnet"
+        }
     );
     tracing::info!(
         "  Staking:         {}",

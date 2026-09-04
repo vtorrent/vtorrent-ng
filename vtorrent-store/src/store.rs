@@ -423,21 +423,31 @@ impl BlockStore {
     /// For large chains this is fast because we skip validation on trusted
     /// stored data.
     pub fn load_into_chain(&self) -> Result<vtorrent_node::chain::Chain> {
-        self.load_into_chain_with_mode(false)
+        self.load_into_chain_with_mode(false, false)
     }
 
     pub fn load_into_regtest_chain(&self) -> Result<vtorrent_node::chain::Chain> {
-        self.load_into_chain_with_mode(true)
+        self.load_into_chain_with_mode(true, false)
     }
 
-    fn load_into_chain_with_mode(&self, regtest: bool) -> Result<vtorrent_node::chain::Chain> {
+    pub fn load_into_fast_regtest_chain(&self) -> Result<vtorrent_node::chain::Chain> {
+        self.load_into_chain_with_mode(true, true)
+    }
+
+    fn load_into_chain_with_mode(
+        &self,
+        regtest: bool,
+        fast_stake: bool,
+    ) -> Result<vtorrent_node::chain::Chain> {
         use vtorrent_node::chain::Chain;
 
         let height = self.best_height()?;
         tracing::info!("Loading chain from store: {} blocks", height + 1);
 
         let make_chain = || {
-            if regtest {
+            if regtest && fast_stake {
+                Chain::new_regtest_fast()
+            } else if regtest {
                 Chain::new_regtest()
             } else {
                 Chain::new()
@@ -485,22 +495,32 @@ impl BlockStore {
     /// complete in-memory block list. Used when event loss may have left the
     /// store behind the chain.
     pub fn rebuild_from_blocks(&self, blocks: &[vtorrent_node::block::Block]) -> Result<()> {
-        self.rebuild_from_blocks_with_mode(blocks, false)
+        self.rebuild_from_blocks_with_mode(blocks, false, false)
     }
 
     pub fn rebuild_from_regtest_blocks(
         &self,
         blocks: &[vtorrent_node::block::Block],
     ) -> Result<()> {
-        self.rebuild_from_blocks_with_mode(blocks, true)
+        self.rebuild_from_blocks_with_mode(blocks, true, false)
+    }
+
+    pub fn rebuild_from_fast_regtest_blocks(
+        &self,
+        blocks: &[vtorrent_node::block::Block],
+    ) -> Result<()> {
+        self.rebuild_from_blocks_with_mode(blocks, true, true)
     }
 
     fn rebuild_from_blocks_with_mode(
         &self,
         blocks: &[vtorrent_node::block::Block],
         regtest: bool,
+        fast_stake: bool,
     ) -> Result<()> {
-        let chain_result = if regtest {
+        let chain_result = if regtest && fast_stake {
+            vtorrent_node::chain::Chain::new_regtest_fast()
+        } else if regtest {
             vtorrent_node::chain::Chain::new_regtest()
         } else {
             vtorrent_node::chain::Chain::new()

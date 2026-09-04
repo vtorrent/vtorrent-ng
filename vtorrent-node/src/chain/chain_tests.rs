@@ -473,6 +473,67 @@ fn test_pos_block_with_signed_coinstake_accepted() {
 }
 
 #[test]
+fn test_fast_regtest_chain_accepts_fast_stake_age() {
+    use crate::staking::StakingEngine;
+    use secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+    let secp = Secp256k1::new();
+    let mut key_bytes = [0u8; 32];
+    key_bytes[31] = 43;
+    let key = vtorrent_core::keys::PrivateKey::from_bytes(key_bytes, true).unwrap();
+    let wif = key.to_wif(198);
+    let secret = SecretKey::from_slice(key.as_bytes()).unwrap();
+    let pubkey = PublicKey::from_secret_key(&secp, &secret);
+    let address = vtorrent_core::address::Address::from_pubkey(&pubkey, true, 70).to_string();
+
+    let mut fast_chain = Chain::new_regtest_fast().unwrap();
+    let mut normal_chain = Chain::new_regtest().unwrap();
+    let funding_ts = 1_700_000_001u32;
+    let funding_block = make_coinbase_to_script(
+        fast_chain.best_hash().unwrap(),
+        0,
+        1,
+        funding_ts,
+        fast_chain.address_to_p2pkh_script(&address),
+        500 * crate::consensus::COIN,
+    );
+    fast_chain.add_block(funding_block.clone()).unwrap();
+    normal_chain.add_block(funding_block).unwrap();
+
+    let engine = StakingEngine::with_wif_fast(address, wif);
+    let utxos = fast_chain
+        .get_utxo_set()
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    let prev_modifier = fast_chain
+        .get_block_at_height(1)
+        .unwrap()
+        .header
+        .stake_modifier;
+    let stake_block = (funding_ts + crate::consensus::REGTEST_FAST_MIN_STAKE_AGE as u32
+        ..funding_ts + crate::consensus::MIN_STAKE_AGE as u32)
+        .find_map(|timestamp| {
+            engine.build_stake_block(
+                fast_chain.best_hash().unwrap(),
+                prev_modifier,
+                2,
+                timestamp,
+                utxos.clone(),
+                vec![],
+            )
+        })
+        .expect("fast regtest should find a kernel before mainnet maturity");
+
+    let error = normal_chain.add_block(stake_block.clone()).unwrap_err();
+    assert!(error.to_string().contains("Stake age"));
+    assert!(matches!(
+        fast_chain.add_block(stake_block).unwrap(),
+        BlockAcceptance::MainChain { height: 2, .. }
+    ));
+}
+
+#[test]
 fn test_pos_block_with_bad_kernel_rejected() {
     use secp256k1::{PublicKey, Secp256k1, SecretKey};
 

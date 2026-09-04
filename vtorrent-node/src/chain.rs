@@ -154,6 +154,8 @@ pub struct Chain {
     /// as blocks are applied and rolled back. Bounded by `MAX_SUPPLY`.
     total_supply: u64,
     allow_pow_test_blocks: bool,
+    min_stake_age: u64,
+    max_stake_age: u64,
 }
 
 impl Chain {
@@ -175,6 +177,8 @@ impl Chain {
             block_heights: HashMap::new(),
             total_supply: 0,
             allow_pow_test_blocks: cfg!(test),
+            min_stake_age: crate::consensus::MIN_STAKE_AGE,
+            max_stake_age: crate::consensus::MAX_STAKE_AGE,
         };
 
         chain.blocks.insert(genesis_hash, genesis.clone());
@@ -197,6 +201,14 @@ impl Chain {
     pub fn new_regtest() -> Result<Self> {
         let mut chain = Self::new()?;
         chain.allow_pow_test_blocks = true;
+        Ok(chain)
+    }
+
+    /// Initialize a regtest chain with accelerated stake maturity rules.
+    pub fn new_regtest_fast() -> Result<Self> {
+        let mut chain = Self::new_regtest()?;
+        chain.min_stake_age = crate::consensus::REGTEST_FAST_MIN_STAKE_AGE;
+        chain.max_stake_age = crate::consensus::REGTEST_FAST_MAX_STAKE_AGE;
         Ok(chain)
     }
 

@@ -1423,9 +1423,8 @@ pub(crate) async fn dispatch_message(
         "ping" => {
             // peer.rs already handles inbound ping→pong at the peer level;
             // this arm handles any ping that bubbles up (e.g. from test harness).
-            if let Ok(ping) = serde_json::from_slice::<PingMsg>(&msg.payload) {
-                let payload =
-                    serde_json::to_vec(&PingMsg { nonce: ping.nonce }).unwrap_or_default();
+            if let Ok(ping) = decode_for_peer::<PingMsg>(&msg.payload, peer_version) {
+                let payload = encode_for_peer(&PingMsg { nonce: ping.nonce }, peer_version);
                 node.peer_manager
                     .send_to(peer_addr, NetMessage::new("pong", payload))
                     .await;
@@ -1434,7 +1433,7 @@ pub(crate) async fn dispatch_message(
 
         "pong" => {
             // Validate the nonce matches what we sent
-            if let Ok(pong) = serde_json::from_slice::<PingMsg>(&msg.payload) {
+            if let Ok(pong) = decode_for_peer::<PingMsg>(&msg.payload, peer_version) {
                 if let Some(&expected) = node.peer_ping_nonces.get(&peer_addr) {
                     if pong.nonce == expected {
                         node.peer_ping_nonces.remove(&peer_addr);
@@ -1682,10 +1681,11 @@ mod dispatch_tests {
     async fn dispatch_pong_with_matching_nonce_clears_pending_ping() {
         let mut node = test_node();
         let addr = peer(23);
+        node.peer_versions.insert(addr, PROTOCOL_VERSION);
         node.peer_ping_nonces.insert(addr, 4242);
         let msg = NetMessage::new(
             "pong",
-            serde_json::to_vec(&PingMsg { nonce: 4242 }).unwrap(),
+            encode_for_peer(&PingMsg { nonce: 4242 }, PROTOCOL_VERSION),
         );
         dispatch_message(&mut node, addr, msg).await.unwrap();
         assert!(

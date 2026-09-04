@@ -120,8 +120,8 @@ pub struct NodeConfig {
     /// When `true`, the node operates in regtest mode:
     /// - A faucet RPC endpoint mints coins to arbitrary addresses
     pub regtest: bool,
-    /// When `true` and `regtest` is also true, lower min/max stake age
-    /// for rapid regtest soak testing (60s min, 1h max).
+    /// When `true` and `regtest` is also true, lower the minimum stake age
+    /// to 60 seconds for rapid regtest soak testing.
     pub regtest_fast_stake: bool,
     /// Outbound routing policy for clearnet, Tor SOCKS5, and I2P SAM peers.
     pub transport: TransportConfig,
@@ -222,7 +222,9 @@ use overlay::*;
 impl Node {
     /// Create a new node.
     pub fn new(config: NodeConfig) -> Result<Self> {
-        let chain = if config.regtest {
+        let chain = if config.regtest && config.regtest_fast_stake {
+            Chain::new_regtest_fast()?
+        } else if config.regtest {
             Chain::new_regtest()?
         } else {
             Chain::new()?
@@ -489,7 +491,7 @@ impl Node {
             .map_err(|e| NodeError::Chain(format!("P2P start failed: {}", e)))?;
 
         // ── Stage 0.5: Start the overlay NAT traversal layer ─────────────────
-        if self.config.use_overlay {
+        if self.config.use_overlay && !self.config.isolated {
             self.start_overlay().await;
         }
 
@@ -517,7 +519,12 @@ impl Node {
 
         // Periodic timers
         let mut sync_ticker = interval(Duration::from_secs(SYNC_INTERVAL_SECS));
-        let mut stake_ticker = interval(Duration::from_secs(TARGET_BLOCK_TIME));
+        let stake_tick_secs = if self.config.regtest && self.config.regtest_fast_stake {
+            1
+        } else {
+            TARGET_BLOCK_TIME
+        };
+        let mut stake_ticker = interval(Duration::from_secs(stake_tick_secs));
         let mut peer_ticker = interval(Duration::from_secs(PEER_MAINTENANCE_SECS));
         let mut ping_ticker = interval(Duration::from_secs(PING_INTERVAL_SECS));
         let mut pex_ticker = interval(Duration::from_secs(PEX_INTERVAL_SECS));
