@@ -30,7 +30,9 @@ pub struct CompactNode {
 
 impl CompactNode {
     pub fn parse_list(data: &[u8]) -> Vec<Self> {
-        data.chunks_exact(26)
+        data.as_chunks::<26>()
+            .0
+            .iter()
             .filter_map(|chunk| {
                 let mut id = [0u8; 20];
                 id.copy_from_slice(&chunk[..20]);

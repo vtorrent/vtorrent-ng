@@ -14,7 +14,6 @@ path = "src/main.rs"
 [dependencies]
 vtorrent-node     = { path = "../vtorrent-node" }
 vtorrent-core     = { path = "../vtorrent-core" }
-vtorrent-p2p      = { path = "../vtorrent-p2p" }
 zeroize           = { workspace = true }
 vtorrent-rpc      = { path = "../vtorrent-rpc" }
 vtorrent-store    = { path = "../vtorrent-store" }

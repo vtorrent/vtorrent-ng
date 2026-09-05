@@ -29,7 +29,6 @@ bincode = { workspace = true }
 
 # Error handling
 thiserror = "1"
-anyhow = "1"
 
 # Encoding
 hex = "0.4"
@@ -42,7 +41,6 @@ bitcoin = { workspace = true }
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

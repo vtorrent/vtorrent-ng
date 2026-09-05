@@ -438,8 +438,8 @@ fn test_pos_block_with_signed_coinstake_accepted() {
         .map(|b| b.header.stake_modifier)
         .unwrap_or(0);
     let mut stake_block = None;
-    let mut ts = funding_ts + crate::consensus::MIN_STAKE_AGE as u32;
-    for _ in 0..10_000 {
+    let first_ts = funding_ts + crate::consensus::MIN_STAKE_AGE as u32;
+    for ts in (first_ts..).take(10_000) {
         if let Some(block) = engine.build_stake_block(
             chain.best_hash().unwrap(),
             prev_stake_modifier,
@@ -451,7 +451,6 @@ fn test_pos_block_with_signed_coinstake_accepted() {
             stake_block = Some(block);
             break;
         }
-        ts += 1;
     }
     let stake_block = stake_block.expect("should find a valid stake kernel");
 
@@ -868,13 +867,13 @@ fn test_multi_block_staking() {
         let utxos = chain.get_utxo_set().values().cloned().collect::<Vec<_>>();
 
         let mut stake_block = None;
-        let mut ts = chain
+        let first_ts = chain
             .get_block_at_height(expected_height - 1)
             .unwrap()
             .header
             .timestamp
             + crate::consensus::MIN_STAKE_AGE as u32;
-        for _ in 0..100_000 {
+        for ts in (first_ts..).take(100_000) {
             if let Some(block) = engine.build_stake_block(
                 chain.best_hash().unwrap(),
                 prev_modifier,
@@ -886,7 +885,6 @@ fn test_multi_block_staking() {
                 stake_block = Some(block);
                 break;
             }
-            ts += 1;
         }
         let block = stake_block.expect("should find stake kernel");
         prev_modifier = block.header.stake_modifier;
@@ -963,8 +961,8 @@ fn test_pos_block_includes_mempool_txs() {
     };
 
     let mut stake_block = None;
-    let mut ts = funding_ts + crate::consensus::MIN_STAKE_AGE as u32;
-    for _ in 0..100_000 {
+    let first_ts = funding_ts + crate::consensus::MIN_STAKE_AGE as u32;
+    for ts in (first_ts..).take(100_000) {
         if let Some(block) = engine.build_stake_block(
             chain.best_hash().unwrap(),
             prev_modifier,
@@ -976,7 +974,6 @@ fn test_pos_block_includes_mempool_txs() {
             stake_block = Some(block);
             break;
         }
-        ts += 1;
     }
     let block = stake_block.expect("should find stake kernel");
     // Block should have the coinstake + the mempool tx.

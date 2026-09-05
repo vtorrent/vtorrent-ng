@@ -22,7 +22,6 @@ secp256k1      = { workspace = true }
 
 # Error handling
 thiserror      = "1"
-anyhow         = "1"
 
 # Logging
 tracing        = "0.1"

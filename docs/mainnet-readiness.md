@@ -28,7 +28,9 @@
       `fuzz_btc_psbt`), 2026-08-24→25 — 11.4B / 41.7B / 4.7B / 3.1B
       executions respectively. Zero crashes, zero artifacts.
 - [x] **Benchmark regression gate**: `scripts/bench-gate.sh` + 23 committed
-      baselines in `vtorrent-node/benches/baselines/`; CI job runs on every push.
+      baselines in `vtorrent-node/benches/baselines/`; CI measures the previous
+      and current revisions on the same runner to avoid cross-host timing noise,
+      then remeasures once before confirming a threshold breach.
 - [ ] **External security review** of wallet encryption (Argon2id +
       ChaCha20-Poly1305), RPC auth, and the atomic-swap HTLC flow.
 
@@ -101,8 +103,9 @@
 
 ## 4. Release Engineering
 
-- [ ] **CI green on billing-fixed account**: tests, fmt, clippy `-D warnings`,
-      cargo audit all pass on GitHub Actions (currently blocked — see below).
+- [ ] **CI green**: Actions billing is unblocked. Tests and cargo audit pass;
+      Rust 1.98 Clippy, Cargo Machete, and the cross-host benchmark comparison
+      failures found 2026-09-04 have local fixes pending a green Actions run.
 - [ ] **Desktop builds verified** on all three platforms from a `v*` tag:
       Linux (deb/AppImage), macOS (Intel + Apple Silicon), Windows x64.
 - [ ] **Reproducible build check**: two independent builds of the same tag
@@ -131,7 +134,6 @@
 
 | Blocker | Owner | Notes |
 |---|---|---|
-| GitHub Actions billing failure | Account admin | Fix at github.com/billing; until then run CI locally (`cargo test --workspace && cargo clippy --workspace --all-targets --all-features -- -D warnings`) |
 | External security review not scheduled | Lead | Required before final v2.0.0 |
 
 ## Known Issues (found during soak/E2E, 2026-08-24)

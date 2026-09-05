@@ -109,10 +109,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run benchmark gate
-        run: bash scripts/bench-gate.sh
+        run: bash scripts/bench-gate.sh --compare-ref HEAD^
 
   # ─── Desktop builds ─────────────────────────────────────────────────────────
   build-desktop:

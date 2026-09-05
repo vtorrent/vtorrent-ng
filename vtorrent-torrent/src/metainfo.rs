@@ -165,10 +165,8 @@ impl Metainfo {
                     ));
                 }
                 let mut hashes = Vec::with_capacity(b.len() / 20);
-                for chunk in b.chunks_exact(20) {
-                    let mut h = [0u8; 20];
-                    h.copy_from_slice(chunk);
-                    hashes.push(h);
+                for chunk in b.as_chunks::<20>().0 {
+                    hashes.push(*chunk);
                 }
                 hashes
             }

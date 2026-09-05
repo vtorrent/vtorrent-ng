@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 description = "vTorrent NAT traversal overlay — UDP hole punching, STUN discovery, X25519/ChaCha20 encryption"
 
+[package.metadata.cargo-machete]
+ignored = ["hex"]
+
 [dependencies]
 # Async runtime
 tokio             = { version = "1", features = ["full"] }
@@ -19,16 +22,12 @@ zeroize           = { workspace = true }
 
 # Serialization
 serde             = { version = "1", features = ["derive"] }
-serde_json        = "1"
-bincode           = { workspace = true }
 
 # Encoding
 hex               = { workspace = true }
-bs58              = { workspace = true }
 
 # Error handling
 thiserror         = "1"
-anyhow            = "1"
 
 # Logging
 tracing           = "0.1"

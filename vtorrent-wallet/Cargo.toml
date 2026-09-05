@@ -9,10 +9,7 @@ repository.workspace = true
 [dependencies]
 vtorrent-core = { path = "../vtorrent-core" }
 vtorrent-node = { path = "../vtorrent-node" }
-bitcoin = { workspace = true }
 bip39 = { workspace = true }
-ripemd = { workspace = true }
-bs58 = { workspace = true }
 secp256k1 = { workspace = true }
 sha2 = { workspace = true }
 argon2 = { workspace = true }
@@ -20,14 +17,11 @@ chacha20poly1305 = { workspace = true }
 totp-rs = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
-base64 = { workspace = true }
 base32 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-bincode = "1"
 thiserror = { workspace = true }
 zeroize = { workspace = true }
-tokio = { workspace = true }
 
 [dev-dependencies]
 vtorrent-script = { path = "../vtorrent-script" }

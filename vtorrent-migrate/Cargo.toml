@@ -12,17 +12,12 @@ secp256k1 = { workspace = true }
 sha2 = { workspace = true }
 aes = { workspace = true }
 cbc = { workspace = true }
-pbkdf2 = { workspace = true }
 scrypt = { workspace = true }
-hmac = { workspace = true }
-rand = { workspace = true }
-bs58 = { workspace = true }
 hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 zeroize = { workspace = true }
-totp-rs = { workspace = true }
 tempfile = { workspace = true }
 libc = "0.2"
 

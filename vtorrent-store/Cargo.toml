@@ -7,7 +7,6 @@ description = "Persistent block and UTXO storage for vTorrent using redb"
 [dependencies]
 vtorrent-node = { path = "../vtorrent-node" }
 redb = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

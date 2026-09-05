@@ -91,19 +91,19 @@ Benchmark suite in `vtorrent-node/benches/consensus_hotpath.rs` (criterion):
 
 | Benchmark | Result |
 |---|---|
-| `compute_stake_modifier` | ~67 ns |
-| `stake_kernel_hash` | ~65 ns |
-| `check_stake_kernel` | ~62 ns |
+| `compute_stake_modifier` | ~83 ns |
+| `stake_kernel_hash` | ~76 ns |
+| `check_stake_kernel` | ~75 ns |
 | `compute_pos_reward` | ~2 ns |
-| `build_stake_block` (1u/0tx) | ~26 ns |
-| `build_stake_block` (50u/50tx) | ~7 µs |
-| `chain_add_block` (coinbase-only) | ~3 µs |
-| `merkle_root` (1 tx) | ~173 ns |
-| `merkle_root` (10 tx) | ~2.4 µs |
-| `merkle_root` (100 tx) | ~23.5 µs |
-| `sighash` (1 input P2PKH) | ~131 ns |
-| `sighash` (5 inputs) | ~221 ns |
-| `sighash` (20 inputs) | ~545 ns |
+| `build_stake_block` (1u/0tx) | ~256 ns |
+| `build_stake_block` (50u/50tx) | ~7.6 µs |
+| `chain_add_block` (snapshot-backed regtest) | ~11.6 ms |
+| `merkle_root` (1 tx) | ~182 ns |
+| `merkle_root` (10 tx) | ~2.5 µs |
+| `merkle_root` (100 tx) | ~24.3 µs |
+| `sighash` (1 input P2PKH) | ~138 ns |
+| `sighash` (5 inputs) | ~231 ns |
+| `sighash` (20 inputs) | ~563 ns |
 
 Key optimizations:
 - **Incremental sighash**: Hashes transaction fields directly via `Sha256::update()`

@@ -7,7 +7,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-vtorrent-core     = { path = "../vtorrent-core" }
 vtorrent-onion    = { path = "../vtorrent-onion" }
 
 # Async runtime + networking
@@ -22,12 +21,10 @@ bincode           = "1"
 
 # Crypto
 sha2              = "0.10"
-hex               = "0.4"
 rand              = "0.8"
 
 # Error handling
 thiserror         = "1"
-anyhow            = "1"
 
 # Logging
 tracing           = "0.1"

@@ -74,7 +74,9 @@ pub struct CompactPeer {
 impl CompactPeer {
     /// Parse a list of compact peers from a byte slice (6 bytes each).
     pub fn parse_list(data: &[u8]) -> Vec<Self> {
-        data.chunks_exact(6)
+        data.as_chunks::<6>()
+            .0
+            .iter()
             .filter_map(|chunk| {
                 let ip = std::net::Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]);
                 let port = u16::from_be_bytes([chunk[4], chunk[5]]);
@@ -100,7 +102,9 @@ pub struct CompactNode {
 impl CompactNode {
     /// Parse a list of compact nodes from a byte slice (26 bytes each).
     pub fn parse_list(data: &[u8]) -> Vec<Self> {
-        data.chunks_exact(26)
+        data.as_chunks::<26>()
+            .0
+            .iter()
             .filter_map(|chunk| {
                 let mut id = [0u8; 20];
                 id.copy_from_slice(&chunk[..20]);

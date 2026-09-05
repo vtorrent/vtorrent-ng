@@ -75,8 +75,8 @@ impl SipHasher {
 
     /// Hash a 32-byte value (four 8-byte blocks) and finalize.
     pub fn hash32(&mut self, data: &[u8; 32]) -> u64 {
-        for chunk in data.chunks_exact(8) {
-            let m = u64::from_le_bytes(chunk.try_into().unwrap());
+        for chunk in data.as_chunks::<8>().0 {
+            let m = u64::from_le_bytes(*chunk);
             self.v3 ^= m;
             self.compress();
             self.compress();

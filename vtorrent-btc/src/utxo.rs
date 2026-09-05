@@ -54,7 +54,7 @@ impl UtxoSet {
     /// Select UTXOs to cover `amount` (plus `fee`), largest-first.
     pub fn select(&self, amount: u64, fee: u64) -> Option<Vec<Utxo>> {
         let mut sorted: Vec<Utxo> = self.utxos.clone();
-        sorted.sort_by(|a, b| b.value.cmp(&a.value));
+        sorted.sort_by_key(|utxo| std::cmp::Reverse(utxo.value));
         let mut selected = Vec::new();
         let mut sum = 0u64;
         for u in sorted {

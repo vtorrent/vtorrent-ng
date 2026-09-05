@@ -17,7 +17,6 @@ vtorrent-script   = { path = "../vtorrent-script" }
 vtorrent-p2p      = { path = "../vtorrent-p2p" }
 vtorrent-overlay  = { path = "../vtorrent-overlay" }
 vtorrent-onion    = { path = "../vtorrent-onion" }
-vtorrent-snapshot = { path = "../vtorrent-snapshot" }
 # CLI argument parsing
 clap              = { version = "4", features = ["derive"] }
 
@@ -34,8 +33,6 @@ sha2              = "0.10"
 hex               = "0.4"
 rand              = "0.8"
 secp256k1         = { workspace = true }
-ripemd            = { workspace = true }
-bs58              = { workspace = true }
 
 # Error handling
 thiserror         = "1"
@@ -44,9 +41,6 @@ anyhow            = "1"
 # Logging
 tracing           = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-# Storage
-rusty-leveldb     = { version = "1.0", default-features = false }
 
 [dev-dependencies]
 criterion = { workspace = true }

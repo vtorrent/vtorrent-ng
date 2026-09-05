@@ -289,7 +289,7 @@ pub fn utxo_select(
 ) -> Option<Vec<vtorrent_btc::utxo::Utxo>> {
     let required = amount.checked_add(fee)?;
     let mut sorted: Vec<vtorrent_btc::utxo::Utxo> = utxos.to_vec();
-    sorted.sort_by(|a, b| b.value.cmp(&a.value));
+    sorted.sort_by_key(|utxo| std::cmp::Reverse(utxo.value));
     let mut selected = Vec::new();
     let mut sum = 0u64;
     for u in sorted {

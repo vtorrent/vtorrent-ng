@@ -799,8 +799,8 @@ mod proof_tests {
 
         let engine = StakingEngine::with_wif(address, wif);
         let mut found: Option<(Block, StakeProof)> = None;
-        let mut ts = funding_ts + crate::consensus::MIN_STAKE_AGE as u32;
-        for _ in 0..100_000 {
+        let first_ts = funding_ts + crate::consensus::MIN_STAKE_AGE as u32;
+        for ts in (first_ts..).take(100_000) {
             if let Some(r) = engine.build_stake_block_with_proof(
                 chain.best_hash().unwrap(),
                 prev_modifier,
@@ -812,7 +812,6 @@ mod proof_tests {
                 found = Some(r);
                 break;
             }
-            ts += 1;
         }
         let (block, proof) = found.expect("should find stake kernel");
 

@@ -9,21 +9,14 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-arbitrary = { version = "1", features = ["derive"] }
 bytes = "1"
 tokio-util = { version = "0.7", features = ["codec"] }
 
 [dependencies.vtorrent-script]
 path = "../vtorrent-script"
 
-[dependencies.vtorrent-node]
-path = "../vtorrent-node"
-
 [dependencies.vtorrent-p2p]
 path = "../vtorrent-p2p"
-
-[dependencies.vtorrent-btc]
-path = "../vtorrent-btc"
 
 [dependencies.bitcoin]
 version = "0.32"
