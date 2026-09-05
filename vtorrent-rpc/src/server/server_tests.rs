@@ -289,6 +289,120 @@ async fn test_send_rejects_wrong_passphrase() {
 }
 
 #[tokio::test]
+async fn test_totp_survives_persisted_wallet_restart() {
+    let path = std::env::temp_dir().join(format!(
+        "vtr-totp-restart-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let mut state = AppState::new();
+    state.wallet_path = Some(path.clone());
+    let secret_text = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+    let (status, body) = post_json(
+        build_router(state),
+        "/api/v1/wallet/import",
+        serde_json::json!({
+            "wif": "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS",
+            "passphrase": "restart-pass", "otp_secret": secret_text
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let saved = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    assert!(!saved.contains(secret_text));
+    let blob: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    let restarted = AppState::new();
+    *restarted.wallet_encrypted.write().await =
+        Some(serde_json::from_value(blob["wallet"].clone()).unwrap());
+    assert!(restarted.wallet_totp_secret.read().await.is_none());
+    let app = build_router(restarted);
+    for otp_code in [None, Some("invalid")] {
+        let (status, _) = post_json(
+            app.clone(),
+            "/api/v1/wallet/unlock",
+            serde_json::json!({
+                "passphrase": "restart-pass", "timeout_secs": 300, "otp_code": otp_code
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let secret = vtorrent_wallet::otp::TotpSecret::from_base32(secret_text).unwrap();
+    let (status, body) = post_json(app, "/api/v1/wallet/unlock", serde_json::json!({
+        "passphrase": "restart-pass", "timeout_secs": 300, "otp_code": secret.current_code().unwrap()
+    })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn test_invalid_totp_import_preserves_existing_wallet() {
+    let state = AppState::new();
+    let encrypted = Arc::clone(&state.wallet_encrypted);
+    let change = Arc::clone(&state.wallet_change_address);
+    let app = build_router(state);
+    let wif = "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS";
+    let (status, _) = post_json(
+        app.clone(),
+        "/api/v1/wallet/import",
+        serde_json::json!({
+            "wif": wif, "passphrase": "original-pass"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let original = serde_json::to_value(encrypted.read().await.as_ref().unwrap()).unwrap();
+    let address = change.read().await.clone();
+    let (status, _) = post_json(
+        app.clone(),
+        "/api/v1/wallet/import",
+        serde_json::json!({
+            "wif": wif, "passphrase": "replacement-pass", "otp_secret": "!invalid!"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        serde_json::to_value(encrypted.read().await.as_ref().unwrap()).unwrap(),
+        original
+    );
+    assert_eq!(*change.read().await, address);
+    let (status, _) = post_json(
+        app,
+        "/api/v1/wallet/unlock",
+        serde_json::json!({
+            "passphrase": "original-pass", "timeout_secs": 300
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_legacy_wif_only_wallet_still_unlocks() {
+    let state = AppState::new();
+    *state.wallet_encrypted.write().await = Some(
+        vtorrent_wallet::encryption::encrypt_wallet(
+            b"WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS",
+            "legacy-pass",
+        )
+        .unwrap(),
+    );
+    let (status, body) = post_json(
+        build_router(state),
+        "/api/v1/wallet/unlock",
+        serde_json::json!({
+            "passphrase": "legacy-pass", "timeout_secs": 300
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
 async fn test_unlock_requires_totp_when_enabled() {
     let app = build_router(AppState::new());
     let (status, _) = post_json(
@@ -664,6 +778,134 @@ async fn test_api_key_protects_sensitive_endpoints() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_regtest_debug_routes_require_api_key() {
+    for regtest in [false, true] {
+        let mut state = AppState::new();
+        state.regtest = regtest;
+        state.rpc_api_key = Some("debug-secret".into());
+        let mock_time = Arc::clone(&state.mock_time);
+        let app = build_router(state);
+
+        for (method, uri) in [
+            ("GET", "/api/v1/debug/order/missing/preimage"),
+            ("POST", "/api/v1/debug/mocktime"),
+        ] {
+            for key in [None, Some("wrong"), Some("debug-secret")] {
+                let mut request = Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header("content-type", "application/json");
+                if let Some(key) = key {
+                    request = request.header("x-api-key", key);
+                }
+                let response = app
+                    .clone()
+                    .oneshot(
+                        request
+                            .body(Body::from(r#"{"timestamp":1700000000}"#))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let expected = if key != Some("debug-secret") {
+                    StatusCode::UNAUTHORIZED
+                } else if !regtest {
+                    StatusCode::FORBIDDEN
+                } else if method == "GET" {
+                    StatusCode::NOT_FOUND
+                } else {
+                    StatusCode::OK
+                };
+                assert_eq!(response.status(), expected, "{method} {uri}, key={key:?}");
+                if method == "POST" && expected != StatusCode::OK {
+                    assert_eq!(*mock_time.read().await, None);
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_mocktime_rejects_invalid_numbers_without_resetting_clock() {
+    let mut state = AppState::new();
+    state.regtest = true;
+    let mock_time = Arc::clone(&state.mock_time);
+    *mock_time.write().await = Some(1_700_000_000);
+    let app = build_router(state);
+    for timestamp in [
+        serde_json::json!(-1),
+        serde_json::json!(1.5),
+        serde_json::json!(u64::MAX),
+    ] {
+        let (status, _) = post_json(
+            app.clone(),
+            "/api/v1/debug/mocktime",
+            serde_json::json!({"timestamp": timestamp}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(*mock_time.read().await, Some(1_700_000_000));
+    }
+    let (status, _) = post_json(
+        app,
+        "/api/v1/debug/mocktime",
+        serde_json::json!({"timestamp": null}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(*mock_time.read().await, None);
+}
+
+#[tokio::test]
+async fn test_dex_funding_preserves_order_expiry_with_offset_clock() {
+    use vtorrent_node::atomic_swap::{AtomicSwap, Htlc, SwapOrder};
+
+    let maker = "VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k";
+    let taker = "VQ2BZDB3MzX5CEKVCoFJpzqw4eisdEMJHh";
+    let wif = "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS";
+    let state = AppState::new();
+    let mut chain = vtorrent_node::chain::Chain::new_regtest().unwrap();
+    chain.mint_to_address(maker, 100_000_000).unwrap();
+    *state.chain.lock().await = chain;
+    *state.wallet_encrypted.write().await =
+        Some(vtorrent_wallet::encryption::encrypt_wallet(wif.as_bytes(), "test-pass").unwrap());
+    *state.wallet_unlock_expiry.write().await = Some(0);
+    *state.wallet_change_address.write().await = Some(maker.into());
+
+    let swap = AtomicSwap::new();
+    let mut order = SwapOrder::new(maker.into(), 1_000_000, "BTC".into(), 10_000, 7200);
+    order.hash_lock = Some(swap.hash_lock);
+    order.preimage = Some(swap.preimage);
+    let expiry = order.expiry;
+    let order_id = hex::encode(order.order_id);
+    *state.mock_time.write().await = Some(order.created_at - 600);
+    state.order_book.write().await.add_order(order);
+    let mempool = Arc::clone(&state.mempool);
+    let (status, body) = post_json(build_router(state), "/api/v1/dex/match",
+        serde_json::json!({"order_id": order_id, "taker_address": taker, "passphrase": "test-pass"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["expiry"], expiry);
+    let txid: [u8; 32] = hex::decode(body["funding_txid"].as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let pool = mempool.lock().await;
+    let funding = pool.get_transaction(&txid).unwrap();
+    let reconstructed = Htlc::with_expiry(
+        swap.hash_lock,
+        taker.into(),
+        maker.into(),
+        expiry,
+        1_000_000,
+    )
+    .unwrap();
+    assert_eq!(
+        funding.outputs[0].script_pubkey,
+        reconstructed.build_script().unwrap()
+    );
 }
 
 #[tokio::test]

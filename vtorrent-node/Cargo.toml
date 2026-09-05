@@ -11,6 +11,7 @@ name = "vtorrent-node"
 path = "src/main.rs"
 
 [dependencies]
+zeroize = { workspace = true }
 vtorrent-core     = { path = "../vtorrent-core" }
 vtorrent-spv      = { path = "../vtorrent-spv" }
 vtorrent-script   = { path = "../vtorrent-script" }

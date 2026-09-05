@@ -110,6 +110,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/claim/submit", post(submit_claim))
         .route("/api/v1/spv/headers", post(add_spv_headers))
         .route("/api/v1/btc/send", post(send_btc))
+        .route(
+            "/api/v1/debug/order/:id/preimage",
+            get(debug_order_preimage),
+        )
+        .route("/api/v1/debug/mocktime", post(debug_mocktime))
         .layer(auth)
         .layer(rate);
 
@@ -142,11 +147,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/fee/estimate", get(get_fee_estimate))
         .route("/api/v1/btc/status", get(get_btc_status))
         .route("/api/v1/btc/address", get(get_btc_address))
-        .route(
-            "/api/v1/debug/order/:id/preimage",
-            get(debug_order_preimage),
-        )
-        .route("/api/v1/debug/mocktime", post(debug_mocktime))
         .route("/api/v1/spv/status", get(get_spv_status))
         .route("/api/v1/peers", get(get_peers))
         .route("/ws", get(ws_handler))

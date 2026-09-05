@@ -2,6 +2,11 @@
 
 Cross-chain atomic swap between VTR (vTorrent) and BTC using Hash Time-Locked Contracts (HTLCs).
 
+The internal [2026-09-05 review](security-review-2026-09-05.md) found unresolved
+timeout-ordering, per-chain recovery, and funding-reservation bugs. The claim
+sequence and timing descriptions below need correction before this protocol
+can be approved for real-value swaps.
+
 ## Overview
 
 The protocol enables trustless exchange of VTR for BTC without intermediaries. Both parties lock funds in HTLCs with the same hash lock; the preimage reveals on claim, enabling the counterparty to claim.

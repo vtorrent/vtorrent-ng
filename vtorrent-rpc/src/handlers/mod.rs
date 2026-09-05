@@ -172,14 +172,19 @@ pub fn validate_p2pkh(addr: &str) -> RpcResult<()> {
         })
 }
 
-/// Verify the hot wallet passphrase (and TOTP code if 2FA is enabled) and
-/// return the decrypted WIF. Fails if no wallet has been imported or the
-/// credentials are incorrect.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct HotWalletData {
+    pub version: u8,
+    pub wif: zeroize::Zeroizing<String>,
+    pub otp_secret: Option<zeroize::Zeroizing<String>>,
+}
+
+/// Verify the passphrase and encrypted TOTP configuration before returning a signing key.
 pub(crate) async fn verify_wallet_auth(
     state: &AppState,
     passphrase: &str,
     otp_code: Option<&str>,
-) -> RpcResult<String> {
+) -> RpcResult<zeroize::Zeroizing<String>> {
     let encrypted = state.wallet_encrypted.read().await.clone().ok_or_else(|| {
         RpcError::BadRequest("No wallet imported. Call POST /api/v1/wallet/import first. (hint: import a WIF key before unlocking)".into())
     })?;
@@ -188,13 +193,34 @@ pub(crate) async fn verify_wallet_auth(
         vtorrent_wallet::encryption::decrypt_wallet(&encrypted, passphrase).map_err(|_| {
             RpcError::Unauthorized("Incorrect passphrase — wallet decryption failed".into())
         })?;
-    let wif = String::from_utf8(plaintext).map_err(|_| {
+    let text = std::str::from_utf8(&plaintext).map_err(|_| {
         RpcError::Internal(
             "Wallet decryption produced invalid UTF-8 data — key may be corrupted".into(),
         )
     })?;
+    let (wif, secret) = if text.starts_with('{') {
+        let data: HotWalletData = serde_json::from_str(text)
+            .map_err(|_| RpcError::Internal("Encrypted wallet payload is corrupted".into()))?;
+        if data.version != 1 {
+            return Err(RpcError::Internal(
+                "Unsupported hot wallet payload version".into(),
+            ));
+        }
+        let secret = data
+            .otp_secret
+            .as_ref()
+            .map(|secret| vtorrent_wallet::otp::TotpSecret::from_base32(secret))
+            .transpose()
+            .map_err(|_| {
+                RpcError::Internal("Encrypted wallet TOTP configuration is corrupted".into())
+            })?;
+        (data.wif, secret)
+    } else {
+        let secret = state.wallet_totp_secret.read().await.clone();
+        (zeroize::Zeroizing::new(text.to_owned()), secret)
+    };
 
-    if let Some(secret) = state.wallet_totp_secret.read().await.as_ref() {
+    if let Some(secret) = secret {
         let code = otp_code.filter(|c| !c.is_empty()).ok_or_else(|| {
             RpcError::Unauthorized(
                 "TOTP code required — 2FA is enabled on this wallet, provide otp_code".into(),

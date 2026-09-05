@@ -15,7 +15,7 @@ use chacha20poly1305::{
     ChaCha20Poly1305, Key, Nonce,
 };
 use serde::{Deserialize, Serialize};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 /// Current encryption format version.
 const ENCRYPTION_VERSION: u8 = 1;
@@ -56,12 +56,12 @@ pub fn derive_key(passphrase: &str, salt: &[u8; 32]) -> Result<DerivedKey> {
 
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
-    let mut key = [0u8; 32];
+    let mut derived = DerivedKey { key: [0u8; 32] };
     argon2
-        .hash_password_into(passphrase.as_bytes(), salt, &mut key)
+        .hash_password_into(passphrase.as_bytes(), salt, &mut derived.key)
         .map_err(|e| WalletError::EncryptionError(format!("Argon2 hash error: {}", e)))?;
 
-    Ok(DerivedKey { key })
+    Ok(derived)
 }
 
 /// Encrypt wallet data with the given passphrase.
@@ -94,7 +94,7 @@ pub fn encrypt_wallet(plaintext: &[u8], passphrase: &str) -> Result<EncryptedWal
 }
 
 /// Decrypt wallet data with the given passphrase.
-pub fn decrypt_wallet(encrypted: &EncryptedWallet, passphrase: &str) -> Result<Vec<u8>> {
+pub fn decrypt_wallet(encrypted: &EncryptedWallet, passphrase: &str) -> Result<Zeroizing<Vec<u8>>> {
     if encrypted.version != ENCRYPTION_VERSION {
         return Err(WalletError::CorruptedWallet);
     }
@@ -118,6 +118,7 @@ pub fn decrypt_wallet(encrypted: &EncryptedWallet, passphrase: &str) -> Result<V
 
     cipher
         .decrypt(nonce, ciphertext_bytes.as_ref())
+        .map(Zeroizing::new)
         .map_err(|_| WalletError::IncorrectPassphrase)
 }
 
@@ -133,6 +134,8 @@ mod tests {
         let encrypted = encrypt_wallet(plaintext, passphrase).expect("Encryption failed");
         let decrypted = decrypt_wallet(&encrypted, passphrase).expect("Decryption failed");
 
+        fn assert_zeroize_on_drop<T: ZeroizeOnDrop>(_: &T) {}
+        assert_zeroize_on_drop(&decrypted);
         assert_eq!(plaintext.as_slice(), decrypted.as_slice());
     }
 

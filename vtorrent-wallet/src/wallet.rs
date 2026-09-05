@@ -142,7 +142,8 @@ impl Wallet {
     /// cannot leave a truncated wallet and the key material is never
     /// world-readable — matches the RPC persistence path's guarantees.
     pub fn save(&self, path: &std::path::Path) -> Result<()> {
-        let plaintext = serde_json::to_vec(&self.data)
+        let mut plaintext = zeroize::Zeroizing::new(Vec::new());
+        serde_json::to_writer(&mut *plaintext, &self.data)
             .map_err(|e| WalletError::Serialization(e.to_string()))?;
         let encrypted = encrypt_wallet(&plaintext, &self.passphrase)?;
         let wallet_file = WalletFile {
@@ -404,7 +405,8 @@ impl Wallet {
 
     /// Serialize the wallet to an in-memory JSON string (for testing).
     pub fn to_json_file(&self, passphrase: &str) -> Result<String> {
-        let plaintext = serde_json::to_vec(&self.data)
+        let mut plaintext = zeroize::Zeroizing::new(Vec::new());
+        serde_json::to_writer(&mut *plaintext, &self.data)
             .map_err(|e| WalletError::Serialization(e.to_string()))?;
         let encrypted = encrypt_wallet(&plaintext, passphrase)?;
         let wallet_file = WalletFile {
@@ -448,6 +450,17 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_wallet_debug_redacts_otp_secret() {
+        let mut wallet = Wallet::create("test-passphrase").unwrap();
+        let config = OtpConfig::new(&TotpSecret::generate());
+        let secret = config.secret_base32();
+        wallet.data.otp_config = Some(config);
+        let debug = format!("{:?}", wallet.data);
+        assert!(!debug.contains(&secret));
+        assert!(debug.contains("[REDACTED]"));
+    }
 
     #[test]
     fn test_wallet_create_and_generate_key() {

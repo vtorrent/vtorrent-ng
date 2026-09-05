@@ -14,7 +14,7 @@ pub async fn match_dex_order(
     State(state): State<Arc<AppState>>,
     Json(req): Json<MatchOrderRequest>,
 ) -> RpcResult<Json<MatchOrderResponse>> {
-    use vtorrent_node::atomic_swap::{AtomicSwap, Htlc, MIN_HTLC_LOCKTIME};
+    use vtorrent_node::atomic_swap::{AtomicSwap, Htlc, MAX_HTLC_LOCKTIME, MIN_HTLC_LOCKTIME};
     use vtorrent_wallet::tx_builder::sign_custom_transaction;
 
     if !state.is_wallet_unlocked().await {
@@ -62,6 +62,11 @@ pub async fn match_dex_order(
             "DEX order is too close to expiry to fund safely".into(),
         ));
     }
+    if remaining_locktime > MAX_HTLC_LOCKTIME {
+        return Err(RpcError::BadRequest(
+            "DEX order expiry exceeds maximum locktime".into(),
+        ));
+    }
     let (preimage, hash_lock) = match (order.preimage, order.hash_lock) {
         (Some(preimage), Some(hash_lock)) => (preimage, hash_lock),
         _ => {
@@ -69,11 +74,11 @@ pub async fn match_dex_order(
             (swap.preimage, swap.hash_lock)
         }
     };
-    let htlc = Htlc::new(
+    let htlc = Htlc::with_expiry(
         hash_lock,
         req.taker_address.clone(),
         order.maker_address.clone(),
-        remaining_locktime,
+        order.expiry,
         order.vtr_amount,
     )
     .map_err(|e| RpcError::BadRequest(format!("Unable to construct HTLC: {}", e)))?;

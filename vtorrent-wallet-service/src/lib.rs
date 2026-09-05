@@ -50,7 +50,7 @@ pub enum IncentivePaymentError {
 /// the single `build_payment` path, admits it to the mempool with a chain-
 /// derived fee, and submits it for P2P broadcast. Returns the txid hex.
 pub async fn build_incentive_payment(
-    wallet_wif: &tokio::sync::RwLock<Option<String>>,
+    wallet_wif: &tokio::sync::RwLock<Option<zeroize::Zeroizing<String>>>,
     wallet_change_address: &tokio::sync::RwLock<Option<String>>,
     chain: &tokio::sync::Mutex<vtorrent_node::chain::Chain>,
     mempool: &tokio::sync::Mutex<vtorrent_node::mempool::Mempool>,
@@ -146,7 +146,8 @@ mod tests {
         use vtorrent_node::mempool::Mempool;
 
         let chain = Chain::new().unwrap();
-        let wif: tokio::sync::RwLock<Option<String>> = tokio::sync::RwLock::new(None);
+        let wif: tokio::sync::RwLock<Option<zeroize::Zeroizing<String>>> =
+            tokio::sync::RwLock::new(None);
         let change: tokio::sync::RwLock<Option<String>> = tokio::sync::RwLock::new(None);
         let chain = tokio::sync::Mutex::new(chain);
         let mempool = tokio::sync::Mutex::new(Mempool::new(100));
@@ -173,9 +174,12 @@ mod tests {
         use vtorrent_node::mempool::Mempool;
 
         let chain = Chain::new().unwrap();
-        let wif: tokio::sync::RwLock<Option<String>> = tokio::sync::RwLock::new(Some(
-            "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS".into(),
-        ));
+        let wif: tokio::sync::RwLock<Option<zeroize::Zeroizing<String>>> =
+            tokio::sync::RwLock::new(Some(
+                "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS"
+                    .to_owned()
+                    .into(),
+            ));
         let change: tokio::sync::RwLock<Option<String>> =
             tokio::sync::RwLock::new(Some("VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k".into()));
         let chain = tokio::sync::Mutex::new(chain);

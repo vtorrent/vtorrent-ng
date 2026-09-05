@@ -103,9 +103,10 @@
 
 ## 4. Release Engineering
 
-- [ ] **CI green**: Actions billing is unblocked. Tests and cargo audit pass;
-      Rust 1.98 Clippy, Cargo Machete, and the cross-host benchmark comparison
-      failures found 2026-09-04 have local fixes pending a green Actions run.
+- [x] **CI green**: [Actions run 33951883585](https://github.com/vtorrent/vtorrent-ng/actions/runs/33951883585)
+      passed on `4a3e86e` (2026-09-05): workspace tests, audit, formatting,
+      Clippy, Cargo Machete, and the benchmark gate. Subsequent changes still
+      require their own green run.
 - [ ] **Desktop builds verified** on all three platforms from a `v*` tag:
       Linux (deb/AppImage), macOS (Intel + Apple Silicon), Windows x64.
 - [ ] **Reproducible build check**: two independent builds of the same tag
@@ -135,6 +136,7 @@
 | Blocker | Owner | Notes |
 |---|---|---|
 | External security review not scheduled | Lead | Required before final v2.0.0 |
+| Atomic-swap timing and recovery | Code | Open findings in `docs/security-review-2026-09-05.md`; local E2E success does not establish adversarial cross-chain safety |
 
 ## Known Issues (found during soak/E2E, 2026-08-24)
 

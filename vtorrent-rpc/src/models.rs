@@ -155,11 +155,11 @@ pub struct AddressInfo {
     pub is_change: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct SendRequest {
     pub to_address: String,
     pub amount_satoshis: u64,
-    pub passphrase: String,
+    pub passphrase: zeroize::Zeroizing<String>,
     pub otp_code: Option<String>,
     pub memo: Option<String>,
 }
@@ -171,9 +171,9 @@ pub struct SendResponse {
     pub fee_satoshis: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct UnlockRequest {
-    pub passphrase: String,
+    pub passphrase: zeroize::Zeroizing<String>,
     pub otp_code: Option<String>,
     /// Seconds to keep unlocked (0 = until manually locked).
     pub timeout_secs: u64,
@@ -199,10 +199,10 @@ pub struct StakingStatusResponse {
     pub blocks_staked: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct StakingStartRequest {
     pub address: String,
-    pub passphrase: String,
+    pub passphrase: zeroize::Zeroizing<String>,
     pub otp_code: Option<String>,
 }
 
@@ -260,7 +260,7 @@ pub struct DexOrderResponse {
     pub expires_at: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct PlaceOrderRequest {
     pub maker_address: String,
     /// The maker's BTC address (where they receive BTC when claiming).
@@ -271,7 +271,7 @@ pub struct PlaceOrderRequest {
     pub request_asset: String,
     /// Expiry in seconds from now.
     pub expiry_secs: u64,
-    pub passphrase: String,
+    pub passphrase: zeroize::Zeroizing<String>,
     pub otp_code: Option<String>,
 }
 
@@ -321,16 +321,16 @@ pub struct ClaimSubmitResponse {
 
 /// Request body for `POST /api/v1/wallet/import`.
 /// Imports a WIF-encoded private key into the hot wallet for signing.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct ImportWalletRequest {
     /// WIF-encoded private key.
-    pub wif: String,
+    pub wif: zeroize::Zeroizing<String>,
     /// Passphrase used to encrypt the imported key. Required to unlock the
     /// wallet and to sign transactions afterwards.
-    pub passphrase: String,
+    pub passphrase: zeroize::Zeroizing<String>,
     /// Optional Base32-encoded TOTP secret. When set, unlock and send require
     /// a valid TOTP code in addition to the passphrase.
-    pub otp_secret: Option<String>,
+    pub otp_secret: Option<zeroize::Zeroizing<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -343,14 +343,14 @@ pub struct ImportWalletResponse {
 // ─── DEX Matching ───────────────────────────────────────────────────────────
 
 /// Request body for `POST /api/v1/dex/match`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct MatchOrderRequest {
     /// Hex-encoded order ID to match.
     pub order_id: String,
     /// The taker's VTR address.
     pub taker_address: String,
     /// The wallet passphrase (re-verified before signing).
-    pub passphrase: String,
+    pub passphrase: zeroize::Zeroizing<String>,
     /// The 6-digit TOTP code (required when 2FA is enabled).
     pub otp_code: Option<String>,
 }
@@ -499,14 +499,14 @@ pub struct BtcFundResponse {
 }
 
 /// Request body for `POST /api/v1/swap/vtr-claim`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct VtrClaimRequest {
     /// Hex-encoded order ID.
     pub order_id: String,
     /// The secret preimage (revealed by the taker).
     pub preimage: String,
     /// The taker's WIF private key, used to sign the claim transaction.
-    pub taker_wif: String,
+    pub taker_wif: zeroize::Zeroizing<String>,
 }
 
 /// Request body for `POST /api/v1/swap/btc-claim`.

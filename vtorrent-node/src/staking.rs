@@ -30,12 +30,12 @@ use vtorrent_spv::stake::{
 };
 
 /// Runtime staking control command sent from RPC/tauri to the node.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum StakingCommand {
     /// Start staking with the given address and optional signing WIF.
     Start {
         address: String,
-        wif: Option<String>,
+        wif: Option<zeroize::Zeroizing<String>>,
     },
     /// Stop staking.
     Stop,
@@ -46,7 +46,7 @@ pub struct StakingEngine {
     /// The address whose UTXOs are used for staking.
     pub address: String,
     /// The WIF-encoded private key used to sign the coinstake input.
-    pub wif: Option<String>,
+    pub wif: Option<zeroize::Zeroizing<String>>,
     /// Minimum coin age in seconds for UTXO eligibility.
     pub min_stake_age: u64,
     /// Maximum coin age in seconds for UTXO eligibility.
@@ -130,10 +130,10 @@ impl StakingEngine {
     }
 
     /// Create a new staking engine with a signing key.
-    pub fn with_wif(address: String, wif: String) -> Self {
+    pub fn with_wif(address: String, wif: impl Into<zeroize::Zeroizing<String>>) -> Self {
         Self {
             address,
-            wif: Some(wif),
+            wif: Some(wif.into()),
             min_stake_age: MIN_STAKE_AGE,
             max_stake_age: MAX_STAKE_AGE,
         }
@@ -152,10 +152,10 @@ impl StakingEngine {
     }
 
     /// Create a fast staking engine with a signing key for regtest.
-    pub fn with_wif_fast(address: String, wif: String) -> Self {
+    pub fn with_wif_fast(address: String, wif: impl Into<zeroize::Zeroizing<String>>) -> Self {
         Self {
             address,
-            wif: Some(wif),
+            wif: Some(wif.into()),
             min_stake_age: REGTEST_FAST_MIN_STAKE_AGE,
             max_stake_age: REGTEST_FAST_MAX_STAKE_AGE,
         }

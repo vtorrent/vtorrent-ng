@@ -19,6 +19,7 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+zeroize = { workspace = true }
 vtorrent-core    = { path = "../vtorrent-core" }
 vtorrent-migrate = { path = "../vtorrent-migrate" }
 vtorrent-wallet  = { path = "../vtorrent-wallet" }

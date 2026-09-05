@@ -221,23 +221,10 @@ pub async fn import_wallet(
         ))
     })?;
 
-    // Encrypt the WIF with the passphrase so unlock/send can verify it.
-    let encrypted =
-        vtorrent_wallet::encryption::encrypt_wallet(req.wif.as_bytes(), &req.passphrase).map_err(
-            |e| {
-                RpcError::Internal(format!(
-                    "Wallet encryption failed (Argon2id + ChaCha20-Poly1305): {}",
-                    e
-                ))
-            },
-        )?;
-
-    *state.wallet_encrypted.write().await = Some(encrypted);
-    *state.wallet_change_address.write().await = Some(address.clone());
-    *state.wallet_totp_secret.write().await = req
+    let totp_secret = req
         .otp_secret
         .as_deref()
-        .map(vtorrent_wallet::otp::TotpSecret::from_base32)
+        .map(|secret| vtorrent_wallet::otp::TotpSecret::from_base32(secret))
         .transpose()
         .map_err(|e| {
             RpcError::BadRequest(format!(
@@ -245,6 +232,20 @@ pub async fn import_wallet(
                 e
             ))
         })?;
+    let data = super::HotWalletData {
+        version: 1,
+        wif: req.wif,
+        otp_secret: req.otp_secret,
+    };
+    let mut plaintext = zeroize::Zeroizing::new(Vec::new());
+    serde_json::to_writer(&mut *plaintext, &data)
+        .map_err(|_| RpcError::Internal("Unable to serialize hot wallet".into()))?;
+    let encrypted = vtorrent_wallet::encryption::encrypt_wallet(&plaintext, &req.passphrase)
+        .map_err(|e| RpcError::Internal(format!("Wallet encryption failed: {}", e)))?;
+
+    *state.wallet_encrypted.write().await = Some(encrypted);
+    *state.wallet_change_address.write().await = Some(address.clone());
+    *state.wallet_totp_secret.write().await = totp_secret;
     // The wallet starts locked; the WIF is only decrypted into memory on unlock.
     *state.wallet_wif.write().await = None;
     *state.wallet_unlock_expiry.write().await = None;

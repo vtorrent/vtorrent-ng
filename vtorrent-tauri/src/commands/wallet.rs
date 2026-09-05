@@ -164,6 +164,7 @@ pub fn create_wallet(
     passphrase: String,
     wallet_path: String,
 ) -> Result<WalletInfo> {
+    let passphrase = zeroize::Zeroizing::new(passphrase);
     if passphrase.len() < 8 {
         return Err(TauriError::InvalidInput(
             "Passphrase must be at least 8 characters".into(),
@@ -199,9 +200,16 @@ pub fn open_wallet(
     passphrase: String,
     otp_code: Option<String>,
 ) -> Result<WalletInfo> {
+    let passphrase = zeroize::Zeroizing::new(passphrase);
+    let otp_code = otp_code.map(zeroize::Zeroizing::new);
     let path = std::path::PathBuf::from(&wallet_path);
 
-    let wallet = Wallet::load(&path, &passphrase, otp_code.as_deref()).map_err(TauriError::from)?;
+    let wallet = Wallet::load(
+        &path,
+        &passphrase,
+        otp_code.as_ref().map(|code| code.as_str()),
+    )
+    .map_err(TauriError::from)?;
 
     let default_address = wallet.default_address().map(|a| a.to_string());
     let address_count = wallet.address_count();
@@ -256,9 +264,13 @@ pub fn import_legacy_wallet(
     new_wallet_passphrase: String,
     new_wallet_path: String,
 ) -> Result<ImportResult> {
-    let wallet_bytes = B64
-        .decode(&wallet_dat_base64)
-        .map_err(|e| TauriError::InvalidInput(format!("Invalid base64: {}", e)))?;
+    let wallet_dat_base64 = zeroize::Zeroizing::new(wallet_dat_base64);
+    let passphrase = passphrase.map(zeroize::Zeroizing::new);
+    let new_wallet_passphrase = zeroize::Zeroizing::new(new_wallet_passphrase);
+    let wallet_bytes = zeroize::Zeroizing::new(
+        B64.decode(&wallet_dat_base64)
+            .map_err(|e| TauriError::InvalidInput(format!("Invalid base64: {}", e)))?,
+    );
 
     if new_wallet_passphrase.is_empty() {
         return Err(TauriError::InvalidInput(
@@ -266,8 +278,8 @@ pub fn import_legacy_wallet(
         ));
     }
 
-    let extraction =
-        extract_wallet(&wallet_bytes, passphrase.as_deref()).map_err(TauriError::from)?;
+    let extraction = extract_wallet(&wallet_bytes, passphrase.as_ref().map(|p| p.as_str()))
+        .map_err(TauriError::from)?;
 
     if extraction.keys.is_empty() {
         return Err(TauriError::Migration("No keys found in wallet.dat".into()));

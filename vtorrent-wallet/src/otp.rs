@@ -18,21 +18,31 @@ const TOTP_ISSUER: &str = "vTorrent";
 const TOTP_ACCOUNT: &str = "vTorrent-Wallet";
 
 /// A TOTP secret, zeroized on drop.
-#[derive(Zeroize, ZeroizeOnDrop)]
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct TotpSecret {
     /// The raw secret bytes (20 bytes for SHA1-TOTP).
     secret: Vec<u8>,
 }
 
 /// The serializable form of an OTP configuration stored in the wallet file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct OtpConfig {
     /// Base32-encoded TOTP secret (for QR code generation and backup).
-    pub secret_base32: String,
+    pub secret_base32: zeroize::Zeroizing<String>,
     /// Whether 2FA is currently enabled.
     pub enabled: bool,
     /// Timestamp when 2FA was enabled.
     pub enabled_at: u64,
+}
+
+impl std::fmt::Debug for OtpConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OtpConfig")
+            .field("secret_base32", &"[REDACTED]")
+            .field("enabled", &self.enabled)
+            .field("enabled_at", &self.enabled_at)
+            .finish()
+    }
 }
 
 impl TotpSecret {
@@ -127,7 +137,7 @@ impl OtpConfig {
             .unwrap_or_default()
             .as_secs();
         Self {
-            secret_base32: secret.to_base32(),
+            secret_base32: secret.to_base32().into(),
             enabled: true,
             enabled_at: now,
         }
@@ -149,7 +159,7 @@ impl OtpConfig {
 
     /// Get the Base32-encoded secret string.
     pub fn secret_base32(&self) -> String {
-        self.secret_base32.clone()
+        self.secret_base32.to_string()
     }
 
     /// Verify an OTP code against this config.

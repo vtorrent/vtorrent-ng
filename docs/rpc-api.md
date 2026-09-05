@@ -4,6 +4,11 @@ Base URL: `http://127.0.0.1:22525`
 
 All request/response bodies are JSON. Authentication via `X-Api-Key` header.
 
+New hot-wallet imports encrypt the WIF and optional TOTP secret together, so
+2FA remains enforced after restart. Older WIF-only files remain readable, but
+they contain no saved TOTP configuration: re-import with the original TOTP
+secret to persist 2FA. Old binaries cannot unlock the new encrypted payload.
+
 ---
 
 ## Node Info
@@ -405,7 +410,14 @@ per address every 10 seconds.
 
 ### POST /api/v1/debug/mocktime
 
-Advance mock time (testnet only).
+Set the regtest mock clock with `{"timestamp": <integer>}`. The value must be
+between 0 and `u32::MAX`; `null` resets the clock. Invalid values return 400
+without changing it. Requires the configured API key.
+
+### GET /api/v1/debug/order/:id/preimage
+
+Return an order's secret preimage for regtest testing. Requires the configured
+API key. Both debug endpoints return 403 outside regtest after authentication.
 
 ---
 

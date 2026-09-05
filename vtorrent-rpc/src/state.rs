@@ -86,7 +86,7 @@ pub struct AppState {
     /// Populated by `POST /api/v1/wallet/unlock` after the passphrase (and TOTP,
     /// if enabled) have been verified against `wallet_encrypted`. Cleared on
     /// wallet lock or daemon restart.
-    pub wallet_wif: Arc<RwLock<Option<String>>>,
+    pub wallet_wif: Arc<RwLock<Option<zeroize::Zeroizing<String>>>>,
     /// The imported hot-wallet WIF encrypted with the wallet passphrase
     /// (Argon2id + ChaCha20-Poly1305). Set on import (and restored from disk
     /// on startup when `wallet_path` is configured); used to verify the

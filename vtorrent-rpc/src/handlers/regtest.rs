@@ -154,15 +154,18 @@ pub async fn debug_mocktime(
         ));
     }
     let ts = req.get("timestamp").cloned();
-    let new_time =
-        match ts {
-            None | Some(Value::Null) => None,
-            Some(Value::Number(n)) => n.as_u64(),
-            _ => return Err(RpcError::BadRequest(
+    let new_time = match ts {
+        None | Some(Value::Null) => None,
+        Some(Value::Number(n)) => Some(n.as_u64().filter(|n| *n <= u32::MAX as u64).ok_or_else(
+            || RpcError::BadRequest("timestamp must be an integer between 0 and u32::MAX".into()),
+        )?),
+        _ => {
+            return Err(RpcError::BadRequest(
                 "timestamp must be a number (unix seconds) or null to reset — got unexpected type"
                     .into(),
-            )),
-        };
+            ))
+        }
+    };
     *state.mock_time.write().await = new_time;
     Ok(Json(json!({ "mock_time": new_time })))
 }
