@@ -35,9 +35,14 @@ pub async fn get_dex_orders(state: tauri::State<'_, AppState>) -> Result<Vec<Dex
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
     let order_book = handle.rpc_state.order_book.read().await;
+    let swaps = handle.rpc_state.swaps.read().await;
     Ok(order_book
-        .list_open_orders()
+        .list_orders()
         .into_iter()
+        .filter(|o| {
+            o.status == vtorrent_node::atomic_swap::OrderStatus::Open
+                || swaps.contains_key(&hex::encode(o.order_id))
+        })
         .map(|o| DexOrderResult {
             id: hex::encode(o.order_id),
             maker_address: o.maker_address.clone(),
@@ -73,6 +78,7 @@ pub async fn place_dex_order(
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
     let rpc = &handle.rpc_state;
+    state.sync_swap_wallet(rpc).await?;
 
     // Validation mirrors the RPC handler (previously the desktop app accepted
     // zero-amount orders, invalid maker addresses, and unbounded expiry —
@@ -146,6 +152,9 @@ pub async fn place_dex_order(
         created_at: 0,
         expires_at: order.expiry,
     };
+    vtorrent_rpc::swap_recovery::persist(rpc, &order, None)
+        .await
+        .map_err(TauriError::from)?;
     rpc.order_book.write().await.add_order(order);
     Ok(result)
 }
@@ -157,6 +166,7 @@ pub async fn cancel_dex_order(state: tauri::State<'_, AppState>, order_id: Strin
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
     let rpc = &handle.rpc_state;
+    state.sync_swap_wallet(rpc).await?;
 
     // Ownership check (mirrors the RPC handler): without this, any code path
     // in the desktop app could cancel third-party orders.
@@ -183,6 +193,14 @@ pub async fn cancel_dex_order(state: tauri::State<'_, AppState>, order_id: Strin
     }
 
     let mut order_book = rpc.order_book.write().await;
+    if let Some(mut order) = order_book.get_order(&order_id).cloned() {
+        if order.status == vtorrent_node::atomic_swap::OrderStatus::Open {
+            order.status = vtorrent_node::atomic_swap::OrderStatus::Cancelled;
+            vtorrent_rpc::swap_recovery::persist(rpc, &order, None)
+                .await
+                .map_err(TauriError::from)?;
+        }
+    }
     Ok(order_book.cancel_order(&order_id))
 }
 
@@ -196,199 +214,30 @@ pub async fn match_dex_order(
     _passphrase: String,
     _otp_code: Option<String>,
 ) -> Result<vtorrent_rpc::models::MatchOrderResponse> {
-    use vtorrent_node::atomic_swap::{
-        AtomicSwap, Htlc, SwapState, SwapStatus, MAX_HTLC_LOCKTIME, MIN_HTLC_LOCKTIME,
-    };
-    use vtorrent_wallet::tx_builder::sign_custom_transaction;
-
     let guard = state.node.lock().await;
     let handle = guard
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
     let rpc = &handle.rpc_state;
-
-    if !rpc.is_wallet_unlocked().await {
-        return Err(TauriError::WalletLocked);
-    }
-    if taker_address.trim().is_empty() {
-        return Err(TauriError::InvalidInput("Taker address is required".into()));
-    }
-    vtorrent_wallet::tx_builder::p2pkh_script_pubkey(&taker_address)
-        .map_err(|e| TauriError::InvalidInput(format!("Invalid taker address: {}", e)))?;
-
+    state.sync_swap_wallet(rpc).await?;
     let wif = rpc
         .wallet_wif
         .read()
         .await
         .clone()
         .ok_or(TauriError::WalletLocked)?;
-    let wallet_address = rpc
-        .wallet_change_address
-        .read()
-        .await
-        .clone()
-        .ok_or_else(|| TauriError::Internal("Change address not set".into()))?;
-
-    let order = {
-        let order_book = rpc.order_book.read().await;
-        order_book
-            .get_order(&order_id)
-            .filter(|o| matches!(o.status, vtorrent_node::atomic_swap::OrderStatus::Open))
-            .cloned()
-            .ok_or_else(|| {
-                TauriError::NotFound(format!("Order {} not found or not open", order_id))
-            })?
-    };
-    if order.maker_address != wallet_address {
-        return Err(TauriError::Unauthorized(
-            "Only the maker's imported wallet may fund this order".into(),
-        ));
-    }
-
-    // Honor the regtest mock clock when set (mirrors the RPC handler).
-    let now = {
-        let mock = rpc.mock_time.read().await;
-        match *mock {
-            Some(t) => t as u32,
-            None => std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as u32,
-        }
-    };
-    let remaining_locktime = order.expiry.saturating_sub(now);
-    if remaining_locktime < MIN_HTLC_LOCKTIME {
-        return Err(TauriError::InvalidInput(
-            "DEX order is too close to expiry to fund safely".into(),
-        ));
-    }
-    if remaining_locktime > MAX_HTLC_LOCKTIME {
-        return Err(TauriError::InvalidInput(
-            "DEX order expiry exceeds maximum locktime".into(),
-        ));
-    }
-    let (preimage, hash_lock) = match (order.preimage, order.hash_lock) {
-        (Some(p), Some(h)) => (p, h),
-        _ => {
-            let swap = AtomicSwap::new();
-            (swap.preimage, swap.hash_lock)
-        }
-    };
-    let htlc = Htlc::with_expiry(
-        hash_lock,
-        taker_address.clone(),
-        order.maker_address.clone(),
-        order.expiry,
-        order.vtr_amount,
+    vtorrent_rpc::handlers::match_dex_order_with_wif(
+        rpc,
+        vtorrent_rpc::models::MatchOrderRequest {
+            order_id,
+            taker_address,
+            passphrase: _passphrase.into(),
+            otp_code: _otp_code,
+        },
+        &wif,
     )
-    .map_err(|e| TauriError::InvalidInput(format!("Unable to construct HTLC: {}", e)))?;
-
-    const FUNDING_FEE_SATOSHIS: u64 = vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS;
-    // Reserve the order BEFORE building/signing the funding transaction: two
-    // concurrent match calls would otherwise both select the same UTXO and
-    // both admit competing funding txs to the mempool (mirrors the RPC
-    // handler). Reserving first means the loser exits here without touching
-    // the mempool.
-    let reserved = rpc.order_book.write().await.begin_funding(&order_id);
-    if reserved.is_none() {
-        return Err(TauriError::NotFound(format!(
-            "Order {} is no longer open",
-            order_id
-        )));
-    }
-    let funding_tx = match (async {
-        let funding_utxo = {
-            let chain = rpc.chain.lock().await;
-            chain
-                .get_utxos_for_address(&wallet_address)
-                .into_iter()
-                .filter(|utxo| utxo.value >= order.vtr_amount.saturating_add(FUNDING_FEE_SATOSHIS))
-                .max_by_key(|utxo| utxo.value)
-                .ok_or_else(|| {
-                    TauriError::InvalidInput("No single wallet UTXO can fund this HTLC".into())
-                })?
-        };
-        let unsigned_funding = htlc
-            .build_funding_tx(
-                funding_utxo.txid,
-                funding_utxo.vout,
-                funding_utxo.value,
-                FUNDING_FEE_SATOSHIS,
-            )
-            .map_err(|e| {
-                TauriError::InvalidInput(format!("Unable to build HTLC funding tx: {}", e))
-            })?;
-        sign_custom_transaction(unsigned_funding, std::slice::from_ref(&funding_utxo), &wif)
-            .map_err(|e| TauriError::InvalidInput(format!("Unable to sign HTLC funding tx: {}", e)))
-    })
     .await
-    {
-        Ok(tx) => tx,
-        Err(e) => {
-            rpc.order_book.write().await.release_funding(&order_id);
-            return Err(e);
-        }
-    };
-    let funding_txid = funding_tx.txid();
-
-    let admission = {
-        let mut mempool = rpc.mempool.lock().await;
-        mempool.add_transaction_with_fee(funding_tx.clone(), FUNDING_FEE_SATOSHIS)
-    };
-    if let Err(e) = admission {
-        rpc.order_book.write().await.release_funding(&order_id);
-        return Err(TauriError::InvalidInput(format!(
-            "Mempool rejected HTLC funding transaction: {}",
-            e
-        )));
-    }
-    let matched = match rpc.order_book.write().await.fund_and_match_order(
-        &order_id,
-        taker_address,
-        preimage,
-        hash_lock,
-        funding_txid,
-    ) {
-        Some(m) => m,
-        None => {
-            // Release the reservation so the order stays retryable; without
-            // this it is stuck in Funding forever (invisible to open-order
-            // listings and unmatchable).
-            rpc.order_book.write().await.release_funding(&order_id);
-            return Err(TauriError::Internal(
-                "Funding reservation disappeared".into(),
-            ));
-        }
-    };
-
-    if let Some(sender) = &rpc.tx_submit {
-        let _ = sender.try_send(funding_tx);
-    }
-
-    // Materialize the swap state in VtrFunded stage so lifecycle guards on
-    // btc-fund / claims / refunds operate from a known baseline. Without
-    // this, the desktop btc_fund always fails with "VTR leg not funded yet".
-    {
-        let mut swaps = rpc.swaps.write().await;
-        let swap = swaps
-            .entry(hex::encode(matched.order.order_id))
-            .or_insert_with(|| SwapState::new(matched.order.order_id, matched.hash_lock));
-        if swap.vtr_funding_txid.is_none() {
-            swap.vtr_funding_txid = Some(funding_txid);
-            swap.status = SwapStatus::VtrFunded;
-        }
-    }
-
-    Ok(vtorrent_rpc::models::MatchOrderResponse {
-        order_id: hex::encode(matched.order.order_id),
-        maker_address: matched.order.maker_address,
-        vtr_amount: matched.order.vtr_amount,
-        target_asset: matched.order.target_asset,
-        target_amount: matched.order.target_amount,
-        hash_lock: hex::encode(matched.hash_lock),
-        expiry: matched.order.expiry,
-        funding_txid: hex::encode(funding_txid),
-    })
+    .map_err(TauriError::from)
 }
 
 #[tauri::command]
@@ -401,6 +250,7 @@ pub async fn btc_fund(
     let handle = guard
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    state.sync_swap_wallet(&handle.rpc_state).await?;
     let result = vtorrent_rpc::handlers::btc_fund_with_state(
         &handle.rpc_state,
         vtorrent_rpc::models::BtcFundRequest {
@@ -428,6 +278,7 @@ pub async fn vtr_claim(
     let handle = guard
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    state.sync_swap_wallet(&handle.rpc_state).await?;
     let result = vtorrent_rpc::handlers::vtr_claim_with_state(
         &handle.rpc_state,
         vtorrent_rpc::models::VtrClaimRequest {
@@ -454,6 +305,7 @@ pub async fn btc_claim(
     let handle = guard
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    state.sync_swap_wallet(&handle.rpc_state).await?;
     let result = vtorrent_rpc::handlers::btc_claim_with_state(
         &handle.rpc_state,
         vtorrent_rpc::models::BtcClaimRequest { order_id },
@@ -477,6 +329,14 @@ pub async fn swap_refund(
     let handle = guard
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    let has_wallet = state
+        .wallet
+        .lock()
+        .map_err(|_| TauriError::WalletLocked)?
+        .is_some();
+    if has_wallet {
+        state.sync_swap_wallet(&handle.rpc_state).await?;
+    }
     let result = vtorrent_rpc::handlers::swap_refund_with_state(
         &handle.rpc_state,
         vtorrent_rpc::models::SwapRefundRequest { order_id, leg },

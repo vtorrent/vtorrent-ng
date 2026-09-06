@@ -50,6 +50,15 @@ pub async fn start_node(state: tauri::State<'_, AppState>) -> Result<NodeInfoRes
     let mut node = Node::new(config).map_err(|e| TauriError::NodeError(e.to_string()))?;
 
     let mut rpc_state = RpcAppState::new_with_shared(node.chain_arc(), node.mempool_arc());
+    rpc_state.swap_recovery_dir = Some({
+        let path = state
+            .wallet_path
+            .lock()
+            .map_err(|_| TauriError::WalletLocked)?;
+        path.as_ref()
+            .map(|p| p.with_extension("swaps"))
+            .unwrap_or_else(|| std::path::PathBuf::from("swaps"))
+    });
 
     let btc_seed = {
         use sha2::{Digest, Sha512};
@@ -103,6 +112,15 @@ pub async fn start_node(state: tauri::State<'_, AppState>) -> Result<NodeInfoRes
                 )));
             }
         }
+    }
+
+    let has_wallet = state
+        .wallet
+        .lock()
+        .map_err(|_| TauriError::WalletLocked)?
+        .is_some();
+    if has_wallet {
+        state.sync_swap_wallet(&rpc_state).await?;
     }
 
     let (event_tx, mut node_rx) = vtorrent_node::events::channel(1024);

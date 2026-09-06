@@ -205,6 +205,7 @@ async fn main() -> anyhow::Result<()> {
     // one on startup (the wallet stays locked until /wallet/unlock).
     let wallet_path = data_dir.join("wallet.json");
     rpc_state.wallet_path = Some(wallet_path.clone());
+    rpc_state.swap_recovery_dir = Some(data_dir.join("swaps"));
     rpc_state.staking_state_path = Some(data_dir.join("staking.json"));
     if wallet_path.exists() {
         match std::fs::read(&wallet_path)

@@ -194,8 +194,8 @@ pub fn create_wallet(
 }
 
 #[tauri::command]
-pub fn open_wallet(
-    state: State<AppState>,
+pub async fn open_wallet(
+    state: State<'_, AppState>,
     wallet_path: String,
     passphrase: String,
     otp_code: Option<String>,
@@ -218,6 +218,16 @@ pub fn open_wallet(
     *state.wallet.lock().unwrap() = Some(wallet);
     *state.wallet_path.lock().unwrap() = Some(path);
 
+    {
+        let node = state.node.lock().await;
+        if let Some(handle) = node.as_ref() {
+            if let Err(error) = state.sync_swap_wallet(&handle.rpc_state).await {
+                *state.wallet.lock().unwrap() = None;
+                return Err(error);
+            }
+        }
+    }
+
     Ok(WalletInfo {
         is_unlocked: true,
         has_2fa,
@@ -228,8 +238,11 @@ pub fn open_wallet(
 }
 
 #[tauri::command]
-pub fn lock_wallet(state: State<AppState>) -> Result<()> {
+pub async fn lock_wallet(state: State<'_, AppState>) -> Result<()> {
     *state.wallet.lock().unwrap() = None;
+    if let Some(handle) = state.node.lock().await.as_ref() {
+        handle.rpc_state.lock_wallet().await;
+    }
     Ok(())
 }
 

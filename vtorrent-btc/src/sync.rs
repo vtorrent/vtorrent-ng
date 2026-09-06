@@ -24,6 +24,14 @@ pub const DNS_SEEDS: &[&str] = &[
     "dnsseed.bitcoin.dashjr.org",
 ];
 
+/// Required funding depth before revealing an atomic-swap secret.
+pub const BTC_SWAP_CONFIRMATIONS: u32 = 6;
+/// Minimum time before BTC refund eligibility when revealing the secret.
+pub const MIN_BTC_CLAIM_WINDOW: u32 = 3600;
+/// Bound each claim scan; older funding fails closed and needs separate recovery.
+const SWAP_SCAN_BLOCKS: u32 = 1_008;
+const MAX_SWAP_TIP_AGE: u64 = 2 * 3600;
+
 /// Resolve DNS seeds to socket addresses.
 pub async fn resolve_seeds() -> Result<Vec<SocketAddr>> {
     let mut addrs = Vec::new();
@@ -103,9 +111,162 @@ pub struct BtcSync {
     filter_headers: Arc<Mutex<FilterHeaderStore>>,
     addresses: Vec<String>,
     network: bitcoin::Network,
+    coinbase_txids: Mutex<std::collections::HashSet<String>>,
 }
 
 impl BtcSync {
+    pub(crate) async fn verify_swap_funding(
+        &self,
+        htlc: &crate::htlc::BtcHtlc,
+        funding_txid: [u8; 32],
+        addrs: &[SocketAddr],
+        now: u64,
+    ) -> Result<()> {
+        let required = if self.network == bitcoin::Network::Regtest {
+            1
+        } else {
+            2
+        };
+        if addrs
+            .iter()
+            .map(|addr| addr.ip())
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            < required
+        {
+            return Err(BtcError::Sync(format!(
+                "BTC contract verification requires {required} distinct compact-filter peers"
+            )));
+        }
+        let mut peers = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for addr in addrs.iter().filter(|addr| seen.insert(addr.ip())).take(8) {
+            let attempt = async {
+                let mut peer = BtcPeer::connect_with_network(*addr, self.network).await?;
+                if !peer.supports_compact_filters() {
+                    return Err(BtcError::Sync("BTC peer lacks compact filters".into()));
+                }
+                self.sync_once(&mut peer).await?;
+                Ok(peer)
+            };
+            if let Ok(Ok(peer)) =
+                tokio::time::timeout(std::time::Duration::from_secs(15), attempt).await
+            {
+                peers.push(peer);
+                if peers.len()
+                    >= if self.network == bitcoin::Network::Regtest {
+                        1
+                    } else {
+                        3
+                    }
+                {
+                    break;
+                }
+            }
+        }
+        if peers.len() < required {
+            return Err(BtcError::Sync(format!(
+                "BTC contract verification requires {required} distinct compact-filter peers"
+            )));
+        }
+        let (tip_hash, tip_height) = {
+            let chain = self.headers.lock();
+            let hash = chain
+                .best_hash()
+                .ok_or_else(|| BtcError::Sync("Missing BTC tip".into()))?;
+            let tip = chain
+                .get(&hash)
+                .ok_or_else(|| BtcError::Sync("Missing BTC header".into()))?;
+            if now.abs_diff(u64::from(tip.header.time)) > MAX_SWAP_TIP_AGE {
+                return Err(BtcError::Sync(
+                    "BTC tip is stale or too far in the future".into(),
+                ));
+            }
+            // Bound median-time-past conservatively, including a tip whose
+            // timestamp went backwards relative to recent headers.
+            let mut cursor = hash;
+            let mut latest_time = now;
+            for _ in 0..11 {
+                let header = chain
+                    .get(&cursor)
+                    .ok_or_else(|| BtcError::Sync("Missing BTC time ancestor".into()))?;
+                latest_time = latest_time.max(u64::from(header.header.time));
+                if header.height == 0 {
+                    break;
+                }
+                cursor = header.header.prev_blockhash.to_byte_array();
+            }
+            if htlc.expiry < 500_000_000
+                || latest_time.saturating_add(u64::from(MIN_BTC_CLAIM_WINDOW))
+                    >= u64::from(htlc.expiry)
+            {
+                return Err(BtcError::Sync(
+                    "BTC chain time is too close to refund eligibility".into(),
+                ));
+            }
+            (hash, tip.height)
+        };
+        let start = tip_height.saturating_sub(SWAP_SCAN_BLOCKS - 1).max(1);
+        let mut last_error = BtcError::Sync("BTC contract scan did not complete".into());
+        for peer in &mut peers {
+            *self.utxos.lock() = UtxoSet::new();
+            match self.scan_utxos_bip158(peer, start).await {
+                Ok(scanned) => {
+                    return self.verify_scanned_swap(htlc, funding_txid, start, tip_hash, scanned);
+                }
+                Err(error) => last_error = error,
+            }
+        }
+        Err(last_error)
+    }
+
+    fn verify_scanned_swap(
+        &self,
+        htlc: &crate::htlc::BtcHtlc,
+        funding_txid: [u8; 32],
+        start: u32,
+        tip_hash: [u8; 32],
+        scanned: usize,
+    ) -> Result<()> {
+        let chain = self.headers.lock();
+        let tip = chain.best_height();
+        let expected = tip.checked_sub(start).map(|n| u64::from(n) + 1);
+        if chain.best_hash() != Some(tip_hash) || expected != Some(scanned as u64) {
+            return Err(BtcError::Sync(
+                "BTC contract scan is incomplete or its tip changed".into(),
+            ));
+        }
+        let txid = bitcoin::Txid::from_byte_array(funding_txid).to_string();
+        let address = htlc.address()?;
+        let set = self.utxos.lock();
+        let output = set
+            .list()
+            .iter()
+            .find(|u| u.txid == txid && u.vout == 0)
+            .ok_or_else(|| {
+                BtcError::Sync(
+                    "BTC funding output is missing, unconfirmed, spent, or outside the scan window"
+                        .into(),
+                )
+            })?;
+        if output.value != htlc.amount || output.address != address || output.height < start {
+            return Err(BtcError::Sync(
+                "BTC funding output does not match the swap contract".into(),
+            ));
+        }
+        let confirmations = tip
+            .checked_sub(output.height)
+            .map(|n| u64::from(n) + 1)
+            .unwrap_or(0);
+        if confirmations < u64::from(BTC_SWAP_CONFIRMATIONS) {
+            return Err(BtcError::Sync(format!("BTC funding requires {BTC_SWAP_CONFIRMATIONS} confirmations; found {confirmations}")));
+        }
+        if self.coinbase_txids.lock().contains(&txid) && confirmations < 100 {
+            return Err(BtcError::Sync("BTC funding coinbase is immature".into()));
+        }
+        Ok(())
+    }
+
     pub fn new(
         headers: Arc<Mutex<HeaderChain>>,
         utxos: Arc<Mutex<UtxoSet>>,
@@ -118,6 +279,7 @@ impl BtcSync {
             filter_headers: Arc::new(Mutex::new(FilterHeaderStore::default())),
             addresses,
             network,
+            coinbase_txids: Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -134,6 +296,7 @@ impl BtcSync {
             filter_headers,
             addresses,
             network,
+            coinbase_txids: Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -229,6 +392,9 @@ impl BtcSync {
                 if let Ok(a) = bitcoin::Address::from_str(addr) {
                     if let Ok(a) = a.require_network(self.network) {
                         if a.script_pubkey().to_bytes() == script {
+                            if tx.is_coinbase() {
+                                self.coinbase_txids.lock().insert(txid.clone());
+                            }
                             self.record_utxo(&txid, vout as u32, out.value.to_sat(), addr, height);
                         }
                     }
@@ -404,6 +570,7 @@ impl BtcSync {
         const FILTER_TYPE_BASIC: u8 = 0x00;
 
         let mut scanned = 0usize;
+        let mut queued_filters = std::collections::VecDeque::new();
         for (chunk_index, chunk) in hashes.chunks(CFILTERS_RANGE_LIMIT).enumerate() {
             let chunk_start = start_height + (chunk_index * CFILTERS_RANGE_LIMIT) as u32;
             let stop_hash = bitcoin::BlockHash::from_byte_array(*chunk.last().unwrap());
@@ -420,6 +587,9 @@ impl BtcSync {
                 // index can lag behind the tip, so it may send fewer filters than
                 // requested; time out rather than block forever.
                 let filter = loop {
+                    if let Some(filter) = queued_filters.pop_front() {
+                        break filter;
+                    }
                     match tokio::time::timeout(std::time::Duration::from_secs(10), peer.recv())
                         .await
                     {
@@ -470,6 +640,14 @@ impl BtcSync {
                     let block = loop {
                         match peer.recv().await? {
                             NetworkMessage::Block(b) => break b,
+                            NetworkMessage::CFilter(filter) => {
+                                if queued_filters.len() >= CFILTERS_RANGE_LIMIT {
+                                    return Err(BtcError::Sync(
+                                        "Too many queued compact filters".into(),
+                                    ));
+                                }
+                                queued_filters.push_back(filter);
+                            }
                             NetworkMessage::Ping(nonce) => {
                                 peer.send(NetworkMessage::Pong(nonce)).await?;
                             }
@@ -510,6 +688,10 @@ impl BtcSync {
         Ok(scanned)
     }
 }
+
+#[cfg(test)]
+#[path = "sync/swap_tests.rs"]
+mod swap_tests;
 
 #[cfg(test)]
 mod tests {

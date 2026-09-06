@@ -294,9 +294,26 @@ Claim VTR by revealing the preimage (taker action).
 ### POST /api/v1/swap/btc-claim
 
 The maker claims BTC first, revealing the locally held preimage to the taker.
-Independent verification of the confirmed BTC funding contract is still required;
-the handler does not yet establish that proof automatically. Secret revelation
-is rejected within one hour of BTC refund eligibility.
+Before signing, the handler performs a fresh BTC SPV contract scan: exact txid,
+vout 0, amount, P2WSH script, at least six confirmations, and no confirmed spend
+through the scanned tip. Failed or incomplete verification never broadcasts the
+preimage. Secret revelation is rejected within one hour of BTC refund eligibility,
+including a deadline recheck after the scan and a conservative BTC chain-time check.
+Unspent VTR funding is also rechecked before signing.
+
+The scan is bounded to 1,008 recent blocks and 120 seconds, requires a tip timestamp
+within two hours of the local clock, and requires two distinct compact-filter peer
+IPs outside regtest (one in regtest). A configured hostname resolving to only one
+non-regtest IP cannot satisfy verification. See [verification limits](atomic-swap-protocol.md#btc-verification-limits).
+This does not establish mempool conflict absence or finality against future reorgs.
+
+With daemon persistence enabled, wallet unlock restores encrypted local order and
+swap recovery records. VTR funding/claim/refund retries reuse the saved signed
+transaction and revalidate it before submission. The order listing includes
+locally tracked funded swaps so their IDs remain discoverable after restart.
+Persistence or record-authentication failures stop the action; restoration alone
+does not broadcast. See [encrypted recovery](atomic-swap-protocol.md#encrypted-maker-and-vtr-journal)
+for backup locations and limitations.
 
 **Request:**
 ```json

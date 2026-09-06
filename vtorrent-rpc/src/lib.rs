@@ -30,4 +30,5 @@ pub mod models;
 pub mod ratelimit;
 pub mod server;
 pub mod state;
+pub mod swap_recovery;
 pub mod ws;

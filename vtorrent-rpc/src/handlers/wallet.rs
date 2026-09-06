@@ -461,6 +461,10 @@ pub async fn unlock_wallet(
     // Verify the passphrase (and TOTP if 2FA is enabled) and decrypt the WIF
     // into memory. The wallet stays locked unless the credentials are correct.
     let wif = verify_wallet_auth(&state, &req.passphrase, req.otp_code.as_deref()).await?;
+    if let Err(error) = crate::swap_recovery::restore_with_wif(&state, &wif).await {
+        state.lock_wallet().await;
+        return Err(error);
+    }
     *state.wallet_wif.write().await = Some(wif.clone());
 
     // Re-derive the change address from the decrypted key. After a daemon

@@ -35,6 +35,47 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub async fn sync_swap_wallet(&self, rpc: &RpcAppState) -> crate::error::Result<()> {
+        let (wif, address) = {
+            let guard = self
+                .wallet
+                .lock()
+                .map_err(|_| crate::error::TauriError::WalletLocked)?;
+            let wallet = guard
+                .as_ref()
+                .ok_or(crate::error::TauriError::WalletLocked)?;
+            let wif = zeroize::Zeroizing::new(
+                wallet
+                    .get_default_wif()
+                    .ok_or(crate::error::TauriError::WalletLocked)?
+                    .to_owned(),
+            );
+            let address = wallet
+                .default_address()
+                .ok_or(crate::error::TauriError::WalletLocked)?
+                .to_string();
+            (wif, address)
+        };
+        let same_key = rpc
+            .wallet_wif
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|current| current.as_str() == wif.as_str());
+        if same_key {
+            *rpc.wallet_unlock_expiry.write().await = Some(0);
+            return Ok(());
+        }
+        if let Err(error) = vtorrent_rpc::swap_recovery::restore_with_wif(rpc, &wif).await {
+            rpc.lock_wallet().await;
+            return Err(error.into());
+        }
+        *rpc.wallet_wif.write().await = Some(wif);
+        *rpc.wallet_change_address.write().await = Some(address);
+        *rpc.wallet_unlock_expiry.write().await = Some(0);
+        Ok(())
+    }
+
     pub fn new() -> Self {
         Self {
             wallet: Mutex::new(None),

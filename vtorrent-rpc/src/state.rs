@@ -95,6 +95,9 @@ pub struct AppState {
     /// File path where the encrypted hot wallet is persisted. `None` disables
     /// persistence (standalone/test instances).
     pub wallet_path: Option<std::path::PathBuf>,
+    /// Per-wallet encrypted swap recovery records; disabled only in ephemeral instances.
+    pub swap_recovery_dir: Option<std::path::PathBuf>,
+    pub swap_recovery_lock: Arc<Mutex<()>>,
     /// File path recording the staking intent (`{"address": ...}`). When set,
     /// staking auto-resumes whenever the wallet is unlocked.
     pub staking_state_path: Option<std::path::PathBuf>,
@@ -176,6 +179,8 @@ impl AppState {
             staking_control: None,
             peer_list: Arc::new(RwLock::new(Vec::new())),
             wallet_path: None,
+            swap_recovery_dir: None,
+            swap_recovery_lock: Arc::new(Mutex::new(())),
             staking_state_path: None,
             rpc_api_key: None,
             regtest: false,
@@ -229,6 +234,8 @@ impl AppState {
             staking_control: None,
             peer_list: Arc::new(RwLock::new(Vec::new())),
             wallet_path: None,
+            swap_recovery_dir: None,
+            swap_recovery_lock: Arc::new(Mutex::new(())),
             staking_state_path: None,
             rpc_api_key: None,
             regtest: false,

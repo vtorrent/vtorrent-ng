@@ -247,6 +247,33 @@ impl BtcWallet {
         self.headers.lock().best_height()
     }
 
+    /// Freshly scan a swap contract, without trusting the persisted wallet UTXO cache.
+    pub async fn verify_swap_funding(
+        &self,
+        htlc: &crate::htlc::BtcHtlc,
+        funding_txid: [u8; 32],
+        peers: &[std::net::SocketAddr],
+        now: u64,
+    ) -> Result<()> {
+        if htlc.network != self.network {
+            return Err(crate::error::BtcError::Sync(
+                "BTC swap network mismatch".into(),
+            ));
+        }
+        let sync = crate::sync::BtcSync::new(
+            self.headers.clone(),
+            Arc::new(Mutex::new(UtxoSet::new())),
+            vec![htlc.address()?],
+            self.network,
+        );
+        tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            sync.verify_swap_funding(htlc, funding_txid, peers, now),
+        )
+        .await
+        .map_err(|_| crate::error::BtcError::Sync("BTC contract verification timed out".into()))?
+    }
+
     /// Add a header to the chain.
     pub fn add_header(&self, raw: &[u8], height: u32) -> Result<()> {
         self.headers.lock().add_header(raw, height)

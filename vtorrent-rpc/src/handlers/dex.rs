@@ -13,9 +13,14 @@ pub async fn get_dex_orders(
     State(state): State<Arc<AppState>>,
 ) -> RpcResult<Json<Vec<DexOrderResponse>>> {
     let order_book = state.order_book.read().await;
+    let swaps = state.swaps.read().await;
     let orders: Vec<DexOrderResponse> = order_book
-        .list_open_orders()
+        .list_orders()
         .iter()
+        .filter(|o| {
+            o.status == vtorrent_node::atomic_swap::OrderStatus::Open
+                || swaps.contains_key(&hex::encode(o.order_id))
+        })
         .map(|o| DexOrderResponse {
             id: hex::encode(o.order_id),
             maker_address: o.maker_address.clone(),
@@ -38,6 +43,13 @@ pub async fn place_dex_order(
     State(state): State<Arc<AppState>>,
     Json(req): Json<PlaceOrderRequest>,
 ) -> RpcResult<Json<PlaceOrderResponse>> {
+    place_dex_order_with_state(&state, req).await.map(Json)
+}
+
+pub async fn place_dex_order_with_state(
+    state: &AppState,
+    req: PlaceOrderRequest,
+) -> RpcResult<PlaceOrderResponse> {
     use vtorrent_node::atomic_swap::{
         AtomicSwap, SwapOrder, DEFAULT_HTLC_LOCKTIME, MAX_HTLC_LOCKTIME, MIN_HTLC_LOCKTIME,
     };
@@ -108,15 +120,16 @@ pub async fn place_dex_order(
         order.maker_btc_address = Some(btc_addr);
     }
     let order_id = hex::encode(order.order_id);
+    crate::swap_recovery::persist(state, &order, None).await?;
     state.order_book.write().await.add_order(order);
 
-    Ok(Json(PlaceOrderResponse {
+    Ok(PlaceOrderResponse {
         order_id,
         htlc_address: None,
         hash_lock,
         funding_txid: None,
         status: "Open".to_string(),
-    }))
+    })
 }
 
 pub async fn cancel_dex_order(
@@ -150,7 +163,16 @@ pub async fn cancel_dex_order(
             &maker[..maker.len().min(64)]
         )));
     }
-    let cancelled = state.order_book.write().await.cancel_order(&id);
+    let mut book = state.order_book.write().await;
+    let mut cancelled_order = book
+        .get_order(&id)
+        .cloned()
+        .ok_or_else(|| RpcError::NotFound("Order disappeared".into()))?;
+    if cancelled_order.status == vtorrent_node::atomic_swap::OrderStatus::Open {
+        cancelled_order.status = vtorrent_node::atomic_swap::OrderStatus::Cancelled;
+        crate::swap_recovery::persist(&state, &cancelled_order, None).await?;
+    }
+    let cancelled = book.cancel_order(&id);
     if !cancelled {
         return Err(RpcError::NotFound(format!(
             "Order {} could not be cancelled — it may have already been cancelled or filled",

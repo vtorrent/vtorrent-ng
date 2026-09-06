@@ -410,7 +410,7 @@ impl Htlc {
 }
 
 /// A swap order posted to the P2P DEX order book.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SwapOrder {
     /// Unique order ID (SHA256 of the order data).
     pub order_id: [u8; 32],
@@ -495,7 +495,7 @@ impl OrderAnnouncement {
 }
 
 /// Status of a swap order.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum OrderStatus {
     /// Order is open and waiting for a taker.
     Open,
@@ -512,7 +512,7 @@ pub enum OrderStatus {
 }
 
 /// Status of a cross-chain swap across both chains.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum SwapStatus {
     /// The maker's VTR HTLC is being funded.
     Funding,
@@ -531,7 +531,7 @@ pub enum SwapStatus {
 }
 
 /// Tracks a swap's lifecycle across the VTR and BTC chains.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SwapState {
     /// The order this swap belongs to.
     pub order_id: [u8; 32],
@@ -557,6 +557,12 @@ pub struct SwapState {
     pub btc_refund_txid: Option<[u8; 32]>,
     pub btc_refund_raw: Option<Vec<u8>>,
     pub btc_funding_raw: Option<Vec<u8>>,
+    #[serde(default)]
+    pub vtr_funding_tx: Option<Transaction>,
+    #[serde(default)]
+    pub vtr_claim_tx: Option<Transaction>,
+    #[serde(default)]
+    pub vtr_refund_tx: Option<Transaction>,
     /// Current status.
     pub status: SwapStatus,
 }
@@ -579,6 +585,9 @@ impl SwapState {
             btc_refund_txid: None,
             btc_refund_raw: None,
             btc_funding_raw: None,
+            vtr_funding_tx: None,
+            vtr_claim_tx: None,
+            vtr_refund_tx: None,
             status: SwapStatus::Funding,
         }
     }
@@ -702,6 +711,11 @@ impl SwapOrderBook {
             .collect()
     }
 
+    /// List order metadata for local recovery views as well as the open book.
+    pub fn list_orders(&self) -> Vec<&SwapOrder> {
+        self.orders.iter().collect()
+    }
+
     /// Cancel an open order by hex-encoded order_id. Funded or in-progress
     /// swaps must be settled through their HTLC path rather than cancelled.
     pub fn cancel_order(&mut self, id: &str) -> bool {
@@ -717,6 +731,34 @@ impl SwapOrderBook {
     /// Get an order by hex-encoded order_id.
     pub fn get_order(&self, id: &str) -> Option<&SwapOrder> {
         self.orders.iter().find(|o| hex::encode(o.order_id) == id)
+    }
+
+    /// Restore local recovery metadata in preference to an unfunded public announcement.
+    pub fn restore_order(&mut self, order: SwapOrder) {
+        if let Some(existing) = self
+            .orders
+            .iter_mut()
+            .find(|o| o.order_id == order.order_id)
+        {
+            if existing.preimage.is_none() && existing.funding_txid.is_none() {
+                *existing = order;
+            }
+        } else {
+            self.add_order(order);
+        }
+    }
+
+    /// Replace an existing local order after preparing its recovery record.
+    pub fn replace_order(&mut self, order: SwapOrder) {
+        if let Some(existing) = self
+            .orders
+            .iter_mut()
+            .find(|o| o.order_id == order.order_id)
+        {
+            *existing = order;
+        } else {
+            self.add_order(order);
+        }
     }
 
     /// Update the status of an order by hex-encoded order_id.

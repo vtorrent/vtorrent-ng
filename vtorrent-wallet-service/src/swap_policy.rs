@@ -6,7 +6,7 @@ use vtorrent_node::{
 /// Time reserved for the taker to claim VTR after the maker reveals the secret on BTC.
 pub const SWAP_CLAIM_SAFETY_MARGIN: u32 = 6 * 3600;
 /// Minimum remaining BTC funding/claim window.
-pub const MIN_BTC_SWAP_WINDOW: u32 = 3600;
+pub const MIN_BTC_SWAP_WINDOW: u32 = vtorrent_btc::sync::MIN_BTC_CLAIM_WINDOW;
 /// Required VTR funding depth before the taker commits BTC.
 pub const VTR_SWAP_CONFIRMATIONS: u32 = 6;
 

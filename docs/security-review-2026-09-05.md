@@ -86,8 +86,25 @@ secret revelation. The protocol document now follows maker-secret ownership:
 maker claims BTC first, then taker claims VTR. CLTV is refund eligibility,
 not a hard deadline on the preimage branch.
 
-Still open: automatic verification of the confirmed BTC contract before the
-maker reveals the secret, and adversarial validation with independent nodes.
+Follow-up implemented locally: BTC claim now requires a fresh isolated SPV scan
+of the exact P2WSH contract before signing. It verifies txid/vout, amount, full
+script, six confirmations, and no confirmed spend through a complete scanned
+tip. Persisted wallet UTXOs cannot authorize claims. Non-regtest scans require
+filter agreement from distinct peer IPs. Stale/future tips, partial scans,
+changed tips, immature coinbase outputs, invalid commitments, and deadlines
+crossed during verification fail closed. The handler also checks order/secret
+consistency and rechecks confirmed unspent VTR funding before revelation.
+
+Simulated P2P tests cover valid funding, contract-field mismatches, shallow
+funding, spent/missing outputs, corrupt responses, and chain-time boundaries.
+RPC tests ensure failures never broadcast the secret or update claim status.
+The scan now preserves queued filters arriving before a requested full block.
+
+Still open: adversarial validation with independent nodes and the SPV trust
+limits (eclipse attacks, mempool conflicts, and reorgs after verification).
+Claim scans are bounded to the latest 1,008 blocks and 120 seconds; older or
+unverifiable funding is rejected, not assumed safe. These changes do not provide
+full per-chain settlement reconciliation; durable maker/VTR recovery is covered below.
 
 ### High: swap recovery combines independent legs
 
@@ -108,10 +125,26 @@ metadata are saved with the BTC wallet; a fresh RPC state can reconstruct and
 retry that refund without the VTR order book. VTR claim/refund submissions
 must pass chain-backed script and fee validation.
 
-Still open: durable maker secret and VTR recovery, persistence/reconciliation
-of confirmed per-chain outcomes, and automatic handling of conflicting spends
-and reorgs. Submission IDs do not prove confirmations. Existing swaps created
-before contract journaling do not gain missing recovery metadata retroactively.
+Follow-up implemented locally: a per-wallet/network encrypted journal now retains
+maker secrets, order terms, swap metadata, and exact signed VTR funding/claim/refund
+transactions. It uses the existing wallet encryption format with domain-separated
+WIF-based key material; user passphrases are not retained for journaling. Records
+are synced and atomically replaced before mempool admission or relay. Corruption,
+changed contract terms, or replacement of prepared transaction IDs fail closed.
+All records authenticate before installation on wallet unlock. Desktop funding
+shares the RPC path and desktop wallet open/lock now updates the shared signing
+state. Funded local swaps remain visible after restoration.
+
+Restart regressions cover maker-secret recovery, exact funding/claim/refund
+retries, and refusal to admit funding when persistence fails. Invalid claim
+signatures are rejected before recording a pending claim. Corrupt-file tests
+check that failed restoration does not overwrite the file or install its order.
+
+Still open: settlement/reorg reconciliation of confirmed per-chain outcomes,
+fee-bumped recovery, and automatic handling of conflicting spends. Submission
+IDs do not prove confirmations. This journal does not prevent replay of an older
+authentic file or wipe all in-memory preimages on lock. Existing swaps created
+before journaling do not gain missing recovery metadata retroactively.
 
 ### High: BTC funding has no reservation across broadcast
 
