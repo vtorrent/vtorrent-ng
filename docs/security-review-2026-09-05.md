@@ -51,10 +51,15 @@ rewritten by this review.
 
 Workspace tests with all features, strict workspace Clippy across all targets
 and features, formatting, Cargo Machete, and whitespace checks passed locally.
-The previously pushed `4a3e86e` also has a green GitHub Actions run; these review
-changes are still local and have not been deployed to the ongoing soak.
+The wallet/RPC fixes were committed as `d128ed7`, whose GitHub Actions run is
+green. The swap follow-up below is still local and has not been deployed to
+the ongoing soak. Workspace tests, strict Clippy, Cargo Machete, formatting,
+and frontend lint/build passed for the follow-up.
 
-## Open release blockers
+## Original swap findings and follow-up
+
+The descriptions below record the original findings. Their current mitigation
+and remaining release requirements are listed explicitly.
 
 ### High: cross-chain expiry ordering is not enforced
 
@@ -73,6 +78,17 @@ the actual funded contracts and confirmations before the counterparty funds,
 and test adversarial boundary timing on independent nodes. Changing one
 constant does not cover those requirements.
 
+Implemented locally: shared policy now checks the exact unspent VTR contract
+and six confirmations, requires both amounts to exceed their spend fees, and
+chooses BTC refund eligibility at least six hours before VTR expiry. BTC
+funding requires at least one hour remaining. Maker BTC claim refuses late
+secret revelation. The protocol document now follows maker-secret ownership:
+maker claims BTC first, then taker claims VTR. CLTV is refund eligibility,
+not a hard deadline on the preimage branch.
+
+Still open: automatic verification of the confirmed BTC contract before the
+maker reveals the secret, and adversarial validation with independent nodes.
+
 ### High: swap recovery combines independent legs
 
 `handlers/swap.rs::swap_refund` and the desktop equivalent require VTR expiry
@@ -85,6 +101,18 @@ Required work: persist separate per-chain funding/claim/refund outcomes, make
 each leg independently retryable, and reconcile submissions with on-chain
 confirmation/spend state. Test one-leg success followed by failure/restart.
 
+Implemented locally: RPC and desktop share one orchestration path, track
+separate claim/refund submissions, and expose explicit refund legs. BTC refund
+does not require VTR expiry or unlock. Signed BTC refunds and public contract
+metadata are saved with the BTC wallet; a fresh RPC state can reconstruct and
+retry that refund without the VTR order book. VTR claim/refund submissions
+must pass chain-backed script and fee validation.
+
+Still open: durable maker secret and VTR recovery, persistence/reconciliation
+of confirmed per-chain outcomes, and automatic handling of conflicting spends
+and reorgs. Submission IDs do not prove confirmations. Existing swaps created
+before contract journaling do not gain missing recovery metadata retroactively.
+
 ### High: BTC funding has no reservation across broadcast
 
 RPC and desktop BTC funding check `VtrFunded` under a read lock, release it,
@@ -96,3 +124,22 @@ conflicting funding transactions.
 Required work: reserve the swap and selected inputs before broadcast; reconcile
 ambiguous broadcast failures and restart state before allowing retries. Cover
 concurrent calls and competing orders with deterministic broadcast hooks.
+
+Implemented locally: serialized funding guards, atomic BTC input reservations,
+and saved signed funding transactions precede broadcast. Failed persistence
+prevents broadcast and restores the in-memory input. Ambiguous broadcast errors
+retain the reservation; same-process retries reuse the signed transaction.
+Rescanning cannot re-add a reserved outpoint. The daemon uses persistent BTC
+state, and desktop no longer falls back to empty state on a load error.
+BTC receiving-address indices also persist, so refund recovery can find
+nonzero-index signing keys after restart.
+
+Regression tests cover duplicate concurrent requests, competing orders,
+ambiguous funding/refund broadcasts, reservation persistence failures, and two
+restarts during BTC refund recovery. Script and confirmation-boundary tests
+cover the funding policy.
+
+Still open: automatic reconciliation/release of unused reservations after
+restart. Signed funding transactions and contract terms remain available in
+the BTC wallet file for recovery, but they are not automatically rebroadcast
+without re-establishing the counterparty funding facts.

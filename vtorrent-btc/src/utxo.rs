@@ -18,10 +18,31 @@ pub struct Utxo {
     pub height: u32,
 }
 
+/// Public contract terms needed to recover the BTC refund after restart.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SwapContract {
+    pub order_id: String,
+    pub funding_txid: String,
+    pub hash_lock: [u8; 32],
+    pub recipient: String,
+    pub refund_address: String,
+    pub expiry: u32,
+    pub amount: u64,
+    pub refund_raw: Option<Vec<u8>>,
+}
+
 /// In-memory UTXO set with optional disk persistence.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UtxoSet {
     utxos: Vec<Utxo>,
+    #[serde(default)]
+    reserved: std::collections::BTreeSet<(String, u32)>,
+    #[serde(default)]
+    pending_swap_transactions: std::collections::BTreeMap<String, Vec<u8>>,
+    #[serde(default)]
+    swap_contracts: std::collections::BTreeMap<String, SwapContract>,
+    #[serde(default)]
+    next_index: u32,
 }
 
 impl UtxoSet {
@@ -29,7 +50,18 @@ impl UtxoSet {
         Self::default()
     }
 
+    pub fn next_index(&self) -> u32 {
+        self.next_index
+    }
+
+    pub fn set_next_index(&mut self, index: u32) {
+        self.next_index = index;
+    }
+
     pub fn add(&mut self, utxo: Utxo) {
+        if self.reserved.contains(&(utxo.txid.clone(), utxo.vout)) {
+            return;
+        }
         if !self
             .utxos
             .iter()
@@ -41,6 +73,28 @@ impl UtxoSet {
 
     pub fn remove(&mut self, txid: &str, vout: u32) {
         self.utxos.retain(|u| !(u.txid == txid && u.vout == vout));
+    }
+
+    pub fn reserve(&mut self, txid: &str, vout: u32) {
+        self.remove(txid, vout);
+        self.reserved.insert((txid.to_owned(), vout));
+    }
+
+    pub fn record_swap_transaction(&mut self, txid: String, raw: Vec<u8>) {
+        self.pending_swap_transactions.insert(txid, raw);
+    }
+
+    pub fn record_swap_contract(&mut self, contract: SwapContract) {
+        self.swap_contracts
+            .insert(contract.order_id.clone(), contract);
+    }
+
+    pub fn swap_contract(&self, order_id: &str) -> Option<&SwapContract> {
+        self.swap_contracts.get(order_id)
+    }
+
+    pub fn pending_swap_transactions(&self) -> &std::collections::BTreeMap<String, Vec<u8>> {
+        &self.pending_swap_transactions
     }
 
     pub fn total(&self) -> u64 {
@@ -72,7 +126,17 @@ impl UtxoSet {
         let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
         // Write atomically via a temp file + rename.
         let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, &json)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp)?;
+        std::io::Write::write_all(&mut file, json.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
         std::fs::rename(&tmp, path)?;
         tracing::debug!(
             "UTXO set saved: {} entries → {}",
@@ -85,10 +149,11 @@ impl UtxoSet {
     /// Load the UTXO set from a JSON file.  Returns an empty set if the
     /// file does not exist.
     pub fn load(path: &Path) -> std::io::Result<Self> {
-        if !path.exists() {
-            return Ok(Self::new());
-        }
-        let json = std::fs::read_to_string(path)?;
+        let json = match std::fs::read_to_string(path) {
+            Ok(json) => json,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Self::new()),
+            Err(error) => return Err(error),
+        };
         let set: UtxoSet = serde_json::from_str(&json)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         tracing::debug!(

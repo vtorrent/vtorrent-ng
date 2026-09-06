@@ -521,6 +521,15 @@ pub struct BtcClaimRequest {
 pub struct SwapRefundRequest {
     /// Hex-encoded order ID.
     pub order_id: String,
+    #[serde(default)]
+    pub leg: Option<SwapLeg>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SwapLeg {
+    Vtr,
+    Btc,
 }
 
 /// Generic swap action response.

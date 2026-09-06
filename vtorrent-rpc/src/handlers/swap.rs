@@ -1,10 +1,7 @@
 use axum::{extract::State, Json};
 use std::sync::Arc;
 
-use super::{
-    broadcast_btc, btc_txid_hex, now_secs_mock, parse_hash32, require_swap_stage,
-    verify_wallet_auth,
-};
+use super::{broadcast_btc, btc_txid_hex, now_secs_mock, parse_hash32, verify_wallet_auth};
 use crate::error::{RpcError, RpcResult};
 use crate::models::*;
 use crate::state::AppState;
@@ -231,86 +228,123 @@ pub async fn btc_fund(
     State(state): State<Arc<AppState>>,
     Json(req): Json<BtcFundRequest>,
 ) -> RpcResult<Json<BtcFundResponse>> {
-    use vtorrent_node::atomic_swap::SwapStatus;
+    btc_fund_with_state(&state, req).await.map(Json)
+}
 
-    let order = {
-        let order_book = state.order_book.read().await;
-        order_book
-            .get_order(&req.order_id)
-            .cloned()
-            .ok_or_else(|| RpcError::NotFound(format!("Order {} not found", req.order_id)))?
-    };
-    let hash_lock = order
-        .hash_lock
-        .ok_or_else(|| RpcError::BadRequest("Order has no hash lock".into()))?;
+pub async fn btc_fund_with_state(
+    state: &AppState,
+    req: BtcFundRequest,
+) -> RpcResult<BtcFundResponse> {
+    fund_btc_with_broadcast(state, req, async |raw: &[u8]| {
+        broadcast_btc(state, raw).await
+    })
+    .await
+}
+
+async fn fund_btc_with_broadcast(
+    state: &AppState,
+    req: BtcFundRequest,
+    broadcast: impl AsyncFnOnce(&[u8]) -> RpcResult<[u8; 32]>,
+) -> RpcResult<BtcFundResponse> {
+    let order = state
+        .order_book
+        .read()
+        .await
+        .get_order(&req.order_id)
+        .cloned()
+        .ok_or_else(|| RpcError::NotFound(format!("Order {} not found", req.order_id)))?;
     let maker_btc_address = order
         .maker_btc_address
         .clone()
         .ok_or_else(|| RpcError::BadRequest("Order has no maker BTC address".into()))?;
-
-    // Lifecycle guard: the VTR leg must be funded first — locking BTC into an
-    // HTLC for an unfunded order would strand the taker's BTC until refund.
-    // The BTC HTLC must not already be funded, and a finished swap
-    // (claimed/refunded) can never be funded again.
-    {
-        let swaps = state.swaps.read().await;
-        let swap = swaps.get(&req.order_id).ok_or_else(|| {
-            RpcError::BadRequest(
-                "VTR leg not funded yet — call /api/v1/dex/match to fund the order first".into(),
-            )
-        })?;
-        if swap.status != SwapStatus::VtrFunded {
-            return Err(RpcError::BadRequest(format!(
-                "Swap is in state {:?}; BTC funding requires VtrFunded",
-                swap.status
-            )));
-        }
-    }
-
-    // The BTC amount the taker must lock is the order's target amount.
-    let btc_amount = order.target_amount;
-    if btc_amount == 0 {
-        return Err(RpcError::BadRequest("Order target amount is zero".into()));
-    }
-
-    // Build the BTC HTLC: the maker is the recipient (claims with preimage),
-    // the taker is the refund address.
-    let (btc_funding_txid, btc_expiry) = {
-        let btc = state.btc_wallet.read().await;
-        let w = btc
-            .as_ref()
-            .ok_or_else(|| RpcError::BadRequest("BTC wallet not initialized".into()))?;
-        // Broadcast hook: use the daemon's configured peer when set.
-        vtorrent_wallet_service::build_btc_htlc_funding(
-            w,
-            hash_lock,
-            &maker_btc_address,
-            &req.btc_refund_address,
-            btc_amount,
-            async |raw: &[u8]| broadcast_btc(&state, raw).await.map_err(|e| e.to_string()),
-        )
-        .await
-        .map_err(RpcError::BadRequest)?
-    };
-
-    // Record the swap state with the real funding txid. The lifecycle guard
-    // above guarantees the entry exists (VtrFunded), so get_mut is exact.
     let mut swaps = state.swaps.write().await;
-    let swap = swaps
-        .get_mut(&req.order_id)
-        .ok_or_else(|| RpcError::Internal("Swap state disappeared after stage guard".into()))?;
-    swap.btc_funding_txid = Some(btc_funding_txid);
-    swap.maker_btc_address = Some(maker_btc_address);
-    swap.taker_btc_refund_address = Some(req.btc_refund_address);
-    swap.btc_amount = btc_amount;
-    swap.btc_expiry = btc_expiry;
+    let swap = swaps.get_mut(&req.order_id).ok_or_else(|| {
+        RpcError::BadRequest("VTR leg not funded yet — fund the order first".into())
+    })?;
+    if swap.btc_funding_raw.is_some()
+        && swap.taker_btc_refund_address.as_deref() != Some(&req.btc_refund_address)
+    {
+        return Err(RpcError::BadRequest(
+            "BTC refund address differs from the reserved funding transaction".into(),
+        ));
+    }
+    if swap.status == SwapStatus::BtcFunded {
+        let txid = swap
+            .btc_funding_txid
+            .ok_or_else(|| RpcError::Internal("BTC funding txid missing".into()))?;
+        return Ok(BtcFundResponse {
+            order_id: req.order_id,
+            btc_funding_txid: btc_txid_hex(&txid),
+            status: "BtcFunded".into(),
+        });
+    }
+    if swap.status != SwapStatus::VtrFunded && swap.status != SwapStatus::BtcFunding {
+        return Err(RpcError::BadRequest(format!(
+            "Cannot fund BTC in swap state {:?}",
+            swap.status
+        )));
+    }
+    if swap.vtr_funding_txid != order.funding_txid || order.hash_lock != Some(swap.hash_lock) {
+        return Err(RpcError::BadRequest(
+            "VTR order and swap funding disagree".into(),
+        ));
+    }
+    let btc = state.btc_wallet.read().await;
+    let wallet = btc
+        .as_ref()
+        .ok_or_else(|| RpcError::BadRequest("BTC wallet not initialized".into()))?;
+    let now = now_secs_mock(state).await;
+    let terms = {
+        let chain = state.chain.lock().await;
+        vtorrent_wallet_service::swap_policy::verify_vtr_swap_funding(&chain, &order, now)
+            .map_err(RpcError::BadRequest)?
+    };
+    if let Some(raw) = &swap.btc_funding_raw {
+        if u64::from(swap.btc_expiry)
+            < now.saturating_add(u64::from(
+                vtorrent_wallet_service::swap_policy::MIN_BTC_SWAP_WINDOW,
+            ))
+        {
+            return Err(RpcError::BadRequest("Reserved BTC funding window has elapsed; reconcile the recorded transaction before recovery".into()));
+        }
+        broadcast(raw).await?;
+        swap.status = SwapStatus::BtcFunded;
+        let txid = swap
+            .btc_funding_txid
+            .ok_or_else(|| RpcError::Internal("Reserved BTC txid missing".into()))?;
+        return Ok(BtcFundResponse {
+            order_id: req.order_id,
+            btc_funding_txid: btc_txid_hex(&txid),
+            status: "BtcFunded".into(),
+        });
+    }
+    let expiry = terms.btc_expiry();
+    let (txid, _) = vtorrent_wallet_service::build_btc_htlc_funding(
+        wallet,
+        terms,
+        &req.btc_refund_address,
+        async |raw: &[u8]| {
+            use bitcoin::hashes::Hash;
+            let tx: bitcoin::Transaction =
+                bitcoin::consensus::deserialize(raw).map_err(|e| e.to_string())?;
+            swap.btc_funding_txid = Some(tx.compute_txid().to_byte_array());
+            swap.btc_funding_raw = Some(raw.to_vec());
+            swap.maker_btc_address = Some(maker_btc_address);
+            swap.taker_btc_refund_address = Some(req.btc_refund_address.clone());
+            swap.btc_amount = order.target_amount;
+            swap.btc_expiry = expiry;
+            swap.status = SwapStatus::BtcFunding;
+            broadcast(raw).await.map_err(|e| e.to_string())
+        },
+    )
+    .await
+    .map_err(RpcError::BadRequest)?;
     swap.status = SwapStatus::BtcFunded;
-
-    Ok(Json(BtcFundResponse {
+    Ok(BtcFundResponse {
         order_id: req.order_id,
-        btc_funding_txid: btc_txid_hex(&btc_funding_txid),
-        status: "BtcFunded".to_string(),
-    }))
+        btc_funding_txid: btc_txid_hex(&txid),
+        status: "BtcFunded".into(),
+    })
 }
 
 /// POST /api/v1/swap/vtr-claim
@@ -320,8 +354,13 @@ pub async fn vtr_claim(
     State(state): State<Arc<AppState>>,
     Json(req): Json<VtrClaimRequest>,
 ) -> RpcResult<Json<SwapActionResponse>> {
-    use vtorrent_node::atomic_swap::{SwapState, SwapStatus};
+    vtr_claim_with_state(&state, req).await.map(Json)
+}
 
+pub async fn vtr_claim_with_state(
+    state: &AppState,
+    req: VtrClaimRequest,
+) -> RpcResult<SwapActionResponse> {
     let preimage = parse_hash32(&req.preimage, "preimage")?;
     if req.taker_wif.is_empty() {
         return Err(RpcError::BadRequest("Taker WIF is required".into()));
@@ -345,10 +384,19 @@ pub async fn vtr_claim(
         .clone()
         .ok_or_else(|| RpcError::BadRequest("Order has no taker address".into()))?;
 
-    // Lifecycle guard: a refunded swap cannot be claimed on the VTR leg.
-    {
-        let swaps = state.swaps.read().await;
-        require_swap_stage(swaps.get(&req.order_id), &[SwapStatus::Refunded])?;
+    let mut swaps = state.swaps.write().await;
+    let swap = swaps
+        .get_mut(&req.order_id)
+        .ok_or_else(|| RpcError::NotFound("Swap state not found".into()))?;
+    if swap.vtr_refund_txid.is_some() {
+        return Err(RpcError::BadRequest("VTR refund already submitted".into()));
+    }
+    if let Some(txid) = swap.vtr_claim_txid {
+        return Ok(SwapActionResponse {
+            order_id: req.order_id,
+            txid: hex::encode(txid),
+            status: "VtrClaimSubmitted".into(),
+        });
     }
 
     // Verify the preimage matches the hash lock.
@@ -381,60 +429,74 @@ pub async fn vtr_claim(
 
     // Admit to the mempool and broadcast.
     {
+        let chain = state.chain.lock().await;
         let mut mempool = state.mempool.lock().await;
         mempool
-            .add_transaction_with_fee(
-                claim_tx.clone(),
-                vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS,
-            )
+            .admit_with_chain_fee(&chain, claim_tx.clone())
             .map_err(|e| RpcError::BadRequest(format!("Mempool rejected VTR claim tx: {}", e)))?;
     }
     if let Some(sender) = &state.tx_submit {
         let _ = sender.try_send(claim_tx);
     }
 
-    let mut swaps = state.swaps.write().await;
-    let swap = swaps
-        .entry(req.order_id.clone())
-        .or_insert_with(|| SwapState::new(order.order_id, hash_lock));
     swap.preimage = Some(preimage);
-    swap.status = SwapStatus::Claimed;
+    swap.vtr_claim_txid = Some(claim_txid);
+    swap.refresh_status();
 
-    Ok(Json(SwapActionResponse {
+    Ok(SwapActionResponse {
         order_id: req.order_id,
         txid: hex::encode(claim_txid),
-        status: "Claimed".to_string(),
-    }))
+        status: "VtrClaimSubmitted".to_string(),
+    })
 }
 
 /// POST /api/v1/swap/btc-claim
 ///
-/// The maker claims BTC using the revealed preimage.
+/// The maker reveals the preimage by claiming BTC.
 pub async fn btc_claim(
     State(state): State<Arc<AppState>>,
     Json(req): Json<BtcClaimRequest>,
 ) -> RpcResult<Json<SwapActionResponse>> {
+    btc_claim_with_state(&state, req).await.map(Json)
+}
+
+pub async fn btc_claim_with_state(
+    state: &AppState,
+    req: BtcClaimRequest,
+) -> RpcResult<SwapActionResponse> {
+    let order_preimage = state
+        .order_book
+        .read()
+        .await
+        .get_order(&req.order_id)
+        .and_then(|order| order.preimage);
+    let mut swaps = state.swaps.write().await;
     let (preimage, btc_funding_txid, maker_btc_address, btc_amount, btc_expiry, refund_address) = {
-        let swaps = state.swaps.read().await;
         let swap = swaps
             .get(&req.order_id)
             .ok_or_else(|| RpcError::NotFound(format!("Swap {} not found", req.order_id)))?;
-        // Lifecycle guard: the BTC leg can be claimed any time after it was
-        // funded (typically after vtr-claim revealed the preimage) and never
-        // after a refund.
-        require_swap_stage(Some(swap), &[SwapStatus::Refunded])?;
-        // The maker generated the preimage at order placement and holds it in
-        // the order book. The swap state's preimage is only populated when the
-        // taker reveals it via vtr_claim, so fall back to the order's preimage.
+        if swap.btc_refund_txid.is_some() {
+            return Err(RpcError::BadRequest("BTC refund already submitted".into()));
+        }
+        if swap.vtr_refund_txid.is_some() {
+            return Err(RpcError::BadRequest(
+                "VTR refund already submitted; refusing to reveal the swap secret".into(),
+            ));
+        }
+        if now_secs_mock(state).await.saturating_add(u64::from(
+            vtorrent_wallet_service::swap_policy::MIN_BTC_SWAP_WINDOW,
+        )) >= u64::from(swap.btc_expiry)
+        {
+            return Err(RpcError::BadRequest(
+                "BTC claim window is too close to refund eligibility to reveal the secret safely"
+                    .into(),
+            ));
+        }
+        // Maker-created orders hold the preimage before its first on-chain revelation.
         let preimage = match swap.preimage {
             Some(p) => p,
-            None => {
-                let order_book = state.order_book.read().await;
-                order_book
-                    .get_order(&req.order_id)
-                    .and_then(|o| o.preimage)
-                    .ok_or_else(|| RpcError::BadRequest("Preimage not available".into()))?
-            }
+            None => order_preimage
+                .ok_or_else(|| RpcError::BadRequest("Preimage not available".into()))?,
         };
         let btc_funding_txid = swap
             .btc_funding_txid
@@ -459,8 +521,7 @@ pub async fn btc_claim(
         )
     };
 
-    // Build and sign the claim via the shared service path; the maker's BTC
-    // key is derived from the wallet seed at index 0 inside the service.
+    // The shared builder finds the key for the recorded maker BTC address.
     let (raw, txid) = {
         let btc = state.btc_wallet.read().await;
         let w = btc
@@ -480,20 +541,18 @@ pub async fn btc_claim(
         )
         .map_err(RpcError::BadRequest)?
     };
-    broadcast_btc(&state, &raw).await?;
+    let swap = swaps
+        .get_mut(&req.order_id)
+        .ok_or_else(|| RpcError::Internal("Swap state disappeared".into()))?;
+    swap.btc_claim_txid = Some(txid);
+    swap.refresh_status();
+    broadcast_btc(state, &raw).await?;
 
-    {
-        let mut swaps = state.swaps.write().await;
-        if let Some(swap) = swaps.get_mut(&req.order_id) {
-            swap.status = SwapStatus::Claimed;
-        }
-    }
-
-    Ok(Json(SwapActionResponse {
+    Ok(SwapActionResponse {
         order_id: req.order_id,
         txid: btc_txid_hex(&txid),
-        status: "Claimed".to_string(),
-    }))
+        status: "BtcClaimSubmitted".to_string(),
+    })
 }
 
 /// POST /api/v1/swap/refund
@@ -503,137 +562,252 @@ pub async fn swap_refund(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SwapRefundRequest>,
 ) -> RpcResult<Json<SwapActionResponse>> {
-    use vtorrent_node::atomic_swap::{SwapState, SwapStatus};
+    swap_refund_with_state(&state, req).await.map(Json)
+}
 
-    let order = {
-        let order_book = state.order_book.read().await;
-        order_book
-            .get_order(&req.order_id)
-            .cloned()
-            .ok_or_else(|| RpcError::NotFound(format!("Order {} not found", req.order_id)))?
-    };
-    let now = now_secs_mock(&state).await as u32;
-    if now < order.expiry {
-        return Err(RpcError::BadRequest("Swap has not expired yet".into()));
-    }
+pub async fn swap_refund_with_state(
+    state: &AppState,
+    req: SwapRefundRequest,
+) -> RpcResult<SwapActionResponse> {
+    refund_with_broadcast(state, req, async |raw: &[u8]| {
+        broadcast_btc(state, raw).await
+    })
+    .await
+}
 
-    // Lifecycle guard: each leg refunds independently; a completed refund is
-    // the only terminal state for this endpoint.
-    {
-        let swaps = state.swaps.read().await;
-        require_swap_stage(swaps.get(&req.order_id), &[SwapStatus::Refunded])?;
-    }
-
-    // ── VTR-side refund (the maker reclaims their VTR) ──────────────────────
-    let vtr_refund_txid = {
-        let hash_lock = order.hash_lock;
-        let funding_txid = order.funding_txid;
-        let taker_address = order.taker_address.clone();
-        match (hash_lock, funding_txid, taker_address) {
-            (Some(hash_lock), Some(funding_txid), Some(taker_address)) => {
-                // The maker signs the refund (they are the refund address).
-                let maker_wif = state
-                    .wallet_wif
-                    .read()
-                    .await
-                    .clone()
-                    .ok_or_else(|| RpcError::BadRequest("Maker wallet not unlocked".into()))?;
-                let refund_tx = vtorrent_wallet_service::build_vtr_htlc_refund(
-                    vtorrent_wallet_service::VtrRefundParams {
-                        hash_lock,
-                        taker_address: &taker_address,
-                        maker_address: &order.maker_address,
-                        expiry: order.expiry,
-                        vtr_amount: order.vtr_amount,
-                        funding_txid,
-                        maker_wif: &maker_wif,
-                    },
-                )
-                .map_err(RpcError::BadRequest)?;
-                let refund_txid = refund_tx.txid();
-
-                {
-                    let mut mempool = state.mempool.lock().await;
-                    mempool
-                        .add_transaction_with_fee(
-                            refund_tx.clone(),
-                            vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS,
-                        )
-                        .map_err(|e| {
-                            RpcError::BadRequest(format!("Mempool rejected VTR refund tx: {}", e))
-                        })?;
-                }
-                if let Some(sender) = &state.tx_submit {
-                    let _ = sender.try_send(refund_tx);
-                }
-                Some(refund_txid)
-            }
-            _ => None,
-        }
-    };
-
-    // ── BTC-side refund (the taker reclaims their BTC) ──────────────────────
-    let btc_refund_txid = {
-        let swaps = state.swaps.read().await;
-        let swap = swaps.get(&req.order_id);
-        match swap {
-            Some(s) if s.btc_funding_txid.is_some() && s.btc_expiry > 0 => {
-                let funding_txid = s.btc_funding_txid.unwrap();
-                let refund_address = s.taker_btc_refund_address.clone().ok_or_else(|| {
-                    RpcError::BadRequest("Taker BTC refund address not recorded".into())
-                })?;
-                let htlc = vtorrent_btc::htlc::BtcHtlc {
-                    hash_lock: s.hash_lock,
-                    recipient: s.maker_btc_address.clone().unwrap_or_default(),
-                    refund_address,
-                    expiry: s.btc_expiry,
-                    amount: s.btc_amount,
-                    network: *state.btc_network.read().await,
-                };
-                const REFUND_FEE_SATOSHIS: u64 = vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS;
-                let unsigned = htlc
-                    .build_refund_tx_at(funding_txid, REFUND_FEE_SATOSHIS, now)
-                    .map_err(|e| {
-                        RpcError::BadRequest(format!("Unable to build BTC refund tx: {}", e))
-                    })?;
-                let refund_wif = {
-                    let btc = state.btc_wallet.read().await;
-                    let w = btc
-                        .as_ref()
-                        .ok_or_else(|| RpcError::BadRequest("BTC wallet not initialized".into()))?;
-                    w.derive_wif(0)
-                        .map_err(|e| RpcError::Internal(e.to_string()))?
-                };
-                let signed = htlc.sign_refund_tx(unsigned, &refund_wif).map_err(|e| {
-                    RpcError::BadRequest(format!("Unable to sign BTC refund tx: {}", e))
-                })?;
-                let raw = bitcoin::consensus::encode::serialize(&signed);
-                let txid = {
-                    use bitcoin::hashes::Hash;
-                    signed.compute_txid().to_byte_array()
-                };
-                broadcast_btc(&state, &raw).await?;
-                Some(txid)
-            }
-            _ => None,
-        }
-    };
-
+async fn refund_with_broadcast(
+    state: &AppState,
+    req: SwapRefundRequest,
+    broadcast: impl AsyncFnOnce(&[u8]) -> RpcResult<[u8; 32]>,
+) -> RpcResult<SwapActionResponse> {
+    restore_btc_swap(state, &req.order_id).await?;
+    let order = state
+        .order_book
+        .read()
+        .await
+        .get_order(&req.order_id)
+        .cloned();
+    let now = u32::try_from(now_secs_mock(state).await)
+        .map_err(|_| RpcError::BadRequest("Swap clock exceeds u32::MAX".into()))?;
     let mut swaps = state.swaps.write().await;
     let swap = swaps
-        .entry(req.order_id.clone())
-        .or_insert_with(|| SwapState::new(order.order_id, order.hash_lock.unwrap_or([0u8; 32])));
-    swap.status = SwapStatus::Refunded;
-
-    let refund_txid_display = match (vtr_refund_txid, btc_refund_txid) {
-        (Some(vtr), _) => hex::encode(vtr),
-        (None, Some(btc)) => btc_txid_hex(&btc),
-        (None, None) => hex::encode(order.order_id),
+        .get_mut(&req.order_id)
+        .ok_or_else(|| RpcError::NotFound(format!("Swap {} not found", req.order_id)))?;
+    let leg = match req.leg {
+        Some(leg) => leg,
+        None => {
+            let vtr_ready = order.as_ref().is_some_and(|order| now >= order.expiry)
+                && swap.vtr_funding_txid.is_some()
+                && swap.vtr_claim_txid.is_none()
+                && swap.vtr_refund_txid.is_none();
+            let btc_ready = now >= swap.btc_expiry
+                && swap.btc_expiry > 0
+                && swap.btc_funding_txid.is_some()
+                && swap.btc_claim_txid.is_none()
+                && swap.btc_refund_txid.is_none();
+            match (vtr_ready, btc_ready) {
+                (true, false) => SwapLeg::Vtr,
+                (false, true) => SwapLeg::Btc,
+                _ => {
+                    return Err(RpcError::BadRequest(
+                        "Specify the refund leg as vtr or btc".into(),
+                    ))
+                }
+            }
+        }
     };
 
-    Ok(Json(SwapActionResponse {
+    let txid = match leg {
+        SwapLeg::Vtr => {
+            if swap.vtr_claim_txid.is_some() {
+                return Err(RpcError::BadRequest("VTR claim already submitted".into()));
+            }
+            if let Some(txid) = swap.vtr_refund_txid {
+                return Ok(SwapActionResponse {
+                    order_id: req.order_id,
+                    txid: hex::encode(txid),
+                    status: "VtrRefundSubmitted".into(),
+                });
+            }
+            let order =
+                order.ok_or_else(|| RpcError::NotFound("VTR order metadata missing".into()))?;
+            if now < order.expiry {
+                return Err(RpcError::BadRequest("VTR HTLC has not expired yet".into()));
+            }
+            if !state.is_wallet_unlocked().await {
+                return Err(RpcError::WalletLocked);
+            }
+            let maker_wif = state
+                .wallet_wif
+                .read()
+                .await
+                .clone()
+                .ok_or(RpcError::WalletLocked)?;
+            let funding_txid = swap
+                .vtr_funding_txid
+                .ok_or_else(|| RpcError::BadRequest("VTR funding txid not recorded".into()))?;
+            if order.funding_txid != Some(funding_txid) || order.hash_lock != Some(swap.hash_lock) {
+                return Err(RpcError::BadRequest(
+                    "VTR order and swap funding disagree".into(),
+                ));
+            }
+            let taker = order
+                .taker_address
+                .as_deref()
+                .ok_or_else(|| RpcError::BadRequest("Taker address not recorded".into()))?;
+            let refund = vtorrent_wallet_service::build_vtr_htlc_refund(
+                vtorrent_wallet_service::VtrRefundParams {
+                    hash_lock: swap.hash_lock,
+                    taker_address: taker,
+                    maker_address: &order.maker_address,
+                    expiry: order.expiry,
+                    vtr_amount: order.vtr_amount,
+                    funding_txid,
+                    maker_wif: &maker_wif,
+                },
+            )
+            .map_err(RpcError::BadRequest)?;
+            let txid = refund.txid();
+            {
+                let chain = state.chain.lock().await;
+                let mut mempool = state.mempool.lock().await;
+                mempool
+                    .admit_with_chain_fee(&chain, refund.clone())
+                    .map_err(|e| RpcError::BadRequest(format!("VTR refund rejected: {e}")))?;
+            }
+            swap.vtr_refund_txid = Some(txid);
+            swap.refresh_status();
+            if let Some(sender) = &state.tx_submit {
+                let _ = sender.try_send(refund);
+            }
+            hex::encode(txid)
+        }
+        SwapLeg::Btc => {
+            if swap.btc_claim_txid.is_some() {
+                return Err(RpcError::BadRequest("BTC claim already submitted".into()));
+            }
+            if now < swap.btc_expiry || swap.btc_expiry == 0 {
+                return Err(RpcError::BadRequest("BTC HTLC has not expired yet".into()));
+            }
+            let funding_txid = swap
+                .btc_funding_txid
+                .ok_or_else(|| RpcError::BadRequest("BTC funding txid not recorded".into()))?;
+            let refund_address = swap
+                .taker_btc_refund_address
+                .as_ref()
+                .ok_or_else(|| RpcError::BadRequest("BTC refund address not recorded".into()))?;
+            let recipient = swap
+                .maker_btc_address
+                .as_ref()
+                .ok_or_else(|| RpcError::BadRequest("Maker BTC address not recorded".into()))?;
+            let raw = if let Some(raw) = &swap.btc_refund_raw {
+                raw.clone()
+            } else {
+                let btc = state.btc_wallet.read().await;
+                let wallet = btc
+                    .as_ref()
+                    .ok_or_else(|| RpcError::BadRequest("BTC wallet not initialized".into()))?;
+                let htlc = vtorrent_btc::htlc::BtcHtlc {
+                    hash_lock: swap.hash_lock,
+                    recipient: recipient.clone(),
+                    refund_address: refund_address.clone(),
+                    expiry: swap.btc_expiry,
+                    amount: swap.btc_amount,
+                    network: wallet.network(),
+                };
+                let unsigned = htlc
+                    .build_refund_tx_at(
+                        funding_txid,
+                        vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS,
+                        now,
+                    )
+                    .map_err(|e| RpcError::BadRequest(e.to_string()))?;
+                let wif = zeroize::Zeroizing::new(
+                    wallet
+                        .derive_wif_for_address(refund_address)
+                        .map_err(|e| RpcError::BadRequest(e.to_string()))?,
+                );
+                let signed = htlc
+                    .sign_refund_tx(unsigned, &wif)
+                    .map_err(|e| RpcError::BadRequest(e.to_string()))?;
+                bitcoin::consensus::serialize(&signed)
+            };
+            use bitcoin::hashes::Hash;
+            let transaction: bitcoin::Transaction = bitcoin::consensus::deserialize(&raw)
+                .map_err(|_| RpcError::Internal("Recorded BTC refund is corrupted".into()))?;
+            let txid = transaction.compute_txid().to_byte_array();
+            {
+                let btc = state.btc_wallet.read().await;
+                let wallet = btc
+                    .as_ref()
+                    .ok_or_else(|| RpcError::BadRequest("BTC wallet not initialized".into()))?;
+                wallet
+                    .record_swap_refund(&req.order_id, &raw)
+                    .map_err(|e| RpcError::BadRequest(e.to_string()))?;
+            }
+            swap.btc_refund_txid = Some(txid);
+            swap.btc_refund_raw = Some(raw.clone());
+            swap.refresh_status();
+            broadcast(&raw).await?;
+            btc_txid_hex(&txid)
+        }
+    };
+    Ok(SwapActionResponse {
         order_id: req.order_id,
-        txid: refund_txid_display,
-        status: "Refunded".to_string(),
-    }))
+        txid,
+        status: match leg {
+            SwapLeg::Vtr => "VtrRefundSubmitted".into(),
+            SwapLeg::Btc => "BtcRefundSubmitted".into(),
+        },
+    })
 }
+
+async fn restore_btc_swap(state: &AppState, order_id: &str) -> RpcResult<()> {
+    let saved = state
+        .btc_wallet
+        .read()
+        .await
+        .as_ref()
+        .and_then(|wallet| wallet.swap_contract(order_id));
+    let Some(saved) = saved else {
+        return Ok(());
+    };
+    use bitcoin::hashes::Hash;
+    let funding_txid = saved
+        .funding_txid
+        .parse::<bitcoin::Txid>()
+        .map_err(|_| RpcError::Internal("Persisted BTC funding txid is malformed".into()))?
+        .to_byte_array();
+    let mut recovered = SwapState::new(parse_hash32(order_id, "order_id")?, saved.hash_lock);
+    recovered.btc_funding_txid = Some(funding_txid);
+    recovered.maker_btc_address = Some(saved.recipient);
+    recovered.taker_btc_refund_address = Some(saved.refund_address);
+    recovered.btc_expiry = saved.expiry;
+    recovered.btc_amount = saved.amount;
+    recovered.btc_funding_raw = state.btc_wallet.read().await.as_ref().and_then(|wallet| {
+        wallet
+            .pending_swap_transactions()
+            .get(&saved.funding_txid)
+            .cloned()
+    });
+    if let Some(raw) = saved.refund_raw {
+        let refund: bitcoin::Transaction = bitcoin::consensus::deserialize(&raw)
+            .map_err(|_| RpcError::Internal("Persisted BTC refund is malformed".into()))?;
+        recovered.btc_refund_txid = Some(refund.compute_txid().to_byte_array());
+        recovered.btc_refund_raw = Some(raw);
+    }
+    recovered.refresh_status();
+    if recovered.btc_refund_txid.is_none() {
+        recovered.status = SwapStatus::BtcFunding;
+    }
+    state
+        .swaps
+        .write()
+        .await
+        .entry(order_id.to_owned())
+        .or_insert(recovered);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;

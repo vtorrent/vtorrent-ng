@@ -457,12 +457,12 @@ export async function btcClaim(orderId: string): Promise<SwapActionResult> {
 }
 
 /** Refund either side after expiry. */
-export async function swapRefund(orderId: string): Promise<SwapActionResult> {
+export async function swapRefund(orderId: string, leg?: 'vtr' | 'btc'): Promise<SwapActionResult> {
   if (isTauri()) {
-    return tauriInvoke<SwapActionResult>('swap_refund', { orderId })
+    return tauriInvoke<SwapActionResult>('swap_refund', { orderId, leg })
   }
   return camel(
-    await rpcPost<unknown>('/api/v1/swap/refund', { order_id: orderId })
+    await rpcPost<unknown>('/api/v1/swap/refund', { order_id: orderId, leg })
   ) as SwapActionResult
 }
 

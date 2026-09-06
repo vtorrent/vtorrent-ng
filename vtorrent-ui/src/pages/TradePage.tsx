@@ -469,12 +469,22 @@ export default function TradePage() {
               <button
                 disabled={swapBusy || !swapOrderId}
                 onClick={() => runSwap(
-                  () => swapRefund(swapOrderId),
-                  'Swap refunded'
+                  () => swapRefund(swapOrderId, 'vtr'),
+                  'VTR refund submitted'
                 )}
-                className="btn-secondary text-xs disabled:opacity-50 col-span-2"
+                className="btn-secondary text-xs disabled:opacity-50"
               >
-                Refund
+                Refund VTR
+              </button>
+              <button
+                disabled={swapBusy || !swapOrderId}
+                onClick={() => runSwap(
+                  () => swapRefund(swapOrderId, 'btc'),
+                  'BTC refund submitted'
+                )}
+                className="btn-secondary text-xs disabled:opacity-50"
+              >
+                Refund BTC
               </button>
             </div>
           </div>

@@ -64,6 +64,7 @@ impl BtcWallet {
         utxo_path: PathBuf,
     ) -> std::io::Result<Self> {
         let utxos = UtxoSet::load(&utxo_path)?;
+        let next_index = utxos.next_index();
         Ok(Self {
             seed,
             network,
@@ -71,7 +72,7 @@ impl BtcWallet {
             utxos: Arc::new(Mutex::new(utxos)),
             filter_headers: Arc::new(Mutex::new(FilterHeaderStore::default())),
             utxo_path: Some(utxo_path),
-            next_index: 0,
+            next_index,
             synced: false,
             last_scanned_height: 0,
             rbf_enabled: true,
@@ -102,7 +103,24 @@ impl BtcWallet {
     /// Derive the next unused receiving address.
     pub fn next_address(&mut self) -> Result<String> {
         let addr = derive_address(&self.seed, self.next_index, self.network)?;
-        self.next_index += 1;
+        let next_index = self
+            .next_index
+            .checked_add(1)
+            .ok_or_else(|| crate::error::BtcError::Bitcoin("BTC address index overflow".into()))?;
+        {
+            let mut set = self.utxos.lock();
+            let previous = set.clone();
+            set.set_next_index(next_index);
+            if let Some(path) = &self.utxo_path {
+                if let Err(error) = set.save(path) {
+                    *set = previous;
+                    return Err(crate::error::BtcError::Bitcoin(format!(
+                        "Could not persist BTC address index: {error}"
+                    )));
+                }
+            }
+        }
+        self.next_index = next_index;
         Ok(addr)
     }
 
@@ -114,6 +132,18 @@ impl BtcWallet {
     /// Derive the WIF private key for the given index.
     pub fn derive_wif(&self, index: u32) -> Result<String> {
         crate::keys::derive_wif(&self.seed, index, self.network)
+    }
+
+    /// Find the signing key for an address issued by this wallet.
+    pub fn derive_wif_for_address(&self, address: &str) -> Result<String> {
+        for index in 0..=self.next_index {
+            if derive_address(&self.seed, index, self.network)? == address {
+                return self.derive_wif(index);
+            }
+        }
+        Err(crate::error::BtcError::InvalidAddress(
+            "Address does not belong to this BTC wallet".into(),
+        ))
     }
 
     /// Derive a gap of addresses (indices 0..=gap) for scanning.
@@ -137,6 +167,79 @@ impl BtcWallet {
     /// List all UTXOs.
     pub fn list_utxos(&self) -> Vec<Utxo> {
         self.utxos.lock().list().to_vec()
+    }
+
+    /// Exclude a swap funding input from selection and future rescans before broadcast.
+    pub fn reserve_swap_input(
+        &self,
+        input: &Utxo,
+        raw: &[u8],
+        order_id: String,
+        htlc: &crate::htlc::BtcHtlc,
+    ) -> Result<()> {
+        let transaction: bitcoin::Transaction = bitcoin::consensus::deserialize(raw)
+            .map_err(|error| crate::error::BtcError::Bitcoin(error.to_string()))?;
+        let mut set = self.utxos.lock();
+        if !set.list().iter().any(|utxo| {
+            utxo.txid == input.txid
+                && utxo.vout == input.vout
+                && utxo.value == input.value
+                && utxo.address == input.address
+        }) {
+            return Err(crate::error::BtcError::Bitcoin(
+                "BTC funding input is no longer available".into(),
+            ));
+        }
+        let previous = set.clone();
+        set.reserve(&input.txid, input.vout);
+        set.record_swap_transaction(transaction.compute_txid().to_string(), raw.to_vec());
+        set.record_swap_contract(crate::utxo::SwapContract {
+            order_id,
+            funding_txid: transaction.compute_txid().to_string(),
+            hash_lock: htlc.hash_lock,
+            recipient: htlc.recipient.clone(),
+            refund_address: htlc.refund_address.clone(),
+            expiry: htlc.expiry,
+            amount: htlc.amount,
+            refund_raw: None,
+        });
+        if let Some(path) = &self.utxo_path {
+            if let Err(error) = set.save(path) {
+                *set = previous;
+                return Err(crate::error::BtcError::Bitcoin(format!(
+                    "Could not persist BTC input reservation: {error}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Signed swap transactions retained for reconciliation after restart.
+    pub fn pending_swap_transactions(&self) -> std::collections::BTreeMap<String, Vec<u8>> {
+        self.utxos.lock().pending_swap_transactions().clone()
+    }
+
+    pub fn swap_contract(&self, order_id: &str) -> Option<crate::utxo::SwapContract> {
+        self.utxos.lock().swap_contract(order_id).cloned()
+    }
+
+    pub fn record_swap_refund(&self, order_id: &str, raw: &[u8]) -> Result<()> {
+        let mut set = self.utxos.lock();
+        let mut contract = set.swap_contract(order_id).cloned().ok_or_else(|| {
+            crate::error::BtcError::Bitcoin("Persisted BTC swap contract missing".into())
+        })?;
+        let previous = set.clone();
+        contract.refund_raw = Some(raw.to_vec());
+        set.record_swap_contract(contract);
+        if let Some(path) = &self.utxo_path {
+            if let Err(error) = set.save(path) {
+                *set = previous;
+                return Err(crate::error::BtcError::Bitcoin(format!(
+                    "Could not persist BTC refund: {error}"
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Best known header height.

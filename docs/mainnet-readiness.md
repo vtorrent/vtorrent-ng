@@ -103,8 +103,8 @@
 
 ## 4. Release Engineering
 
-- [x] **CI green**: [Actions run 33951883585](https://github.com/vtorrent/vtorrent-ng/actions/runs/33951883585)
-      passed on `4a3e86e` (2026-09-05): workspace tests, audit, formatting,
+- [x] **CI green**: [Actions run 33954016532](https://github.com/vtorrent/vtorrent-ng/actions/runs/33954016532)
+      passed on `d128ed7` (2026-09-05): workspace tests, audit, formatting,
       Clippy, Cargo Machete, and the benchmark gate. Subsequent changes still
       require their own green run.
 - [ ] **Desktop builds verified** on all three platforms from a `v*` tag:
@@ -136,7 +136,7 @@
 | Blocker | Owner | Notes |
 |---|---|---|
 | External security review not scheduled | Lead | Required before final v2.0.0 |
-| Atomic-swap timing and recovery | Code | Open findings in `docs/security-review-2026-09-05.md`; local E2E success does not establish adversarial cross-chain safety |
+| Atomic-swap confirmation and full recovery | Code | Timing, input reservations, and independent BTC recovery have local fixes; confirmed BTC-contract verification, maker/VTR recovery, and adversarial multi-node validation remain open in `docs/security-review-2026-09-05.md` |
 
 ## Known Issues (found during soak/E2E, 2026-08-24)
 

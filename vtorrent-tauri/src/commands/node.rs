@@ -96,13 +96,11 @@ pub async fn start_node(state: tauri::State<'_, AppState>) -> Result<NodeInfoRes
                 );
             }
             Err(e) => {
-                tracing::warn!(
-                    "Failed to load BTC UTXOs from {}: {}, using fresh wallet",
+                return Err(TauriError::Io(format!(
+                    "Could not load BTC wallet state from {}: {}",
                     utxo_path.display(),
                     e
-                );
-                *rpc_state.btc_wallet.write().await =
-                    Some(vtorrent_btc::wallet::BtcWallet::new(seed));
+                )));
             }
         }
     }

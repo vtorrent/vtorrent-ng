@@ -253,12 +253,19 @@ async fn main() -> anyhow::Result<()> {
         } else {
             bitcoin::Network::Bitcoin
         };
-        *rpc_state.btc_wallet.write().await =
-            Some(vtorrent_btc::wallet::BtcWallet::with_network(seed, network));
-        *rpc_state.btc_network.write().await = network;
+        let btc_wallet = vtorrent_btc::wallet::BtcWallet::with_persistence(
+            seed,
+            network,
+            data_dir.join("btc_utxos.json"),
+        );
         // Zeroize the local seed material; the wallet holds its own copy
         // (zeroized on drop) and the CLI string is process-lifetime anyway.
         seed.zeroize();
+        *rpc_state.btc_wallet.write().await =
+            Some(btc_wallet.map_err(|e| {
+                anyhow::anyhow!("Could not load persistent BTC wallet state: {}", e)
+            })?);
+        *rpc_state.btc_network.write().await = network;
         if let Some(peer) = &cli.btc_peer {
             // Store the host:port as given; it is resolved on every connection
             // attempt so peer IPs can change across container restarts.

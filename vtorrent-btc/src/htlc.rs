@@ -22,9 +22,10 @@ use std::str::FromStr;
 /// The expiry is an absolute Unix timestamp (`fund_time + locktime`) used both
 /// for the refund-window check and as the CLTV consensus value in the HTLC
 /// script. Time-based (rather than block-height) CLTV keeps the window
-/// predictable across chains with different block intervals. It must stay
-/// strictly longer than the VTR-side HTLC window (~144 blocks ≈ 2.4 h) so the
-/// maker always has time to claim the BTC after the taker reveals the preimage.
+/// predictable across chains with different block intervals. The shared swap
+/// policy caps this duration so BTC refund eligibility precedes VTR refund
+/// eligibility, leaving the taker time to claim VTR after the maker reveals
+/// the preimage on BTC.
 pub const DEFAULT_HTLC_LOCKTIME: u32 = 48 * 3600;
 
 /// A Bitcoin-side HTLC.

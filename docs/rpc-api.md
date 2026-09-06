@@ -265,12 +265,16 @@ Remove a torrent session.
 
 ### POST /api/v1/swap/btc-fund
 
-Fund the BTC side of an atomic swap (taker action).
+Fund the BTC side after the exact VTR contract has six local confirmations.
+BTC refund eligibility is at least six hours before VTR refund eligibility,
+with at least one hour remaining to fund BTC. The refund address must belong
+to the local BTC wallet. Retrying a pending attempt reuses its signed transaction.
 
 **Request:**
 ```json
 {
-  "order_id": "..."
+  "order_id": "...",
+  "btc_refund_address": "bc1q..."
 }
 ```
 
@@ -289,26 +293,29 @@ Claim VTR by revealing the preimage (taker action).
 
 ### POST /api/v1/swap/btc-claim
 
-Claim BTC using the revealed preimage (maker action).
+The maker claims BTC first, revealing the locally held preimage to the taker.
+Independent verification of the confirmed BTC funding contract is still required;
+the handler does not yet establish that proof automatically. Secret revelation
+is rejected within one hour of BTC refund eligibility.
 
 **Request:**
 ```json
 {
-  "order_id": "...",
-  "maker_btc_wif": "...",
-  "refund_address": "tb1..."
+  "order_id": "..."
 }
 ```
 
 ### POST /api/v1/swap/refund
 
-Refund VTR after HTLC expiry (taker action).
+Refund one chain after that chain's expiry: VTR for the maker, BTC for the
+taker. BTC refund is independent of VTR expiry and VTR wallet unlock. If
+omitted, `leg` is inferred only when a single unsettled leg is eligible.
 
 **Request:**
 ```json
 {
   "order_id": "...",
-  "taker_wif": "7..."
+  "leg": "btc"
 }
 ```
 

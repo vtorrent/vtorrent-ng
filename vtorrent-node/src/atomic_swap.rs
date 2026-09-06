@@ -518,11 +518,15 @@ pub enum SwapStatus {
     Funding,
     /// The maker's VTR HTLC is funded.
     VtrFunded,
+    /// BTC funding was prepared; broadcast acceptance may still be unknown.
+    BtcFunding,
     /// The taker's BTC HTLC is funded.
     BtcFunded,
-    /// The swap completed (both sides claimed).
+    /// One chain has a submitted claim or refund; the other is still unsettled.
+    Settling,
+    /// Claim transactions have been submitted for both chains.
     Claimed,
-    /// The swap was refunded after expiry.
+    /// Refund transactions have been prepared for all funded chains.
     Refunded,
 }
 
@@ -533,7 +537,7 @@ pub struct SwapState {
     pub order_id: [u8; 32],
     /// The hash lock shared by both HTLCs.
     pub hash_lock: [u8; 32],
-    /// The secret preimage (held by the maker until the taker claims VTR).
+    /// The secret preimage, revealed by the maker's BTC claim.
     pub preimage: Option<[u8; 32]>,
     /// The maker's VTR HTLC funding txid.
     pub vtr_funding_txid: Option<[u8; 32]>,
@@ -547,6 +551,12 @@ pub struct SwapState {
     pub btc_amount: u64,
     /// The BTC HTLC expiry (unix timestamp).
     pub btc_expiry: u32,
+    pub vtr_claim_txid: Option<[u8; 32]>,
+    pub btc_claim_txid: Option<[u8; 32]>,
+    pub vtr_refund_txid: Option<[u8; 32]>,
+    pub btc_refund_txid: Option<[u8; 32]>,
+    pub btc_refund_raw: Option<Vec<u8>>,
+    pub btc_funding_raw: Option<Vec<u8>>,
     /// Current status.
     pub status: SwapStatus,
 }
@@ -563,8 +573,37 @@ impl SwapState {
             taker_btc_refund_address: None,
             btc_amount: 0,
             btc_expiry: 0,
+            vtr_claim_txid: None,
+            btc_claim_txid: None,
+            vtr_refund_txid: None,
+            btc_refund_txid: None,
+            btc_refund_raw: None,
+            btc_funding_raw: None,
             status: SwapStatus::Funding,
         }
+    }
+
+    pub fn refresh_status(&mut self) {
+        self.status = if self.vtr_claim_txid.is_some() && self.btc_claim_txid.is_some() {
+            SwapStatus::Claimed
+        } else if (self.vtr_refund_txid.is_some() || self.vtr_funding_txid.is_none())
+            && (self.btc_refund_txid.is_some() || self.btc_funding_txid.is_none())
+            && (self.vtr_refund_txid.is_some() || self.btc_refund_txid.is_some())
+        {
+            SwapStatus::Refunded
+        } else if self.vtr_claim_txid.is_some()
+            || self.btc_claim_txid.is_some()
+            || self.vtr_refund_txid.is_some()
+            || self.btc_refund_txid.is_some()
+        {
+            SwapStatus::Settling
+        } else if self.btc_funding_txid.is_some() {
+            SwapStatus::BtcFunded
+        } else if self.vtr_funding_txid.is_some() {
+            SwapStatus::VtrFunded
+        } else {
+            SwapStatus::Funding
+        };
     }
 }
 
@@ -827,7 +866,7 @@ impl SwapOrderBook {
 pub struct MatchResult {
     /// The matched order (clone with status updated to Matched).
     pub order: SwapOrder,
-    /// The preimage the taker must keep secret until they fund their side.
+    /// The maker's secret preimage.
     pub preimage: [u8; 32],
     /// The hash lock the maker will use in the HTLC script.
     pub hash_lock: [u8; 32],

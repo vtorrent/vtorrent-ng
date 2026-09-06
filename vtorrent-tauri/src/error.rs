@@ -54,3 +54,19 @@ impl From<vtorrent_wallet::error::WalletError> for TauriError {
 }
 
 pub type Result<T> = std::result::Result<T, TauriError>;
+
+impl From<vtorrent_rpc::error::RpcError> for TauriError {
+    fn from(error: vtorrent_rpc::error::RpcError) -> Self {
+        use vtorrent_rpc::error::RpcError;
+        match error {
+            RpcError::NotFound(message) => Self::NotFound(message),
+            RpcError::BadRequest(message) => Self::InvalidInput(message),
+            RpcError::Unauthorized(message) | RpcError::Forbidden(message) => {
+                Self::Unauthorized(message)
+            }
+            RpcError::Internal(message) => Self::Internal(message),
+            RpcError::WalletLocked => Self::WalletLocked,
+            RpcError::NodeError(message) => Self::NodeError(message),
+        }
+    }
+}
