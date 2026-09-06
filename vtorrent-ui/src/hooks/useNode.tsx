@@ -466,6 +466,47 @@ export async function swapRefund(orderId: string, leg?: 'vtr' | 'btc'): Promise<
   ) as SwapActionResult
 }
 
+export interface SwapChainStatus {
+  orderId: string
+  btcReconciled: boolean
+  btc: BtcChainStatus | null
+  vtr: {
+    tipHash: string
+    tipHeight: number
+    state: string
+    funding: { txid: string; blockHash: string; height: number; confirmations: number } | null
+    spend: { txid: string; blockHash: string; height: number; confirmations: number } | null
+    pendingSpendTxid: string | null
+    reorgCount: number
+  }
+}
+
+export interface BtcChainStatus {
+  network: string
+  observedAt: number
+  tipHash: string
+  tipHeight: number
+  scanStart: number
+  state: string
+  funding: { txid: string; blockHash: string; height: number; confirmations: number } | null
+  spend: { txid: string; blockHash: string; height: number; confirmations: number } | null
+  reorgCount: number
+}
+
+export async function reconcileBtcSwap(orderId: string): Promise<BtcChainStatus> {
+  const result = isTauri()
+    ? await tauriInvoke<unknown>('reconcile_btc_swap', { orderId })
+    : await rpcPost<unknown>('/api/v1/swap/btc-reconcile', { order_id: orderId })
+  return camel(result) as BtcChainStatus
+}
+
+export async function getSwapStatus(orderId: string): Promise<SwapChainStatus> {
+  const result = isTauri()
+    ? await tauriInvoke<unknown>('get_swap_status', { orderId })
+    : await rpcGet<unknown>(`/api/v1/swap/${encodeURIComponent(orderId)}/status`)
+  return camel(result) as SwapChainStatus
+}
+
 // ─── Staking actions ──────────────────────────────────────────────────────────
 
 /** Start staking on the given address. */

@@ -213,6 +213,49 @@ impl HeaderChain {
         self.headers.get(hash)
     }
 
+    /// Build a compact locator including recent ancestors and genesis for fork discovery.
+    pub fn block_locator(&self) -> Vec<bitcoin::BlockHash> {
+        let Some(mut hash) = self.best_hash else {
+            return vec![bitcoin::BlockHash::all_zeros()];
+        };
+        let mut locator = Vec::new();
+        let mut step = 1u32;
+        loop {
+            locator.push(bitcoin::BlockHash::from_byte_array(hash));
+            let Some(current) = self.get(&hash) else {
+                break;
+            };
+            if current.height == 0 {
+                break;
+            }
+            let target = current.height.saturating_sub(step);
+            while let Some(header) = self.get(&hash) {
+                if header.height <= target {
+                    break;
+                }
+                hash = header.header.prev_blockhash.to_byte_array();
+            }
+            if locator.len() > 10 {
+                step = step.saturating_mul(2);
+            }
+        }
+        locator
+    }
+
+    /// Check an anchor against the current highest-work branch.
+    pub fn is_active_anchor(&self, hash: &[u8; 32], height: u32) -> bool {
+        let Some(mut cursor) = self.best_hash else {
+            return false;
+        };
+        while let Some(header) = self.get(&cursor) {
+            if header.height <= height {
+                return header.height == height && cursor == *hash;
+            }
+            cursor = header.header.prev_blockhash.to_byte_array();
+        }
+        false
+    }
+
     /// Return the block hashes at heights `>= start_height`, sorted ascending.
     ///
     /// Used to request `merkleblock`s for a UTXO scan from a checkpoint.

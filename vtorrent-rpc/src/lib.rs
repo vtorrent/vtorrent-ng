@@ -23,6 +23,7 @@
 //! - POST /api/v1/dex/order         — Place a DEX order
 //! - DELETE /api/v1/dex/order/:id   — Cancel a DEX order
 
+pub mod btc_reconciliation;
 pub mod error;
 pub mod handlers;
 pub mod metrics;
@@ -30,5 +31,6 @@ pub mod models;
 pub mod ratelimit;
 pub mod server;
 pub mod state;
+pub mod swap_reconciliation;
 pub mod swap_recovery;
 pub mod ws;

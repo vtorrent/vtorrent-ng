@@ -6,7 +6,7 @@ import {
 import { formatVTR } from '../hooks/useWallet'
 import {
   useDexOrders, cancelDexOrder, matchDexOrder, btcFund, vtrClaim, btcClaim, swapRefund,
-  type DexOrder,
+  getSwapStatus, reconcileBtcSwap, type BtcChainStatus, type SwapChainStatus, type DexOrder,
 } from '../hooks/useNode'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -55,6 +55,8 @@ export default function TradePage() {
   const [swapBusy, setSwapBusy] = useState(false)
   const [swapResult, setSwapResult] = useState<string | null>(null)
   const [swapError, setSwapError] = useState<string | null>(null)
+  const [chainStatus, setChainStatus] = useState<SwapChainStatus | null>(null)
+  const [btcStatus, setBtcStatus] = useState<{ orderId: string; observation: BtcChainStatus } | null>(null)
 
   const total = amount && price ? (parseFloat(amount) * parseFloat(price)).toFixed(8) : '0'
 
@@ -82,6 +84,8 @@ export default function TradePage() {
     setSwapBusy(true)
     setSwapError(null)
     setSwapResult(null)
+    setChainStatus(null)
+    setBtcStatus(null)
     try {
       await action()
       setSwapResult(success)
@@ -357,7 +361,7 @@ export default function TradePage() {
             Swap Lifecycle
           </h3>
           <p className="text-xs text-gray-500 mb-4">
-            Drive an atomic swap through its stages: match (fund VTR), fund BTC, claim VTR, claim BTC, or refund after expiry.
+            Match (fund VTR), fund BTC, let the maker claim BTC, then claim VTR. Expiry only enables a refund; it does not prove one occurred.
           </p>
 
           <div className="space-y-4">
@@ -367,7 +371,7 @@ export default function TradePage() {
                 className="input-field font-mono"
                 placeholder="Hex order ID"
                 value={swapOrderId}
-                onChange={e => setSwapOrderId(e.target.value)}
+                onChange={e => { setSwapOrderId(e.target.value); setChainStatus(null); setBtcStatus(null) }}
               />
             </div>
 
@@ -418,6 +422,45 @@ export default function TradePage() {
                 <p className="text-red-300 text-sm">{swapError}</p>
               </div>
             )}
+            <button
+              disabled={swapBusy || !swapOrderId}
+              onClick={() => runSwap(async () => {
+                const result = await getSwapStatus(swapOrderId)
+                setChainStatus(result)
+                if (result.btc) setBtcStatus({ orderId: swapOrderId, observation: result.btc })
+              }, 'VTR chain state checked; any BTC snapshot is cached')}
+              className="btn-secondary text-xs disabled:opacity-50"
+            >
+              Check VTR chain state
+            </button>
+            <button
+              disabled={swapBusy || !swapOrderId}
+              onClick={() => runSwap(async () => {
+                const observation = await reconcileBtcSwap(swapOrderId)
+                setBtcStatus({ orderId: swapOrderId, observation })
+              }, 'BTC scan completed — this is a dated snapshot, not irreversible finality')}
+              className="btn-secondary text-xs disabled:opacity-50"
+            >
+              Scan BTC chain (up to 2 minutes)
+            </button>
+            {chainStatus && chainStatus.orderId === swapOrderId && (
+              <div className="text-xs text-gray-300 space-y-1" aria-live="polite">
+                <p>VTR: {chainStatus.vtr.state.replace(/_/g, ' ')} at block {chainStatus.vtr.tipHeight}</p>
+                <p>Funding confirmations: {chainStatus.vtr.funding?.confirmations ?? 0}</p>
+                <p>Spend confirmations: {chainStatus.vtr.spend?.confirmations ?? 0}</p>
+                {chainStatus.vtr.reorgCount > 0 && <p className="text-amber-400">Reorg/resync warnings: {chainStatus.vtr.reorgCount}</p>}
+                <p className="text-amber-400">VTR evidence alone does not prove that both legs are complete.</p>
+              </div>
+            )}
+            {btcStatus && btcStatus.orderId === swapOrderId && (
+              <div className="text-xs text-gray-300 space-y-1" aria-live="polite">
+                <p>BTC snapshot ({btcStatus.observation.network}): {btcStatus.observation.state.replace(/_/g, ' ')}</p>
+                <p>Observed: {new Date(btcStatus.observation.observedAt * 1000).toLocaleString()}</p>
+                <p>Scanned blocks {btcStatus.observation.scanStart}–{btcStatus.observation.tipHeight}; funding confirmations: {btcStatus.observation.funding?.confirmations ?? 0}; spend confirmations: {btcStatus.observation.spend?.confirmations ?? 0}</p>
+                {btcStatus.observation.reorgCount > 0 && <p className="text-amber-400">BTC reorg/resync warnings: {btcStatus.observation.reorgCount}</p>}
+                <p className="text-amber-400">Not a live view. No BTC mempool check; an absent transaction may be unconfirmed or outside the scan window. No reservations are released.</p>
+              </div>
+            )}
             {swapResult && (
               <div className="flex gap-2 bg-emerald-900/20 border border-emerald-800/40 rounded-lg p-3">
                 <CheckCircle size={16} className="text-emerald-400 flex-shrink-0 mt-0.5" />
@@ -430,7 +473,7 @@ export default function TradePage() {
                 disabled={swapBusy || !swapOrderId || !takerAddress}
                 onClick={() => runSwap(
                   () => matchDexOrder({ orderId: swapOrderId, takerAddress, passphrase: '' }),
-                  'Order matched — VTR HTLC funded'
+                  'VTR funding submitted — confirmation pending'
                 )}
                 className="btn-primary text-xs disabled:opacity-50"
               >
@@ -440,7 +483,7 @@ export default function TradePage() {
                 disabled={swapBusy || !swapOrderId || !btcRefundAddress}
                 onClick={() => runSwap(
                   () => btcFund({ orderId: swapOrderId, btcRefundAddress }),
-                  'BTC HTLC funded'
+                  'BTC funding broadcast attempted — verify confirmation'
                 )}
                 className="btn-primary text-xs disabled:opacity-50"
               >
@@ -450,7 +493,7 @@ export default function TradePage() {
                 disabled={swapBusy || !swapOrderId || !preimage || !takerWif}
                 onClick={() => runSwap(
                   () => vtrClaim({ orderId: swapOrderId, preimage, takerWif }),
-                  'VTR claimed'
+                  'VTR claim submitted — confirmation pending'
                 )}
                 className="btn-primary text-xs disabled:opacity-50"
               >
@@ -460,7 +503,7 @@ export default function TradePage() {
                 disabled={swapBusy || !swapOrderId}
                 onClick={() => runSwap(
                   () => btcClaim(swapOrderId),
-                  'BTC claimed'
+                  'BTC claim broadcast attempted — verify confirmation'
                 )}
                 className="btn-primary text-xs disabled:opacity-50"
               >

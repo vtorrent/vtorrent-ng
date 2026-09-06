@@ -3,8 +3,8 @@
 The maker sells VTR, generates the secret, and claims BTC first. The taker
 learns the secret from that BTC claim and uses it to claim VTR.
 
-This implementation is not yet approved for real-value swaps. Chain
-reconciliation and adversarial multi-node testing remain open in
+This implementation is not yet approved for real-value swaps. Automatic
+recovery, fee-bumped replacement, and adversarial multi-node testing remain open in
 [the security review](security-review-2026-09-05.md).
 
 ## Funding and claim sequence
@@ -176,11 +176,68 @@ and submit the identical saved transaction. A transaction already in the local
 chain or mempool is recognized. An expired, conflicting, or otherwise invalid
 transaction is not blindly rebroadcast.
 
-Automatic settlement/reorg reconciliation, fee-bumped recovery, release of unused
+Automatic BTC settlement monitoring, fee-bumped recovery, release of unused
 reservations, and protection against rollback to an older authentic journal remain
 open. Locking does not yet wipe every in-memory preimage copy. Existing swaps do
 not gain secrets lost before journaling. Do not delete recovery records to retry
 an ambiguous broadcast.
+
+### VTR settlement observations
+
+`GET /api/v1/swap/{order_id}/status` recomputes VTR state from the active local
+chain and current mempool. `POST /api/v1/swap/reconcile` with `{"order_id":"..."}`
+also journals changed observations. Both endpoints require the configured RPC
+API key. Neither returns secrets, signs transactions, or broadcasts anything.
+The desktop swap panel exposes the same read-only check.
+
+Daemon and desktop refresh VTR observations every 30 seconds while the wallet
+is unlocked. Journal writes occur on state/anchor changes, not every increase
+in confirmation count. Prepared transactions, mempool submissions, shallow
+confirmations, and six-confirmation claims/refunds are separate states. A spend
+whose ID is not a locally recorded claim/refund is reported as `spent_elsewhere`,
+not automatically classified as a successful local settlement. Pending competing
+spends are reported separately. Expiry never marks a swap refunded.
+
+Each response identifies the local tip and the funding/spending block anchors.
+If an old anchor is absent from the current active chain, its confirmation is
+discarded and `reorg_count` increases. This is a conservative local reorg/resync
+warning, not proof that the wider network reorganized. Signed recovery transactions
+and their original IDs remain intact for revalidation/retry. Cached observations
+loaded after restart are never used as fresh confirmation evidence by the status
+endpoint. A six-confirmation status can still change after a later reorg.
+
+The response sets `btc_reconciled: false`: this request does not perform a fresh
+BTC scan. Its optional `btc` field is a cached, timestamped snapshot, never proof
+of current BTC settlement or completion of the entire swap.
+
+### BTC settlement observations
+
+`POST /api/v1/swap/btc-reconcile` with `{"order_id":"..."}` and the configured
+API key requests a fresh BTC scan; the desktop exposes the same action. The
+network phase is bounded to 120 seconds, with one settlement scan at a time.
+It reuses anchored header validation and compact-filter agreement (two distinct
+peer IPs outside regtest, one on regtest), but uses an isolated scan tracker,
+not the wallet's persisted UTXO cache. Downloaded blocks must match their header,
+transaction Merkle root, and witness commitment. It checks the exact funding
+txid, output zero, amount, and contract script, and retains confirmed spends.
+
+The result identifies the network, observation time, scan range, tip, confirmation
+anchors, and reorg/resync count. Six confirmations distinguish `claimed` and
+`refunded` from their confirming states; unknown spend IDs are `spent_elsewhere`.
+Expired contracts can be scanned, but expiry alone is never settlement evidence.
+Headers are followed by parent height with ancestor locators so a higher-work
+competing branch can invalidate old anchors. Changed wallet/contract metadata
+or failed scans cannot replace the previous journaled observation.
+
+This is an explicit, dated SPV snapshot, not automatic BTC monitoring or full-node
+transaction validation. Scans cover the latest 1,008 blocks only, with no BTC
+mempool query. `funding_not_observed` may mean unconfirmed, outside that window,
+or absent from the observed branch; it does not prove a failed broadcast or make
+an input safe to reuse. Results depend on the selected peers and remain subject
+to eclipse attacks and later reorgs. Observations persist in the encrypted
+recovery journal when enabled. No secrets/witnesses are returned; no transaction
+is signed, rebroadcast, fee-bumped, deleted, or automatically claimed, and no
+input reservation is released. Fee-bumped replacement lineage remains open.
 
 ## Implementation
 
@@ -188,5 +245,8 @@ an ambiguous broadcast.
 - `vtorrent-wallet-service/src/lib.rs`: shared transaction builders
 - `vtorrent-rpc/src/handlers/swap.rs`: shared RPC and desktop orchestration
 - `vtorrent-rpc/src/swap_recovery.rs`: encrypted order/secret and signed VTR journal
+- `vtorrent-rpc/src/swap_reconciliation.rs`: live VTR confirmation/spend observations
+- `vtorrent-rpc/src/btc_reconciliation.rs`: explicit BTC scan and encrypted observations
+- `vtorrent-btc/src/sync/swap_observation.rs`: bounded confirmed funding/spend tracker
 - `vtorrent-btc/src/wallet.rs`, `utxo.rs`: BTC reservation and recovery records
 - `vtorrent-rpc/src/handlers/swap/tests.rs`: concurrency, failure, and restart regressions

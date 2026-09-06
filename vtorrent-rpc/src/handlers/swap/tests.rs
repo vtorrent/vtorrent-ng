@@ -246,6 +246,238 @@ async fn mine_recovery_transaction(
     chain.add_block(block).unwrap();
 }
 
+async fn reconciliation_fixture() -> (AppState, String, String) {
+    let (mut state, id, taker) = recovery_fixture(std::path::Path::new("unused")).await;
+    state.swap_recovery_dir = None;
+    (state, id, taker)
+}
+
+async fn confirm_vtr(state: &AppState, transaction: vtorrent_node::block::Transaction) {
+    let txid = transaction.txid();
+    mine_recovery_transaction(state, transaction, vtorrent_core::time::now_secs() as u32).await;
+    state.mempool.lock().await.remove_transaction(&txid);
+}
+
+async fn add_confirmations(state: &AppState, count: u32) {
+    let address = state.wallet_change_address.read().await.clone().unwrap();
+    for _ in 0..count {
+        state
+            .chain
+            .lock()
+            .await
+            .mint_to_address(&address, 1)
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn reconciliation_distinguishes_submissions_confirmations_and_reorgs() {
+    use crate::swap_reconciliation::{reconcile, status};
+    use vtorrent_node::atomic_swap::VtrSettlementState::*;
+    let (state, id, taker) = reconciliation_fixture().await;
+    match_recovery(&state, &id, &taker).await.unwrap();
+    assert_eq!(status(&state, &id).await.unwrap().state, FundingPending);
+    let funding = state.swaps.read().await[&id]
+        .vtr_funding_tx
+        .clone()
+        .unwrap();
+    state
+        .mempool
+        .lock()
+        .await
+        .remove_transaction(&funding.txid());
+    assert_eq!(status(&state, &id).await.unwrap().state, FundingPrepared);
+    confirm_vtr(&state, funding).await;
+    assert_eq!(status(&state, &id).await.unwrap().state, FundingConfirming);
+    add_confirmations(&state, 5).await;
+    assert_eq!(reconcile(&state, &id).await.unwrap().state, Funded);
+    let before_claim: Vec<_> = {
+        let chain = state.chain.lock().await;
+        (1..=chain.best_height())
+            .map(|h| chain.get_block_at_height(h).unwrap().clone())
+            .collect()
+    };
+    let preimage = state
+        .order_book
+        .read()
+        .await
+        .get_order(&id)
+        .unwrap()
+        .preimage
+        .unwrap();
+    vtr_claim_with_state(
+        &state,
+        VtrClaimRequest {
+            order_id: id.clone(),
+            preimage: hex::encode(preimage),
+            taker_wif: vtr_identity(2).0,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(status(&state, &id).await.unwrap().state, ClaimPending);
+    let claim = state.swaps.read().await[&id].vtr_claim_tx.clone().unwrap();
+    confirm_vtr(&state, claim.clone()).await;
+    assert_eq!(status(&state, &id).await.unwrap().state, ClaimConfirming);
+    add_confirmations(&state, 5).await;
+    let settled = reconcile(&state, &id).await.unwrap();
+    assert_eq!(settled.state, Claimed);
+    assert_eq!(settled.spend.unwrap().confirmations, 6);
+    {
+        let mut chain = state.chain.lock().await;
+        *chain = vtorrent_node::chain::Chain::new_regtest().unwrap();
+        for block in before_claim {
+            chain.add_block(block).unwrap();
+        }
+    }
+    let reorged = reconcile(&state, &id).await.unwrap();
+    assert_eq!(reorged.state, ClaimPrepared);
+    assert!(reorged.spend.is_none());
+    assert_eq!(reorged.reorg_count, 1);
+    assert_eq!(reconcile(&state, &id).await.unwrap().reorg_count, 1);
+    assert_eq!(
+        state.swaps.read().await[&id].vtr_claim_txid,
+        Some(claim.txid())
+    );
+    confirm_vtr(&state, claim).await;
+    assert_eq!(status(&state, &id).await.unwrap().state, ClaimConfirming);
+}
+
+#[tokio::test]
+async fn reconciliation_does_not_infer_refund_from_expiry_and_detects_external_spends() {
+    use crate::swap_reconciliation::status;
+    use vtorrent_node::atomic_swap::VtrSettlementState::*;
+    let (state, id, taker) = reconciliation_fixture().await;
+    let now = vtorrent_core::time::now_secs();
+    let mut order = state
+        .order_book
+        .read()
+        .await
+        .get_order(&id)
+        .unwrap()
+        .clone();
+    order.expiry = now as u32 - 3600;
+    *state.mock_time.write().await = Some(now - 48 * 3600);
+    state.order_book.write().await.replace_order(order);
+    match_recovery(&state, &id, &taker).await.unwrap();
+    let funding = state.swaps.read().await[&id]
+        .vtr_funding_tx
+        .clone()
+        .unwrap();
+    confirm_vtr(&state, funding).await;
+    add_confirmations(&state, 5).await;
+    assert_eq!(status(&state, &id).await.unwrap().state, Funded);
+    *state.mock_time.write().await = Some(now);
+    swap_refund_with_state(
+        &state,
+        SwapRefundRequest {
+            order_id: id.clone(),
+            leg: Some(SwapLeg::Vtr),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(status(&state, &id).await.unwrap().state, RefundPending);
+    let refund = state.swaps.read().await[&id].vtr_refund_tx.clone().unwrap();
+    state
+        .swaps
+        .write()
+        .await
+        .get_mut(&id)
+        .unwrap()
+        .vtr_refund_txid = None;
+    assert_eq!(
+        status(&state, &id).await.unwrap().state,
+        CompetingSpendPending
+    );
+    confirm_vtr(&state, refund.clone()).await;
+    let external = status(&state, &id).await.unwrap();
+    assert_eq!(external.state, SpentElsewhere);
+    assert_eq!(external.spend.unwrap().txid, hex::encode(refund.txid()));
+    state
+        .swaps
+        .write()
+        .await
+        .get_mut(&id)
+        .unwrap()
+        .vtr_refund_txid = Some(refund.txid());
+    assert_eq!(status(&state, &id).await.unwrap().state, RefundConfirming);
+    add_confirmations(&state, 5).await;
+    assert_eq!(status(&state, &id).await.unwrap().state, Refunded);
+}
+
+#[tokio::test]
+async fn reconciliation_rejects_wrong_contract_and_persists_observation() {
+    use crate::swap_reconciliation::{reconcile, status};
+    use vtorrent_node::atomic_swap::VtrSettlementState::*;
+    let directory = tempfile::tempdir().unwrap();
+    let (state, id, taker) = recovery_fixture(directory.path()).await;
+    match_recovery(&state, &id, &taker).await.unwrap();
+    let recorded = reconcile(&state, &id).await.unwrap();
+    assert_eq!(recorded.state, FundingPending);
+    let restored = restart_recovery(&state).await;
+    assert_eq!(
+        restored.swaps.read().await[&id].vtr_observation.as_ref(),
+        Some(&recorded)
+    );
+    // The fresh status cannot trust the persisted mempool observation after restart.
+    assert_eq!(status(&restored, &id).await.unwrap().state, FundingPrepared);
+    let mut wrong = restored
+        .order_book
+        .read()
+        .await
+        .get_order(&id)
+        .unwrap()
+        .clone();
+    wrong.hash_lock = Some([99; 32]);
+    restored.order_book.write().await.replace_order(wrong);
+    assert_eq!(status(&restored, &id).await.unwrap().state, InvalidFunding);
+    assert!(reconcile(&restored, &id).await.is_err());
+}
+
+#[tokio::test]
+async fn reconciliation_api_is_authenticated_and_does_not_expose_secrets() {
+    use tower::ServiceExt;
+    let (mut state, id, taker) = reconciliation_fixture().await;
+    state.rpc_api_key = Some("reconciliation-test-key".into());
+    match_recovery(&state, &id, &taker).await.unwrap();
+    let app = crate::server::build_router(state);
+    let uri = format!("/api/v1/swap/{id}/status");
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .uri(&uri)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri(uri)
+                .header("X-API-Key", "reconciliation-test-key")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), 16_384)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["order_id"], id);
+    assert_eq!(body["vtr"]["state"], "funding_pending");
+    assert_eq!(body["btc_reconciled"], false);
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+    for forbidden in ["preimage", "wif", "script_sig", "passphrase"] {
+        assert!(!text.contains(forbidden));
+    }
+}
+
 #[tokio::test]
 async fn vtr_claim_and_refund_retry_exact_signed_transactions_after_restart() {
     for claim in [true, false] {
@@ -553,6 +785,251 @@ async fn fixture() -> (AppState, String, String) {
     state.swaps.write().await.insert(id.clone(), swap);
     state.order_book.write().await.add_order(order);
     (state, id, refund_address)
+}
+
+async fn btc_reconciliation_fixture() -> (AppState, String, vtorrent_btc::sync::SwapScan) {
+    let (state, id, refund) = fixture().await;
+    fund_btc_with_broadcast(
+        &state,
+        BtcFundRequest {
+            order_id: id.clone(),
+            btc_refund_address: refund,
+        },
+        async |raw: &[u8]| Ok(txid(raw)),
+    )
+    .await
+    .unwrap();
+    let funding = state.swaps.read().await[&id].btc_funding_txid.unwrap();
+    let scan = vtorrent_btc::sync::SwapScan {
+        tip_hash: [80; 32],
+        tip_height: 20,
+        scan_start: 1,
+        funding: Some(vtorrent_btc::sync::SwapAnchor {
+            txid: funding,
+            block_hash: [90; 32],
+            height: 15,
+        }),
+        spend: None,
+        invalid_funding: false,
+        coinbase: false,
+        invalidated_anchor: false,
+    };
+    (state, id, scan)
+}
+
+#[tokio::test]
+async fn btc_reconciliation_distinguishes_confirmations_expiry_and_reorgs() {
+    use crate::btc_reconciliation::reconcile_with_scan;
+    use vtorrent_node::atomic_swap::BtcSettlementState::*;
+    let (state, id, mut scan) = btc_reconciliation_fixture().await;
+    let raw = state.swaps.read().await[&id].btc_funding_raw.clone();
+    let first = reconcile_with_scan(&state, &id, async |_, _, previous| {
+        assert!(previous.is_empty());
+        Ok(scan.clone())
+    })
+    .await
+    .unwrap();
+    assert_eq!(first.state, Funded);
+    assert_eq!(first.funding.as_ref().unwrap().confirmations, 6);
+    // Expiry and a recorded submission alone are not refund evidence.
+    *state.mock_time.write().await = Some(NOW + 100_000);
+    state
+        .swaps
+        .write()
+        .await
+        .get_mut(&id)
+        .unwrap()
+        .btc_refund_txid = Some([7; 32]);
+    let expired = reconcile_with_scan(&state, &id, async |_, _, previous| {
+        assert_eq!(previous.len(), 1);
+        Ok(scan.clone())
+    })
+    .await
+    .unwrap();
+    assert_eq!(expired.state, Funded);
+    scan.spend = Some(vtorrent_btc::sync::SwapAnchor {
+        txid: [7; 32],
+        block_hash: [91; 32],
+        height: 20,
+    });
+    let shallow = reconcile_with_scan(&state, &id, async |_, _, _| Ok(scan.clone()))
+        .await
+        .unwrap();
+    assert_eq!(shallow.state, RefundConfirming);
+    scan.tip_height = 25;
+    let settled = reconcile_with_scan(&state, &id, async |_, _, _| Ok(scan.clone()))
+        .await
+        .unwrap();
+    assert_eq!(settled.state, Refunded);
+    scan.spend = None;
+    scan.invalidated_anchor = true;
+    let reorg = reconcile_with_scan(&state, &id, async |_, _, previous| {
+        assert_eq!(previous.len(), 2);
+        Ok(scan.clone())
+    })
+    .await
+    .unwrap();
+    assert_eq!(reorg.state, Funded);
+    assert_eq!(reorg.reorg_count, 1);
+    scan.invalidated_anchor = false;
+    scan.funding = None;
+    let missing = reconcile_with_scan(&state, &id, async |_, _, _| Ok(scan))
+        .await
+        .unwrap();
+    assert_eq!(missing.state, FundingNotObserved);
+    assert_eq!(missing.reorg_count, 1);
+    assert_eq!(state.swaps.read().await[&id].btc_funding_raw, raw);
+    assert!(state
+        .btc_wallet
+        .read()
+        .await
+        .as_ref()
+        .unwrap()
+        .list_utxos()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn btc_reconciliation_rejects_failed_or_changed_scans_and_preserves_previous_evidence() {
+    use crate::btc_reconciliation::reconcile_with_scan;
+    let (state, id, scan) = btc_reconciliation_fixture().await;
+    let first = reconcile_with_scan(&state, &id, async |_, _, _| Ok(scan.clone()))
+        .await
+        .unwrap();
+    let failed = reconcile_with_scan(&state, &id, async |_, _, _| {
+        Err(RpcError::BadRequest("bad filter commitment".into()))
+    })
+    .await;
+    assert!(failed.is_err());
+    assert_eq!(
+        state.swaps.read().await[&id].btc_observation.as_ref(),
+        Some(&first)
+    );
+    let guard = state.btc_swap_scan_lock.lock().await;
+    assert!(reconcile_with_scan(&state, &id, async |_, _, _| {
+        panic!("busy scan must not start")
+    })
+    .await
+    .is_err());
+    drop(guard);
+    let changed = reconcile_with_scan(&state, &id, async |_, _, _| {
+        state
+            .swaps
+            .write()
+            .await
+            .get_mut(&id)
+            .unwrap()
+            .taker_btc_refund_address = Some(
+            vtorrent_btc::keys::derive_address(&[3; 64], 0, bitcoin::Network::Regtest).unwrap(),
+        );
+        Ok(scan)
+    })
+    .await;
+    assert!(changed.is_err());
+    assert_eq!(
+        state.swaps.read().await[&id].btc_observation.as_ref(),
+        Some(&first)
+    );
+    state.swaps.write().await.get_mut(&id).unwrap().hash_lock = [0; 32];
+    assert!(reconcile_with_scan(&state, &id, async |_, _, _| {
+        panic!("invalid terms must not scan")
+    })
+    .await
+    .is_err());
+}
+
+#[tokio::test]
+async fn btc_reconciliation_journal_restores_snapshot_without_exposing_secrets() {
+    use crate::btc_reconciliation::reconcile_with_scan;
+    use tower::ServiceExt;
+    let (mut state, id, scan) = btc_reconciliation_fixture().await;
+    let directory = tempfile::tempdir().unwrap();
+    state.swap_recovery_dir = Some(directory.path().to_path_buf());
+    *state.wallet_wif.write().await = Some(vtr_identity(1).0);
+    *state.wallet_unlock_expiry.write().await = Some(0);
+    let observed = reconcile_with_scan(&state, &id, async |_, _, _| Ok(scan.clone()))
+        .await
+        .unwrap();
+    assert!(reconcile_with_scan(&state, &id, async |_, _, _| {
+        *state.wallet_wif.write().await = Some(vtr_identity(2).0);
+        Ok(scan)
+    })
+    .await
+    .is_err());
+    assert_eq!(
+        state.swaps.read().await[&id].btc_observation.as_ref(),
+        Some(&observed)
+    );
+    let mut restored = AppState::new_with_shared(state.chain.clone(), state.mempool.clone());
+    restored.swap_recovery_dir = state.swap_recovery_dir.clone();
+    *restored.btc_network.write().await = bitcoin::Network::Regtest;
+    crate::swap_recovery::restore_with_wif(&restored, &vtr_identity(1).0)
+        .await
+        .unwrap();
+    assert_eq!(
+        restored.swaps.read().await[&id].btc_observation.as_ref(),
+        Some(&observed)
+    );
+    restored.rpc_api_key = Some("btc-observation-key".into());
+    let app = crate::server::build_router(restored);
+    let locked = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/v1/swap/btc-reconcile")
+                .header("Content-Type", "application/json")
+                .header("X-API-Key", "btc-observation-key")
+                .body(axum::body::Body::from(format!(r#"{{"order_id":"{id}"}}"#)))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(locked.status(), axum::http::StatusCode::FORBIDDEN);
+    let unauthorized = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/v1/swap/btc-reconcile")
+                .header("Content-Type", "application/json")
+                .body(axum::body::Body::from(format!(r#"{{"order_id":"{id}"}}"#)))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), axum::http::StatusCode::UNAUTHORIZED);
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri(format!("/api/v1/swap/{id}/status"))
+                .header("X-API-Key", "btc-observation-key")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), 16384)
+        .await
+        .unwrap();
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+    let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(body["btc"]["observed_at"], NOW);
+    assert_eq!(body["btc_reconciled"], false);
+    assert!(!text.contains(&hex::encode(
+        state
+            .order_book
+            .read()
+            .await
+            .get_order(&id)
+            .unwrap()
+            .preimage
+            .unwrap()
+    )));
+    for secret in ["preimage", "witness", "private", "raw", "wif"] {
+        assert!(!text.contains(secret));
+    }
 }
 
 #[tokio::test]

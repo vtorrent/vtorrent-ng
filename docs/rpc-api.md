@@ -291,6 +291,52 @@ Claim VTR by revealing the preimage (taker action).
 }
 ```
 
+### GET /api/v1/swap/{order_id}/status
+
+Authenticated, read-only VTR settlement view. Reports `order_id`, `vtr` (state,
+tip hash/height, funding/spend txids and confirmation anchors, pending competing
+spend ID, and `reorg_count`), plus `btc_reconciled: false`.
+
+States distinguish `funding_prepared`, `funding_pending`, `funding_confirming`,
+`funded`, `claim_prepared`, `claim_pending`, `claim_confirming`, `claimed`,
+and the equivalent refund states. Other states include `not_funded`,
+`funding_missing`, `invalid_funding`, `competing_spend_pending`,
+`spent_elsewhere`, and `spend_unknown`. Six active-chain confirmations are
+required for `funded`, `claimed`, and `refunded`; these are not irreversible
+finality guarantees. Expiry alone cannot produce a refund status.
+
+### POST /api/v1/swap/reconcile
+
+Accepts `{"order_id":"..."}` and returns the same response, saving changed
+VTR observations to the encrypted journal. Persistence requires an unlocked
+wallet when enabled. A 30-second daemon/desktop worker does the same while
+unlocked. No transaction is signed, rebroadcast, replaced, or deleted.
+`reorg_count` records invalidated local confirmation anchors (including local
+resync), while the original signed recovery transactions remain available.
+BTC settlement is not freshly reconciled by these endpoints. The optional `btc`
+field is the last cached BTC observation, with its original `observed_at` time.
+
+### POST /api/v1/swap/btc-reconcile
+
+Accepts `{"order_id":"..."}`. Requires the configured API key and, when
+persistence is enabled, an unlocked wallet. Requests a fresh, isolated BTC
+compact-filter scan with a 120-second network timeout; concurrent settlement
+scans are rejected. Returns and journals a BTC observation containing `network`,
+`observed_at`, `tip_hash`, `tip_height`, `scan_start`, `state`, `funding`, `spend`,
+and `reorg_count`. Anchors contain standard Bitcoin display txids/block hashes,
+height, and confirmations. Six confirmations are required for `funded`,
+`claimed`, and `refunded` (coinbase funding also requires maturity).
+
+Other states: `funding_not_observed`, `invalid_funding`, `funding_immature`,
+`funding_confirming`, `claim_confirming`, `refund_confirming`, `spent_elsewhere`.
+Only the last 1,008 blocks are scanned, and no BTC mempool is queried. Missing
+funding is inconclusive, not proof of a refund or permission to reuse reserved
+inputs. Unknown spend IDs are not classified as local claims/refunds. The scan
+requires agreement from two compact-filter peer IPs outside regtest (one on
+regtest). Stale tips and incomplete/inconsistent scans fail without replacing
+the previous snapshot. This is dated SPV evidence, not irreversible finality.
+No signing, broadcast, automatic claims, or reservation release occurs.
+
 ### POST /api/v1/swap/btc-claim
 
 The maker claims BTC first, revealing the locally held preimage to the taker.

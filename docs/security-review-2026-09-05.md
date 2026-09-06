@@ -140,8 +140,32 @@ retries, and refusal to admit funding when persistence fails. Invalid claim
 signatures are rejected before recording a pending claim. Corrupt-file tests
 check that failed restoration does not overwrite the file or install its order.
 
-Still open: settlement/reorg reconciliation of confirmed per-chain outcomes,
-fee-bumped recovery, and automatic handling of conflicting spends. Submission
+Follow-up implemented locally: live VTR observations now separate prepared,
+mempool, shallow-confirmed, and six-confirmation settlement states. Confirmations
+are anchored to the active local chain; missing/replaced anchors downgrade the
+observation and record a reorg/resync warning without destroying signed recovery
+transactions. Confirmed unknown spends and pending competing transactions are
+reported explicitly. Authenticated status/reconcile endpoints and a 30-second
+unlocked-wallet worker expose and persist these observations. The daemon's
+expiry sweep no longer fabricates `Refunded` status without a transaction.
+
+Tests cover confirmation boundaries, removal/reappearance of a claim on the
+active chain, persisted stale observations after restart, competing spends,
+expiry without refund, and API authentication/no-secret responses.
+
+Follow-up implemented locally: explicit BTC scans now retain funding and spend
+confirmation anchors separately from submission IDs and persist dated snapshots
+in the encrypted journal. Header sync uses ancestor locators and parent heights
+to follow higher-work forks. Failed scans preserve prior evidence; mismatched
+contract terms and concurrent scans are rejected. Simulated-peer tests cover
+spent outputs, expired contracts, invalid commitments, and a higher-work branch
+that removes an observed spend. RPC tests cover confirmation boundaries,
+reorg downgrades, encrypted restoration, and secret-free authenticated views.
+These are bounded 1,008-block SPV scans, not mempool monitoring or full Bitcoin
+validation; missing transactions remain inconclusive and peer eclipse risk remains.
+
+Still open: automatic BTC monitoring, fee-bumped replacement lineage,
+and automatic resolution (not merely detection) of conflicting spends. Submission
 IDs do not prove confirmations. This journal does not prevent replay of an older
 authentic file or wipe all in-memory preimages on lock. Existing swaps created
 before journaling do not gain missing recovery metadata retroactively.

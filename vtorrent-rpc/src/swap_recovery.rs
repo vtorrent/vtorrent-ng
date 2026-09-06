@@ -125,6 +125,15 @@ pub async fn persist(
     order: &SwapOrder,
     swap: Option<&SwapState>,
 ) -> RpcResult<()> {
+    persist_for_wallet(state, order, swap, None).await
+}
+
+pub(crate) async fn persist_for_wallet(
+    state: &AppState,
+    order: &SwapOrder,
+    swap: Option<&SwapState>,
+    expected_wif: Option<&str>,
+) -> RpcResult<()> {
     if state.swap_recovery_dir.is_none() {
         return Ok(());
     }
@@ -137,6 +146,11 @@ pub async fn persist(
         .await
         .clone()
         .ok_or(RpcError::WalletLocked)?;
+    if expected_wif.is_some_and(|expected| expected != wif.as_str()) {
+        return Err(RpcError::BadRequest(
+            "Wallet changed during swap observation; retry".into(),
+        ));
+    }
     let Some((directory, password)) = context(state, &wif).await? else {
         return Ok(());
     };
@@ -301,7 +315,9 @@ pub async fn restore_with_wif(state: &AppState, wif: &str) -> RpcResult<()> {
                         btc_funding_raw,
                         vtr_funding_tx,
                         vtr_claim_tx,
-                        vtr_refund_tx
+                        vtr_refund_tx,
+                        vtr_observation,
+                        btc_observation
                     );
                     current.refresh_status();
                     if pending_btc

@@ -133,6 +133,9 @@ pub async fn start_node(state: tauri::State<'_, AppState>) -> Result<NodeInfoRes
         start_time: std::time::Instant::now(),
     };
     *state.node.lock().await = Some(handle);
+    tokio::spawn(vtorrent_rpc::swap_reconciliation::run_reconciler(
+        rpc_state.clone(),
+    ));
 
     {
         let blocks_staked = Arc::clone(&rpc_state.blocks_staked);

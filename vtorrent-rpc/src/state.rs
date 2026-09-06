@@ -55,6 +55,7 @@ pub struct AppState {
     pub stake_proofs: Arc<RwLock<std::collections::HashMap<[u8; 32], StakeProof>>>,
     /// Bitcoin SPV wallet (optional — created when a seed is available).
     pub btc_wallet: Arc<RwLock<Option<BtcWallet>>>,
+    pub btc_swap_scan_lock: Arc<Mutex<()>>,
     /// Bitcoin network the wallet operates on (mainnet or regtest).
     pub btc_network: Arc<RwLock<bitcoin::Network>>,
     /// Optional explicit Bitcoin peer as `host:port` (regtest). When set, BTC
@@ -157,6 +158,7 @@ impl AppState {
             spv_chain: Arc::new(RwLock::new(SpvChain::new())),
             stake_proofs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             btc_wallet: Arc::new(RwLock::new(None)),
+            btc_swap_scan_lock: Arc::new(Mutex::new(())),
             btc_network: Arc::new(RwLock::new(bitcoin::Network::Bitcoin)),
             btc_peer: Arc::new(RwLock::new(None)),
             start_time: now,
@@ -212,6 +214,7 @@ impl AppState {
             spv_chain: Arc::new(RwLock::new(SpvChain::new())),
             stake_proofs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             btc_wallet: Arc::new(RwLock::new(None)),
+            btc_swap_scan_lock: Arc::new(Mutex::new(())),
             btc_network: Arc::new(RwLock::new(bitcoin::Network::Bitcoin)),
             btc_peer: Arc::new(RwLock::new(None)),
             start_time: now,

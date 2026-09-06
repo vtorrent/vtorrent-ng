@@ -29,7 +29,7 @@ use std::str::FromStr;
 pub const DEFAULT_HTLC_LOCKTIME: u32 = 48 * 3600;
 
 /// A Bitcoin-side HTLC.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BtcHtlc {
     pub hash_lock: [u8; 32],
     pub recipient: String,

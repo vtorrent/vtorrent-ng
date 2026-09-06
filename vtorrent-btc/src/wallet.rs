@@ -274,6 +274,43 @@ impl BtcWallet {
         .map_err(|_| crate::error::BtcError::Sync("BTC contract verification timed out".into()))?
     }
 
+    /// Observe confirmed funding and spends without disclosing a preimage or trusting cached UTXOs.
+    pub async fn observe_swap(
+        &self,
+        htlc: &crate::htlc::BtcHtlc,
+        funding_txid: [u8; 32],
+        peers: &[std::net::SocketAddr],
+        now: u64,
+        previous: &[crate::sync::SwapAnchor],
+    ) -> Result<crate::sync::SwapScan> {
+        use crate::error::BtcError;
+        if htlc.network != self.network {
+            return Err(BtcError::Sync("BTC swap network mismatch".into()));
+        }
+        let sync = crate::sync::BtcSync::new(
+            self.headers.clone(),
+            Arc::new(Mutex::new(UtxoSet::new())),
+            vec![htlc.address()?],
+            self.network,
+        );
+        let mut scan = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            sync.scan_swap_contract(htlc, funding_txid, peers, now, false),
+        )
+        .await
+        .map_err(|_| BtcError::Sync("BTC settlement scan timed out".into()))??;
+        let chain = self.headers.lock();
+        if chain.best_hash() != Some(scan.tip_hash) {
+            return Err(BtcError::Sync(
+                "BTC tip changed after settlement scan".into(),
+            ));
+        }
+        scan.invalidated_anchor = previous
+            .iter()
+            .any(|anchor| !chain.is_active_anchor(&anchor.block_hash, anchor.height));
+        Ok(scan)
+    }
+
     /// Add a header to the chain.
     pub fn add_header(&self, raw: &[u8], height: u32) -> Result<()> {
         self.headers.lock().add_header(raw, height)

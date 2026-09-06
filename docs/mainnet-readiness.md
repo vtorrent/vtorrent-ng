@@ -136,7 +136,7 @@
 | Blocker | Owner | Notes |
 |---|---|---|
 | External security review not scheduled | Lead | Required before final v2.0.0 |
-| Atomic-swap confirmation and full recovery | Code | Timing, reservations, BTC verification/refund recovery, and encrypted maker/VTR restart recovery have local fixes; settlement/reorg reconciliation, fee-bumped recovery, and adversarial multi-node validation remain open in `docs/security-review-2026-09-05.md` |
+| Atomic-swap confirmation and full recovery | Code | Timing, reservations, BTC verification/refund recovery, encrypted maker/VTR recovery, live VTR observations, and explicit bounded BTC settlement/reorg scans have local fixes; automatic BTC monitoring, fee-bumped recovery, and adversarial multi-node validation remain open in `docs/security-review-2026-09-05.md` |
 
 ## Known Issues (found during soak/E2E, 2026-08-24)
 

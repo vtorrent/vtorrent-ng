@@ -48,7 +48,8 @@ export async function rpcPost<T>(path: string, body: unknown): Promise<T> {
     let msg = `RPC POST ${path} → ${res.status}`
     try {
       const err = await res.json()
-      if (err.error) msg = err.error
+      if (typeof err.message === 'string') msg = err.message
+      else if (typeof err.error === 'string') msg = err.error
     } catch { /* ignore */ }
     throw new Error(msg)
   }

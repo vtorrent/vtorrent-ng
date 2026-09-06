@@ -148,8 +148,13 @@ async fn serve(listener: TcpListener, blocks: Vec<Block>, case: &'static str) {
                     .unwrap();
                 NetworkMessage::Verack
             }
-            NetworkMessage::GetHeaders(_) => {
-                NetworkMessage::Headers(blocks[1..].iter().map(|b| b.header).collect())
+            NetworkMessage::GetHeaders(req) => {
+                let common = req
+                    .locator_hashes
+                    .iter()
+                    .find_map(|hash| blocks.iter().position(|b| b.block_hash() == *hash))
+                    .unwrap_or(0);
+                NetworkMessage::Headers(blocks[common + 1..].iter().map(|b| b.header).collect())
             }
             NetworkMessage::GetCFCheckpt(req) => NetworkMessage::CFCheckpt(CFCheckpt {
                 filter_type: 0,
@@ -321,4 +326,110 @@ fn incomplete_scan_or_changed_tip_cannot_authorize_claim() {
     assert!(sync
         .verify_scanned_swap(&htlc, txid, 1, [0; 32], 6)
         .is_err());
+}
+
+#[tokio::test]
+async fn settlement_scan_keeps_spent_outputs_and_allows_expired_contracts() {
+    for case in [
+        "valid",
+        "spent",
+        "shallow",
+        "coinbase",
+        "amount",
+        "missing",
+        "expired",
+        "filter",
+        "merkle",
+        "disconnect",
+    ] {
+        let mut htlc = contract();
+        if case == "expired" {
+            htlc.expiry = NOW as u32 - 1;
+        }
+        let (blocks, txid) = chain(&htlc, case);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(serve(listener, blocks, case));
+        let wallet = crate::wallet::BtcWallet::with_network([1; 64], bitcoin::Network::Regtest);
+        let result = wallet.observe_swap(&htlc, txid, &[addr], NOW, &[]).await;
+        if matches!(case, "filter" | "merkle" | "disconnect") {
+            assert!(result.is_err(), "{case}");
+        } else {
+            let scan = result.unwrap();
+            assert_eq!(scan.funding.is_some(), case != "missing", "{case}");
+            assert_eq!(scan.spend.is_some(), case == "spent", "{case}");
+            assert_eq!(scan.invalid_funding, case == "amount", "{case}");
+            assert_eq!(scan.coinbase, case == "coinbase", "{case}");
+            assert_eq!(scan.tip_height, if case == "shallow" { 5 } else { 6 });
+            assert_eq!(wallet.balance(), 0);
+        }
+        server.await.unwrap();
+    }
+}
+
+fn extend_empty(blocks: &mut Vec<Block>, target: u32) {
+    while blocks.len() <= target as usize {
+        let height = blocks.len() as u32;
+        let mut block = blocks.last().unwrap().clone();
+        block.txdata.truncate(1);
+        block.txdata[0].lock_time = bitcoin::absolute::LockTime::from_height(height).unwrap();
+        block.header.prev_blockhash = blocks.last().unwrap().block_hash();
+        block.header.time += 1;
+        block.header.merkle_root = block.compute_merkle_root().unwrap();
+        block.header.nonce = 0;
+        while block.header.validate_pow(block.header.target()).is_err() {
+            block.header.nonce += 1;
+        }
+        blocks.push(block);
+    }
+}
+
+#[tokio::test]
+async fn settlement_scan_follows_higher_work_fork_and_invalidates_old_spend() {
+    let htlc = contract();
+    let (mut blocks, txid) = chain(&htlc, "spent");
+    extend_empty(&mut blocks, 11);
+    let mut fork = blocks[..6].to_vec();
+    extend_empty(&mut fork, 12);
+    let wallet = crate::wallet::BtcWallet::with_network([1; 64], bitcoin::Network::Regtest);
+    let mut previous = Vec::new();
+    for (branch, reorg) in [(blocks, false), (fork, true)] {
+        let expected_tip = branch.last().unwrap().block_hash().to_byte_array();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(serve(listener, branch, "valid"));
+        let scan = wallet
+            .observe_swap(&htlc, txid, &[addr], NOW, &previous)
+            .await
+            .unwrap();
+        assert_eq!(scan.tip_hash, expected_tip);
+        assert_eq!(scan.invalidated_anchor, reorg);
+        assert_eq!(scan.spend.is_none(), reorg);
+        assert_eq!(scan.funding.as_ref().unwrap().height, 1);
+        previous = [scan.funding, scan.spend].into_iter().flatten().collect();
+        server.await.unwrap();
+    }
+}
+
+#[test]
+fn incomplete_settlement_scan_cannot_publish_evidence() {
+    let htlc = contract();
+    let (blocks, txid) = chain(&htlc, "valid");
+    let headers = Arc::new(Mutex::new(HeaderChain::anchored(bitcoin::Network::Regtest)));
+    let sync = BtcSync::new(
+        headers.clone(),
+        Arc::new(Mutex::new(UtxoSet::new())),
+        vec![htlc.address().unwrap()],
+        htlc.network,
+    );
+    *sync.swap_scan.lock() = Some(swap_observation::SwapScanTracker::new(&htlc, txid).unwrap());
+    for (height, block) in blocks.iter().enumerate().skip(1) {
+        headers
+            .lock()
+            .add_header(&serialize(&block.header), height as u32)
+            .unwrap();
+    }
+    let tip = blocks.last().unwrap().block_hash().to_byte_array();
+    assert!(sync.finish_swap_scan(1, tip, 5).is_err());
+    assert!(sync.finish_swap_scan(1, [0; 32], 6).is_err());
 }

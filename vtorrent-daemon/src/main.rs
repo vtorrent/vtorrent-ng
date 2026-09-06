@@ -25,7 +25,6 @@
 ///   --log-level <LEVEL>       Log level: error|warn|info|debug|trace [default: info]
 use std::path::PathBuf;
 use std::sync::Arc;
-use vtorrent_core::time::now_timestamp_u32;
 
 mod config;
 
@@ -608,10 +607,12 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // ── Start services concurrently ───────────────────────────────────────────
+    tokio::spawn(vtorrent_rpc::swap_reconciliation::run_reconciler(
+        rpc_state.clone(),
+    ));
 
     // Periodic DEX order expiry maintenance — runs every 60 seconds.
     let order_book_for_maintenance = Arc::clone(&rpc_state.order_book);
-    let swaps_for_maintenance = Arc::clone(&rpc_state.swaps);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
         loop {
@@ -619,23 +620,6 @@ async fn main() -> anyhow::Result<()> {
             let expired = order_book_for_maintenance.write().await.expire_orders();
             if expired > 0 {
                 tracing::info!("DEX maintenance: expired {} stale orders", expired);
-            }
-            // Sweep expired swaps to Refunded.
-            let now = now_timestamp_u32();
-            let mut swaps = swaps_for_maintenance.write().await;
-            let mut swept = 0;
-            for (id, swap) in swaps.iter_mut() {
-                if swap.status == vtorrent_node::atomic_swap::SwapStatus::BtcFunded {
-                    if let Some(order) = order_book_for_maintenance.read().await.get_order(id) {
-                        if now >= order.expiry {
-                            swap.status = vtorrent_node::atomic_swap::SwapStatus::Refunded;
-                            swept += 1;
-                        }
-                    }
-                }
-            }
-            if swept > 0 {
-                tracing::info!("Swap maintenance: refunded {} expired swaps", swept);
             }
         }
     });

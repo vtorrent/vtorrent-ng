@@ -563,6 +563,10 @@ pub struct SwapState {
     pub vtr_claim_tx: Option<Transaction>,
     #[serde(default)]
     pub vtr_refund_tx: Option<Transaction>,
+    #[serde(default)]
+    pub vtr_observation: Option<VtrSwapObservation>,
+    #[serde(default)]
+    pub btc_observation: Option<BtcSwapObservation>,
     /// Current status.
     pub status: SwapStatus,
 }
@@ -588,6 +592,8 @@ impl SwapState {
             vtr_funding_tx: None,
             vtr_claim_tx: None,
             vtr_refund_tx: None,
+            vtr_observation: None,
+            btc_observation: None,
             status: SwapStatus::Funding,
         }
     }
@@ -614,6 +620,79 @@ impl SwapState {
             SwapStatus::Funding
         };
     }
+}
+
+/// A main-chain confirmation anchor, rechecked before reporting settlement.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SwapConfirmation {
+    pub txid: String,
+    pub block_hash: String,
+    pub height: u32,
+    pub confirmations: u32,
+}
+
+/// Observed VTR state, separate from the local signed-transaction journal.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct VtrSwapObservation {
+    pub tip_hash: String,
+    pub tip_height: u32,
+    pub state: VtrSettlementState,
+    pub funding: Option<SwapConfirmation>,
+    pub spend: Option<SwapConfirmation>,
+    pub pending_spend_txid: Option<String>,
+    pub reorg_count: u32,
+}
+
+/// A timestamped BTC scan snapshot, not a live view or authorization to spend.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BtcSwapObservation {
+    pub network: String,
+    pub observed_at: u64,
+    pub tip_hash: String,
+    pub tip_height: u32,
+    pub scan_start: u32,
+    pub state: BtcSettlementState,
+    pub funding: Option<SwapConfirmation>,
+    pub spend: Option<SwapConfirmation>,
+    pub reorg_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BtcSettlementState {
+    FundingNotObserved,
+    InvalidFunding,
+    FundingImmature,
+    FundingConfirming,
+    Funded,
+    ClaimConfirming,
+    Claimed,
+    RefundConfirming,
+    Refunded,
+    SpentElsewhere,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VtrSettlementState {
+    NotFunded,
+    FundingMissing,
+    FundingPrepared,
+    FundingPending,
+    FundingConfirming,
+    Funded,
+    InvalidFunding,
+    ClaimPrepared,
+    ClaimPending,
+    ClaimConfirming,
+    Claimed,
+    RefundPrepared,
+    RefundPending,
+    RefundConfirming,
+    Refunded,
+    CompetingSpendPending,
+    SpentElsewhere,
+    SpendUnknown,
 }
 
 impl SwapOrder {

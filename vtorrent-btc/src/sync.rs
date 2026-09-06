@@ -32,6 +32,9 @@ pub const MIN_BTC_CLAIM_WINDOW: u32 = 3600;
 const SWAP_SCAN_BLOCKS: u32 = 1_008;
 const MAX_SWAP_TIP_AGE: u64 = 2 * 3600;
 
+mod swap_observation;
+pub use swap_observation::{SwapAnchor, SwapScan};
+
 /// Resolve DNS seeds to socket addresses.
 pub async fn resolve_seeds() -> Result<Vec<SocketAddr>> {
     let mut addrs = Vec::new();
@@ -112,6 +115,7 @@ pub struct BtcSync {
     addresses: Vec<String>,
     network: bitcoin::Network,
     coinbase_txids: Mutex<std::collections::HashSet<String>>,
+    swap_scan: Mutex<Option<swap_observation::SwapScanTracker>>,
 }
 
 impl BtcSync {
@@ -122,6 +126,19 @@ impl BtcSync {
         addrs: &[SocketAddr],
         now: u64,
     ) -> Result<()> {
+        self.scan_swap_contract(htlc, funding_txid, addrs, now, true)
+            .await
+            .map(|_| ())
+    }
+
+    pub(crate) async fn scan_swap_contract(
+        &self,
+        htlc: &crate::htlc::BtcHtlc,
+        funding_txid: [u8; 32],
+        addrs: &[SocketAddr],
+        now: u64,
+        require_claim_window: bool,
+    ) -> Result<SwapScan> {
         let required = if self.network == bitcoin::Network::Regtest {
             1
         } else {
@@ -196,9 +213,10 @@ impl BtcSync {
                 }
                 cursor = header.header.prev_blockhash.to_byte_array();
             }
-            if htlc.expiry < 500_000_000
-                || latest_time.saturating_add(u64::from(MIN_BTC_CLAIM_WINDOW))
-                    >= u64::from(htlc.expiry)
+            if require_claim_window
+                && (htlc.expiry < 500_000_000
+                    || latest_time.saturating_add(u64::from(MIN_BTC_CLAIM_WINDOW))
+                        >= u64::from(htlc.expiry))
             {
                 return Err(BtcError::Sync(
                     "BTC chain time is too close to refund eligibility".into(),
@@ -210,9 +228,14 @@ impl BtcSync {
         let mut last_error = BtcError::Sync("BTC contract scan did not complete".into());
         for peer in &mut peers {
             *self.utxos.lock() = UtxoSet::new();
+            *self.swap_scan.lock() =
+                Some(swap_observation::SwapScanTracker::new(htlc, funding_txid)?);
             match self.scan_utxos_bip158(peer, start).await {
                 Ok(scanned) => {
-                    return self.verify_scanned_swap(htlc, funding_txid, start, tip_hash, scanned);
+                    if require_claim_window {
+                        self.verify_scanned_swap(htlc, funding_txid, start, tip_hash, scanned)?;
+                    }
+                    return self.finish_swap_scan(start, tip_hash, scanned);
                 }
                 Err(error) => last_error = error,
             }
@@ -280,6 +303,7 @@ impl BtcSync {
             addresses,
             network,
             coinbase_txids: Mutex::new(std::collections::HashSet::new()),
+            swap_scan: Mutex::new(None),
         }
     }
 
@@ -297,20 +321,14 @@ impl BtcSync {
             addresses,
             network,
             coinbase_txids: Mutex::new(std::collections::HashSet::new()),
+            swap_scan: Mutex::new(None),
         }
     }
 
     /// Build a `getheaders` message from the current tip.
     pub fn build_getheaders(&self) -> GetHeadersMessage {
         let headers = self.headers.lock();
-        let locator = if let Some(best) = headers.best_hash() {
-            vec![bitcoin::BlockHash::from_byte_array(best)]
-        } else {
-            // No headers yet: send a single all-zeros locator so the peer
-            // responds from genesis (an empty locator is rejected by some
-            // implementations).
-            vec![bitcoin::BlockHash::all_zeros()]
-        };
+        let locator = headers.block_locator();
         GetHeadersMessage {
             version: 70016,
             locator_hashes: locator,
@@ -334,11 +352,15 @@ impl BtcSync {
             match msg {
                 NetworkMessage::Headers(hdrs) => {
                     let batch_len = hdrs.len();
+                    let last_hash = hdrs.last().map(|header| header.block_hash());
                     for h in hdrs {
                         let raw = serialize(&h);
                         let height = {
                             let chain = self.headers.lock();
-                            chain.best_height() + 1
+                            chain
+                                .get(&h.prev_blockhash.to_byte_array())
+                                .and_then(|parent| parent.height.checked_add(1))
+                                .ok_or_else(|| BtcError::Sync("Missing BTC header parent".into()))?
                         };
                         self.headers.lock().add_header(&raw, height)?;
                         added += 1;
@@ -349,8 +371,11 @@ impl BtcSync {
                     if batch_len < 2000 {
                         break;
                     }
-                    peer.send(NetworkMessage::GetHeaders(self.build_getheaders()))
-                        .await?;
+                    let mut request = self.build_getheaders();
+                    if let Some(hash) = last_hash {
+                        request.locator_hashes.insert(0, hash);
+                    }
+                    peer.send(NetworkMessage::GetHeaders(request)).await?;
                 }
                 NetworkMessage::Ping(nonce) => {
                     peer.send(NetworkMessage::Pong(nonce)).await?;
@@ -678,6 +703,9 @@ impl BtcSync {
                     };
                     if let Some(height) = height {
                         for tx in &block.txdata {
+                            if let Some(scan) = self.swap_scan.lock().as_mut() {
+                                scan.record(tx, height, block_hash.to_byte_array());
+                            }
                             self.record_matching_outputs(tx, height);
                         }
                     }

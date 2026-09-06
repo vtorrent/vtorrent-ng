@@ -207,6 +207,52 @@ pub async fn cancel_dex_order(state: tauri::State<'_, AppState>, order_id: Strin
 // ─── Swap lifecycle commands ─────────────────────────────────────────────────
 
 #[tauri::command]
+pub async fn get_swap_status(
+    state: tauri::State<'_, AppState>,
+    order_id: String,
+) -> Result<vtorrent_rpc::swap_reconciliation::SwapStatusResponse> {
+    let guard = state.node.lock().await;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    let vtr = vtorrent_rpc::swap_reconciliation::status(&handle.rpc_state, &order_id)
+        .await
+        .map_err(TauriError::from)?;
+    let btc = handle
+        .rpc_state
+        .swaps
+        .read()
+        .await
+        .get(&order_id)
+        .and_then(|swap| swap.btc_observation.clone());
+    Ok(vtorrent_rpc::swap_reconciliation::SwapStatusResponse {
+        btc,
+        order_id,
+        vtr,
+        btc_reconciled: false,
+    })
+}
+
+#[tauri::command]
+pub async fn reconcile_btc_swap(
+    state: tauri::State<'_, AppState>,
+    order_id: String,
+) -> Result<vtorrent_node::atomic_swap::BtcSwapObservation> {
+    let rpc = state
+        .node
+        .lock()
+        .await
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?
+        .rpc_state
+        .clone();
+    state.sync_swap_wallet(&rpc).await?;
+    vtorrent_rpc::btc_reconciliation::reconcile(&rpc, &order_id)
+        .await
+        .map_err(TauriError::from)
+}
+
+#[tauri::command]
 pub async fn match_dex_order(
     state: tauri::State<'_, AppState>,
     order_id: String,

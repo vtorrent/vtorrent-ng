@@ -41,6 +41,8 @@ fn main() {
             commands::vtr_claim,
             commands::btc_claim,
             commands::swap_refund,
+            commands::get_swap_status,
+            commands::reconcile_btc_swap,
             // Staking
             commands::start_staking,
             commands::stop_staking,
