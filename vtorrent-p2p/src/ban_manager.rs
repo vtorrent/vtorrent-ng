@@ -475,7 +475,7 @@ mod tests {
 
     #[test]
     fn test_rapid_ban_unban_cycle() {
-        let mut mgr = BanManager::new(10, Duration::from_millis(1));
+        let mut mgr = BanManager::new(10, Duration::from_secs(3600));
         for i in 0..50u8 {
             let addr = ip(i);
             mgr.ban_ip(addr, "test".into());

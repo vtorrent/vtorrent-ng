@@ -641,26 +641,25 @@ impl Node {
                     // every input is worth 100k sats, fabricating fees) and
                     // skip script verification entirely.
                     let admission_fee = {
+                        let chain = self.chain.lock().await;
                         let mut mp = self.mempool.lock().await;
-                        if mp.get_transaction(&txid).is_some() {
-                            None
-                        } else {
-                            let chain = self.chain.lock().await;
-                            match mp.admit_with_chain_fee(&chain, tx) {
-                                Ok(fee) => Some(fee),
-                                Err(e) => {
-                                    tracing::warn!(
-                                        txid = %hex::encode(txid),
-                                        "Local tx submission rejected: {}",
-                                        e
-                                    );
-                                    None
-                                }
+                        let already_admitted = mp.get_transaction(&txid).is_some();
+                        match mp.admit_with_chain_fee(&chain, tx) {
+                            Ok(fee) => Some((fee, already_admitted)),
+                            Err(e) => {
+                                tracing::warn!(
+                                    txid = %hex::encode(txid),
+                                    "Local tx submission rejected: {}",
+                                    e
+                                );
+                                None
                             }
                         }
                     };
-                    if let Some(fee_sats) = admission_fee {
-                        self.emit(NodeEvent::TxUnconfirmed { txid, fee_sats, size_bytes });
+                    if let Some((fee_sats, already_admitted)) = admission_fee {
+                        if !already_admitted {
+                            self.emit(NodeEvent::TxUnconfirmed { txid, fee_sats, size_bytes });
+                        }
                         let inv_msg = InvMsg {
                             items: vec![InvItem {
                                 inv_type: InvType::Transaction,

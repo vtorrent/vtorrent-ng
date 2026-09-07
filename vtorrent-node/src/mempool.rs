@@ -342,6 +342,35 @@ impl Mempool {
         }
     }
 
+    pub(crate) fn handle_reorg(
+        &mut self,
+        chain: &crate::chain::Chain,
+        rolled_back_txs: &[Transaction],
+    ) {
+        let height = chain.best_height();
+        let timestamp = chain
+            .get_block_at_height(height)
+            .map(|block| block.header.timestamp)
+            .unwrap_or(0);
+        let invalid: Vec<_> = self
+            .entries
+            .iter()
+            .filter_map(|(txid, entry)| {
+                (chain.compute_tx_fee(&entry.tx) != Some(entry.fee_sats)
+                    || chain
+                        .verify_tx_scripts(&entry.tx, height, timestamp)
+                        .is_err())
+                .then_some(*txid)
+            })
+            .collect();
+        for txid in invalid {
+            self.remove_entry(&txid);
+        }
+        for tx in rolled_back_txs {
+            let _ = self.admit_with_chain_fee(chain, tx.clone());
+        }
+    }
+
     /// Get a specific transaction by txid.
     pub fn get_transaction(&self, txid: &[u8; 32]) -> Option<&Transaction> {
         self.entries.get(txid).map(|e| &e.tx)

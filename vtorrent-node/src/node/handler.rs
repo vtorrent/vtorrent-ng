@@ -212,6 +212,25 @@ pub(crate) async fn handle_block(
             let block_arc = std::sync::Arc::new(block);
             let mut chain = node.chain.lock().await;
             let acceptance = chain.add_block((*block_arc).clone());
+            match &acceptance {
+                Ok(BlockAcceptance::MainChain { utxos_removed, .. }) => {
+                    let confirmed: Vec<_> =
+                        block_arc.transactions.iter().map(|tx| tx.txid()).collect();
+                    node.mempool
+                        .lock()
+                        .await
+                        .handle_confirmed_block(&confirmed, utxos_removed);
+                }
+                Ok(BlockAcceptance::Reorg {
+                    rolled_back_txs, ..
+                }) => {
+                    node.mempool
+                        .lock()
+                        .await
+                        .handle_reorg(&chain, rolled_back_txs);
+                }
+                _ => {}
+            }
             drop(chain);
             match acceptance {
                 Ok(acceptance) => {
@@ -227,12 +246,6 @@ pub(crate) async fn handle_block(
                                 hex::encode(hash),
                                 height
                             );
-                            {
-                                let confirmed: Vec<[u8; 32]> =
-                                    block_arc.transactions.iter().map(|tx| tx.txid()).collect();
-                                let mut mp = node.mempool.lock().await;
-                                mp.handle_confirmed_block(&confirmed, &utxos_removed);
-                            }
                             node.emit(NodeEvent::NewBlock {
                                 height,
                                 hash,
@@ -266,7 +279,7 @@ pub(crate) async fn handle_block(
                             old_tip,
                             new_tip,
                             depth,
-                            rolled_back_txs,
+                            rolled_back_txs: _,
                             rolled_back_blocks,
                             applied_fork_blocks,
                         } => {
@@ -276,13 +289,6 @@ pub(crate) async fn handle_block(
                                 hex::encode(old_tip),
                                 hex::encode(new_tip)
                             );
-                            {
-                                let chain = node.chain.lock().await;
-                                let mut mp = node.mempool.lock().await;
-                                for tx in rolled_back_txs {
-                                    let _ = mp.admit_with_chain_fee(&chain, tx);
-                                }
-                            }
                             node.emit(NodeEvent::Reorg {
                                 old_tip,
                                 new_tip,
@@ -510,56 +516,19 @@ pub(crate) async fn handle_cmpctblock(
                 }
                 if all_ok {
                     let block = reconstruct_compact_block(&cmpct, txs);
-                    let hash = block.hash();
-                    let tx_count = block.transactions.len();
-                    let timestamp = block.header.timestamp;
-                    let size_bytes = serde_json::to_vec(&block).map(|v| v.len()).unwrap_or(0);
-                    let block_arc = std::sync::Arc::new(block);
-                    let mut chain = node.chain.lock().await;
-                    match chain.add_block((*block_arc).clone()) {
-                        Ok(acceptance) => {
-                            if let BlockAcceptance::MainChain {
-                                height,
-                                utxos_added,
-                                utxos_removed,
-                                claimed_addresses,
-                            } = acceptance
-                            {
-                                tracing::info!(
-                                    "cmpctblock: accepted block {} at height {}",
-                                    hex::encode(hash),
-                                    height
-                                );
-                                {
-                                    let confirmed: Vec<[u8; 32]> =
-                                        block_arc.transactions.iter().map(|tx| tx.txid()).collect();
-                                    let mut mp = node.mempool.lock().await;
-                                    mp.handle_confirmed_block(&confirmed, &utxos_removed);
-                                }
-                                node.emit(NodeEvent::NewBlock {
-                                    height,
-                                    hash,
-                                    tx_count,
-                                    timestamp,
-                                    size_bytes,
-                                    block: block_arc.clone(),
-                                    utxos_added,
-                                    utxos_removed,
-                                    claimed_addresses,
-                                });
-                                for tx in block_arc.transactions.iter() {
-                                    node.emit(NodeEvent::TxConfirmed {
-                                        txid: tx.txid(),
-                                        block_height: height,
-                                        block_hash: hash,
-                                    });
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("cmpctblock: rejected block from {}: {}", peer_addr, e);
-                        }
-                    }
+                    let peer_version = node
+                        .peer_versions
+                        .get(&peer_addr)
+                        .copied()
+                        .unwrap_or(PROTOCOL_VERSION);
+                    let payload = node.serialize_block_for_peer(&block, peer_version);
+                    handle_block(
+                        node,
+                        peer_addr,
+                        &NetMessage::new("block", payload),
+                        peer_version,
+                    )
+                    .await?;
                 }
             }
             Err(CompactBlockDecodeError::MissingTransactions(missing_indexes)) => {
@@ -740,60 +709,19 @@ pub(crate) async fn handle_blocktxn(
                 }
                 if all_ok {
                     let block = reconstruct_compact_block(&pending, txs);
-                    let hash = block.hash();
-                    let tx_count = block.transactions.len();
-                    let timestamp = block.header.timestamp;
-                    let size_bytes = serde_json::to_vec(&block).map(|v| v.len()).unwrap_or(0);
-                    let block_arc = std::sync::Arc::new(block);
-                    let mut chain = node.chain.lock().await;
-                    match chain.add_block((*block_arc).clone()) {
-                        Ok(acceptance) => {
-                            if let BlockAcceptance::MainChain {
-                                height,
-                                utxos_added,
-                                utxos_removed,
-                                claimed_addresses,
-                            } = acceptance
-                            {
-                                tracing::info!(
-                                    "blocktxn: accepted block {} at height {}",
-                                    hex::encode(hash),
-                                    height
-                                );
-                                {
-                                    let confirmed: Vec<[u8; 32]> =
-                                        block_arc.transactions.iter().map(|tx| tx.txid()).collect();
-                                    let mut mp = node.mempool.lock().await;
-                                    mp.handle_confirmed_block(&confirmed, &utxos_removed);
-                                }
-                                node.emit(NodeEvent::NewBlock {
-                                    height,
-                                    hash,
-                                    tx_count,
-                                    timestamp,
-                                    size_bytes,
-                                    block: block_arc.clone(),
-                                    utxos_added,
-                                    utxos_removed,
-                                    claimed_addresses,
-                                });
-                                for tx in block_arc.transactions.iter() {
-                                    node.emit(NodeEvent::TxConfirmed {
-                                        txid: tx.txid(),
-                                        block_height: height,
-                                        block_hash: hash,
-                                    });
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "cmpctblock: rejected completed block from {}: {}",
-                                peer_addr,
-                                e
-                            );
-                        }
-                    }
+                    let peer_version = node
+                        .peer_versions
+                        .get(&peer_addr)
+                        .copied()
+                        .unwrap_or(PROTOCOL_VERSION);
+                    let payload = node.serialize_block_for_peer(&block, peer_version);
+                    handle_block(
+                        node,
+                        peer_addr,
+                        &NetMessage::new("block", payload),
+                        peer_version,
+                    )
+                    .await?;
                 }
             }
             Err(e) => {
@@ -1271,6 +1199,141 @@ mod tests {
             super::super::MAX_ORPHAN_BYTES + 1,
         ));
         assert_eq!(node.orphan_blocks.len(), super::super::MAX_ORPHAN_BLOCKS);
+    }
+
+    async fn compact_reorg_reconciles_mempool(missing_transaction: bool) {
+        let mut node = test_node();
+        let (sender, mut events) = crate::events::channel(16);
+        node.set_event_sender(sender);
+        let genesis = node.chain.lock().await.best_hash().unwrap();
+        let mut common = coinbase_block(genesis, 0, 1);
+        common.transactions[0].outputs = vec![
+            TxOutput {
+                value: 400_000,
+                script_pubkey: vec![0x51]
+            };
+            2
+        ];
+        common.header.merkle_root = common.compute_merkle_root();
+        let spend = |txid, vout, value| Transaction {
+            version: 1,
+            tx_type: TxType::Standard,
+            inputs: vec![TxInput {
+                prev_txid: txid,
+                prev_vout: vout,
+                script_sig: Vec::new(),
+                sequence: u32::MAX,
+            }],
+            outputs: vec![TxOutput {
+                value,
+                script_pubkey: vec![0x51],
+            }],
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        };
+        let survivor = spend(common.transactions[0].txid(), 0, 390_000);
+        let restored = spend(common.transactions[0].txid(), 1, 390_000);
+        let mut old = coinbase_block(common.hash(), common.header.stake_modifier, 2);
+        old.transactions[0].outputs[0].script_pubkey = vec![0x51];
+        old.transactions.push(restored.clone());
+        old.header.merkle_root = old.compute_merkle_root();
+        let stale = spend(old.transactions[0].txid(), 0, 990_000);
+        let mut fork = coinbase_block(common.hash(), common.header.stake_modifier, 2);
+        fork.transactions[0].outputs[0].value = 900_000;
+        fork.transactions[0].outputs[0].script_pubkey = vec![0x51];
+        fork.header.merkle_root = fork.compute_merkle_root();
+        let mut winner = coinbase_block(fork.hash(), fork.header.stake_modifier, 3);
+        let winning_tx = spend(fork.transactions[0].txid(), 0, 890_000);
+        winner.transactions.push(winning_tx.clone());
+        winner.header.merkle_root = winner.compute_merkle_root();
+        let received_at = {
+            let mut chain = node.chain.lock().await;
+            chain.add_block(common).unwrap();
+            chain.add_block(old).unwrap();
+            assert!(matches!(
+                chain.add_block(fork).unwrap(),
+                BlockAcceptance::Fork { .. }
+            ));
+            let mut mp = node.mempool.lock().await;
+            mp.admit_with_chain_fee(&chain, survivor.clone()).unwrap();
+            mp.admit_with_chain_fee(&chain, stale.clone()).unwrap();
+            if !missing_transaction {
+                mp.add_transaction_with_fee(winning_tx.clone(), 10_000)
+                    .unwrap();
+            }
+            mp.get_entries()
+                .into_iter()
+                .find(|e| e.tx.txid() == survivor.txid())
+                .unwrap()
+                .received_at
+        };
+        let header = &winner.header;
+        let compact = vtorrent_p2p::compact::CompactBlockEncoder::encode(
+            header.version,
+            header.prev_block_hash,
+            header.merkle_root,
+            header.utxo_root,
+            header.timestamp,
+            header.bits,
+            header.nonce,
+            header.stake_modifier,
+            &winner
+                .transactions
+                .iter()
+                .map(Transaction::txid)
+                .collect::<Vec<_>>(),
+            serde_json::to_vec(&winner.transactions[0]).unwrap(),
+        )
+        .unwrap();
+        handle_cmpctblock(
+            &mut node,
+            peer(25),
+            &NetMessage::new("cmpctblock", serde_json::to_vec(&compact).unwrap()),
+        )
+        .await
+        .unwrap();
+        if missing_transaction {
+            assert!(node.pending_compact_blocks.contains_key(&winner.hash()));
+            let response = BlockTxnMsg {
+                block_hash: winner.hash(),
+                transactions: vec![serde_json::to_vec(&winning_tx).unwrap()],
+            };
+            handle_blocktxn(
+                &mut node,
+                peer(25),
+                &NetMessage::new("blocktxn", serde_json::to_vec(&response).unwrap()),
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(node.chain.lock().await.best_hash(), Some(winner.hash()));
+        assert!(matches!(
+            &*events.try_recv().unwrap(),
+            NodeEvent::Reorg { depth: 1, .. }
+        ));
+        let mp = node.mempool.lock().await;
+        assert!(mp.get_transaction(&stale.txid()).is_none());
+        assert!(mp.get_transaction(&winning_tx.txid()).is_none());
+        assert!(mp.get_transaction(&restored.txid()).is_some());
+        let entry = mp
+            .get_entries()
+            .into_iter()
+            .find(|e| e.tx.txid() == survivor.txid())
+            .unwrap();
+        assert_eq!(entry.received_at, received_at);
+        assert_eq!(entry.fee_sats, 10_000);
+        assert_eq!(mp.size(), 2);
+    }
+
+    #[tokio::test]
+    async fn compact_reorg_reconciles_with_mempool_transactions() {
+        compact_reorg_reconciles_mempool(false).await;
+    }
+
+    #[tokio::test]
+    async fn compact_reorg_reconciles_with_requested_transactions() {
+        compact_reorg_reconciles_mempool(true).await;
     }
 
     #[tokio::test]

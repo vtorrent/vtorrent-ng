@@ -1,0 +1,445 @@
+use super::refund_bump::{fixture, request};
+use super::*;
+use std::{net::SocketAddr, path::Path, time::Duration};
+use vtorrent_node::{
+    block::{Block, Transaction},
+    chain::Chain,
+    events::NodeEvent,
+    node::{Node, NodeConfig},
+};
+
+struct RunningNode {
+    state: AppState,
+    address: SocketAddr,
+    events: tokio::sync::broadcast::Receiver<Arc<NodeEvent>>,
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for RunningNode {
+    fn drop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(thread) = self.thread.take() {
+            thread.join().unwrap();
+        }
+    }
+}
+
+async fn blocks(state: &AppState) -> Vec<Block> {
+    let chain = state.chain.lock().await;
+    (1..=chain.best_height())
+        .map(|h| chain.get_block_at_height(h).unwrap().clone())
+        .collect()
+}
+
+fn replay(blocks: &[Block]) -> Chain {
+    let mut chain = Chain::new_regtest().unwrap();
+    for block in blocks {
+        chain.add_block(block.clone()).unwrap();
+    }
+    chain
+}
+
+async fn start(
+    base: &AppState,
+    chain: Chain,
+    directory: &Path,
+    seeds: &[SocketAddr],
+) -> RunningNode {
+    let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = reservation.local_addr().unwrap();
+    let config = NodeConfig {
+        listen_addr: address.to_string(),
+        data_dir: directory.to_path_buf(),
+        extra_seeds: seeds.iter().map(ToString::to_string).collect(),
+        isolated: true,
+        use_dht: false,
+        use_overlay: false,
+        regtest: true,
+        testnet: true,
+        public_addr: Some(address),
+        ..Default::default()
+    };
+    let mut node = Node::new_with_chain(config, chain).unwrap();
+    let mut state = AppState::new_with_shared(node.chain_arc(), node.mempool_arc());
+    state.swap_recovery_dir = base.swap_recovery_dir.clone();
+    state.tx_submit = Some(node.tx_submit_sender());
+    state.block_submit = Some(node.block_submit_sender());
+    *state.mock_time.write().await = *base.mock_time.read().await;
+    *state.wallet_wif.write().await = base.wallet_wif.read().await.clone();
+    *state.wallet_change_address.write().await = base.wallet_change_address.read().await.clone();
+    *state.wallet_unlock_expiry.write().await = *base.wallet_unlock_expiry.read().await;
+    *state.swaps.write().await = base.swaps.read().await.clone();
+    for order in base.order_book.read().await.list_orders() {
+        state.order_book.write().await.add_order(order.clone());
+    }
+    node.set_order_book(state.order_book.clone());
+    let (event_tx, events) = vtorrent_node::events::channel(256);
+    node.set_event_sender(event_tx);
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    drop(reservation);
+    let thread = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            tokio::select! {
+                result = node.start() => panic!("node stopped unexpectedly: {result:?}"),
+                _ = stopped => {},
+            }
+        });
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if tokio::net::TcpStream::connect(address).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("node did not listen");
+    RunningNode {
+        state,
+        address,
+        events,
+        stop: Some(stop),
+        thread: Some(thread),
+    }
+}
+
+async fn connected(node: &mut RunningNode) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if matches!(
+                &*node.events.recv().await.unwrap(),
+                NodeEvent::PeerConnected { .. }
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("TCP peer handshake timed out");
+}
+
+async fn reorganized(node: &mut RunningNode) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if matches!(&*node.events.recv().await.unwrap(), NodeEvent::Reorg { .. }) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("node did not finish processing the reorg");
+}
+
+async fn wait_mempool(node: &RunningNode, txid: [u8; 32]) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if node
+                .state
+                .mempool
+                .lock()
+                .await
+                .get_transaction(&txid)
+                .is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "{} did not receive transaction {}",
+            node.address,
+            hex::encode(txid)
+        )
+    });
+}
+
+async fn wait_tip(node: &RunningNode, hash: [u8; 32]) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if node.state.chain.lock().await.best_hash() == Some(hash) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{} did not adopt tip {}", node.address, hex::encode(hash)));
+}
+
+async fn mine(node: &RunningNode, transaction: Option<Transaction>, tag: u64) -> Block {
+    let mut chain = node.state.chain.lock().await;
+    let current: Vec<_> = (1..=chain.best_height())
+        .map(|h| chain.get_block_at_height(h).unwrap().clone())
+        .collect();
+    let mut template = replay(&current);
+    template.mint_to_address(&vtr_identity(1).1, tag).unwrap();
+    let mut block = template
+        .get_block_at_height(template.best_height())
+        .unwrap()
+        .clone();
+    if let Some(tx) = transaction {
+        block.transactions.push(tx);
+    }
+    block.header.merkle_root = block.compute_merkle_root();
+    chain.add_block(block.clone()).unwrap();
+    let confirmed: Vec<_> = block.transactions.iter().map(Transaction::txid).collect();
+    let spent: Vec<_> = block
+        .transactions
+        .iter()
+        .flat_map(|tx| tx.inputs.iter().map(|i| (i.prev_txid, i.prev_vout)))
+        .collect();
+    node.state
+        .mempool
+        .lock()
+        .await
+        .handle_confirmed_block(&confirmed, &spent);
+    drop(chain);
+    node.state
+        .block_submit
+        .as_ref()
+        .unwrap()
+        .send(block.clone())
+        .await
+        .unwrap();
+    block
+}
+
+#[tokio::test]
+async fn refund_network_replacement_crosses_tcp_after_peer_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let (base, id, original) = fixture(&directory.path().join("wallet")).await;
+    let initial = blocks(&base).await;
+    let mut a = start(&base, replay(&initial), &directory.path().join("a"), &[]).await;
+    let mut b = start(
+        &base,
+        replay(&initial),
+        &directory.path().join("b"),
+        &[a.address],
+    )
+    .await;
+    connected(&mut a).await;
+    connected(&mut b).await;
+    crate::refund_bump::submit_latest(&a.state, &a.state.swaps.read().await[&id])
+        .await
+        .unwrap();
+    wait_mempool(&b, original).await;
+    let mempool_path = directory.path().join("b-mempool.json");
+    b.state.mempool.lock().await.save_to(&mempool_path).unwrap();
+    drop(b);
+    let bump = crate::refund_bump::bump(&a.state, request(&id, original, 20_000))
+        .await
+        .unwrap();
+    let replacement = parse_hash32(&bump.txid, "id").unwrap();
+    let chain_path = directory.path().join("a-chain.bin");
+    std::fs::write(
+        &chain_path,
+        bincode::serialize(&blocks(&a.state).await).unwrap(),
+    )
+    .unwrap();
+    drop(a);
+    let saved: Vec<Block> = bincode::deserialize(&std::fs::read(&chain_path).unwrap()).unwrap();
+    let mut a = start(
+        &base,
+        replay(&saved),
+        &directory.path().join("a-restarted"),
+        &[],
+    )
+    .await;
+    assert!(a.state.swaps.read().await[&id]
+        .vtr_refund_replacements
+        .is_empty());
+    crate::swap_recovery::restore_with_wif(&a.state, &vtr_identity(1).0)
+        .await
+        .unwrap();
+    assert_eq!(
+        a.state.swaps.read().await[&id]
+            .latest_vtr_refund()
+            .unwrap()
+            .txid(),
+        replacement
+    );
+    let mut b = start(
+        &base,
+        replay(&initial),
+        &directory.path().join("b-restarted"),
+        &[a.address],
+    )
+    .await;
+    {
+        let chain = b.state.chain.lock().await;
+        for (tx, _) in vtorrent_node::mempool::Mempool::load_saved(&mempool_path) {
+            b.state
+                .mempool
+                .lock()
+                .await
+                .admit_with_chain_fee(&chain, tx)
+                .unwrap();
+        }
+    }
+    connected(&mut b).await;
+    connected(&mut a).await;
+    assert!(b
+        .state
+        .mempool
+        .lock()
+        .await
+        .get_transaction(&original)
+        .is_some());
+    crate::refund_bump::bump(&a.state, request(&id, original, 20_000))
+        .await
+        .unwrap();
+    wait_mempool(&b, replacement).await;
+    assert!(b
+        .state
+        .mempool
+        .lock()
+        .await
+        .get_transaction(&original)
+        .is_none());
+    let mut c = start(
+        &base,
+        replay(&initial),
+        &directory.path().join("c"),
+        &[b.address],
+    )
+    .await;
+    connected(&mut c).await;
+    b.state
+        .tx_submit
+        .as_ref()
+        .unwrap()
+        .send(
+            a.state.swaps.read().await[&id]
+                .latest_vtr_refund()
+                .unwrap()
+                .clone(),
+        )
+        .await
+        .unwrap();
+    wait_mempool(&c, replacement).await;
+    let latest = a.state.swaps.read().await[&id]
+        .latest_vtr_refund()
+        .unwrap()
+        .clone();
+    let block = mine(&a, Some(latest), 3).await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if c.state.chain.lock().await.best_hash() == Some(block.hash()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("confirmation did not propagate over TCP");
+    assert!(b
+        .state
+        .mempool
+        .lock()
+        .await
+        .get_transaction(&replacement)
+        .is_none());
+    assert!(c
+        .state
+        .mempool
+        .lock()
+        .await
+        .get_transaction(&replacement)
+        .is_none());
+}
+
+async fn refund_network_reorg_evicts_losing_refund(replacement_wins: bool) {
+    let directory = tempfile::tempdir().unwrap();
+    let (base, id, original) = fixture(&directory.path().join("wallet")).await;
+    let initial = blocks(&base).await;
+    let mut a = start(&base, replay(&initial), &directory.path().join("a"), &[]).await;
+    let b = start(
+        &base,
+        replay(&initial),
+        &directory.path().join("b-offline"),
+        &[],
+    )
+    .await;
+    let bump_state = if replacement_wins { &b.state } else { &a.state };
+    let bump = crate::refund_bump::bump(bump_state, request(&id, original, 20_000))
+        .await
+        .unwrap();
+    let replacement = parse_hash32(&bump.txid, "id").unwrap();
+    mine(&a, None, 10).await;
+    let winning_tx = if replacement_wins {
+        let swap = b.state.swaps.read().await[&id].clone();
+        a.state.swaps.write().await.insert(id.clone(), swap.clone());
+        let original_swap = base.swaps.read().await[&id].clone();
+        crate::refund_bump::submit_latest(&a.state, &original_swap)
+            .await
+            .unwrap();
+        swap.latest_vtr_refund().unwrap().clone()
+    } else {
+        base.swaps.read().await[&id].vtr_refund_tx.clone().unwrap()
+    };
+    let winning_txid = winning_tx.txid();
+    let losing_txid = if replacement_wins {
+        original
+    } else {
+        replacement
+    };
+    assert!(a
+        .state
+        .mempool
+        .lock()
+        .await
+        .get_transaction(&losing_txid)
+        .is_some());
+    mine(&b, Some(winning_tx), 20).await;
+    let winner = mine(&b, None, 21).await;
+    let fork = blocks(&b.state).await;
+    drop(b);
+    let mut b = start(
+        &base,
+        replay(&fork),
+        &directory.path().join("b-online"),
+        &[a.address],
+    )
+    .await;
+    connected(&mut a).await;
+    connected(&mut b).await;
+    wait_tip(&a, winner.hash()).await;
+    reorganized(&mut a).await;
+    let observation = crate::swap_reconciliation::status(&a.state, &id)
+        .await
+        .unwrap();
+    assert_eq!(
+        observation.spend.as_ref().unwrap().txid,
+        hex::encode(winning_txid)
+    );
+    assert!(a.state.mempool.lock().await.get_transaction(&losing_txid).is_none(),
+        "reorg left the losing refund in the mempool after its input was spent on the winning branch");
+    assert!(a
+        .state
+        .mempool
+        .lock()
+        .await
+        .get_transaction(&winning_txid)
+        .is_none());
+}
+
+#[tokio::test]
+async fn refund_network_reorg_evicts_replacement_when_original_wins() {
+    refund_network_reorg_evicts_losing_refund(false).await;
+}
+
+#[tokio::test]
+async fn refund_network_reorg_evicts_original_when_replacement_wins() {
+    refund_network_reorg_evicts_losing_refund(true).await;
+}

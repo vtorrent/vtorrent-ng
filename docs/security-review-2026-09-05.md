@@ -174,6 +174,24 @@ reconciliation recognizes earlier versions that confirm and later reorgs.
 Tests cover wrong keys, omitted approval, fee bounds, concurrency, persistence
 and relay failures, restart, truncation/tampering, and original/replacement winners.
 
+TCP-node follow-up (2026-09-07): isolated, real-TCP regressions exposed and drove
+fixes for two production-path failures missed by the state-level tests. Local
+submission now revalidates and announces RPC-pre-admitted transactions and explicit
+retries, using chain-before-mempool lock ordering. Reorg handling revalidates the
+existing mempool against the winning chain before restoring eligible rolled-back
+transactions; valid entries retain their fee metadata and arrival timestamps.
+Both compact-block completion paths now use the full-block handler, including
+reorg cleanup and the event needed by the persistence bridge.
+
+`vtorrent-rpc/src/handlers/swap/tests/refund_network.rs` covers three-node TCP
+propagation, peer and originating-node restart, encrypted refund-journal restore,
+mempool-file reload, replacement confirmation, and competing longer forks with
+either refund version winning. Handler tests separately exercise immediate and
+requested-transaction compact-block reconstruction across a reorg. These are
+isolated Node runtimes with replayed chain fixtures, not daemon-process/redb
+crash-recovery or public-network tests. Conflicting claim-versus-refund network
+coverage remains a follow-up.
+
 Still open: automatic BTC monitoring, BTC/claim/funding fee replacement,
 and automatic resolution (not merely detection) of conflicting spends. Submission
 IDs do not prove confirmations. This journal does not prevent replay of an older

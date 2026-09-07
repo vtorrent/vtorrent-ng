@@ -2,7 +2,7 @@ use super::*;
 use crate::models::VtrRefundBumpRequest;
 use crate::refund_bump::{bump, history};
 
-async fn fixture(path: &std::path::Path) -> (AppState, String, [u8; 32]) {
+pub(super) async fn fixture(path: &std::path::Path) -> (AppState, String, [u8; 32]) {
     let (mut state, id, taker) = reconciliation_fixture().await;
     let now = vtorrent_core::time::now_secs();
     let mut order = state
@@ -36,7 +36,7 @@ async fn fixture(path: &std::path::Path) -> (AppState, String, [u8; 32]) {
     (state, id, original)
 }
 
-fn request(id: &str, parent: [u8; 32], fee: u64) -> VtrRefundBumpRequest {
+pub(super) fn request(id: &str, parent: [u8; 32], fee: u64) -> VtrRefundBumpRequest {
     VtrRefundBumpRequest {
         order_id: id.into(),
         replaces_txid: hex::encode(parent),

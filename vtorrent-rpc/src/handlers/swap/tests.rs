@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use vtorrent_node::atomic_swap::{AtomicSwap, Htlc, SwapOrder};
 
 mod refund_bump;
+mod refund_network;
 
 const NOW: u64 = 1_800_000_000;
 
