@@ -115,6 +115,7 @@ fn read_record(path: &Path, password: &str) -> RpcResult<Option<Record>> {
                 return Err(failure("signed transaction identity mismatch"));
             }
         }
+        crate::refund_lineage::validate(&record.order, swap)?;
     }
     Ok(Some(record))
 }
@@ -134,6 +135,9 @@ pub(crate) async fn persist_for_wallet(
     swap: Option<&SwapState>,
     expected_wif: Option<&str>,
 ) -> RpcResult<()> {
+    if let Some(swap) = swap {
+        crate::refund_lineage::validate(order, swap)?;
+    }
     if state.swap_recovery_dir.is_none() {
         return Ok(());
     }
@@ -193,6 +197,12 @@ pub(crate) async fn persist_for_wallet(
                     .swap
                     .as_ref()
                     .ok_or_else(|| failure("refusing to discard swap recovery state"))?;
+                if !crate::refund_lineage::is_prefix(
+                    &old.vtr_refund_replacements,
+                    &new.vtr_refund_replacements,
+                ) {
+                    return Err(failure("refusing to replace or discard refund lineage"));
+                }
                 for (old_id, new_id) in [
                     (old.vtr_funding_txid, new.vtr_funding_txid),
                     (old.btc_funding_txid, new.btc_funding_txid),
@@ -268,7 +278,19 @@ pub async fn restore_with_wif(state: &AppState, wif: &str) -> RpcResult<()> {
         if let (Some(saved), Some(current)) =
             (&record.swap, swaps.get(&hex::encode(record.order.order_id)))
         {
+            if !crate::refund_lineage::is_prefix(
+                &current.vtr_refund_replacements,
+                &saved.vtr_refund_replacements,
+            ) && !crate::refund_lineage::is_prefix(
+                &saved.vtr_refund_replacements,
+                &current.vtr_refund_replacements,
+            ) {
+                return Err(failure("recovered refund lineage conflicts with memory"));
+            }
             if current.hash_lock != saved.hash_lock
+                || (current.vtr_refund_txid.is_some()
+                    && saved.vtr_refund_txid.is_some()
+                    && current.vtr_refund_txid != saved.vtr_refund_txid)
                 || (current.vtr_funding_txid.is_some()
                     && saved.vtr_funding_txid.is_some()
                     && current.vtr_funding_txid != saved.vtr_funding_txid)
@@ -291,6 +313,9 @@ pub async fn restore_with_wif(state: &AppState, wif: &str) -> RpcResult<()> {
                 }
                 std::collections::hash_map::Entry::Occupied(mut entry) => {
                     let current = entry.get_mut();
+                    if current.vtr_refund_replacements.len() < swap.vtr_refund_replacements.len() {
+                        current.vtr_refund_replacements = swap.vtr_refund_replacements.clone();
+                    }
                     let pending_btc = current.status
                         == vtorrent_node::atomic_swap::SwapStatus::BtcFunding
                         || swap.status == vtorrent_node::atomic_swap::SwapStatus::BtcFunding;

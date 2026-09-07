@@ -3,6 +3,8 @@ use bitcoin::hashes::Hash;
 use std::sync::Mutex;
 use vtorrent_node::atomic_swap::{AtomicSwap, Htlc, SwapOrder};
 
+mod refund_bump;
+
 const NOW: u64 = 1_800_000_000;
 
 fn vtr_identity(byte: u8) -> (zeroize::Zeroizing<String>, String) {

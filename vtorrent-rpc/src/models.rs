@@ -525,6 +525,38 @@ pub struct SwapRefundRequest {
     pub leg: Option<SwapLeg>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VtrRefundBumpRequest {
+    pub order_id: String,
+    pub replaces_txid: String,
+    pub total_fee_satoshis: u64,
+    #[serde(default)]
+    pub approve: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VtrRefundBumpResponse {
+    pub order_id: String,
+    pub txid: String,
+    pub replaces_txid: String,
+    pub total_fee_satoshis: u64,
+    pub status: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VtrRefundHistoryResponse {
+    pub order_id: String,
+    pub versions: Vec<VtrRefundVersion>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VtrRefundVersion {
+    pub txid: String,
+    pub replaces_txid: Option<String>,
+    pub total_fee_satoshis: u64,
+    pub approved_at: Option<u64>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SwapLeg {

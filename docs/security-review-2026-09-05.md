@@ -164,7 +164,17 @@ reorg downgrades, encrypted restoration, and secret-free authenticated views.
 These are bounded 1,008-block SPV scans, not mempool monitoring or full Bitcoin
 validation; missing transactions remain inconclusive and peer eclipse risk remains.
 
-Still open: automatic BTC monitoring, fee-bumped replacement lineage,
+Follow-up implemented locally (2026-09-07): prepared VTR refunds support an
+explicitly approved total-fee replacement, using the same funding outpoint,
+destination, and timelock. The original ID remains immutable; up to 16 signed
+replacements and their fee approvals are append-only encrypted recovery data.
+Preflight checks reject insufficient fees, conflicting spends/descendants,
+and confirmed refunds before persistence. Retries reuse approved bytes, while
+reconciliation recognizes earlier versions that confirm and later reorgs.
+Tests cover wrong keys, omitted approval, fee bounds, concurrency, persistence
+and relay failures, restart, truncation/tampering, and original/replacement winners.
+
+Still open: automatic BTC monitoring, BTC/claim/funding fee replacement,
 and automatic resolution (not merely detection) of conflicting spends. Submission
 IDs do not prove confirmations. This journal does not prevent replay of an older
 authentic file or wipe all in-memory preimages on lock. Existing swaps created

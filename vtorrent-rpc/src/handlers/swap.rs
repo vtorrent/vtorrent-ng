@@ -718,15 +718,12 @@ async fn refund_with_broadcast(
             if swap.vtr_claim_txid.is_some() {
                 return Err(RpcError::BadRequest("VTR claim already submitted".into()));
             }
-            if let Some(txid) = swap.vtr_refund_txid {
+            if swap.vtr_refund_txid.is_some() {
                 let order = order
                     .as_ref()
                     .ok_or_else(|| RpcError::NotFound("VTR order metadata missing".into()))?;
-                let transaction = swap.vtr_refund_tx.as_ref().ok_or_else(|| {
-                    RpcError::BadRequest("Signed VTR refund recovery data missing".into())
-                })?;
                 crate::swap_recovery::persist(state, order, Some(swap)).await?;
-                crate::swap_recovery::submit_vtr(state, transaction).await?;
+                let txid = crate::refund_bump::submit_latest(state, swap).await?;
                 return Ok(SwapActionResponse {
                     order_id: req.order_id,
                     txid: hex::encode(txid),

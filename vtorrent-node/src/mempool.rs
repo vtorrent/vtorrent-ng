@@ -57,6 +57,7 @@ impl MempoolEntry {
 }
 
 /// The transaction mempool with fee market and RBF support.
+#[derive(Clone)]
 pub struct Mempool {
     /// Transactions indexed by txid.
     entries: HashMap<[u8; 32], MempoolEntry>,

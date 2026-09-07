@@ -162,6 +162,11 @@ pub fn observe_vtr(
         let recorded_spend = [swap.vtr_claim_txid, swap.vtr_refund_txid]
             .into_iter()
             .flatten()
+            .chain(
+                swap.vtr_refund_replacements
+                    .iter()
+                    .map(|r| r.transaction.txid()),
+            )
             .find(|txid| {
                 chain
                     .get_transaction(txid)
@@ -191,7 +196,7 @@ pub fn observe_vtr(
                 } else {
                     ClaimConfirming
                 }
-            } else if Some(txid) == swap.vtr_refund_txid {
+            } else if swap.is_vtr_refund(&txid) {
                 if settled {
                     Refunded
                 } else {
@@ -214,7 +219,7 @@ pub fn observe_vtr(
         observation.pending_spend_txid = Some(hex::encode(txid));
         observation.state = if Some(txid) == swap.vtr_claim_txid {
             ClaimPending
-        } else if Some(txid) == swap.vtr_refund_txid {
+        } else if swap.is_vtr_refund(&txid) {
             RefundPending
         } else {
             CompetingSpendPending

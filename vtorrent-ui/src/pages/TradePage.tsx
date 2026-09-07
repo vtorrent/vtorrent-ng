@@ -7,6 +7,7 @@ import { formatVTR } from '../hooks/useWallet'
 import {
   useDexOrders, cancelDexOrder, matchDexOrder, btcFund, vtrClaim, btcClaim, swapRefund,
   getSwapStatus, reconcileBtcSwap, type BtcChainStatus, type SwapChainStatus, type DexOrder,
+  getVtrRefundHistory, bumpVtrRefund, type VtrRefundHistory,
 } from '../hooks/useNode'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -57,6 +58,12 @@ export default function TradePage() {
   const [swapError, setSwapError] = useState<string | null>(null)
   const [chainStatus, setChainStatus] = useState<SwapChainStatus | null>(null)
   const [btcStatus, setBtcStatus] = useState<{ orderId: string; observation: BtcChainStatus } | null>(null)
+  const [refundHistory, setRefundHistory] = useState<VtrRefundHistory | null>(null)
+  const [refundFee, setRefundFee] = useState('')
+  const [refundFeeApproved, setRefundFeeApproved] = useState(false)
+  const latestRefund = refundHistory?.orderId === swapOrderId ? refundHistory.versions[refundHistory.versions.length - 1] : undefined
+  const parsedRefundFee = /^\d+$/.test(refundFee) ? Number(refundFee) : NaN
+  const validRefundFee = Number.isSafeInteger(parsedRefundFee) && parsedRefundFee > (latestRefund?.totalFeeSatoshis ?? Infinity)
 
   const total = amount && price ? (parseFloat(amount) * parseFloat(price)).toFixed(8) : '0'
 
@@ -86,6 +93,8 @@ export default function TradePage() {
     setSwapResult(null)
     setChainStatus(null)
     setBtcStatus(null)
+    setRefundHistory(null)
+    setRefundFeeApproved(false)
     try {
       await action()
       setSwapResult(success)
@@ -371,7 +380,7 @@ export default function TradePage() {
                 className="input-field font-mono"
                 placeholder="Hex order ID"
                 value={swapOrderId}
-                onChange={e => { setSwapOrderId(e.target.value); setChainStatus(null); setBtcStatus(null) }}
+                onChange={e => { setSwapOrderId(e.target.value); setChainStatus(null); setBtcStatus(null); setRefundHistory(null); setRefundFeeApproved(false) }}
               />
             </div>
 
@@ -433,6 +442,30 @@ export default function TradePage() {
             >
               Check VTR chain state
             </button>
+            <button disabled={swapBusy || !swapOrderId}
+              onClick={() => runSwap(async () => { setRefundHistory(await getVtrRefundHistory(swapOrderId)) }, 'VTR refund fee history loaded')}
+              className="btn-secondary text-xs disabled:opacity-50">
+              Load VTR refund fee history
+            </button>
+            {latestRefund && (
+              <div className="text-xs space-y-2 border border-gray-700 rounded p-3">
+                <p className="break-all">Latest prepared refund: {latestRefund.txid}</p>
+                <p>Current total fee: {latestRefund.totalFeeSatoshis} satoshis. Saved versions: {refundHistory?.versions.length}.</p>
+                <label className="block">New total fee (VTR satoshis, not an additional fee)
+                  <input className="input-field" inputMode="numeric" value={refundFee}
+                    onChange={e => { setRefundFee(e.target.value); setRefundFeeApproved(false) }} />
+                </label>
+                <label className="flex gap-2">
+                  <input type="checkbox" checked={refundFeeApproved} disabled={!validRefundFee || swapBusy}
+                    onChange={e => setRefundFeeApproved(e.target.checked)} />
+                  I approve a total fee of {validRefundFee ? parsedRefundFee : '…'} satoshis, reducing my refund by {validRefundFee ? parsedRefundFee - latestRefund.totalFeeSatoshis : '…'} more satoshis.
+                </label>
+                <button disabled={swapBusy || !validRefundFee || !refundFeeApproved}
+                  onClick={() => runSwap(() => bumpVtrRefund(swapOrderId, latestRefund.txid, parsedRefundFee), 'VTR refund replacement recorded/submitted — check chain state')}
+                  className="btn-secondary text-xs disabled:opacity-50">Approve and submit VTR refund replacement</button>
+                <p className="text-amber-400">VTR refunds only. History is not confirmation evidence. Original and replacement transactions remain saved. After an uncertain result, use Refund VTR to retry the latest saved version.</p>
+              </div>
+            )}
             <button
               disabled={swapBusy || !swapOrderId}
               onClick={() => runSwap(async () => {

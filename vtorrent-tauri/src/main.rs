@@ -43,6 +43,8 @@ fn main() {
             commands::swap_refund,
             commands::get_swap_status,
             commands::reconcile_btc_swap,
+            commands::get_vtr_refund_history,
+            commands::bump_vtr_refund,
             // Staking
             commands::start_staking,
             commands::stop_staking,

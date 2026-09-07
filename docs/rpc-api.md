@@ -370,6 +370,9 @@ for backup locations and limitations.
 
 ### POST /api/v1/swap/refund
 
+VTR retries use the latest saved fee-approved refund replacement, if any, and
+recognize an earlier saved version already confirmed on the active chain.
+
 Refund one chain after that chain's expiry: VTR for the maker, BTC for the
 taker. BTC refund is independent of VTR expiry and VTR wallet unlock. If
 omitted, `leg` is inferred only when a single unsettled leg is eligible.
@@ -381,6 +384,43 @@ omitted, `leg` is inferred only when a single unsettled leg is eligible.
   "leg": "btc"
 }
 ```
+
+---
+
+### GET /api/v1/swap/{order_id}/vtr-refund-history
+
+Authenticated, read-only history of prepared VTR refunds. Returns `order_id` and
+`versions`, oldest first; each version has `txid`, `replaces_txid` (null for the
+original), `total_fee_satoshis`, and `approved_at` (null for the original).
+No signed transaction or secret is returned. Preparation is not confirmation.
+
+### POST /api/v1/swap/vtr-refund-bump
+
+Requires the configured API key, an unlocked maker wallet, an encrypted recovery
+directory, and a previously prepared VTR refund. No BTC/funding/claim bumping.
+
+```json
+{
+  "order_id": "...",
+  "replaces_txid": "latest prepared VTR refund txid",
+  "total_fee_satoshis": 20000,
+  "approve": true
+}
+```
+
+The total fee (not the increment) must equal the chain-verified fee, increase,
+and meet current relay/RBF policy, preserving at least 546 satoshis in the refund output. Missing
+approval, stale parents, confirmed refunds, competing spends, pending refund
+descendants, and invalid contract/key data are rejected. Up to 16 signed
+replacements are appended to the encrypted journal before admission/relay.
+The original signed transaction and every approved replacement are retained.
+
+Returns `order_id`, `txid`, `replaces_txid`, `total_fee_satoshis`, and
+`status: "VtrRefundRecordedOrSubmitted"`; check chain status for confirmations.
+An identical parent/fee retry reuses the latest saved replacement. Superseded
+requests are rejected. After ambiguous delivery, ordinary `swap/refund` on the
+VTR leg retries the latest saved version without increasing its fee. Persistence
+failure prevents admission; relay failure leaves the saved transaction intact.
 
 ---
 

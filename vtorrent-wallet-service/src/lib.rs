@@ -545,8 +545,35 @@ pub struct VtrRefundParams<'a> {
 pub fn build_vtr_htlc_refund(
     params: VtrRefundParams<'_>,
 ) -> Result<vtorrent_node::block::Transaction, String> {
-    use vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS;
+    build_vtr_refund_with_fee(
+        params,
+        vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS,
+        false,
+    )
+}
+
+/// Build a fee-approved refund replacement, preserving its contract and destination.
+pub fn build_vtr_htlc_refund_replacement(
+    params: VtrRefundParams<'_>,
+    total_fee: u64,
+) -> Result<vtorrent_node::block::Transaction, String> {
+    build_vtr_refund_with_fee(params, total_fee, true)
+}
+
+fn build_vtr_refund_with_fee(
+    params: VtrRefundParams<'_>,
+    total_fee: u64,
+    replaceable: bool,
+) -> Result<vtorrent_node::block::Transaction, String> {
     use vtorrent_wallet::tx_builder::sign_input_over_subscript;
+
+    if params
+        .vtr_amount
+        .checked_sub(total_fee)
+        .is_none_or(|value| value < 546)
+    {
+        return Err("Refund fee leaves a dust or missing output".into());
+    }
 
     let VtrRefundParams {
         hash_lock,
@@ -567,9 +594,12 @@ pub fn build_vtr_htlc_refund(
     )
     .map_err(|e| format!("Unable to reconstruct HTLC: {}", e))?;
 
-    let unsigned = htlc
-        .build_refund_tx_unsigned(funding_txid, VTR_HTLC_FEE_SATOSHIS)
+    let mut unsigned = htlc
+        .build_refund_tx_unsigned(funding_txid, total_fee)
         .map_err(|e| format!("Unable to build VTR refund tx: {}", e))?;
+    if replaceable {
+        unsigned.inputs[0].sequence = u32::MAX - 2;
+    }
 
     let htlc_script = htlc
         .build_script()

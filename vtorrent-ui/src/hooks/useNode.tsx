@@ -481,6 +481,24 @@ export interface SwapChainStatus {
   }
 }
 
+export interface VtrRefundHistory {
+  orderId: string
+  versions: { txid: string; replacesTxid: string | null; totalFeeSatoshis: number; approvedAt: number | null }[]
+}
+
+export async function getVtrRefundHistory(orderId: string): Promise<VtrRefundHistory> {
+  return camel(isTauri()
+    ? await tauriInvoke<unknown>('get_vtr_refund_history', { orderId })
+    : await rpcGet<unknown>(`/api/v1/swap/${encodeURIComponent(orderId)}/vtr-refund-history`)) as VtrRefundHistory
+}
+
+export async function bumpVtrRefund(orderId: string, replacesTxid: string, totalFeeSatoshis: number): Promise<SwapActionResult> {
+  const req = { order_id: orderId, replaces_txid: replacesTxid, total_fee_satoshis: totalFeeSatoshis, approve: true }
+  return camel(isTauri()
+    ? await tauriInvoke<unknown>('bump_vtr_refund', { req })
+    : await rpcPost<unknown>('/api/v1/swap/vtr-refund-bump', req)) as SwapActionResult
+}
+
 export interface BtcChainStatus {
   network: string
   observedAt: number

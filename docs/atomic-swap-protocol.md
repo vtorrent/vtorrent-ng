@@ -4,7 +4,7 @@ The maker sells VTR, generates the secret, and claims BTC first. The taker
 learns the secret from that BTC claim and uses it to claim VTR.
 
 This implementation is not yet approved for real-value swaps. Automatic
-recovery, fee-bumped replacement, and adversarial multi-node testing remain open in
+recovery, BTC/claim/funding fee replacement, and adversarial multi-node testing remain open in
 [the security review](security-review-2026-09-05.md).
 
 ## Funding and claim sequence
@@ -176,7 +176,7 @@ and submit the identical saved transaction. A transaction already in the local
 chain or mempool is recognized. An expired, conflicting, or otherwise invalid
 transaction is not blindly rebroadcast.
 
-Automatic BTC settlement monitoring, fee-bumped recovery, release of unused
+Automatic BTC settlement monitoring, fee-bumped BTC/claim/funding recovery, release of unused
 reservations, and protection against rollback to an older authentic journal remain
 open. Locking does not yet wipe every in-memory preimage copy. Existing swaps do
 not gain secrets lost before journaling. Do not delete recovery records to retry
@@ -237,7 +237,47 @@ an input safe to reuse. Results depend on the selected peers and remain subject
 to eclipse attacks and later reorgs. Observations persist in the encrypted
 recovery journal when enabled. No secrets/witnesses are returned; no transaction
 is signed, rebroadcast, fee-bumped, deleted, or automatically claimed, and no
-input reservation is released. Fee-bumped replacement lineage remains open.
+input reservation is released. BTC replacement lineage remains open.
+
+### Fee-approved VTR refund replacement
+
+Only an already-prepared VTR refund can currently be fee-bumped. Funding and
+claim transactions, and all BTC transactions, are unchanged. In particular,
+changing an HTLC funding txid would require counterparty coordination; this
+endpoint never changes the funding outpoint, refund destination, or timelock.
+
+Read `GET /api/v1/swap/{order_id}/vtr-refund-history` for the original refund and
+its replacements (txids, parent IDs, total fees, approval times; no signed data).
+`POST /api/v1/swap/vtr-refund-bump` requires the order ID, the latest prepared
+refund ID as `replaces_txid`, an exact `total_fee_satoshis`, and `approve: true`.
+The fee is the total VTR fee, not an increment. The desktop presents the current
+fee and additional deduction, and requires a checkbox approval reset whenever
+the fee or order changes. An unlocked maker wallet and encrypted recovery path
+are required. No automated task raises fees or sends refund replacements.
+
+The builder signs the same refund with an RBF sequence and a smaller refund
+output. Dust/overflow, non-increasing total fee or insufficient fee-rate increase,
+stale parent IDs, conflicting mempool spends, pending refund descendants, and
+already-confirmed refunds are rejected. Admission is first checked against a
+copy of the current mempool, then rechecked after persistence before actual
+admission. Chain or mempool changes can still stop submission after preparation.
+
+The encrypted journal keeps the original signed refund and an append-only chain
+of up to 16 signed replacements, including their fee approvals. Existing txids
+are not overwritten. Writes reject truncation or changes to existing entries;
+restoration rejects broken links and conflicting in-memory history. An exact
+repeated parent/fee request reuses the saved latest
+transaction; a superseded request is rejected. Ordinary VTR refund retries use
+the latest approved transaction, or recognize an earlier version that won on
+the active chain. Reconciliation recognizes every saved refund version across
+confirmation changes and reorgs. An unavailable relay leaves the transaction
+saved and admitted locally, with an error instructing an identical retry.
+
+Local tests cover explicit approval, fee bounds, wrong keys, concurrent requests,
+conflicting spends/descendants, failed persistence, relay failure, encrypted
+restart, original-versus-replacement confirmation, and reorg downgrades. These
+are not a substitute for adversarial multi-node validation. Restoring an older
+authentic journal remains outside the anti-rollback guarantees.
 
 ## Implementation
 
@@ -247,6 +287,7 @@ input reservation is released. Fee-bumped replacement lineage remains open.
 - `vtorrent-rpc/src/swap_recovery.rs`: encrypted order/secret and signed VTR journal
 - `vtorrent-rpc/src/swap_reconciliation.rs`: live VTR confirmation/spend observations
 - `vtorrent-rpc/src/btc_reconciliation.rs`: explicit BTC scan and encrypted observations
+- `vtorrent-rpc/src/refund_bump.rs`, `refund_lineage.rs`: approved VTR refund replacements
 - `vtorrent-btc/src/sync/swap_observation.rs`: bounded confirmed funding/spend tracker
 - `vtorrent-btc/src/wallet.rs`, `utxo.rs`: BTC reservation and recovery records
 - `vtorrent-rpc/src/handlers/swap/tests.rs`: concurrency, failure, and restart regressions

@@ -567,6 +567,8 @@ pub struct SwapState {
     pub vtr_observation: Option<VtrSwapObservation>,
     #[serde(default)]
     pub btc_observation: Option<BtcSwapObservation>,
+    #[serde(default)]
+    pub vtr_refund_replacements: Vec<VtrRefundReplacement>,
     /// Current status.
     pub status: SwapStatus,
 }
@@ -594,6 +596,7 @@ impl SwapState {
             vtr_refund_tx: None,
             vtr_observation: None,
             btc_observation: None,
+            vtr_refund_replacements: Vec::new(),
             status: SwapStatus::Funding,
         }
     }
@@ -620,6 +623,30 @@ impl SwapState {
             SwapStatus::Funding
         };
     }
+
+    pub fn latest_vtr_refund(&self) -> Option<&Transaction> {
+        self.vtr_refund_replacements
+            .last()
+            .map(|replacement| &replacement.transaction)
+            .or(self.vtr_refund_tx.as_ref())
+    }
+
+    pub fn is_vtr_refund(&self, txid: &[u8; 32]) -> bool {
+        self.vtr_refund_txid.as_ref() == Some(txid)
+            || self
+                .vtr_refund_replacements
+                .iter()
+                .any(|replacement| replacement.transaction.txid() == *txid)
+    }
+}
+
+/// An append-only, explicitly fee-approved replacement of a saved VTR refund.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VtrRefundReplacement {
+    pub replaces_txid: [u8; 32],
+    pub total_fee_satoshis: u64,
+    pub approved_at: u64,
+    pub transaction: Transaction,
 }
 
 /// A main-chain confirmation anchor, rechecked before reporting settlement.

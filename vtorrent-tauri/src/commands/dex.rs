@@ -253,6 +253,43 @@ pub async fn reconcile_btc_swap(
 }
 
 #[tauri::command]
+pub async fn get_vtr_refund_history(
+    state: tauri::State<'_, AppState>,
+    order_id: String,
+) -> Result<vtorrent_rpc::models::VtrRefundHistoryResponse> {
+    let rpc = state
+        .node
+        .lock()
+        .await
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?
+        .rpc_state
+        .clone();
+    vtorrent_rpc::refund_bump::history(&rpc, &order_id)
+        .await
+        .map_err(TauriError::from)
+}
+
+#[tauri::command]
+pub async fn bump_vtr_refund(
+    state: tauri::State<'_, AppState>,
+    req: vtorrent_rpc::models::VtrRefundBumpRequest,
+) -> Result<vtorrent_rpc::models::VtrRefundBumpResponse> {
+    let rpc = state
+        .node
+        .lock()
+        .await
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?
+        .rpc_state
+        .clone();
+    state.sync_swap_wallet(&rpc).await?;
+    vtorrent_rpc::refund_bump::bump(&rpc, req)
+        .await
+        .map_err(TauriError::from)
+}
+
+#[tauri::command]
 pub async fn match_dex_order(
     state: tauri::State<'_, AppState>,
     order_id: String,
