@@ -213,6 +213,7 @@ fn assert_store(directory: &Path, expected: &Chain) {
 
 #[tokio::test]
 async fn daemon_startup_repairs_old_rollback_damage() {
+    let _scenario = RECOVERY_SCENARIO.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let (old, fork) = fixture();
     let mut chain = replay(&old);
@@ -279,6 +280,7 @@ async fn daemon_startup_repairs_old_rollback_damage() {
 
 #[tokio::test]
 async fn daemon_recovers_at_every_reorg_write_boundary() {
+    let _scenario = RECOVERY_SCENARIO.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let (old, fork) = fixture();
     let mut winning_blocks = vec![old[0].clone()];

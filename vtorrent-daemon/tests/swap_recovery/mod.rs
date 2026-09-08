@@ -85,16 +85,23 @@ async fn historical_funding(maker_dir: &Path, peer_dir: &Path) -> String {
 }
 
 async fn post(daemon: &Daemon, path: &str, body: Value) -> (reqwest::StatusCode, Value) {
-    let response = daemon
-        .client
-        .post(format!("{}{path}", daemon.rpc))
-        .timeout(Duration::from_secs(30))
-        .json(&body)
-        .send()
-        .await
-        .unwrap_or_else(|error| panic!("POST {path} failed: {error}; {}", daemon.logs()));
-    let status = response.status();
-    (status, response.json().await.unwrap())
+    let started = Instant::now();
+    let result = rpc_polling::post_json_once(
+        &daemon.client,
+        &format!("{}{path}", daemon.rpc),
+        &body,
+        MUTATION_TIMEOUT,
+    )
+    .await
+    .unwrap_or_else(|error| {
+        panic!(
+            "POST {path} failed after {:?} (not retried): {error}; {}",
+            started.elapsed(),
+            daemon.logs()
+        )
+    });
+    eprintln!("POST {path} completed in {:?}", started.elapsed());
+    result
 }
 
 async fn post_ok(daemon: &Daemon, path: &str, body: Value) -> Value {
@@ -149,6 +156,7 @@ async fn wait_mempool(daemon: &Daemon, expected: &str) {
 
 #[tokio::test]
 async fn daemon_rpc_refund_bump_survives_restart_and_replaces_peer_mempool() {
+    let _scenario = RECOVERY_SCENARIO.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let maker_dir = directory.path().join("maker");
     let peer_dir = directory.path().join("peer");

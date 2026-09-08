@@ -5,7 +5,7 @@ use std::{
     net::TcpListener,
     path::{Path, PathBuf},
     process::Stdio,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::process::{Child, Command};
 use vtorrent_store::store::BlockStore;
@@ -13,6 +13,12 @@ use vtorrent_store::store::BlockStore;
 mod interrupted_reorg;
 mod rpc_polling;
 mod swap_recovery;
+
+// Each scenario replays the full genesis snapshot; keep scenarios from starving
+// one another on CI while retaining concurrent nodes within each scenario.
+static RECOVERY_SCENARIO: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
+const MUTATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 struct Daemon {
     child: Child,
@@ -24,6 +30,7 @@ struct Daemon {
 
 impl Daemon {
     async fn start(directory: &Path, log_name: &str, seed: Option<&str>) -> Self {
+        let started = Instant::now();
         std::fs::create_dir_all(directory).unwrap();
         let rpc_port = TcpListener::bind("127.0.0.1:0").unwrap();
         let p2p_port = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -45,7 +52,7 @@ impl Daemon {
                 "--public-addr",
                 &p2p,
                 "--log-level",
-                "vtorrent_daemon=debug,vtorrent_node=warn,vtorrent_store=warn",
+                "vtorrent_daemon=debug,vtorrent_node=warn,vtorrent_store=info",
             ])
             .arg("--data-dir")
             .arg(directory)
@@ -72,7 +79,7 @@ impl Daemon {
                 .build()
                 .unwrap(),
         };
-        tokio::time::timeout(Duration::from_secs(20), async {
+        tokio::time::timeout(STARTUP_TIMEOUT, async {
             loop {
                 assert!(
                     daemon.child.try_wait().unwrap().is_none(),
@@ -92,7 +99,18 @@ impl Daemon {
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("daemon startup timed out: {}", daemon.logs()));
+        .unwrap_or_else(|_| {
+            panic!(
+                "daemon startup timed out after {:?}: {}",
+                started.elapsed(),
+                daemon.logs()
+            )
+        });
+        eprintln!(
+            "Daemon ready in {:?}: {}",
+            started.elapsed(),
+            daemon.log.display()
+        );
         daemon
     }
 
@@ -110,16 +128,31 @@ impl Daemon {
         let address = vtorrent_core::address::Address::from_hash160(&[tag; 20], 70)
             .unwrap()
             .to_string();
-        let response = self
-            .client
-            .post(format!("{}/api/v1/faucet", self.rpc))
-            .json(&json!({"address": address, "amount_satoshis": u64::from(tag) * 100_000}))
-            .send()
-            .await
-            .unwrap();
-        let status = response.status();
-        let body: Value = response.json().await.unwrap();
-        assert!(status.is_success(), "faucet failed: {body}");
+        let started = Instant::now();
+        let (status, body) = rpc_polling::post_json_once(
+            &self.client,
+            &format!("{}/api/v1/faucet", self.rpc),
+            &json!({"address": address, "amount_satoshis": u64::from(tag) * 100_000}),
+            MUTATION_TIMEOUT,
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "faucet request failed after {:?} (not retried): {error}; {}",
+                started.elapsed(),
+                self.logs()
+            )
+        });
+        assert!(
+            status.is_success(),
+            "faucet failed: {status} {body}; {}",
+            self.logs()
+        );
+        eprintln!(
+            "Faucet completed in {:?}: {}",
+            started.elapsed(),
+            self.log.display()
+        );
         body
     }
 
@@ -174,6 +207,7 @@ impl Daemon {
 }
 
 async fn reorg_recovery(crash: bool) {
+    let _scenario = RECOVERY_SCENARIO.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let a_dir = directory.path().join("a");
     let b_dir = directory.path().join("b");

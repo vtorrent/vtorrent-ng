@@ -12,6 +12,17 @@ pub(super) async fn get_json(client: &Client, url: &str) -> Result<Value, reqwes
         .await
 }
 
+pub(super) async fn post_json_once(
+    client: &Client,
+    url: &str,
+    body: &Value,
+    timeout: Duration,
+) -> Result<(reqwest::StatusCode, Value), reqwest::Error> {
+    let response = client.post(url).timeout(timeout).json(body).send().await?;
+    let status = response.status();
+    Ok((status, response.json().await?))
+}
+
 pub(super) async fn wait_tip(
     client: &Client,
     url: &str,
@@ -50,7 +61,10 @@ pub(super) async fn wait_tip(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{routing::get, Router};
+    use axum::{
+        routing::{get, post},
+        Router,
+    };
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -84,6 +98,58 @@ mod tests {
             .timeout(timeout)
             .build()
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn mutation_uses_its_own_timeout_without_retrying() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let count = requests.clone();
+        let server = Server::start(Router::new().route(
+            "/info",
+            post(move || {
+                count.fetch_add(1, Ordering::SeqCst);
+                async {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    r#"{"success":true}"#
+                }
+            }),
+        ))
+        .await;
+        let (status, body) = post_json_once(
+            &client(Duration::from_millis(50)),
+            &server.url,
+            &serde_json::json!({}),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert!(status.is_success());
+        assert_eq!(body["success"], true);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn mutation_timeout_after_server_accepts_is_not_retried() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let count = requests.clone();
+        let server = Server::start(Router::new().route(
+            "/info",
+            post(move || {
+                count.fetch_add(1, Ordering::SeqCst);
+                std::future::pending::<&str>()
+            }),
+        ))
+        .await;
+        let error = post_json_once(
+            &client(Duration::from_secs(10)),
+            &server.url,
+            &serde_json::json!({}),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.is_timeout(), "{error}");
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
