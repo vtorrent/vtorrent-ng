@@ -110,7 +110,7 @@ services:
     restart: unless-stopped
 
   node3:
-    image: vtorrent/node:soak
+    image: vtorrent/node:84125ea
     cap_add:
       - NET_ADMIN
       - NET_RAW
@@ -122,9 +122,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
-    build:
-      context: ../..
-      dockerfile: docker/Dockerfile
     # Named volumes are root-owned; run as root for this local testnet only.
     user: "0:0"
     container_name: vtr-node3

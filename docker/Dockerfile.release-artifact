@@ -1,0 +1,14 @@
+ARG RUNTIME_IMAGE=vtorrent/node:soak
+FROM ${RUNTIME_IMAGE}
+
+ARG VCS_REF
+ARG DAEMON_SHA256
+LABEL org.opencontainers.image.revision="${VCS_REF}" \
+      org.vtorrent.daemon.sha256="${DAEMON_SHA256}"
+
+USER root
+COPY --chmod=0755 vtorrent-daemon /usr/local/bin/vtorrent-daemon
+RUN test -n "$VCS_REF" && test -n "$DAEMON_SHA256" \
+    && echo "$DAEMON_SHA256  /usr/local/bin/vtorrent-daemon" | sha256sum -c - \
+    && /usr/local/bin/vtorrent-daemon --version
+USER vtorrent
