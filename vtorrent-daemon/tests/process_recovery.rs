@@ -119,9 +119,13 @@ impl Daemon {
     }
 
     async fn get(&self, path: &str) -> Value {
-        rpc_polling::get_json(&self.client, &format!("{}{path}", self.rpc))
-            .await
-            .unwrap_or_else(|error| panic!("GET {path} failed: {error}; {}", self.logs()))
+        rpc_polling::get_json_with_deadline(
+            &self.client,
+            &format!("{}{path}", self.rpc),
+            Duration::from_secs(20),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("GET {path} failed: {error}; {}", self.logs()))
     }
 
     async fn mint(&self, tag: u8) -> Value {

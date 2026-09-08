@@ -23,6 +23,32 @@ pub(super) async fn post_json_once(
     Ok((status, response.json().await?))
 }
 
+pub(super) async fn get_json_with_deadline(
+    client: &Client,
+    url: &str,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let mut last_error = "no response received".to_owned();
+    tokio::time::timeout(timeout, async {
+        loop {
+            match get_json(client, url).await {
+                Ok(value) => return Ok(value),
+                Err(error) if error.is_timeout() || error.is_connect() => {
+                    last_error = format!("{error:?}");
+                }
+                Err(error) => return Err(format!("GET {url}: {error:?}")),
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        Err(format!(
+            "GET {url} timed out after {timeout:?}; {last_error}"
+        ))
+    })
+}
+
 pub(super) async fn wait_tip(
     client: &Client,
     url: &str,
@@ -43,9 +69,9 @@ pub(super) async fn wait_tip(
                     last_observation = format!("observed tip {tip}");
                 }
                 Err(error) if error.is_timeout() || error.is_connect() => {
-                    last_observation = format!("RPC transport error: {error}");
+                    last_observation = format!("RPC transport error: {error:?}");
                 }
-                Err(error) => return Err(format!("RPC response failed: {error}")),
+                Err(error) => return Err(format!("RPC response failed: {error:?}")),
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -98,6 +124,96 @@ mod tests {
             .timeout(timeout)
             .build()
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn read_retries_timeout_and_returns_complete_json() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let count = requests.clone();
+        let server = Server::start(Router::new().route(
+            "/info",
+            get(move || {
+                let attempt = count.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if attempt == 0 {
+                        std::future::pending::<()>().await;
+                    }
+                    r#"{"versions":[{"txid":"replacement"}]}"#
+                }
+            }),
+        ))
+        .await;
+        let value = get_json_with_deadline(
+            &client(Duration::from_millis(100)),
+            &server.url,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"versions":[{"txid":"replacement"}]})
+        );
+        assert!(requests.load(Ordering::SeqCst) >= 2);
+    }
+
+    #[tokio::test]
+    async fn read_deadline_preserves_underlying_timeout_error() {
+        let server =
+            Server::start(Router::new().route("/info", get(std::future::pending::<&str>))).await;
+        let error = get_json_with_deadline(
+            &client(Duration::from_millis(50)),
+            &server.url,
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("timed out after"), "{error}");
+        assert!(error.contains("TimedOut"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn read_deadline_cancels_a_long_request() {
+        let server =
+            Server::start(Router::new().route("/info", get(std::future::pending::<&str>))).await;
+        let error = get_json_with_deadline(
+            &client(Duration::from_secs(10)),
+            &server.url,
+            Duration::from_millis(100),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("timed out after"), "{error}");
+        assert!(error.contains("no response received"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn read_does_not_retry_http_or_json_errors() {
+        for (status, body) in [
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "{}"),
+            (axum::http::StatusCode::NOT_FOUND, "{}"),
+            (axum::http::StatusCode::OK, "invalid JSON"),
+        ] {
+            let requests = Arc::new(AtomicUsize::new(0));
+            let count = requests.clone();
+            let server = Server::start(Router::new().route(
+                "/info",
+                get(move || {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    async move { (status, body) }
+                }),
+            ))
+            .await;
+            let error = get_json_with_deadline(
+                &client(Duration::from_secs(1)),
+                &server.url,
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap_err();
+            assert!(!error.contains("timed out"), "{error}");
+            assert_eq!(requests.load(Ordering::SeqCst), 1);
+        }
     }
 
     #[tokio::test]
