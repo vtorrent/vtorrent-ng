@@ -11,6 +11,7 @@ use tokio::process::{Child, Command};
 use vtorrent_store::store::BlockStore;
 
 mod interrupted_reorg;
+mod rpc_polling;
 
 struct Daemon {
     child: Child,
@@ -99,16 +100,9 @@ impl Daemon {
     }
 
     async fn get(&self, path: &str) -> Value {
-        self.client
-            .get(format!("{}{path}", self.rpc))
-            .send()
+        rpc_polling::get_json(&self.client, &format!("{}{path}", self.rpc))
             .await
-            .unwrap()
-            .error_for_status()
-            .unwrap()
-            .json()
-            .await
-            .unwrap()
+            .unwrap_or_else(|error| panic!("GET {path} failed: {error}; {}", self.logs()))
     }
 
     async fn mint(&self, tag: u8) -> Value {
@@ -142,13 +136,14 @@ impl Daemon {
     }
 
     async fn wait_tip(&self, hash: &str) {
-        tokio::time::timeout(Duration::from_secs(20), async {
-            while self.get("/api/v1/info").await["best_block_hash"] != hash {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        })
+        rpc_polling::wait_tip(
+            &self.client,
+            &format!("{}/api/v1/info", self.rpc),
+            hash,
+            Duration::from_secs(20),
+        )
         .await
-        .unwrap_or_else(|_| panic!("chain synchronization timed out: {}", self.logs()));
+        .unwrap_or_else(|error| panic!("chain synchronization failed: {error}; {}", self.logs()));
     }
 
     async fn stop(mut self, crash: bool) {
