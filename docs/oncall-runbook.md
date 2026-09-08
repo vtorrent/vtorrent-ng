@@ -75,6 +75,24 @@ a seed — resync is fast).
 If a legit peer is being banned repeatedly, capture the triggering message
 from the log before restarting, then file an issue with the log excerpt.
 
+## Procedure: Derived UTXO Recovery After an Older Reorg
+
+Use this when block history still replays but the old rollback bug left missing
+or incorrect persisted UTXOs.
+
+1. Stop one affected daemon and preserve a copy of its `chain.db` before upgrading.
+   Keep another healthy seed running.
+2. Start the updated daemon with the existing database and the same network mode.
+   Do not remove the database to trigger this repair.
+3. Startup validates the canonical history, then repairs UTXO differences in one
+   atomic transaction. Look for `Repaired persisted UTXOs from validated chain
+   history` with the repaired/removed counts. Healthy tables need no repair.
+4. Verify the resumed height and best block hash against the healthy peer.
+   This repair does not reset the tip, rewrite blocks, or touch wallet files.
+5. If the database cannot be opened or block replay fails, preserve the error log
+   and follow the store-corruption procedure below; derived-state repair is not
+   a substitute for recovering damaged block history.
+
 ## Procedure: Chain-State Recovery (store corruption)
 
 Symptom: daemon fails to start, redb errors like "database corrupted", or the

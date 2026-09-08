@@ -212,6 +212,72 @@ fn assert_store(directory: &Path, expected: &Chain) {
 }
 
 #[tokio::test]
+async fn daemon_startup_repairs_old_rollback_damage() {
+    let directory = tempfile::tempdir().unwrap();
+    let (old, fork) = fixture();
+    let mut chain = replay(&old);
+    let mut blocks = vec![chain.get_block_at_height(0).unwrap().clone()];
+    blocks.extend(old.clone());
+    let expected = replay(&old[..2]);
+    let mut acceptance = BlockAcceptance::Duplicate;
+    for block in fork {
+        acceptance = chain.add_block(block).unwrap();
+    }
+    let BlockAcceptance::Reorg {
+        rolled_back_blocks, ..
+    } = acceptance
+    else {
+        panic!("expected reorg");
+    };
+    let rollback = &rolled_back_blocks[0];
+    assert!(!rollback.utxos_to_restore.is_empty());
+    {
+        let store = BlockStore::open(directory.path().join("chain.db")).unwrap();
+        store.rebuild_from_regtest_blocks(&blocks).unwrap();
+        let mut old_removals = rollback.utxos_to_remove.clone();
+        old_removals.extend(rollback.utxos_to_restore.iter().map(|u| (u.txid, u.vout)));
+        store
+            .rollback_tip(
+                &rollback.utxos_to_restore,
+                &old_removals,
+                &rollback.claimed_to_remove,
+            )
+            .unwrap();
+        assert_eq!(store.best_hash().unwrap(), expected.best_hash());
+        for utxo in &rollback.utxos_to_restore {
+            assert!(!store.has_utxo(&utxo.txid, utxo.vout).unwrap());
+        }
+    }
+    let daemon = Daemon::start(directory.path(), "repair.log", None).await;
+    let info = daemon.get("/api/v1/info").await;
+    assert_eq!(info["block_height"], expected.best_height());
+    assert_eq!(
+        info["best_block_hash"],
+        hex::encode(expected.best_hash().unwrap())
+    );
+    assert!(daemon
+        .logs()
+        .contains("Repaired persisted UTXOs from validated chain history"));
+    daemon.stop(false).await;
+    assert_store(directory.path(), &expected);
+    let daemon = Daemon::start(directory.path(), "healthy.log", None).await;
+    assert!(!daemon
+        .logs()
+        .contains("Repaired persisted UTXOs from validated chain history"));
+    let minted = daemon.mint(21).await;
+    assert_eq!(minted["block_height"], 3);
+    daemon.persisted(3).await;
+    daemon.stop(false).await;
+    let store = BlockStore::open(directory.path().join("chain.db")).unwrap();
+    for utxo in &rollback.utxos_to_restore {
+        assert_eq!(
+            store.get_utxo(&utxo.txid, utxo.vout).unwrap().as_ref(),
+            Some(utxo)
+        );
+    }
+}
+
+#[tokio::test]
 async fn daemon_recovers_at_every_reorg_write_boundary() {
     let directory = tempfile::tempdir().unwrap();
     let (old, fork) = fixture();

@@ -484,11 +484,83 @@ impl BlockStore {
             }
         }
 
+        self.repair_utxos(&chain)?;
+
         tracing::info!(
             "Chain loaded successfully at height {}",
             chain.best_height()
         );
         Ok(chain)
+    }
+
+    fn repair_utxos(&self, chain: &vtorrent_node::chain::Chain) -> Result<bool> {
+        // Genesis snapshot outputs are not materialized in the store's UTXO table.
+        let mut expected: std::collections::BTreeMap<_, _> = chain
+            .get_utxo_set()
+            .values()
+            .filter(|utxo| utxo.height > 0)
+            .map(|utxo| (format!("{}:{}", hex::encode(utxo.txid), utxo.vout), utxo))
+            .collect();
+        let write_txn = self.db.begin_write()?;
+        {
+            let height_index = write_txn.open_table(HEIGHT_INDEX)?;
+            if height_index.len()? != u64::from(chain.best_height()) + 1 {
+                return Err(StoreError::Corrupted(
+                    "height index changed during UTXO repair".into(),
+                ));
+            }
+            for entry in height_index.iter()? {
+                let (height, hash) = entry?;
+                if chain
+                    .block_hash_at_height(height.value())
+                    .map(hex::encode)
+                    .as_deref()
+                    != Some(hash.value())
+                {
+                    return Err(StoreError::Corrupted(
+                        "height index disagrees with replayed chain during UTXO repair".into(),
+                    ));
+                }
+            }
+        }
+        let (repaired, removed) = {
+            let mut table = write_txn.open_table(UTXOS)?;
+            let mut remove = Vec::new();
+            let mut replace = Vec::new();
+            for entry in table.iter()? {
+                let (key, value) = entry?;
+                match expected.remove(key.value()) {
+                    Some(utxo) => {
+                        if serde_json::from_slice::<Utxo>(value.value()).ok().as_ref() != Some(utxo)
+                        {
+                            replace.push((key.value().to_owned(), serde_json::to_vec(utxo)?));
+                        }
+                    }
+                    None => remove.push(key.value().to_owned()),
+                }
+            }
+            for (key, utxo) in expected {
+                replace.push((key, serde_json::to_vec(utxo)?));
+            }
+            if remove.is_empty() && replace.is_empty() {
+                return Ok(false);
+            }
+            for key in &remove {
+                table.remove(key.as_str())?;
+            }
+            for (key, value) in &replace {
+                table.insert(key.as_str(), value.as_slice())?;
+            }
+            (replace.len(), remove.len())
+        };
+        write_txn.commit()?;
+        tracing::warn!(
+            height = chain.best_height(),
+            repaired,
+            removed,
+            "Repaired persisted UTXOs from validated chain history"
+        );
+        Ok(true)
     }
 
     /// Rebuild ALL derived state (UTXOS, CLAIMED_ADDRS, HEIGHT_INDEX) from a
@@ -738,6 +810,104 @@ mod tests {
             height,
             timestamp: 1_700_000_000 + height,
         }
+    }
+
+    #[test]
+    fn startup_repairs_missing_extra_and_invalid_utxos_without_rewriting_blocks() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("chain.db");
+        let mut chain = vtorrent_node::chain::Chain::new_regtest().unwrap();
+        for amount in [1_000_000, 2_000_000, 3_000_000] {
+            chain
+                .mint_to_address("VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k", amount)
+                .unwrap();
+        }
+        let blocks: Vec<_> = (0..=chain.best_height())
+            .map(|h| chain.get_block_at_height(h).unwrap().clone())
+            .collect();
+        let expected: Vec<_> = chain
+            .get_utxo_set()
+            .values()
+            .filter(|utxo| utxo.height > 0)
+            .cloned()
+            .collect();
+        let key = |utxo: &Utxo| format!("{}:{}", hex::encode(utxo.txid), utxo.vout);
+        {
+            let store = BlockStore::open(&path).unwrap();
+            store.rebuild_from_regtest_blocks(&blocks).unwrap();
+            let write = store.db.begin_write().unwrap();
+            {
+                let mut table = write.open_table(UTXOS).unwrap();
+                table.remove(key(&expected[0]).as_str()).unwrap();
+                table
+                    .insert(key(&expected[1]).as_str(), b"invalid json".as_slice())
+                    .unwrap();
+                let mut wrong = expected[2].clone();
+                wrong.value += 1;
+                table
+                    .insert(
+                        key(&expected[2]).as_str(),
+                        serde_json::to_vec(&wrong).unwrap().as_slice(),
+                    )
+                    .unwrap();
+                table.insert("not-an-outpoint", b"junk".as_slice()).unwrap();
+            }
+            write.commit().unwrap();
+        }
+        let store = BlockStore::open(&path).unwrap();
+        let hashes = store.main_chain_hashes().unwrap();
+        let count = store.block_count().unwrap();
+        let loaded = store.load_into_regtest_chain().unwrap();
+        assert_eq!(loaded.get_utxo_set(), chain.get_utxo_set());
+        let mut actual = store.all_utxos().unwrap();
+        actual.sort_by_key(|utxo| (utxo.txid, utxo.vout));
+        assert_eq!(actual, expected);
+        assert_eq!(store.main_chain_hashes().unwrap(), hashes);
+        assert_eq!(store.block_count().unwrap(), count);
+        assert_eq!(store.best_hash().unwrap(), chain.best_hash());
+        assert!(!store.repair_utxos(&loaded).unwrap());
+        for (height, block) in blocks.iter().enumerate() {
+            assert_eq!(
+                serde_json::to_vec(&store.get_block_at_height(height as u32).unwrap().unwrap())
+                    .unwrap(),
+                serde_json::to_vec(block).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn startup_repairs_genesis_only_store_and_refuses_stale_chain() {
+        let dir = tempdir().unwrap();
+        let store = BlockStore::open(dir.path().join("chain.db")).unwrap();
+        let write = store.db.begin_write().unwrap();
+        write
+            .open_table(UTXOS)
+            .unwrap()
+            .insert("orphan", b"invalid".as_slice())
+            .unwrap();
+        write.commit().unwrap();
+        let chain = store.load_into_regtest_chain().unwrap();
+        assert_eq!(chain.best_height(), 0);
+        assert_eq!(store.utxo_count().unwrap(), 0);
+        let mut newer = vtorrent_node::chain::Chain::new_regtest().unwrap();
+        newer
+            .mint_to_address("VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k", 1_000_000)
+            .unwrap();
+        let blocks: Vec<_> = (0..=newer.best_height())
+            .map(|h| newer.get_block_at_height(h).unwrap().clone())
+            .collect();
+        store.rebuild_from_regtest_blocks(&blocks).unwrap();
+        let before = store.all_utxos().unwrap();
+        assert!(store.repair_utxos(&chain).is_err());
+        assert_eq!(store.all_utxos().unwrap(), before);
+        assert_eq!(store.best_hash().unwrap(), newer.best_hash());
+        let mut other_fork = vtorrent_node::chain::Chain::new_regtest().unwrap();
+        other_fork
+            .mint_to_address("VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k", 2_000_000)
+            .unwrap();
+        assert!(store.repair_utxos(&other_fork).is_err());
+        assert_eq!(store.all_utxos().unwrap(), before);
+        assert_eq!(store.best_hash().unwrap(), newer.best_hash());
     }
 
     #[test]

@@ -220,8 +220,19 @@ each of three fork appends. Each recovered prefix matches the raw stored tip,
 height index, and non-genesis UTXOs before replay, then a real daemon restarts,
 resynchronizes to the winning peer, and persists another block.
 
-This prevents incorrect future undo records; it does not automatically rebuild
-derived tables already damaged by the old code. The test writer reproduces the
+The undo fix prevents incorrect future records. Startup recovery (2026-09-08)
+also compares persisted non-genesis UTXOs with the validated canonical replay,
+restoring missing or incorrect entries and removing spurious or malformed rows
+in one redb transaction. It leaves blocks, the height index, claim records, and
+the chain tip unchanged; healthy tables do not incur a repair commit. Repair
+refuses a height index that differs from the replayed chain. The daemon performs
+this check even for a genesis-only store. Tests cover damaged rows, stale/different
+chain rejection, idempotence, and actual daemon restart from old rollback damage.
+This repairs derived UTXO data, not unreadable databases or invalid block history;
+the existing corrupt-tail recovery remains separate. No deployed database was
+opened or modified during implementation.
+
+The test writer reproduces the
 daemon's store-call sequence without production failpoints. Interruption inside
 a single redb transaction, legacy-claim rollback, complete swap recovery through
 daemon RPC, and public-network operation remain outside this matrix.

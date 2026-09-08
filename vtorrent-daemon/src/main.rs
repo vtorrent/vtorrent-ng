@@ -132,21 +132,19 @@ async fn main() -> anyhow::Result<()> {
 
         if store_height > 0 {
             tracing::info!("Resuming from persisted chain at height {}", store_height);
-            // Load persisted chain into memory, then build the node with it.
-            let chain = if cli.regtest && cli.regtest_fast_stake {
-                block_store.load_into_fast_regtest_chain()
-            } else if cli.regtest {
-                block_store.load_into_regtest_chain()
-            } else {
-                block_store.load_into_chain()
-            }
-            .map_err(|e| anyhow::anyhow!("Failed to load chain from store: {}", e))?;
-            Node::new_with_chain(config.clone(), chain)
-                .map_err(|e| anyhow::anyhow!("Node::new_with_chain failed: {}", e))?
         } else {
             tracing::info!("No persisted chain found — starting from genesis");
-            Node::new(config.clone()).map_err(|e| anyhow::anyhow!("Node::new failed: {}", e))?
         }
+        let chain = if cli.regtest && cli.regtest_fast_stake {
+            block_store.load_into_fast_regtest_chain()
+        } else if cli.regtest {
+            block_store.load_into_regtest_chain()
+        } else {
+            block_store.load_into_chain()
+        }
+        .map_err(|e| anyhow::anyhow!("Failed to load chain from store: {}", e))?;
+        Node::new_with_chain(config.clone(), chain)
+            .map_err(|e| anyhow::anyhow!("Node::new_with_chain failed: {}", e))?
     };
 
     // ── Build RPC AppState ────────────────────────────────────────────────────

@@ -43,7 +43,7 @@ impl Daemon {
                 "--public-addr",
                 &p2p,
                 "--log-level",
-                "vtorrent_daemon=debug,vtorrent_node=warn",
+                "vtorrent_daemon=debug,vtorrent_node=warn,vtorrent_store=warn",
             ])
             .arg("--data-dir")
             .arg(directory)
