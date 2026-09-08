@@ -12,6 +12,7 @@ use vtorrent_store::store::BlockStore;
 
 mod interrupted_reorg;
 mod rpc_polling;
+mod swap_recovery;
 
 struct Daemon {
     child: Child,
