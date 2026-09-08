@@ -2,6 +2,7 @@
 /target/
 **/target/
 Cargo.lock
+/.ops-backups/
 
 # Node.js / frontend
 vtorrent-ui/node_modules/

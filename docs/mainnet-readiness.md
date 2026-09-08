@@ -43,6 +43,10 @@
 > volumes are retained with the `pre-v3-58b256c` suffix. Check daily with
 > `scripts/soak-status.sh`; Grafana at http://localhost:3300 (admin/admin).
 
+The 2026-09-08 node3-only canary restart and its availability interruption are
+recorded in [the soak operations log](soak-log.md). The three-node continuous
+window is not signed off by that drill; node1/node2 remain on their prior build.
+
 - [ ] **3+ node Docker testnet** (`docker/testnet/docker-compose.yml`) runs
       ≥7 days: blocks propagate between all nodes, no forks beyond expected
       PoS reorg depth, no memory growth, no peer churn storms. *(Mechanics
