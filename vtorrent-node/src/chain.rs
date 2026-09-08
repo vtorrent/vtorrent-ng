@@ -762,8 +762,7 @@ impl Chain {
                         }
                     };
 
-                let depth =
-                    (self.best_height() as i64 - fork_height as i64).unsigned_abs() as u32 + 1;
+                let depth = rolled_back_blocks.len() as u32;
                 tracing::warn!(
                     "Chain reorg: old tip {} → new tip {} (depth {})",
                     hex::encode(old_tip),

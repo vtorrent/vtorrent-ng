@@ -6,7 +6,7 @@ use crate::{
     error::{NodeError, Result},
     genesis::get_legacy_balance,
 };
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use vtorrent_script::{Engine, Script, ScriptEnv};
 
 use super::{compute_supply_delta, AppliedForkBlock, Chain, RolledBackBlock, Utxo};
@@ -55,17 +55,13 @@ pub(crate) fn rollback_one_block(chain: &mut Chain) -> Result<(Vec<Transaction>,
         .map(|b| b.transactions.clone())
         .unwrap_or_default();
 
-    let mut utxos_to_remove: Vec<([u8; 32], u32)> = Vec::new();
-    let mut utxos_to_restore: Vec<Utxo> = Vec::new();
-    for change in &journal.changes {
-        match change {
-            UtxoChange::Added { key } => utxos_to_remove.push(*key),
-            UtxoChange::Removed { key, utxo } => {
-                utxos_to_remove.push(*key);
-                utxos_to_restore.push(utxo.clone());
-            }
-        }
-    }
+    let touched: BTreeSet<_> = journal
+        .changes
+        .iter()
+        .map(|change| match change {
+            UtxoChange::Added { key } | UtxoChange::Removed { key, .. } => *key,
+        })
+        .collect();
     let claimed_to_remove = journal.claimed_addresses.clone();
 
     for change in journal.changes.into_iter().rev() {
@@ -76,6 +72,16 @@ pub(crate) fn rollback_one_block(chain: &mut Chain) -> Result<(Vec<Transaction>,
             UtxoChange::Removed { key, utxo } => {
                 chain.utxo_set.insert(key, utxo);
             }
+        }
+    }
+
+    let mut utxos_to_remove = Vec::new();
+    let mut utxos_to_restore = Vec::new();
+    for key in touched {
+        if let Some(utxo) = chain.utxo_set.get(&key) {
+            utxos_to_restore.push(utxo.clone());
+        } else {
+            utxos_to_remove.push(key);
         }
     }
 

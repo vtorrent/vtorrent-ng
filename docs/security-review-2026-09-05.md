@@ -186,11 +186,45 @@ reorg cleanup and the event needed by the persistence bridge.
 `vtorrent-rpc/src/handlers/swap/tests/refund_network.rs` covers three-node TCP
 propagation, peer and originating-node restart, encrypted refund-journal restore,
 mempool-file reload, replacement confirmation, and competing longer forks with
-either refund version winning. Handler tests separately exercise immediate and
-requested-transaction compact-block reconstruction across a reorg. These are
-isolated Node runtimes with replayed chain fixtures, not daemon-process/redb
-crash-recovery or public-network tests. Conflicting claim-versus-refund network
-coverage remains a follow-up.
+either refund version winning. Four additional cases cover independent claim and
+refund submitters, either spend winning, and pending or previously confirmed
+losing transactions. The losing node records the external winning spend, evicts
+the loser, rejects its resubmission, and counts invalidated confirmation anchors
+only once. Handler tests separately exercise immediate and requested-transaction
+compact-block reconstruction across a reorg.
+
+`vtorrent-daemon/tests/process_recovery.rs` launches actual isolated daemon
+processes on Unix, adopts a competing longer fork over TCP, then verifies redb tip
+and UTXO state across SIGTERM and SIGKILL restarts. The restarted daemon must also
+extend and persist the recovered chain. These two tests wait for persistence to
+complete before termination; the separate boundary matrix below interrupts the
+sequence of reorg writes.
+
+Crash-boundary follow-up (2026-09-07): the new
+`vtorrent-daemon/tests/interrupted_reorg/mod.rs` fixture uses a test-only child
+writer to execute the same store rollback/append operations as the daemon bridge,
+pauses at a selected commit boundary, and is terminated with SIGKILL. It compares
+raw persisted UTXOs with an independently replayed prefix before starting a daemon
+and resynchronizing from a winning peer. It initially failed after the first
+rollback: `rollback_one_block` included spent outputs in both the restore and
+removal lists, and `BlockStore::rollback_tip` restored then deleted them. In-memory
+undo was correct, but the persisted prefix was missing restored outputs. The
+deeper fixture also exposed reorg depth always being reported as one because it
+was calculated after switching to the new tip.
+
+Fixed and verified (2026-09-08): disk undo now derives disjoint restore/remove
+lists from the fully rolled-back UTXO state, including outputs created and spent
+within the same block. Reorg depth uses the actual number of rolled-back blocks.
+The six-boundary matrix passes before undo, after each of two rollbacks, and after
+each of three fork appends. Each recovered prefix matches the raw stored tip,
+height index, and non-genesis UTXOs before replay, then a real daemon restarts,
+resynchronizes to the winning peer, and persists another block.
+
+This prevents incorrect future undo records; it does not automatically rebuild
+derived tables already damaged by the old code. The test writer reproduces the
+daemon's store-call sequence without production failpoints. Interruption inside
+a single redb transaction, legacy-claim rollback, complete swap recovery through
+daemon RPC, and public-network operation remain outside this matrix.
 
 Still open: automatic BTC monitoring, BTC/claim/funding fee replacement,
 and automatic resolution (not merely detection) of conflicting spends. Submission

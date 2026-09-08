@@ -443,3 +443,147 @@ async fn refund_network_reorg_evicts_replacement_when_original_wins() {
 async fn refund_network_reorg_evicts_original_when_replacement_wins() {
     refund_network_reorg_evicts_losing_refund(true).await;
 }
+
+async fn claim_refund_fork(claim_wins: bool, loser_confirmed: bool) {
+    use crate::swap_reconciliation::{reconcile, status};
+    use vtorrent_node::atomic_swap::VtrSettlementState;
+
+    let directory = tempfile::tempdir().unwrap();
+    let (base, id, original) = fixture(&directory.path().join("maker-wallet")).await;
+    let initial = blocks(&base).await;
+    let refund_node = start(
+        &base,
+        replay(&initial),
+        &directory.path().join("refund"),
+        &[],
+    )
+    .await;
+    let mut claim_node = start(
+        &base,
+        replay(&initial),
+        &directory.path().join("claim"),
+        &[],
+    )
+    .await;
+    claim_node.state.swap_recovery_dir = Some(directory.path().join("taker-wallet"));
+    *claim_node.state.wallet_wif.write().await = Some(vtr_identity(2).0.clone());
+    *claim_node.state.wallet_change_address.write().await = Some(vtr_identity(2).1.clone());
+    {
+        let mut swaps = claim_node.state.swaps.write().await;
+        let swap = swaps.get_mut(&id).unwrap();
+        swap.vtr_refund_txid = None;
+        swap.vtr_refund_tx = None;
+        swap.refresh_status();
+    }
+    let preimage = base
+        .order_book
+        .read()
+        .await
+        .get_order(&id)
+        .unwrap()
+        .preimage
+        .unwrap();
+    vtr_claim_with_state(
+        &claim_node.state,
+        VtrClaimRequest {
+            order_id: id.clone(),
+            preimage: hex::encode(preimage),
+            taker_wif: vtr_identity(2).0,
+        },
+    )
+    .await
+    .unwrap();
+    crate::refund_bump::bump(&refund_node.state, request(&id, original, 20_000))
+        .await
+        .unwrap();
+    let claim = claim_node.state.swaps.read().await[&id]
+        .vtr_claim_tx
+        .clone()
+        .unwrap();
+    let refund = refund_node.state.swaps.read().await[&id]
+        .latest_vtr_refund()
+        .unwrap()
+        .clone();
+    assert_eq!(claim.inputs[0].prev_txid, refund.inputs[0].prev_txid);
+    assert_eq!(claim.inputs[0].prev_vout, refund.inputs[0].prev_vout);
+    assert_eq!(
+        status(&claim_node.state, &id).await.unwrap().state,
+        VtrSettlementState::ClaimPending
+    );
+    assert_eq!(
+        status(&refund_node.state, &id).await.unwrap().state,
+        VtrSettlementState::RefundPending
+    );
+    let (mut loser, winner, losing_tx, winning_tx) = if claim_wins {
+        (refund_node, claim_node, refund, claim)
+    } else {
+        (claim_node, refund_node, claim, refund)
+    };
+    mine(&loser, loser_confirmed.then(|| losing_tx.clone()), 30).await;
+    let before = reconcile(&loser.state, &id).await.unwrap();
+    assert_eq!(before.reorg_count, 0);
+    assert_eq!(before.spend.is_some(), loser_confirmed);
+    mine(&winner, Some(winning_tx.clone()), 40).await;
+    let winning_tip = mine(&winner, None, 41).await;
+    let fork = blocks(&winner.state).await;
+    let winning_state = winner.state.clone();
+    drop(winner);
+    let mut winner = start(
+        &winning_state,
+        replay(&fork),
+        &directory.path().join("winner-online"),
+        &[loser.address],
+    )
+    .await;
+    connected(&mut loser).await;
+    connected(&mut winner).await;
+    wait_tip(&loser, winning_tip.hash()).await;
+    reorganized(&mut loser).await;
+    for node in [&loser, &winner] {
+        let chain = node.state.chain.lock().await;
+        let mp = node.state.mempool.lock().await;
+        assert!(chain.get_transaction(&losing_tx.txid()).is_none());
+        assert!(chain.get_transaction(&winning_tx.txid()).is_some());
+        assert!(mp.get_transaction(&losing_tx.txid()).is_none());
+        assert!(mp.get_transaction(&winning_tx.txid()).is_none());
+    }
+    let observed = reconcile(&loser.state, &id).await.unwrap();
+    assert_eq!(observed.state, VtrSettlementState::SpentElsewhere);
+    assert_eq!(
+        observed.spend.as_ref().unwrap().txid,
+        hex::encode(winning_tx.txid())
+    );
+    assert_eq!(observed.reorg_count, u32::from(loser_confirmed));
+    assert_eq!(
+        reconcile(&loser.state, &id).await.unwrap().reorg_count,
+        observed.reorg_count
+    );
+    let chain = loser.state.chain.lock().await;
+    assert!(loser
+        .state
+        .mempool
+        .lock()
+        .await
+        .admit_with_chain_fee(&chain, losing_tx)
+        .is_err());
+}
+
+#[tokio::test]
+async fn refund_network_pending_refund_loses_to_claim() {
+    claim_refund_fork(true, false).await;
+}
+
+#[tokio::test]
+async fn refund_network_confirmed_refund_loses_to_claim() {
+    claim_refund_fork(true, true).await;
+}
+
+#[tokio::test]
+async fn refund_network_pending_claim_loses_to_refund() {
+    claim_refund_fork(false, false).await;
+}
+
+#[tokio::test]
+async fn refund_network_confirmed_claim_loses_to_refund() {
+    claim_refund_fork(false, true).await;
+}

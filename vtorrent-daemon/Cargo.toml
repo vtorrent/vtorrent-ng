@@ -43,6 +43,8 @@ serde_json        = { workspace = true }
 bitcoin           = { workspace = true }
 
 [dev-dependencies]
+reqwest          = { workspace = true }
+tempfile         = { workspace = true }
 axum             = { version = "0.7", features = ["http1", "http2", "json", "tokio"] }
 sha2             = "0.10"
 tower            = { version = "0.4", features = ["util"] }
