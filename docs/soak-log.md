@@ -77,3 +77,44 @@ recipe, and node3-only recreation procedure are documented in
 [the testnet image guide](../docker/testnet/README.md). Both rollback backups are
 local only, not off-site backups. Recreating node3 with the checked-in Compose
 configuration now retains the versioned binary rather than reverting the canary.
+
+## 2026-09-08 — node2 follower upgrade after canary observation
+
+CI for commit `4438403` passed all required checks. Before proceeding, node3 had
+over two hours of uptime and zero restarts. Prometheus queries around 14:49–14:50
+UTC covered the preceding 90 minutes: 360 successful 15-second scrapes,
+`min_over_time(up)=1`, minimum peer count 1, approximately 38 blocks of height
+growth, and maximum sampled lag behind the fleet of one block. This historical
+observation covered the additional hour requested after the earlier 30-minute
+canary check. Current RPC tips also agreed; it is not a seven-day soak sign-off.
+
+Only non-staking follower `vtr-node2` was upgraded to the same verified local
+image `vtorrent/node:84125ea`, ID
+`sha256:a56ac5545f87cc989b96500aa819f1715a070d21a2a72e4363316fbad74be41b`.
+
+- Preflight agreement: height 2824,
+  `62eff64c369ff06727beacee987aef1c48dcddb5ad917337fa95dc91e3fabe6f`.
+- Old binary and stopped `/data/node2` were backed up privately in
+  `.ops-backups/node2-image-20260908-7y7Hyc/`; its README records checksums and
+  rollback precautions. The backup remains local only.
+- Graceful stop: `2026-09-08T14:51:12.629357618Z`, exit 0.
+- Replacement start: `2026-09-08T14:51:13.015833654Z`, using
+  `up -d --no-deps --no-build --pull never --force-recreate node2`.
+- New container: `617de8710bff0ad578c5d5f15dbe52c28b4b30cb8b4b7a858f99b169525521e0`.
+  Named volume `vtorrent-testnet_vtr-data2` and the prior anonymous volume were
+  preserved, along with all runtime arguments and regtest/fast-stake settings.
+- Installed binary checksum matched
+  `1275b1f06c7b0d6076d3b36a9c9fbceda8e0ecaaa1bfd869d84830c955da79ce`.
+- Replay completed at stored height 2826 at `14:51:46.016452Z`; RPC started at
+  `14:51:46.016647Z`. No replay error or derived-state repair warning appeared.
+- Peer handshake completed at `14:51:46.122083Z`; node2 caught up to height 2827.
+- Fresh block 2828 propagated at `14:56:04.238719Z`; all three RPC endpoints
+  agreed on `28678d5a34bb18144573abfb57dc2384e87928cfec1684580d91b1cc5f893615`.
+- Node2 was healthy with restart count 0 and staking disabled. Node1 remained
+  staking. Node1/node3 container identities and start times were unchanged;
+  production seeds were untouched.
+
+Node2's availability interruption was approximately 33 seconds. Exclude that
+interval from uninterrupted three-node availability. Both followers now use the
+versioned release image; node1 remains on its older image and requires a separate
+approved staking-aware upgrade. The seven-day soak remains pending.

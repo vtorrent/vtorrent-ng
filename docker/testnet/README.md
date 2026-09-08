@@ -1,9 +1,9 @@
 # Local testnet images
 
-Node1 and node2 use `vtorrent/node:soak`. Node3 is pinned to the locally built
-`vtorrent/node:84125ea`; it has no Compose `build` entry, so recreation cannot
+Node1 uses `vtorrent/node:soak`. Node2 and node3 are pinned to the locally built
+`vtorrent/node:84125ea`; neither has a Compose `build` entry, so recreation cannot
 silently replace that version with the current working tree. No image was pushed
-to a registry. Provision the node3 image locally before bringing up this stack on
+to a registry. Provision the follower image locally before bringing up this stack on
 another host.
 
 ## Restore the tested image
@@ -51,17 +51,20 @@ docker build --pull=false \
 The build verifies the binary checksum and runtime compatibility and records the
 revision/checksum in image labels. Existing image runtime configuration is inherited.
 
-## Node3-only recreation
+## One-follower recreation
 
-First verify peer health, stop only node3, and preserve a stopped-data backup.
-After verifying the image identity, recreate only the follower:
+First verify peer health, stop only the selected follower, and preserve a
+stopped-data backup. After verifying the image identity, recreate only that
+follower. For node3:
 
 ```bash
 docker compose -f docker/testnet/docker-compose.yml up -d \
   --no-deps --no-build --pull never --force-recreate node3
 ```
 
-Keep `vtorrent-testnet_vtr-data3` mounted at `/data/node3`. Do not use `down -v`
+For node2, use the same command with the final service argument `node2`, not
+both services. Keep `vtorrent-testnet_vtr-data2` mounted at `/data/node2` and
+`vtorrent-testnet_vtr-data3` mounted at `/data/node3`. Do not use `down -v`
 or renew anonymous volumes. Check replay logs, binary checksum, health, tip
 agreement, and a fresh propagated block before approving any other node upgrade.
 Record every interruption in `docs/soak-log.md`.
