@@ -15,7 +15,7 @@ name: vtorrent-testnet
 
 services:
   node1:
-    image: vtorrent/node:84125ea
+    image: vtorrent/node:c9d00a6
     cap_add:
       - NET_ADMIN
       - NET_RAW

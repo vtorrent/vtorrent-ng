@@ -1,13 +1,13 @@
 # Local testnet images
 
-Node1 uses `vtorrent/node:84125ea`; node2 and node3 use the sync-status release
-`vtorrent/node:c9d00a6`. Both images are locally built, and no node has a Compose
+All three nodes use the locally built sync-status release
+`vtorrent/node:c9d00a6`. No node has a Compose
 `build` entry, so recreation cannot
 silently replace that version with the current working tree. No image was pushed
 to a registry. Provision the image locally before bringing up this stack on
 another host.
 
-## Current follower image
+## Current release image
 
 Source revision: `c9d00a62c74ff639354706d2990124c3d8dc0190`.
 Binary SHA-256:
@@ -29,10 +29,10 @@ docker image inspect vtorrent/node:c9d00a6 --format '{{.Id}}'
 It uses the same release-artifact recipe and verified runtime base described
 below, with the canary revision/checksum above and binary-only context
 `.ops-backups/node3-sync-20260909-xciPth/image-context/`. The release daemon passed
-all 18 process-recovery tests before packaging. Do not promote this image to the
-staking node without a separately approved rollout.
+all 18 process-recovery tests before packaging. Node1 was upgraded only after
+green CI, recorded follower observation, and a verified wallet-unlock procedure.
 
-## Restore the node1 image (follower rollback)
+## Restore the preceding image (rollback)
 
 The operational archive is private and git-ignored:
 `.ops-backups/node3-image-20260908-oclHcN/vtorrent-node-84125ea.tar`.

@@ -292,3 +292,50 @@ Node2's RPC availability interruption was approximately 39 seconds. Exclude that
 interval from uninterrupted three-node availability. Node1 remains on
 `vtorrent/node:84125ea`; production seeds, BTC, and monitoring were untouched.
 The seven-day soak remains pending.
+
+## 2026-09-09 — node1 sync-status release rollout
+
+CI for `ecb7829` passed:
+[run 34332159332](https://github.com/vtorrent/vtorrent-ng/actions/runs/34332159332).
+Both followers were healthy with zero restarts. Their preceding hour of recorded
+Prometheus history showed 240 successful scrapes each, minimum one peer each,
+and maximum sampled fleet lag one block. Current tips agreed at height 3350.
+The existing protected-file wallet unlock succeeded before stopping node1;
+no wallet re-import or passphrase change was needed.
+
+Only node1 was upgraded to `vtorrent/node:c9d00a6`, image ID
+`sha256:01c51d65ec2e147e5debf2255106f4a7097e993014b03ba355debab468d79821`.
+
+- Private backup: `.ops-backups/node1-sync-20260909-kyKnJw/` (0700), containing
+  both stopped data locations, previous binary, and a 0600 copy of the existing
+  passphrase paired with the encrypted wallet. Nothing private is committed.
+- Graceful stop: `2026-09-09T11:39:15.126390494Z`, exit 0.
+- Chain database SHA-256:
+  `f77e9d2fe52e942dfe4fa2bac7fac1e05cf4e46c992a9ee693bb96dda6857d4a`.
+- Encrypted wallet SHA-256 was unchanged:
+  `d6e069dd2ae5ec594e7e19e06f862e87c345a6257ef32563d332e4e64e4b84a7`.
+- New container: `8e01696cef7f27c96fdd1393296c02221e3763c151f82a5c2c5097a04a2966de`,
+  started at `2026-09-09T11:39:15.504161388Z` using
+  `up -d --no-deps --no-build --pull never --force-recreate node1`.
+- Named and anonymous volumes were preserved, along with BTC seed, networking,
+  and all other runtime arguments. Installed binary SHA-256 matched
+  `6c12aa9e8849448257dcc16837ce33b6f9d72811a51a467ab90ed9f1cf80f5d3`.
+- Replay completed at height 3350 at `11:39:55.414994Z`; RPC listened at
+  `11:39:55.415940Z`, with no startup WARN/ERROR or derived-state repair warning.
+- The first readiness GET hit a transient connection reset before any unlock
+  POST. The private helper was adjusted to tolerate readiness resets/remote
+  closes; unlock POSTs remain single-attempt. Protected-file unlock auto-resumed
+  staking at `11:39:55.979020Z`.
+- First new stake: height 3351 at `11:41:17.459201Z`, hash
+  `83d554ba54b28a094f01fa1bbf1990bf0d6b14a256bc4910b27ff61323b25340`.
+  All three RPC endpoints subsequently matched that height/hash and reported
+  `syncing: false`, 100%, and connected peers.
+- BTC-regtest SPV remained initialized and synced at height 140, with the same
+  address and balance of 499948000 satoshis as before the upgrade.
+
+RPC interruption was approximately 40 seconds; stop-to-staking-resume was
+approximately 41 seconds. Followers were not restarted, but lost their seed
+connection temporarily. Exclude the maintenance/reconnection interval from
+uninterrupted three-node availability. All three nodes now use the same release.
+Production seeds, BTC, and monitoring were not redeployed. Backups remain local
+only. Leave the fleet stable for observation; the seven-day soak is not signed off.

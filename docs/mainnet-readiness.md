@@ -50,7 +50,9 @@ node3 on the versioned release image. Node1's staking-aware upgrade and wallet
 recovery are recorded separately in the operations log; the seven-day soak remains
 pending. Node3 subsequently received the sync-status fix as a separately recorded
 canary, followed by node2 after green CI and an hour of recorded canary health.
-Node1 remains on the preceding versioned image.
+Node1 subsequently joined the same release after another green CI gate and
+recorded follower observation. All maintenance interruptions remain excluded
+from uninterrupted soak measurements.
 
 - [ ] **3+ node Docker testnet** (`docker/testnet/docker-compose.yml`) runs
       ≥7 days: blocks propagate between all nodes, no forks beyond expected
