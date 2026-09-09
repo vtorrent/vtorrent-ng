@@ -252,3 +252,43 @@ interval from uninterrupted three-node availability. This verifies startup,
 catch-up, and fresh-block propagation on the new canary; disconnect/reconnect
 behavior was exercised in the isolated release test, not by disrupting live
 peers again. Longer canary observation and seven-day soak sign-off remain pending.
+
+## 2026-09-09 — node2 sync-status release rollout
+
+CI for the canary rollout record (`9993cab`) passed:
+[run 34324472050](https://github.com/vtorrent/vtorrent-ng/actions/runs/34324472050).
+At approximately 08:54 UTC, node3's preceding hour of Prometheus history showed
+240 successful 15-second scrapes, minimum availability 1, minimum peer count 1,
+and maximum sampled fleet lag one block. Node3 was healthy with zero restarts;
+all three current RPC tips agreed at height 3282 before proceeding.
+
+Only node2 was upgraded to `vtorrent/node:c9d00a6`, image ID
+`sha256:01c51d65ec2e147e5debf2255106f4a7097e993014b03ba355debab468d79821`.
+
+- Its previous executable and both stopped data locations were privately backed
+  up under `.ops-backups/node2-sync-20260909-8X0Lwy/`. The private README records
+  checksums, prior image identity, and rollback precautions. Backups are local only.
+- Graceful stop: `2026-09-09T08:55:28.857644078Z`, exit 0.
+- Stopped chain database SHA-256:
+  `82fb1e14992602ebe5b4b495d0b42b0d34363e897c870bb5040bb2fb49859add`.
+- New container: `5aa79aa6df9eef83952caa699036e8ef1ec952d8176e6728d93c7aa52bc421a1`,
+  started at `2026-09-09T08:55:29.237602093Z`, using
+  `up -d --no-deps --no-build --pull never --force-recreate node2`.
+- Named volume `vtorrent-testnet_vtr-data2` and the previous anonymous volume
+  were retained, with runtime arguments and network isolation unchanged.
+- Installed binary SHA-256 matched the tested release artifact:
+  `6c12aa9e8849448257dcc16837ce33b6f9d72811a51a467ab90ed9f1cf80f5d3`.
+- Replay completed at stored height 3282 at `08:56:08.105057Z`; RPC listened
+  at `08:56:08.105587Z`. No startup error or derived-state repair warning appeared.
+- Handshake completed at `08:56:08.232940Z`; node2 caught up to height 3283
+  at `08:56:08.448922Z`.
+- Both followers reported one peer, `syncing: false`, and 100%; node2 was healthy
+  with zero restarts. Node1 remained staking. Node1/node3 start times were unchanged.
+- A fresh post-reconnection block, height 3284, was accepted by node2 at
+  `08:57:53.755182Z`, hash
+  `3c3e8eea147ff74ccab9073f56569edd2666cbc24ec5caa81837d9748bbff15f`.
+
+Node2's RPC availability interruption was approximately 39 seconds. Exclude that
+interval from uninterrupted three-node availability. Node1 remains on
+`vtorrent/node:84125ea`; production seeds, BTC, and monitoring were untouched.
+The seven-day soak remains pending.

@@ -1,13 +1,13 @@
 # Local testnet images
 
-Node1 and node2 use `vtorrent/node:84125ea`; node3 is the sync-status canary on
+Node1 uses `vtorrent/node:84125ea`; node2 and node3 use the sync-status release
 `vtorrent/node:c9d00a6`. Both images are locally built, and no node has a Compose
 `build` entry, so recreation cannot
 silently replace that version with the current working tree. No image was pushed
 to a registry. Provision the image locally before bringing up this stack on
 another host.
 
-## Current node3 canary image
+## Current follower image
 
 Source revision: `c9d00a62c74ff639354706d2990124c3d8dc0190`.
 Binary SHA-256:
@@ -30,9 +30,9 @@ It uses the same release-artifact recipe and verified runtime base described
 below, with the canary revision/checksum above and binary-only context
 `.ops-backups/node3-sync-20260909-xciPth/image-context/`. The release daemon passed
 all 18 process-recovery tests before packaging. Do not promote this image to the
-other services without a separately approved rollout.
+staking node without a separately approved rollout.
 
-## Restore the node1/node2 image (node3 rollback)
+## Restore the node1 image (follower rollback)
 
 The operational archive is private and git-ignored:
 `.ops-backups/node3-image-20260908-oclHcN/vtorrent-node-84125ea.tar`.
