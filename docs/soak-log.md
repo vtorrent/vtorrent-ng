@@ -203,3 +203,52 @@ The complete daemon and P2P all-features test run passed 109 tests: five daemon
 unit tests, 17 RPC integration tests, 18 process-recovery tests (including the
 interrupted-reorg matrix and swap recovery), and 69 P2P tests. Formatting and
 `git diff --check` also passed.
+
+## 2026-09-09 — sync-status release canary on node3
+
+Commits `6a7be17` (node1 rollout record) and `c9d00a6` (sync-status/peer-close
+fixes) were pushed to `origin/main`. CI run
+[34295160138](https://github.com/vtorrent/vtorrent-ng/actions/runs/34295160138)
+passed all required jobs before deployment; desktop builds were skipped because
+this was not a release tag. The exact release daemon also passed all 18
+process-recovery tests locally before packaging.
+
+Only node3 was upgraded to the new local image `vtorrent/node:c9d00a6`, ID
+`sha256:01c51d65ec2e147e5debf2255106f4a7097e993014b03ba355debab468d79821`.
+The release binary SHA-256 is
+`6c12aa9e8849448257dcc16837ce33b6f9d72811a51a467ab90ed9f1cf80f5d3`.
+Its exact image archive, stopped-data copies, and previous executable are private
+under `.ops-backups/node3-sync-20260909-xciPth/`. Image recovery details are in
+[the testnet image guide](../docker/testnet/README.md). No image was pushed to
+a registry; backups remain local only.
+
+- Preflight tips agreed at height 3237; node3 was non-staking. Both old followers
+  still reported the known 99.9% sync-status discrepancy.
+- Graceful stop: `2026-09-09T07:25:59.990749891Z`, exit 0.
+- Both stopped data locations, `/data/node3` and `/home/vtorrent/.vtorrent`,
+  were copied before container replacement. Stored height was 3238;
+  chain database SHA-256:
+  `bb1e2efb8615f3d5de598b663dac9dc2954e4d9738ea70239be3d286e4200c53`.
+- New container: `fb07560f136d34355bc3f1780a769feebe7e9c7f31f9ecaae989238f9017f784`,
+  started at `2026-09-09T07:26:00.601606503Z`. Recreation used
+  `up -d --no-deps --no-build --pull never --force-recreate node3`.
+- Named volume `vtorrent-testnet_vtr-data3` and the existing anonymous volume
+  were preserved. Runtime arguments, isolation, and network mode were unchanged.
+- Installed binary checksum matched the tested artifact. Replay completed at
+  height 3238 at `07:26:38.962461Z`; RPC listened at `07:26:38.963229Z`.
+  No startup WARN/ERROR or derived-state repair warning appeared.
+- Peer handshake completed at `07:26:39.068654Z`; fresh block 3239 was accepted
+  at `07:27:17.686535Z`, hash
+  `15b438ad40bd0fcd6a5eee39e0f13ddbd53fb48dbfeaaa1007cb604b0c828ba6`.
+- Follow-up tips agreed across all three nodes at height 3240, hash
+  `1fc373581d7b4c3ba243385f9f57c61fa177b93404c9d35b9b4664f356dbb87f`.
+  Node3 reported one peer, `syncing: false`, 100%, healthy, and zero restarts.
+- Node1/node2 start times were unchanged; node1 remained staking. Node2 still
+  reports 99.9% on its older build; it was not upgraded. Production seeds, BTC,
+  and monitoring services were untouched.
+
+Node3's RPC availability interruption was approximately 39 seconds. Exclude that
+interval from uninterrupted three-node availability. This verifies startup,
+catch-up, and fresh-block propagation on the new canary; disconnect/reconnect
+behavior was exercised in the isolated release test, not by disrupting live
+peers again. Longer canary observation and seven-day soak sign-off remain pending.

@@ -1,12 +1,38 @@
 # Local testnet images
 
-All three nodes are pinned to the locally built
-`vtorrent/node:84125ea`; none has a Compose `build` entry, so recreation cannot
+Node1 and node2 use `vtorrent/node:84125ea`; node3 is the sync-status canary on
+`vtorrent/node:c9d00a6`. Both images are locally built, and no node has a Compose
+`build` entry, so recreation cannot
 silently replace that version with the current working tree. No image was pushed
 to a registry. Provision the image locally before bringing up this stack on
 another host.
 
-## Restore the tested image
+## Current node3 canary image
+
+Source revision: `c9d00a62c74ff639354706d2990124c3d8dc0190`.
+Binary SHA-256:
+`6c12aa9e8849448257dcc16837ce33b6f9d72811a51a467ab90ed9f1cf80f5d3`.
+Image ID:
+`sha256:01c51d65ec2e147e5debf2255106f4a7097e993014b03ba355debab468d79821`.
+
+The private exact-image archive is
+`.ops-backups/node3-sync-20260909-xciPth/vtorrent-node-c9d00a6.tar`, SHA-256
+`6baba25381737d940e338b388d3e48a16a789c822acb1fae89086d316371bf5f`.
+Verify its checksum before loading it:
+
+```bash
+sha256sum .ops-backups/node3-sync-20260909-xciPth/vtorrent-node-c9d00a6.tar
+docker image load --input .ops-backups/node3-sync-20260909-xciPth/vtorrent-node-c9d00a6.tar
+docker image inspect vtorrent/node:c9d00a6 --format '{{.Id}}'
+```
+
+It uses the same release-artifact recipe and verified runtime base described
+below, with the canary revision/checksum above and binary-only context
+`.ops-backups/node3-sync-20260909-xciPth/image-context/`. The release daemon passed
+all 18 process-recovery tests before packaging. Do not promote this image to the
+other services without a separately approved rollout.
+
+## Restore the node1/node2 image (node3 rollback)
 
 The operational archive is private and git-ignored:
 `.ops-backups/node3-image-20260908-oclHcN/vtorrent-node-84125ea.tar`.

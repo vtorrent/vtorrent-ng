@@ -48,7 +48,8 @@ recorded in [the soak operations log](soak-log.md). The three-node continuous
 window is not signed off by those drills. Node2 and then node1 subsequently joined
 node3 on the versioned release image. Node1's staking-aware upgrade and wallet
 recovery are recorded separately in the operations log; the seven-day soak remains
-pending.
+pending. Node3 subsequently received the sync-status fix as a separately recorded
+canary; node1 and node2 remain on the preceding versioned image.
 
 - [ ] **3+ node Docker testnet** (`docker/testnet/docker-compose.yml`) runs
       ≥7 days: blocks propagate between all nodes, no forks beyond expected
