@@ -27,6 +27,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 mod config;
+mod sync_status;
 
 use clap::Parser;
 use config::{validate_startup_config, Cli};
@@ -294,12 +295,9 @@ async fn main() -> anyhow::Result<()> {
 
         let rpc_broadcaster = rpc_state.events.clone();
         let store_for_bridge = Arc::clone(&block_store);
-        let best_peer_height_ref = Arc::clone(&rpc_state.best_peer_height);
-        let peer_count_ref = Arc::clone(&rpc_state.peer_count);
-        let syncing_ref = Arc::clone(&rpc_state.syncing);
+        let sync_status = sync_status::SyncStatus::new(&rpc_state);
         let spv_chain_ref = Arc::clone(&rpc_state.spv_chain);
         let chain_ref = Arc::clone(&rpc_state.chain);
-        let peer_list_ref = Arc::clone(&rpc_state.peer_list);
         let blocks_staked_ref = Arc::clone(&rpc_state.blocks_staked);
         let last_stake_time_ref = Arc::clone(&rpc_state.last_stake_time);
         let rewards_earned_ref = Arc::clone(&rpc_state.rewards_earned_sats);
@@ -308,6 +306,16 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 match node_rx.recv().await {
                     Ok(event) => {
+                        if matches!(
+                            &*event,
+                            node_events::NodeEvent::PeerConnected { .. }
+                                | node_events::NodeEvent::PeerDisconnected { .. }
+                                | node_events::NodeEvent::NewBlock { .. }
+                                | node_events::NodeEvent::Reorg { .. }
+                        ) {
+                            let local_height = chain_ref.lock().await.best_height();
+                            sync_status.apply(&event, local_height).await;
+                        }
                         // ── Persist new main-chain blocks ─────────────────────
                         if let node_events::NodeEvent::NewBlock {
                             height,
@@ -417,55 +425,13 @@ async fn main() -> anyhow::Result<()> {
                                 user_agent,
                                 version,
                                 height,
-                            } => {
-                                // Update peer count and best known peer height for sync % calculation.
-                                {
-                                    let mut count = peer_count_ref.write().await;
-                                    *count += 1;
-                                }
-                                {
-                                    let mut best = best_peer_height_ref.write().await;
-                                    let h = u64::from(*height);
-                                    if h > *best {
-                                        *best = h;
-                                    }
-                                }
-                                // Update live peer list.
-                                {
-                                    use vtorrent_rpc::state::PeerInfo;
-                                    let mut peers = peer_list_ref.write().await;
-                                    if !peers.iter().any(|p| p.addr == addr.to_string()) {
-                                        peers.push(PeerInfo {
-                                            addr: addr.to_string(),
-                                            user_agent: user_agent.clone(),
-                                            services: 0,
-                                            best_height: *height,
-                                        });
-                                    }
-                                }
-                                Some(RpcNodeEvent::PeerConnected {
-                                    addr: addr.to_string(),
-                                    version: *version,
-                                    user_agent: user_agent.clone(),
-                                    height: *height,
-                                })
-                            }
+                            } => Some(RpcNodeEvent::PeerConnected {
+                                addr: addr.to_string(),
+                                version: *version,
+                                user_agent: user_agent.clone(),
+                                height: *height,
+                            }),
                             node_events::NodeEvent::PeerDisconnected { addr } => {
-                                // Decrement peer count.
-                                {
-                                    let mut count = peer_count_ref.write().await;
-                                    *count = count.saturating_sub(1);
-                                    // If no peers remain, mark as syncing until reconnected.
-                                    if *count == 0 {
-                                        let mut syncing = syncing_ref.write().await;
-                                        *syncing = true;
-                                    }
-                                }
-                                // Remove from live peer list.
-                                {
-                                    let mut peers = peer_list_ref.write().await;
-                                    peers.retain(|p| p.addr != addr.to_string());
-                                }
                                 Some(RpcNodeEvent::PeerDisconnected {
                                     addr: addr.to_string(),
                                     reason: "disconnected".to_string(),
@@ -563,6 +529,8 @@ async fn main() -> anyhow::Result<()> {
                                 blocks.len().saturating_sub(1)
                             );
                         }
+                        let local_height = chain_ref.lock().await.best_height();
+                        sync_status.refresh(local_height).await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         tracing::info!("Node event channel closed — event bridge stopping");

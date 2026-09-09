@@ -13,6 +13,7 @@ use vtorrent_store::store::BlockStore;
 mod interrupted_reorg;
 mod rpc_polling;
 mod swap_recovery;
+mod sync_status;
 
 // Each scenario replays the full genesis snapshot; keep scenarios from starving
 // one another on CI while retaining concurrent nodes within each scenario.

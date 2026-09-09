@@ -130,7 +130,8 @@ pub async fn run_peer(stream: TcpStream, addr: SocketAddr, config: PeerTaskConfi
     loop {
         tokio::select! {
             // Incoming message from peer
-            Some(result) = framed.next() => {
+            result = framed.next() => {
+                let Some(result) = result else { break };
                 match result {
                     Ok(msg) => {
                         // Reset the idle window on any traffic.
@@ -237,7 +238,8 @@ pub async fn run_peer(stream: TcpStream, addr: SocketAddr, config: PeerTaskConfi
             }
 
             // Outgoing command from node
-            Some(cmd) = cmd_rx.recv() => {
+            cmd = cmd_rx.recv() => {
+                let Some(cmd) = cmd else { break };
                 match cmd {
                     PeerCommand::Send(msg) => {
                         if let Err(e) = framed.send(msg).await {
@@ -313,6 +315,72 @@ mod tests {
         let version = framed.next().await.unwrap().unwrap();
         assert_eq!(version.command_str(), "version");
         (framed, event_rx, task, cmd_tx)
+    }
+
+    #[tokio::test]
+    async fn remote_eof_disconnects_before_handshake() {
+        let (framed, mut events, task, _cmd_tx) = connected_peer().await;
+        drop(framed);
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event, PeerEvent::Disconnected { .. }));
+        tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn remote_eof_disconnects_after_handshake() {
+        let (mut framed, mut events, task, _cmd_tx) = connected_peer().await;
+        let version = VersionMsg::new(0, "127.0.0.1:0");
+        framed
+            .send(NetMessage::new(
+                "version",
+                bincode::serialize(&version).unwrap(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            framed.next().await.unwrap().unwrap().command_str(),
+            "verack"
+        );
+        framed
+            .send(NetMessage::new("verack", Vec::new()))
+            .await
+            .unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event, PeerEvent::HandshakeComplete { .. }));
+        drop(framed);
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event, PeerEvent::Disconnected { .. }));
+        tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn closed_command_channel_disconnects() {
+        let (_framed, mut events, task, cmd_tx) = connected_peer().await;
+        drop(cmd_tx);
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event, PeerEvent::Disconnected { .. }));
+        tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]
