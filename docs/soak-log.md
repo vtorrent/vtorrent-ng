@@ -118,3 +118,88 @@ Node2's availability interruption was approximately 33 seconds. Exclude that
 interval from uninterrupted three-node availability. Both followers now use the
 versioned release image; node1 remains on its older image and requires a separate
 approved staking-aware upgrade. The seven-day soak remains pending.
+
+## 2026-09-08 — node1 wallet recovery and staking-aware upgrade
+
+After CI passed for `7333b54` and both followers passed an additional hour of
+recorded observation, the operator approved upgrading node1. Preflight found
+the persisted wallet and staking intent, but the original passphrase was unknown.
+The smoke-test passphrase failed wallet decryption; node1 was left running until
+the operator separately approved same-key wallet recovery.
+
+The repository's deterministic regtest WIF was independently decoded and its
+public key/address derived, matching node1's active staking address. The original
+encrypted wallet, staking intent, and binary were privately backed up before
+re-importing that same key with a new randomly generated passphrase. Import and
+unlock succeeded, with the same address and four UTXOs. No swap recovery directory
+existed. The passphrase is retained only in a 0600 file under the 0700, git-ignored
+`.ops-backups/node1-image-20260908-nHCswr/` directory; its private README records
+the unlock procedure. The old encrypted wallet remains preserved. This public
+test key must never hold real funds, regardless of its encryption passphrase.
+
+Only node1 was recreated on `vtorrent/node:84125ea`, image ID
+`sha256:a56ac5545f87cc989b96500aa819f1715a070d21a2a72e4363316fbad74be41b`.
+
+- Graceful stop: `2026-09-08T16:11:19.318199265Z`, exit 0.
+- Complete stopped `/data/node1` and `/home/vtorrent/.vtorrent` copies were
+  preserved in the private backup directory, including the recovered encrypted
+  wallet and staking intent. These are local backups, not off-site backups.
+- Chain database SHA-256:
+  `7e84b2df5c58630b5c73fd2c1a7c601a350b30e2dbdc5d4d72be024980b7414a`.
+- New container: `9ddef1e31eea9f8bd1ccca4db11aeec3698d3960630b531efbcaeb754ec6fd9e`,
+  started at `2026-09-08T16:11:19.694368912Z` using
+  `up -d --no-deps --no-build --pull never --force-recreate node1`.
+- Named volume `vtorrent-testnet_vtr-data1` and the existing anonymous volume
+  were retained; BTC seed, networking, and all runtime arguments were unchanged.
+- Installed binary SHA-256:
+  `1275b1f06c7b0d6076d3b36a9c9fbceda8e0ecaaa1bfd869d84830c955da79ce`.
+- Validated replay completed at height 2860 at `16:11:52.507874Z`; RPC listened
+  at `16:11:52.509014Z`. Wallet restored locked and BTC-regtest SPV initialized.
+- Protected-file unlock auto-resumed staking at `16:12:09.848176Z`.
+- First new stake: height 2861 at `16:13:39.549933Z`, hash
+  `66075c341e72d4bfaf86ee23514751d8fb7fa4dfd165302b2adc1cd56ccc0821`.
+  Node2 accepted it at `16:13:39.740312Z`; node3 reconnected and accepted it at
+  `16:13:55.734470Z`.
+- Follow-up around 23:41–23:42 UTC: 186 blocks staked since restart; all nodes
+  matched at height 3046, hash
+  `a7c4761bb0e60a22c9647ebfe2a581d1d0a70ed3bf913f400817fa36972f4c75`.
+  All containers were healthy with zero restarts. BTC-regtest SPV reported
+  initialized and synced at height 140. No node1 WARN/ERROR lines were found
+  in the post-upgrade log check.
+
+RPC availability was interrupted for approximately 33 seconds; the stopped-node
+to staking-resume interval was approximately 51 seconds. Wallet re-import also
+briefly locked the wallet before its pre-upgrade unlock; no continuous staking
+claim is made for that recovery interval. Followers were not restarted, but
+temporarily lost their seed connection during node1 recreation. Exclude these
+maintenance/reconnection intervals from uninterrupted soak measurements.
+
+An unresolved follow-up remains: both followers report `syncing: true` and 99.9%
+despite matching node1's tip and propagating new blocks. Record this as a
+sync-status discrepancy, not evidence of chain divergence or a completed sync
+diagnosis. All three nodes now use the versioned image; production seeds, BTC,
+and monitoring services were not redeployed. Seven-day soak sign-off is pending.
+
+## 2026-09-09 — follower sync-status diagnosis (not deployed)
+
+Code inspection confirmed that the daemon event bridge set `syncing` on losing
+the last peer but never cleared it after reconnection or block catch-up. It also
+retained the highest historical peer height after that peer disconnected.
+The source fix recalculates status from the connected peer list and local height
+on peer/block/reorg events, with duplicate peer events handled idempotently.
+
+A real-daemon reconnect regression exposed a related transport issue: the peer
+task matched only `Some` from its incoming stream, so clean TCP EOF disabled
+that select branch without ending the connection task. EOF and command-channel
+closure now terminate the task and emit the disconnect event promptly.
+
+Focused status tests, clean-close tests, and the actual-daemon disconnect/reconnect
+and fresh-block propagation test pass, as do strict Clippy checks for both affected
+crates. These source changes have not been deployed: the running containers still
+use `vtorrent/node:84125ea`. No node restart or soak interruption was performed
+for this diagnosis and fix.
+
+The complete daemon and P2P all-features test run passed 109 tests: five daemon
+unit tests, 17 RPC integration tests, 18 process-recovery tests (including the
+interrupted-reorg matrix and swap recovery), and 69 P2P tests. Formatting and
+`git diff --check` also passed.

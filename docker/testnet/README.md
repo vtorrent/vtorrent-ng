@@ -1,9 +1,9 @@
 # Local testnet images
 
-Node1 uses `vtorrent/node:soak`. Node2 and node3 are pinned to the locally built
-`vtorrent/node:84125ea`; neither has a Compose `build` entry, so recreation cannot
+All three nodes are pinned to the locally built
+`vtorrent/node:84125ea`; none has a Compose `build` entry, so recreation cannot
 silently replace that version with the current working tree. No image was pushed
-to a registry. Provision the follower image locally before bringing up this stack on
+to a registry. Provision the image locally before bringing up this stack on
 another host.
 
 ## Restore the tested image
@@ -68,3 +68,22 @@ both services. Keep `vtorrent-testnet_vtr-data2` mounted at `/data/node2` and
 or renew anonymous volumes. Check replay logs, binary checksum, health, tip
 agreement, and a fresh propagated block before approving any other node upgrade.
 Record every interruption in `docs/soak-log.md`.
+
+## Staking-node recreation
+
+Node1 additionally requires a verified wallet unlock path before stopping it.
+Its persisted wallet starts locked; unlocking restores the saved staking intent.
+Back up the encrypted wallet, staking intent, complete stopped data directory,
+and any data in its other mounted volume. Preserve the BTC-regtest seed and
+runtime arguments without resetting the BTC service.
+
+After a separately approved maintenance window, use the recreation command above
+with only `node1`. Preserve `vtorrent-testnet_vtr-data1` at `/data/node1` and the
+existing anonymous volume. Unlock locally without placing the passphrase in
+shell arguments or logs, then require a newly staked block to reach both followers.
+Record RPC downtime and the longer stop-to-staking-resume interval separately.
+
+The current local wallet uses the repository's publicly known deterministic
+regtest key. Its new passphrase is stored privately under the node1 operational
+backup directory, not in Compose. Encryption does not make a public test key safe
+for real funds. Never use this key or stack for mainnet funds.
