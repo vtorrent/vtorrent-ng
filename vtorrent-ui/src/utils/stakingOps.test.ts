@@ -21,3 +21,21 @@ describe('stakingOps', () => {
     expect(s).toBe('height 10 · 2 peers · synced · mempool 0')
   })
 })
+
+import { describe as describe2, it as it2, expect as expect2 } from 'vitest'
+import { dailyAvgReward as avg2, healthSummary as healthSummary2, maturityCountdown as maturityCountdown2 } from './stakingOps'
+
+describe2('stakingOps carryover', () => {
+  it2('returns 0 for empty history', () => {
+    expect2(avg2([], 1_700_000_000)).toBe(0)
+  })
+
+  it2('reports syncing branch', () => {
+    const s = healthSummary2({ blockHeight: 5, connections: 1, syncing: true, syncPercent: 99.9, mempoolSize: 3 })
+    expect2(s).toContain('syncing')
+  })
+
+  it2('clamps over-mature countdown to zero', () => {
+    expect2(maturityCountdown2(150, 100)).toBe(0)
+  })
+})

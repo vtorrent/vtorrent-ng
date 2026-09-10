@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import { formatVTR, useWallet } from '../hooks/useWallet'
 import { useStakingStatus, startStaking, stopStaking } from '../hooks/useNode'
+import HealthStrip from '../components/staking/HealthStrip'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -100,6 +101,8 @@ export default function StakingPage() {
           <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
         </button>
       </div>
+
+      <HealthStrip />
 
       {/* Status banner */}
       {error && (
