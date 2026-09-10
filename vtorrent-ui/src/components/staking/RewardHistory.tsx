@@ -13,7 +13,8 @@ interface RewardRow {
 
 async function fetchRewards(): Promise<RewardRow[]> {
   if (isTauri()) {
-    return tauriInvoke<RewardRow[]>('get_staking_rewards', { limit: 20 })
+    const raw = await tauriInvoke<unknown>('get_staking_rewards', { limit: 20 })
+    return camel(raw) as RewardRow[]
   }
   const raw = await rpcGet<unknown>('/api/v1/staking/rewards?limit=20')
   const data = camel(raw) as { tipHeight: number, rewards: RewardRow[] }
