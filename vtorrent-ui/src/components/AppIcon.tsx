@@ -13,7 +13,7 @@ export default function AppIcon({ size = 64, className }: AppIconProps) {
       viewBox="0 0 128 128"
       className={className}
       role="img"
-      aria-label="vTorrent-NG"
+      aria-label="vTorrent"
     >
       <defs>
         <linearGradient id="vtr-hex" x1="0" y1="0" x2="1" y2="1">

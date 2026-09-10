@@ -299,7 +299,7 @@ export default function ImportWizardPage() {
 
             <div className="bg-vtorrent-900/20 border border-vtorrent-800/30 rounded-lg p-3 mb-5">
               <p className="text-vtorrent-300 text-xs leading-relaxed">
-                <strong>Next step:</strong> Your claimable balance will be available once the new vTorrent-NG chain launches.
+                <strong>Next step:</strong> Your claimable balance will be available once the new vTorrent 2.0 chain launches.
                 You can claim directly from the Dashboard using these imported keys.
               </p>
             </div>

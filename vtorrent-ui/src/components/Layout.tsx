@@ -49,7 +49,7 @@ export default function Layout() {
           <div className="flex items-center gap-2.5">
             <AppIcon size={32} />
             <div>
-              <p className="text-white font-semibold text-sm leading-none">vTorrent-NG</p>
+              <p className="text-white font-semibold text-sm leading-none">vTorrent</p>
               <p className="text-vtorrent-500 text-xs mt-0.5">v2.0.0-beta.2</p>
             </div>
           </div>
