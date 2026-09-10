@@ -73,6 +73,12 @@ pub(crate) enum OverlayIngress {
 /// window before it is banned. Protects the node's event loop from flood DoS.
 pub const MAX_MSGS_PER_WINDOW: u64 = 500;
 
+/// Maximum number of bulk-data (`block`/`tx`) messages per window. Sync
+/// bursts legitimately exceed the control budget (a 500-block getdata round
+/// streams back-to-back), so data payloads get 10x headroom. Each payload is
+/// still size-capped and fully validated, with violations banned as usual.
+pub const MAX_DATA_MSGS_PER_WINDOW: u64 = 5000;
+
 /// Rate-limit window length in seconds.
 pub const MSG_WINDOW_SECS: u64 = 10;
 
@@ -206,6 +212,8 @@ pub struct Node {
     pub(crate) peer_ping_nonces: std::collections::HashMap<std::net::SocketAddr, u64>,
     /// Per-peer message counts for flood rate limiting: (count, window start).
     pub(crate) peer_msg_counts: std::collections::HashMap<std::net::SocketAddr, (u64, u64)>,
+    /// Per-peer bulk-data (`block`/`tx`) counts for the higher data budget.
+    pub(crate) peer_data_msg_counts: std::collections::HashMap<std::net::SocketAddr, (u64, u64)>,
     /// Per-peer advertised protocol version. Completed live handshakes always
     /// use the current hard-boundary protocol version.
     /// Unknown commands are ignored to allow rolling upgrades.
@@ -294,6 +302,7 @@ impl Node {
             peer_fee_filters: std::collections::HashMap::new(),
             peer_ping_nonces: std::collections::HashMap::new(),
             peer_msg_counts: std::collections::HashMap::new(),
+            peer_data_msg_counts: std::collections::HashMap::new(),
             peer_versions: std::collections::HashMap::new(),
             order_book: None,
             seen_orders: HashSet::new(),
@@ -363,6 +372,7 @@ impl Node {
             peer_fee_filters: std::collections::HashMap::new(),
             peer_ping_nonces: std::collections::HashMap::new(),
             peer_msg_counts: std::collections::HashMap::new(),
+            peer_data_msg_counts: std::collections::HashMap::new(),
             peer_versions: std::collections::HashMap::new(),
             order_book: None,
             seen_orders: HashSet::new(),

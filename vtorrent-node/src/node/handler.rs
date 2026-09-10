@@ -1607,7 +1607,7 @@ pub(crate) async fn dispatch_message(
     peer_addr: SocketAddr,
     msg: NetMessage,
 ) -> Result<()> {
-    use super::{MAX_MSGS_PER_WINDOW, MSG_WINDOW_SECS};
+    use super::MSG_WINDOW_SECS;
     use crate::atomic_swap::OrderAnnouncement;
     use vtorrent_p2p::ban_manager::Misbehaviour;
     use vtorrent_p2p::message::{AddrMsg, FeeFilterMsg, PingMsg, SendCmpctMsg};
@@ -1621,19 +1621,30 @@ pub(crate) async fn dispatch_message(
         .unwrap_or(vtorrent_p2p::message::LEGACY_PROTOCOL_VERSION);
 
     // Per-peer flood rate limiting: a peer that exceeds the message budget
-    // within a window is banned and disconnected.
+    // within a window is banned and disconnected. Bulk-data payloads
+    // (`block`/`tx`) draw from a 10x budget — sync bursts legitimately
+    // exceed the control budget, while each payload stays size-capped and
+    // fully validated with violations banned as usual.
     let now = super::now_secs();
-    let (count, window_start) = node.peer_msg_counts.entry(peer_addr).or_insert((0, now));
+    let is_bulk_data = matches!(msg.command_str(), "block" | "tx");
+    let (budget, counts) = if is_bulk_data {
+        use super::MAX_DATA_MSGS_PER_WINDOW as BUDGET;
+        (BUDGET, &mut node.peer_data_msg_counts)
+    } else {
+        use super::MAX_MSGS_PER_WINDOW as BUDGET;
+        (BUDGET, &mut node.peer_msg_counts)
+    };
+    let (count, window_start) = counts.entry(peer_addr).or_insert((0, now));
     if now.saturating_sub(*window_start) >= MSG_WINDOW_SECS {
         *count = 0;
         *window_start = now;
     }
     *count += 1;
-    if *count > MAX_MSGS_PER_WINDOW {
+    if *count > budget {
         tracing::warn!(
             "Peer {} exceeded {} messages/{}s; banning",
             peer_addr,
-            MAX_MSGS_PER_WINDOW,
+            budget,
             MSG_WINDOW_SECS
         );
         node.peer_manager
@@ -1945,6 +1956,47 @@ mod dispatch_tests {
         assert!(
             node.peer_manager.is_banned(addr).await,
             "peer exceeding the message budget must be banned"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_bulk_data_allows_sync_bursts() {
+        use crate::node::MAX_DATA_MSGS_PER_WINDOW;
+        let mut node = test_node();
+        let addr = peer(24);
+        // Small block with an unknown parent: lands in the orphan path
+        // (deduped, unscored), isolating the rate limiter under test.
+        // (The local genesis would work but carries the 59k-entry legacy
+        // snapshot, making 5000 iterations pathologically slow.)
+        let block = Block {
+            header: BlockHeader {
+                version: 1,
+                prev_block_hash: [0x99u8; 32],
+                merkle_root: [0u8; 32],
+                utxo_root: [0u8; 32],
+                timestamp: 1_700_000_000,
+                bits: crate::genesis::GENESIS_BITS,
+                nonce: 9999,
+                stake_modifier: 0,
+            },
+            transactions: vec![],
+        };
+        let payload = bincode::serialize(&block).unwrap();
+        let msg = NetMessage::new("block", payload);
+        for _ in 0..MAX_DATA_MSGS_PER_WINDOW {
+            dispatch_message(&mut node, addr, msg.clone())
+                .await
+                .unwrap();
+        }
+        assert!(
+            !node.peer_manager.is_banned(addr).await,
+            "a full bulk-data window must not ban a syncing peer"
+        );
+        // One more trips the data budget and bans, like the control budget.
+        dispatch_message(&mut node, addr, msg).await.unwrap();
+        assert!(
+            node.peer_manager.is_banned(addr).await,
+            "exceeding the bulk-data budget must still ban"
         );
     }
 

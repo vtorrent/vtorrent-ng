@@ -127,6 +127,7 @@ impl Node {
                 self.peer_fee_filters.remove(&peer_addr);
                 self.peer_ping_nonces.remove(&peer_addr);
                 self.peer_msg_counts.remove(&peer_addr);
+                self.peer_data_msg_counts.remove(&peer_addr);
                 self.peer_versions.remove(&peer_addr);
             }
         }
