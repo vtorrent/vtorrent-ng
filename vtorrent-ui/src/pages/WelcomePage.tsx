@@ -3,7 +3,6 @@ import { useState } from 'react'
 import { Download, PlusCircle, Shield, ArrowRight, Lock } from 'lucide-react'
 import { useWallet } from '../hooks/useWallet'
 import AppIcon from '../components/AppIcon'
-import LegacyWordmark from '../components/LegacyWordmark'
 
 export default function WelcomePage() {
   const navigate = useNavigate()
@@ -29,7 +28,7 @@ export default function WelcomePage() {
   }
 
   return (
-    <div className="min-h-screen gradient-bg flex flex-col items-center justify-center p-6 relative">
+    <div className="min-h-screen gradient-bg flex flex-col items-center justify-center p-6">
       {/* Header */}
       <div className="text-center mb-10">
         <div className="mb-5 flex justify-center">
@@ -107,10 +106,6 @@ export default function WelcomePage() {
                 <span className="text-xs text-gray-500">{label}</span>
               </div>
             ))}
-          </div>
-
-          <div className="absolute bottom-5 right-6">
-            <LegacyWordmark />
           </div>
         </div>
       ) : (
