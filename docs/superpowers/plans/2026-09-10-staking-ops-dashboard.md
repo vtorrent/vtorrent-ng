@@ -19,8 +19,11 @@
 
 - [ ] **Step 1: Add vitest dev dependency**
 
-Run: `cd vtorrent-ui && pnpm add -D vitest`
-Expected: `package.json` gains `"vitest"` under `devDependencies`, exit 0.
+Run: `cd vtorrent-ui && pnpm add -D vitest@2`
+Expected: `package.json` gains `"vitest": "^2.x"` under `devDependencies`, exit 0.
+Note: pin major 2 — vitest 5 crashes with vite 5 (`ERR_PACKAGE_PATH_NOT_EXPORTED
+'./module-runner'`); vitest 2 is the contemporary major for vite 5. Also add a
+`"test": "vitest run"` script to `vtorrent-ui/package.json` so CI can invoke it.
 
 - [ ] **Step 2: Write the failing test**
 
