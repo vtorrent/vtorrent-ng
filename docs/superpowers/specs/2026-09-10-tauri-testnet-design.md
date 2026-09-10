@@ -10,12 +10,16 @@ running an embedded mainnet node.
 
 ## Backend (`vtorrent-tauri`)
 - `start_node(state, network: Option<String>, seeds: Option<Vec<String>>)`:
-  `"testnet"` → `testnet: true`, datadir `~/.vtorrent/testnet`,
-  `extra_seeds` from param; anything else/omitted → current mainnet default.
-- `NodeHandle` gains `network: String`; if a node is already running on a
-  different network, return `NodeError("node running on {net}; restart the app to switch")`
-  instead of silently reusing it.
-- `NodeInfoResult.network` already exists — no change.
+  `"testnet"` selects the **soak-compatible regtest chain**
+  (`regtest + regtest_fast_stake`, i.e. chain ID `vtorrent-regtest`) with
+  `testnet: true` PEX behavior, datadir `~/.vtorrent/testnet`, and
+  `extra_seeds` from param. (`testnet: true` alone would select the mainnet
+  chain and reject soak blocks — hence regtest underneath.)
+  Anything else/omitted → current mainnet default.
+- `DEFAULT_TESTNET_SEEDS: &[&str]` (empty until phase-B infra lands) used as
+  fallback when the user provides no seeds.
+- `NodeHandle` gains `network: String` (canonical chain ID); running node on
+  a different network → `NodeError`, restart required.
 
 ## Frontend (`vtorrent-ui`)
 - `useNetwork()` hook: `'mainnet' | 'testnet'`, localStorage `vtr-network`,
