@@ -2,39 +2,97 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Theme palette triplets. :root is the modern teal/navy identity;
+   [data-theme='legacy'] restores the original espresso/taupe artwork. */
+:root {
+  --vt-50: 237 252 249;
+  --vt-100: 210 247 241;
+  --vt-200: 169 237 228;
+  --vt-300: 114 221 211;
+  --vt-400: 62 197 188;
+  --vt-500: 37 169 162;
+  --vt-600: 29 136 128;
+  --vt-700: 28 109 104;
+  --vt-800: 28 87 84;
+  --vt-900: 27 72 69;
+  --vt-950: 10 46 44;
+  --nv-700: 26 37 53;
+  --nv-800: 15 25 35;
+  --nv-900: 10 17 24;
+  --nv-950: 6 12 18;
+  --bg: 6 12 18;
+}
+
+[data-theme='legacy'] {
+  --vt-50: 244 235 235;
+  --vt-100: 232 216 216;
+  --vt-200: 212 193 193;
+  --vt-300: 196 181 181;
+  --vt-400: 165 152 152;
+  --vt-500: 110 84 83;
+  --vt-600: 98 73 72;
+  --vt-700: 74 49 49;
+  --vt-800: 58 39 39;
+  --vt-900: 74 49 49;
+  --vt-950: 36 22 22;
+  --nv-700: 93 64 64;
+  --nv-800: 74 49 49;
+  --nv-900: 36 22 22;
+  --nv-950: 24 14 14;
+  --bg: 24 14 14;
+}
+
 @layer base {
   body {
-    @apply bg-[#060c12] text-gray-100 font-sans antialiased;
+    background-color: rgb(var(--bg));
+    @apply text-gray-100 font-sans antialiased;
   }
 
   ::-webkit-scrollbar {
     @apply w-1.5;
   }
   ::-webkit-scrollbar-track {
-    @apply bg-[#0a1118];
+    background-color: rgb(var(--nv-900));
   }
   ::-webkit-scrollbar-thumb {
-    @apply bg-[#1c6d68] rounded-full;
+    background-color: rgb(var(--vt-700));
+    @apply rounded-full;
   }
 }
 
 @layer components {
   .card {
-    @apply bg-[#0a1118] border border-[#1b4845]/40 rounded-xl p-5 shadow-lg;
+    background-color: rgb(var(--nv-900));
+    border: 1px solid rgb(var(--vt-900) / 0.4);
+    @apply rounded-xl p-5 shadow-lg;
   }
 
   .btn-primary {
-    @apply bg-[#25a9a2] hover:bg-[#3ec5bc] text-white font-semibold
-           px-5 py-2.5 rounded-lg transition-all duration-150
-           focus:outline-none focus:ring-2 focus:ring-[#3ec5bc] focus:ring-offset-2 focus:ring-offset-[#060c12]
-           disabled:opacity-50 disabled:cursor-not-allowed;
+    background-color: rgb(var(--vt-500));
+    @apply text-white font-semibold px-5 py-2.5 rounded-lg transition-all duration-150
+           focus:outline-none focus:ring-2 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary:hover {
+    background-color: rgb(var(--vt-400));
+  }
+  .btn-primary:focus {
+    --tw-ring-color: rgb(var(--vt-400));
+    --tw-ring-offset-color: rgb(var(--bg));
   }
 
   .btn-secondary {
-    @apply bg-[#0f1923] hover:bg-[#1a2535] text-gray-200 font-medium
-           border border-[#1b4845]/50 hover:border-[#1c6d68]/50
-           px-5 py-2.5 rounded-lg transition-all duration-150
-           focus:outline-none focus:ring-2 focus:ring-[#1c6d68];
+    background-color: rgb(var(--nv-800));
+    color: rgb(229 231 235);
+    border: 1px solid rgb(var(--vt-900) / 0.5);
+    @apply font-medium px-5 py-2.5 rounded-lg transition-all duration-150
+           focus:outline-none focus:ring-2;
+  }
+  .btn-secondary:hover {
+    background-color: rgb(var(--nv-700));
+    border-color: rgb(var(--vt-700) / 0.5);
+  }
+  .btn-secondary:focus {
+    --tw-ring-color: rgb(var(--vt-700));
   }
 
   .btn-danger {
@@ -43,10 +101,14 @@
   }
 
   .input-field {
-    @apply bg-[#0f1923] border border-[#1b4845]/60 text-gray-100
-           placeholder-gray-500 rounded-lg px-4 py-2.5 w-full
-           focus:outline-none focus:ring-2 focus:ring-[#25a9a2] focus:border-transparent
+    background-color: rgb(var(--nv-800));
+    border: 1px solid rgb(var(--vt-900) / 0.6);
+    @apply text-gray-100 placeholder-gray-500 rounded-lg px-4 py-2.5 w-full
+           focus:outline-none focus:ring-2 focus:border-transparent
            transition-all duration-150;
+  }
+  .input-field:focus {
+    --tw-ring-color: rgb(var(--vt-500));
   }
 
   .input-invalid {
@@ -73,15 +135,17 @@
   }
 
   .address-mono {
-    @apply font-mono text-sm text-[#72ddd3] bg-[#0f1923]/60
-           px-3 py-1.5 rounded-lg border border-[#1b4845]/40
+    color: rgb(var(--vt-300));
+    background-color: rgb(var(--nv-800) / 0.6);
+    border: 1px solid rgb(var(--vt-900) / 0.4);
+    @apply font-mono text-sm px-3 py-1.5 rounded-lg
            break-all select-all;
   }
 }
 
 /* Animated gradient background for the hero section */
 .gradient-bg {
-  background: radial-gradient(ellipse at 20% 50%, rgba(37, 169, 162, 0.08) 0%, transparent 60%),
-              radial-gradient(ellipse at 80% 20%, rgba(37, 169, 162, 0.05) 0%, transparent 50%),
-              #060c12;
+  background: radial-gradient(ellipse at 20% 50%, rgb(var(--vt-500) / 0.08) 0%, transparent 60%),
+              radial-gradient(ellipse at 80% 20%, rgb(var(--vt-500) / 0.05) 0%, transparent 50%),
+              rgb(var(--bg));
 }

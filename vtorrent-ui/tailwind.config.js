@@ -4,24 +4,27 @@ export default {
   theme: {
     extend: {
       colors: {
-        // vTorrent brand colors - deep navy + electric teal
+        // Theme-aware brand colors. Triplets are set per theme in index.css
+        // (:root = modern teal/navy, [data-theme='legacy'] = espresso/taupe).
+        // rgb() with <alpha-value> keeps /opacity modifiers working.
         vtorrent: {
-          50:  '#edfcf9',
-          100: '#d2f7f1',
-          200: '#a9ede4',
-          300: '#72ddd3',
-          400: '#3ec5bc',
-          500: '#25a9a2',  // primary brand teal
-          600: '#1d8880',
-          700: '#1c6d68',
-          800: '#1c5754',
-          900: '#1b4845',
-          950: '#0a2e2c',
+          50:  'rgb(var(--vt-50) / <alpha-value>)',
+          100: 'rgb(var(--vt-100) / <alpha-value>)',
+          200: 'rgb(var(--vt-200) / <alpha-value>)',
+          300: 'rgb(var(--vt-300) / <alpha-value>)',
+          400: 'rgb(var(--vt-400) / <alpha-value>)',
+          500: 'rgb(var(--vt-500) / <alpha-value>)',  // primary brand
+          600: 'rgb(var(--vt-600) / <alpha-value>)',
+          700: 'rgb(var(--vt-700) / <alpha-value>)',
+          800: 'rgb(var(--vt-800) / <alpha-value>)',
+          900: 'rgb(var(--vt-900) / <alpha-value>)',
+          950: 'rgb(var(--vt-950) / <alpha-value>)',
         },
         navy: {
-          800: '#0f1923',
-          900: '#0a1118',
-          950: '#060c12',
+          700: 'rgb(var(--nv-700) / <alpha-value>)',
+          800: 'rgb(var(--nv-800) / <alpha-value>)',
+          900: 'rgb(var(--nv-900) / <alpha-value>)',
+          950: 'rgb(var(--nv-950) / <alpha-value>)',
         }
       },
       fontFamily: {

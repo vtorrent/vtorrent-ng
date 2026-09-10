@@ -1,10 +1,11 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Shield, Download, ArrowLeftRight,
-  Lock, Wifi, WifiOff, RefreshCw, Cpu, Zap, Gift, Bitcoin,
+  Lock, Wifi, WifiOff, RefreshCw, Cpu, Zap, Gift, Bitcoin, Palette,
 } from 'lucide-react'
 import { useWallet, formatVTR } from '../hooks/useWallet'
 import { useNodeInfo } from '../hooks/useNode'
+import { useTheme } from '../hooks/useTheme'
 import clsx from 'clsx'
 
 const navItems = [
@@ -19,6 +20,7 @@ const navItems = [
 
 export default function Layout() {
   const { lock, totalBalance, has2FA, keys } = useWallet()
+  const { theme, toggle: toggleTheme } = useTheme()
   const navigate = useNavigate()
 
   // Poll node info every 8 seconds for live sidebar status
@@ -163,6 +165,16 @@ export default function Layout() {
               2FA Active
             </div>
           )}
+
+          {/* Theme toggle */}
+          <button
+            onClick={toggleTheme}
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-gray-200 hover:bg-navy-800/60 transition-all duration-150"
+            title={theme === 'legacy' ? 'Switch to modern theme' : 'Switch to legacy theme'}
+          >
+            <Palette size={14} />
+            {theme === 'legacy' ? 'Modern Theme' : 'Legacy Theme'}
+          </button>
 
           {/* Lock button */}
           <button
