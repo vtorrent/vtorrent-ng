@@ -30,6 +30,11 @@ export default function NetworkPicker({ network, onChange, seeds, onSeedsChange 
         ))}
       </div>
       {network === 'testnet' && (
+        <p className="text-[11px] text-gray-500">
+          Testnet joins the soak network (regtest chain — coins are worthless).
+        </p>
+      )}
+      {network === 'testnet' && (
         <div>
           <label className="label flex items-center gap-1.5">
             <FlaskConical size={12} className="text-amber-400" />

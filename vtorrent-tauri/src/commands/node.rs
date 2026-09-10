@@ -32,6 +32,19 @@ pub struct TxResult {
     pub display: String,
 }
 
+/// Default testnet (soak) bootstrap peers. Empty until phase-B infra lands a
+/// stable public seed — until then the UI seed field is the only way in.
+pub const DEFAULT_TESTNET_SEEDS: &[&str] = &[];
+
+/// Resolve the requested network name to its canonical chain ID.
+fn resolve_network(network: Option<&str>) -> &'static str {
+    if matches!(network, Some("testnet")) {
+        "vtorrent-regtest"
+    } else {
+        "vtorrent-mainnet"
+    }
+}
+
 #[tauri::command]
 pub async fn start_node(
     state: tauri::State<'_, AppState>,
@@ -42,11 +55,7 @@ pub async fn start_node(
     use vtorrent_node::node::{Node, NodeConfig};
     use vtorrent_rpc::state::AppState as RpcAppState;
 
-    let network_name = if matches!(network.as_deref(), Some("testnet")) {
-        "vtorrent-testnet"
-    } else {
-        "vtorrent-mainnet"
-    };
+    let network_name = resolve_network(network.as_deref());
 
     {
         let guard = state.node.lock().await;
@@ -63,10 +72,23 @@ pub async fn start_node(
     }
 
     let mut config = NodeConfig::default();
-    if network_name == "vtorrent-testnet" {
-        config.testnet = true;
+    if network_name == "vtorrent-regtest" {
+        // Soak recipe: regtest consensus chain, MAINNET P2P magic (the soak
+        // fleet runs without --testnet), isolated (no mainnet DHT/DNS), and
+        // explicit seeds only.
+        config.regtest = true;
+        config.regtest_fast_stake = true;
+        config.isolated = true;
         config.data_dir = config.data_dir.join("testnet");
-        config.extra_seeds = seeds.unwrap_or_default();
+        let seeds = seeds.unwrap_or_default();
+        config.extra_seeds = if seeds.is_empty() {
+            DEFAULT_TESTNET_SEEDS
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        } else {
+            seeds
+        };
     }
     let mut node = Node::new(config).map_err(|e| TauriError::NodeError(e.to_string()))?;
 
@@ -299,4 +321,17 @@ pub async fn get_transactions(
             }
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_network() {
+        assert_eq!(resolve_network(None), "vtorrent-mainnet");
+        assert_eq!(resolve_network(Some("mainnet")), "vtorrent-mainnet");
+        assert_eq!(resolve_network(Some("testnet")), "vtorrent-regtest");
+        assert_eq!(resolve_network(Some("bogus")), "vtorrent-mainnet");
+    }
 }
