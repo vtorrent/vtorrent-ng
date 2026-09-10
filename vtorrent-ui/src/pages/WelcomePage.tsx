@@ -2,6 +2,7 @@ import { useNavigate } from 'react-router-dom'
 import { useState } from 'react'
 import { Download, PlusCircle, Shield, ArrowRight, Lock } from 'lucide-react'
 import { useWallet } from '../hooks/useWallet'
+import AppIcon from '../components/AppIcon'
 import LegacyWordmark from '../components/LegacyWordmark'
 
 export default function WelcomePage() {
@@ -31,8 +32,8 @@ export default function WelcomePage() {
     <div className="min-h-screen gradient-bg flex flex-col items-center justify-center p-6">
       {/* Header */}
       <div className="text-center mb-10">
-        <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-vtorrent-500/15 border border-vtorrent-500/30 mb-5">
-          <span className="text-vtorrent-400 font-bold text-2xl">VT</span>
+        <div className="mb-5 flex justify-center">
+          <AppIcon size={64} />
         </div>
         <h1 className="text-3xl font-bold text-white mb-2">vTorrent-NG</h1>
         <p className="text-gray-400 text-sm max-w-xs mx-auto">

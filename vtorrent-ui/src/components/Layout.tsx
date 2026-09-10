@@ -6,6 +6,7 @@ import {
 import { useWallet, formatVTR } from '../hooks/useWallet'
 import { useNodeInfo } from '../hooks/useNode'
 import { useTheme } from '../hooks/useTheme'
+import AppIcon from './AppIcon'
 import clsx from 'clsx'
 
 const navItems = [
@@ -46,9 +47,7 @@ export default function Layout() {
         {/* Logo */}
         <div className="px-5 py-5 border-b border-vtorrent-900/30">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-vtorrent-500/20 border border-vtorrent-500/40 flex items-center justify-center">
-              <span className="text-vtorrent-400 font-bold text-sm">VT</span>
-            </div>
+            <AppIcon size={32} />
             <div>
               <p className="text-white font-semibold text-sm leading-none">vTorrent-NG</p>
               <p className="text-vtorrent-500 text-xs mt-0.5">v2.0.0-beta.2</p>

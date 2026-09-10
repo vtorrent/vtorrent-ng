@@ -40,7 +40,7 @@
     ],
     "category": "Finance",
     "shortDescription": "vTorrent-NG — Decentralized torrent client with built-in VTR wallet and P2P trading",
-    "longDescription": "vTorrent is a next-generation cryptocurrency client that combines a full VTR wallet, incentivized BitTorrent seeding, and peer-to-peer atomic swap trading — all without relying on centralized exchanges.",
+    "longDescription": "vTorrent-NG is a next-generation cryptocurrency client that combines a full VTR wallet, incentivized BitTorrent seeding, and peer-to-peer atomic swap trading — all without relying on centralized exchanges.",
     "copyright": "Copyright © 2024 vTorrent Project",
     "macOS": {
       "minimumSystemVersion": "10.15",
