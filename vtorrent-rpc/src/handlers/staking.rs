@@ -135,3 +135,104 @@ pub async fn stop_staking(State(state): State<Arc<AppState>>) -> RpcResult<Json<
         json!({ "success": true, "message": "Staking stopped" }),
     ))
 }
+
+#[allow(dead_code)]
+pub(crate) fn clamp_rewards_limit(limit: Option<u64>) -> u64 {
+    match limit {
+        None => 20,
+        Some(n) => n.clamp(1, 100),
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn p2pkh_script_to_address(script: &[u8]) -> Option<String> {
+    if script.len() != 25
+        || script[0] != 0x76
+        || script[1] != 0xa9
+        || script[2] != 0x14
+        || script[23] != 0x88
+        || script[24] != 0xac
+    {
+        return None;
+    }
+    let addr = vtorrent_core::address::Address::from_hash160(
+        &script[3..23],
+        vtorrent_core::network::legacy::PUBKEY_ADDRESS_PREFIX,
+    )
+    .ok()?;
+    Some(addr.to_string())
+}
+
+#[allow(dead_code)]
+pub(crate) fn coinstake_reward(tx: &vtorrent_node::block::Transaction) -> Option<u64> {
+    if tx.tx_type != vtorrent_node::block::TxType::Coinstake {
+        return None;
+    }
+    Some(tx.outputs.iter().map(|o| o.value).sum())
+}
+
+#[cfg(test)]
+mod rewards_tests {
+    use super::*;
+
+    fn p2pkh_script(hash: &[u8; 20]) -> Vec<u8> {
+        let mut s = vec![0x76, 0xa9, 0x14];
+        s.extend_from_slice(hash);
+        s.push(0x88);
+        s.push(0xac);
+        s
+    }
+
+    #[test]
+    fn test_clamp_rewards_limit() {
+        assert_eq!(clamp_rewards_limit(None), 20);
+        assert_eq!(clamp_rewards_limit(Some(0)), 1);
+        assert_eq!(clamp_rewards_limit(Some(5)), 5);
+        assert_eq!(clamp_rewards_limit(Some(101)), 100);
+    }
+
+    #[test]
+    fn test_p2pkh_script_to_address_roundtrip() {
+        let hash = [0x11u8; 20];
+        let addr = p2pkh_script_to_address(&p2pkh_script(&hash)).unwrap();
+        assert!(addr.starts_with('V'));
+        assert!(p2pkh_script_to_address(&[0x00, 0x01]).is_none());
+        assert!(p2pkh_script_to_address(&[0x00; 25]).is_none());
+    }
+
+    #[test]
+    fn test_coinstake_reward_sums_outputs() {
+        let tx = vtorrent_node::block::Transaction {
+            version: 1,
+            tx_type: vtorrent_node::block::TxType::Coinstake,
+            inputs: vec![],
+            outputs: vec![
+                vtorrent_node::block::TxOutput {
+                    value: 0,
+                    script_pubkey: vec![],
+                },
+                vtorrent_node::block::TxOutput {
+                    value: 50_000,
+                    script_pubkey: vec![0x76],
+                },
+            ],
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        };
+        assert_eq!(coinstake_reward(&tx), Some(50_000));
+        let std_tx = vtorrent_node::block::Transaction {
+            version: 1,
+            tx_type: vtorrent_node::block::TxType::Standard,
+            inputs: vec![],
+            outputs: vec![vtorrent_node::block::TxOutput {
+                value: 50_000,
+                script_pubkey: vec![0x76],
+            }],
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        };
+        assert_eq!(coinstake_reward(&std_tx), None);
+    }
+}
