@@ -95,7 +95,7 @@ export interface ClaimSubmitResult {
 
 async function fetchNodeInfo(): Promise<NodeInfo> {
   if (isTauri()) {
-    return tauriInvoke<NodeInfo>('get_node_info')
+    return camel(await tauriInvoke<unknown>('get_node_info')) as NodeInfo
   }
   return camel(await rpcGet<unknown>('/api/v1/info')) as NodeInfo
 }
