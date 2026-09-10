@@ -28,7 +28,7 @@ export default function WelcomePage() {
   }
 
   return (
-    <div className="min-h-screen gradient-bg flex flex-col items-center justify-center p-6">
+    <div className="min-h-screen gradient-bg flex flex-col items-center justify-center p-6 relative">
       {/* Header */}
       <div className="text-center mb-10">
         <div className="mb-5 flex justify-center">
@@ -95,7 +95,7 @@ export default function WelcomePage() {
           </button>
 
           {/* Feature highlights */}
-          <div className="pt-4 grid grid-cols-3 gap-2 text-center">
+          <div className="absolute bottom-5 left-1/2 -translate-x-1/2 grid grid-cols-3 gap-2 text-center">
             {[
               { icon: Shield, label: 'Built-in 2FA' },
               { icon: Download, label: 'Earn by Seeding' },
