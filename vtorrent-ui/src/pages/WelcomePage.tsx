@@ -33,7 +33,7 @@ export default function WelcomePage() {
         <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-vtorrent-500/15 border border-vtorrent-500/30 mb-5">
           <span className="text-vtorrent-400 font-bold text-2xl">VT</span>
         </div>
-        <h1 className="text-3xl font-bold text-white mb-2">vTorrent 2.0</h1>
+        <h1 className="text-3xl font-bold text-white mb-2">vTorrent-NG</h1>
         <p className="text-gray-400 text-sm max-w-xs mx-auto">
           The decentralized torrent economy. Earn VTR for seeding. Trade peer-to-peer. No exchanges needed.
         </p>
@@ -53,7 +53,7 @@ export default function WelcomePage() {
               </div>
               <div className="flex-1">
                 <p className="font-semibold text-white text-sm">Open Wallet</p>
-                <p className="text-gray-500 text-xs mt-0.5">Unlock your existing vTorrent 2.0 wallet</p>
+                <p className="text-gray-500 text-xs mt-0.5">Unlock your existing vTorrent-NG wallet</p>
               </div>
               <ArrowRight size={16} className="text-gray-600 group-hover:text-vtorrent-400 transition-colors" />
             </div>

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "vTorrent",
+  "productName": "vTorrent-NG",
   "version": "2.0.0-beta.2",
   "identifier": "io.vtorrent.client",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "vTorrent",
+        "title": "vTorrent-NG",
         "width": 1200,
         "height": 800,
         "minWidth": 900,
@@ -39,7 +39,7 @@
       "icons/icon.ico"
     ],
     "category": "Finance",
-    "shortDescription": "vTorrent 2.0 — Decentralized torrent client with built-in VTR wallet and P2P trading",
+    "shortDescription": "vTorrent-NG — Decentralized torrent client with built-in VTR wallet and P2P trading",
     "longDescription": "vTorrent is a next-generation cryptocurrency client that combines a full VTR wallet, incentivized BitTorrent seeding, and peer-to-peer atomic swap trading — all without relying on centralized exchanges.",
     "copyright": "Copyright © 2024 vTorrent Project",
     "macOS": {
