@@ -2,10 +2,14 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, ArrowRight, PlusCircle, Shield, Eye, EyeOff } from 'lucide-react'
 import { useWallet } from '../hooks/useWallet'
+import { useNetwork, parseSeeds } from '../hooks/useNetwork'
+import NetworkPicker from '../components/NetworkPicker'
 
 export default function CreateWalletPage() {
   const navigate = useNavigate()
   const { createWallet } = useWallet()
+  const { network, setNetwork } = useNetwork()
+  const [seeds, setSeeds] = useState('')
   const [passphrase, setPassphrase] = useState('')
   const [confirm, setConfirm] = useState('')
   const [showPass, setShowPass] = useState(false)
@@ -34,7 +38,7 @@ export default function CreateWalletPage() {
     setLoading(true)
     setError('')
     try {
-      await createWallet(passphrase)
+      await createWallet(passphrase, { network, seeds: parseSeeds(seeds) })
       navigate('/dashboard')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create wallet')
@@ -59,6 +63,10 @@ export default function CreateWalletPage() {
         <p className="text-gray-400 text-sm mb-6">
           Choose a strong passphrase. This encrypts your wallet file using Argon2id + ChaCha20-Poly1305.
         </p>
+
+        <div className="mb-5">
+          <NetworkPicker network={network} onChange={setNetwork} seeds={seeds} onSeedsChange={setSeeds} />
+        </div>
 
         <form onSubmit={handleCreate} className="space-y-4">
           <div>

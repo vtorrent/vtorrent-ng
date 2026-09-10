@@ -107,6 +107,11 @@ export default function Layout() {
               </span>
             )}
           </div>
+          {nodeInfo && nodeInfo.network !== 'vtorrent-mainnet' && (
+            <span className="inline-flex w-fit items-center text-[10px] font-bold tracking-widest text-amber-400 border border-amber-500/40 bg-amber-500/10 rounded px-1.5 py-0.5">
+              TESTNET
+            </span>
+          )}
 
           {/* Block height */}
           {isOnline && (

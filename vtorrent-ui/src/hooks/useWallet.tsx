@@ -39,9 +39,9 @@ export interface WalletState {
 }
 
 interface WalletContextType extends WalletState {
-  unlock: (passphrase: string, otpCode?: string) => Promise<void>
+  unlock: (passphrase: string, otpCode?: string, net?: { network?: string, seeds?: string[] }) => Promise<void>
   lock: () => void
-  createWallet: (passphrase: string) => Promise<void>
+  createWallet: (passphrase: string, net?: { network?: string, seeds?: string[] }) => Promise<void>
   importLegacyWallet: (walletDatBase64: string, legacyPassphrase: string | undefined, newPassphrase: string) => Promise<ImportResult>
   enable2FA: () => Promise<{ uri: string; secret: string }>
   disable2FA: (otpCode: string) => Promise<void>
@@ -225,7 +225,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     }
   }, [state.isUnlocked])
 
-  const unlock = useCallback(async (passphrase: string, otpCode?: string) => {
+  const unlock = useCallback(async (passphrase: string, otpCode?: string, net?: { network?: string, seeds?: string[] }) => {
     const info = await invoke<TauriWalletInfo>('open_wallet', {
       walletPath: await getWalletPath(),
       passphrase,
@@ -246,6 +246,8 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       await invoke('start_node', {
         stakingAddress: info.default_address ?? null,
         dataDir: null,
+        network: net?.network ?? 'mainnet',
+        seeds: net?.seeds ?? [],
       })
     } catch (e) {
       console.warn('start_node failed (may already be running):', e)
@@ -257,7 +259,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     setState(prev => ({ ...prev, isUnlocked: false }))
   }, [])
 
-  const createWallet = useCallback(async (passphrase: string) => {
+  const createWallet = useCallback(async (passphrase: string, net?: { network?: string, seeds?: string[] }) => {
     const info = await invoke<TauriWalletInfo>('create_wallet', {
       passphrase,
       walletPath: await getWalletPath(),
@@ -274,6 +276,8 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       await invoke('start_node', {
         stakingAddress: info.default_address ?? null,
         dataDir: null,
+        network: net?.network ?? 'mainnet',
+        seeds: net?.seeds ?? [],
       })
     } catch (e) {
       console.warn('start_node failed after wallet creation:', e)
