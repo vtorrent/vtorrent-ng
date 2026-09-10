@@ -23,28 +23,15 @@ export default function AppIcon({ size = 64, className }: AppIconProps) {
         <rect width="128" height="128" rx="24" fill="#4a3131" />
         <text
           x="64"
-          y="76"
+          y="86"
           textAnchor="middle"
-          fontSize="46"
+          fontSize="52"
           fontWeight="200"
           letterSpacing="4"
           fill="#ffffff"
           fontFamily="Inter, system-ui, sans-serif"
         >
           VTR
-        </text>
-        <text
-          x="64"
-          y="102"
-          textAnchor="middle"
-          fontSize="15"
-          fontStyle="italic"
-          fontWeight="700"
-          letterSpacing="2"
-          fill="#ffffff"
-          fontFamily="Inter, system-ui, sans-serif"
-        >
-          VTORRENT
         </text>
       </svg>
     )
