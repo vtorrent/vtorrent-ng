@@ -199,6 +199,27 @@ pub struct StakingStatusResponse {
     pub blocks_staked: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StakingRewardItem {
+    pub height: u64,
+    pub timestamp: u32,
+    pub block_hash: String,
+    pub reward_sats: u64,
+    pub staker_address: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StakingRewardsResponse {
+    pub tip_height: u64,
+    pub rewards: Vec<StakingRewardItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StakingRewardsQuery {
+    pub limit: Option<u64>,
+    pub address: Option<String>,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct StakingStartRequest {
     pub address: String,
@@ -603,4 +624,28 @@ pub struct FaucetResponse {
     pub amount_satoshis: u64,
     pub txid: String,
     pub block_height: u64,
+}
+
+#[cfg(test)]
+mod models_tests {
+    use super::*;
+
+    #[test]
+    fn test_staking_rewards_response_roundtrip() {
+        let resp = StakingRewardsResponse {
+            tip_height: 100,
+            rewards: vec![StakingRewardItem {
+                height: 99,
+                timestamp: 1_700_000_000,
+                block_hash: "ab".repeat(32),
+                reward_sats: 50_000,
+                staker_address: Some("VTest".to_string()),
+            }],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let back: StakingRewardsResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.tip_height, 100);
+        assert_eq!(back.rewards.len(), 1);
+        assert_eq!(back.rewards[0].reward_sats, 50_000);
+    }
 }
