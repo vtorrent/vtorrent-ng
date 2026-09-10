@@ -66,14 +66,14 @@ export default function WelcomePage() {
             className="w-full card hover:border-vtorrent-700/60 transition-all duration-200 text-left group"
           >
             <div className="flex items-center gap-4">
-              <div className="w-10 h-10 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center flex-shrink-0">
-                <Download size={18} className="text-amber-400" />
+              <div className="w-10 h-10 rounded-lg bg-vtorrent-500/10 border border-vtorrent-500/20 flex items-center justify-center flex-shrink-0">
+                <Download size={18} className="text-vtorrent-400" />
               </div>
               <div className="flex-1">
                 <p className="font-semibold text-white text-sm">Import Legacy Wallet</p>
                 <p className="text-gray-500 text-xs mt-0.5">Claim your old VTR from a wallet.dat file</p>
               </div>
-              <ArrowRight size={16} className="text-gray-600 group-hover:text-amber-400 transition-colors" />
+              <ArrowRight size={16} className="text-gray-600 group-hover:text-vtorrent-400 transition-colors" />
             </div>
           </button>
 
@@ -83,18 +83,21 @@ export default function WelcomePage() {
             className="w-full card hover:border-vtorrent-700/60 transition-all duration-200 text-left group"
           >
             <div className="flex items-center gap-4">
-              <div className="w-10 h-10 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center flex-shrink-0">
-                <PlusCircle size={18} className="text-emerald-400" />
+              <div className="w-10 h-10 rounded-lg bg-vtorrent-500/10 border border-vtorrent-500/20 flex items-center justify-center flex-shrink-0">
+                <PlusCircle size={18} className="text-vtorrent-400" />
               </div>
               <div className="flex-1">
                 <p className="font-semibold text-white text-sm">Create New Wallet</p>
                 <p className="text-gray-500 text-xs mt-0.5">Start fresh with a new VTR wallet</p>
               </div>
-              <ArrowRight size={16} className="text-gray-600 group-hover:text-emerald-400 transition-colors" />
+              <ArrowRight size={16} className="text-gray-600 group-hover:text-vtorrent-400 transition-colors" />
             </div>
           </button>
 
           {/* Feature highlights */}
+          <div className="absolute bottom-5 left-6 text-xs text-gray-600 font-mono select-none">
+            v2.0.0-beta.2
+          </div>
           <div className="absolute bottom-5 left-1/2 -translate-x-1/2 grid grid-cols-3 gap-2 text-center">
             {[
               { icon: Shield, label: 'Built-in 2FA' },
