@@ -28,6 +28,29 @@ use crate::{
 
 use super::Node;
 
+/// Maximum items per `getdata` request. Receivers reject anything larger as
+/// misbehaviour, so requesters must chunk to this bound and responders must
+/// never announce more than this per message.
+pub(crate) const MAX_GETDATA_ITEMS: usize = 500;
+
+/// Inclusive `(start, end)` height window holding at most `max_items` heights.
+/// Responders must use this so bulk answers always fit the receiver caps.
+pub(crate) fn capped_range(start_height: u32, tip_height: u32, max_items: u32) -> (u32, u32) {
+    let end = tip_height.min(start_height.saturating_add(max_items).saturating_sub(1));
+    (start_height, end)
+}
+
+/// Split inventory into `getdata`-sized chunks (`<= MAX_GETDATA_ITEMS` each)
+///
+/// so a large announcement (including from an unpatched peer) never trips
+/// the receiver's oversize rejection.
+pub(crate) fn chunk_getdata(items: Vec<InvItem>) -> Vec<Vec<InvItem>> {
+    items
+        .chunks(MAX_GETDATA_ITEMS)
+        .map(|c| c.to_vec())
+        .collect()
+}
+
 fn queue_orphan(
     node: &mut Node,
     block: Block,
@@ -168,13 +191,15 @@ pub(crate) async fn handle_inv(
             }
         }
         if !want.is_empty() {
-            let payload = encode_for_peer(
-                &vtorrent_p2p::message::GetDataMsg { items: want },
-                peer_version,
-            );
-            node.peer_manager
-                .broadcast(NetMessage::new("getdata", payload))
-                .await;
+            for chunk in chunk_getdata(want) {
+                let payload = encode_for_peer(
+                    &vtorrent_p2p::message::GetDataMsg { items: chunk },
+                    peer_version,
+                );
+                node.peer_manager
+                    .broadcast(NetMessage::new("getdata", payload))
+                    .await;
+            }
         }
     }
     Ok(())
@@ -442,7 +467,8 @@ pub(crate) async fn handle_getblocks(
             }
 
             let mut items = Vec::new();
-            for h in start_height..=our_height.min(start_height + 500) {
+            let (from, to) = capped_range(start_height, our_height, MAX_GETDATA_ITEMS as u32);
+            for h in from..=to {
                 if let Some(block) = chain.get_block_at_height(h) {
                     items.push(InvItem {
                         inv_type: InvType::Block,
@@ -746,7 +772,6 @@ pub(crate) async fn handle_getdata(
     if let Ok(req) = decode_for_peer::<GetDataMsg>(&msg.payload, peer_version) {
         // Bound the request: each item can trigger a full block (up to 1 MB)
         // or transaction response, so a large list is a bandwidth DoS vector.
-        const MAX_GETDATA_ITEMS: usize = 500;
         if req.items.len() > MAX_GETDATA_ITEMS {
             tracing::debug!(
                 "getdata from {} with {} items — rejecting (max {})",
@@ -863,7 +888,9 @@ pub(crate) async fn handle_getheaders(
             }
 
             let mut headers: Vec<HeaderEntry> = Vec::new();
-            for h in start_height..=our_height.min(start_height + super::HEADERS_PER_BATCH as u32) {
+            let (from, to) =
+                capped_range(start_height, our_height, super::HEADERS_PER_BATCH as u32);
+            for h in from..=to {
                 if let Some(block) = chain.get_block_at_height(h) {
                     let hash = block.hash();
                     if req.hash_stop != [0u8; 32] && hash == req.hash_stop {
@@ -943,13 +970,15 @@ pub(crate) async fn handle_headers(
         };
 
         if !want.is_empty() {
-            let payload = encode_for_peer(
-                &vtorrent_p2p::message::GetDataMsg { items: want },
-                peer_version,
-            );
-            node.peer_manager
-                .send_to(peer_addr, NetMessage::new("getdata", payload))
-                .await;
+            for chunk in chunk_getdata(want) {
+                let payload = encode_for_peer(
+                    &vtorrent_p2p::message::GetDataMsg { items: chunk },
+                    peer_version,
+                );
+                node.peer_manager
+                    .send_to(peer_addr, NetMessage::new("getdata", payload))
+                    .await;
+            }
         }
 
         if count == super::HEADERS_PER_BATCH {
@@ -2019,5 +2048,36 @@ mod deserialize_limit_tests {
             .deserialize_block(&bytes)
             .expect("valid block must decode");
         assert_eq!(decoded.hash(), block.hash());
+    }
+
+    #[test]
+    fn test_capped_range_never_exceeds_max() {
+        // Bulk sync responses must fit the receiver caps (500 blocks,
+        // 2000 headers) or every round scores misbehaviour and the
+        // syncing peer ends up banned.
+        assert_eq!(capped_range(1, 4016, 500), (1, 500));
+        assert_eq!(capped_range(3500, 4016, 500), (3500, 3999));
+        assert_eq!(capped_range(4016, 4016, 500), (4016, 4016));
+        assert_eq!(capped_range(1, 4016, 2000), (1, 2000));
+    }
+
+    #[test]
+    fn test_chunk_getdata_items() {
+        fn items(n: usize) -> Vec<InvItem> {
+            (0..n)
+                .map(|i| InvItem {
+                    inv_type: InvType::Block,
+                    hash: [i as u8; 32],
+                })
+                .collect()
+        }
+        // 501 items (what an unpatched peer announces) must go out as
+        // 500 + 1 so no single getdata trips the receiver's 500 cap.
+        let chunks = chunk_getdata(items(501));
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].len(), 500);
+        assert_eq!(chunks[1].len(), 1);
+        assert_eq!(chunk_getdata(items(500)).len(), 1);
+        assert!(chunk_getdata(items(0)).is_empty());
     }
 }
