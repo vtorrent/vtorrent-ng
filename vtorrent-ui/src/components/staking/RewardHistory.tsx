@@ -15,10 +15,12 @@ export default function RewardHistory({ tipHeight, blocksStaked }: { tipHeight: 
   const [points, setPoints] = useState<RewardPoint[]>([])
   const [loading, setLoading] = useState(false)
   const [expanded, setExpanded] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   const load = async () => {
     if (tipHeight == null || loading) return
     setLoading(true)
+    setLoadError(null)
     try {
       const out: RewardPoint[] = []
       for (let h = tipHeight; h > tipHeight - 20 && h > 0; h--) {
@@ -27,6 +29,8 @@ export default function RewardHistory({ tipHeight, blocksStaked }: { tipHeight: 
       }
       setPoints(out)
       setExpanded(true)
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : String(e))
     } finally {
       setLoading(false)
     }
@@ -42,8 +46,9 @@ export default function RewardHistory({ tipHeight, blocksStaked }: { tipHeight: 
           {loading ? 'Loading…' : 'Show last 20 blocks'}
         </button>
       ) : (
-        <p className="text-xs text-gray-400 font-mono">Daily avg (non-zero rewards): {formatVTR(Math.round(avg))} / day</p>
+        <p className="text-xs text-gray-400 font-mono">Historical rewards (v2 endpoint pending): {formatVTR(Math.round(avg))} / day</p>
       )}
+      {loadError && <p className="text-xs text-red-400" role="status">{loadError}</p>}
     </div>
   )
 }
