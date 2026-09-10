@@ -299,6 +299,12 @@ git add vtorrent-ui/src/components/staking/RewardHistory.tsx vtorrent-ui/src/com
 git commit -m "feat(ui): lazy reward history on staking page"
 ```
 
+**Follow-ups (tracked, not blocking):** surface `fetchBlock` errors in UI
+(especially the Tauri dead-click path — currently silent), label the v1
+zero-avg as placeholder until the v2 reward-history endpoint lands, and dedupe
+the second `useNodeInfo` poller on StakingPage (HealthStrip + RewardHistory
+each poll `/api/v1/info`).
+
 ### Task 4: Start-flow errors + full-address copy
 
 **Files:**
