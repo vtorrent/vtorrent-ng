@@ -145,6 +145,9 @@ pub struct StakingRewardEntry {
     pub staker_address: Option<String>,
 }
 
+// Bound total blocks scanned per request; response may truncate under a non-matching filter.
+const MAX_SCAN_BLOCKS: u32 = 5_000;
+
 #[tauri::command]
 pub async fn get_staking_rewards(
     state: State<'_, AppState>,
@@ -159,10 +162,15 @@ pub async fn get_staking_rewards(
     let chain = handle.rpc_state.chain.lock().await;
     let mut out = Vec::new();
     let mut height = chain.best_height();
+    let mut scanned: u32 = 0;
     while out.len() < limit as usize {
+        if scanned >= MAX_SCAN_BLOCKS {
+            break;
+        }
         let Some(block) = chain.get_block_at_height(height) else {
             break;
         };
+        scanned += 1;
         if let Some(coinstake) = block
             .transactions
             .iter()
@@ -174,7 +182,10 @@ pub async fn get_staking_rewards(
                 .iter()
                 .filter_map(|o| p2pkh_to_address(&o.script_pubkey))
                 .next();
-            if address.as_ref().is_none_or(|a| staker_address.as_ref() == Some(a)) {
+            if address
+                .as_ref()
+                .is_none_or(|a| staker_address.as_ref() == Some(a))
+            {
                 out.push(StakingRewardEntry {
                     height: height as u64,
                     timestamp: block.header.timestamp,

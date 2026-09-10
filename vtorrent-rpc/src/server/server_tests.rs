@@ -463,6 +463,149 @@ async fn test_staking_rewards_empty_chain() {
 }
 
 #[tokio::test]
+async fn test_staking_rewards_limit_clamp_on_empty_chain() {
+    let app = build_router(AppState::new());
+    let (status, body) = get(app, "/api/v1/staking/rewards?limit=101").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["rewards"].as_array().unwrap().is_empty());
+    assert!(body["tip_height"].is_number());
+}
+
+/// Shaped rewards test: build a chain with real PoS blocks (signed coinstake
+/// via StakingEngine, mirroring chain_tests::test_pos_block_with_signed_coinstake_accepted)
+/// and assert response shape, newest-first ordering, limit, and address filter.
+#[tokio::test]
+async fn test_staking_rewards_shaped_with_pos_blocks() {
+    use secp256k1::{PublicKey, Secp256k1, SecretKey};
+    use vtorrent_node::block::{Block, BlockHeader, Transaction, TxInput, TxOutput, TxType};
+    use vtorrent_node::consensus::compute_stake_modifier;
+    use vtorrent_node::staking::StakingEngine;
+
+    let secp = Secp256k1::new();
+    let mut key_bytes = [0u8; 32];
+    key_bytes[31] = 42;
+    let key = vtorrent_core::keys::PrivateKey::from_bytes(key_bytes, true).unwrap();
+    let wif = key.to_wif(198);
+    let secret = SecretKey::from_slice(key.as_bytes()).unwrap();
+    let pubkey = PublicKey::from_secret_key(&secp, &secret);
+    let address = vtorrent_core::address::Address::from_pubkey(&pubkey, true, 70).to_string();
+
+    let mut chain = vtorrent_node::chain::Chain::new_regtest_fast().unwrap();
+    let genesis_hash = chain.best_hash().unwrap();
+    let genesis_modifier = chain
+        .get_block_at_height(0)
+        .map(|b| b.header.stake_modifier)
+        .unwrap_or(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as u32;
+    // Old funding timestamp leaves ample headroom for the kernel search to
+    // stay below the future-timestamp limit.
+    let funding_ts = now - 200_000;
+    let script = vtorrent_core::address::Address::parse(&address)
+        .unwrap()
+        .p2pkh_script_pubkey();
+    let funding_block = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block_hash: genesis_hash,
+            merkle_root: [0u8; 32],
+            utxo_root: [0u8; 32],
+            timestamp: funding_ts,
+            bits: vtorrent_node::genesis::GENESIS_BITS,
+            nonce: 1,
+            stake_modifier: compute_stake_modifier(genesis_modifier, &genesis_hash),
+        },
+        transactions: vec![Transaction {
+            version: 1,
+            tx_type: TxType::Coinbase,
+            inputs: vec![TxInput {
+                prev_txid: [0u8; 32],
+                prev_vout: 0xffffffff,
+                script_sig: vec![1u8],
+                sequence: 0xffffffff,
+            }],
+            outputs: vec![TxOutput {
+                value: 1_000 * vtorrent_node::consensus::COIN,
+                script_pubkey: script,
+            }],
+            lock_time: 1,
+            claim_address: None,
+            claim_signature: None,
+        }],
+    };
+    let mut funding_block = funding_block;
+    funding_block.header.merkle_root = funding_block.compute_merkle_root();
+    chain.add_block(funding_block).unwrap();
+    assert_eq!(chain.best_height(), 1);
+
+    let engine = StakingEngine::with_wif_fast(address.clone(), wif);
+    // Two consecutive PoS blocks; each search starts once the staked coins
+    // mature under the fast-regtest 60s minimum age.
+    let mut prev_ts = funding_ts;
+    for height in [2u32, 3u32] {
+        let prev_modifier = chain
+            .get_block_at_height(height - 1)
+            .map(|b| b.header.stake_modifier)
+            .unwrap_or(0);
+        let mut stake_block = None;
+        for ts in (prev_ts + 61..).take(100_000) {
+            let utxos = chain.get_utxo_set().values().cloned().collect::<Vec<_>>();
+            if let Some(block) = engine.build_stake_block(
+                chain.best_hash().unwrap(),
+                prev_modifier,
+                height,
+                ts,
+                utxos,
+                vec![],
+            ) {
+                stake_block = Some((ts, block));
+                break;
+            }
+        }
+        let (ts, block) = stake_block.expect("should find a valid stake kernel");
+        chain.add_block(block).unwrap();
+        prev_ts = ts;
+    }
+    assert_eq!(chain.best_height(), 3);
+
+    let state = AppState::new();
+    *state.chain.lock().await = chain;
+    let app = build_router(state);
+
+    let (status, body) = get(app.clone(), "/api/v1/staking/rewards?limit=2").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["tip_height"], 3);
+    let rewards = body["rewards"].as_array().unwrap();
+    assert_eq!(rewards.len(), 2);
+    assert_eq!(rewards[0]["height"], 3);
+    assert_eq!(rewards[1]["height"], 2);
+    for item in rewards {
+        assert!(item["reward_sats"].as_u64().unwrap() > 0);
+        assert_eq!(item["block_hash"].as_str().unwrap().len(), 64);
+    }
+    let staker = rewards[0]["staker_address"].as_str().unwrap().to_string();
+    assert!(!staker.is_empty());
+
+    let (status, body) = get(
+        app.clone(),
+        &format!("/api/v1/staking/rewards?address={}", staker),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["rewards"].as_array().unwrap().len(), 2);
+
+    let (status, body) = get(
+        app,
+        "/api/v1/staking/rewards?address=V000000000000000000000000000000000",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["rewards"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn test_list_torrent_sessions_empty() {
     let app = build_router(AppState::new());
     let (status, body) = get(app, "/api/v1/torrent/sessions").await;

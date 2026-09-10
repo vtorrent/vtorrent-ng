@@ -168,6 +168,16 @@ pub(crate) fn coinstake_reward(tx: &vtorrent_node::block::Transaction) -> Option
     Some(tx.outputs.iter().map(|o| o.value).sum())
 }
 
+pub(crate) fn reward_matches_filter(staker_address: Option<&str>, filter: Option<&str>) -> bool {
+    match filter {
+        None => true,
+        Some(f) => staker_address == Some(f),
+    }
+}
+
+// Bound total blocks scanned per request; response may truncate under a non-matching filter.
+pub(crate) const MAX_SCAN_BLOCKS: u32 = 5_000;
+
 pub async fn get_staking_rewards(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(query): axum::extract::Query<StakingRewardsQuery>,
@@ -177,10 +187,15 @@ pub async fn get_staking_rewards(
     let tip = chain.best_height();
     let mut rewards = Vec::new();
     let mut height = tip;
+    let mut scanned: u32 = 0;
     while rewards.len() < limit as usize {
+        if scanned >= MAX_SCAN_BLOCKS {
+            break;
+        }
         let Some(block) = chain.get_block_at_height(height) else {
             break;
         };
+        scanned += 1;
         if let Some(coinstake) = block
             .transactions
             .iter()
@@ -192,11 +207,7 @@ pub async fn get_staking_rewards(
                     .iter()
                     .filter_map(|o| p2pkh_script_to_address(&o.script_pubkey))
                     .next();
-                if query
-                    .address
-                    .as_ref()
-                    .is_none_or(|a| staker_address.as_ref() == Some(a))
-                {
+                if reward_matches_filter(staker_address.as_deref(), query.address.as_deref()) {
                     let hash = chain
                         .block_hash_at_height(height)
                         .map(hex::encode)
@@ -232,6 +243,15 @@ mod rewards_tests {
         s.push(0x88);
         s.push(0xac);
         s
+    }
+
+    #[test]
+    fn test_reward_matches_filter() {
+        assert!(reward_matches_filter(Some("Vabc"), None));
+        assert!(reward_matches_filter(None, None));
+        assert!(reward_matches_filter(Some("Vabc"), Some("Vabc")));
+        assert!(!reward_matches_filter(Some("Vabc"), Some("Vother")));
+        assert!(!reward_matches_filter(None, Some("Vabc")));
     }
 
     #[test]
