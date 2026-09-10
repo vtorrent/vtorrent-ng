@@ -136,7 +136,6 @@ pub async fn stop_staking(State(state): State<Arc<AppState>>) -> RpcResult<Json<
     ))
 }
 
-#[allow(dead_code)]
 pub(crate) fn clamp_rewards_limit(limit: Option<u64>) -> u64 {
     match limit {
         None => 20,
@@ -144,7 +143,6 @@ pub(crate) fn clamp_rewards_limit(limit: Option<u64>) -> u64 {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn p2pkh_script_to_address(script: &[u8]) -> Option<String> {
     if script.len() != 25
         || script[0] != 0x76
@@ -163,12 +161,65 @@ pub(crate) fn p2pkh_script_to_address(script: &[u8]) -> Option<String> {
     Some(addr.to_string())
 }
 
-#[allow(dead_code)]
 pub(crate) fn coinstake_reward(tx: &vtorrent_node::block::Transaction) -> Option<u64> {
     if tx.tx_type != vtorrent_node::block::TxType::Coinstake {
         return None;
     }
     Some(tx.outputs.iter().map(|o| o.value).sum())
+}
+
+pub async fn get_staking_rewards(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<StakingRewardsQuery>,
+) -> RpcResult<Json<StakingRewardsResponse>> {
+    let limit = clamp_rewards_limit(query.limit);
+    let chain = state.chain.lock().await;
+    let tip = chain.best_height();
+    let mut rewards = Vec::new();
+    let mut height = tip;
+    while rewards.len() < limit as usize {
+        let Some(block) = chain.get_block_at_height(height) else {
+            break;
+        };
+        if let Some(coinstake) = block
+            .transactions
+            .iter()
+            .find(|tx| tx.tx_type == vtorrent_node::block::TxType::Coinstake)
+        {
+            if let Some(reward_sats) = coinstake_reward(coinstake) {
+                let staker_address = coinstake
+                    .outputs
+                    .iter()
+                    .filter_map(|o| p2pkh_script_to_address(&o.script_pubkey))
+                    .next();
+                if query
+                    .address
+                    .as_ref()
+                    .is_none_or(|a| staker_address.as_ref() == Some(a))
+                {
+                    let hash = chain
+                        .block_hash_at_height(height)
+                        .map(hex::encode)
+                        .unwrap_or_default();
+                    rewards.push(StakingRewardItem {
+                        height: height as u64,
+                        timestamp: block.header.timestamp,
+                        block_hash: hash,
+                        reward_sats,
+                        staker_address,
+                    });
+                }
+            }
+        }
+        if height == 0 {
+            break;
+        }
+        height -= 1;
+    }
+    Ok(Json(StakingRewardsResponse {
+        tip_height: tip as u64,
+        rewards,
+    }))
 }
 
 #[cfg(test)]

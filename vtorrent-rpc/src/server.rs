@@ -145,6 +145,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/wallet/transactions", get(get_transactions))
         .route("/api/v1/blockchain/utxo/:txid/:vout", get(get_txout))
         .route("/api/v1/staking/status", get(get_staking_status))
+        .route("/api/v1/staking/rewards", get(get_staking_rewards))
         .route("/api/v1/torrent/sessions", get(list_torrent_sessions))
         .route("/api/v1/dex/orders", get(get_dex_orders))
         .route("/api/v1/claim/check", post(check_claim))

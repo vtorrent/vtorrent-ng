@@ -455,6 +455,14 @@ async fn test_staking_status() {
 }
 
 #[tokio::test]
+async fn test_staking_rewards_empty_chain() {
+    let app = build_router(AppState::new());
+    let (status, body) = get(app, "/api/v1/staking/rewards?limit=5").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["rewards"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn test_list_torrent_sessions_empty() {
     let app = build_router(AppState::new());
     let (status, body) = get(app, "/api/v1/torrent/sessions").await;
