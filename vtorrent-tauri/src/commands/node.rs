@@ -33,20 +33,41 @@ pub struct TxResult {
 }
 
 #[tauri::command]
-pub async fn start_node(state: tauri::State<'_, AppState>) -> Result<NodeInfoResult> {
+pub async fn start_node(
+    state: tauri::State<'_, AppState>,
+    network: Option<String>,
+    seeds: Option<Vec<String>>,
+) -> Result<NodeInfoResult> {
     use crate::state::NodeHandle;
     use vtorrent_node::node::{Node, NodeConfig};
     use vtorrent_rpc::state::AppState as RpcAppState;
 
+    let network_name = if matches!(network.as_deref(), Some("testnet")) {
+        "vtorrent-testnet"
+    } else {
+        "vtorrent-mainnet"
+    };
+
     {
         let guard = state.node.lock().await;
-        if guard.is_some() {
+        if let Some(handle) = guard.as_ref() {
+            if handle.network != network_name {
+                return Err(TauriError::NodeError(format!(
+                    "node running on {}; restart the app to switch networks",
+                    handle.network
+                )));
+            }
             drop(guard);
             return get_node_info(state).await;
         }
     }
 
-    let config = NodeConfig::default();
+    let mut config = NodeConfig::default();
+    if network_name == "vtorrent-testnet" {
+        config.testnet = true;
+        config.data_dir = config.data_dir.join("testnet");
+        config.extra_seeds = seeds.unwrap_or_default();
+    }
     let mut node = Node::new(config).map_err(|e| TauriError::NodeError(e.to_string()))?;
 
     let mut rpc_state = RpcAppState::new_with_shared(node.chain_arc(), node.mempool_arc());
@@ -130,6 +151,7 @@ pub async fn start_node(state: tauri::State<'_, AppState>) -> Result<NodeInfoRes
 
     let handle = NodeHandle {
         rpc_state: rpc_state.clone(),
+        network: network_name.to_string(),
         start_time: std::time::Instant::now(),
     };
     *state.node.lock().await = Some(handle);

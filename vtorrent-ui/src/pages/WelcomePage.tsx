@@ -3,11 +3,15 @@ import { useState } from 'react'
 import { Download, PlusCircle, Shield, ArrowRight, Lock } from 'lucide-react'
 import { useWallet } from '../hooks/useWallet'
 import { useNodeInfo } from '../hooks/useNode'
+import { useNetwork, parseSeeds } from '../hooks/useNetwork'
 import AppIcon from '../components/AppIcon'
+import NetworkPicker from '../components/NetworkPicker'
 
 export default function WelcomePage() {
   const navigate = useNavigate()
   const { unlock } = useWallet()
+  const { network, setNetwork } = useNetwork()
+  const [seeds, setSeeds] = useState('')
   const { data: node } = useNodeInfo(8_000)
   const [passphrase, setPassphrase] = useState('')
   const [otpCode, setOtpCode] = useState('')
@@ -20,7 +24,7 @@ export default function WelcomePage() {
     setLoading(true)
     setError('')
     try {
-      await unlock(passphrase, otpCode || undefined)
+      await unlock(passphrase, otpCode || undefined, { network, seeds: parseSeeds(seeds) })
       navigate('/dashboard')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Incorrect passphrase or OTP code')
@@ -57,6 +61,7 @@ export default function WelcomePage() {
       {!showUnlock ? (
         /* Action cards */
         <div className="w-full max-w-sm space-y-3">
+          <NetworkPicker network={network} onChange={setNetwork} seeds={seeds} onSeedsChange={setSeeds} />
           {/* Open existing wallet */}
           <button
             onClick={() => setShowUnlock(true)}
