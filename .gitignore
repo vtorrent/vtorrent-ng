@@ -38,3 +38,6 @@ wallet.dat
 # Logs
 *.log
 append_spv.py
+
+# Isolated worktrees
+.worktrees/
