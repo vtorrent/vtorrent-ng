@@ -1,18 +1,28 @@
 import { useState } from 'react'
-import { camel, isTauri, rpcGet } from '../../api'
+import { camel, isTauri, rpcGet, tauriInvoke } from '../../api'
 import { dailyAvgReward, type RewardPoint } from '../../utils/stakingOps'
 import { formatVTR } from '../../hooks/useWallet'
 
-async function fetchBlock(height: number): Promise<{ timestamp: number }> {
+interface RewardRow {
+  height: number
+  timestamp: number
+  blockHash: string
+  rewardSats: number
+  stakerAddress: string | null
+}
+
+async function fetchRewards(): Promise<RewardRow[]> {
   if (isTauri()) {
-    throw new Error('Reward history needs RPC web mode in v1 (no Tauri get_block_by_height command).')
+    return tauriInvoke<RewardRow[]>('get_staking_rewards', { limit: 20 })
   }
-  const raw = await rpcGet<unknown>(`/api/v1/blockchain/block/height/${height}`)
-  return camel(raw) as { timestamp: number }
+  const raw = await rpcGet<unknown>('/api/v1/staking/rewards?limit=20')
+  const data = camel(raw) as { tipHeight: number, rewards: RewardRow[] }
+  return data.rewards
 }
 
 export default function RewardHistory({ tipHeight, blocksStaked }: { tipHeight: number | null, blocksStaked: number }) {
   const [points, setPoints] = useState<RewardPoint[]>([])
+  const [rows, setRows] = useState<RewardRow[]>([])
   const [loading, setLoading] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -22,12 +32,9 @@ export default function RewardHistory({ tipHeight, blocksStaked }: { tipHeight: 
     setLoading(true)
     setLoadError(null)
     try {
-      const out: RewardPoint[] = []
-      for (let h = tipHeight; h > tipHeight - 20 && h > 0; h--) {
-        const b = await fetchBlock(h)
-        out.push({ height: h, timestamp: b.timestamp, rewardSats: 0 })
-      }
-      setPoints(out)
+      const rewards = await fetchRewards()
+      setRows(rewards)
+      setPoints(rewards.map(r => ({ height: r.height, timestamp: r.timestamp, rewardSats: r.rewardSats })))
       setExpanded(true)
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : String(e))
@@ -46,7 +53,16 @@ export default function RewardHistory({ tipHeight, blocksStaked }: { tipHeight: 
           {loading ? 'Loading…' : 'Show last 20 blocks'}
         </button>
       ) : (
-        <p className="text-xs text-gray-400 font-mono">Historical rewards (v2 endpoint pending): {formatVTR(Math.round(avg))} / day</p>
+        <>
+          <p className="text-xs text-gray-400 font-mono">Daily avg: {formatVTR(Math.round(avg))} / day</p>
+          <ul className="space-y-1">
+            {rows.map(r => (
+              <li key={r.height} className="text-xs text-gray-400 font-mono">
+                {r.height} · {new Date(r.timestamp * 1000).toLocaleString()} · {formatVTR(r.rewardSats)} · {r.stakerAddress ?? '—'}
+              </li>
+            ))}
+          </ul>
+        </>
       )}
       {loadError && <p className="text-xs text-red-400" role="status">{loadError}</p>}
     </div>
