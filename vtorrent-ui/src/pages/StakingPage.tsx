@@ -4,8 +4,9 @@ import {
   CheckCircle, AlertCircle, Info,
 } from 'lucide-react'
 import { formatVTR, useWallet } from '../hooks/useWallet'
-import { useStakingStatus, startStaking, stopStaking } from '../hooks/useNode'
+import { useStakingStatus, startStaking, stopStaking, useNodeInfo } from '../hooks/useNode'
 import HealthStrip from '../components/staking/HealthStrip'
+import RewardHistory from '../components/staking/RewardHistory'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -32,6 +33,7 @@ type ActionStatus = 'idle' | 'loading' | 'success' | 'error'
 export default function StakingPage() {
   const { keys } = useWallet()
   const { data: status, loading, error, refresh } = useStakingStatus(8_000)
+  const { data: node } = useNodeInfo(10_000)
 
   const [actionStatus, setActionStatus] = useState<ActionStatus>('idle')
   const [actionMsg, setActionMsg] = useState('')
@@ -155,6 +157,8 @@ export default function StakingPage() {
           />
         </div>
       </div>
+
+      <RewardHistory tipHeight={node?.blockHeight ?? null} blocksStaked={blocksStaked} />
 
       {/* Address selector (only shown when not staking) */}
       {!isEnabled && addressOptions.length > 1 && (
