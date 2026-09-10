@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import { formatVTR, useWallet } from '../hooks/useWallet'
 import { useStakingStatus, startStaking, stopStaking, useNodeInfo } from '../hooks/useNode'
+import { stakingStartError } from '../utils/stakingOps'
 import HealthStrip from '../components/staking/HealthStrip'
 import RewardHistory from '../components/staking/RewardHistory'
 
@@ -66,7 +67,7 @@ export default function StakingPage() {
       refresh()
     } catch (e) {
       setActionStatus('error')
-      setActionMsg(e instanceof Error ? e.message : String(e))
+      setActionMsg(stakingStartError(e instanceof Error ? e.message : String(e)))
     }
   }
 
@@ -80,7 +81,7 @@ export default function StakingPage() {
       refresh()
     } catch (e) {
       setActionStatus('error')
-      setActionMsg(e instanceof Error ? e.message : String(e))
+      setActionMsg(stakingStartError(e instanceof Error ? e.message : String(e)))
     }
   }
 
@@ -147,7 +148,14 @@ export default function StakingPage() {
         <h2 className="text-sm font-medium text-gray-300">Staking Details</h2>
 
         <div className="grid grid-cols-2 gap-x-8 gap-y-3 text-sm">
-          <DetailRow label="Staking Address" value={stakingAddress ? `${stakingAddress.slice(0, 16)}…` : '—'} />
+          <div className="flex flex-col gap-0.5">
+            <span className="text-gray-500 text-xs flex items-center gap-1">
+              Staking Address
+            </span>
+            <span className="text-gray-200 font-mono text-xs break-all select-all" title={stakingAddress ?? ''}>
+              {stakingAddress ?? '—'}
+            </span>
+          </div>
           <DetailRow label="Eligible UTXOs" value={eligibleUtxos.toString()} />
           <DetailRow label="Last Stake" value={lastStakedAgo(lastStakeTime)} />
           <DetailRow

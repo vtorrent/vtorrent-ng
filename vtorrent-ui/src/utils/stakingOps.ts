@@ -26,3 +26,14 @@ export function healthSummary(info: {
   const sync = info.syncing ? `syncing ${info.syncPercent.toFixed(1)}%` : 'synced'
   return `height ${info.blockHeight} · ${info.connections} peers · ${sync} · mempool ${info.mempoolSize}`
 }
+
+export function stakingStartError(raw: string): string {
+  const lower = raw.toLowerCase()
+  if (lower.includes('wallet') && lower.includes('lock')) {
+    return 'Wallet is locked. Unlock first, then start staking.'
+  }
+  if (lower.includes('no address') || lower.includes('address is required')) {
+    return 'No staking address selected. Unlock your wallet first.'
+  }
+  return raw
+}

@@ -24,6 +24,7 @@ describe('stakingOps', () => {
 
 import { describe as describe2, it as it2, expect as expect2 } from 'vitest'
 import { dailyAvgReward as avg2, healthSummary as healthSummary2, maturityCountdown as maturityCountdown2 } from './stakingOps'
+import { stakingStartError } from './stakingOps'
 
 describe2('stakingOps carryover', () => {
   it2('returns 0 for empty history', () => {
@@ -37,5 +38,14 @@ describe2('stakingOps carryover', () => {
 
   it2('clamps over-mature countdown to zero', () => {
     expect2(maturityCountdown2(150, 100)).toBe(0)
+  })
+})
+
+describe('stakingStartError', () => {
+  it('maps wallet locked', () => {
+    expect(stakingStartError('wallet is locked')).toBe('Wallet is locked. Unlock first, then start staking.')
+  })
+  it('passes through unknown errors', () => {
+    expect(stakingStartError('boom')).toBe('boom')
   })
 })
