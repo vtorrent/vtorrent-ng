@@ -2,6 +2,7 @@ import { useNavigate } from 'react-router-dom'
 import { useState } from 'react'
 import { Download, PlusCircle, Shield, ArrowRight, Lock } from 'lucide-react'
 import { useWallet } from '../hooks/useWallet'
+import LegacyWordmark from '../components/LegacyWordmark'
 
 export default function WelcomePage() {
   const navigate = useNavigate()
@@ -106,6 +107,10 @@ export default function WelcomePage() {
               </div>
             ))}
           </div>
+
+          <div className="pt-6 flex justify-center">
+            <LegacyWordmark />
+          </div>
         </div>
       ) : (
         /* Unlock form */
@@ -121,7 +126,7 @@ export default function WelcomePage() {
                 <label className="label">Passphrase</label>
                 <input
                   type="password"
-                  className="input-field"
+                  className={`input-field${error ? ' input-invalid' : ''}`}
                   placeholder="Enter your wallet passphrase"
                   value={passphrase}
                   onChange={e => setPassphrase(e.target.value)}

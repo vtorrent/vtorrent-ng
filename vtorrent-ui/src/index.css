@@ -49,6 +49,10 @@
            transition-all duration-150;
   }
 
+  .input-invalid {
+    @apply border-[#FF8080] ring-2 ring-[#FF8080]/40;
+  }
+
   .label {
     @apply text-sm font-medium text-gray-400 mb-1.5 block;
   }

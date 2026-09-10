@@ -66,7 +66,7 @@ export default function CreateWalletPage() {
             <div className="relative">
               <input
                 type={showPass ? 'text' : 'password'}
-                className="input-field pr-10"
+                className={`input-field pr-10${error ? ' input-invalid' : ''}`}
                 placeholder="Choose a strong passphrase"
                 value={passphrase}
                 onChange={e => setPassphrase(e.target.value)}
@@ -101,7 +101,7 @@ export default function CreateWalletPage() {
             <label className="label">Confirm Passphrase</label>
             <input
               type="password"
-              className="input-field"
+              className={`input-field${error ? ' input-invalid' : ''}`}
               placeholder="Repeat your passphrase"
               value={confirm}
               onChange={e => setConfirm(e.target.value)}
