@@ -6,9 +6,9 @@ const STORAGE_KEY = 'vtr-theme'
 
 function initialTheme(): Theme {
   try {
-    return localStorage.getItem(STORAGE_KEY) === 'legacy' ? 'legacy' : 'modern'
+    return localStorage.getItem(STORAGE_KEY) === 'modern' ? 'modern' : 'legacy'
   } catch {
-    return 'modern'
+    return 'legacy'
   }
 }
 

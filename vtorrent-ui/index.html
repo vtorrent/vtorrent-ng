@@ -10,7 +10,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
     <script>
       try {
-        if (localStorage.getItem('vtr-theme') === 'legacy') document.documentElement.dataset.theme = 'legacy'
+        if (localStorage.getItem('vtr-theme') !== 'modern') document.documentElement.dataset.theme = 'legacy'
       } catch (e) {}
     </script>
   </head>
