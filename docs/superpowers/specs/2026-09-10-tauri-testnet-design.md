@@ -10,11 +10,11 @@ running an embedded mainnet node.
 
 ## Backend (`vtorrent-tauri`)
 - `start_node(state, network: Option<String>, seeds: Option<Vec<String>>)`:
-  `"testnet"` selects the **soak-compatible regtest chain**
-  (`regtest + regtest_fast_stake`, i.e. chain ID `vtorrent-regtest`) with
-  `testnet: true` PEX behavior, datadir `~/.vtorrent/testnet`, and
-  `extra_seeds` from param. (`testnet: true` alone would select the mainnet
-  chain and reject soak blocks — hence regtest underneath.)
+  `"testnet"` selects the **soak recipe**: regtest consensus chain
+  (`regtest + regtest_fast_stake`, chain ID `vtorrent-regtest`), MAINNET P2P
+  magic (the soak fleet runs without `--testnet`), `isolated: true`, datadir
+  `~/.vtorrent/testnet`, and `extra_seeds` from param (falling back to
+  `DEFAULT_TESTNET_SEEDS`).
   Anything else/omitted → current mainnet default.
 - `DEFAULT_TESTNET_SEEDS: &[&str]` (empty until phase-B infra lands) used as
   fallback when the user provides no seeds.
