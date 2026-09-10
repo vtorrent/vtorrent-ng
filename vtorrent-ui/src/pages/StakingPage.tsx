@@ -34,7 +34,7 @@ type ActionStatus = 'idle' | 'loading' | 'success' | 'error'
 export default function StakingPage() {
   const { keys } = useWallet()
   const { data: status, loading, error, refresh } = useStakingStatus(8_000)
-  const { data: node } = useNodeInfo(10_000)
+  const { data: node, loading: nodeLoading, error: nodeError } = useNodeInfo(10_000)
 
   const [actionStatus, setActionStatus] = useState<ActionStatus>('idle')
   const [actionMsg, setActionMsg] = useState('')
@@ -105,7 +105,7 @@ export default function StakingPage() {
         </button>
       </div>
 
-      <HealthStrip />
+      <HealthStrip info={{ data: node, loading: nodeLoading, error: nodeError }} />
 
       {/* Status banner */}
       {error && (
@@ -148,14 +148,14 @@ export default function StakingPage() {
         <h2 className="text-sm font-medium text-gray-300">Staking Details</h2>
 
         <div className="grid grid-cols-2 gap-x-8 gap-y-3 text-sm">
-          <div className="flex flex-col gap-0.5">
-            <span className="text-gray-500 text-xs flex items-center gap-1">
-              Staking Address
-            </span>
-            <span className="text-gray-200 font-mono text-xs break-all select-all" title={stakingAddress ?? ''}>
-              {stakingAddress ?? '—'}
-            </span>
-          </div>
+          <DetailRow
+            label="Staking Address"
+            value={
+              <span className="break-all select-all" title={stakingAddress ?? ''}>
+                {stakingAddress ?? '—'}
+              </span>
+            }
+          />
           <DetailRow label="Eligible UTXOs" value={eligibleUtxos.toString()} />
           <DetailRow
             label="Avg per UTXO"
@@ -277,7 +277,7 @@ function StatCard({ label, value, icon, accent }: StatCardProps) {
 
 interface DetailRowProps {
   label: string
-  value: string
+  value: React.ReactNode
   hint?: string
 }
 

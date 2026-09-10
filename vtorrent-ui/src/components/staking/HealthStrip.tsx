@@ -1,12 +1,17 @@
-import { useNodeInfo } from '../../hooks/useNode'
+import type { NodeInfo } from '../../hooks/useNode'
 import { healthSummary } from '../../utils/stakingOps'
 
 // Testnet compose maps grafana 3000->3300 on the host; override via VITE_GRAFANA_URL outside localhost.
 const GRAFANA_URL = import.meta.env.VITE_GRAFANA_URL ?? 'http://127.0.0.1:3300'
 
-export default function HealthStrip() {
-  const { data, loading, error } = useNodeInfo(10_000)
-  void loading
+export interface NodeHealth {
+  data: NodeInfo | null
+  loading: boolean
+  error: string | null
+}
+
+export default function HealthStrip({ info }: { info: NodeHealth }) {
+  const { data, error } = info
   if (!data) {
     if (error) return <p className="text-xs text-red-400" role="status">Node health unavailable: {error}</p>
     return <p className="text-xs text-gray-500" role="status">Loading node health…</p>
