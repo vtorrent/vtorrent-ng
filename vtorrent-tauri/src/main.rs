@@ -49,6 +49,7 @@ fn main() {
             commands::start_staking,
             commands::stop_staking,
             commands::get_staking_status,
+            commands::get_staking_rewards,
             // Bitcoin wallet
             commands::get_btc_status,
             commands::get_btc_address,

@@ -135,3 +135,80 @@ pub async fn get_staking_status(state: State<'_, AppState>) -> Result<StakingSta
         blocks_staked,
     })
 }
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StakingRewardEntry {
+    pub height: u64,
+    pub timestamp: u32,
+    pub block_hash: String,
+    pub reward_sats: u64,
+    pub staker_address: Option<String>,
+}
+
+#[tauri::command]
+pub async fn get_staking_rewards(
+    state: State<'_, AppState>,
+    limit: Option<u64>,
+    address: Option<String>,
+) -> Result<Vec<StakingRewardEntry>> {
+    let guard = state.node.lock().await;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    let limit = limit.unwrap_or(20).clamp(1, 100);
+    let chain = handle.rpc_state.chain.lock().await;
+    let mut out = Vec::new();
+    let mut height = chain.best_height();
+    while out.len() < limit as usize {
+        let Some(block) = chain.get_block_at_height(height) else {
+            break;
+        };
+        if let Some(coinstake) = block
+            .transactions
+            .iter()
+            .find(|tx| tx.tx_type == vtorrent_node::block::TxType::Coinstake)
+        {
+            let reward_sats: u64 = coinstake.outputs.iter().map(|o| o.value).sum();
+            let staker_address = coinstake
+                .outputs
+                .iter()
+                .filter_map(|o| p2pkh_to_address(&o.script_pubkey))
+                .next();
+            if address.as_ref().is_none_or(|a| staker_address.as_ref() == Some(a)) {
+                out.push(StakingRewardEntry {
+                    height: height as u64,
+                    timestamp: block.header.timestamp,
+                    block_hash: chain
+                        .block_hash_at_height(height)
+                        .map(hex::encode)
+                        .unwrap_or_default(),
+                    reward_sats,
+                    staker_address,
+                });
+            }
+        }
+        if height == 0 {
+            break;
+        }
+        height -= 1;
+    }
+    Ok(out)
+}
+
+fn p2pkh_to_address(script: &[u8]) -> Option<String> {
+    if script.len() != 25
+        || script[0] != 0x76
+        || script[1] != 0xa9
+        || script[2] != 0x14
+        || script[23] != 0x88
+        || script[24] != 0xac
+    {
+        return None;
+    }
+    vtorrent_core::address::Address::from_hash160(
+        &script[3..23],
+        vtorrent_core::network::legacy::PUBKEY_ADDRESS_PREFIX,
+    )
+    .ok()
+    .map(|a| a.to_string())
+}
