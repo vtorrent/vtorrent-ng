@@ -157,6 +157,10 @@ export default function StakingPage() {
             </span>
           </div>
           <DetailRow label="Eligible UTXOs" value={eligibleUtxos.toString()} />
+          <DetailRow
+            label="Avg per UTXO"
+            value={eligibleUtxos > 0 ? formatVTR(Math.floor(totalStakingSats / eligibleUtxos)) : '—'}
+          />
           <DetailRow label="Last Stake" value={lastStakedAgo(lastStakeTime)} />
           <DetailRow
             label="Maturity Requirement"
