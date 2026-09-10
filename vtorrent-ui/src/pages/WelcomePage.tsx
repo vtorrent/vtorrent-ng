@@ -2,11 +2,13 @@ import { useNavigate } from 'react-router-dom'
 import { useState } from 'react'
 import { Download, PlusCircle, Shield, ArrowRight, Lock } from 'lucide-react'
 import { useWallet } from '../hooks/useWallet'
+import { useNodeInfo } from '../hooks/useNode'
 import AppIcon from '../components/AppIcon'
 
 export default function WelcomePage() {
   const navigate = useNavigate()
   const { unlock } = useWallet()
+  const { data: node } = useNodeInfo(8_000)
   const [passphrase, setPassphrase] = useState('')
   const [otpCode, setOtpCode] = useState('')
   const [loading, setLoading] = useState(false)
@@ -30,14 +32,26 @@ export default function WelcomePage() {
   return (
     <div className="min-h-screen gradient-bg flex flex-col items-center justify-center p-6 relative">
       {/* Header */}
-      <div className="text-center mb-10">
-        <div className="mb-5 flex justify-center">
-          <AppIcon size={64} />
+      <div className="text-center mb-10 relative">
+        <div
+          aria-hidden
+          className="absolute left-1/2 top-8 -translate-x-1/2 -translate-y-1/2 w-72 h-72 rounded-full bg-vtorrent-500/10 blur-3xl pointer-events-none"
+        />
+        <div className="mb-5 flex justify-center relative">
+          <AppIcon size={80} />
         </div>
-        <h1 className="text-3xl font-bold text-white mb-2">vTorrent 2.0</h1>
+        <h1 className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-white via-white to-vtorrent-300 mb-3">
+          vTorrent 2.0
+        </h1>
         <p className="text-gray-400 text-sm max-w-xs mx-auto">
           The decentralized torrent economy. Earn VTR for seeding. Trade peer-to-peer. No exchanges needed.
         </p>
+        {node && (
+          <p className="mt-3 text-xs font-mono text-vtorrent-400/90">
+            Block {node.blockHeight.toLocaleString()} · {node.connections} peer{node.connections !== 1 ? 's' : ''}
+            {node.syncing ? ` · syncing ${node.syncPercent.toFixed(0)}%` : ' · synced'}
+          </p>
+        )}
       </div>
 
       {!showUnlock ? (
