@@ -29,7 +29,7 @@ export default function WelcomePage() {
   }
 
   return (
-    <div className="min-h-screen gradient-bg flex flex-col items-center justify-center p-6">
+    <div className="min-h-screen gradient-bg flex flex-col items-center justify-center p-6 relative">
       {/* Header */}
       <div className="text-center mb-10">
         <div className="mb-5 flex justify-center">
@@ -109,7 +109,7 @@ export default function WelcomePage() {
             ))}
           </div>
 
-          <div className="pt-6 flex justify-center">
+          <div className="absolute bottom-5 right-6">
             <LegacyWordmark />
           </div>
         </div>
