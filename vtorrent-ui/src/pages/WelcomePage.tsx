@@ -10,8 +10,7 @@ import NetworkPicker from '../components/NetworkPicker'
 export default function WelcomePage() {
   const navigate = useNavigate()
   const { unlock } = useWallet()
-  const { network, setNetwork } = useNetwork()
-  const [seeds, setSeeds] = useState('')
+  const { network, setNetwork, seeds, setSeeds } = useNetwork()
   const { data: node } = useNodeInfo(8_000)
   const [passphrase, setPassphrase] = useState('')
   const [otpCode, setOtpCode] = useState('')

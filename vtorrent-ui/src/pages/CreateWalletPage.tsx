@@ -8,8 +8,7 @@ import NetworkPicker from '../components/NetworkPicker'
 export default function CreateWalletPage() {
   const navigate = useNavigate()
   const { createWallet } = useWallet()
-  const { network, setNetwork } = useNetwork()
-  const [seeds, setSeeds] = useState('')
+  const { network, setNetwork, seeds, setSeeds } = useNetwork()
   const [passphrase, setPassphrase] = useState('')
   const [confirm, setConfirm] = useState('')
   const [showPass, setShowPass] = useState(false)

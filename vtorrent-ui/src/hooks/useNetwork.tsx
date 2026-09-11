@@ -3,6 +3,10 @@ import { useEffect, useState } from 'react'
 export type Network = 'mainnet' | 'testnet'
 
 const STORAGE_KEY = 'vtr-network'
+const SEEDS_KEY = 'vtr-seeds'
+
+/// Well-known local endpoints tried by seed auto-detect.
+export const DEFAULT_PROBE_CANDIDATES = ['127.0.0.1:22526', '127.0.0.1:22527']
 
 /// Split a comma-separated seed-peer input into clean `host:port` entries.
 export function parseSeeds(input: string): string[] {
@@ -32,5 +36,21 @@ export function useNetwork() {
     }
   }, [network])
 
-  return { network, setNetwork }
+  const [seeds, setSeeds] = useState<string>(() => {
+    try {
+      return localStorage.getItem(SEEDS_KEY) ?? ''
+    } catch {
+      return ''
+    }
+  })
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SEEDS_KEY, seeds)
+    } catch {
+      // Private mode: seeds still apply for this session.
+    }
+  }, [seeds])
+
+  return { network, setNetwork, seeds, setSeeds }
 }

@@ -167,6 +167,9 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
     case 'stop_node':
       // Mock: no-op in browser dev mode
       return undefined as T
+    case 'probe_seed_peers':
+      // Mock: no local peers in browser dev mode
+      return [] as T
     default:
       throw new Error(`Unknown mock command: ${cmd}`)
   }

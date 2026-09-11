@@ -334,4 +334,40 @@ mod tests {
         assert_eq!(resolve_network(Some("testnet")), "vtorrent-regtest");
         assert_eq!(resolve_network(Some("bogus")), "vtorrent-mainnet");
     }
+
+    #[tokio::test]
+    async fn test_probe_seed_peers_finds_listener() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let found = probe_seed_peers(vec![addr.clone(), "127.0.0.1:1".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(found, vec![addr]);
+    }
+}
+
+/// Probe candidate seed peers with a short TCP connect; returns the reachable
+/// subset. This is reachability only (no handshake) — the node validates
+/// peers properly when it starts.
+#[tauri::command]
+pub async fn probe_seed_peers(candidates: Vec<String>) -> Result<Vec<String>> {
+    use std::time::Duration;
+
+    let mut reachable = Vec::new();
+    for addr in candidates {
+        let socket: std::net::SocketAddr = match addr.parse() {
+            Ok(a) => a,
+            Err(_) => continue,
+        };
+        if tokio::time::timeout(
+            Duration::from_secs(2),
+            tokio::net::TcpStream::connect(socket),
+        )
+        .await
+        .is_ok_and(|r| r.is_ok())
+        {
+            reachable.push(addr);
+        }
+    }
+    Ok(reachable)
 }

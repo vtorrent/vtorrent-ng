@@ -24,6 +24,7 @@ fn main() {
             // Node lifecycle
             commands::start_node,
             commands::get_node_info,
+            commands::probe_seed_peers,
             // Transactions
             commands::get_transactions,
             commands::send_vtr,
