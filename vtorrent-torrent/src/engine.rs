@@ -615,14 +615,14 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
             Ok(PeerMessage::Bitfield { bits }) => {
                 scheduler
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|e| e.into_inner())
                     .tracker
                     .set_peer_bitfield(conn.remote_peer_id, &bits);
             }
             Ok(PeerMessage::Have { index }) => {
                 scheduler
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|e| e.into_inner())
                     .tracker
                     .set_peer_have(conn.remote_peer_id, index);
             }
