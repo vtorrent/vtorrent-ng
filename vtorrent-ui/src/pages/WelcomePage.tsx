@@ -36,7 +36,7 @@ export default function WelcomePage() {
   return (
     <div className="min-h-screen gradient-bg flex flex-col items-center justify-center p-6 relative">
       {/* Header */}
-      <div className="text-center mb-10 relative">
+      <div className="text-center mb-7 relative">
         <div
           aria-hidden
           className="absolute left-1/2 top-8 -translate-x-1/2 -translate-y-1/2 w-72 h-72 rounded-full bg-vtorrent-500/10 blur-3xl pointer-events-none"
@@ -51,14 +51,19 @@ export default function WelcomePage() {
           The decentralized torrent economy. Earn VTR for seeding. Trade peer-to-peer. No exchanges needed.
         </p>
         {node && (
-          <p className="mt-3 text-xs font-mono text-vtorrent-400/90">
-            Block {node.blockHeight.toLocaleString()} · {node.connections} peer{node.connections !== 1 ? 's' : ''}
-            {node.connections === 0
-              ? ' · waiting for peers'
-              : node.syncing
-                ? ` · syncing ${node.syncPercent.toFixed(0)}%`
-                : ' · synced'}
-          </p>
+          <div className="mt-4 inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-vtorrent-900/50 bg-navy-900/60">
+            <span className={`w-1.5 h-1.5 rounded-full ${node.connections > 0 ? 'bg-emerald-400 animate-pulse-slow' : 'bg-gray-600'}`} />
+            <span className="text-xs font-mono text-gray-300">
+              Block {node.blockHeight.toLocaleString()} · {node.connections} peer{node.connections !== 1 ? 's' : ''}
+            </span>
+            <span className="text-xs text-gray-500">
+              {node.connections === 0
+                ? 'waiting for peers'
+                : node.syncing
+                  ? `syncing ${node.syncPercent.toFixed(0)}%`
+                  : 'synced'}
+            </span>
+          </div>
         )}
       </div>
 
@@ -69,7 +74,7 @@ export default function WelcomePage() {
           {/* Open existing wallet */}
           <button
             onClick={() => setShowUnlock(true)}
-            className="w-full card hover:border-vtorrent-700/60 transition-all duration-200 text-left group"
+            className="w-full group flex items-center gap-4 p-4 rounded-xl bg-navy-900/40 border border-vtorrent-500/50 hover:border-vtorrent-400 hover:bg-navy-900/60 transition-all duration-150 text-left shadow-[0_0_28px_-10px_rgb(var(--vt-500)/0.5)]"
           >
             <div className="flex items-center gap-4">
               <div className="w-10 h-10 rounded-lg bg-vtorrent-500/15 border border-vtorrent-500/30 flex items-center justify-center flex-shrink-0">
