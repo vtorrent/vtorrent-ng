@@ -237,7 +237,8 @@ enum ClaimCommands {
     },
     /// Submit a legacy balance claim.
     Submit {
-        /// Legacy vTorrent 1.x WIF-encoded private key.
+        /// Legacy vTorrent 1.x WIF-encoded private key, or "-" to read it
+        /// from stdin (recommended: keeps the key out of `ps` and history).
         wif: String,
         /// New vTorrent 2.0 destination address.
         destination: String,
@@ -607,10 +608,19 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                 }
             }
             ClaimCommands::Submit { wif, destination } => {
+                // Never leave key material in argv-visible memory longer than
+                // needed: "-" reads the WIF from stdin (pipe/redirection keeps
+                // it out of `ps` output and shell history).
+                let mut wif = if wif == "-" {
+                    rpassword::prompt_password("Legacy WIF: ").unwrap_or_default()
+                } else {
+                    wif.clone()
+                };
                 let payload = serde_json::json!({
                     "wif_private_key": wif,
                     "recipient_address": destination,
                 });
+                wif.zeroize();
                 let data = client.post("/api/v1/claim/submit", &payload)?;
                 if cli.json {
                     println!("{}", serde_json::to_string_pretty(&data)?);
