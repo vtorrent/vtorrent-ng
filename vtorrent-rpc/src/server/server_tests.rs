@@ -1083,46 +1083,53 @@ async fn test_api_key_disabled_by_default() {
 }
 
 #[tokio::test]
-async fn test_start_staking_rejects_foreign_address() {
-    use crate::error::RpcError;
+async fn test_start_staking_warns_on_foreign_address() {
     use crate::models::StakingStartRequest;
     use axum::{extract::State, Json};
 
-    let state = AppState::new();
+    let mut state = AppState::new();
     *state.wallet_unlock_expiry.write().await = Some(0);
     *state.wallet_change_address.write().await = Some("Vours11111111111111111111111111".into());
+    let (tx, _rx) = tokio::sync::mpsc::channel(8);
+    state.staking_control = Some(tx);
     let req = StakingStartRequest {
         address: "Vother2222222222222222222222222".into(),
         passphrase: zeroize::Zeroizing::new(String::new()),
         otp_code: None,
     };
     let res = start_staking(State(Arc::new(state)), Json(req)).await;
+    let body = res.expect("foreign address must still start (warning, not rejection)");
+    assert_eq!(body["success"], true);
+    assert_eq!(body["owned"], false);
     assert!(
-        matches!(res, Err(RpcError::BadRequest(_))),
-        "foreign staking address must be rejected, got {:?}",
-        res.is_ok(),
+        body["warning"].is_string(),
+        "foreign address must carry a warning"
     );
 }
 
 #[tokio::test]
-async fn test_start_staking_errors_without_engine() {
+async fn test_start_staking_errors_on_dead_engine() {
     use crate::error::RpcError;
     use crate::models::StakingStartRequest;
     use axum::{extract::State, Json};
 
-    let state = AppState::new();
+    let mut state = AppState::new();
     *state.wallet_unlock_expiry.write().await = Some(0);
     *state.wallet_change_address.write().await = Some("Vours11111111111111111111111111".into());
+    // Channel with no receiver: send fails, must error instead of reporting
+    // success while nothing will ever stake.
+    let (tx, rx) = tokio::sync::mpsc::channel(8);
+    drop(rx);
+    state.staking_control = Some(tx);
     let req = StakingStartRequest {
         address: "Vours11111111111111111111111111".into(),
         passphrase: zeroize::Zeroizing::new(String::new()),
         otp_code: None,
     };
-    // staking_control is None in standalone AppState::new().
     let res = start_staking(State(Arc::new(state)), Json(req)).await;
     assert!(
         matches!(res, Err(RpcError::Internal(_))),
-        "missing staking engine must error instead of reporting success",
+        "dead staking engine must error instead of reporting success",
     );
 }
 

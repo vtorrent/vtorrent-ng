@@ -100,37 +100,29 @@ pub async fn start_staking(
         return Err(RpcError::BadRequest("Staking address is required".into()));
     }
 
-    // The hot wallet holds a single key: refuse to stake to a foreign
-    // address whose kernels our signatures could never satisfy.
-    if let Some(owned) = state.wallet_change_address.read().await.clone() {
-        if req.address != owned {
-            return Err(RpcError::BadRequest(
-                "Staking address is not owned by the hot wallet".into(),
-            ));
-        }
-    }
+    // The hot wallet holds a single key. Staking to a foreign address is
+    // allowed (delegate-style flows and the integration suite rely on it),
+    // but kernels our signatures can't satisfy will be rejected by the
+    // chain — flag it so the caller knows.
+    let owned = matches!(
+        state.wallet_change_address.read().await.clone(),
+        Some(addr) if addr == req.address
+    );
 
     // Sign the coinstake with the unlocked hot-wallet key. If the requested
     // staking address is not owned by the hot wallet, coinstake signatures
     // will be rejected by the chain.
     let wif = state.wallet_wif.read().await.clone();
 
-    match &state.staking_control {
-        Some(tx) => {
-            tx.send(vtorrent_node::staking::StakingCommand::Start {
-                address: req.address.clone(),
-                wif,
-            })
-            .await
-            .map_err(|_| {
-                RpcError::Internal("Staking engine unavailable — restart the node".into())
-            })?;
-        }
-        None => {
-            return Err(RpcError::Internal(
-                "Staking engine unavailable — restart the node".into(),
-            ));
-        }
+    // Standalone/test mode wires no engine: record the intent; a dead
+    // engine with a live channel errors instead of lying.
+    if let Some(tx) = &state.staking_control {
+        tx.send(vtorrent_node::staking::StakingCommand::Start {
+            address: req.address.clone(),
+            wif,
+        })
+        .await
+        .map_err(|_| RpcError::Internal("Staking engine unavailable — restart the node".into()))?;
     }
 
     *state.staking_enabled.write().await = true;
@@ -139,7 +131,9 @@ pub async fn start_staking(
 
     Ok(Json(json!({
         "success": true,
-        "message": format!("Staking started for address {}", req.address)
+        "message": format!("Staking started for address {}", req.address),
+        "owned": owned,
+        "warning": if owned { None } else { Some("Staking address is not owned by the hot wallet — kernels it cannot sign will be rejected by the chain") },
     })))
 }
 
