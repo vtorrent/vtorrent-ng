@@ -99,7 +99,12 @@ pub async fn build_incentive_payment(
             .map_err(|e| IncentivePaymentError::Mempool(e.to_string()))?;
     }
     if let Some(sender) = tx_submit {
-        let _ = sender.try_send(tx);
+        if sender.try_send(tx).is_err() {
+            tracing::warn!(
+                txid = %txid,
+                "Incentive payment admitted to mempool but P2P broadcast channel full — tx will relay on next mempool sync",
+            );
+        }
     }
     Ok(txid)
 }

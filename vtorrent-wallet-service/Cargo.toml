@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 zeroize = { workspace = true }
+tracing = { workspace = true }
 vtorrent-wallet = { path = "../vtorrent-wallet" }
 vtorrent-node = { path = "../vtorrent-node" }
 vtorrent-btc = { path = "../vtorrent-btc" }
