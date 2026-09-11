@@ -53,7 +53,11 @@ export default function WelcomePage() {
         {node && (
           <p className="mt-3 text-xs font-mono text-vtorrent-400/90">
             Block {node.blockHeight.toLocaleString()} · {node.connections} peer{node.connections !== 1 ? 's' : ''}
-            {node.syncing ? ` · syncing ${node.syncPercent.toFixed(0)}%` : ' · synced'}
+            {node.connections === 0
+              ? ' · waiting for peers'
+              : node.syncing
+                ? ` · syncing ${node.syncPercent.toFixed(0)}%`
+                : ' · synced'}
           </p>
         )}
       </div>
@@ -117,7 +121,7 @@ export default function WelcomePage() {
           <div className="absolute bottom-5 left-6 text-xs text-gray-600 font-mono select-none">
             v2.0.0-beta.2
           </div>
-          <div className="absolute bottom-5 left-1/2 -translate-x-1/2 grid grid-cols-3 gap-2 text-center">
+          <div className="mt-8 grid grid-cols-3 gap-2 text-center">
             {[
               { icon: Shield, label: 'Built-in 2FA' },
               { icon: Download, label: 'Earn by Seeding' },
