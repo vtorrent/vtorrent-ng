@@ -305,9 +305,7 @@ impl StakingEngine {
         block.header.utxo_root =
             compute_post_apply_root(ordered_utxos, &block.transactions, height, timestamp);
 
-        let utxo_proof_mp = utxo_tree
-            .proof(leaf_index)
-            .expect("winning utxo leaf index is in-bounds");
+        let utxo_proof_mp = utxo_tree.proof(leaf_index)?;
         let utxo_proof = UtxoInclusionProof {
             leaf_index,
             siblings: utxo_proof_mp.siblings,
@@ -316,9 +314,7 @@ impl StakingEngine {
 
         let txids: Vec<[u8; 32]> = block.transactions.iter().map(|tx| tx.txid()).collect();
         let tx_tree = ProofMerkleTree::build(&txids);
-        let tx_merkle_proof = tx_tree
-            .proof(0)
-            .expect("block has at least the coinstake tx");
+        let tx_merkle_proof = tx_tree.proof(0)?;
 
         let proof = StakeProof {
             coinstake: spv_transaction_mirror(&coinstake),

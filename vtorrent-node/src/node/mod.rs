@@ -391,6 +391,12 @@ impl Node {
         Arc::clone(&self.chain)
     }
 
+    /// Returns a clone of the Arc wrapping the ban manager.
+    /// Used to share operator unban access with the RPC server.
+    pub fn ban_manager_handle(&self) -> Arc<RwLock<vtorrent_p2p::ban_manager::BanManager>> {
+        Arc::clone(&self.peer_manager.ban_manager)
+    }
+
     /// Returns a clone of the Arc wrapping the mempool Mutex.
     /// Used by vtorrent-daemon to share the live mempool with the RPC server.
     pub fn mempool_arc(&self) -> Arc<Mutex<Mempool>> {

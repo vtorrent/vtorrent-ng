@@ -1081,3 +1081,121 @@ async fn test_api_key_disabled_by_default() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], true);
 }
+
+#[tokio::test]
+async fn test_start_staking_rejects_foreign_address() {
+    use crate::error::RpcError;
+    use crate::models::StakingStartRequest;
+    use axum::{extract::State, Json};
+
+    let state = AppState::new();
+    *state.wallet_unlock_expiry.write().await = Some(0);
+    *state.wallet_change_address.write().await = Some("Vours11111111111111111111111111".into());
+    let req = StakingStartRequest {
+        address: "Vother2222222222222222222222222".into(),
+        passphrase: zeroize::Zeroizing::new(String::new()),
+        otp_code: None,
+    };
+    let res = start_staking(State(Arc::new(state)), Json(req)).await;
+    assert!(
+        matches!(res, Err(RpcError::BadRequest(_))),
+        "foreign staking address must be rejected, got {:?}",
+        res.is_ok(),
+    );
+}
+
+#[tokio::test]
+async fn test_start_staking_errors_without_engine() {
+    use crate::error::RpcError;
+    use crate::models::StakingStartRequest;
+    use axum::{extract::State, Json};
+
+    let state = AppState::new();
+    *state.wallet_unlock_expiry.write().await = Some(0);
+    *state.wallet_change_address.write().await = Some("Vours11111111111111111111111111".into());
+    let req = StakingStartRequest {
+        address: "Vours11111111111111111111111111".into(),
+        passphrase: zeroize::Zeroizing::new(String::new()),
+        otp_code: None,
+    };
+    // staking_control is None in standalone AppState::new().
+    let res = start_staking(State(Arc::new(state)), Json(req)).await;
+    assert!(
+        matches!(res, Err(RpcError::Internal(_))),
+        "missing staking engine must error instead of reporting success",
+    );
+}
+
+#[tokio::test]
+async fn test_start_staking_accepts_own_address() {
+    use crate::models::StakingStartRequest;
+    use axum::{extract::State, Json};
+
+    let mut state = AppState::new();
+    *state.wallet_unlock_expiry.write().await = Some(0);
+    *state.wallet_change_address.write().await = Some("Vours11111111111111111111111111".into());
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    state.staking_control = Some(tx);
+    let req = StakingStartRequest {
+        address: "Vours11111111111111111111111111".into(),
+        passphrase: zeroize::Zeroizing::new(String::new()),
+        otp_code: None,
+    };
+    let res = start_staking(State(Arc::new(state)), Json(req)).await;
+    assert!(res.is_ok(), "own staking address must be accepted");
+    match rx.recv().await {
+        Some(vtorrent_node::staking::StakingCommand::Start { address, .. }) => {
+            assert_eq!(address, "Vours11111111111111111111111111");
+        }
+        other => panic!("expected Start command, got {:?}", other.is_some()),
+    }
+}
+
+#[tokio::test]
+async fn test_unban_peer_rejects_bad_ip() {
+    use crate::error::RpcError;
+    use crate::models::UnbanRequest;
+    use axum::{extract::State, Json};
+
+    let state = AppState::new();
+    let req = UnbanRequest {
+        ip: "not-an-ip".into(),
+    };
+    let res = unban_peer(State(Arc::new(state)), Json(req)).await;
+    assert!(matches!(res, Err(RpcError::BadRequest(_))));
+}
+
+#[tokio::test]
+async fn test_unban_peer_errors_without_node() {
+    use crate::error::RpcError;
+    use crate::models::UnbanRequest;
+    use axum::{extract::State, Json};
+
+    let state = AppState::new();
+    let req = UnbanRequest {
+        ip: "10.0.0.9".into(),
+    };
+    let res = unban_peer(State(Arc::new(state)), Json(req)).await;
+    assert!(matches!(res, Err(RpcError::Internal(_))));
+}
+
+#[tokio::test]
+async fn test_unban_peer_clears_ban() {
+    use crate::models::UnbanRequest;
+    use axum::{extract::State, Json};
+    use std::time::Duration;
+
+    let mut state = AppState::new();
+    let mgr = vtorrent_p2p::ban_manager::BanManager::new(100, Duration::from_secs(3600));
+    let handle = std::sync::Arc::new(tokio::sync::RwLock::new(mgr));
+    let ip: std::net::IpAddr = "10.0.0.9".parse().unwrap();
+    handle.write().await.ban_ip(ip, "test".into());
+    assert!(handle.read().await.is_banned(ip));
+    state.ban_manager = Some(handle.clone());
+    let req = UnbanRequest {
+        ip: "10.0.0.9".into(),
+    };
+    let res = unban_peer(State(Arc::new(state)), Json(req)).await;
+    assert!(res.is_ok());
+    assert!(!handle.read().await.is_banned(ip));
+}

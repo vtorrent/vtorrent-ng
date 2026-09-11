@@ -190,6 +190,8 @@ async fn main() -> anyhow::Result<()> {
     rpc_state.block_submit = Some(block_submit_sender);
     // Wire the staking control channel so RPC can enable/disable staking.
     rpc_state.staking_control = Some(staking_control_sender);
+    // Share the ban manager so the authed unban endpoint works.
+    rpc_state.ban_manager = Some(node.ban_manager_handle());
     rpc_state.rpc_api_key = cli.rpc_api_key.clone();
     rpc_state.regtest = cli.regtest;
     rpc_state.network = if cli.regtest {

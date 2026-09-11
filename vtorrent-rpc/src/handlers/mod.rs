@@ -347,6 +347,29 @@ pub async fn get_peers(State(state): State<Arc<AppState>>) -> RpcResult<Json<Pee
     Ok(Json(PeersResponse { count, peers }))
 }
 
+/// POST /api/v1/peers/unban
+///
+/// Removes a ban for an IP (operator recourse for false positives).
+/// Requires API key (protected route).
+pub async fn unban_peer(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<UnbanRequest>,
+) -> RpcResult<Json<serde_json::Value>> {
+    let ip: std::net::IpAddr =
+        req.ip.trim().parse().map_err(|_| {
+            RpcError::BadRequest("Invalid IP address — provide a bare v4/v6 IP".into())
+        })?;
+    match &state.ban_manager {
+        Some(handle) => {
+            handle.write().await.unban(ip);
+            Ok(Json(serde_json::json!({ "success": true, "ip": req.ip })))
+        }
+        None => Err(RpcError::Internal(
+            "Ban manager unavailable — node not running".into(),
+        )),
+    }
+}
+
 // ─── Bitcoin wallet ────────────────────────────────────────────────────────────
 
 #[cfg(test)]

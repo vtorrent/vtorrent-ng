@@ -1620,6 +1620,40 @@ pub(crate) async fn dispatch_message(
         .copied()
         .unwrap_or(vtorrent_p2p::message::LEGACY_PROTOCOL_VERSION);
 
+    // Unknown commands are ignored before rate limiting so
+    // forward-compatible chatter can never trip the flood budget.
+    // Keep in sync with the match arms below.
+    const KNOWN_COMMANDS: &[&str] = &[
+        "addr",
+        "getaddr",
+        "inv",
+        "block",
+        "tx",
+        "getblocks",
+        "sendcmpct",
+        "cmpctblock",
+        "getblocktxn",
+        "blocktxn",
+        "ping",
+        "pong",
+        "feefilter",
+        "notfound",
+        "getdata",
+        "getheaders",
+        "headers",
+        "getproof",
+        "proof",
+        "dexorder",
+    ];
+    if !KNOWN_COMMANDS.contains(&msg.command_str()) {
+        tracing::trace!(
+            "Unknown command '{}' from {} — ignored",
+            msg.command_str(),
+            peer_addr
+        );
+        return Ok(());
+    }
+
     // Per-peer flood rate limiting: a peer that exceeds the message budget
     // within a window is banned and disconnected. Bulk-data payloads
     // (`block`/`tx`) draw from a 10x budget — sync bursts legitimately
@@ -1936,6 +1970,23 @@ mod dispatch_tests {
         assert_eq!(
             score, 0,
             "unknown commands must be ignored (rolling upgrades)"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_unknown_commands_skip_flood_budget() {
+        use crate::node::MAX_MSGS_PER_WINDOW;
+        let mut node = test_node();
+        let addr = peer(25);
+        let msg = NetMessage::new("futurecmd99", vec![]);
+        for _ in 0..MAX_MSGS_PER_WINDOW + 1 {
+            dispatch_message(&mut node, addr, msg.clone())
+                .await
+                .unwrap();
+        }
+        assert!(
+            !node.peer_manager.is_banned(addr).await,
+            "upgrade chatter must never trip the flood budget"
         );
     }
 

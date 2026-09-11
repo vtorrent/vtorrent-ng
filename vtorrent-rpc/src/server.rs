@@ -135,6 +135,7 @@ pub fn build_router(state: AppState) -> Router {
             get(debug_order_preimage),
         )
         .route("/api/v1/debug/mocktime", post(debug_mocktime))
+        .route("/api/v1/peers/unban", post(unban_peer))
         .layer(auth)
         .layer(rate);
 

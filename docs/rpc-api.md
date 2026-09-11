@@ -487,6 +487,11 @@ Submit compact block headers for SPV sync.
 
 Returns connected peers with score, ban status, and protocol version.
 
+### POST /api/v1/peers/unban (auth)
+
+Removes a ban for an IP (operator recourse for false positives).
+Body: `{"ip": "10.0.0.9"}`. Returns `{"success": true, "ip": ...}`.
+
 ---
 
 ## Faucet (Testnet)

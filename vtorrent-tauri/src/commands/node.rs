@@ -170,6 +170,7 @@ pub async fn start_node(
     node.set_event_sender(event_tx);
 
     rpc_state.staking_control = Some(node.staking_control());
+    rpc_state.ban_manager = Some(node.ban_manager_handle());
 
     let handle = NodeHandle {
         rpc_state: rpc_state.clone(),
@@ -353,8 +354,12 @@ mod tests {
 pub async fn probe_seed_peers(candidates: Vec<String>) -> Result<Vec<String>> {
     use std::time::Duration;
 
+    // Bound the scan: each candidate costs up to the connect timeout, and the
+    // UI blocks on the full result.
+    const MAX_PROBE_CANDIDATES: usize = 10;
+
     let mut reachable = Vec::new();
-    for addr in candidates {
+    for addr in candidates.into_iter().take(MAX_PROBE_CANDIDATES) {
         let socket: std::net::SocketAddr = match addr.parse() {
             Ok(a) => a,
             Err(_) => continue,

@@ -476,6 +476,11 @@ pub struct PeersResponse {
     pub peers: Vec<PeerInfoResponse>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UnbanRequest {
+    pub ip: String,
+}
+
 // ─── Bitcoin wallet ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize)]

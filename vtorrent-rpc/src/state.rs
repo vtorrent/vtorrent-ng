@@ -116,6 +116,8 @@ pub struct AppState {
     pub block_submit: Option<mpsc::Sender<vtorrent_node::block::Block>>,
     /// Channel for enabling/disabling staking at runtime. `None` in standalone mode.
     pub staking_control: Option<mpsc::Sender<StakingCommand>>,
+    /// Shared ban manager for operator unbans. `None` in standalone mode.
+    pub ban_manager: Option<Arc<tokio::sync::RwLock<vtorrent_p2p::ban_manager::BanManager>>>,
     /// Live list of connected peers — updated by the daemon event bridge.
     pub peer_list: Arc<RwLock<Vec<PeerInfo>>>,
     /// Optional RPC API key. When set, sensitive endpoints require the
@@ -179,6 +181,7 @@ impl AppState {
             tx_submit: None,
             block_submit: None,
             staking_control: None,
+            ban_manager: None,
             peer_list: Arc::new(RwLock::new(Vec::new())),
             wallet_path: None,
             swap_recovery_dir: None,
@@ -235,6 +238,7 @@ impl AppState {
             tx_submit: None,
             block_submit: None,
             staking_control: None,
+            ban_manager: None,
             peer_list: Arc::new(RwLock::new(Vec::new())),
             wallet_path: None,
             swap_recovery_dir: None,
