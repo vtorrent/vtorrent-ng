@@ -1687,6 +1687,12 @@ pub(crate) async fn dispatch_message(
         return Ok(());
     }
 
+    // Any message that passes flood control proves the peer is alive:
+    // clear a pending ping so bulk transfers (hundreds of back-to-back
+    // blocks) can never trigger a false "no pong" disconnect. Malformed
+    // content still scores misbehaviour below and bans within a few hits.
+    node.peer_ping_nonces.remove(&peer_addr);
+
     match msg.command_str() {
         // ── PEX: Peer Exchange ────────────────────────────────────────────
         "addr" => {
@@ -2182,5 +2188,42 @@ mod deserialize_limit_tests {
         assert_eq!(chunks[1].len(), 1);
         assert_eq!(chunk_getdata(items(500)).len(), 1);
         assert!(chunk_getdata(items(0)).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod ping_liveness_tests {
+    use super::*;
+    use crate::node::NodeConfig;
+    use vtorrent_p2p::message::InvMsg;
+
+    fn test_node() -> Node {
+        let config = NodeConfig {
+            isolated: true,
+            use_dht: false,
+            use_overlay: false,
+            ..NodeConfig::default()
+        };
+        Node::new(config).expect("test node creation failed")
+    }
+
+    fn peer(port: u16) -> SocketAddr {
+        format!("127.0.0.1:{}", port).parse().unwrap()
+    }
+
+    #[tokio::test]
+    async fn dispatch_data_clears_pending_ping() {
+        let mut node = test_node();
+        let addr = peer(27);
+        node.peer_ping_nonces.insert(addr, 999);
+        let msg = NetMessage::new(
+            "inv",
+            serde_json::to_vec(&InvMsg { items: vec![] }).unwrap(),
+        );
+        dispatch_message(&mut node, addr, msg).await.unwrap();
+        assert!(
+            !node.peer_ping_nonces.contains_key(&addr),
+            "protocol data from a peer must reset ping liveness"
+        );
     }
 }
