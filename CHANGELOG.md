@@ -128,6 +128,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Backup policy (`docs/backup-policy.md`)
 - CLI BTC subcommands (`btc status|address|send`) — full RPC parity
 - Graceful shutdown flushes mempool to disk
+
+**P2P Sync Hardening (2026-09-10 → 2026-09-12)**
+- **CRITICAL — bulk cold-sync stalled**: inclusive-range off-by-one made bulk responders announce 501 invs / 2001 headers while receivers reject getdata >500 / headers >2000 → every round scored misbehaviour → 24h ban → permanent stall for any fresh joiner. Responders capped exactly, requesters chunk to ≤500 (works against unpatched peers too). Proven: unfixed joiner stalled at 0, fixed joiner synced 620/620 identical hashes
+- **Rate limiter banned legit sync bursts**: 500 msgs/10s applied equally to bulk payloads; `block`/`tx` now draw from a 5000/10s budget, control messages keep 500/10s
+- **Ping timer killed busy peers**: 120s timer ignored bulk data; any message passing flood control now resets ping liveness
+- **Blocking disconnect froze the node loop**: the lone blocking `send().await` on a 64-slot queue wedged the whole loop mid-disconnect; now fire-and-forget like every other send site
+- Full fleet join proven 0 → 4885 with byte-identical tip hash
+- New auth-gated `POST /api/v1/peers/unban` (operator recourse for false positives)
+
+**Desktop: Testnet Mode + Staking Dashboard (2026-09-10)**
+- Tauri app can join the soak network: Mainnet/Testnet picker, seed peers (persisted + local auto-detect via `probe_seed_peers`), TESTNET badge, separate `~/.vtorrent/testnet` datadir, network-mismatch guard
+- Staking ops dashboard: health strip, lazy reward history via new `GET /api/v1/staking/rewards`, start-error mapping, copyable address (Tauri snake_case normalization fix included)
+- Legacy espresso theme toggle (CSS-var palette, persisted, defaults legacy); VTR app icon set regenerated; product renamed vTorrent 2.0 display (repo stays vtorrent-ng)
+
+**Audit Batch (2026-09-11)**
+- `start_staking` warns (not rejects) on foreign addresses + errors on dead engine instead of lying; proof-code `expect()`s became `?` early-returns; poison-aware torrent scheduler locks; dropped P2P broadcasts now logged with txid; `claim submit` reads WIF from stdin (`-`) and zeroizes
 - AGENTS.md synced with current state (19 crates, 539 tests, 3 seeds, ops features)
 
 **Testing & Verification**

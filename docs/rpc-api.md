@@ -202,6 +202,14 @@ Start staking with the wallet.
 
 Stop staking.
 
+### GET /api/v1/staking/rewards?limit=20&address=
+
+Recent PoS block rewards, newest first. `limit` clamped 1–100 (default 20);
+optional `address` filters to one staker. Reward = sum of coinstake outputs
+(same definition as the `staking_reward` websocket event). Staker address is
+best-effort decoded, `null` when undecodable. Reads the active chain, so it
+is reorg-safe by construction.
+
 ---
 
 ## DEX
