@@ -25,7 +25,7 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::{mpsc, Mutex, RwLock};
-use tokio::time::{interval, Duration};
+use tokio::time::{interval, interval_at, Duration, Instant};
 
 use std::path::PathBuf;
 
@@ -84,6 +84,20 @@ pub const MSG_WINDOW_SECS: u64 = 10;
 
 /// How often (seconds) to sync blocks from peers.
 const SYNC_INTERVAL_SECS: u64 = 30;
+
+/// Sync cadence while behind the network tip. A dropped round then costs
+/// seconds of idle instead of a full 30s window; at tip the base cadence
+/// applies so steady-state chatter is unchanged.
+const FAST_SYNC_INTERVAL_SECS: u64 = 3;
+
+/// Sync tick interval for the given sync state. Pure helper for tests.
+pub(crate) fn sync_interval_secs(behind: bool) -> u64 {
+    if behind {
+        FAST_SYNC_INTERVAL_SECS
+    } else {
+        SYNC_INTERVAL_SECS
+    }
+}
 
 /// How often (seconds) to run peer maintenance (prune, eviction).
 const PEER_MAINTENANCE_SECS: u64 = 60;
@@ -592,6 +606,14 @@ impl Node {
                 // Periodic sync
                 _ = sync_ticker.tick() => {
                     self.request_blocks_from_peers().await;
+                    let our_height = { self.chain.lock().await.best_height() };
+                    let behind =
+                        self.peer_manager.network_best_height() > our_height;
+                    let secs = sync_interval_secs(behind);
+                    sync_ticker = interval_at(
+                        Instant::now() + Duration::from_secs(secs),
+                        Duration::from_secs(secs),
+                    );
                 }
 
                 // Periodic staking attempt
@@ -1087,5 +1109,18 @@ mod tests {
             .unwrap();
 
         assert_eq!(book.read().await.open_order_count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod sync_interval_tests {
+    use super::*;
+
+    #[test]
+    fn test_sync_interval_adapts_to_sync_state() {
+        // FAST must stay below SYNC (3 < 30) so a dropped round while
+        // behind costs seconds of idle instead of a full 30s window.
+        assert_eq!(sync_interval_secs(true), 3);
+        assert_eq!(sync_interval_secs(false), 30);
     }
 }
