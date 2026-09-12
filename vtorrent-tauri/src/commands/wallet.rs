@@ -437,6 +437,14 @@ pub async fn send_vtr(
     to_address: String,
     amount_satoshis: u64,
 ) -> Result<String> {
+    if to_address.trim().is_empty() {
+        return Err(TauriError::InvalidInput(
+            "Recipient address is required".into(),
+        ));
+    }
+    if amount_satoshis == 0 {
+        return Err(TauriError::InvalidInput("Amount must be non-zero".into()));
+    }
     let (wif, from_address) = {
         let guard = state.wallet.lock().unwrap();
         let wallet = guard.as_ref().ok_or(TauriError::WalletNotInitialized)?;
