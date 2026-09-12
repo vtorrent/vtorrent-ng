@@ -657,9 +657,14 @@ impl PeerManager {
     }
 
     /// Disconnect a specific peer by sending it a `Disconnect` command.
+    ///
+    /// Fire-and-forget: a wedged peer task may never drain its command
+    /// queue, and awaiting capacity here would wedge the caller (this froze
+    /// the entire node loop mid-disconnect in production). The peer's idle
+    /// timeout reaps it if the task never processes the command.
     pub async fn disconnect(&mut self, addr: SocketAddr) {
         if let Some(peer) = self.peers.get_mut(&addr) {
-            let _ = peer.cmd_tx.send(PeerCommand::Disconnect).await;
+            let _ = peer.cmd_tx.try_send(PeerCommand::Disconnect);
             peer.state = PeerState::Disconnecting;
         }
     }
@@ -812,5 +817,35 @@ mod tests {
         // Must not panic or error on an unknown address.
         pm.send_to(test_addr(44444), NetMessage::new("ping", vec![]))
             .await;
+    }
+}
+
+#[cfg(test)]
+mod disconnect_liveness_tests {
+    use super::*;
+
+    fn test_addr(port: u16) -> std::net::SocketAddr {
+        format!("127.0.0.1:{}", port).parse().unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_never_blocks_on_full_queue() {
+        let mut pm = PeerManager::new_testnet(0, "127.0.0.1:22526");
+        let addr = test_addr(11131);
+        let (tx, _rx) = mpsc::channel(8);
+        pm.register_virtual_peer(addr, "/vTorrent:test/".into(), tx.clone())
+            .unwrap();
+        // Wedge the consumer: fill the 8-slot queue so any blocking send
+        // would hang forever (this is what wedged the node loop in prod).
+        for _ in 0..8 {
+            tx.try_send(crate::peer::PeerCommand::Send(
+                crate::message::NetMessage::new("ping", vec![]),
+            ))
+            .unwrap();
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(5), pm.disconnect(addr))
+            .await
+            .expect("disconnect must not block on a wedged peer queue");
+        assert_eq!(pm.peers.get(&addr).unwrap().state, PeerState::Disconnecting);
     }
 }
