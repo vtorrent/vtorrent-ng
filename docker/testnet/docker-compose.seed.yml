@@ -1,0 +1,22 @@
+# Post-soak seed exposure — DO NOT APPLY DURING A SOAK WINDOW.
+#
+# Publishes node1's P2P port on the host so desktop apps (Tauri "Detect
+# local") can auto-discover the testnet at 127.0.0.1:22526 with zero manual
+# seed entry.
+#
+# Applying this file RECREATES the node1 container (restart), which resets
+# the 7-day soak clock. Requires explicit sign-off while any soak is active.
+#
+# Usage (after sign-off only):
+#   cd docker/testnet && docker compose -f docker-compose.yml \
+#     -f docker-compose.seed.yml up -d vtr-node1
+# Verify: python3 -c "import socket;
+#   socket.create_connection(('127.0.0.1', 22526), timeout=5)"
+
+name: vtorrent-testnet
+
+services:
+  node1:
+    ports:
+      - "22625:22525"
+      - "22526:22526"
