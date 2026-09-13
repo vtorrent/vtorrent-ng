@@ -34,6 +34,15 @@ pub const SELF_ANNOUNCE_INTERVAL_SECS: u64 = 30 * 60;
 /// How often to request addresses from peers (10 minutes).
 pub const GETADDR_INTERVAL_SECS: u64 = 10 * 60;
 
+/// Candidate selection pool size, as a multiple of the requested count.
+///
+/// Selection draws uniformly from the top `count * CANDIDATE_POOL_FACTOR`
+/// entries by quality score instead of returning a deterministic top-N.
+/// A predictable dial order lets an attacker position sybils exactly where
+/// they will be tried first (eclipse); randomizing within a quality-ranked
+/// pool keeps the quality signal while removing the predictability.
+pub const CANDIDATE_POOL_FACTOR: usize = 4;
+
 /// An entry in the peer address book.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddrEntry {
@@ -283,9 +292,14 @@ impl AddrBook {
 
     /// Get the best candidate addresses to try connecting to.
     ///
-    /// Returns up to `count` addresses sorted by quality score, excluding
-    /// already-connected peers and our own address.
+    /// Returns up to `count` addresses drawn uniformly at random from the
+    /// top `count * CANDIDATE_POOL_FACTOR` entries by quality score,
+    /// excluding already-connected peers and our own address. Randomizing
+    /// within a quality-ranked pool (instead of a deterministic top-N)
+    /// denies attackers a predictable dial order for eclipse attempts.
     pub fn get_candidates(&self, count: usize) -> Vec<SocketAddr> {
+        use rand::seq::SliceRandom;
+
         let mut candidates: Vec<_> = self
             .entries
             .iter()
@@ -297,11 +311,15 @@ impl AddrBook {
 
         // Sort by quality score descending
         candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        candidates
-            .iter()
-            .take(count)
-            .map(|(addr, _)| *addr)
-            .collect()
+        // Randomized draw from the top pool; the pool covers the whole
+        // list when fewer entries exist than the pool size.
+        let pool = count
+            .saturating_mul(CANDIDATE_POOL_FACTOR)
+            .max(count)
+            .min(candidates.len());
+        let mut pool: Vec<_> = candidates.into_iter().take(pool).collect();
+        pool.shuffle(&mut rand::thread_rng());
+        pool.iter().take(count).map(|(addr, _)| *addr).collect()
     }
 
     /// Get all known addresses for sharing with peers (for `addr` response).
@@ -651,5 +669,66 @@ mod tests {
 
         let testnet = AddrBook::with_testnet(true);
         assert!(testnet.testnet);
+    }
+
+    /// Build a book with `n` entries of strictly decreasing quality:
+    /// identical success rates, staggered `last_seen` so freshness decides.
+    fn make_ranked_book(n: u16) -> (AddrBook, Vec<SocketAddr>) {
+        let mut book = AddrBook::new_testnet();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let mut addrs = Vec::new();
+        for i in 0..n {
+            let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 1, 1)), 22500 + i);
+            let mut entry = AddrEntry::new(addr, NODE_NETWORK);
+            entry.connection_attempts = 10;
+            entry.successful_connections = 10;
+            entry.last_seen = now.saturating_sub(u64::from(i) * 3600);
+            book.add_addrs(&[entry]);
+            addrs.push(addr);
+        }
+        (book, addrs)
+    }
+
+    #[test]
+    fn test_candidates_vary_across_calls() {
+        // Eclipse hardening: selection must not be a deterministic top-N.
+        // With 8 strictly ranked entries and 2 requested, repeated calls
+        // must reach beyond the top 2 over time.
+        let (book, _addrs) = make_ranked_book(8);
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..30 {
+            for addr in book.get_candidates(2) {
+                seen.insert(addr);
+            }
+        }
+        assert!(
+            seen.len() > 2,
+            "candidate selection looks deterministic: 30 calls of get_candidates(2) \
+             covered only {} distinct peers",
+            seen.len()
+        );
+    }
+
+    #[test]
+    fn test_candidates_stay_within_top_pool() {
+        // Quality signal is preserved: with 12 ranked entries and 2 requested,
+        // selection draws from the top pool only — the worst entries are
+        // never returned, no matter how many calls are made.
+        let (book, addrs) = make_ranked_book(12);
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..100 {
+            for addr in book.get_candidates(2) {
+                seen.insert(addr);
+            }
+        }
+        let top: std::collections::HashSet<_> = addrs.iter().take(8).copied().collect();
+        assert!(
+            seen.iter().all(|a| top.contains(a)),
+            "selection reached outside the top pool: {:?}",
+            seen.difference(&top).collect::<Vec<_>>()
+        );
     }
 }
