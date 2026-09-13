@@ -88,3 +88,26 @@ and the swap + claim paths are now exercised end-to-end on testnet.
 ## Checksums
 
 *Populated at tag time by the release pipeline.*
+
+## Addendum — changes since this draft (2026-09-10 → 2026-09-13, unreleased)
+
+- **P2P bulk-sync hardening** — fresh joiners stalled permanently (responder
+  announced 501 invs / 2001 headers while receivers cap `getdata` at 500 /
+  headers at 2000, scoring misbehaviour into 24h bans). Responders now cap
+  exactly, requesters chunk to ≤500; bulk `block`/`tx` traffic draws from a
+  dedicated 5000/10s budget; any flood-control-passing message resets ping
+  liveness; node-loop disconnect sends are fire-and-forget. Proven with a
+  full 0 → 4885 fleet join at byte-identical tip hash. New auth-gated
+  `POST /api/v1/peers/unban` for false-positive recourse.
+- **Sync-status fix** — followers stuck at 99.9% `syncing: true` after
+  reconnect (stale high-water peer height, lost disconnect events on clean
+  TCP EOF). Status is now recalculated from live peers + local height.
+- **PEX eclipse hardening** — candidate selection draws uniformly from the
+  top `count × 4` quality pool instead of deterministic top-N (no wire
+  change).
+- **Desktop testnet mode** — Mainnet/Testnet picker, persisted + auto-detected
+  seed peers, TESTNET badge, separate `~/.vtorrent/testnet` datadir,
+  network-mismatch guard; staking dashboard with lazy reward history via new
+  `GET /api/v1/staking/rewards`.
+- **Soak status** — three-node regtest soak running `vtorrent/node:7db5da3`;
+  sign-off pending (see `docs/soak-log.md`). No fleet deploy until sign-off.

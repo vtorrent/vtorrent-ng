@@ -1,20 +1,24 @@
 # Seed Fleet Monitoring
 
 Prometheus + Alertmanager + Grafana stack deployed on `vtr-seed1`
-(91.98.80.38), scraping both seed nodes.
+(91.98.80.38), scraping all three seed nodes.
 
 ## Architecture
 
 | Component | Host | Port | Notes |
 |---|---|---|---|
-| Prometheus | vtr-seed1 | 9090 (localhost) | scrapes both daemons + node_exporters |
+| Prometheus | vtr-seed1 | 9090 (localhost) | scrapes all daemons + node_exporters |
 | Alertmanager | vtr-seed1 | 9093 (localhost) | webhook → ntfy push |
 | Grafana | vtr-seed1 | **3000 (public)** | `admin` / password in ops vault |
-| node_exporter | both seeds | 9100 | ufw: seed1 IP only |
-| metrics proxy (nginx) | vtr-seed2 | 9105 | `/metrics` → 127.0.0.1:22525, ufw: seed1 IP only |
+| node_exporter | all three seeds | 9100 | ufw: seed1 IP only |
+| metrics proxy (nginx) | vtr-seed2, vtr-seed3 | 9105 | `/metrics` → 127.0.0.1:22525, ufw: seed1 IP only |
 
-The daemons' RPC listeners stay localhost-only; seed2's daemon metrics are
-exposed read-only through an nginx location restricted to seed1's IP.
+The daemons' RPC listeners stay localhost-only; seed2/seed3 daemon metrics
+are exposed read-only through an nginx location restricted to seed1's IP.
+Applying a `prometheus.yml` target change requires copying the file to
+`/etc/prometheus/prometheus.yml` on vtr-seed1 and reloading prometheus;
+installing the proxy/exporter on a seed host requires SSH access to that
+host. Both are production-seed actions — get approval before applying.
 
 ## Alerts (`vtorrent-alerts.yml`)
 
@@ -35,6 +39,14 @@ titles like `🔥 FIRING: DaemonDown` / `✅ RESOLVED: …`.
 
 ```bash
 # vtr-seed2 (remote scrape target)
+apt-get install -y nginx prometheus-node-exporter
+cp nginx-vtorrent-metrics.conf /etc/nginx/sites-available/vtorrent-metrics
+ln -sf /etc/nginx/sites-available/vtorrent-metrics /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default && systemctl reload nginx
+ufw allow from 91.98.80.38 to any port 9105 proto tcp
+ufw allow from 91.98.80.38 to any port 9100 proto tcp
+
+# vtr-seed3 (remote scrape target — same recipe)
 apt-get install -y nginx prometheus-node-exporter
 cp nginx-vtorrent-metrics.conf /etc/nginx/sites-available/vtorrent-metrics
 ln -sf /etc/nginx/sites-available/vtorrent-metrics /etc/nginx/sites-enabled/

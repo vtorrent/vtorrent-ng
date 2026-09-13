@@ -31,6 +31,7 @@ This is a Cargo workspace with 19 crates plus a frontend:
 | `vtorrent-cli` | Command-line client |
 | `vtorrent-torrent` | BitTorrent client (metainfo, tracker, peer wire, incentives) |
 | `vtorrent-wallet-service` | Shared payment builder (single `build_payment` path for daemon/tauri) |
+| `vtorrent-btc` | Bitcoin SPV wallet (BIP39/BIP84, HTLC funding/claim/refund, regtest) |
 | `vtorrent-ui` | React + TypeScript + Tailwind frontend (not a crate) |
 
 ## Build & Test Commands
@@ -131,7 +132,7 @@ GitHub Actions (`.github/workflows/build.yml`) runs on every push/PR:
 | `docs/oncall-runbook.md` | On-call procedures (restart, reorg, ban, recovery) |
 | `docs/explorer-faucet-policy.md` | Explorer deferral + faucet policy |
 | `docs/backup-policy.md` | Seed node backup + genesis/snapshot archival |
-| `docs/rpc-api.md` | Complete RPC reference (50 endpoints) |
+| `docs/rpc-api.md` | Complete RPC reference (51 endpoints) |
 | `docs/dns-seeds.md` | DNS seed deployment guide |
 | `docs/atomic-swap-protocol.md` | Cross-chain HTLC flow + timing |
 

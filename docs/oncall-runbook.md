@@ -9,6 +9,7 @@ the monitoring setup in `deploy/seeds-monitoring/`.
 |---|---|---|---|
 | `vtr-seed1` | 91.98.80.38 | Mainnet seed + monitoring stack | SSH root |
 | `vtr-seed2` | 2.29.8.113 | Mainnet seed | SSH root |
+| `vtr-seed3` | 5.161.90.55 | Mainnet seed (Ashburn, US) | SSH root |
 | dev workstation | localhost | 7-day soak (docker compose) | local |
 
 - Daemon binary: `/usr/local/bin/vtorrent-daemon`, systemd unit `vtorrent.service`,
@@ -17,7 +18,7 @@ the monitoring setup in `deploy/seeds-monitoring/`.
 - P2P `22526/tcp` public; RPC `127.0.0.1:22525` localhost-only.
 - Monitoring: Grafana http://91.98.80.38:3000 (admin), Prometheus/Alertmanager
   localhost on seed1; push alerts via ntfy topic `vtorrent-seeds-4254e0588837`.
-- Bootstrap surfaces: DNS seeds `seed1/seed2.vtorrent.org` (IONOS),
+- Bootstrap surfaces: DNS seeds `seed1/seed2/seed3.vtorrent.org` (IONOS),
   `BOOTSTRAP_PEERS` in `vtorrent-p2p/src/peer_manager.rs`,
   `bootstrap/peers.txt` on GitHub (+ jsdelivr/statically mirrors).
 
@@ -27,6 +28,7 @@ the monitoring setup in `deploy/seeds-monitoring/`.
 scripts/soak-status.sh                      # soak fleet
 ssh root@91.98.80.38 'systemctl is-active vtorrent; curl -s localhost:22525/api/v1/info'
 ssh root@2.29.8.113 'systemctl is-active vtorrent; curl -s localhost:22525/api/v1/info'
+ssh root@5.161.90.55 'systemctl is-active vtorrent; curl -s localhost:22525/api/v1/info'
 ```
 
 Healthy = service active, height equal across seeds, connections ≥ 1 per node,

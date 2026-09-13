@@ -16,6 +16,7 @@ scrape_configs:
       - targets:
           - 127.0.0.1:22525
           - 2.29.8.113:9105
+          - 5.161.90.55:9105
         labels:
           fleet: seeds
 
@@ -24,6 +25,7 @@ scrape_configs:
       - targets:
           - 127.0.0.1:9100
           - 2.29.8.113:9100
+          - 5.161.90.55:9100
         labels:
           fleet: seeds
 

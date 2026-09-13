@@ -44,7 +44,7 @@ Returns current chain height.
 
 Returns block header and transactions by block hash.
 
-### GET /api/v1/blockchain/height/:height
+### GET /api/v1/blockchain/block/height/:height
 
 Returns block by height.
 
