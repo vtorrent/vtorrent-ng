@@ -1,7 +1,7 @@
 # Local testnet images
 
-All three nodes use the locally built sync-status release
-`vtorrent/node:c9d00a6`. No node has a Compose
+All three nodes use the locally built PEX top-K randomization release
+`vtorrent/node:7db5da3`. No node has a Compose
 `build` entry, so recreation cannot
 silently replace that version with the current working tree. No image was pushed
 to a registry. Provision the image locally before bringing up this stack on
@@ -9,16 +9,40 @@ another host.
 
 ## Current release image
 
-Source revision: `c9d00a62c74ff639354706d2990124c3d8dc0190`.
+Source revision: `7db5da31ed87ff18e3b86db7e1ef7d9d0c272374`.
 Binary SHA-256:
-`6c12aa9e8849448257dcc16837ce33b6f9d72811a51a467ab90ed9f1cf80f5d3`.
+`fda13af3a58c4d19a4eec86246273ddc9abca7f8ac2ff20eb30ab8cb33e821aa`.
 Image ID:
-`sha256:01c51d65ec2e147e5debf2255106f4a7097e993014b03ba355debab468d79821`.
+`sha256:1308257446d5a6a3c381dcdeb693a1dfb36ddc0c7337ccb77978ef4753c69935`.
 
 The private exact-image archive is
-`.ops-backups/node3-sync-20260909-xciPth/vtorrent-node-c9d00a6.tar`, SHA-256
-`6baba25381737d940e338b388d3e48a16a789c822acb1fae89086d316371bf5f`.
+`.ops-backups/pex-20260913-97BzX7/vtorrent-node-7db5da3.tar`, SHA-256
+`30f9d5d0b799e1d66f86702418910e4b6293dae5bfda842938aca247aeb39b0a`.
 Verify its checksum before loading it:
+
+```bash
+sha256sum .ops-backups/pex-20260913-97BzX7/vtorrent-node-7db5da3.tar
+docker image load --input .ops-backups/pex-20260913-97BzX7/vtorrent-node-7db5da3.tar
+docker image inspect vtorrent/node:7db5da3 --format '{{.Id}}'
+```
+
+It uses the same release-artifact recipe and verified runtime base described
+below, with the canary revision/checksum above and binary-only context
+`.ops-backups/pex-20260913-97BzX7/image-context/`. The release daemon passed
+all 18 process-recovery tests before packaging. Node1 was upgraded only after
+green CI, recorded follower observation, and a verified wallet-unlock procedure.
+
+## Restore the preceding image (rollback)
+
+The immediate rollback image is `vtorrent/node:c9d00a6`, the prior fleet
+release:
+
+- Archive: `.ops-backups/node3-sync-20260909-xciPth/vtorrent-node-c9d00a6.tar`,
+  SHA-256 `6baba25381737d940e338b388d3e48a16a789c822acb1fae89086d316371bf5f`,
+  image ID `sha256:01c51d65ec2e147e5debf2255106f4a7097e993014b03ba355debab468d79821`,
+  binary SHA-256 `6c12aa9e8849448257dcc16837ce33b6f9d72811a51a467ab90ed9f1cf80f5d3`.
+
+From the repository root, verify and load it:
 
 ```bash
 sha256sum .ops-backups/node3-sync-20260909-xciPth/vtorrent-node-c9d00a6.tar
@@ -26,29 +50,11 @@ docker image load --input .ops-backups/node3-sync-20260909-xciPth/vtorrent-node-
 docker image inspect vtorrent/node:c9d00a6 --format '{{.Id}}'
 ```
 
-It uses the same release-artifact recipe and verified runtime base described
-below, with the canary revision/checksum above and binary-only context
-`.ops-backups/node3-sync-20260909-xciPth/image-context/`. The release daemon passed
-all 18 process-recovery tests before packaging. Node1 was upgraded only after
-green CI, recorded follower observation, and a verified wallet-unlock procedure.
-
-## Restore the preceding image (rollback)
-
-The operational archive is private and git-ignored:
-`.ops-backups/node3-image-20260908-oclHcN/vtorrent-node-84125ea.tar`.
-Its SHA-256 is
-`e2d9bc4099a97b76f2d345609dd82712ceb431e63e3f17a011a9b6c709fdaeb6`.
-From the repository root, verify and load it:
-
-```bash
-sha256sum .ops-backups/node3-image-20260908-oclHcN/vtorrent-node-84125ea.tar
-docker image load --input .ops-backups/node3-image-20260908-oclHcN/vtorrent-node-84125ea.tar
-docker image inspect vtorrent/node:84125ea --format '{{.Id}}'
-```
-
-Expected image ID:
-`sha256:a56ac5545f87cc989b96500aa819f1715a070d21a2a72e4363316fbad74be41b`.
-Do not overwrite this version tag with a different artifact.
+The earlier operational archive `vtorrent/node:84125ea` remains available at
+`.ops-backups/node3-image-20260908-oclHcN/vtorrent-node-84125ea.tar`
+(SHA-256 `e2d9bc4099a97b76f2d345609dd82712ceb431e63e3f17a011a9b6c709fdaeb6`,
+ID `sha256:a56ac5545f87cc989b96500aa819f1715a070d21a2a72e4363316fbad74be41b`) for
+deeper rollback. Do not overwrite either version tag with a different artifact.
 
 ## Package a validated release artifact
 
@@ -58,7 +64,7 @@ without the original toolchain and dependency lockfile. Use a minimal build
 context containing only `vtorrent-daemon`, never a wallet/data backup directory.
 
 For this image, the context is
-`.ops-backups/node3-image-20260908-oclHcN/image-context/`. The base was the existing
+`.ops-backups/pex-20260913-97BzX7/image-context/`. The base was the existing
 compatible runtime `vtorrent/node:soak`, image ID
 `sha256:db00ea4eeb1f3c46647dc586c346bfb96d428bf4843ff743ba4781f2920d8ba2`.
 Check the base ID before reusing these instructions; a changed tag is not the
@@ -67,11 +73,11 @@ same runtime. The saved image archive is the preferred exact-image recovery path
 ```bash
 docker build --pull=false \
   --build-arg RUNTIME_IMAGE=vtorrent/node:soak \
-  --build-arg VCS_REF=84125ea5c273d0380778d6c60933c063cacff17e \
-  --build-arg DAEMON_SHA256=1275b1f06c7b0d6076d3b36a9c9fbceda8e0ecaaa1bfd869d84830c955da79ce \
+  --build-arg VCS_REF=7db5da31ed87ff18e3b86db7e1ef7d9d0c272374 \
+  --build-arg DAEMON_SHA256=fda13af3a58c4d19a4eec86246273ddc9abca7f8ac2ff20eb30ab8cb33e821aa \
   -f docker/Dockerfile.release-artifact \
-  -t vtorrent/node:84125ea \
-  .ops-backups/node3-image-20260908-oclHcN/image-context
+  -t vtorrent/node:7db5da3 \
+  .ops-backups/pex-20260913-97BzX7/image-context
 ```
 
 The build verifies the binary checksum and runtime compatibility and records the

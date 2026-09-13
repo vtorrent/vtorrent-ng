@@ -15,7 +15,7 @@ name: vtorrent-testnet
 
 services:
   node1:
-    image: vtorrent/node:c9d00a6
+    image: vtorrent/node:7db5da3
     cap_add:
       - NET_ADMIN
       - NET_RAW
@@ -61,7 +61,7 @@ services:
     restart: unless-stopped
 
   node2:
-    image: vtorrent/node:c9d00a6
+    image: vtorrent/node:7db5da3
     cap_add:
       - NET_ADMIN
       - NET_RAW
@@ -104,7 +104,7 @@ services:
     restart: unless-stopped
 
   node3:
-    image: vtorrent/node:c9d00a6
+    image: vtorrent/node:7db5da3
     cap_add:
       - NET_ADMIN
       - NET_RAW

@@ -364,3 +364,119 @@ No fleet action taken. All checks were read-only (RPC, Prometheus, `docker logs`
   74.2 MiB. Node2 flat at ~77 after yesterday's 64→77 tick; watch continues.
 - Repo `main` at `a7cddbf`, CI green. Seven-day sign-off remains pending;
   earliest review 2026-09-16 after 11:42 UTC.
+
+## 2026-09-13 — PEX top-K randomization release rollout
+
+Approved after green CI run
+[34733095117](https://github.com/vtorrent/vtorrent-ng/actions/runs/34733095117)
+for `7db5da3` (all required jobs green) and the exact release daemon passing all
+18 process-recovery tests (`cargo test -p vtorrent-daemon --release --test
+process_recovery`). The change is preventive hardening (`fix(p2p): randomize PEX
+candidate selection within top-K pool`) with no wire change: `AddrBook::get_candidates`
+now draws uniformly from the top `count × 4` pool by quality score instead of a
+deterministic top-N, removing the predictable dial order for eclipse attempts.
+Soak observations earlier today showed no eclipse indicators; the previous
+seven-day soak is **reset** by this fleet upgrade — earliest sign-off is now
+**2026-09-20 after 04:31 UTC** (completion of the final follower reconnection).
+
+Image `vtorrent/node:7db5da3`, ID
+`sha256:1308257446d5a6a3c381dcdeb693a1dfb36ddc0c7337ccb77978ef4753c69935`.
+Source revision: `7db5da31ed87ff18e3b86db7e1ef7d9d0c272374`.
+Binary SHA-256:
+`fda13af3a58c4d19a4eec86246273ddc9abca7f8ac2ff20eb30ab8cb33e821aa`.
+The exact archive is private under
+`.ops-backups/pex-20260913-97BzX7/vtorrent-node-7db5da3.tar`, SHA-256
+`30f9d5d0b799e1d66f86702418910e4b6293dae5bfda842938aca247aeb39b0a`.
+Build used the checked-in release-artifact recipe and minimal binary-only
+`image-context/`; verified base is `vtorrent/node:soak`, ID
+`sha256:db00ea4eeb1f3c46647dc586c346bfb96d428bf4843ff743ba4781f2920d8ba2`.
+No image was pushed to a registry; backups remain local only. Compose now
+references `vtorrent/node:7db5da3` for all three services.
+
+### node3 canary
+
+- Preflight at `04:15:54Z`: all three tips agreed at height 5414,
+  `31648ee55abe`, healthy.
+- Old binary and stopped `/data/node3` and anonymous volume contents were
+  privately backed up in `.ops-backups/node3-pex-20260913-y8cevv/` (0700).
+  Its `vtorrent-daemon.previous` SHA-256 matches the prior release
+  `6c12aa9e8849448257dcc16837ce33b6f9d72811a51a467ab90ed9f1cf80f5d3`.
+- Graceful stop: `2026-09-13T04:24:37.14263805Z`, exit 0. Stored chain
+  database SHA-256: `a6c91dc1033131f7cb55a7df8c2e58c68e21a676ab4a65aedeaefdd06d1b315c`.
+  Chain height at stop was 5414; resuming height after stop was 5417 due to
+  chain growth during the brief window.
+- New container: `d396e3d60a1c470f3272353fdb656970c838cfb2525a0782ec630f2457d3e7f8`,
+  started at `2026-09-13T04:24:56.344180924Z` using
+  `up -d --no-deps --no-build --pull never --force-recreate node3`.
+  Named volume `vtorrent-testnet_vtr-data3` and the existing anonymous volume
+  were preserved.
+- Installed binary SHA-256 matched the tested artifact
+  `fda13af3a58c4d19a4eec86246273ddc9abca7f8ac2ff20eb30ab8cb33e821aa`.
+  Replay completed at height 5417 at approximately `04:26:00Z`; RPC listened
+  after replay. No startup WARN/ERROR or derived-state repair warning appeared.
+- Peer handshake recovered: node3 held 1 peer after reconnection. All three
+  tips agreed at height 5417, `9f2f24f5540a`, with `syncing: false`, 100%.
+  Node3 was healthy with restart count 0.
+- Fresh block 5418 at `04:26:44Z` and 5420 at `04:30:57Z` both propagated; the
+  canary reported healthy throughout. No ban or reorg lines.
+
+RPC interruption for node3 was approximately 39–67 seconds (replay through
+health). Exclude that interval from uninterrupted three-node availability.
+
+### node2 follower
+
+- Preflight at `04:26:52Z`: all three tips agreed at height 5418,
+  `292145f3653b`, healthy.
+- Private backup: `.ops-backups/node2-pex-20260913-NncyFT/` (0700), containing
+  both stopped data locations and previous binary
+  `6c12aa9e8849448257dcc16837ce33b6f9d72811a51a467ab90ed9f1cf80f5d3`.
+  Chain database SHA-256: `e37e0ec949d44ee0b9b03ac9b287be751a5cc10e12a63da3ba458b6df391bc46`.
+- Graceful stop: `2026-09-13T04:26:52.347626951Z`, exit 0.
+- New container: `0ad71383c1e6be56354db959c999e91ed70476ff965b65ee7ea9a42edbed6341`,
+  started at `2026-09-13T04:26:56.800491402Z`.
+  Named volume `vtorrent-testnet_vtr-data2` and anonymous volume were retained.
+- Installed binary matched the tested artifact. Replay completed at height 5419
+  at approximately `04:28:01Z`; RPC and health followed. Node2 was healthy with
+  restart count 0 and reported 1 peer, `syncing: false`, 100%.
+- Follow-up: all three tips agreed at height 5419, `82027b476e4f`, after node2
+  recreation.
+
+RPC interruption for node2 was approximately 65–85 seconds including replay.
+
+### node1 staker
+
+- Preflight at `04:28:22Z`: all three tips agreed at height 5419,
+  `82027b476e4f`, healthy. Node1 staking enabled (4 UTXOs,
+  `blocks_staked` 2069 before stop).
+- Private backup: `.ops-backups/node1-pex-20260913-FzJDF2/` (0700), containing
+  both stopped data locations, previous binary, staking intent, encrypted wallet,
+  and a 0600 copy of the existing passphrase. Chain database SHA-256:
+  `21aeee46ebe49c4f00d51b82c30a6519636b939173b1142b8507a6caaef256bf`.
+  Encrypted wallet SHA-256 was unchanged from the prior recovery.
+- Graceful stop: `2026-09-13T04:28:22.826676087Z`, exit 0.
+- New container: `54531aef934a23e49421fdc647d33ed853146aaf421be8544621ae35afa0f421`,
+  started at `2026-09-13T04:28:27.072169902Z` using
+  `up -d --no-deps --no-build --pull never --force-recreate node1`.
+  Named and anonymous volumes were preserved, along with BTC seed, networking,
+  and all runtime arguments. Installed binary matched the tested artifact.
+- Replay completed at height 5419; RPC listened and BTC-regtest SPV
+  re-scanned 141 blocks through height 140. Wallet restored locked.
+- Protected-file unlock auto-resumed staking at `2026-09-13T04:29:48.792709Z`
+  via `python3 .ops-backups/node1-image-20260908-nHCswr/wallet-ops.py unlock`
+  (single-attempt POST, staking address `VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k`
+  verified). Node1 initially reported 0 peers; all three nodes reconnected
+  at `04:30:01–04:30:02Z` (node1 2 peers, each follower 1 peer).
+- First new stake: height 5420 at `2026-09-13T04:30:57.260862Z`, hash
+  `cc659f6843d8a8b35f72bc8dcb42c7b4d169308bd5484669c552b815ac3c2875`.
+  All three RPC endpoints subsequently matched that height/hash and reported
+  `syncing: false`, 100%, and connected peers.
+- BTC-regtest SPV remained initialized at height 140.
+
+RPC interruption was approximately 60–65 seconds; stop-to-staking-resume was
+approximately 86 seconds; stop-to-peer-reconnect was approximately 99 seconds.
+Followers were not restarted during node1's window but lost their seed
+connection temporarily. Exclude the maintenance/reconnection interval from
+uninterrupted three-node availability. All three nodes now use the same release
+`7db5da3`. Production seeds, BTC, and monitoring were not redeployed. Backups
+remain local only. Leave the fleet stable for observation; the seven-day soak is
+not signed off.
