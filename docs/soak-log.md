@@ -480,3 +480,54 @@ uninterrupted three-node availability. All three nodes now use the same release
 `7db5da3`. Production seeds, BTC, and monitoring were not redeployed. Backups
 remain local only. Leave the fleet stable for observation; the seven-day soak is
 not signed off.
+
+## 2026-09-13 — operator host reboot for user/hostname change (soak interrupted)
+
+Operator-initiated host reboot: laptop restart after changing to a new user and
+hostname (working directory is now `/home/pnoch`). No fleet deploy, upgrade,
+or volume change was performed; all three nodes still run local image
+`vtorrent/node:7db5da3`. This was an availability interruption, not a
+version change. Exclude the window below from uninterrupted soak measurements;
+uninterrupted evidence restarts at the first post-recovery stake.
+
+- Prometheus `up{job="vtorrent-nodes"}` (15s scrapes): last success
+  `09:25:30Z`, failures `09:25:45Z` through the reboot; Prometheus itself was
+  down ~`09:58Z`–`10:03:45Z` (no data points, not zeros). Nodes scraped `1`
+  again from `10:05:15Z`.
+- Host reboot: `2026-09-13T09:53:58Z` (`16:53:58 +07`, `last reboot` /
+  `journalctl --list-boots`; prior boot since 2026-08-03). The ~28 minutes of
+  scrape failures preceding the reboot timestamp indicate the host was already
+  degrading or shutting down before the recorded boot line.
+- Containers restarted `2026-09-13T10:04:01–02Z` (node1 `10:04:01Z`, node3
+  `10:04:02Z`, node2 `10:04:02Z`), restart count 0 (fresh boot, not docker
+  restarts). Named and anonymous volumes preserved; no data loss.
+- Replay completed at stored height 5550 on all nodes
+  (`7987796112049f0235c6182cd893e446fa32aff46bd67004a7cdb578f49619b6`);
+  no startup WARN/ERROR, derived-state repair warning, reorg, or rollback.
+- Peers reconnected `10:05:09–10:05:14Z` (node1 2 peers, each follower 1 peer,
+  seed `node1:22526`). All three RPC endpoints agreed at height 5550 with
+  `syncing: false`, 100%, mempool 0. Post-restart log scan: zero ERROR/panic/
+  reorg/rollback/ban lines on all three nodes.
+- Node1 wallet was restored locked after the reboot, so staking was disabled
+  and the chain stalled at 5550. `staking.json` intent remained
+  `enabled: true` for `VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k`; no re-import was
+  needed. Protected-file unlock via
+  `.ops-backups/node1-image-20260908-nHCswr/wallet-ops.py unlock`
+  (single-attempt POST) auto-resumed staking at approximately `10:11Z`
+  (4 UTXOs, same address verified).
+- First new stake: height 5551 at `2026-09-13T10:12:19Z`, hash
+  `b070b21659e10b86f28198e2e78bfd8a4889d6c76b01af2eb57519e8e11d3cac`,
+  accepted by both followers the same second. All three endpoints agree with
+  `syncing: false`, 100%. Memory (Docker stats, point-in-time): node1 69.0,
+  node2 62.1, node3 61.9 MiB.
+- BTC-regtest SPV on node1 re-scanned 141 blocks through height 140 with no
+  error. Production seeds, BTC, and monitoring configuration were untouched.
+- CI is green for all recent pushes (`34743228890`, `34743039777`,
+  `34738118792` all success).
+
+Soak impact: the PEX-rollout window (earliest review 2026-09-20 after
+04:31 UTC) is broken by this host-level interruption. Uninterrupted
+three-node evidence restarts at the first post-recovery stake
+(`2026-09-13T10:12:19Z`); earliest sign-off is now no earlier than seven
+full days after that, contingent on continuous evidence — not an automatic
+pass. Next daily observation entry remains due 2026-09-14.
