@@ -339,3 +339,28 @@ connection temporarily. Exclude the maintenance/reconnection interval from
 uninterrupted three-node availability. All three nodes now use the same release.
 Production seeds, BTC, and monitoring were not redeployed. Backups remain local
 only. Leave the fleet stable for observation; the seven-day soak is not signed off.
+
+## 2026-09-13 — daily soak observation (read-only, day 4 of 7)
+
+No fleet action taken. All checks were read-only (RPC, Prometheus, `docker logs`,
+`docker stats`/`inspect`); no restarts, upgrades, or volume changes.
+
+- All three nodes agree at height 5348, hash
+  `d9859382cc4cb5f377f73320b5630110b4cd029b4dd2d25425b912317e5cd710`,
+  `syncing: false`, 100%, mempool 0. Node1 (staker) holds 2 connections;
+  each follower holds 1.
+- Containers `Up 3 days`, restart count 0, start times unchanged
+  (node3 09-09T07:26, node2 08:55, node1 11:39 UTC).
+- Prometheus 24h: `min_over_time(up) = 1` on all three (zero scrape outages);
+  chain growth +540 blocks/24h (~1 per 160s, steady, no stalls); all new blocks
+  staked by node1 as designed. `min_over_time(peer_count) = 0` on all nodes:
+  transient 0-peer dips still occur and self-heal; `max(syncing) = 1`
+  in-window, attributed to those dips. Follow up at sign-off review.
+- Logs 24h: node2/node3 clean (no ERROR/panic/reorg/rollback/ban lines).
+  Node1 shows only the known self-inflicted 172.20.0.1 ban-manager lines from
+  the 09-10/09-12 bulk-join attempts; last rejection 2026-09-12 13:02 UTC with
+  zero ban activity in the ~12.5h since. No panics, reorgs, or rollbacks.
+- Memory (Docker stats, point-in-time): node1 101.6, node2 77.0, node3
+  74.2 MiB. Node2 flat at ~77 after yesterday's 64→77 tick; watch continues.
+- Repo `main` at `a7cddbf`, CI green. Seven-day sign-off remains pending;
+  earliest review 2026-09-16 after 11:42 UTC.
