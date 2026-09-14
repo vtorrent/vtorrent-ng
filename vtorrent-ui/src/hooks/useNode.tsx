@@ -157,7 +157,10 @@ function usePoll<T>(
   }, [fetcher])
 
   useEffect(() => {
-    run()
+    const initial = async () => {
+      await run()
+    }
+    void initial()
     timerRef.current = setInterval(run, intervalMs)
     return () => {
       if (timerRef.current) clearInterval(timerRef.current)
@@ -237,7 +240,10 @@ export function useStakingStatus(_intervalMs = 8_000): {
 
   useEffect(() => {
     mountedRef.current = true
-    refresh()
+    const initial = async () => {
+      await refresh()
+    }
+    void initial()
     if (isTauri()) {
       pollTimerRef.current = setInterval(refresh, _intervalMs)
       return () => {

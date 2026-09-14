@@ -22,8 +22,8 @@ async function fetchRewards(): Promise<RewardRow[]> {
 }
 
 export default function RewardHistory({ tipHeight, blocksStaked }: { tipHeight: number | null, blocksStaked: number }) {
-  const [points, setPoints] = useState<RewardPoint[]>([])
   const [rows, setRows] = useState<RewardRow[]>([])
+  const [avg, setAvg] = useState(0)
   const [loading, setLoading] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -34,8 +34,9 @@ export default function RewardHistory({ tipHeight, blocksStaked }: { tipHeight: 
     setLoadError(null)
     try {
       const rewards = await fetchRewards()
+      const nextPoints: RewardPoint[] = rewards.map(r => ({ height: r.height, timestamp: r.timestamp, rewardSats: r.rewardSats }))
       setRows(rewards)
-      setPoints(rewards.map(r => ({ height: r.height, timestamp: r.timestamp, rewardSats: r.rewardSats })))
+      setAvg(dailyAvgReward(nextPoints.filter(p => p.rewardSats > 0), Math.floor(Date.now() / 1000)))
       setExpanded(true)
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : String(e))
@@ -43,8 +44,6 @@ export default function RewardHistory({ tipHeight, blocksStaked }: { tipHeight: 
       setLoading(false)
     }
   }
-
-  const avg = dailyAvgReward(points.filter(p => p.rewardSats > 0), Math.floor(Date.now() / 1000))
 
   return (
     <div className="bg-navy-900/40 border border-vtorrent-900/20 rounded-xl p-5 space-y-3">

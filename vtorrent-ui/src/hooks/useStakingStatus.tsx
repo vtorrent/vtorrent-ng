@@ -103,7 +103,10 @@ export function useStakingStatus(_pollIntervalMs = 8_000): {
   useEffect(() => {
     mountedRef.current = true
     // Initial fetch so UI is populated before WS connects.
-    refresh()
+    const initial = async () => {
+      await refresh()
+    }
+    void initial()
 
     // Tauri mode: keep polling (IPC, no WS).
     if (isTauri()) {
