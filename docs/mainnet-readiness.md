@@ -142,6 +142,34 @@ from uninterrupted soak measurements.
       data dirs (14-day retention); genesis/snapshot binaries in repo + release
       assets, checksums appended at tag time.
 
+## Post-Soak Batch (frozen until 2026-09-20 sign-off)
+
+Items deliberately deferred so the soak window stays uninterrupted. Do **not**
+apply any of these before the seven-day sign-off (earliest
+`2026-09-20T10:12Z`); each needs its own green CI run and, for the seed
+actions, operator approval.
+
+- [ ] **`DNS_SEEDS` missing seed3** — `vtorrent-p2p/src/peer_manager.rs:55`
+      lists only `seed1.vtorrent.org` and `seed2.vtorrent.org`.
+      `BOOTSTRAP_PEERS` (`:45`) already has all three IPs, so this is a
+      DNS-path gap only. Code change → build + fleet deploy.
+- [ ] **seed3 monitoring not applied** — `deploy/seeds-monitoring/prometheus.yml`
+      already targets `5.161.90.55:9105`/`:9100`, but the config has not been
+      copied to `/etc/prometheus/prometheus.yml` on vtr-seed1 (reload), and the
+      nginx metrics proxy + node_exporter are not installed on vtr-seed3.
+      Production-seed action → operator approval required.
+- [ ] **`MALLOC_ARENA_MAX` review** — node1's staker holds a 5-arena/64 MiB
+      glibc high-water mark vs 3/25 MiB on followers; steady-state RSS is flat
+      and under the <150 MiB budget, so this is optional. Decide whether to pin
+      `MALLOC_ARENA_MAX` and/or restate the budget against live heap. See
+      `docs/memory-observability-design.md` §7.1.
+- [ ] **`v2.0.0-beta.3` tag** — `docs/release-notes-beta.3.md` addendum is a
+      draft; no tag exists (only beta.1/beta.2). Tag after sign-off, with the
+      desktop build matrix and checksums.
+- [ ] **Memory observability + parallel-fetch designs** — both are flag-gated
+      drafts (`docs/memory-observability-design.md`,
+      `docs/parallel-fetch-design.md`); deploy only after sign-off.
+
 ## Known Blockers
 
 | Blocker | Owner | Notes |
