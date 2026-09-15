@@ -531,3 +531,47 @@ three-node evidence restarts at the first post-recovery stake
 (`2026-09-13T10:12:19Z`); earliest sign-off is now no earlier than seven
 full days after that, contingent on continuous evidence — not an automatic
 pass. Next daily observation entry remains due 2026-09-14.
+
+## 2026-09-14 — daily soak observation (read-only, day 1 of 7)
+
+No fleet action taken. All checks were read-only (RPC, Prometheus, `docker
+logs`, `docker stats`/`inspect`); no restarts, upgrades, or volume changes.
+The observation window opened at the post-reboot recovery stake
+(`2026-09-13T10:12:19Z`, height 5551); this entry covers the first full 24h
+plus the following day, read at `2026-09-15T01:04Z`.
+
+- All three nodes agree at height 6496, hash
+  `28d805f41b9d36ff1009844bdd3189235169804e02cace7e60555412f7d90dca`,
+  `syncing: false`, 100%, mempool 0. Node1 (staker) holds 2 connections;
+  each follower holds 1.
+- Containers `Up 39 hours`, restart count 0, start times unchanged
+  (node1 09-13T10:04:01Z, node2 10:04:02Z, node3 10:04:02Z).
+- Prometheus 24h: `min_over_time(up) = 1` on all three (zero scrape
+  outages); `min_over_time(peer_count) = 2/1/1` — no zero-peer dips this
+  window, unlike the 09-13 entry; `max_over_time(syncing) = 0` on all three;
+  chain growth +579 blocks/24h (~1 per 149s, steady, no stalls). All new
+  blocks staked by node1 as designed.
+- Logs since the window start: zero ERROR/panic/reorg/rollback/ban lines on
+  all three nodes. Node1's earlier self-inflicted 172.20.0.1 ban-manager
+  lines did not recur.
+- Memory (Docker stats, point-in-time): node1 129.1, node2 82.6, node3
+  83.6 MiB. Node1 continues a slow climb (69.0 at recovery → 102.7 at
+  09-13T15:19Z → 108 at 09-14T01:55Z → 129.1 now); sampled over ~6s it is
+  stable, not runaway. Node metrics expose no process-memory series, so this
+  remains point-in-time only — the memory-observability design is still a
+  flag-gated draft. Watch continues.
+- BTC-regtest SPV on node1: handshakes every 5 min against the local regtest
+  peer at height 140, no errors. Production seeds, BTC, and monitoring
+  configuration were untouched.
+- Repo `main` at `8102ef4`; frontend toolchain refreshed this window (pnpm
+  10, ESLint 10, Vite 6, Vitest 4, React Router 7, zero audit advisories).
+  CI green on push runs; the weekly scheduled Cargo Audit job had been
+  failing since 2026-08-17 on a missing `issues: write` permission (the
+  action files an issue on `schedule` events, a check on push), fixed in
+  `8102ef4`. A stale local lockfile also carried rustls 0.23.43
+  (RUSTSEC-2026-0285); a fresh `cargo generate-lockfile` resolves 0.23.45
+  and `cargo audit` exits 0.
+
+Soak impact: none — this window is uninterrupted. Earliest seven-day
+sign-off remains no earlier than `2026-09-20T10:12Z`, contingent on
+continuous evidence. Next daily observation entry due 2026-09-15.
