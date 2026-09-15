@@ -555,11 +555,19 @@ plus the following day, read at `2026-09-15T01:04Z`.
   all three nodes. Node1's earlier self-inflicted 172.20.0.1 ban-manager
   lines did not recur.
 - Memory (Docker stats, point-in-time): node1 129.1, node2 82.6, node3
-  83.6 MiB. Node1 continues a slow climb (69.0 at recovery → 102.7 at
-  09-13T15:19Z → 108 at 09-14T01:55Z → 129.1 now); sampled over ~6s it is
-  stable, not runaway. Node metrics expose no process-memory series, so this
-  remains point-in-time only — the memory-observability design is still a
-  flag-gated draft. Watch continues.
+  83.6 MiB. Node1 showed a warmup climb (69.0 at recovery → 102.7 at
+  09-13T15:19Z → 108 at 09-14T01:55Z → 129.1 now). Follow-up on 09-15
+  found this **plateaus**: VmRSS held 140832→140912 kB (+80 kB) over 17.5
+  min while 9 blocks were staked, with cgroup `memory.current` flat at
+  139.5–141.0 MiB. The climb was glibc malloc arena expansion (5 arenas /
+  64 MiB on the staker vs 3 / 25 MiB on followers), not a leak; the
+  2026-09-04 fix (`1a3d010`) is intact. See
+  `docs/memory-observability-design.md` §7.1. Node metrics expose no
+  process-memory series, so this remains point-in-time only.
+- Consensus depth check (added 2026-09-15, read-only): the last 100 blocks
+  have identical hashes on all three nodes, and the last 50 also match on
+  `(hash, merkle_root)` — zero mismatches. No store corruption/self-heal/
+  truncation lines since the window start.
 - BTC-regtest SPV on node1: handshakes every 5 min against the local regtest
   peer at height 140, no errors. Production seeds, BTC, and monitoring
   configuration were untouched.
