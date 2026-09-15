@@ -152,7 +152,10 @@ actions, operator approval.
 - [ ] **`DNS_SEEDS` missing seed3** — `vtorrent-p2p/src/peer_manager.rs:55`
       lists only `seed1.vtorrent.org` and `seed2.vtorrent.org`.
       `BOOTSTRAP_PEERS` (`:45`) already has all three IPs, so this is a
-      DNS-path gap only. Code change → build + fleet deploy.
+      DNS-path gap only. Verified 2026-09-15: `seed3.vtorrent.org` already
+      resolves to `5.161.90.55` via both the system resolver and Cloudflare
+      DoH (A record, TTL ~1h), so the record is live and adding it to
+      `DNS_SEEDS` is a low-risk code change → build + fleet deploy.
 - [ ] **seed3 monitoring not applied** — `deploy/seeds-monitoring/prometheus.yml`
       already targets `5.161.90.55:9105`/`:9100`, but the config has not been
       copied to `/etc/prometheus/prometheus.yml` on vtr-seed1 (reload), and the
