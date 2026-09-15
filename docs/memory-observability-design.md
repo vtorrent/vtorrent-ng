@@ -199,8 +199,6 @@ entry (69.0 MiB at recovery → 137.2 MiB RSS at `2026-09-15T03:2xZ`):
 
 - `VmHWM == VmRSS` exactly on all three nodes — RSS has never been returned
   to the OS, so this is not a sawtooth heap that happens to be sampled high.
-- RSS is flat over 12 min (+16 kB) while blocks advance; growth is step-wise,
-  not a steady per-tick leak.
 - `/proc/1/smaps` attribution: node1 has **5** 64 MiB-aligned `rw-p` regions
   (glibc malloc arenas) totalling 64.0 MiB; node2/node3 have **3** each,
   25.3/25.0 MiB. The node1−node2 RSS delta (41.2 MiB) is almost entirely
@@ -211,12 +209,24 @@ entry (69.0 MiB at recovery → 137.2 MiB RSS at `2026-09-15T03:2xZ`):
   spawning additional arenas (default `MALLOC_ARENA_MAX = 8 × nproc`, here
   24 cores) rather than a logical leak. `cache_stake_proof` is bounded
   (`MAX_CACHED_STAKE_PROOFS = 2048`) and is not the cause.
-- Implication for the budget: at the observed steady ~0.8 MiB/h node1 would
-  reach ~233 MiB by 2026-09-20, **exceeding the <150 MiB target** — but the
-  target is measuring allocator retention, not live data. Before treating
-  this as a failure, the review should either (a) set `MALLOC_ARENA_MAX=2`
-  (or `MALLOC_ARENA_MAX=1`) for the fleet and re-measure, or (b) restate the
-  budget in terms of `Pss_Anon`/live heap rather than RSS.
+- **The growth plateaus.** A 17.5-minute sample at `2026-09-15T04:39–04:56Z`
+  held VmRSS at 140832→140912 kB (**+80 kB**) while 9 blocks were staked
+  (blocks_staked 1035→1044); cgroup `memory.current` oscillated 139.5–141.0
+  MiB with no trend. The earlier climb was warmup/arena expansion, not a
+  steady leak. An earlier draft of this note projected ~0.8 MiB/h from the
+  warmup slope and predicted >233 MiB by 2026-09-20 — that projection is
+  **withdrawn**; the observed steady state is flat.
+- The 2026-09-04 fix (`1a3d010`, "bound staking memory usage") is intact:
+  the production tick passes `chain.get_utxo_set()` **by reference**
+  (`staking_loop.rs:97`) and scans only wallet UTXOs
+  (`get_utxos_for_address`). The `.values().cloned()` calls at
+  `staking.rs:793/835` are inside `#[cfg(test)]`. So this is not a
+  regression of that fix.
+- Implication for the budget: RSS sits at ~137 MiB, under the <150 MiB
+  target, and is not trending upward at steady state. The remaining
+  question is whether the arena high-water mark (5 arenas / 64 MiB) is
+  acceptable; pinning `MALLOC_ARENA_MAX=2` would reduce it but is not
+  required by the current data. Re-check at sign-off with a fresh sample.
 - Not a soak interruption and not a consensus issue; no action taken during
   the window. Candidate post-soak item alongside the gauge work.
 
