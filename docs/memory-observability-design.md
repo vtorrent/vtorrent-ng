@@ -192,6 +192,34 @@ soak sign-off. Alerts can be added post-soak (e.g. `>250MiB for 10m`).
 - No expected throughput regression; bench-gate `scripts/bench-gate.sh` must
   still pass (memory read is single `read_to_string`, not hot path).
 
+### 7.1 Interim finding — node1 growth is glibc arena fragmentation (2026-09-15)
+
+Read-only investigation of the node1 climb recorded in the 2026-09-14 soak
+entry (69.0 MiB at recovery → 137.2 MiB RSS at `2026-09-15T03:2xZ`):
+
+- `VmHWM == VmRSS` exactly on all three nodes — RSS has never been returned
+  to the OS, so this is not a sawtooth heap that happens to be sampled high.
+- RSS is flat over 12 min (+16 kB) while blocks advance; growth is step-wise,
+  not a steady per-tick leak.
+- `/proc/1/smaps` attribution: node1 has **5** 64 MiB-aligned `rw-p` regions
+  (glibc malloc arenas) totalling 64.0 MiB; node2/node3 have **3** each,
+  25.3/25.0 MiB. The node1−node2 RSS delta (41.2 MiB) is almost entirely
+  arena delta (38.7 MiB).
+- Node1 is the only staker and the only node growing; the staking path
+  (`staking_loop.rs` → `build_from_kernel_with_proof`, `get_utxo_set`) is
+  multi-threaded and allocates per attempt, which is consistent with glibc
+  spawning additional arenas (default `MALLOC_ARENA_MAX = 8 × nproc`, here
+  24 cores) rather than a logical leak. `cache_stake_proof` is bounded
+  (`MAX_CACHED_STAKE_PROOFS = 2048`) and is not the cause.
+- Implication for the budget: at the observed steady ~0.8 MiB/h node1 would
+  reach ~233 MiB by 2026-09-20, **exceeding the <150 MiB target** — but the
+  target is measuring allocator retention, not live data. Before treating
+  this as a failure, the review should either (a) set `MALLOC_ARENA_MAX=2`
+  (or `MALLOC_ARENA_MAX=1`) for the fleet and re-measure, or (b) restate the
+  budget in terms of `Pss_Anon`/live heap rather than RSS.
+- Not a soak interruption and not a consensus issue; no action taken during
+  the window. Candidate post-soak item alongside the gauge work.
+
 ## 8. Open Questions
 
 - Include `VmHWM` (peak) as `vtorrent_process_memory_peak_bytes`?
@@ -201,6 +229,8 @@ soak sign-off. Alerts can be added post-soak (e.g. `>250MiB for 10m`).
 - Node1 `debug` vs `info`: memory pressure from `debug` tracing may skew
   comparison; consider switching node1 to `info` at same time (prior soak
   note suggested this, post-soak).
+- Should `MALLOC_ARENA_MAX` be pinned in the image/compose (see §7.1), and
+  should the RSS budget be restated against live heap instead of RSS?
 
 ## 9. References
 
