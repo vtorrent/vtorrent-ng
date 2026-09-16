@@ -104,7 +104,9 @@ impl FileLayout {
         let mut offset = 0u64;
         for (i, f) in files.iter().enumerate() {
             ranges.push((i, offset, f.length));
-            offset += f.length;
+            // saturating: a crafted metainfo with huge per-file lengths must
+            // not panic the layout build under overflow-checks.
+            offset = offset.saturating_add(f.length);
         }
         Self {
             ranges,
@@ -118,12 +120,12 @@ impl FileLayout {
         piece_index: u32,
         piece_data: &[u8],
     ) -> Vec<(usize, u64, Vec<u8>)> {
-        let piece_start = piece_index as u64 * self.piece_length;
-        let piece_end = piece_start + piece_data.len() as u64;
+        let piece_start = (piece_index as u64).saturating_mul(self.piece_length);
+        let piece_end = piece_start.saturating_add(piece_data.len() as u64);
         let mut segments = Vec::new();
         let mut data_offset = 0usize;
         for (file_index, file_start, file_len) in &self.ranges {
-            let file_end = file_start + file_len;
+            let file_end = file_start.saturating_add(*file_len);
             if file_end <= piece_start {
                 continue;
             }

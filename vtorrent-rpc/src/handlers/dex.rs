@@ -9,6 +9,8 @@ use crate::error::{RpcError, RpcResult};
 use crate::models::*;
 use crate::state::AppState;
 
+use super::truncate_chars;
+
 pub async fn get_dex_orders(
     State(state): State<Arc<AppState>>,
 ) -> RpcResult<Json<Vec<DexOrderResponse>>> {
@@ -158,9 +160,9 @@ pub async fn cancel_dex_order(
     if order.maker_address != maker {
         return Err(RpcError::Unauthorized(format!(
             "Only the maker ({}) may cancel order {} — your wallet address ({}) does not match",
-            &order.maker_address[..order.maker_address.len().min(64)],
+            truncate_chars(&order.maker_address, 64),
             id,
-            &maker[..maker.len().min(64)]
+            truncate_chars(&maker, 64)
         )));
     }
     let mut book = state.order_book.write().await;
@@ -275,7 +277,7 @@ pub async fn submit_claim(
     let script_pubkey = p2pkh_script_pubkey(&req.recipient_address).map_err(|e| {
         RpcError::BadRequest(format!(
             "Invalid recipient address {}: {}",
-            &req.recipient_address[..req.recipient_address.len().min(64)],
+            truncate_chars(&req.recipient_address, 64),
             e
         ))
     })?;
@@ -310,7 +312,7 @@ pub async fn submit_claim(
             RpcError::BadRequest(format!(
                 "Mempool rejected claim {} for {} ({} sats): {}",
                 txid,
-                &derived_address[..derived_address.len().min(64)],
+                truncate_chars(&derived_address, 64),
                 claimable,
                 e
             ))

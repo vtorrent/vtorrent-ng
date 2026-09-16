@@ -6,7 +6,7 @@ use axum::{
 };
 use std::sync::Arc;
 
-use super::{block_response, now_secs, parse_hash32, transaction_lookup_response};
+use super::{block_response, now_secs, parse_hash32, transaction_lookup_response, truncate_chars};
 use crate::error::{RpcError, RpcResult};
 use crate::models::*;
 use crate::state::AppState;
@@ -172,7 +172,7 @@ pub async fn broadcast_transaction(
         RpcError::BadRequest(format!(
             "raw_tx must be valid hexadecimal, got {} chars starting with \"{}\"",
             req.raw_tx.len(),
-            &req.raw_tx[..req.raw_tx.len().min(16)]
+            truncate_chars(&req.raw_tx, 16)
         ))
     })?;
     if raw.len() > MAX_RAW_TX_BYTES {

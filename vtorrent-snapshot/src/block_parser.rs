@@ -49,7 +49,12 @@ pub fn parse_utxo_value(raw: &RawUtxo) -> Result<ParsedUtxo> {
         .ok_or_else(|| SnapshotError::BlockParse("Failed to read amount varint".into()))?;
     cursor += n;
 
-    let amount = decompress_amount(compressed_amount);
+    let amount = decompress_amount(compressed_amount).ok_or_else(|| {
+        SnapshotError::BlockParse(format!(
+            "compressed amount {} overflows u64",
+            compressed_amount
+        ))
+    })?;
 
     // Read script type and data
     let (script_type, n) = decode_varint_base128(&data[cursor..])

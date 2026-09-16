@@ -322,17 +322,21 @@ fn parse_dbdump_output(output: &str) -> Result<Vec<RawRecord>> {
 
 fn hex_decode(hex: &str) -> Result<Vec<u8>> {
     let hex = hex.trim();
-    if !hex.len().is_multiple_of(2) {
+    let raw = hex.as_bytes();
+    if !raw.len().is_multiple_of(2) {
         return Err(MigrateError::Other(format!(
             "odd-length hex string: {}",
-            hex.len()
+            raw.len()
         )));
     }
-    let mut bytes = Vec::with_capacity(hex.len() / 2);
-    for i in (0..hex.len()).step_by(2) {
-        let byte = u8::from_str_radix(&hex[i..i + 2], 16).map_err(|_| {
-            MigrateError::Other(format!("invalid hex at position {i}: {}", &hex[i..i + 2]))
-        })?;
+    // Iterate over bytes rather than str-slicing: `&hex[i..i+2]` panics if the
+    // input contains multi-byte UTF-8 and the index lands mid-character.
+    let mut bytes = Vec::with_capacity(raw.len() / 2);
+    for i in (0..raw.len()).step_by(2) {
+        let pair = std::str::from_utf8(&raw[i..i + 2])
+            .map_err(|_| MigrateError::Other(format!("invalid hex at position {i}")))?;
+        let byte = u8::from_str_radix(pair, 16)
+            .map_err(|_| MigrateError::Other(format!("invalid hex at position {i}: {pair}")))?;
         bytes.push(byte);
     }
     Ok(bytes)

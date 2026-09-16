@@ -158,9 +158,12 @@ pub fn decode_varint_base128(data: &[u8]) -> Option<(u64, usize)> {
 
 /// Decode a Bitcoin-style "compressed amount" as used in the chainstate DB.
 /// See: https://github.com/bitcoin/bitcoin/blob/master/src/compressor.cpp
-pub fn decompress_amount(x: u64) -> u64 {
+///
+/// Returns `None` when the encoded exponent would overflow `u64` (a crafted
+/// chainstate can otherwise panic the process under `overflow-checks`).
+pub fn decompress_amount(x: u64) -> Option<u64> {
     if x == 0 {
-        return 0;
+        return Some(0);
     }
     let mut x = x - 1;
     let e = x % 10;
@@ -173,9 +176,9 @@ pub fn decompress_amount(x: u64) -> u64 {
         x + 1
     };
     for _ in 0..e {
-        n *= 10;
+        n = n.checked_mul(10)?;
     }
-    n
+    Some(n)
 }
 
 #[cfg(test)]
@@ -210,12 +213,18 @@ mod tests {
 
     #[test]
     fn test_decompress_amount_zero() {
-        assert_eq!(decompress_amount(0), 0);
+        assert_eq!(decompress_amount(0), Some(0));
     }
 
     #[test]
     fn test_decompress_amount_one_satoshi() {
         // 1 satoshi = compressed value 1
-        assert_eq!(decompress_amount(1), 1);
+        assert_eq!(decompress_amount(1), Some(1));
+    }
+
+    #[test]
+    fn test_decompress_amount_overflow_is_none() {
+        // A crafted exponent must not panic under overflow-checks.
+        assert_eq!(decompress_amount(184_467_440_740), None);
     }
 }

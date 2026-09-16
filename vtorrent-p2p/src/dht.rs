@@ -210,10 +210,16 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// Returns the string bytes if successful.
 fn parse_bencode_string(data: &[u8]) -> Option<Vec<u8>> {
     let colon_pos = data.iter().position(|&b| b == b':')?;
+    // Bound the numeric prefix so a huge declared length cannot overflow the
+    // addition below (release builds enable overflow-checks, so this would
+    // otherwise panic on attacker-controlled DHT responses).
+    if colon_pos > 20 {
+        return None;
+    }
     let len_str = std::str::from_utf8(&data[..colon_pos]).ok()?;
     let len: usize = len_str.parse().ok()?;
     let start = colon_pos + 1;
-    if start + len <= data.len() {
+    if len <= data.len().saturating_sub(start) {
         Some(data[start..start + len].to_vec())
     } else {
         None
@@ -230,9 +236,13 @@ fn parse_bencode_list_of_strings(data: &[u8]) -> Option<Vec<Vec<u8>>> {
     while pos < data.len() && data[pos] != b'e' {
         if let Some(s) = parse_bencode_string(&data[pos..]) {
             let colon = data[pos..].iter().position(|&b| b == b':')?;
+            if colon > 20 {
+                break;
+            }
             let len_str = std::str::from_utf8(&data[pos..pos + colon]).ok()?;
             let len: usize = len_str.parse().ok()?;
-            pos += colon + 1 + len;
+            let advance = colon.checked_add(1).and_then(|v| v.checked_add(len))?;
+            pos = pos.checked_add(advance)?;
             result.push(s);
         } else {
             break;
@@ -726,6 +736,31 @@ fn parse_peers_txt(text: &str, default_port: u16) -> Vec<std::net::SocketAddr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_bencode_string_rejects_overflow_length() {
+        // A declared length of usize::MAX must not overflow the bounds check
+        // (release builds enable overflow-checks, so this would panic).
+        let data = b"18446744073709551615:abc";
+        assert_eq!(parse_bencode_string(data), None);
+    }
+
+    #[test]
+    fn test_parse_bencode_string_rejects_huge_numeric_prefix() {
+        let data = b"999999999999999999999999999:abc";
+        assert_eq!(parse_bencode_string(data), None);
+    }
+
+    #[test]
+    fn test_parse_bencode_string_valid() {
+        assert_eq!(parse_bencode_string(b"3:abc"), Some(b"abc".to_vec()));
+    }
+
+    #[test]
+    fn test_parse_bencode_list_rejects_overflow() {
+        let data = b"l18446744073709551615:abce";
+        assert_eq!(parse_bencode_list_of_strings(data), Some(Vec::new()));
+    }
 
     #[test]
     fn test_vtorrent_infohash_deterministic() {

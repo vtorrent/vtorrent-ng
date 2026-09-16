@@ -5,7 +5,7 @@ use axum::{
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-use super::{now_secs, verify_wallet_auth};
+use super::{now_secs, truncate_chars, verify_wallet_auth};
 use crate::error::{RpcError, RpcResult};
 use crate::models::*;
 use crate::state::AppState;
@@ -366,7 +366,7 @@ pub async fn send_vtr(
     if utxos.is_empty() {
         return Err(RpcError::BadRequest(format!(
             "No UTXOs available for wallet address {} — fund the address first by sending VTR to it",
-            &change_address[..change_address.len().min(64)]
+            truncate_chars(&change_address, 64)
         )));
     }
 
@@ -391,7 +391,7 @@ pub async fn send_vtr(
             "Transaction build failed ({} inputs, {} sats to {}): {}",
             utxos.len(),
             req.amount_satoshis,
-            &req.to_address[..req.to_address.len().min(64)],
+            truncate_chars(&req.to_address, 64),
             e
         ))
     })?;
@@ -424,7 +424,7 @@ pub async fn send_vtr(
                     "Mempool rejected transaction {} ({} sats to {}): {}",
                     txid,
                     req.amount_satoshis,
-                    &req.to_address[..req.to_address.len().min(64)],
+                    truncate_chars(&req.to_address, 64),
                     e
                 ))
             })?;

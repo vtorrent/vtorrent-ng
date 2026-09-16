@@ -60,12 +60,23 @@ pub(crate) async fn broadcast_btc(state: &AppState, raw: &[u8]) -> RpcResult<[u8
     }
 }
 
+/// Truncate a string to at most `max` characters for display in error
+/// messages. Byte-slicing arbitrary UTF-8 can split a multi-byte character and
+/// panic the handler task, so this counts chars, not bytes.
+pub(crate) fn truncate_chars(value: &str, max: usize) -> String {
+    if value.chars().count() <= max {
+        value.to_string()
+    } else {
+        value.chars().take(max).collect()
+    }
+}
+
 pub(crate) fn parse_hash32(value: &str, field: &str) -> RpcResult<[u8; 32]> {
     let bytes = hex::decode(value).map_err(|_| {
         RpcError::BadRequest(format!(
             "Invalid {} hex: expected 64 hex characters, got \"{}\"",
             field,
-            &value[..value.len().min(64)]
+            truncate_chars(value, 64)
         ))
     })?;
     if bytes.len() != 32 {
@@ -166,7 +177,7 @@ pub fn validate_p2pkh(addr: &str) -> RpcResult<()> {
         .map_err(|e| {
             RpcError::BadRequest(format!(
                 "Invalid address: must be a VTR address with prefix V, got \"{}\": {}",
-                &addr[..addr.len().min(80)],
+                truncate_chars(addr, 80),
                 e
             ))
         })
@@ -374,6 +385,22 @@ pub async fn unban_peer(
 
 #[cfg(test)]
 mod relay_floor_lockstep {
+    use super::truncate_chars;
+
+    #[test]
+    fn truncate_chars_does_not_split_multibyte() {
+        // 63 ASCII + a 2-byte char = 65 bytes; byte index 64 is mid-character.
+        let value = format!("{}é", "a".repeat(63));
+        let out = truncate_chars(&value, 64);
+        assert_eq!(out.chars().count(), 64);
+        assert!(out.ends_with('é'));
+    }
+
+    #[test]
+    fn truncate_chars_short_input_unchanged() {
+        assert_eq!(truncate_chars("abc", 64), "abc");
+    }
+
     #[test]
     fn wallet_minimum_matches_mempool_relay_policy() {
         assert_eq!(

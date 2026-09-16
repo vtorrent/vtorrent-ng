@@ -99,9 +99,14 @@ impl RpcClient {
             .json()
             .with_context(|| "Failed to parse JSON response")?;
 
-        if !status.is_success() && status.as_u16() != 403 {
-            let err = resp_body["error"]
+        // Any non-2xx is an error. In particular 403 must NOT be treated as
+        // success: the daemon returns it for WalletLocked/Forbidden, so
+        // swallowing it made `send`/`dex`/`staking` report success for
+        // operations the server rejected.
+        if !status.is_success() {
+            let err = resp_body["message"]
                 .as_str()
+                .or_else(|| resp_body["error"].as_str())
                 .unwrap_or("unknown error")
                 .to_string();
             return Err(anyhow::anyhow!("RPC error ({}): {}", status, err));

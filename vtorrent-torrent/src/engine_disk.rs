@@ -36,9 +36,18 @@ pub async fn piece_on_disk_matches(
 }
 
 /// The length of a piece (the last piece may be shorter).
+///
+/// Returns 0 for an out-of-range index or when the offset would overflow, so
+/// a peer-supplied `Piece` index can never panic the task under
+/// `overflow-checks`.
 pub fn piece_length(metainfo: &Metainfo, index: u32) -> u64 {
-    let start = index as u64 * metainfo.piece_length;
-    let remaining = metainfo.total_size.saturating_sub(start);
+    let Some(start) = (index as u64).checked_mul(metainfo.piece_length) else {
+        return 0;
+    };
+    if start >= metainfo.total_size {
+        return 0;
+    }
+    let remaining = metainfo.total_size - start;
     remaining.min(metainfo.piece_length)
 }
 

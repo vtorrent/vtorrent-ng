@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 use super::broadcast_btc;
+use super::truncate_chars;
 use crate::error::{RpcError, RpcResult};
 use crate::models::*;
 use crate::state::AppState;
@@ -81,7 +82,7 @@ pub async fn send_btc(
             .map_err(|e| {
                 RpcError::BadRequest(format!(
                     "BTC send_to {} failed: {}",
-                    &req.to_address[..req.to_address.len().min(64)],
+                    truncate_chars(&req.to_address, 64),
                     e
                 ))
             })?
