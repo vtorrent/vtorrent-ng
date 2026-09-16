@@ -868,6 +868,25 @@ async fn test_api_key_protects_sensitive_endpoints() {
     let (status, _) = get(app.clone(), "/api/v1/info").await;
     assert_eq!(status, StatusCode::OK);
 
+    // Wallet/staking/DEX read endpoints must also require the key: they expose
+    // the hot wallet address, balances, UTXO set and order book.
+    for path in [
+        "/api/v1/wallet/balance",
+        "/api/v1/wallet/addresses",
+        "/api/v1/wallet/utxos",
+        "/api/v1/wallet/transactions",
+        "/api/v1/staking/status",
+        "/api/v1/staking/rewards",
+        "/api/v1/dex/orders",
+    ] {
+        let (status, _) = get(app.clone(), path).await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{path} must require the API key"
+        );
+    }
+
     // Wrong key rejected.
     let response = app
         .clone()

@@ -95,12 +95,19 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/wallet/send", post(send_vtr))
         .route("/api/v1/wallet/unlock", post(unlock_wallet))
         .route("/api/v1/wallet/lock", post(lock_wallet))
+        .route("/api/v1/wallet/balance", get(get_balance))
+        .route("/api/v1/wallet/addresses", get(get_addresses))
+        .route("/api/v1/wallet/utxos", get(get_wallet_utxos))
+        .route("/api/v1/wallet/transactions", get(get_transactions))
         .route("/api/v1/staking/start", post(start_staking))
         .route("/api/v1/staking/stop", post(stop_staking))
+        .route("/api/v1/staking/status", get(get_staking_status))
+        .route("/api/v1/staking/rewards", get(get_staking_rewards))
         .route("/api/v1/torrent/add", post(add_torrent))
         .route("/api/v1/torrent/:id", delete(remove_torrent))
         .route("/api/v1/dex/order", post(place_dex_order))
         .route("/api/v1/dex/order/:id", delete(cancel_dex_order))
+        .route("/api/v1/dex/orders", get(get_dex_orders))
         .route("/api/v1/dex/match", post(match_dex_order))
         .route("/api/v1/swap/btc-fund", post(btc_fund))
         .route("/api/v1/swap/vtr-claim", post(vtr_claim))
@@ -136,19 +143,16 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/v1/debug/mocktime", post(debug_mocktime))
         .route("/api/v1/peers/unban", post(unban_peer))
-        .layer(auth)
-        .layer(rate);
+        // Order matters: `auth` must be the outer layer so unauthenticated
+        // requests are rejected before they can consume one of the 5 global
+        // concurrency permits (otherwise 5 keyless requests starve the
+        // legitimate wallet owner).
+        .layer(rate)
+        .layer(auth);
 
     let public_routes = Router::new()
-        .route("/api/v1/wallet/balance", get(get_balance))
-        .route("/api/v1/wallet/addresses", get(get_addresses))
-        .route("/api/v1/wallet/utxos", get(get_wallet_utxos))
-        .route("/api/v1/wallet/transactions", get(get_transactions))
         .route("/api/v1/blockchain/utxo/:txid/:vout", get(get_txout))
-        .route("/api/v1/staking/status", get(get_staking_status))
-        .route("/api/v1/staking/rewards", get(get_staking_rewards))
         .route("/api/v1/torrent/sessions", get(list_torrent_sessions))
-        .route("/api/v1/dex/orders", get(get_dex_orders))
         .route("/api/v1/claim/check", post(check_claim))
         .route("/api/v1/faucet", post(faucet))
         .layer(middleware::from_fn_with_state(

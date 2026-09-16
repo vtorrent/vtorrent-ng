@@ -4,6 +4,14 @@ Base URL: `http://127.0.0.1:22525`
 
 All request/response bodies are JSON. Authentication via `X-Api-Key` header.
 
+**Auth scope.** When `--rpc-api-key` is set, every wallet, staking, DEX,
+torrent, swap, claim, broadcast and SPV endpoint requires the key — including
+the read-only wallet/staking/DEX endpoints, which expose the hot wallet
+address, balances, UTXO set and order book. Only node-info, blockchain
+lookups, mempool, fee estimate, BTC/SPV status, peers, `/metrics` and `/ws`
+remain open. When the key is unset (the loopback default) all endpoints are
+open; the daemon refuses to bind a non-loopback address without a key.
+
 New hot-wallet imports encrypt the WIF and optional TOTP secret together, so
 2FA remains enforced after restart. Older WIF-only files remain readable, but
 they contain no saved TOTP configuration: re-import with the original TOTP
