@@ -35,12 +35,18 @@ pub async fn start_staking(
     let wif = handle.rpc_state.wallet_wif.read().await.clone();
 
     if let Some(tx) = &handle.rpc_state.staking_control {
-        let _ = tx
-            .send(vtorrent_node::staking::StakingCommand::Start {
-                address: address.clone(),
-                wif,
-            })
-            .await;
+        // Only report staking as enabled if the command actually reached the
+        // staking loop; otherwise the UI shows it active while nothing runs.
+        tx.send(vtorrent_node::staking::StakingCommand::Start {
+            address: address.clone(),
+            wif,
+        })
+        .await
+        .map_err(|_| TauriError::NodeError("Staking loop is not accepting commands".into()))?;
+    } else {
+        return Err(TauriError::NodeError(
+            "Staking control channel is not available".into(),
+        ));
     }
     *handle.rpc_state.staking_enabled.write().await = true;
     *handle.rpc_state.staking_address.write().await = Some(address.clone());

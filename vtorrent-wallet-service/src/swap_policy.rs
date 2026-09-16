@@ -63,7 +63,11 @@ fn verify_output(
     now: u64,
 ) -> Result<VerifiedSwapFunding, String> {
     if order.target_asset != "BTC"
-        || order.target_amount <= vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS
+        // The claim output is `target_amount - BTC_HTLC_FEE_SATOSHIS`, which
+        // must clear Bitcoin's 546-sat dust limit or the claim tx is
+        // policy-rejected and the maker can never take the preimage branch.
+        || order.target_amount
+            <= vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS + 546
         || order.vtr_amount <= vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS
     {
         return Err("Swap amounts must exceed each chain's claim/refund fee".into());
@@ -194,7 +198,8 @@ mod tests {
         changed_order.expiry += 1;
         assert!(verify_output(&changed_order, &utxo, 105, NOW.into()).is_err());
         let mut dust_order = order.clone();
-        dust_order.target_amount = vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS;
+        // Just above the fee floor but still leaving a sub-546-sat claim output.
+        dust_order.target_amount = vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS + 1;
         assert!(verify_output(&dust_order, &utxo, 105, NOW.into()).is_err());
     }
 

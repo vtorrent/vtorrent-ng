@@ -155,21 +155,31 @@ impl Wallet {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| WalletError::Io(e.to_string()))?;
         }
-        let tmp = path.with_extension("json.tmp");
+        // Unique temp name created with O_EXCL: a deterministic
+        // `wallet.json.tmp` could be pre-created as a symlink by a local
+        // attacker to redirect the write, and concurrent saves would race.
+        let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
         #[cfg(unix)]
         {
+            use std::io::Write as _;
             use std::os::unix::fs::OpenOptionsExt;
-            std::fs::OpenOptions::new()
+            let mut file = std::fs::OpenOptions::new()
                 .write(true)
-                .create(true)
-                .truncate(true)
+                .create_new(true)
                 .mode(0o600)
                 .open(&tmp)
-                .and_then(|mut f| std::io::Write::write_all(&mut f, json.as_bytes()))
+                .map_err(|e| WalletError::Io(e.to_string()))?;
+            file.write_all(json.as_bytes())
+                .map_err(|e| WalletError::Io(e.to_string()))?;
+            // Flush to disk before the rename so a crash cannot leave an empty
+            // or truncated wallet despite the "atomic" rename.
+            file.sync_all()
                 .map_err(|e| WalletError::Io(e.to_string()))?;
         }
         #[cfg(not(unix))]
-        std::fs::write(&tmp, &json).map_err(|e| WalletError::Io(e.to_string()))?;
+        {
+            std::fs::write(&tmp, &json).map_err(|e| WalletError::Io(e.to_string()))?;
+        }
         std::fs::rename(&tmp, path).map_err(|e| WalletError::Io(e.to_string()))?;
         // Re-assert 0600 on Unix: rename preserves the source mode, but
         // pre-existing files keep their old permissions.
@@ -177,6 +187,12 @@ impl Wallet {
         {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+            // fsync the directory so the rename itself is durable.
+            if let Some(parent) = path.parent() {
+                if let Ok(dir) = std::fs::File::open(parent) {
+                    let _ = dir.sync_all();
+                }
+            }
         }
         Ok(())
     }

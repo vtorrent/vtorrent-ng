@@ -109,8 +109,12 @@ pub fn p2pkh_script_pubkey(address: &str) -> Result<Vec<u8>> {
 }
 
 /// Decode a vTorrent/Bitcoin Base58Check address to its 20-byte Hash160.
+///
+/// Rejects foreign-network addresses: the P2PKH script is version-agnostic,
+/// so a Bitcoin mainnet address would otherwise be silently accepted as a VTR
+/// recipient.
 fn address_to_hash160(address: &str) -> Result<[u8; 20]> {
-    let addr = vtorrent_core::address::Address::parse(address)
+    let addr = vtorrent_core::address::validate_p2pkh(address)
         .map_err(|e| WalletError::InvalidAddress(format!("{}: {}", address, e)))?;
     Ok(addr.hash)
 }
