@@ -241,6 +241,10 @@ async fn receive_loop(
     // inserts an entry, so without pruning a spoofed-UDP flood leaks memory.
     const PUNCH_PRUNE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
     const PUNCH_ENTRY_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+    // Hard cap: the TTL (600s) exceeds the prune interval (300s), so peak size
+    // is every distinct source IP seen in a 600s window — unbounded under a
+    // spoofed-source flood. Evict the oldest entries once over the cap.
+    const PUNCH_MAX_ENTRIES: usize = 100_000;
     let mut last_prune = std::time::Instant::now();
 
     loop {
@@ -274,6 +278,18 @@ async fn receive_loop(
                 // each datagram otherwise allocates keypairs and registry
                 // entries on the responder.
                 let now = std::time::Instant::now();
+                if punch_tokens.len() >= PUNCH_MAX_ENTRIES && !punch_tokens.contains_key(&from.ip())
+                {
+                    // Over the cap and this is a new source: evict the oldest
+                    // entry rather than growing without bound.
+                    if let Some(oldest) = punch_tokens
+                        .iter()
+                        .min_by_key(|(_, (_, seen))| *seen)
+                        .map(|(ip, _)| *ip)
+                    {
+                        punch_tokens.remove(&oldest);
+                    }
+                }
                 let entry = punch_tokens
                     .entry(from.ip())
                     .or_insert((PUNCH_BURST as f64, now));

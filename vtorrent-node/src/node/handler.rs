@@ -196,6 +196,10 @@ pub(crate) async fn handle_inv(
                     &vtorrent_p2p::message::GetDataMsg { items: chunk },
                     peer_version,
                 );
+                // Broadcast to ALL peers, including the announcer: this is a
+                // request for the missing data, not an echo. The announcer is
+                // typically the peer that has the block, so excluding it would
+                // stall propagation.
                 node.peer_manager
                     .broadcast(NetMessage::new("getdata", payload))
                     .await;
@@ -1910,8 +1914,32 @@ pub(crate) async fn dispatch_message(
         // ── DEX order gossip ─────────────────────────────────────────────
         "dexorder" => {
             if let Ok(ann) = serde_json::from_slice::<OrderAnnouncement>(&msg.payload) {
+                // Validate gossiped fields before they reach the order book or
+                // any error-message formatting: orders arrive unauthenticated,
+                // and an unvalidated `maker_address` was previously echoed
+                // through a byte-slice truncation (panic) on cancel.
+                let valid = vtorrent_core::address::validate_p2pkh(&ann.maker_address).is_ok()
+                    && ann.maker_address.len() <= 128
+                    && ann.target_asset.len() <= 64
+                    && ann.vtr_amount > 0
+                    && ann.target_amount > 0
+                    && ann.vtr_amount <= crate::consensus::MAX_MONEY
+                    && ann.target_amount <= crate::consensus::MAX_MONEY;
+                if !valid {
+                    node.peer_manager
+                        .record_misbehaviour(peer_addr, Misbehaviour::MalformedMessage)
+                        .await;
+                    return Ok(());
+                }
                 let order_id = ann.order_id;
                 if node.seen_orders.insert(order_id) {
+                    // Bound the dedup set: it is never otherwise pruned, so a
+                    // peer sending random order ids grows it without limit.
+                    const MAX_SEEN_ORDERS: usize = 100_000;
+                    if node.seen_orders.len() > MAX_SEEN_ORDERS {
+                        node.seen_orders.clear();
+                        node.seen_orders.insert(order_id);
+                    }
                     if let Some(book) = &node.order_book {
                         book.write().await.add_order(ann.to_order());
                     }

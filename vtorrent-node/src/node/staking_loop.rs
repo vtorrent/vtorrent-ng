@@ -150,14 +150,18 @@ impl Node {
                         block_hash,
                     });
                 }
-                // Emit StakingReward event
-                let reward_sats: u64 = block_arc
-                    .transactions
-                    .iter()
-                    .filter(|tx| matches!(tx.tx_type, crate::block::TxType::Coinstake))
-                    .flat_map(|tx| tx.outputs.iter())
-                    .map(|o| o.value)
-                    .sum();
+                // Emit StakingReward event. The reward is total outputs minus
+                // the staked principal — a coinstake returns `stake + reward`,
+                // so summing outputs would overstate it by the stake amount.
+                let reward_sats: u64 = {
+                    let chain = self.chain.lock().await;
+                    block_arc
+                        .transactions
+                        .iter()
+                        .filter(|tx| matches!(tx.tx_type, crate::block::TxType::Coinstake))
+                        .filter_map(|tx| chain.coinstake_reward(tx))
+                        .sum()
+                };
                 let staking_addr = staking.address.clone();
                 self.emit(NodeEvent::StakingReward {
                     block_height: height,

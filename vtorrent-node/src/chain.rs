@@ -357,6 +357,27 @@ impl Chain {
         self.utxo_set.get(&(*txid, vout))
     }
 
+    /// Compute the actual reward paid by a coinstake transaction.
+    ///
+    /// A coinstake returns the staked principal plus the reward
+    /// (`outputs[1] = stake + reward`), so summing the outputs overstates the
+    /// reward by the full staked amount. The true reward is
+    /// `total_output − staked_input_value`, where the input value is resolved
+    /// from the transaction that created the staked output.
+    ///
+    /// Returns `None` if the transaction is not a coinstake or the staked
+    /// input cannot be resolved (e.g. pruned history).
+    pub fn coinstake_reward(&self, tx: &Transaction) -> Option<u64> {
+        if tx.tx_type != crate::block::TxType::Coinstake {
+            return None;
+        }
+        let total_output: u64 = tx.outputs.iter().map(|o| o.value).sum();
+        let input = tx.inputs.first()?;
+        let (parent, _, _) = self.get_transaction(&input.prev_txid)?;
+        let staked = parent.outputs.get(input.prev_vout as usize)?.value;
+        total_output.checked_sub(staked)
+    }
+
     /// Compute the real fee paid by a transaction using the current UTXO set.
     ///
     /// Returns `None` if any input is not in the UTXO set (unspendable or

@@ -106,15 +106,23 @@ pub fn hash_meets_target(hash: &[u8; 32], bits: u32) -> bool {
         target[1] = (val >> 8) as u8;
         target[2] = (val >> 16) as u8;
     } else {
-        let low_zeros = exponent - 3;
-        if low_zeros + 3 > 32 {
-            // Target ≥ 2^256: every hash trivially meets it.
-            return true;
-        }
+        let shift_bytes = exponent - 3;
         let mb = mantissa.to_le_bytes();
-        target[low_zeros] = mb[0];
-        target[low_zeros + 1] = mb[1];
-        target[low_zeros + 2] = mb[2];
+        // Place the 24-bit mantissa at byte offset `shift_bytes`. Any non-zero
+        // byte that would land at index >= 32 means the target exceeds 2^256:
+        // that is a non-canonical (overflowing) target and must be rejected,
+        // not treated as "every hash passes". Returning true here previously
+        // let a peer fabricate zero-cost headers that passed the PoW check.
+        for (i, b) in mb.iter().take(3).enumerate() {
+            if *b == 0 {
+                continue;
+            }
+            let idx = shift_bytes + i;
+            if idx >= 32 {
+                return false;
+            }
+            target[idx] = *b;
+        }
     }
     // Compare hash ≤ target as little-endian numbers: scan from the most
     // significant byte down.
@@ -558,6 +566,18 @@ impl SpvChain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_overflowing_target_is_rejected() {
+        // exponent 33 (0x21) with mantissa 1: the real target is 2^240, so an
+        // all-ones hash must NOT meet it. Previously the out-of-range branch
+        // returned true, letting a peer fabricate zero-cost headers.
+        assert!(!hash_meets_target(&[0xff; 32], 0x2100_0001));
+        // exponent 32 (0x20), mantissa 1 -> target 2^232; still must reject.
+        assert!(!hash_meets_target(&[0xff; 32], 0x2000_0001));
+        // A genuinely easy target still accepts an all-zero hash.
+        assert!(hash_meets_target(&[0u8; 32], 0x207f_ffff));
+    }
 
     fn make_header(height: u32, prev: [u8; 32], merkle: [u8; 32]) -> SpvHeader {
         // Maximum (easiest) target; mine a nonce that satisfies PoW (~2 tries

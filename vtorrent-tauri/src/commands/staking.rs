@@ -176,7 +176,9 @@ pub async fn get_staking_rewards(
             .iter()
             .find(|tx| tx.tx_type == vtorrent_node::block::TxType::Coinstake)
         {
-            let reward_sats: u64 = coinstake.outputs.iter().map(|o| o.value).sum();
+            // Reward = total outputs minus the staked principal (a coinstake
+            // returns `stake + reward`; summing outputs overstates it).
+            let reward_sats: u64 = chain.coinstake_reward(coinstake).unwrap_or(0);
             let staker_address = coinstake
                 .outputs
                 .iter()

@@ -348,6 +348,23 @@ impl BanManager {
             }
         }
 
+        // Bound the ban map too. `scores` is capped but `bans` was not, so an
+        // attacker with many source IPs (botnet / IPv6) could grow it without
+        // limit — each entry holds a heap `reason` string. Evict the bans
+        // closest to expiry first.
+        if self.bans.len() > Self::MAX_TRACKED_PEERS {
+            let mut entries: Vec<(IpAddr, Duration)> = self
+                .bans
+                .iter()
+                .map(|(ip, ban)| (*ip, ban.duration.saturating_sub(ban.banned_at.elapsed())))
+                .collect();
+            entries.sort_by_key(|(_, remaining)| *remaining);
+            let excess = entries.len() - Self::MAX_TRACKED_PEERS * 3 / 4;
+            for (ip, _) in entries.into_iter().take(excess) {
+                self.bans.remove(&ip);
+            }
+        }
+
         // Bound the connection-failure tracker: IPs with no active ban and no
         // recorded misbehaviour score no longer need their failure count.
         self.consecutive_failures

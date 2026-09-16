@@ -277,6 +277,11 @@ impl DhtClient {
         let mut peers = Vec::new();
         let mut queried: std::collections::HashSet<SocketAddr> = std::collections::HashSet::new();
         let mut pending: Vec<SocketAddr> = self.bootstrap.clone();
+        // Bound the frontier: a hostile node can return ~2500 fresh addresses
+        // per reply, and `queried` is only populated when an address is popped,
+        // so the same addresses can be re-pushed before being queried. Without
+        // a cap `pending` grows without bound.
+        const MAX_PENDING: usize = 1024;
 
         let mut tid: u16 = 0;
         while !pending.is_empty() && peers.len() < 50 {
@@ -310,7 +315,10 @@ impl DhtClient {
                         }
                     }
                     for node in nodes {
-                        if !queried.contains(&node.addr) {
+                        if pending.len() >= MAX_PENDING {
+                            break;
+                        }
+                        if !queried.contains(&node.addr) && !pending.contains(&node.addr) {
                             pending.push(node.addr);
                         }
                     }

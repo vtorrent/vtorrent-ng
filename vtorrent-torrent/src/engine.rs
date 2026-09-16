@@ -879,6 +879,10 @@ async fn fetch_metadata_from_peer(
     const PIECE_LEN: u64 = 16 * 1024;
     let piece_count = metadata_size.div_ceil(PIECE_LEN);
     let mut pieces: std::collections::HashMap<u32, Vec<u8>> = std::collections::HashMap::new();
+    // Running byte total: `metadata_size` bounds the piece *count*, but each
+    // data message can be up to MAX_MESSAGE_LENGTH (16 MiB), so a hostile peer
+    // answering with forged piece indices could otherwise pin ~64 GB.
+    let mut received_bytes: u64 = 0;
 
     for piece in 0..piece_count as u32 {
         let req = metadata::build_request(piece);
@@ -894,7 +898,17 @@ async fn fetch_metadata_from_peer(
             match conn.recv().await {
                 Ok(PeerMessage::Extended { id, payload }) if id == ut_metadata_id => {
                     if let Ok((p, _total, data)) = metadata::parse_data(&payload) {
-                        pieces.insert(p, data);
+                        // Reject out-of-range indices and oversized payloads,
+                        // and abort once the declared metadata size is exceeded.
+                        if (p as u64) < piece_count
+                            && data.len() as u64 <= PIECE_LEN
+                            && received_bytes.saturating_add(data.len() as u64) <= metadata_size
+                        {
+                            received_bytes += data.len() as u64;
+                            pieces.insert(p, data);
+                        } else {
+                            return None;
+                        }
                     }
                     break;
                 }
