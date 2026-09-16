@@ -389,7 +389,12 @@ pub fn validate_legacy_claim(tx: &Transaction, snapshot_balance: u64) -> Result<
         .as_ref()
         .ok_or_else(|| NodeError::InvalidClaim("Missing claim signature".into()))?;
 
-    verify_claim_signature(claim_addr, sig_bytes)
+    // v2: the signature covers the claim's outputs as well as the address.
+    // The v1 address-only scheme let anyone copy a valid signature out of the
+    // mempool, redirect the outputs to themselves, and permanently lock out
+    // the real owner.
+    let msg_hash = claim_message_hash_v2(claim_addr, &tx.outputs);
+    verify_claim_signature(msg_hash, claim_addr, sig_bytes)
         .map_err(|e| NodeError::InvalidClaim(format!("Signature verification failed: {}", e)))?;
 
     Ok(())
@@ -398,17 +403,17 @@ pub fn validate_legacy_claim(tx: &Transaction, snapshot_balance: u64) -> Result<
 /// Verify a Bitcoin-style signed-message proof for a legacy claim.
 ///
 /// Protocol:
-/// 1. Compute the message hash:
-///    `hash = SHA256d("vTorrent Signed Message\n" + len_varint + claim_address)`
-/// 2. Recover the public key from the compact (65-byte) ECDSA signature.
-/// 3. Derive the P2PKH address from the recovered public key.
-/// 4. Compare the derived address to the claimed legacy address.
+/// 1. Recover the public key from the compact (65-byte) ECDSA signature over
+///    the caller-supplied message hash.
+/// 2. Derive the P2PKH address from the recovered public key.
+/// 3. Compare the derived address to the claimed legacy address.
 ///
 /// The signature must be in compact (65-byte) format:
 ///   byte[0]  = recovery flag (27–34)
 ///   byte[1..33] = r
 ///   byte[33..65] = s
 pub fn verify_claim_signature(
+    message_hash: [u8; 32],
     claim_address: &str,
     sig_bytes: &[u8],
 ) -> std::result::Result<(), NodeError> {
@@ -420,8 +425,6 @@ pub fn verify_claim_signature(
     }
 
     // ── Step 1: Build the signed message hash ────────────────────────────────
-    let message_hash = claim_message_hash(claim_address);
-
     let msg = Message::from_digest(message_hash);
 
     // ── Step 2: Parse the compact signature and recover the public key ────────
@@ -463,8 +466,30 @@ pub fn verify_claim_signature(
 /// The signed message is the claim address itself (not the txid, which would
 /// be circular since the txid embeds the signature). Both the claim RPC
 /// (`submit_claim`) and chain validation use this helper so they stay in sync.
+///
+/// DEPRECATED for validation: this v1 scheme does not commit to the claim's
+/// outputs, so a valid signature can be replayed with a different recipient.
+/// Use [`claim_message_hash_v2`] for new claims.
 pub fn claim_message_hash(claim_address: &str) -> [u8; 32] {
     bitcoin_signed_message_hash("vTorrent Signed Message", claim_address)
+}
+
+/// Compute the v2 claim message hash, binding the signature to the outputs.
+///
+/// The signed message commits to the claim address **and** every output
+/// (value + scriptPubKey), so a signature observed in the mempool cannot be
+/// replayed with a redirected recipient. Domain-separated from v1 by the
+/// magic prefix so a v1 signature can never satisfy a v2 check.
+pub fn claim_message_hash_v2(claim_address: &str, outputs: &[crate::block::TxOutput]) -> [u8; 32] {
+    let mut message = String::with_capacity(claim_address.len() + 32 + outputs.len() * 64);
+    message.push_str(claim_address);
+    for output in outputs {
+        message.push('|');
+        message.push_str(&output.value.to_string());
+        message.push(':');
+        message.push_str(&hex::encode(&output.script_pubkey));
+    }
+    bitcoin_signed_message_hash("vTorrent Signed Message v2", &message)
 }
 
 /// Compute the Bitcoin-style signed message hash.
@@ -620,16 +645,67 @@ mod tests {
         let secret_key = SecretKey::from_slice(&[7u8; 32]).unwrap();
         let pubkey = PublicKey::from_secret_key(&secp, &secret_key);
         let claim_address = pubkey_to_vtorrent_address(&pubkey, true);
+        let outputs = vec![TxOutput {
+            value: 100 * COIN,
+            script_pubkey: vec![0x76, 0xa9, 0x14],
+        }];
 
-        let msg = Message::from_digest(claim_message_hash(&claim_address));
+        let msg = Message::from_digest(claim_message_hash_v2(&claim_address, &outputs));
         let rec_sig = secp.sign_ecdsa_recoverable(&msg, &secret_key);
         let (rec_id, sig64) = rec_sig.serialize_compact();
         let mut sig_bytes = vec![27 + rec_id.to_i32() as u8 + 4];
         sig_bytes.extend_from_slice(&sig64);
 
-        assert!(verify_claim_signature(&claim_address, &sig_bytes).is_ok());
-        assert!(verify_claim_signature("invalid_address", &sig_bytes).is_err());
-        assert!(verify_claim_signature(&claim_address, &sig_bytes[..5]).is_err());
+        let hash = claim_message_hash_v2(&claim_address, &outputs);
+        assert!(verify_claim_signature(hash, &claim_address, &sig_bytes).is_ok());
+        assert!(verify_claim_signature(hash, "invalid_address", &sig_bytes).is_err());
+        assert!(verify_claim_signature(hash, &claim_address, &sig_bytes[..5]).is_err());
+    }
+
+    #[test]
+    fn test_claim_signature_is_bound_to_outputs() {
+        // A signature over one output set must not validate a different one:
+        // this is the front-running theft vector the v2 scheme closes.
+        let secp = Secp256k1::new();
+        let secret_key = SecretKey::from_slice(&[11u8; 32]).unwrap();
+        let pubkey = PublicKey::from_secret_key(&secp, &secret_key);
+        let claim_address = pubkey_to_vtorrent_address(&pubkey, true);
+
+        let honest = vec![TxOutput {
+            value: 500 * COIN,
+            script_pubkey: vec![0x76, 0xa9, 0x14, 0xaa],
+        }];
+        let msg = Message::from_digest(claim_message_hash_v2(&claim_address, &honest));
+        let rec_sig = secp.sign_ecdsa_recoverable(&msg, &secret_key);
+        let (rec_id, sig64) = rec_sig.serialize_compact();
+        let mut sig_bytes = vec![27 + rec_id.to_i32() as u8 + 4];
+        sig_bytes.extend_from_slice(&sig64);
+
+        // Attacker redirects the output to themselves.
+        let stolen = vec![TxOutput {
+            value: 500 * COIN,
+            script_pubkey: vec![0x76, 0xa9, 0x14, 0xbb],
+        }];
+        let attacker_tx = Transaction {
+            version: 1,
+            tx_type: TxType::LegacyClaim,
+            inputs: vec![],
+            outputs: stolen,
+            lock_time: 0,
+            claim_address: Some(claim_address.clone()),
+            claim_signature: Some(sig_bytes.clone()),
+        };
+        assert!(
+            validate_legacy_claim(&attacker_tx, 1000 * COIN).is_err(),
+            "a signature over different outputs must not validate"
+        );
+
+        // The honest transaction still validates.
+        let honest_tx = Transaction {
+            outputs: honest,
+            ..attacker_tx
+        };
+        assert!(validate_legacy_claim(&honest_tx, 1000 * COIN).is_ok());
     }
 
     #[test]
@@ -639,7 +715,11 @@ mod tests {
         let pubkey = PublicKey::from_secret_key(&secp, &secret_key);
         let claim_address = pubkey_to_vtorrent_address(&pubkey, true);
 
-        let msg = Message::from_digest(claim_message_hash(&claim_address));
+        let outputs = vec![TxOutput {
+            value: 500 * COIN,
+            script_pubkey: vec![0x76, 0xa9, 0x14],
+        }];
+        let msg = Message::from_digest(claim_message_hash_v2(&claim_address, &outputs));
         let rec_sig = secp.sign_ecdsa_recoverable(&msg, &secret_key);
         let (rec_id, sig64) = rec_sig.serialize_compact();
         let mut sig_bytes = vec![27 + rec_id.to_i32() as u8 + 4];
@@ -649,10 +729,7 @@ mod tests {
             version: 1,
             tx_type: TxType::LegacyClaim,
             inputs: vec![],
-            outputs: vec![TxOutput {
-                value: 500 * COIN,
-                script_pubkey: vec![0x76, 0xa9, 0x14],
-            }],
+            outputs,
             lock_time: 0,
             claim_address: Some(claim_address.clone()),
             claim_signature: Some(sig_bytes),

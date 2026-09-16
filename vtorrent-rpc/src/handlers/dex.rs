@@ -282,7 +282,14 @@ pub async fn submit_claim(
         ))
     })?;
 
-    let msg_hash = vtorrent_node::consensus::claim_message_hash(&derived_address);
+    // Build the outputs first: the v2 signature commits to them, so a valid
+    // signature cannot be replayed with a redirected recipient.
+    let outputs = vec![TxOutput {
+        value: claimable,
+        script_pubkey,
+    }];
+
+    let msg_hash = vtorrent_node::consensus::claim_message_hash_v2(&derived_address, &outputs);
     let msg = secp256k1::Message::from_digest(msg_hash);
     let rec_sig = secp.sign_ecdsa_recoverable(&msg, &secret_key);
     let (rec_id, sig64) = rec_sig.serialize_compact();
@@ -294,10 +301,7 @@ pub async fn submit_claim(
         version: 1,
         tx_type: TxType::LegacyClaim,
         inputs: vec![],
-        outputs: vec![TxOutput {
-            value: claimable,
-            script_pubkey,
-        }],
+        outputs,
         lock_time: 0,
         claim_address: Some(derived_address.clone()),
         claim_signature: Some(sig_bytes),
