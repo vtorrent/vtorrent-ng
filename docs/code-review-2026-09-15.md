@@ -1,5 +1,11 @@
 # Codebase bug & edge-case review — 2026-09-15
 
+> **Fix status (2026-09-16).** Most findings below are now fixed; see
+> `docs/code-review-2026-09-15-fix-status.md` for the per-finding ledger.
+> The one deliberately unfixed item is **C1** (stake-kernel target
+> saturation), which is a consensus-rule change requiring a design
+> decision — see that document for why a mechanical fix is not possible.
+
 Read-only review of the whole workspace (19 Rust crates, ~67k LOC, plus the
 React/TS frontend). Four parallel deep passes (consensus/chain, RPC/Tauri,
 wallet/migrate/crypto, P2P/overlay/onion) plus independent verification of
