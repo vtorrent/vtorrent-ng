@@ -66,28 +66,43 @@ pub struct Mempool {
     spent_inputs: HashMap<([u8; 32], u32), [u8; 32]>,
     /// Maximum number of transactions in the mempool.
     max_size: usize,
+    /// Maximum total serialized size of the mempool in bytes. Bounds memory
+    /// independently of the transaction count: without it a peer can hold
+    /// `max_size` transactions of up to `MAX_BLOCK_SIZE` each.
+    max_bytes: u64,
     /// Minimum fee rate (sat/byte) to enter the mempool.
     /// Dynamically raised when the mempool is full.
     min_fee_rate: u64,
 }
 
+/// Default byte budget for the mempool (32 MB). At the 1 MB per-tx relay cap
+/// this allows ~32 maximum-size transactions, while typical small txs still
+/// fit the 10,000-entry count cap.
+pub const DEFAULT_MAX_MEMPOOL_BYTES: u64 = 32 * 1024 * 1024;
+
 impl Mempool {
     pub fn new(max_size: usize) -> Self {
+        Self::with_byte_limit(max_size, DEFAULT_MAX_MEMPOOL_BYTES)
+    }
+
+    /// Construct a mempool with an explicit byte budget.
+    pub fn with_byte_limit(max_size: usize, max_bytes: u64) -> Self {
         Self {
             entries: HashMap::new(),
             spent_inputs: HashMap::new(),
             max_size,
+            max_bytes,
             min_fee_rate: 1, // 1 sat/byte minimum by default
         }
     }
 
-    /// Add a transaction to the mempool.
+    /// Add a transaction to the mempool using the generic fee estimator.
     ///
-    /// Enforces:
-    /// - Minimum relay fee
-    /// - Dynamic minimum fee rate (raised when mempool is full)
-    /// - RBF replacement rules
-    /// - Eviction of the lowest-fee-rate tx when full (if new tx pays more)
+    /// Test-only: `Transaction::fee_sats()` assumes every input is worth
+    /// 100,000 sat, so this must never be used on production paths. All
+    /// production callers use `admit_with_chain_fee` (P2P, RPC, Tauri) or
+    /// `add_transaction_with_fee` with a chain-verified fee.
+    #[cfg(test)]
     pub fn add_transaction(&mut self, tx: Transaction) -> Result<()> {
         let estimated_fee = tx.fee_sats();
         self.add_transaction_with_fee(tx, estimated_fee)
@@ -220,51 +235,71 @@ impl Mempool {
             }
         }
 
-        // If mempool is full, try to evict the lowest-fee-rate entry
-        if self.entries.len() >= self.max_size {
-            if let Some(lowest_txid) = self.lowest_fee_rate_txid() {
-                let lowest_rate = self.entries[&lowest_txid].fee_rate();
-                if fee_rate > lowest_rate {
-                    tracing::debug!(
-                        "Mempool full: evicting {} ({} sat/byte) for {} ({} sat/byte)",
-                        hex::encode(lowest_txid),
-                        lowest_rate,
-                        hex::encode(txid),
-                        fee_rate
-                    );
-                    self.remove_entry(&lowest_txid);
-                    // Evict descendants of the removed entry too: without
-                    // this they are left spending a non-existent parent's
-                    // outputs, can never confirm, and occupy capacity until
-                    // the TTL — an attacker can permanently consume slots by
-                    // pairing a low-fee tx with a child (mirrors the RBF
-                    // frontier eviction above).
-                    let mut frontier: Vec<[u8; 32]> = vec![lowest_txid];
-                    while !frontier.is_empty() {
-                        let doomed: Vec<[u8; 32]> = self
-                            .spent_inputs
-                            .iter()
-                            .filter(|((prev_txid, _), _)| frontier.contains(prev_txid))
-                            .map(|(_, owner)| *owner)
-                            .collect();
-                        if doomed.is_empty() {
-                            break;
-                        }
-                        for txid in &doomed {
-                            self.remove_entry(txid);
-                        }
-                        frontier = doomed;
-                    }
-                    // Raise the dynamic minimum fee rate
-                    self.min_fee_rate = lowest_rate + 1;
-                } else {
-                    return Err(NodeError::Chain(format!(
-                        "Mempool full; minimum fee rate is now {} sat/byte",
-                        self.min_fee_rate
-                    )));
-                }
+        // A single transaction larger than the whole byte budget can never be
+        // admitted; reject it before the eviction loop (which would otherwise
+        // drain the entire mempool trying to make room).
+        if size_bytes as u64 > self.max_bytes {
+            return Err(NodeError::PolicyRejected(format!(
+                "Transaction size {} bytes exceeds the mempool byte budget {} bytes",
+                size_bytes, self.max_bytes
+            )));
+        }
+
+        // If the mempool is at either limit, evict lowest-fee-rate entries
+        // until the new tx fits. The byte budget matters independently of the
+        // count cap: a peer can otherwise fill `max_size` slots with 1 MB
+        // transactions.
+        loop {
+            let over_count = self.entries.len() >= self.max_size;
+            let over_bytes = self.total_bytes().saturating_add(size_bytes as u64) > self.max_bytes;
+            if !over_count && !over_bytes {
+                break;
             }
-        } else if self.entries.len() < self.max_size / 2 && self.min_fee_rate > 1 {
+            let Some(lowest_txid) = self.lowest_fee_rate_txid() else {
+                break;
+            };
+            let lowest_rate = self.entries[&lowest_txid].fee_rate();
+            if fee_rate <= lowest_rate {
+                return Err(NodeError::Chain(format!(
+                    "Mempool full; minimum fee rate is now {} sat/byte",
+                    self.min_fee_rate
+                )));
+            }
+            tracing::debug!(
+                "Mempool full (count={} bytes={}): evicting {} ({} sat/byte) for {} ({} sat/byte)",
+                self.entries.len(),
+                self.total_bytes(),
+                hex::encode(lowest_txid),
+                lowest_rate,
+                hex::encode(txid),
+                fee_rate
+            );
+            self.remove_entry(&lowest_txid);
+            // Evict descendants of the removed entry too: without this they
+            // are left spending a non-existent parent's outputs, can never
+            // confirm, and occupy capacity until the TTL — an attacker can
+            // permanently consume slots by pairing a low-fee tx with a child
+            // (mirrors the RBF frontier eviction above).
+            let mut frontier: Vec<[u8; 32]> = vec![lowest_txid];
+            while !frontier.is_empty() {
+                let doomed: Vec<[u8; 32]> = self
+                    .spent_inputs
+                    .iter()
+                    .filter(|((prev_txid, _), _)| frontier.contains(prev_txid))
+                    .map(|(_, owner)| *owner)
+                    .collect();
+                if doomed.is_empty() {
+                    break;
+                }
+                for txid in &doomed {
+                    self.remove_entry(txid);
+                }
+                frontier = doomed;
+            }
+            // Raise the dynamic minimum fee rate
+            self.min_fee_rate = lowest_rate + 1;
+        }
+        if self.entries.len() < self.max_size / 2 && self.min_fee_rate > 1 {
             // Decay the dynamic minimum fee rate back toward the base once the
             // mempool has drained below half capacity. Without this, a burst
             // of congestion would permanently raise the relay fee floor.
@@ -377,10 +412,74 @@ impl Mempool {
     }
 
     /// Get all transactions sorted by fee rate (highest first) — used by staker.
+    ///
+    /// Transactions are returned in dependency order: a parent always precedes
+    /// any child that spends its outputs. Without this a child paying a higher
+    /// fee rate would be placed before its parent, and the assembled block
+    /// would be invalid (the child's input is not in the pre-state), wedging
+    /// staking on every tick.
     pub fn get_transactions(&self) -> Vec<Transaction> {
-        let mut entries: Vec<&MempoolEntry> = self.entries.values().collect();
-        entries.sort_by_key(|entry| std::cmp::Reverse(entry.fee_rate()));
-        entries.into_iter().map(|e| e.tx.clone()).collect()
+        // Build the parent→children graph over mempool-internal edges only.
+        // A tx's parent is the tx that created an output it consumes.
+        let mut in_degree: HashMap<[u8; 32], usize> = HashMap::with_capacity(self.entries.len());
+        let mut children: HashMap<[u8; 32], Vec<[u8; 32]>> = HashMap::new();
+        for entry in self.entries.values() {
+            let txid = entry.tx.txid();
+            in_degree.entry(txid).or_insert(0);
+            for input in &entry.tx.inputs {
+                if self.entries.contains_key(&input.prev_txid) {
+                    children.entry(input.prev_txid).or_default().push(txid);
+                    *in_degree.entry(txid).or_insert(0) += 1;
+                }
+            }
+        }
+
+        // Ready set ordered by fee rate (descending), then txid for determinism
+        // across nodes with identical mempools.
+        let mut ready: std::collections::BTreeSet<(std::cmp::Reverse<u64>, [u8; 32])> =
+            std::collections::BTreeSet::new();
+        for (txid, degree) in &in_degree {
+            if *degree == 0 {
+                if let Some(entry) = self.entries.get(txid) {
+                    ready.insert((std::cmp::Reverse(entry.fee_rate()), *txid));
+                }
+            }
+        }
+
+        let mut out: Vec<Transaction> = Vec::with_capacity(self.entries.len());
+        while let Some((_, txid)) = ready.pop_first() {
+            if let Some(entry) = self.entries.get(&txid) {
+                out.push(entry.tx.clone());
+            }
+            if let Some(kids) = children.get(&txid) {
+                for kid in kids {
+                    if let Some(degree) = in_degree.get_mut(kid) {
+                        *degree = degree.saturating_sub(1);
+                        if *degree == 0 {
+                            if let Some(entry) = self.entries.get(kid) {
+                                ready.insert((std::cmp::Reverse(entry.fee_rate()), *kid));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Any tx left unemitted is part of a dependency cycle (impossible in
+        // practice: it would require a tx to spend its own descendant). Emit
+        // them in fee order rather than dropping them.
+        if out.len() < self.entries.len() {
+            let emitted: std::collections::HashSet<[u8; 32]> =
+                out.iter().map(|tx| tx.txid()).collect();
+            let mut leftovers: Vec<&MempoolEntry> = self
+                .entries
+                .values()
+                .filter(|e| !emitted.contains(&e.tx.txid()))
+                .collect();
+            leftovers.sort_by_key(|entry| std::cmp::Reverse(entry.fee_rate()));
+            out.extend(leftovers.into_iter().map(|e| e.tx.clone()));
+        }
+        out
     }
 
     /// Get all mempool entries with their fee metadata.
@@ -582,7 +681,7 @@ impl Mempool {
     fn lowest_fee_rate_txid(&self) -> Option<[u8; 32]> {
         self.entries
             .iter()
-            .min_by_key(|(_, e)| (e.fee_rate(), e.tx.serialized_size()))
+            .min_by_key(|(txid, e)| (e.fee_rate(), e.tx.serialized_size(), **txid))
             .map(|(txid, _)| *txid)
     }
 }
@@ -933,5 +1032,70 @@ mod tests {
             "child must be evicted with its parent (orphan prevention)"
         );
         assert_eq!(mp.size(), 1);
+    }
+
+    #[test]
+    fn test_byte_budget_bounds_memory() {
+        // Count cap is generous; the byte budget must be the binding limit.
+        let mut mp = Mempool::with_byte_limit(10_000, 300);
+        // Each tx serializes to well under 300 bytes; admit a few.
+        let mut admitted = 0;
+        for i in 0..20u8 {
+            let tx = make_tx(MIN_RELAY_FEE * (i as u64 + 1), i as usize + 1, false);
+            if mp.add_transaction(tx).is_ok() {
+                admitted += 1;
+            }
+        }
+        assert!(admitted > 0, "at least one tx must fit");
+        assert!(
+            mp.total_bytes() <= 300,
+            "mempool bytes {} must stay within the 300-byte budget",
+            mp.total_bytes()
+        );
+        assert!(mp.size() < 20, "byte budget must have rejected some txs");
+    }
+
+    #[test]
+    fn test_oversized_tx_rejected() {
+        let mut mp = Mempool::with_byte_limit(10_000, 100);
+        // A tx whose serialized size exceeds the whole budget.
+        let mut tx = make_tx(MIN_RELAY_FEE, 1, false);
+        tx.outputs[0].script_pubkey = vec![0u8; 500];
+        assert!(mp.add_transaction(tx).is_err());
+        assert_eq!(mp.size(), 0);
+    }
+
+    #[test]
+    fn test_get_transactions_orders_parent_before_child() {
+        let mut mp = Mempool::new(100);
+        // Parent at a LOW fee rate, child at a HIGH fee rate: fee ordering
+        // alone would put the child first.
+        let parent = make_tx(MIN_RELAY_FEE, 200, false);
+        let parent_txid = parent.txid();
+        mp.add_transaction(parent).unwrap();
+
+        let mut child = make_tx(MIN_RELAY_FEE * 10, 201, false);
+        child.inputs[0].prev_txid = parent_txid;
+        child.inputs[0].prev_vout = 0;
+        let child_txid = child.txid();
+        mp.add_transaction(child).unwrap();
+
+        let ordered = mp.get_transactions();
+        let parent_pos = ordered.iter().position(|t| t.txid() == parent_txid);
+        let child_pos = ordered.iter().position(|t| t.txid() == child_txid);
+        assert!(
+            parent_pos < child_pos,
+            "parent must precede child despite the child's higher fee rate"
+        );
+    }
+
+    #[test]
+    fn test_duplicate_inputs_rejected() {
+        let mut tx = make_tx(MIN_RELAY_FEE, 1, false);
+        tx.inputs.push(tx.inputs[0].clone());
+        assert!(
+            crate::consensus::validate_transaction(&tx).is_err(),
+            "a tx spending the same outpoint twice must be rejected"
+        );
     }
 }

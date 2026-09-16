@@ -325,6 +325,21 @@ pub fn validate_transaction(tx: &Transaction) -> Result<()> {
         ));
     }
 
+    // Reject duplicate outpoints. A tx spending the same input twice would
+    // otherwise have its input value counted twice by the fee computation
+    // (fabricating a high fee) and pass script verification twice, yet can
+    // never confirm — the second lookup fails on apply.
+    let mut seen_inputs = std::collections::HashSet::with_capacity(tx.inputs.len());
+    for input in &tx.inputs {
+        if !seen_inputs.insert((input.prev_txid, input.prev_vout)) {
+            return Err(NodeError::InvalidTransaction(format!(
+                "Duplicate input {}:{}",
+                hex::encode(input.prev_txid),
+                input.prev_vout
+            )));
+        }
+    }
+
     Ok(())
 }
 
