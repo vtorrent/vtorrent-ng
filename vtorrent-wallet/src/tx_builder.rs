@@ -159,7 +159,7 @@ pub struct TxBuilder {
     recipients: Vec<(String, u64)>,
     fee_rate: u64,
     min_absolute_fee: u64,
-    wif_keys: Vec<String>,
+    wif_keys: Vec<zeroize::Zeroizing<String>>,
     change_address: Option<String>,
     signal_rbf: bool,
     lock_time: u32,
@@ -202,7 +202,7 @@ impl TxBuilder {
     ///
     /// Multiple keys can be added for multi-input transactions.
     pub fn sign_with_wif(mut self, wif: &str) -> Self {
-        self.wif_keys.push(wif.to_string());
+        self.wif_keys.push(zeroize::Zeroizing::new(wif.to_string()));
         self
     }
 
@@ -235,9 +235,10 @@ impl TxBuilder {
             return Err(WalletError::BuildError("No signing keys specified".into()));
         }
 
-        // Decode all signing keys.
+        // Decode all signing keys. Secrets are held in Zeroizing buffers so
+        // they are not left in freed heap memory after signing.
         let secp = Secp256k1::new();
-        let mut key_pairs: Vec<([u8; 32], Vec<u8>)> = Vec::new(); // (secret_bytes, compressed_pubkey)
+        let mut key_pairs: Vec<(zeroize::Zeroizing<[u8; 32]>, Vec<u8>)> = Vec::new(); // (secret_bytes, compressed_pubkey)
         for wif in &self.wif_keys {
             let key = vtorrent_core::keys::PrivateKey::from_wif(wif)
                 .map_err(|e| WalletError::Signing(e.to_string()))?;
@@ -245,7 +246,7 @@ impl TxBuilder {
                 .map_err(|e| WalletError::Signing(e.to_string()))?;
             let pubkey = secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
             let pubkey_bytes = pubkey.serialize().to_vec(); // compressed
-            key_pairs.push((*key.as_bytes(), pubkey_bytes));
+            key_pairs.push((zeroize::Zeroizing::new(*key.as_bytes()), pubkey_bytes));
         }
 
         // Determine change address.
@@ -453,9 +454,9 @@ fn pubkey_to_p2pkh_script(compressed_pubkey: &[u8]) -> Vec<u8> {
 
 /// Find the signing key whose P2PKH script matches the given scriptPubKey.
 fn find_key_for_script<'a>(
-    key_pairs: &'a [([u8; 32], Vec<u8>)],
+    key_pairs: &'a [(zeroize::Zeroizing<[u8; 32]>, Vec<u8>)],
     script_pubkey: &[u8],
-) -> Option<&'a ([u8; 32], Vec<u8>)> {
+) -> Option<&'a (zeroize::Zeroizing<[u8; 32]>, Vec<u8>)> {
     key_pairs
         .iter()
         .find(|(_, pubkey_bytes)| pubkey_to_p2pkh_script(pubkey_bytes) == script_pubkey)

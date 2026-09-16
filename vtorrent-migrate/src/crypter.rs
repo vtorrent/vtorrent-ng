@@ -34,12 +34,15 @@ pub struct DecryptedMasterKey {
 /// The iteration count is capped to prevent a malicious wallet.dat from
 /// forcing an unbounded (potentially hours-long) derivation loop.
 pub fn derive_key_method0(passphrase: &[u8], salt: &[u8], iterations: u32) -> Result<[u8; 48]> {
+    use zeroize::Zeroizing;
     const MAX_ITERATIONS: u32 = 1_000_000;
     if iterations > MAX_ITERATIONS {
         return Err(MigrateError::ExcessiveIterations(iterations));
     }
 
-    let mut buf = Vec::new();
+    // Zeroizing: this buffer holds the passphrase and must not be left in
+    // freed heap memory.
+    let mut buf = Zeroizing::new(Vec::new());
     buf.extend_from_slice(passphrase);
     buf.extend_from_slice(salt);
 
@@ -220,41 +223,37 @@ fn strip_compact_size(data: &[u8]) -> Option<&[u8]> {
 
 /// Decrypt the master key using AES-256-CBC.
 pub fn decrypt_master_key(mkey: &MasterKey, passphrase: &str) -> Result<DecryptedMasterKey> {
-    let passphrase_bytes = passphrase.as_bytes();
+    use zeroize::Zeroizing;
+    let passphrase_bytes = Zeroizing::new(passphrase.as_bytes().to_vec());
 
-    let derived_key = match mkey.derivation_method {
-        0 => derive_key_method0(passphrase_bytes, &mkey.salt, mkey.derive_iterations)?,
+    let derived_key = Zeroizing::new(match mkey.derivation_method {
+        0 => derive_key_method0(&passphrase_bytes, &mkey.salt, mkey.derive_iterations)?,
         // scrypt. Legacy Bitcoin numbers it method 1; the vTorrent wallet uses
         // method 2. Support both so scrypt-encrypted wallets migrate regardless.
-        1 | 2 => derive_key_scrypt(passphrase_bytes, &mkey.salt)?,
+        1 | 2 => derive_key_scrypt(&passphrase_bytes, &mkey.salt)?,
         method => {
             return Err(MigrateError::UnsupportedDerivationMethod(method));
         }
-    };
+    });
 
-    if std::env::var("VTORRENT_MIGRATE_DEBUG").is_ok() {
-        eprintln!(
-            "[debug] derived key+iv: {}",
-            derived_key
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>()
-        );
-    }
+    // NOTE: never log `derived_key` — it is the AES-256-CBC key material that
+    // protects the wallet master key. A previous VTORRENT_MIGRATE_DEBUG block
+    // printed it; that was removed because any captured log would let an
+    // attacker decrypt the mkey/ckeys.
 
     // The IV for master key decryption is the second 16 bytes of the same
     // iterated SHA-512 output used for the key (EVP_BytesToKey semantics).
-    let key: [u8; 32] = derived_key[..32].try_into().unwrap();
-    let iv: [u8; 16] = derived_key[32..48].try_into().unwrap();
+    let key = Zeroizing::new(<[u8; 32]>::try_from(&derived_key[..32]).unwrap());
+    let iv = Zeroizing::new(<[u8; 16]>::try_from(&derived_key[32..48]).unwrap());
 
     // Decrypt using AES-256-CBC
-    let mut ciphertext = mkey.encrypted_key.clone();
+    let mut ciphertext = Zeroizing::new(mkey.encrypted_key.clone());
     // Pad to block boundary if needed
     while !ciphertext.len().is_multiple_of(16) {
         ciphertext.push(0);
     }
 
-    let decryptor = Decryptor::<Aes256>::new(&key.into(), &iv.into());
+    let decryptor = Decryptor::<Aes256>::new(&(*key).into(), &(*iv).into());
     let decrypted = decryptor
         .decrypt_padded_mut::<cbc::cipher::block_padding::Pkcs7>(&mut ciphertext)
         .map_err(|_| MigrateError::IncorrectPassphrase)?;
@@ -263,32 +262,36 @@ pub fn decrypt_master_key(mkey: &MasterKey, passphrase: &str) -> Result<Decrypte
         return Err(MigrateError::IncorrectPassphrase);
     }
 
-    let mut key = [0u8; 32];
+    let mut key = Zeroizing::new([0u8; 32]);
     key.copy_from_slice(&decrypted[..32]);
 
-    Ok(DecryptedMasterKey { key })
+    Ok(DecryptedMasterKey { key: *key })
 }
 
 /// Decrypt an encrypted private key (ckey) using the decrypted master key.
 /// The IV is derived from the public key using Hash256 (SHA256d).
+///
+/// Returns the raw 32-byte secp256k1 scalar in a `Zeroizing` buffer so the
+/// caller cannot accidentally leave it in freed heap memory.
 pub fn decrypt_private_key(
     encrypted_privkey: &[u8],
     public_key: &[u8],
     master_key: &DecryptedMasterKey,
-) -> Result<Vec<u8>> {
+) -> Result<zeroize::Zeroizing<Vec<u8>>> {
     use vtorrent_core::crypto::sha256d;
+    use zeroize::Zeroizing;
 
     // IV = first 16 bytes of SHA256d(public_key)
     let iv_hash = sha256d(public_key);
-    let iv: [u8; 16] = iv_hash[..16].try_into().unwrap();
+    let iv = Zeroizing::new(<[u8; 16]>::try_from(&iv_hash[..16]).unwrap());
 
-    let mut ciphertext = encrypted_privkey.to_vec();
+    let mut ciphertext = Zeroizing::new(encrypted_privkey.to_vec());
     // Ensure block alignment
     while !ciphertext.len().is_multiple_of(16) {
         ciphertext.push(0);
     }
 
-    let decryptor = Decryptor::<Aes256>::new(&master_key.key.into(), &iv.into());
+    let decryptor = Decryptor::<Aes256>::new(&master_key.key.into(), &(*iv).into());
     let decrypted = decryptor
         .decrypt_padded_mut::<cbc::cipher::block_padding::Pkcs7>(&mut ciphertext)
         .map_err(|_| MigrateError::IncorrectPassphrase)?;
@@ -298,8 +301,8 @@ pub fn decrypt_private_key(
     }
 
     // Validate the decrypted key is a valid secp256k1 scalar
-    let key_bytes: [u8; 32] = decrypted[..32].try_into().unwrap();
-    let secret = secp256k1::SecretKey::from_slice(&key_bytes)
+    let key_bytes = Zeroizing::new(<[u8; 32]>::try_from(&decrypted[..32]).unwrap());
+    let secret = secp256k1::SecretKey::from_slice(&key_bytes[..])
         .map_err(|_| MigrateError::IncorrectPassphrase)?;
 
     // Validate the derived public key matches the record's public key.
@@ -310,7 +313,7 @@ pub fn decrypt_private_key(
         return Err(MigrateError::IncorrectPassphrase);
     }
 
-    Ok(decrypted[..32].to_vec())
+    Ok(Zeroizing::new(decrypted[..32].to_vec()))
 }
 
 #[cfg(test)]

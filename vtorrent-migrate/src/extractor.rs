@@ -140,11 +140,13 @@ fn extract_wallet_inner(
             // OTP-enabled wallets (keyOTP record) never store the raw
             // passphrase: the effective passphrase is
             // hex(SHA256(otp_secret || passphrase)). Try the plain
-            // passphrase first, then the OTP-mixed variant.
-            let mut candidates: Vec<String> = vec![passphrase.to_string()];
+            // passphrase first, then the OTP-mixed variant. Zeroizing so the
+            // passphrase is not left in freed heap memory.
+            let mut candidates: Vec<zeroize::Zeroizing<String>> =
+                vec![zeroize::Zeroizing::new(passphrase.to_string())];
             if let Some(otp) = otp_record.as_deref() {
                 if let Some(mixed) = crate::crypter::derive_otp_mixed_passphrase(otp, passphrase) {
-                    candidates.push(mixed);
+                    candidates.push(zeroize::Zeroizing::new(mixed));
                 }
             }
             let mut works = false;

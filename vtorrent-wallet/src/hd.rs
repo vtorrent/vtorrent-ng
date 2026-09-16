@@ -59,11 +59,14 @@ impl Mnemonic {
     }
 
     /// Derive the 64-byte BIP39 seed (empty passphrase).
-    pub fn to_seed(&self) -> crate::error::Result<[u8; 64]> {
+    ///
+    /// Returned in a `Zeroizing` buffer: the seed is the root of all derived
+    /// key material and must not be left in freed heap memory.
+    pub fn to_seed(&self) -> crate::error::Result<zeroize::Zeroizing<[u8; 64]>> {
         use bip39::Mnemonic as Bip39Mnemonic;
         let m = Bip39Mnemonic::parse_in_normalized(bip39::Language::English, &self.words)
             .map_err(|e| crate::error::WalletError::MnemonicError(e.to_string()))?;
-        Ok(m.to_seed(""))
+        Ok(zeroize::Zeroizing::new(m.to_seed("")))
     }
 }
 

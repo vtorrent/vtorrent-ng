@@ -105,7 +105,7 @@ impl std::fmt::Debug for CKeyRecord {
 }
 
 /// A fully extracted and decrypted wallet key, ready for migration.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct ExtractedKey {
     /// The legacy vTorrent address (starts with 'V').
     pub legacy_address: String,
@@ -115,6 +115,28 @@ pub struct ExtractedKey {
     pub compressed: bool,
     /// The source of this key (from `key` record or decrypted `ckey` record).
     pub source: KeySource,
+}
+
+/// Serialize with the WIF redacted unless `VTORRENT_SHOW_WIF` is set.
+///
+/// The human-readable output already hides WIFs behind that env var; without
+/// this the `--json` path would silently dump every decrypted private key to
+/// stdout (and therefore into any log or CI artifact that captures it).
+impl Serialize for ExtractedKey {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let show = std::env::var("VTORRENT_SHOW_WIF").is_ok();
+        let mut s = serializer.serialize_struct("ExtractedKey", 4)?;
+        s.serialize_field("legacy_address", &self.legacy_address)?;
+        if show {
+            s.serialize_field("wif", &self.wif)?;
+        } else {
+            s.serialize_field("wif", "[hidden - set VTORRENT_SHOW_WIF=1 to reveal]")?;
+        }
+        s.serialize_field("compressed", &self.compressed)?;
+        s.serialize_field("source", &self.source)?;
+        s.end()
+    }
 }
 
 impl std::fmt::Debug for ExtractedKey {
@@ -147,4 +169,36 @@ pub struct WalletExtraction {
     pub labels: std::collections::HashMap<String, String>,
     /// Wallet version number.
     pub wallet_version: Option<u32>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_key() -> ExtractedKey {
+        ExtractedKey {
+            legacy_address: "VTestAddress".to_string(),
+            wif: "7SecretWifValue".to_string(),
+            compressed: true,
+            source: KeySource::Unencrypted,
+        }
+    }
+
+    #[test]
+    fn json_redacts_wif_unless_opted_in() {
+        // Single test: the two states share a process-wide env var, so
+        // separate tests would race under the parallel test harness.
+        std::env::remove_var("VTORRENT_SHOW_WIF");
+        let hidden = serde_json::to_string(&sample_key()).unwrap();
+        assert!(
+            !hidden.contains("7SecretWifValue"),
+            "WIF must not appear in JSON output by default: {hidden}"
+        );
+        assert!(hidden.contains("hidden"));
+
+        std::env::set_var("VTORRENT_SHOW_WIF", "1");
+        let shown = serde_json::to_string(&sample_key()).unwrap();
+        std::env::remove_var("VTORRENT_SHOW_WIF");
+        assert!(shown.contains("7SecretWifValue"));
+    }
 }

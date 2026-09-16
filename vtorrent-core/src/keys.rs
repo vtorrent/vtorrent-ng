@@ -25,9 +25,13 @@ impl PrivateKey {
     /// Supports both legacy vTorrent WIF prefix (version byte 198 → starts with '7')
     /// and standard WIF (version byte 128 → starts with '5', 'K', or 'L').
     pub fn from_wif(wif: &str) -> Result<Self> {
-        let decoded = bs58::decode(wif)
-            .into_vec()
-            .map_err(|_| CoreError::InvalidWif(wif.to_string()))?;
+        use zeroize::Zeroizing;
+        // Zeroizing: `decoded` and `payload` contain the raw private scalar.
+        let decoded = Zeroizing::new(
+            bs58::decode(wif)
+                .into_vec()
+                .map_err(|_| CoreError::InvalidWif(wif.to_string()))?,
+        );
 
         if decoded.len() < 33 {
             return Err(CoreError::InvalidWif("Too short".to_string()));
@@ -69,9 +73,9 @@ impl PrivateKey {
             )));
         }
 
-        let mut bytes = [0u8; 32];
+        let mut bytes = Zeroizing::new([0u8; 32]);
         bytes.copy_from_slice(raw);
-        Self::from_bytes(bytes, compressed)
+        Self::from_bytes(*bytes, compressed)
     }
 
     /// Encode the private key to WIF format using the given version byte.

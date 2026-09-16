@@ -111,6 +111,7 @@ pub async fn start_node(
                 .mnemonic()
                 .and_then(|m| vtorrent_wallet::hd::Mnemonic::from_phrase(m).ok())
                 .and_then(|m| m.to_seed().ok())
+                .map(|s| *s)
                 .or_else(|| {
                     let wif = wallet.get_default_wif()?;
                     let mut hasher = Sha512::new();
