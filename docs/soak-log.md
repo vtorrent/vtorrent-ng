@@ -583,3 +583,46 @@ plus the following day, read at `2026-09-15T01:04Z`.
 Soak impact: none — this window is uninterrupted. Earliest seven-day
 sign-off remains no earlier than `2026-09-20T10:12Z`, contingent on
 continuous evidence. Next daily observation entry due 2026-09-15.
+
+## 2026-09-17 — C1 stake-kernel fix deployed (fleet upgrade, window reset)
+
+The C1 consensus fix (`a3dd177`, "normalize stake kernel by total staked
+supply") was deployed to all three nodes. This is a consensus-rule change, so
+the fleet was stopped and recreated together rather than rolled — a mixed
+fleet would fork, because v2 is *easier* than v1 at the current
+`total_staked` (~504 VTR), so a v2 node would produce blocks the v1 nodes
+reject.
+
+**Pre-deployment verification (non-destructive).** The new image was run
+against a copy of node3's live data before any fleet action. It replayed the
+entire chain to height 8010 with the **exact same tip hash** as the running
+old binary (`a5bc409f2deb1ea3eb7543a5be33c42f4ed295b5de896a3d2e773503a06f0b04`)
+and zero errors, confirming replay compatibility.
+
+**Backup.** All three `/data/nodeN` volumes were copied to
+`vtr-preupgrade-backup` before the upgrade (chain.db 51.9/71.0/51.9 MB). The
+pre-upgrade tip was height 8215, hash
+`2ca142ec88361e36b3e07c19825cb29f2453d97b202bf27791af9c40e2c8e57f`, agreed by
+all three nodes.
+
+**Rollout.** `docker compose stop node1 node2 node3` (clean stop, all at the
+same tip), compose image pin `7db5da3` → `eb4dd0c`, then
+`docker compose up -d`. All three replayed to the pre-upgrade tip with zero
+errors. Staking did not auto-resume because the wallet restores locked; the
+documented unlock helper
+(`.ops-backups/node1-image-20260908-nHCswr/wallet-ops.py unlock`) restored
+staking for the same address with the same four UTXOs.
+
+**Result.** All three nodes agree and are producing blocks under the v2 rule
+at **61.0s average over six consecutive intervals** (the 60s target), versus
+~146s under v1. Zero ERROR/panic/reorg lines since the upgrade. Staking
+enabled, 4 eligible UTXOs.
+
+**Soak impact.** The seven-day window is **reset** by this fleet upgrade.
+Earliest sign-off is now no earlier than seven days after the upgrade
+(`2026-09-24`), contingent on uninterrupted evidence. The previous window
+(`2026-09-13T10:12:19Z`) is superseded.
+
+**Rollback.** Requires restoring the `vtr-preupgrade-backup` volumes and
+re-pinning `7db5da3`; the old binary cannot replay a v2-produced chain (v1 is
+harder), so rollback is not possible without the volume restore.
