@@ -8,6 +8,9 @@ All fixes were made on `main`, verified with `cargo test --workspace`
 --all-features` (clean) and `cargo fmt --all -- --check`. No fleet action was
 taken; the soak was not interrupted.
 
+**All critical and high findings are now fixed**, including C1. The remaining
+open items are the lower-priority medium/low findings listed at the end.
+
 ## Fixed
 
 | Finding | Commit | Notes |
@@ -42,46 +45,49 @@ taken; the soak was not interrupted.
 | S13 BTC claim dust | `b5166c7` | Require `target_amount > fee + 546` |
 | L16 foreign-network address accepted | `b5166c7` | `validate_p2pkh` in `address_to_hash160` |
 | S19 Tauri staking false success | `b5166c7` | Propagates send error |
+| **C1 stake-kernel target saturation** | `a3dd177` | v2 rule normalizes by total staked supply; whale capped at its stake share |
+
+## C1 — fixed (`a3dd177`)
+
+`vtorrent-node/src/consensus.rs`. The v1 target `min(value/1000, u32::MAX)`
+saturated for any UTXO worth at least 42,949.67 VTR, letting its owner produce
+every block. Replaced by a proportional rule:
+
+```
+P(hit) = value / total_staked        (per tick)
+kernel_val * total_staked <= value * 2^32   (exact integer form)
+```
+
+Because the per-staker probabilities sum to 1, a staker's block share equals
+its stake share; no stake size reaches probability 1 unless it is the entire
+staked supply.
+
+Supporting changes:
+- `Chain::total_staked` is tracked incrementally, counting only stakeable
+  UTXOs (>= `MIN_STAKE_AMOUNT`, not OP_RETURN) so the unspendable genesis
+  distribution cannot dilute the denominator. The delta is journaled and
+  reversed on both rollback paths.
+- The validator uses the pre-block `total_staked` (the field is only updated
+  after the transaction loop), so producer and validator agree exactly.
+- The producer threads `total_staked` through the staking engine.
+
+**No activation height is required.** v2 is strictly easier than v1 whenever
+`total_staked` is below 42,949.67 VTR, so every historical block on the soak
+chain (`total_staked` ≈ 504 VTR) still validates on replay. A large chain gets
+the proportional guarantee from genesis.
+
+**Upgrade note.** This is a consensus-rule change. It is replay-compatible
+with the current chain, but a fleet running the old binary would diverge once
+`total_staked` exceeds 42,949.67 VTR, so the rollout must be coordinated (all
+nodes upgraded together, or a fresh chain).
+
+Tests added: a 90%-of-stake whale hits ~90% of kernels (not 100%); a sole
+staker still wins every tick; a 1% staker hits ~1%; v2 accepts every v1 hit
+below saturation; zero `total_staked` rejects; `is_stakeable` excludes
+OP_RETURN and dust; `total_staked` is restored across a reorg and tracks
+mint/UTXO changes.
 
 ## Deliberately not fixed
-
-### C1 — stake-kernel target saturates at `u32::MAX`
-
-`vtorrent-node/src/consensus.rs:132-133`. Any UTXO ≥ 42,949.67 VTR passes the
-kernel unconditionally. Independently verified: 72 legacy addresses hold 85.4%
-of the legacy supply and could each mint every block.
-
-**Why it is not fixed here.** The same function runs in the block producer
-(`staking.rs:382`), the validator (`chain_reorg.rs:343`) and the store's
-startup replay (`store.rs:641` → `chain.add_block`), and there is no
-activation-height / fork mechanism in the codebase. Changing the rule is
-therefore a hard fork.
-
-**Why a mechanical fix does not work.** The per-tick probability is
-`P = min(value/1000, 2^W−1) / 2^W`. Widening the integer does not move the
-saturation point unless the target is also scaled by `2^(W−32)`, which puts it
-back at 42,949.67 VTR. Raising the scale constant to avoid saturation within
-`MAX_SUPPLY` (needs `S > 465,661`) drops the current 503 VTR staker from one
-block per ~85 ticks to one per ~39,690 ticks. Capping the target at
-`u32::MAX/2` still lets a whale produce ~1 block/min while leaving the staker
-untouched. The linear model cannot represent stake weights far above the
-minimum without either saturating or starving small stakes.
-
-**Recommended direction.** Normalize by total staked supply
-(`P = value / total_staked` per tick), which yields `P = 1.0` for the current
-sole staker (preserving ~60s blocks) and a proportional share once multiple
-stakers exist. This needs: a tracked `total_staked` on `Chain`, a decision on
-the tick model (per-second retry vs per-slot), a coordinated fleet upgrade
-with a fresh chain (the current soak chain would fail replay under the new
-rule), and a test that a whale cannot exceed its proportional share.
-
-**Impact if left.** No effect on the current fleet: the sole staker holds
-503.9 VTR, far below the 42,949.67 VTR threshold, and the genesis distribution
-outputs are OP_RETURN (unspendable) until claimed. The exposure begins when a
-holder above the threshold claims and stakes. This is a mainnet-launch
-blocker, not a soak blocker.
-
-## Not addressed (lower priority, no fix attempted)
 
 M2 (`getdata` bandwidth accounting), M5 (PEX per-peer quota), M6 (DHT source
 validation — the torrent DHT already validates source and tid), M7 (overlay
