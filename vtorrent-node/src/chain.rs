@@ -153,6 +153,10 @@ pub struct Chain {
     /// Total coin supply on the main chain (satoshis), tracked incrementally
     /// as blocks are applied and rolled back. Bounded by `MAX_SUPPLY`.
     total_supply: u64,
+    /// Sum of stakeable UTXO values (satoshis), tracked incrementally. Used as
+    /// the denominator of the v2 stake-kernel probability so a staker's block
+    /// share equals its stake share.
+    total_staked: u64,
     allow_pow_test_blocks: bool,
     min_stake_age: u64,
     max_stake_age: u64,
@@ -176,6 +180,7 @@ impl Chain {
             parent_map: HashMap::new(),
             block_heights: HashMap::new(),
             total_supply: 0,
+            total_staked: 0,
             allow_pow_test_blocks: cfg!(test),
             min_stake_age: crate::consensus::MIN_STAKE_AGE,
             max_stake_age: crate::consensus::MAX_STAKE_AGE,
@@ -225,6 +230,12 @@ impl Chain {
     /// Get the total coin supply on the main chain (satoshis).
     pub fn total_supply(&self) -> u64 {
         self.total_supply
+    }
+
+    /// Total stakeable UTXO value (satoshis) on the main chain. This is the
+    /// denominator of the v2 stake-kernel probability.
+    pub fn total_staked(&self) -> u64 {
+        self.total_staked
     }
 
     /// Mint coins to an address by appending a coinbase block (regtest only).
@@ -674,7 +685,17 @@ impl Chain {
             let journal = self.apply_block_journaled(&block, height)?;
             if block.header.is_pos() && block.header.utxo_root != journal.utxo_root {
                 crate::chain::chain_reorg::rollback_journal(self, &journal);
+                // `apply_block_journaled` already committed both deltas, so
+                // undo them here too (rollback_journal only restores the UTXO
+                // set and claims).
                 self.total_supply = self.total_supply.saturating_sub(journal.supply_delta);
+                self.total_staked = if journal.staked_delta >= 0 {
+                    self.total_staked
+                        .saturating_sub(journal.staked_delta as u64)
+                } else {
+                    self.total_staked
+                        .saturating_add(journal.staked_delta.unsigned_abs())
+                };
                 return Err(NodeError::InvalidBlock(format!(
                     "UTXO root {} does not match computed post-state root {}",
                     hex::encode(block.header.utxo_root),

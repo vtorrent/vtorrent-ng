@@ -23,7 +23,14 @@ impl Node {
             .as_ref()
             .ok_or_else(|| NodeError::Chain("Staking not enabled".into()))?;
 
-        let (best_height, best_hash, best_timestamp, best_stake_modifier, stake_utxos) = {
+        let (
+            best_height,
+            best_hash,
+            best_timestamp,
+            best_stake_modifier,
+            stake_utxos,
+            total_staked,
+        ) = {
             let chain = self.chain.lock().await;
             let best_height = chain.best_height();
             let best_hash = chain.best_hash().unwrap_or([0u8; 32]);
@@ -37,6 +44,7 @@ impl Node {
                 best_timestamp,
                 best_stake_modifier,
                 utxos,
+                chain.total_staked(),
             )
         };
 
@@ -60,6 +68,7 @@ impl Node {
             best_stake_modifier,
             best_height + 1,
             now,
+            total_staked,
             stake_utxos.iter(),
         ) else {
             tracing::trace!(

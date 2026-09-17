@@ -316,6 +316,14 @@ pub fn stake_kernel_hash(
 }
 
 /// Check whether a UTXO satisfies the stake kernel difficulty.
+///
+/// **v1 rule, test-only.** This mirrors the deprecated saturating target
+/// (`value / 1000`, capped at `u32::MAX`). It is used to construct fixture
+/// proofs and by [`crate::spv_chain::SpvChain::add_pos_header`], which always
+/// fails closed before accepting a header, so it cannot admit a block. The
+/// authoritative rule is `vtorrent_node::consensus::check_stake_kernel_v2`,
+/// which normalizes by total staked supply; SPV cannot evaluate it because it
+/// has no UTXO set.
 pub fn check_stake_kernel(
     stake_modifier: u64,
     value: u64,

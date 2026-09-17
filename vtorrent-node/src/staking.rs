@@ -15,7 +15,7 @@ use crate::{
     },
     chain::Utxo,
     consensus::{
-        check_stake_kernel, compute_pos_reward, compute_stake_modifier, stake_kernel_hash,
+        check_stake_kernel_v2, compute_pos_reward, compute_stake_modifier, stake_kernel_hash,
         MAX_STAKE_AGE, MIN_STAKE_AGE, MIN_STAKE_AMOUNT, REGTEST_FAST_MAX_STAKE_AGE,
         REGTEST_FAST_MIN_STAKE_AGE,
     },
@@ -164,12 +164,14 @@ impl StakingEngine {
     /// Try to build a valid PoS block from available UTXOs.
     ///
     /// Returns `Some(block)` if a valid stake kernel was found, `None` otherwise.
+    #[allow(clippy::too_many_arguments)]
     pub fn build_stake_block(
         &self,
         prev_hash: [u8; 32],
         prev_stake_modifier: u64,
         height: u32,
         timestamp: u32,
+        total_staked: u64,
         utxos: Vec<Utxo>,
         pending_txs: Vec<Transaction>,
     ) -> Option<Block> {
@@ -178,6 +180,7 @@ impl StakingEngine {
             prev_stake_modifier,
             height,
             timestamp,
+            total_staked,
             utxos,
             pending_txs,
         )
@@ -192,17 +195,24 @@ impl StakingEngine {
     /// without a full UTXO set.
     ///
     /// Returns `Some((block, proof))` if a valid stake kernel was found.
+    #[allow(clippy::too_many_arguments)]
     pub fn build_stake_block_with_proof(
         &self,
         prev_hash: [u8; 32],
         prev_stake_modifier: u64,
         height: u32,
         timestamp: u32,
+        total_staked: u64,
         utxos: Vec<Utxo>,
         pending_txs: Vec<Transaction>,
     ) -> Option<(Block, StakeProof)> {
-        let kernel =
-            self.find_stake_kernel(prev_stake_modifier, height, timestamp, utxos.iter())?;
+        let kernel = self.find_stake_kernel(
+            prev_stake_modifier,
+            height,
+            timestamp,
+            total_staked,
+            utxos.iter(),
+        )?;
         let ordered_utxos = utxos
             .into_iter()
             .map(|utxo| ((utxo.txid, utxo.vout), utxo))
@@ -223,6 +233,7 @@ impl StakingEngine {
         prev_stake_modifier: u64,
         height: u32,
         timestamp: u32,
+        total_staked: u64,
         utxos: impl IntoIterator<Item = &'a Utxo>,
     ) -> Option<(Utxo, Transaction)> {
         let staking_script = self.address_to_script(&self.address)?;
@@ -233,8 +244,14 @@ impl StakingEngine {
                 && is_spendable(candidate)
             {
                 any_eligible = true;
-                self.try_stake_kernel(prev_stake_modifier, candidate, timestamp, height)
-                    .map(|coinstake| (candidate.clone(), coinstake))
+                self.try_stake_kernel(
+                    prev_stake_modifier,
+                    candidate,
+                    timestamp,
+                    height,
+                    total_staked,
+                )
+                .map(|coinstake| (candidate.clone(), coinstake))
             } else {
                 None
             }
@@ -376,10 +393,11 @@ impl StakingEngine {
         utxo: &Utxo,
         timestamp: u32,
         height: u32,
+        total_staked: u64,
     ) -> Option<Transaction> {
         // The kernel check is shared with the chain's block validation so a
         // block that passes validation provably met the difficulty requirement.
-        if !check_stake_kernel(stake_modifier, utxo, timestamp) {
+        if !check_stake_kernel_v2(stake_modifier, utxo, timestamp, total_staked) {
             let kernel_hash = stake_kernel_hash(stake_modifier, utxo, timestamp);
             let kv = u32::from_le_bytes([
                 kernel_hash[0],
@@ -388,9 +406,9 @@ impl StakingEngine {
                 kernel_hash[3],
             ]);
             tracing::trace!(
-                "Kernel miss: value={} target={} kernel_val={} modifier={}",
+                "Kernel miss: value={} total_staked={} kernel_val={} modifier={}",
                 utxo.value,
-                (utxo.value / 1000).min(u32::MAX as u64),
+                total_staked,
                 kv,
                 stake_modifier
             );
@@ -695,6 +713,7 @@ mod proof_tests {
                 prev_modifier,
                 101,
                 ts,
+                utxo.value,
                 vec![utxo.clone()],
                 vec![],
             );
@@ -802,6 +821,7 @@ mod proof_tests {
                 prev_modifier,
                 2,
                 ts,
+                chain.total_staked(),
                 utxos.clone(),
                 vec![],
             ) {
@@ -902,6 +922,7 @@ mod conflict_tests {
                 prev_modifier,
                 101,
                 ts,
+                utxo.value,
                 vec![utxo.clone()],
                 vec![conflicting.clone(), unrelated.clone()],
             );
@@ -930,11 +951,19 @@ mod conflict_tests {
         foreign.script_pubkey[3] ^= 1;
         let modifier = 0xdead_beef_u64;
         let timestamp = (1_700_000_000..1_700_100_000)
-            .find(|timestamp| check_stake_kernel(modifier, &foreign, *timestamp))
+            .find(|timestamp| check_stake_kernel_v2(modifier, &foreign, *timestamp, foreign.value))
             .expect("foreign kernel should hit");
 
         assert!(engine
-            .build_stake_block([2u8; 32], modifier, 101, timestamp, vec![foreign], vec![],)
+            .build_stake_block(
+                [2u8; 32],
+                modifier,
+                101,
+                timestamp,
+                foreign.value,
+                vec![foreign],
+                vec![],
+            )
             .is_none());
     }
 }

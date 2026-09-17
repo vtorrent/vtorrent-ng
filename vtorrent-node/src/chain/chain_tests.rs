@@ -268,6 +268,7 @@ fn test_invalid_fork_reorg_restores_original_state() {
     chain.add_block(main).unwrap();
     let original_tip = chain.best_hash().unwrap();
     let original_supply = chain.total_supply();
+    let original_staked = chain.total_staked();
     let original_utxos = chain.utxo_set.clone();
 
     let invalid_spend = Transaction {
@@ -303,6 +304,9 @@ fn test_invalid_fork_reorg_restores_original_state() {
     assert_eq!(chain.best_hash(), Some(original_tip));
     assert_eq!(chain.best_height(), 1);
     assert_eq!(chain.total_supply(), original_supply);
+    // The staked-supply denominator must be restored too: a reorg that left it
+    // drifted would corrupt the v2 kernel probability for every later block.
+    assert_eq!(chain.total_staked(), original_staked);
     assert_eq!(chain.utxo_set, original_utxos);
 }
 
@@ -340,6 +344,41 @@ fn test_mint_to_address() {
     assert_eq!(utxos.len(), 1);
     assert_eq!(utxos[0].value, 100 * crate::consensus::COIN);
     assert_eq!(utxos[0].txid, txid);
+}
+
+#[test]
+fn test_total_staked_tracks_stakeable_utxos() {
+    use secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+    let secp = Secp256k1::new();
+    let mut key_bytes = [0u8; 32];
+    key_bytes[31] = 21;
+    let secret = SecretKey::from_slice(&key_bytes).unwrap();
+    let pubkey = PublicKey::from_secret_key(&secp, &secret);
+    let address = vtorrent_core::address::Address::from_pubkey(&pubkey, true, 70).to_string();
+
+    let mut chain = Chain::new().expect("Chain init failed");
+    // Genesis distribution outputs are OP_RETURN and must not count.
+    assert_eq!(chain.total_staked(), 0);
+
+    chain
+        .mint_to_address(&address, 100 * crate::consensus::COIN)
+        .expect("mint should succeed");
+    assert_eq!(
+        chain.total_staked(),
+        100 * crate::consensus::COIN,
+        "a stakeable P2PKH output must count toward the denominator"
+    );
+
+    // A sub-minimum output must not count.
+    chain
+        .mint_to_address(&address, crate::consensus::MIN_STAKE_AMOUNT - 1)
+        .expect("mint should succeed");
+    assert_eq!(
+        chain.total_staked(),
+        100 * crate::consensus::COIN,
+        "dust below MIN_STAKE_AMOUNT must not dilute the denominator"
+    );
 }
 
 #[test]
@@ -445,6 +484,7 @@ fn test_pos_block_with_signed_coinstake_accepted() {
             prev_stake_modifier,
             2,
             ts,
+            chain.total_staked(),
             utxos.clone(),
             vec![],
         ) {
@@ -518,6 +558,7 @@ fn test_fast_regtest_chain_accepts_fast_stake_age() {
                 prev_modifier,
                 2,
                 timestamp,
+                fast_chain.total_staked(),
                 utxos.clone(),
                 vec![],
             )
@@ -879,6 +920,7 @@ fn test_multi_block_staking() {
                 prev_modifier,
                 expected_height,
                 ts,
+                chain.total_staked(),
                 utxos.clone(),
                 vec![],
             ) {
@@ -968,6 +1010,7 @@ fn test_pos_block_includes_mempool_txs() {
             prev_modifier,
             2,
             ts,
+            chain.total_staked(),
             utxos.clone(),
             vec![dummy_tx.clone()],
         ) {

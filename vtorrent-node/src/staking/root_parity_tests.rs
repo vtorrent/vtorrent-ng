@@ -223,6 +223,7 @@ fn test_producer_root_includes_pending_tx_effects() {
             prev_modifier,
             chain.best_height() + 1,
             ts,
+            chain.total_staked(),
             stake_utxos.clone(),
             vec![transfer.clone(), fresh.clone()],
         ) {
@@ -289,6 +290,7 @@ fn test_producer_root_matches_full_set_without_pending() {
             prev_modifier,
             chain.best_height() + 1,
             ts,
+            chain.total_staked(),
             full_set.clone(),
             vec![],
         ) {
@@ -338,6 +340,7 @@ fn test_borrowed_chain_state_staking_path_matches_journal() {
             prev_modifier,
             chain.best_height() + 1,
             timestamp,
+            chain.total_staked(),
             wallet_utxos.iter(),
         ) else {
             continue;

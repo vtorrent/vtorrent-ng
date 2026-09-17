@@ -557,6 +557,7 @@ async fn test_staking_rewards_shaped_with_pos_blocks() {
                 prev_modifier,
                 height,
                 ts,
+                chain.total_staked(),
                 utxos,
                 vec![],
             ) {

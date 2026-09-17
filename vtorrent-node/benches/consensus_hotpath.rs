@@ -2,7 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use vtorrent_node::block::{Block, BlockHeader, Transaction, TxInput, TxOutput, TxType};
 use vtorrent_node::chain::{Chain, Utxo};
 use vtorrent_node::consensus::{
-    check_stake_kernel, compute_pos_reward, compute_stake_modifier, stake_kernel_hash, COIN,
+    check_stake_kernel_v2, compute_pos_reward, compute_stake_modifier, stake_kernel_hash, COIN,
 };
 use vtorrent_node::staking::StakingEngine;
 
@@ -92,10 +92,11 @@ fn bench_pure_functions(c: &mut Criterion) {
 
     group.bench_function("check_stake_kernel", |b| {
         b.iter(|| {
-            check_stake_kernel(
+            check_stake_kernel_v2(
                 black_box(stake_modifier),
                 black_box(&utxo),
                 black_box(1_700_000_000),
+                black_box(1_000_000 * COIN),
             )
         })
     });
@@ -137,6 +138,7 @@ fn bench_build_stake_block(c: &mut Criterion) {
                             black_box(prev_stake_modifier),
                             black_box(height),
                             black_box(now),
+                            black_box(utxos.iter().map(|u| u.value).sum()),
                             black_box(utxos.clone()),
                             black_box(pending.clone()),
                         )

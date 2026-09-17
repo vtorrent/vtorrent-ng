@@ -1,7 +1,8 @@
 use crate::{
     block::{Block, Transaction},
     consensus::{
-        check_stake_kernel, compute_pos_reward, validate_legacy_claim, MAX_SUPPLY, MIN_STAKE_AMOUNT,
+        check_stake_kernel_v2, compute_pos_reward, validate_legacy_claim, MAX_SUPPLY,
+        MIN_STAKE_AMOUNT,
     },
     error::{NodeError, Result},
     genesis::get_legacy_balance,
@@ -24,6 +25,9 @@ pub(crate) struct BlockJournal {
     pub(crate) changes: Vec<UtxoChange>,
     pub(crate) claimed_addresses: Vec<String>,
     pub(crate) supply_delta: u64,
+    /// Signed change to `Chain::total_staked` (stakeable UTXO value added minus
+    /// removed). Applied on commit and reversed on rollback.
+    pub(crate) staked_delta: i64,
     pub(crate) utxo_root: [u8; 32],
 }
 
@@ -90,6 +94,16 @@ pub(crate) fn rollback_one_block(chain: &mut Chain) -> Result<(Vec<Transaction>,
     }
 
     chain.total_supply = chain.total_supply.saturating_sub(journal.supply_delta);
+    // Reverse the staked-supply delta.
+    chain.total_staked = if journal.staked_delta >= 0 {
+        chain
+            .total_staked
+            .saturating_sub(journal.staked_delta as u64)
+    } else {
+        chain
+            .total_staked
+            .saturating_add(journal.staked_delta.unsigned_abs())
+    };
 
     remove_block_transactions(chain, journal.block_hash);
 
@@ -141,6 +155,7 @@ pub(crate) fn apply_block_journaled(
         changes: Vec::new(),
         claimed_addresses: Vec::new(),
         supply_delta: 0,
+        staked_delta: 0,
         utxo_root: [0u8; 32],
     };
 
@@ -177,6 +192,16 @@ pub(crate) fn apply_block_journaled(
         )));
     }
     chain.total_supply = new_supply;
+    // Apply the staked-supply delta (stakeable value added minus removed).
+    chain.total_staked = if journal.staked_delta >= 0 {
+        chain
+            .total_staked
+            .saturating_add(journal.staked_delta as u64)
+    } else {
+        chain
+            .total_staked
+            .saturating_sub(journal.staked_delta.unsigned_abs())
+    };
 
     let utxo_root = crate::block::compute_utxo_root_ordered(chain.utxo_set.values());
     journal.utxo_root = utxo_root;
@@ -262,6 +287,9 @@ fn apply_transaction_journaled(
                     });
                 }
 
+                if crate::consensus::is_stakeable(&utxo) {
+                    journal.staked_delta -= utxo.value as i64;
+                }
                 journal.changes.push(UtxoChange::Removed { key, utxo });
             } else if !tx.is_legacy_claim() {
                 return Err(NodeError::InvalidTransaction(format!(
@@ -298,17 +326,18 @@ fn apply_transaction_journaled(
 
     for (vout, output) in tx.outputs.iter().enumerate() {
         let key = (txid, vout as u32);
-        chain.utxo_set.insert(
-            key,
-            Utxo {
-                txid,
-                vout: vout as u32,
-                value: output.value,
-                script_pubkey: output.script_pubkey.clone(),
-                height,
-                timestamp,
-            },
-        );
+        let utxo = Utxo {
+            txid,
+            vout: vout as u32,
+            value: output.value,
+            script_pubkey: output.script_pubkey.clone(),
+            height,
+            timestamp,
+        };
+        if crate::consensus::is_stakeable(&utxo) {
+            journal.staked_delta += output.value as i64;
+        }
+        chain.utxo_set.insert(key, utxo);
         journal.changes.push(UtxoChange::Added { key });
     }
 
@@ -340,7 +369,17 @@ fn apply_transaction_journaled(
                 coin_age, chain.min_stake_age, chain.max_stake_age
             )));
         }
-        if !check_stake_kernel(parent_stake_modifier, &staked, timestamp) {
+        // v2 kernel: probability is the staker's share of the total staked
+        // supply as of the pre-block state (`chain.total_staked` is only
+        // updated after this loop, so it still holds the pre-state value).
+        // This caps a whale's block share at its stake share instead of
+        // letting any UTXO >= 42,949.67 VTR win unconditionally.
+        if !check_stake_kernel_v2(
+            parent_stake_modifier,
+            &staked,
+            timestamp,
+            chain.total_staked,
+        ) {
             return Err(NodeError::InvalidTransaction(
                 "Coinstake kernel hash does not meet the stake target".into(),
             ));

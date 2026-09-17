@@ -121,6 +121,12 @@ pub fn stake_kernel_hash(stake_modifier: u64, utxo: &Utxo, timestamp: u32) -> [u
 /// target = min(value / 1000, u32::MAX). This is the same check the staking
 /// engine uses when producing blocks, so a block that passes validation here
 /// provably met the difficulty requirement.
+///
+/// **Deprecated (v1).** This linear target saturates at `u32::MAX` for any
+/// UTXO worth >= 42,949.67 VTR, so such a UTXO passes unconditionally and its
+/// owner can produce every block. Retained only to validate historical blocks
+/// below [`STAKE_KERNEL_V2_HEIGHT`]; new blocks use
+/// [`check_stake_kernel_v2`].
 pub fn check_stake_kernel(stake_modifier: u64, utxo: &Utxo, timestamp: u32) -> bool {
     let kernel_hash = stake_kernel_hash(stake_modifier, utxo, timestamp);
     let kernel_val = u32::from_le_bytes([
@@ -131,6 +137,55 @@ pub fn check_stake_kernel(stake_modifier: u64, utxo: &Utxo, timestamp: u32) -> b
     ]);
     let target = (utxo.value / 1000).min(u32::MAX as u64) as u32;
     kernel_val <= target
+}
+
+/// Whether `utxo` counts toward the staked supply for the v2 kernel rule.
+///
+/// Only spendable outputs at or above the minimum stake amount can ever win a
+/// kernel, so unspendable (OP_RETURN) and dust outputs must not dilute the
+/// denominator.
+pub fn is_stakeable(utxo: &Utxo) -> bool {
+    utxo.value >= MIN_STAKE_AMOUNT
+        && vtorrent_script::classify_script(
+            &vtorrent_script::Script::from_bytes(utxo.script_pubkey.clone()).unwrap_or_default(),
+        ) != vtorrent_script::ScriptType::OpReturn
+}
+
+/// Check whether a UTXO satisfies the v2 stake kernel.
+///
+/// The per-attempt probability is the staker's share of the total staked
+/// supply: `P = value / total_staked`. Because the probabilities of all
+/// stakers sum to 1, exactly one block is expected per tick in aggregate, and
+/// a staker's block share equals its stake share — no stake size can ever
+/// reach probability 1 unless it is the entire staked supply.
+///
+/// Implemented as an exact integer comparison to avoid floating point:
+/// `kernel_val / 2^32 <= value / total_staked`
+/// `<=> kernel_val * total_staked <= value * 2^32`
+///
+/// Replaces the v1 rule, which saturated at `u32::MAX` for any UTXO worth at
+/// least 42,949.67 VTR. No activation height is needed: v2 is *easier* than v1
+/// whenever `total_staked` is below 42,949.67 VTR, so every block on a small
+/// chain (including the soak chain, whose only stakeable coins are the
+/// staker's ~504 VTR) still validates on replay, while a large chain gets the
+/// proportional-share guarantee from genesis.
+pub fn check_stake_kernel_v2(
+    stake_modifier: u64,
+    utxo: &Utxo,
+    timestamp: u32,
+    total_staked: u64,
+) -> bool {
+    if total_staked == 0 {
+        return false;
+    }
+    let kernel_hash = stake_kernel_hash(stake_modifier, utxo, timestamp);
+    let kernel_val = u32::from_le_bytes([
+        kernel_hash[0],
+        kernel_hash[1],
+        kernel_hash[2],
+        kernel_hash[3],
+    ]);
+    (kernel_val as u128) * (total_staked as u128) <= (utxo.value as u128) << 32
 }
 
 /// Validate a block against the consensus rules.
@@ -550,6 +605,100 @@ mod tests {
     use super::*;
     use crate::block::TxOutput;
     use secp256k1::SecretKey;
+
+    fn stake_utxo(value: u64) -> Utxo {
+        Utxo {
+            txid: [3u8; 32],
+            vout: 0,
+            value,
+            script_pubkey: vec![0x76, 0xa9, 0x14, 0x00, 0x88, 0xac],
+            height: 1,
+            timestamp: 1_700_000_000,
+        }
+    }
+
+    /// Count how many of `samples` timestamps satisfy a kernel rule.
+    fn hit_rate(value: u64, total_staked: u64, samples: u32) -> f64 {
+        let utxo = stake_utxo(value);
+        let hits = (0..samples)
+            .filter(|i| check_stake_kernel_v2(0xdead_beef, &utxo, 1_700_000_000 + i, total_staked))
+            .count();
+        hits as f64 / samples as f64
+    }
+
+    #[test]
+    fn test_v2_whale_cannot_exceed_its_stake_share() {
+        // A whale holding 90% of the staked supply must hit ~90% of kernels,
+        // not 100%. Under the v1 rule this UTXO (>= 42,949.67 VTR) would pass
+        // unconditionally.
+        let total = 1_000_000 * COIN;
+        let whale = total * 9 / 10;
+        let rate = hit_rate(whale, total, 20_000);
+        assert!(
+            (rate - 0.90).abs() < 0.03,
+            "whale hit rate {rate:.3} should be ~0.90, not 1.0"
+        );
+        assert!(rate < 0.95, "whale must not dominate: {rate:.3}");
+    }
+
+    #[test]
+    fn test_v2_sole_staker_still_wins_every_tick() {
+        // The only staker owns the whole staked supply, so P = 1 and blocks
+        // keep coming at the tick rate (the soak chain's situation).
+        let total = 500 * COIN;
+        let rate = hit_rate(total, total, 1_000);
+        assert_eq!(rate, 1.0, "sole staker must win every tick");
+    }
+
+    #[test]
+    fn test_v2_small_stake_is_proportional() {
+        // A 1% staker hits ~1% of kernels.
+        let total = 1_000_000 * COIN;
+        let rate = hit_rate(total / 100, total, 100_000);
+        assert!(
+            (rate - 0.01).abs() < 0.005,
+            "1% staker hit rate {rate:.4} should be ~0.01"
+        );
+    }
+
+    #[test]
+    fn test_v2_is_easier_than_v1_below_saturation() {
+        // For total_staked < 42,949.67 VTR the v2 rule is strictly easier, so
+        // every historical v1 block still validates on replay.
+        let total = 500 * COIN;
+        let utxo = stake_utxo(total);
+        for ts in 1_700_000_000..1_700_000_500 {
+            if check_stake_kernel(0xdead_beef, &utxo, ts) {
+                assert!(
+                    check_stake_kernel_v2(0xdead_beef, &utxo, ts, total),
+                    "v2 must accept every v1 hit when total_staked is small"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_v2_zero_total_staked_rejects() {
+        // Defensive: an empty staked supply must not divide by zero or accept.
+        assert!(!check_stake_kernel_v2(
+            0xdead_beef,
+            &stake_utxo(COIN),
+            1_700_000_000,
+            0
+        ));
+    }
+
+    #[test]
+    fn test_is_stakeable_excludes_op_return_and_dust() {
+        // OP_RETURN (genesis distribution) must not dilute the denominator.
+        let mut op_return = stake_utxo(1_000_000 * COIN);
+        op_return.script_pubkey = vec![0x6a, 0x03, b'V', b'T', b'R'];
+        assert!(!is_stakeable(&op_return));
+        // Below the minimum stake amount.
+        assert!(!is_stakeable(&stake_utxo(MIN_STAKE_AMOUNT - 1)));
+        // A normal P2PKH at or above the minimum counts.
+        assert!(is_stakeable(&stake_utxo(MIN_STAKE_AMOUNT)));
+    }
 
     #[test]
     fn test_pos_reward_calculation() {
