@@ -316,6 +316,11 @@ pub async fn restore_with_wif(state: &AppState, wif: &str) -> RpcResult<()> {
                     if current.vtr_refund_replacements.len() < swap.vtr_refund_replacements.len() {
                         current.vtr_refund_replacements = swap.vtr_refund_replacements.clone();
                     }
+                    // Claim replacements are append-only, so keep the longer
+                    // chain (same rule as the VTR refund replacements).
+                    if current.btc_claim_replacements.len() < swap.btc_claim_replacements.len() {
+                        current.btc_claim_replacements = swap.btc_claim_replacements.clone();
+                    }
                     let pending_btc = current.status
                         == vtorrent_node::atomic_swap::SwapStatus::BtcFunding
                         || swap.status == vtorrent_node::atomic_swap::SwapStatus::BtcFunding;
@@ -338,6 +343,7 @@ pub async fn restore_with_wif(state: &AppState, wif: &str) -> RpcResult<()> {
                         btc_refund_txid,
                         btc_refund_raw,
                         btc_funding_raw,
+                        btc_claim_raw,
                         vtr_funding_tx,
                         vtr_claim_tx,
                         vtr_refund_tx,

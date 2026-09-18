@@ -472,7 +472,19 @@ pub fn build_btc_htlc_claim(
     params: BtcClaimParams<'_>,
 ) -> Result<(Vec<u8>, [u8; 32]), String> {
     use vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS;
+    build_btc_htlc_claim_with_fee(btc_wallet, params, BTC_HTLC_FEE_SATOSHIS)
+}
 
+/// Build and sign a BTC HTLC claim with an explicit fee.
+///
+/// Used for RBF fee bumps: the claim is RBF-signalling, so a stalled claim can
+/// be rebuilt at a higher fee and replaced. The caller must ensure the new fee
+/// strictly exceeds the previous one (BIP-125 rule 4).
+pub fn build_btc_htlc_claim_with_fee(
+    btc_wallet: &vtorrent_btc::wallet::BtcWallet,
+    params: BtcClaimParams<'_>,
+    fee: u64,
+) -> Result<(Vec<u8>, [u8; 32]), String> {
     let BtcClaimParams {
         funding_txid,
         preimage,
@@ -503,7 +515,7 @@ pub fn build_btc_htlc_claim(
     };
 
     let unsigned = htlc
-        .build_claim_tx(funding_txid, &preimage, BTC_HTLC_FEE_SATOSHIS)
+        .build_claim_tx(funding_txid, &preimage, fee)
         .map_err(|e| format!("Unable to build BTC claim tx: {}", e))?;
     let maker_wif = zeroize::Zeroizing::new(
         btc_wallet

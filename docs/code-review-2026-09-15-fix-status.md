@@ -6,12 +6,11 @@ Per-finding ledger for the two 2026-09-15 reviews
 All fixes were made on `main`, verified with `cargo test --workspace`
 (47 test binaries, 0 failures), `cargo clippy --workspace --all-targets
 --all-features` (clean) and `cargo fmt --all -- --check`. No fleet action was
-taken; the soak was not interrupted.
+taken for the code fixes; the soak was not interrupted by them.
 
 **All critical findings are fixed**, including C1. Of the high findings, all
-except **S4** and **S5** are fixed; those two are open (see below). The
-remaining open items are the lower-priority medium/low findings listed at the
-end.
+except **S5** are fixed; S5 is open (see below). The remaining open items are
+the lower-priority medium/low findings listed at the end.
 
 ## Fixed
 
@@ -48,6 +47,7 @@ end.
 | L16 foreign-network address accepted | `b5166c7` | `validate_p2pkh` in `address_to_hash160` |
 | S19 Tauri staking false success | `b5166c7` | Propagates send error |
 | **C1 stake-kernel target saturation** | `a3dd177` | v2 rule normalizes by total staked supply; whale capped at its stake share |
+| **S4 BTC claim not fee-bumpable** | `TBD` | Claim signals RBF; `btc-claim-bump` RPC + persisted raw claim |
 
 ## C1 — fixed (`a3dd177`)
 
@@ -81,7 +81,8 @@ the proportional guarantee from genesis.
 **Upgrade note.** This is a consensus-rule change. It is replay-compatible
 with the current chain, but a fleet running the old binary would diverge once
 `total_staked` exceeds 42,949.67 VTR, so the rollout must be coordinated (all
-nodes upgraded together, or a fresh chain).
+nodes upgraded together, or a fresh chain). Deployed to the testnet fleet on
+2026-09-17 (`9affdf6`); see `docs/soak-log.md`.
 
 Tests added: a 90%-of-stake whale hits ~90% of kernels (not 100%); a sole
 staker still wins every tick; a 1% staker hits ~1%; v2 accepts every v1 hit
@@ -89,18 +90,34 @@ below saturation; zero `total_staked` rejects; `is_stakeable` excludes
 OP_RETURN and dust; `total_staked` is restored across a reorg and tracks
 mint/UTXO changes.
 
+## S4 — fixed
+
+`vtorrent-btc/src/htlc.rs`. The claim was built with `Sequence::MAX`, so it
+did not signal RBF and a stalled claim could not be replaced. Because the
+claim reveals the preimage, a taker's higher-fee refund could then win the
+race at expiry, costing the maker both legs (reveal-then-lose).
+
+Changes:
+- The claim input now uses `Sequence::ENABLE_RBF_NO_LOCKTIME` (BIP-125). The
+  claim branch has no CLTV, so locktime stays disabled.
+- The refund keeps `ENABLE_LOCKTIME_NO_RBF` (it needs CLTV). This asymmetry is
+  what prevents a refund from replacing a claim: BIP-125 requires the
+  *replacement* to signal RBF, and the refund does not.
+- The signed claim is persisted (`SwapState::btc_claim_raw`) so it can be
+  rebuilt after a restart, and fee-approved replacements are recorded
+  (`btc_claim_replacements`, append-only, capped at 8).
+- New `POST /api/v1/swap/btc-claim-bump` (`vtorrent-rpc/src/btc_claim_bump.rs`)
+  rebuilds the claim at a higher fee. It requires explicit fee approval and
+  durable recovery, enforces BIP-125 rule 4 (strictly higher absolute fee),
+  rejects stale parents and superseded retries, and refuses once the claim
+  window is too close to refund eligibility.
+
+Tests: the claim signals RBF and the refund does not; the bump requires
+approval and durable recovery; a non-increasing fee is rejected; a valid bump
+produces an RBF-signalling replacement paying the higher fee; a stale parent
+is rejected.
+
 ## Deliberately not fixed
-
-### S4 (high) — maker's BTC claim cannot be fee-bumped
-
-`vtorrent-btc/src/htlc.rs:228-235` still builds the claim with
-`Sequence::MAX` and `lock_time: LockTime::ZERO`, so it does not signal RBF,
-and there is no CPFP path or persisted raw claim. A claim broadcast at a low
-feerate near expiry can be outbid by the taker's higher-fee refund after the
-preimage is public (reveal-then-lose). **Not fixed**: making the claim
-RBF-signalling and adding replacement/CPFP changes the cross-chain HTLC
-timing and fee model, which needs a design pass and end-to-end swap tests
-rather than a mechanical edit. This is a mainnet-launch blocker for the DEX.
 
 ### S5 (high) — cross-node taker flow is non-functional
 

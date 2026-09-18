@@ -561,6 +561,24 @@ pub struct VtrRefundBumpRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct BtcClaimBumpRequest {
+    pub order_id: String,
+    pub replaces_txid: String,
+    pub total_fee_satoshis: u64,
+    #[serde(default)]
+    pub approve: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BtcClaimBumpResponse {
+    pub order_id: String,
+    pub txid: String,
+    pub replaces_txid: String,
+    pub total_fee_satoshis: u64,
+    pub status: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct VtrRefundBumpResponse {
     pub order_id: String,
     pub txid: String,

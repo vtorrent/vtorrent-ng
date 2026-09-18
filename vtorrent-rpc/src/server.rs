@@ -122,6 +122,10 @@ pub fn build_router(state: AppState) -> Router {
             post(crate::refund_bump::bump_vtr_refund),
         )
         .route(
+            "/api/v1/swap/btc-claim-bump",
+            post(crate::btc_claim_bump::bump_btc_claim),
+        )
+        .route(
             "/api/v1/swap/btc-reconcile",
             post(crate::btc_reconciliation::reconcile_btc_swap),
         )

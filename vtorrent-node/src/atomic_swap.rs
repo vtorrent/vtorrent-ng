@@ -557,6 +557,13 @@ pub struct SwapState {
     pub btc_refund_txid: Option<[u8; 32]>,
     pub btc_refund_raw: Option<Vec<u8>>,
     pub btc_funding_raw: Option<Vec<u8>>,
+    /// The signed BTC claim transaction, persisted so a stalled claim can be
+    /// rebuilt with a higher fee and replaced (the claim is RBF-signalling).
+    #[serde(default)]
+    pub btc_claim_raw: Option<Vec<u8>>,
+    /// Fee-approved BTC claim replacements, oldest first.
+    #[serde(default)]
+    pub btc_claim_replacements: Vec<BtcClaimReplacement>,
     #[serde(default)]
     pub vtr_funding_tx: Option<Transaction>,
     #[serde(default)]
@@ -591,6 +598,8 @@ impl SwapState {
             btc_refund_txid: None,
             btc_refund_raw: None,
             btc_funding_raw: None,
+            btc_claim_raw: None,
+            btc_claim_replacements: Vec::new(),
             vtr_funding_tx: None,
             vtr_claim_tx: None,
             vtr_refund_tx: None,
@@ -647,6 +656,30 @@ pub struct VtrRefundReplacement {
     pub total_fee_satoshis: u64,
     pub approved_at: u64,
     pub transaction: Transaction,
+}
+
+/// A fee-approved BTC claim replacement.
+///
+/// The claim is RBF-signalling, so a stalled claim can be rebuilt with a
+/// higher fee. The raw transaction is stored (not just the txid) so it can be
+/// re-broadcast after a restart.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BtcClaimReplacement {
+    /// The claim transaction this replacement supersedes.
+    pub replaces_txid: [u8; 32],
+    /// Total fee paid by the replacement (satoshis).
+    pub total_fee_satoshis: u64,
+    /// When the operator approved this fee.
+    pub approved_at: u64,
+    /// Serialized signed replacement transaction.
+    pub raw: Vec<u8>,
+}
+
+impl SwapState {
+    /// The most recent BTC claim transaction, replacement or original.
+    pub fn latest_btc_claim(&self) -> Option<&BtcClaimReplacement> {
+        self.btc_claim_replacements.last()
+    }
 }
 
 /// A main-chain confirmation anchor, rechecked before reporting settlement.

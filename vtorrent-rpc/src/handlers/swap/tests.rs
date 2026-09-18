@@ -1368,3 +1368,123 @@ async fn persistence_failure_never_broadcasts_or_consumes_input() {
         .is_empty());
     assert_eq!(state.swaps.read().await[&id].status, SwapStatus::VtrFunded);
 }
+
+// ─── BTC claim RBF bump ─────────────────────────────────────────────────────
+
+/// Build a swap whose BTC claim has been submitted, ready to be bumped.
+async fn claim_bump_fixture() -> (AppState, String, [u8; 32]) {
+    let (state, id) = claim_fixture().await;
+    // The recovery journal requires an unlocked wallet to persist.
+    *state.wallet_wif.write().await = Some(vtr_identity(1).0);
+    *state.wallet_unlock_expiry.write().await = Some(0);
+    let funding = state.swaps.read().await[&id].btc_funding_txid.unwrap();
+    claim_btc_with_verification(
+        &state,
+        BtcClaimRequest {
+            order_id: id.clone(),
+        },
+        async |_: &vtorrent_btc::htlc::BtcHtlc, _| Ok(()),
+        async |raw: &[u8]| Ok(txid(raw)),
+    )
+    .await
+    .unwrap();
+    let claim = state.swaps.read().await[&id].btc_claim_txid.unwrap();
+    assert_ne!(claim, funding);
+    (state, id, claim)
+}
+
+fn bump_request(id: &str, parent: [u8; 32], fee: u64) -> crate::models::BtcClaimBumpRequest {
+    crate::models::BtcClaimBumpRequest {
+        order_id: id.into(),
+        replaces_txid: hex::encode(parent),
+        total_fee_satoshis: fee,
+        approve: true,
+    }
+}
+
+#[tokio::test]
+async fn btc_claim_bump_requires_explicit_approval() {
+    let (state, id, claim) = claim_bump_fixture().await;
+    let mut req = bump_request(&id, claim, 2_000);
+    req.approve = false;
+    assert!(crate::btc_claim_bump::bump(&state, req).await.is_err());
+    // State must be untouched.
+    assert_eq!(state.swaps.read().await[&id].btc_claim_txid, Some(claim));
+}
+
+#[tokio::test]
+async fn btc_claim_bump_requires_durable_recovery() {
+    let (state, id, claim) = claim_bump_fixture().await;
+    // claim_fixture does not set swap_recovery_dir.
+    assert!(state.swap_recovery_dir.is_none());
+    let err = crate::btc_claim_bump::bump(&state, bump_request(&id, claim, 2_000))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("recovery"));
+}
+
+#[tokio::test]
+async fn btc_claim_bump_rejects_non_increasing_fee() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut state, id, claim) = claim_bump_fixture().await;
+    state.swap_recovery_dir = Some(directory.path().to_path_buf());
+    // The original claim paid BTC_HTLC_FEE_SATOSHIS; an equal fee must fail
+    // BIP-125 rule 4.
+    let err = crate::btc_claim_bump::bump(
+        &state,
+        bump_request(
+            &id,
+            claim,
+            vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS,
+        ),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("strictly increase"));
+}
+
+#[tokio::test]
+async fn btc_claim_bump_replaces_with_higher_fee_and_signals_rbf() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut state, id, claim) = claim_bump_fixture().await;
+    state.swap_recovery_dir = Some(directory.path().to_path_buf());
+    let response = crate::btc_claim_bump::bump_with_broadcast(
+        &state,
+        bump_request(&id, claim, 3_000),
+        async |raw: &[u8]| Ok(txid(raw)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.status, "BtcClaimReplaced");
+    assert_eq!(response.replaces_txid, hex::encode(claim));
+
+    let swaps = state.swaps.read().await;
+    let swap = &swaps[&id];
+    let replacement = swap.latest_btc_claim().unwrap();
+    assert_eq!(replacement.total_fee_satoshis, 3_000);
+    let tx: bitcoin::Transaction = bitcoin::consensus::deserialize(&replacement.raw).unwrap();
+    assert!(tx.input[0].sequence.is_rbf(), "replacement must signal RBF");
+    // The replacement pays the higher fee, so its output is smaller.
+    assert_eq!(tx.output[0].value.to_sat(), swap.btc_amount - 3_000);
+    assert_eq!(swap.btc_claim_txid, Some(replacement.replaces_txid));
+}
+
+#[tokio::test]
+async fn btc_claim_bump_rejects_stale_parent() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut state, id, claim) = claim_bump_fixture().await;
+    state.swap_recovery_dir = Some(directory.path().to_path_buf());
+    // First bump succeeds.
+    crate::btc_claim_bump::bump_with_broadcast(
+        &state,
+        bump_request(&id, claim, 3_000),
+        async |raw: &[u8]| Ok(txid(raw)),
+    )
+    .await
+    .unwrap();
+    // A second bump naming the original (now superseded) parent must fail.
+    let err = crate::btc_claim_bump::bump(&state, bump_request(&id, claim, 4_000))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("Stale"));
+}

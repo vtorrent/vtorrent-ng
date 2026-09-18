@@ -232,7 +232,12 @@ impl BtcHtlc {
                     vout: 0,
                 },
                 script_sig: ScriptBuf::new(),
-                sequence: Sequence::MAX,
+                // RBF-signalling (BIP-125): the claim reveals the preimage, so
+                // if it stalls the maker must be able to replace it with a
+                // higher fee. Without this the taker's refund can win the race
+                // after the preimage is public, costing the maker both legs.
+                // The claim branch has no CLTV, so locktime stays disabled.
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
                 witness: Witness::new(),
             }],
             output: vec![TxOut {
@@ -512,5 +517,41 @@ mod tests {
         assert!(unsigned.input[0].witness.is_empty());
         let signed = htlc.sign_claim_tx(unsigned, &preimage, &wif).unwrap();
         assert!(!signed.input[0].witness.is_empty());
+    }
+
+    #[test]
+    fn test_claim_tx_signals_rbf() {
+        // The claim reveals the preimage, so it must be replaceable: if it
+        // stalls, the maker has to be able to bump the fee before the taker's
+        // refund becomes eligible.
+        let htlc = make_htlc();
+        let preimage = [42u8; 32];
+        let claim = htlc.build_claim_tx([1u8; 32], &preimage, 1000).unwrap();
+        assert!(
+            claim.input[0].sequence.is_rbf(),
+            "claim must signal RBF (BIP-125)"
+        );
+        assert_eq!(claim.lock_time, LockTime::ZERO, "claim needs no locktime");
+    }
+
+    #[test]
+    fn test_refund_tx_does_not_signal_rbf() {
+        // The refund needs CLTV, so it uses ENABLE_LOCKTIME_NO_RBF. It must
+        // NOT be replaceable: otherwise the taker could be griefed, and more
+        // importantly the asymmetry is what stops a refund from replacing a
+        // claim.
+        let htlc = make_htlc();
+        let refund = htlc
+            .build_refund_tx_at([1u8; 32], 1000, htlc.expiry)
+            .unwrap();
+        assert!(
+            !refund.input[0].sequence.is_rbf(),
+            "refund must not signal RBF"
+        );
+        assert_ne!(
+            refund.input[0].sequence,
+            Sequence::MAX,
+            "refund needs a non-final sequence for OP_CLTV (BIP-65 rule 4)"
+        );
     }
 }

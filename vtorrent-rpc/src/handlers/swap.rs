@@ -640,6 +640,9 @@ async fn claim_btc_with_verification(
         .get_mut(&req.order_id)
         .ok_or_else(|| RpcError::Internal("Swap state disappeared".into()))?;
     swap.btc_claim_txid = Some(txid);
+    // Persist the signed claim so a stalled broadcast can be rebuilt at a
+    // higher fee and replaced (the claim is RBF-signalling).
+    swap.btc_claim_raw = Some(raw.clone());
     swap.refresh_status();
     crate::swap_recovery::persist(state, &order, Some(swap)).await?;
     broadcast(&raw).await?;

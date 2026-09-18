@@ -23,6 +23,7 @@
 //! - POST /api/v1/dex/order         — Place a DEX order
 //! - DELETE /api/v1/dex/order/:id   — Cancel a DEX order
 
+pub mod btc_claim_bump;
 pub mod btc_reconciliation;
 pub mod error;
 pub mod handlers;
