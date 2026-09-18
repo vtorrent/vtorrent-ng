@@ -48,7 +48,7 @@ medium/low findings listed at the end.
 | S19 Tauri staking false success | `b5166c7` | Propagates send error |
 | **C1 stake-kernel target saturation** | `a3dd177` | v2 rule normalizes by total staked supply; whale capped at its stake share |
 | **S4 BTC claim not fee-bumpable** | `6edc2e3` | Claim signals RBF; `btc-claim-bump` RPC + persisted raw claim |
-| **S5 preimage handoff missing** | `TBD` | Scan extracts the claim preimage; `vtr-claim` accepts an observed preimage |
+| **S5 preimage handoff missing** | `c37121f` | Scan extracts the claim preimage; `vtr-claim` accepts an observed preimage |
 
 ## C1 — fixed (`a3dd177`)
 
