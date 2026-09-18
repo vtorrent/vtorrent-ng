@@ -47,7 +47,7 @@ the lower-priority medium/low findings listed at the end.
 | L16 foreign-network address accepted | `b5166c7` | `validate_p2pkh` in `address_to_hash160` |
 | S19 Tauri staking false success | `b5166c7` | Propagates send error |
 | **C1 stake-kernel target saturation** | `a3dd177` | v2 rule normalizes by total staked supply; whale capped at its stake share |
-| **S4 BTC claim not fee-bumpable** | `TBD` | Claim signals RBF; `btc-claim-bump` RPC + persisted raw claim |
+| **S4 BTC claim not fee-bumpable** | `6edc2e3` | Claim signals RBF; `btc-claim-bump` RPC + persisted raw claim |
 
 ## C1 — fixed (`a3dd177`)
 
