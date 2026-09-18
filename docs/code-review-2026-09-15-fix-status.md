@@ -8,8 +8,10 @@ All fixes were made on `main`, verified with `cargo test --workspace`
 --all-features` (clean) and `cargo fmt --all -- --check`. No fleet action was
 taken; the soak was not interrupted.
 
-**All critical and high findings are now fixed**, including C1. The remaining
-open items are the lower-priority medium/low findings listed at the end.
+**All critical findings are fixed**, including C1. Of the high findings, all
+except **S4** and **S5** are fixed; those two are open (see below). The
+remaining open items are the lower-priority medium/low findings listed at the
+end.
 
 ## Fixed
 
@@ -88,6 +90,28 @@ OP_RETURN and dust; `total_staked` is restored across a reorg and tracks
 mint/UTXO changes.
 
 ## Deliberately not fixed
+
+### S4 (high) — maker's BTC claim cannot be fee-bumped
+
+`vtorrent-btc/src/htlc.rs:228-235` still builds the claim with
+`Sequence::MAX` and `lock_time: LockTime::ZERO`, so it does not signal RBF,
+and there is no CPFP path or persisted raw claim. A claim broadcast at a low
+feerate near expiry can be outbid by the taker's higher-fee refund after the
+preimage is public (reveal-then-lose). **Not fixed**: making the claim
+RBF-signalling and adding replacement/CPFP changes the cross-chain HTLC
+timing and fee model, which needs a design pass and end-to-end swap tests
+rather than a mechanical edit. This is a mainnet-launch blocker for the DEX.
+
+### S5 (high) — cross-node taker flow is non-functional
+
+`OrderAnnouncement` (`vtorrent-node/src/atomic_swap.rs:448-457`) still omits
+`funding_txid`/`taker_address`, and no code extracts the preimage from the
+maker's observed BTC claim, so the two-party flow only works when both roles
+share one wallet/node. **Not fixed**: this is a feature gap (gossip the
+funding txid and taker address post-match, plus preimage extraction from the
+SPV-observed claim), not a bug fix, and needs its own design and tests.
+
+### Lower-priority medium/low
 
 M2 (`getdata` bandwidth accounting), M5 (PEX per-peer quota), M6 (DHT source
 validation — the torrent DHT already validates source and tid), M7 (overlay
