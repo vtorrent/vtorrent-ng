@@ -626,3 +626,33 @@ Earliest sign-off is now no earlier than seven days after the upgrade
 **Rollback.** Requires restoring the `vtr-preupgrade-backup` volumes and
 re-pinning `7db5da3`; the old binary cannot replay a v2-produced chain (v1 is
 harder), so rollback is not possible without the volume restore.
+
+## 2026-09-18 — host restart stalls staking; recovered
+
+All containers (nodes, Prometheus, Grafana, BTC regtest) restarted together at
+`2026-09-18T13:46:03Z` and came back at `13:46:07Z`. The cause was external to
+the daemon — every container on the host restarted in the same second, the
+Docker daemon itself did not restart, and there is no cron/watchtower job that
+would do this. The restart was graceful: all three nodes exited 0 and no
+daemon error preceded it. Cause not definitively identified; treat as an
+unexplained host-level event.
+
+**Impact.** The chain was intact — all three nodes replayed to height 9191
+(`9c5a22d443e4a302`) with zero ERROR/panic/reorg lines. But staking did **not**
+resume: the wallet restores locked, so the chain stalled at 9191 for ~46
+minutes (last block `13:45:10Z`, staking restored ~`14:33Z`).
+
+**Recovery.** The documented unlock helper
+(`.ops-backups/node1-image-20260908-nHCswr/wallet-ops.py unlock`) restored
+staking for the same address and four UTXOs. Blocks resumed immediately
+(9191 → 9194 within two minutes, three stakes).
+
+**Soak impact.** This is a staking interruption, so the seven-day window is
+reset again. Earliest sign-off is now no earlier than seven days after
+staking resumed (`2026-09-25`), contingent on uninterrupted evidence. The
+previous window (`2026-09-17T21:09Z`) is superseded.
+
+**Follow-up.** The wallet-restores-locked behaviour means any host restart
+stalls the chain until an operator unlocks. Consider persisting the staking
+intent so it can auto-resume without the passphrase, or documenting the
+unlock step in the on-call runbook as a mandatory post-restart action.
