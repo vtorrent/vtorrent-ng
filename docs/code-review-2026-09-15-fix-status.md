@@ -8,9 +8,9 @@ All fixes were made on `main`, verified with `cargo test --workspace`
 --all-features` (clean) and `cargo fmt --all -- --check`. No fleet action was
 taken for the code fixes; the soak was not interrupted by them.
 
-**All critical findings are fixed**, including C1. Of the high findings, all
-except **S5** are fixed; S5 is open (see below). The remaining open items are
-the lower-priority medium/low findings listed at the end.
+**All critical findings are fixed**, including C1. **All high findings are now
+fixed**, including S4 and S5. The remaining open items are the lower-priority
+medium/low findings listed at the end.
 
 ## Fixed
 
@@ -48,6 +48,7 @@ the lower-priority medium/low findings listed at the end.
 | S19 Tauri staking false success | `b5166c7` | Propagates send error |
 | **C1 stake-kernel target saturation** | `a3dd177` | v2 rule normalizes by total staked supply; whale capped at its stake share |
 | **S4 BTC claim not fee-bumpable** | `6edc2e3` | Claim signals RBF; `btc-claim-bump` RPC + persisted raw claim |
+| **S5 preimage handoff missing** | `TBD` | Scan extracts the claim preimage; `vtr-claim` accepts an observed preimage |
 
 ## C1 — fixed (`a3dd177`)
 
@@ -117,16 +118,37 @@ approval and durable recovery; a non-increasing fee is rejected; a valid bump
 produces an RBF-signalling replacement paying the higher fee; a stale parent
 is rejected.
 
-## Deliberately not fixed
+## S5 — fixed
 
-### S5 (high) — cross-node taker flow is non-functional
+The review's core claim was correct: no code extracted the preimage from the
+maker's observed BTC claim, so a taker on a different node could not complete
+the swap.
 
-`OrderAnnouncement` (`vtorrent-node/src/atomic_swap.rs:448-457`) still omits
-`funding_txid`/`taker_address`, and no code extracts the preimage from the
-maker's observed BTC claim, so the two-party flow only works when both roles
-share one wallet/node. **Not fixed**: this is a feature gap (gossip the
-funding txid and taker address post-match, plus preimage extraction from the
-SPV-observed claim), not a bug fix, and needs its own design and tests.
+Investigation corrected the review on one point: `OrderAnnouncement`
+deliberately omits `funding_txid`/`taker_address` (its doc comment says they
+"must never leave the maker's node"), and `broadcast_order` has no production
+caller. That is a *separate, larger* feature — gossiping matched-order terms —
+which is not required for the preimage handoff and is left as follow-up.
+
+The preimage handoff itself is implemented:
+- `SwapScanTracker::record` inspects the witness of the transaction spending
+  the BTC HTLC funding output and extracts any 32-byte element whose SHA-256
+  equals the hash lock. A refund witness has no such element, so it yields
+  nothing.
+- `SwapScan` carries the extracted `preimage`; `btc_reconciliation` stores it
+  in `SwapState::preimage` **only once the claim is confirmed** (an
+  unconfirmed spend could be replaced). It is deliberately *not* placed in
+  `BtcSwapObservation`, which is asserted to stay secret-free.
+- `VtrClaimRequest::preimage` is now optional. When empty, `vtr-claim` uses
+  the preimage recovered from the taker's own observation, so the taker does
+  not need it out of band.
+
+Tests: a valid claim witness yields the preimage; a mismatching 32-byte
+element is ignored; a refund witness yields nothing; `vtr-claim` succeeds with
+an empty `preimage` once the observation recorded it; and it is rejected when
+neither is available.
+
+## Not fixed
 
 ### Lower-priority medium/low
 

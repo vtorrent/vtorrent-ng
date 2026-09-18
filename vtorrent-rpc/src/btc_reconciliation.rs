@@ -178,6 +178,15 @@ pub(crate) async fn reconcile_with_scan(
     );
     let mut updated = current.clone();
     updated.btc_observation = Some(observation.clone());
+    // Record the preimage revealed by a confirmed maker claim in the swap
+    // state (never in the observation, which must stay secret-free). This is
+    // how a taker on a different node learns the secret and can then call
+    // `vtr-claim` without supplying it out of band.
+    if observation.state == vtorrent_node::atomic_swap::BtcSettlementState::Claimed {
+        if let Some(preimage) = evidence.preimage {
+            updated.preimage = Some(preimage);
+        }
+    }
     crate::swap_recovery::persist_for_wallet(
         state,
         &order,
@@ -186,6 +195,7 @@ pub(crate) async fn reconcile_with_scan(
     )
     .await?;
     current.btc_observation = Some(observation.clone());
+    current.preimage = updated.preimage;
     Ok(observation)
 }
 
@@ -272,6 +282,7 @@ mod tests {
             invalid_funding: false,
             coinbase: false,
             invalidated_anchor: false,
+            preimage: None,
         };
         let observe =
             |scan: &SwapScan| super::observe(scan, &swap, bitcoin::Network::Regtest, 1_800_000_000);

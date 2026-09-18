@@ -530,6 +530,11 @@ pub struct VtrClaimRequest {
     /// Hex-encoded order ID.
     pub order_id: String,
     /// The secret preimage (revealed by the taker).
+    ///
+    /// Optional when the taker's own BTC scan has already observed the maker's
+    /// claim: the preimage is then taken from the recorded observation, so a
+    /// taker on a different node does not need it out of band.
+    #[serde(default)]
     pub preimage: String,
     /// The taker's WIF private key, used to sign the claim transaction.
     pub taker_wif: zeroize::Zeroizing<String>,

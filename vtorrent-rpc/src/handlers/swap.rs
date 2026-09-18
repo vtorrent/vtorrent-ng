@@ -373,7 +373,6 @@ pub async fn vtr_claim_with_state(
     state: &AppState,
     req: VtrClaimRequest,
 ) -> RpcResult<SwapActionResponse> {
-    let preimage = parse_hash32(&req.preimage, "preimage")?;
     if req.taker_wif.is_empty() {
         return Err(RpcError::BadRequest("Taker WIF is required".into()));
     }
@@ -395,6 +394,25 @@ pub async fn vtr_claim_with_state(
         .taker_address
         .clone()
         .ok_or_else(|| RpcError::BadRequest("Order has no taker address".into()))?;
+
+    // The preimage may be supplied directly, or recovered from the taker's own
+    // BTC settlement observation of the maker's claim. The latter is what lets
+    // a taker on a different node complete the swap: the maker reveals the
+    // secret on-chain, the taker's scan records it, and it is stored in the
+    // swap state (never in the observation, which stays secret-free).
+    let preimage = if req.preimage.trim().is_empty() {
+        let swaps = state.swaps.read().await;
+        swaps
+            .get(&req.order_id)
+            .and_then(|swap| swap.preimage)
+            .ok_or_else(|| {
+                RpcError::BadRequest(
+                    "Preimage not supplied and no confirmed BTC claim has been observed yet".into(),
+                )
+            })?
+    } else {
+        parse_hash32(&req.preimage, "preimage")?
+    };
 
     let mut swaps = state.swaps.write().await;
     let swap = swaps

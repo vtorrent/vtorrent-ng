@@ -816,6 +816,7 @@ async fn btc_reconciliation_fixture() -> (AppState, String, vtorrent_btc::sync::
         invalid_funding: false,
         coinbase: false,
         invalidated_anchor: false,
+        preimage: None,
     };
     (state, id, scan)
 }
@@ -1487,4 +1488,81 @@ async fn btc_claim_bump_rejects_stale_parent() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("Stale"));
+}
+
+// ─── Cross-node preimage handoff (S5) ───────────────────────────────────────
+
+/// A funded swap whose taker is `vtr_identity(2)`, so its WIF signs the claim.
+async fn cross_node_fixture(path: &std::path::Path) -> (AppState, String, [u8; 32]) {
+    let (state, id, taker) = recovery_fixture(path).await;
+    let wall_now = vtorrent_core::time::now_secs();
+    let mut order = state
+        .order_book
+        .read()
+        .await
+        .get_order(&id)
+        .unwrap()
+        .clone();
+    order.expiry = wall_now as u32 + 48 * 3600;
+    *state.mock_time.write().await = Some(u64::from(order.expiry) - 48 * 3600);
+    state.order_book.write().await.replace_order(order);
+    match_recovery(&state, &id, &taker).await.unwrap();
+    let funding = state.swaps.read().await[&id]
+        .vtr_funding_tx
+        .clone()
+        .unwrap();
+    mine_recovery_transaction(&state, funding, wall_now as u32).await;
+    *state.mock_time.write().await = Some(wall_now);
+    let preimage = state
+        .order_book
+        .read()
+        .await
+        .get_order(&id)
+        .unwrap()
+        .preimage
+        .unwrap();
+    (state, id, preimage)
+}
+
+#[tokio::test]
+async fn vtr_claim_uses_preimage_recovered_from_the_observed_btc_claim() {
+    // A taker on a different node does not hold the preimage. Once the maker's
+    // BTC claim is confirmed and the taker's own scan has recorded it, the
+    // claim must succeed with an empty `preimage` field.
+    let directory = tempfile::tempdir().unwrap();
+    let (state, id, preimage) = cross_node_fixture(directory.path()).await;
+    // Simulate the reconciliation scan having recorded the revealed preimage.
+    state.swaps.write().await.get_mut(&id).unwrap().preimage = Some(preimage);
+
+    let result = vtr_claim_with_state(
+        &state,
+        VtrClaimRequest {
+            order_id: id.clone(),
+            preimage: String::new(),
+            taker_wif: vtr_identity(2).0,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.status, "VtrClaimSubmitted");
+    assert!(state.swaps.read().await[&id].vtr_claim_txid.is_some());
+}
+
+#[tokio::test]
+async fn vtr_claim_without_preimage_or_observation_is_rejected() {
+    let directory = tempfile::tempdir().unwrap();
+    let (state, id, _preimage) = cross_node_fixture(directory.path()).await;
+    // Clear any recorded preimage and supply none.
+    state.swaps.write().await.get_mut(&id).unwrap().preimage = None;
+    let err = vtr_claim_with_state(
+        &state,
+        VtrClaimRequest {
+            order_id: id.clone(),
+            preimage: String::new(),
+            taker_wif: vtr_identity(2).0,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("no confirmed BTC claim"));
 }
