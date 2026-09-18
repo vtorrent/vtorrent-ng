@@ -49,9 +49,9 @@ medium/low findings listed at the end.
 | **C1 stake-kernel target saturation** | `a3dd177` | v2 rule normalizes by total staked supply; whale capped at its stake share |
 | **S4 BTC claim not fee-bumpable** | `6edc2e3` | Claim signals RBF; `btc-claim-bump` RPC + persisted raw claim |
 | **S5 preimage handoff missing** | `c37121f` | Scan extracts the claim preimage; `vtr-claim` accepts an observed preimage |
-| **M8 tracker SSRF** | `TBD` | Scheme allow-list + non-public address rejection (HTTP and UDP) |
-| **M10 wallet import overwrite** | `TBD` | Requires explicit `overwrite: true` |
-| **M15 TOTP replay** | `TBD` | Matched time-step tracked; a used step is rejected |
+| **M8 tracker SSRF** | `e62415e` | Scheme allow-list + non-public address rejection (HTTP and UDP) |
+| **M10 wallet import overwrite** | `e62415e` | Requires explicit `overwrite: true` |
+| **M15 TOTP replay** | `e62415e` | Matched time-step tracked; a used step is rejected |
 
 ## C1 — fixed (`a3dd177`)
 
