@@ -171,6 +171,18 @@ the canonical tip is reached.
 - BTC regtest reset (nuclear): `docker compose rm -sf btc && docker volume rm
   vtorrent-testnet_btc-data && docker compose up -d btc`, then re-mine ≥130
   blocks and re-fund via faucet/sendtoaddress.
+- **After any host or container restart, staking must be re-enabled.** The
+  wallet restores locked, so the staking loop does not auto-resume and the
+  chain stalls until an operator unlocks. Verify with
+  `GET /api/v1/staking/status` (`enabled: false` means stalled) and restore:
+
+  ```bash
+  python3 .ops-backups/node1-image-20260908-nHCswr/wallet-ops.py unlock
+  ```
+
+  This happened on 2026-09-18: an external host-level restart left the chain
+  stalled at height 9191 for ~46 minutes (see `docs/soak-log.md`). Treat the
+  unlock as a mandatory post-restart step, not an optional one.
 
 ## Escalation
 
