@@ -1226,3 +1226,38 @@ async fn test_unban_peer_clears_ban() {
     assert!(res.is_ok());
     assert!(!handle.read().await.is_banned(ip));
 }
+
+#[tokio::test]
+async fn wallet_import_refuses_to_overwrite_without_opt_in() {
+    let state = AppState::new();
+    let app = build_router(state);
+    let wif = vtorrent_core::keys::PrivateKey::from_bytes([9u8; 32], true)
+        .unwrap()
+        .to_wif(198);
+    let body = serde_json::json!({
+        "wif": wif.to_string(),
+        "passphrase": "pass",
+    });
+    // First import succeeds.
+    let (status, _) = post_json(app.clone(), "/api/v1/wallet/import", body.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // A second import without `overwrite` must be refused.
+    let (status, body) = post_json(app.clone(), "/api/v1/wallet/import", body.clone()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("already imported")),
+        "expected an overwrite refusal, got {body}"
+    );
+
+    // With the explicit opt-in it succeeds.
+    let overwrite = serde_json::json!({
+        "wif": wif.to_string(),
+        "passphrase": "pass",
+        "overwrite": true,
+    });
+    let (status, _) = post_json(app, "/api/v1/wallet/import", overwrite).await;
+    assert_eq!(status, StatusCode::OK);
+}

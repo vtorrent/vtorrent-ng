@@ -104,6 +104,12 @@ pub struct AppState {
     pub staking_state_path: Option<std::path::PathBuf>,
     /// TOTP secret for the hot wallet's 2FA (optional, set on import).
     pub wallet_totp_secret: Arc<RwLock<Option<TotpSecret>>>,
+    /// Highest TOTP time-step already accepted for this wallet.
+    ///
+    /// TOTP codes are valid for a ±1-step window, so without this an observed
+    /// code could be replayed within ~90 seconds. Any step at or below this is
+    /// rejected.
+    pub wallet_totp_last_step: Arc<RwLock<Option<u64>>>,
     /// Derived change address for the hot wallet (from `wallet_wif`).
     pub wallet_change_address: Arc<RwLock<Option<String>>>,
     /// Best block height reported by any connected peer (used for sync % calculation).
@@ -176,6 +182,7 @@ impl AppState {
             wallet_wif: Arc::new(RwLock::new(None)),
             wallet_encrypted: Arc::new(RwLock::new(None)),
             wallet_totp_secret: Arc::new(RwLock::new(None)),
+            wallet_totp_last_step: Arc::new(RwLock::new(None)),
             wallet_change_address: Arc::new(RwLock::new(None)),
             best_peer_height: Arc::new(RwLock::new(0)),
             tx_submit: None,
@@ -233,6 +240,7 @@ impl AppState {
             wallet_wif: Arc::new(RwLock::new(None)),
             wallet_encrypted: Arc::new(RwLock::new(None)),
             wallet_totp_secret: Arc::new(RwLock::new(None)),
+            wallet_totp_last_step: Arc::new(RwLock::new(None)),
             wallet_change_address: Arc::new(RwLock::new(None)),
             best_peer_height: Arc::new(RwLock::new(0)),
             tx_submit: None,

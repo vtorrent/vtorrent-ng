@@ -199,6 +199,18 @@ pub async fn import_wallet(
         ));
     }
 
+    // Refuse to silently replace an existing wallet: the previous encrypted key
+    // (and any funds it controls) would be destroyed. The caller must opt in.
+    if !req.overwrite {
+        let existing = state.wallet_encrypted.read().await.is_some()
+            || state.wallet_change_address.read().await.is_some();
+        if existing {
+            return Err(RpcError::BadRequest(
+                "A wallet is already imported; set \"overwrite\": true to replace it".into(),
+            ));
+        }
+    }
+
     // Validate the WIF key and derive the address.
     let key = PrivateKey::from_wif(&req.wif).map_err(|e| {
         RpcError::BadRequest(format!(

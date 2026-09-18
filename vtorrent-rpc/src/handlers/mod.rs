@@ -237,9 +237,24 @@ pub(crate) async fn verify_wallet_auth(
                 "TOTP code required — 2FA is enabled on this wallet, provide otp_code".into(),
             )
         })?;
-        secret.verify_or_error(code).map_err(|_| {
-            RpcError::Unauthorized("Invalid TOTP code — check your authenticator app".into())
-        })?;
+        let step = secret
+            .verify_step(code)
+            .map_err(|_| RpcError::Unauthorized("Invalid TOTP code".into()))?
+            .ok_or_else(|| {
+                RpcError::Unauthorized("Invalid TOTP code — check your authenticator app".into())
+            })?;
+        // Replay guard: a code stays valid for a ±1-step window, so reject any
+        // step already accepted. This is what stops an observed code from
+        // being reused within ~90 seconds.
+        {
+            let mut last = state.wallet_totp_last_step.write().await;
+            if last.is_some_and(|previous| step <= previous) {
+                return Err(RpcError::Unauthorized(
+                    "TOTP code has already been used — wait for the next code".into(),
+                ));
+            }
+            *last = Some(step);
+        }
     }
 
     Ok(wif)
@@ -448,5 +463,54 @@ mod relay_floor_lockstep {
                 assert!(require_swap_stage(Some(&s), &[SwapStatus::Refunded]).is_ok());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod totp_replay {
+    use super::*;
+
+    /// Build a state with an imported wallet protected by a known TOTP secret.
+    async fn state_with_totp() -> (AppState, vtorrent_wallet::otp::TotpSecret) {
+        let secret = vtorrent_wallet::otp::TotpSecret::generate();
+        let state = AppState::new();
+        let wif = vtorrent_core::keys::PrivateKey::from_bytes([5u8; 32], true)
+            .unwrap()
+            .to_wif(198);
+        let data = HotWalletData {
+            version: 1,
+            wif: zeroize::Zeroizing::new(wif.to_string()),
+            otp_secret: Some(zeroize::Zeroizing::new(secret.to_base32())),
+        };
+        let plaintext = zeroize::Zeroizing::new(serde_json::to_vec(&data).unwrap());
+        let encrypted = vtorrent_wallet::encryption::encrypt_wallet(&plaintext, "pass").unwrap();
+        *state.wallet_encrypted.write().await = Some(encrypted);
+        (state, secret)
+    }
+
+    #[tokio::test]
+    async fn totp_code_cannot_be_replayed() {
+        let (state, secret) = state_with_totp().await;
+        let code = secret.current_code().unwrap();
+        // First use succeeds.
+        verify_wallet_auth(&state, "pass", Some(&code))
+            .await
+            .expect("first use of a fresh code must succeed");
+        // Replaying the same code must be rejected even though it is still
+        // inside the ±1-step validity window.
+        let err = verify_wallet_auth(&state, "pass", Some(&code))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("already been used"),
+            "replay must be rejected, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn totp_still_required_when_enabled() {
+        let (state, _secret) = state_with_totp().await;
+        let err = verify_wallet_auth(&state, "pass", None).await.unwrap_err();
+        assert!(err.to_string().contains("TOTP code required"));
     }
 }

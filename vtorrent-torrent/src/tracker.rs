@@ -79,12 +79,149 @@ pub struct HttpTracker {
     client: reqwest::Client,
 }
 
+/// Whether outbound tracker requests may target private, loopback, link-local,
+/// or otherwise non-public addresses.
+///
+/// Disabled by default: tracker URLs come from untrusted `.torrent` files and
+/// magnet links, so an unguarded fetch is an SSRF primitive that can reach
+/// cloud metadata endpoints and internal services. Tests and local-only
+/// deployments can opt in explicitly.
+static ALLOW_PRIVATE_TRACKER_TARGETS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Allow tracker announces to private/loopback/link-local addresses.
+///
+/// Intended for tests and explicitly local deployments. Never enable this on a
+/// node that accepts untrusted torrents.
+pub fn set_allow_private_tracker_targets(allow: bool) {
+    ALLOW_PRIVATE_TRACKER_TARGETS.store(allow, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn private_targets_allowed() -> bool {
+    ALLOW_PRIVATE_TRACKER_TARGETS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Whether a tracker target address is permitted, honouring the
+/// `set_allow_private_tracker_targets` override. Used by the UDP path, which
+/// resolves its own address rather than going through `validate_tracker_url`.
+pub fn tracker_target_allowed(ip: std::net::IpAddr) -> bool {
+    private_targets_allowed() || !is_non_public(ip)
+}
+
+/// Validate a tracker URL before fetching it.
+///
+/// Rejects non-HTTP(S) schemes and, unless explicitly allowed, any host that
+/// resolves to a non-public address. Resolution happens here (not just a
+/// literal-IP check) so a hostname pointing at an internal address is also
+/// rejected.
+pub fn validate_tracker_url(raw: &str) -> Result<()> {
+    validate_tracker_url_with(raw, private_targets_allowed())
+}
+
+/// Policy-explicit form of [`validate_tracker_url`], for callers (and tests)
+/// that must not depend on the process-wide override.
+pub fn validate_tracker_url_with(raw: &str, allow_private: bool) -> Result<()> {
+    let parsed = reqwest::Url::parse(raw)
+        .map_err(|e| TorrentError::TrackerError(format!("Invalid tracker URL: {}", e)))?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        other => {
+            return Err(TorrentError::TrackerError(format!(
+                "Unsupported tracker scheme: {}",
+                other
+            )))
+        }
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| TorrentError::TrackerError("Tracker URL has no host".into()))?;
+    if allow_private {
+        return Ok(());
+    }
+    // A literal IP can be checked directly; a hostname must be resolved.
+    // `host_str()` keeps the brackets around IPv6 literals, so strip them
+    // before parsing.
+    let literal = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = literal.parse::<std::net::IpAddr>() {
+        if is_non_public(ip) {
+            return Err(TorrentError::TrackerError(format!(
+                "Tracker host {} is not a public address",
+                host
+            )));
+        }
+        return Ok(());
+    }
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let resolved: Vec<std::net::SocketAddr> =
+        std::net::ToSocketAddrs::to_socket_addrs(&(host, port))
+            .map_err(|e| {
+                TorrentError::TrackerError(format!("Cannot resolve tracker host {}: {}", host, e))
+            })?
+            .collect();
+    if resolved.is_empty() {
+        return Err(TorrentError::TrackerError(format!(
+            "Tracker host {} did not resolve",
+            host
+        )));
+    }
+    for addr in resolved {
+        if is_non_public(addr.ip()) {
+            return Err(TorrentError::TrackerError(format!(
+                "Tracker host {} resolves to non-public address {}",
+                host,
+                addr.ip()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Whether an address is loopback, private, link-local, unspecified,
+/// multicast, or otherwise not a routable public unicast address.
+fn is_non_public(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_documentation()
+                // 100.64.0.0/10 carrier-grade NAT.
+                || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1]))
+                // 192.0.0.0/24 IETF protocol assignments.
+                || (v4.octets()[0] == 192 && v4.octets()[1] == 0 && v4.octets()[2] == 0)
+                // 198.18.0.0/15 benchmarking.
+                || (v4.octets()[0] == 198 && (v4.octets()[1] == 18 || v4.octets()[1] == 19))
+                // 240.0.0.0/4 reserved.
+                || v4.octets()[0] >= 240
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                // Unique local addresses fc00::/7.
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                // Link-local fe80::/10.
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+                // IPv4-mapped: re-check the embedded v4 address.
+                || v6
+                    .to_ipv4_mapped()
+                    .is_some_and(|v4| is_non_public(std::net::IpAddr::V4(v4)))
+        }
+    }
+}
+
 impl HttpTracker {
     pub fn new() -> crate::error::Result<Self> {
         Ok(HttpTracker {
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .user_agent("vTorrent-NG/2.0")
+                // Do not follow redirects: a public tracker could redirect to
+                // an internal address, bypassing the pre-flight check.
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .map_err(|e| crate::error::TorrentError::Io(e.to_string()))?,
         })
@@ -92,6 +229,8 @@ impl HttpTracker {
 
     /// Send an announce request to an HTTP tracker.
     pub async fn announce(&self, req: &AnnounceRequest) -> Result<AnnounceResponse> {
+        // Reject SSRF targets before building or sending the request.
+        validate_tracker_url(&req.tracker_url)?;
         // Build the URL with query parameters. The tracker URL may already
         // carry a query string (e.g. passkey trackers: ".../a?passkey=X"),
         // so join with '?' only when absent, otherwise '&'.
@@ -319,5 +458,58 @@ mod tests {
         let bytes = [0x00u8, 0xFF, 0x41]; // 0x41 = 'A'
         let encoded = url_encode_bytes(&bytes);
         assert_eq!(encoded, "%00%FFA");
+    }
+
+    #[test]
+    fn rejects_non_http_schemes() {
+        assert!(validate_tracker_url("ftp://tracker.example.com/announce").is_err());
+        assert!(validate_tracker_url("file:///etc/passwd").is_err());
+        assert!(validate_tracker_url("gopher://tracker.example.com/").is_err());
+    }
+
+    #[test]
+    fn rejects_internal_literal_addresses() {
+        // The SSRF cases that matter: loopback, RFC1918, link-local (cloud
+        // metadata), CGNAT, and IPv6 equivalents.
+        for url in [
+            "http://127.0.0.1/announce",
+            "http://10.0.0.1/announce",
+            "http://192.168.1.1/announce",
+            "http://172.16.0.1/announce",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://100.64.0.1/announce",
+            "http://0.0.0.0/announce",
+            "http://[::1]/announce",
+            "http://[fe80::1]/announce",
+            "http://[fc00::1]/announce",
+            "http://[::ffff:127.0.0.1]/announce",
+        ] {
+            assert!(
+                validate_tracker_url(url).is_err(),
+                "{url} must be rejected as a non-public tracker target"
+            );
+        }
+    }
+
+    #[test]
+    fn allows_public_literal_addresses() {
+        assert!(validate_tracker_url("http://93.184.216.34/announce").is_ok());
+        assert!(validate_tracker_url("https://93.184.216.34/announce").is_ok());
+        assert!(
+            validate_tracker_url("http://[2606:2800:220:1:248:1893:25c8:1946]/announce").is_ok()
+        );
+    }
+
+    #[test]
+    fn explicit_override_permits_private_targets() {
+        // Uses the policy-explicit form so this test does not depend on (or
+        // mutate) the process-wide flag, which other tests assert is off.
+        assert!(validate_tracker_url_with("http://127.0.0.1/announce", true).is_ok());
+        assert!(validate_tracker_url_with("http://127.0.0.1/announce", false).is_err());
+    }
+
+    #[test]
+    fn rejects_url_without_host() {
+        assert!(validate_tracker_url("http:///announce").is_err());
     }
 }

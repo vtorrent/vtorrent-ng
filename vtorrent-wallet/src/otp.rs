@@ -91,9 +91,36 @@ impl TotpSecret {
     /// Accepts codes from the current window ±1 step (90 second tolerance)
     /// to account for clock drift.
     pub fn verify(&self, code: &str) -> Result<bool> {
+        Ok(self.verify_step(code)?.is_some())
+    }
+
+    /// Verify a code and return the matched time-step (30-second counter).
+    ///
+    /// The step is what makes replay detection possible: a caller that records
+    /// the last accepted step can reject a code that was already used within
+    /// the ±1-step tolerance window. Returns `None` when no step matches.
+    pub fn verify_step(&self, code: &str) -> Result<Option<u64>> {
         let totp = self.build_totp(None)?;
-        totp.check_current(code)
-            .map_err(|e| WalletError::EncryptionError(format!("TOTP check error: {}", e)))
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| WalletError::EncryptionError(format!("TOTP clock error: {}", e)))?
+            .as_secs();
+        // Mirror `TOTP::check`'s window exactly: it starts at
+        // `time/step - skew` and iterates `2*skew + 1` steps, i.e.
+        // [base-1, base, base+1]. Using [base, base+1, base+2] would both
+        // reject a code generated just before a step boundary and accept one
+        // from the future.
+        let skew = 1u64;
+        let base = now / TOTP_STEP;
+        let first = base.saturating_sub(skew);
+        for offset in 0..(skew * 2 + 1) {
+            let step = first + offset;
+            let step_time = step * TOTP_STEP;
+            if totp.generate(step_time) == code {
+                return Ok(Some(step));
+            }
+        }
+        Ok(None)
     }
 
     /// Verify a code and return an error if it is incorrect.
@@ -214,6 +241,33 @@ mod tests {
         // "000000" is almost certainly wrong (1 in 1,000,000 chance of false positive)
         // We just test that verify runs without error
         let _ = valid;
+    }
+
+    #[test]
+    fn test_verify_step_returns_the_matched_step() {
+        let secret = TotpSecret::generate();
+        let code = secret.current_code().expect("Failed to generate code");
+        let step = secret
+            .verify_step(&code)
+            .expect("Verify failed")
+            .expect("current code must match a step");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // The matched step must be within the ±1 window of the current step.
+        let current = now / TOTP_STEP;
+        assert!(
+            step.abs_diff(current) <= 1,
+            "step {step} should be within 1 of current {current}"
+        );
+    }
+
+    #[test]
+    fn test_verify_step_rejects_a_wrong_code() {
+        let secret = TotpSecret::generate();
+        // A code that cannot match any window step.
+        assert_eq!(secret.verify_step("000000").unwrap(), None);
     }
 
     #[test]

@@ -352,6 +352,12 @@ pub struct ImportWalletRequest {
     /// Optional Base32-encoded TOTP secret. When set, unlock and send require
     /// a valid TOTP code in addition to the passphrase.
     pub otp_secret: Option<zeroize::Zeroizing<String>>,
+    /// Explicitly replace an already-imported wallet.
+    ///
+    /// Importing over an existing wallet destroys the previous encrypted key
+    /// (and any funds it controls), so it is refused unless this is set.
+    #[serde(default)]
+    pub overwrite: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -990,6 +990,13 @@ async fn announce_trackers(
                 }
             };
             let udp = crate::udp::UdpTracker::new(addr);
+            // Same SSRF guard as the HTTP path: tracker URLs come from
+            // untrusted torrents, so a UDP announce must not reach internal
+            // addresses either.
+            if !crate::tracker::tracker_target_allowed(addr.ip()) {
+                tracing::warn!("Skipping UDP tracker {} — non-public address", addr.ip());
+                continue;
+            }
             let params = crate::udp::UdpAnnounceParams {
                 info_hash: &metainfo.info_hash,
                 peer_id: &peer_id,

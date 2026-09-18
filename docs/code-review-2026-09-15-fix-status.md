@@ -49,6 +49,9 @@ medium/low findings listed at the end.
 | **C1 stake-kernel target saturation** | `a3dd177` | v2 rule normalizes by total staked supply; whale capped at its stake share |
 | **S4 BTC claim not fee-bumpable** | `6edc2e3` | Claim signals RBF; `btc-claim-bump` RPC + persisted raw claim |
 | **S5 preimage handoff missing** | `c37121f` | Scan extracts the claim preimage; `vtr-claim` accepts an observed preimage |
+| **M8 tracker SSRF** | `TBD` | Scheme allow-list + non-public address rejection (HTTP and UDP) |
+| **M10 wallet import overwrite** | `TBD` | Requires explicit `overwrite: true` |
+| **M15 TOTP replay** | `TBD` | Matched time-step tracked; a used step is rejected |
 
 ## C1 — fixed (`a3dd177`)
 
@@ -154,11 +157,37 @@ neither is available.
 
 M2 (`getdata` bandwidth accounting), M5 (PEX per-peer quota), M6 (DHT source
 validation — the torrent DHT already validates source and tid), M7 (overlay
-relay auth), M8 (tracker SSRF), M9 (torrent session cap), M10 (wallet import
-overwrite), M11 (full-chain scans under the chain mutex), M12 (`btc_fund`
-authorization), M15 (TOTP replay), M16 (`fork()` safety), M17 (quadratic
+relay auth), M9 (torrent session cap), M11 (full-chain scans under the chain
+mutex), M12 (`btc_fund` authorization), M16 (`fork()` safety), M17 (quadratic
 eviction), and the remaining low-severity items. These are documented in the
 review and are candidates for follow-up work.
+
+## Security batch (M8, M10, M15)
+
+Three security-relevant medium findings were fixed together:
+
+- **M8 tracker SSRF.** Tracker URLs come from untrusted `.torrent` files and
+  magnet links, and were fetched with no scheme or host restriction. Added
+  `validate_tracker_url`, which requires `http`/`https` and rejects any host
+  resolving to a loopback, private, link-local, CGNAT, benchmarking, reserved,
+  multicast, or IPv6 unique-local/link-local address. Redirects are disabled
+  so a public tracker cannot redirect to an internal target. The UDP path
+  (which resolves its own address) uses the same `tracker_target_allowed`
+  check. Tests and local deployments can opt out via
+  `set_allow_private_tracker_targets`.
+- **M10 wallet import overwrite.** `import_wallet` replaced the encrypted hot
+  wallet with no confirmation, so one call destroyed the previous key and any
+  funds it controlled. It now refuses unless the request sets
+  `"overwrite": true`.
+- **M15 TOTP replay.** Codes are valid for a ±1-step window (~90s) with no
+  used-code tracking, so an observed code could be replayed. `verify_step` now
+  returns the matched time-step and the RPC auth path records the highest
+  accepted step, rejecting any step at or below it.
+
+Tests: non-HTTP schemes rejected; loopback/private/link-local/CGNAT/IPv6
+targets rejected; public literals allowed; the explicit override works; a
+second import without `overwrite` is refused and succeeds with it; a TOTP code
+cannot be replayed while still inside its validity window.
 
 ## Correction to the review
 
