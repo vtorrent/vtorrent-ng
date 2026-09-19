@@ -113,6 +113,15 @@ fn is_private_ip(ip: IpAddr) -> bool {
                 || v4.is_broadcast()   // 255.255.255.255
                 || v4.is_documentation() // 192.0.2.x, 198.51.100.x, 203.0.113.x
                 || v4.is_unspecified() // 0.0.0.0
+                || v4.is_multicast()   // 224.0.0.0/4
+                // 100.64.0.0/10 carrier-grade NAT.
+                || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1]))
+                // 192.0.0.0/24 IETF protocol assignments.
+                || (v4.octets()[0] == 192 && v4.octets()[1] == 0 && v4.octets()[2] == 0)
+                // 198.18.0.0/15 benchmarking.
+                || (v4.octets()[0] == 198 && (v4.octets()[1] == 18 || v4.octets()[1] == 19))
+                // 240.0.0.0/4 reserved (includes 255.255.255.255).
+                || v4.octets()[0] >= 240
         }
         IpAddr::V6(v6) => {
             v6.is_loopback()       // ::1
@@ -607,6 +616,25 @@ mod tests {
         let private = make_private_addr(22524);
         book.add_dht_peers(&[private]);
         assert_eq!(book.len(), 1, "Testnet should accept 192.168.x.x addresses");
+    }
+
+    #[test]
+    fn test_mainnet_rejects_multicast_cgnat_and_reserved() {
+        // These are not routable unicast addresses; accepting them lets a peer
+        // poison the address book with unusable entries.
+        for ip in [
+            "224.0.0.1",       // multicast
+            "239.255.255.250", // SSDP multicast
+            "100.64.0.1",      // carrier-grade NAT
+            "198.18.0.1",      // benchmarking
+            "240.0.0.1",       // reserved
+            "255.255.255.255", // broadcast
+        ] {
+            let addr: SocketAddr = format!("{ip}:22524").parse().unwrap();
+            let mut book = AddrBook::new();
+            book.add_dht_peers(&[addr]);
+            assert_eq!(book.len(), 0, "mainnet must reject {ip}");
+        }
     }
 
     #[test]

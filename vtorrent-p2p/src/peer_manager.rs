@@ -52,7 +52,24 @@ pub const BOOTSTRAP_PEERS: &[&str] = &[
 ///
 /// These are A records on `vtorrent.org` (IONOS) pointing at the deployed
 /// seed nodes; see `docs/dns-seeds.md`.
-pub const DNS_SEEDS: &[&str] = &["seed1.vtorrent.org", "seed2.vtorrent.org"];
+pub const DNS_SEEDS: &[&str] = &[
+    "seed1.vtorrent.org",
+    "seed2.vtorrent.org",
+    "seed3.vtorrent.org",
+];
+
+/// Whether `ip` belongs to a configured bootstrap seed.
+///
+/// Seeds are exempt from escalating connection-failure bans: a transient
+/// network problem or a brief seed restart must not escalate into an hour-long
+/// ban of a well-known node, which would cut the node off from bootstrap.
+pub fn is_bootstrap_seed(ip: std::net::IpAddr) -> bool {
+    BOOTSTRAP_PEERS.iter().any(|peer| {
+        peer.parse::<std::net::SocketAddr>()
+            .map(|addr| addr.ip() == ip)
+            .unwrap_or(false)
+    })
+}
 
 /// Default mainnet P2P port.
 pub const DEFAULT_PORT: u16 = 22526;
@@ -281,11 +298,15 @@ impl PeerManager {
             Ok(result) => result,
             Err(e) => {
                 // Track connection failure — bans Tor/I2P synthetic addresses
-                // harmlessly (they don't match real peer IPs).
-                self.ban_manager
-                    .write()
-                    .await
-                    .record_connection_failure(sock_addr.ip());
+                // harmlessly (they don't match real peer IPs). Configured
+                // bootstrap seeds are exempt: a transient failure must not
+                // escalate into an hour-long ban of a well-known node.
+                if !is_bootstrap_seed(sock_addr.ip()) {
+                    self.ban_manager
+                        .write()
+                        .await
+                        .record_connection_failure(sock_addr.ip());
+                }
                 return Err(P2pError::Transport(e.to_string()));
             }
         };
@@ -847,5 +868,23 @@ mod disconnect_liveness_tests {
             .await
             .expect("disconnect must not block on a wedged peer queue");
         assert_eq!(pm.peers.get(&addr).unwrap().state, PeerState::Disconnecting);
+    }
+
+    #[test]
+    fn bootstrap_seeds_are_recognised_and_exempt_from_bans() {
+        for peer in BOOTSTRAP_PEERS {
+            let ip = peer.parse::<std::net::SocketAddr>().unwrap().ip();
+            assert!(is_bootstrap_seed(ip), "{peer} must be recognised as a seed");
+        }
+        // An arbitrary address is not a seed.
+        assert!(!is_bootstrap_seed("203.0.113.9".parse().unwrap()));
+    }
+
+    #[test]
+    fn dns_seeds_cover_all_three_seed_nodes() {
+        // seed3 was previously missing, so a DNS-only bootstrap could never
+        // reach the third seed.
+        assert_eq!(DNS_SEEDS.len(), 3);
+        assert!(DNS_SEEDS.contains(&"seed3.vtorrent.org"));
     }
 }

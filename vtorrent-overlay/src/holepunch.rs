@@ -426,7 +426,11 @@ impl HolePuncher {
             .get_mut(node_id)
             .ok_or_else(|| OverlayError::PeerNotFound(node_id.to_string()))?;
 
-        session.send_counter += 1;
+        // `+= 1` would panic under overflow-checks after 2^64 messages; use a
+        // checked increment so a long-lived session cannot crash the task.
+        session.send_counter = session.send_counter.checked_add(1).ok_or_else(|| {
+            OverlayError::HolePunch("session send counter exhausted; rekey required".into())
+        })?;
         let ct =
             session
                 .shared_key

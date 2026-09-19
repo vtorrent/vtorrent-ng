@@ -279,6 +279,17 @@ pub async fn add_spv_headers(
 ) -> RpcResult<Json<SpvAddHeadersResponse>> {
     use vtorrent_spv::SpvHeader;
 
+    // Bound the batch: the request body is caller-supplied and each header is
+    // retained in the chain, so an unbounded batch is a memory-growth vector.
+    const MAX_SPV_HEADERS_PER_REQUEST: usize = 2_000;
+    if req.headers.len() > MAX_SPV_HEADERS_PER_REQUEST {
+        return Err(RpcError::BadRequest(format!(
+            "Too many headers in one request ({} > {})",
+            req.headers.len(),
+            MAX_SPV_HEADERS_PER_REQUEST
+        )));
+    }
+
     let mut headers: Vec<SpvHeader> = Vec::with_capacity(req.headers.len());
     for h in req.headers {
         let ph = parse_hash32(&h.prev_hash, "prev_hash")?;

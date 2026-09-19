@@ -60,6 +60,11 @@ medium/low findings listed at the end.
 | **M11 full-chain scans under the lock** | `506c344` | Bounded scan depth (200k blocks) |
 | **M17 quadratic eviction scan** | `506c344` | Frontier is a HashSet (linear per level) |
 | **M16 `fork()` safety** | `a2d56a1` | Replaced raw fork/execvp with `std::process::Command` |
+| **L7 PEX accepts multicast/CGNAT/reserved** | `TBD` | Added the missing IPv4 range checks |
+| **L8 overlay send-counter overflow** | `TBD` | `checked_add` instead of `+= 1` |
+| **L10 seed ban escalation** | `TBD` | Bootstrap seeds exempt from failure bans |
+| **L18 unbounded SPV header batch** | `TBD` | Batch capped at 2000 headers |
+| **DNS_SEEDS missing seed3** | `TBD` | Added `seed3.vtorrent.org` (deferred item) |
 
 ## C1 — fixed (`a3dd177`)
 
@@ -164,8 +169,33 @@ neither is available.
 ### Lower-priority medium/low
 
 M6 (DHT source validation — the torrent DHT already validates source and tid)
-and the remaining low-severity items. These are documented in the review and
-are candidates for follow-up work.
+and the remaining low-severity items (L3, L4, L5, L6, L9, L11, L12, L17,
+L19, L20). These are documented in the review and are candidates for
+follow-up work.
+
+## Low-severity batch (L7, L8, L10, L18) + deferred seed3
+
+Four low-severity findings with real (if minor) consequence, plus the
+long-deferred `DNS_SEEDS` gap:
+
+- **L7 PEX address filtering.** IPv4 multicast, carrier-grade NAT
+  (100.64/10), benchmarking (198.18/15), and reserved (240/4) ranges were
+  accepted into the address book, letting a peer poison it with unusable
+  entries. Added the missing checks.
+- **L8 overlay send-counter overflow.** `session.send_counter += 1` would
+  panic under `overflow-checks` after 2^64 messages; now `checked_add` with a
+  rekey error.
+- **L10 seed ban escalation.** Five transient connection failures to a
+  configured bootstrap seed escalated to an hour-long ban, cutting the node
+  off from bootstrap. Seeds are now exempt.
+- **L18 unbounded SPV header batch.** `POST /api/v1/spv/headers` accepted an
+  unbounded header list, each retained in the chain. Capped at 2000.
+- **`DNS_SEEDS` missing seed3.** The deferred item from the post-soak batch:
+  `seed3.vtorrent.org` was absent, so a DNS-only bootstrap could never reach
+  the third seed. Added (the A record was already live).
+
+Tests: bootstrap seeds are recognised and non-seeds are not; `DNS_SEEDS`
+covers all three; mainnet PEX rejects multicast/CGNAT/benchmarking/reserved.
 
 ## M16 — fixed
 
