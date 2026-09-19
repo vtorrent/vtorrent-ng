@@ -731,3 +731,30 @@ closed) rather than silently running locked.
 **Soak impact.** The seven-day window is reset again. Earliest sign-off is
 now no earlier than seven days after this upgrade (`2026-09-26`), contingent
 on uninterrupted evidence.
+
+## 2026-09-19 (later) — auto-unlock hardening deployed (96aef91)
+
+Follow-up to the wallet auto-unlock deployment, fixing two gaps that would
+have silently recreated the stall the feature prevents:
+
+- Docker creates a *directory* when a bind-mount source is missing, so the
+  original existence-only pre-flight would pass, the daemon would start, and
+  the read would fail — leaving the wallet locked and staking stalled.
+  `validate_passphrase_file` now rejects anything that is not a regular file.
+- The compose mount used the short syntax, which also silently creates the
+  missing source. Switched to the long syntax with
+  `bind.create_host_path: false`, so a missing passphrase file fails the
+  deploy with `bind source path does not exist` and creates nothing.
+
+**Verified before rollout.** With `VTORRENT_WALLET_PASSPHRASE_FILE` unset,
+`docker compose up -d node1` now hard-fails and creates no directory at the
+fallback path (previously it would have started a broken container).
+
+**Rollout.** Volumes backed up (49 MB each), all three stopped together,
+image pin `625de28` → `96aef91`, recreated. No manual unlock performed:
+node1 logged `Restored encrypted wallet … (locked)` → `Wallet auto-unlocked
+from /run/secrets/wallet-passphrase` → `Auto-resuming staking for
+VDR9EJdw…`. Chain advanced 9957 → 9961 with zero errors.
+
+**Soak impact.** The seven-day window is reset again. Earliest sign-off is
+now no earlier than seven days after this upgrade (`2026-09-26`).
