@@ -59,7 +59,7 @@ medium/low findings listed at the end.
 | **M9 unbounded torrent sessions** | `506c344` | Cap of 64 concurrent sessions |
 | **M11 full-chain scans under the lock** | `506c344` | Bounded scan depth (200k blocks) |
 | **M17 quadratic eviction scan** | `506c344` | Frontier is a HashSet (linear per level) |
-| **M16 `fork()` safety** | `TBD` | Replaced raw fork/execvp with `std::process::Command` |
+| **M16 `fork()` safety** | `a2d56a1` | Replaced raw fork/execvp with `std::process::Command` |
 
 ## C1 — fixed (`a3dd177`)
 
