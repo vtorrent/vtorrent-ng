@@ -15,7 +15,7 @@ name: vtorrent-testnet
 
 services:
   node1:
-    image: vtorrent/node:2160eb9
+    image: vtorrent/node:625de28
     cap_add:
       - NET_ADMIN
       - NET_RAW
@@ -62,13 +62,23 @@ services:
       # resumes after a restart without operator action. The file is 0600 and
       # lives outside the repo (gitignored .ops-backups/); it is never placed
       # in argv or the environment.
-      - ${VTORRENT_WALLET_PASSPHRASE_FILE:-./secrets/wallet-passphrase}:/run/secrets/wallet-passphrase:ro
+      #
+      # `create_host_path: false` makes a missing source a hard error: Docker
+      # otherwise silently creates a *directory* at the source, which the
+      # daemon would then reject as a non-file (staking would stall).
+      # Set VTORRENT_WALLET_PASSPHRASE_FILE to the host path before `up`.
+      - type: bind
+        source: ${VTORRENT_WALLET_PASSPHRASE_FILE:-./secrets/wallet-passphrase}
+        target: /run/secrets/wallet-passphrase
+        read_only: true
+        bind:
+          create_host_path: false
     networks:
       - vtrnet
     restart: unless-stopped
 
   node2:
-    image: vtorrent/node:2160eb9
+    image: vtorrent/node:625de28
     cap_add:
       - NET_ADMIN
       - NET_RAW
@@ -111,7 +121,7 @@ services:
     restart: unless-stopped
 
   node3:
-    image: vtorrent/node:2160eb9
+    image: vtorrent/node:625de28
     cap_add:
       - NET_ADMIN
       - NET_RAW

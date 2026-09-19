@@ -577,14 +577,10 @@ async fn main() -> anyhow::Result<()> {
     // ── Start services concurrently ───────────────────────────────────────────
     // Fail closed on an unreadable passphrase file: silently starting locked
     // would recreate the exact stall this option exists to prevent.
+    // Fail closed on an unusable passphrase file: silently starting locked
+    // would recreate the exact stall this option exists to prevent.
     if let Some(path) = &cli.wallet_passphrase_file {
-        if let Err(e) = std::fs::metadata(path) {
-            anyhow::bail!(
-                "--wallet-passphrase-file {} is not readable: {}",
-                path.display(),
-                e
-            );
-        }
+        validate_passphrase_file(path)?;
     }
     let rpc_state_for_unlock = rpc_state.clone();
     tokio::spawn(vtorrent_rpc::swap_reconciliation::run_reconciler(
@@ -916,4 +912,56 @@ async fn resolve_addr(peer: &str) -> anyhow::Result<std::net::SocketAddr> {
         .await
         .map_err(|e| anyhow::anyhow!("resolution failed: {}", e))?;
     addrs.next().ok_or_else(|| anyhow::anyhow!("no addresses"))
+}
+
+/// Validate the `--wallet-passphrase-file` target before startup.
+///
+/// Docker silently creates a *directory* when a bind-mount source is missing,
+/// so an existence check alone would let the daemon start and then fail at
+/// read time — leaving the wallet locked and staking stalled, which is exactly
+/// the failure this option exists to prevent. Reject anything that is not a
+/// regular file.
+fn validate_passphrase_file(path: &std::path::Path) -> anyhow::Result<()> {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() => Ok(()),
+        Ok(_) => anyhow::bail!(
+            "--wallet-passphrase-file {} is not a regular file (a missing \
+             bind-mount source becomes a directory; check that the host path \
+             exists and VTORRENT_WALLET_PASSPHRASE_FILE is set)",
+            path.display()
+        ),
+        Err(e) => anyhow::bail!(
+            "--wallet-passphrase-file {} is not readable: {}",
+            path.display(),
+            e
+        ),
+    }
+}
+
+#[cfg(test)]
+mod passphrase_file_tests {
+    use super::validate_passphrase_file;
+
+    #[test]
+    fn accepts_a_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("passphrase");
+        std::fs::write(&path, "secret\n").unwrap();
+        assert!(validate_passphrase_file(&path).is_ok());
+    }
+
+    #[test]
+    fn rejects_a_directory() {
+        // The Docker missing-bind-mount case: the source becomes a directory.
+        let dir = tempfile::tempdir().unwrap();
+        let err = validate_passphrase_file(dir.path()).unwrap_err();
+        assert!(err.to_string().contains("not a regular file"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_a_missing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = validate_passphrase_file(&dir.path().join("nope")).unwrap_err();
+        assert!(err.to_string().contains("not readable"), "got: {err}");
+    }
 }
