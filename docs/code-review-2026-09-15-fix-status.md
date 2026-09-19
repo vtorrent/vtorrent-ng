@@ -52,7 +52,7 @@ medium/low findings listed at the end.
 | **M8 tracker SSRF** | `e62415e` | Scheme allow-list + non-public address rejection (HTTP and UDP) |
 | **M10 wallet import overwrite** | `e62415e` | Requires explicit `overwrite: true` |
 | **M15 TOTP replay** | `e62415e` | Matched time-step tracked; a used step is rejected |
-| **M12 BTC spend authorization** | `TBD` | `btc/send` and `btc-fund` now require an unlocked wallet |
+| **M12 BTC spend authorization** | `e346879` | `btc/send` and `btc-fund` now require an unlocked wallet |
 
 ## C1 — fixed (`a3dd177`)
 
