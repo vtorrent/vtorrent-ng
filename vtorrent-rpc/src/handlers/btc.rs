@@ -55,6 +55,13 @@ pub async fn send_btc(
     State(state): State<Arc<AppState>>,
     Json(req): Json<BtcSendRequest>,
 ) -> RpcResult<Json<BtcSendResponse>> {
+    // Spending the node's BTC wallet requires an unlocked wallet, matching the
+    // VTR path (`send_vtr`). The API key is a transport credential; it must not
+    // by itself authorize moving funds. Without this, anyone holding the key
+    // could drain the BTC wallet.
+    if !state.is_wallet_unlocked().await {
+        return Err(RpcError::WalletLocked);
+    }
     if req.amount_satoshis == 0 {
         return Err(RpcError::BadRequest(
             "Amount must be non-zero — provide a positive satoshi amount".into(),

@@ -254,6 +254,13 @@ async fn fund_btc_with_broadcast(
     req: BtcFundRequest,
     broadcast: impl AsyncFnOnce(&[u8]) -> RpcResult<[u8; 32]>,
 ) -> RpcResult<BtcFundResponse> {
+    // Funding spends the node's BTC wallet, so require an unlocked wallet —
+    // the API key alone must not authorize moving funds. (The refund path is
+    // deliberately NOT gated: BTC refunds must remain possible without an
+    // unlocked VTR wallet, per docs/rpc-api.md.)
+    if !state.is_wallet_unlocked().await {
+        return Err(RpcError::WalletLocked);
+    }
     let order = state
         .order_book
         .read()

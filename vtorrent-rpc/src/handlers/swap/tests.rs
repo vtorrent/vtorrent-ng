@@ -781,6 +781,10 @@ async fn fixture() -> (AppState, String, String) {
     *state.mock_time.write().await = Some(NOW);
     *state.btc_network.write().await = bitcoin::Network::Regtest;
     *state.btc_wallet.write().await = Some(btc);
+    // Funding spends the node's BTC wallet, which now requires an unlocked
+    // wallet. The realistic precondition for a taker funding a swap is an
+    // unlocked wallet, so the fixture reflects that.
+    *state.wallet_unlock_expiry.write().await = Some(0);
     let id = hex::encode(order.order_id);
     let mut swap = SwapState::new(order.order_id, secret.hash_lock);
     swap.vtr_funding_txid = order.funding_txid;
@@ -1122,6 +1126,9 @@ async fn btc_refund_is_independent_and_retry_preserves_raw_transaction() {
     .unwrap();
     let btc_expiry = state.swaps.read().await[&id].btc_expiry;
     *state.mock_time.write().await = Some(u64::from(btc_expiry) + 1);
+    // Lock the wallet: the point of this test is that a BTC refund remains
+    // possible without an unlocked VTR wallet (docs/rpc-api.md).
+    state.lock_wallet().await;
     let result = refund_with_broadcast(
         &state,
         SwapRefundRequest {

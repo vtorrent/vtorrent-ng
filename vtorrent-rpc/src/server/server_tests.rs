@@ -624,7 +624,11 @@ async fn test_dex_orders_empty() {
 
 #[tokio::test]
 async fn test_swap_btc_fund_unknown_order() {
-    let app = build_router(AppState::new());
+    let state = AppState::new();
+    // Funding requires an unlocked wallet; unlock so this exercises the
+    // unknown-order path rather than the wallet-locked guard.
+    *state.wallet_unlock_expiry.write().await = Some(0);
+    let app = build_router(state);
     let (status, body) = post_json(
         app,
         "/api/v1/swap/btc-fund",
@@ -1260,4 +1264,30 @@ async fn wallet_import_refuses_to_overwrite_without_opt_in() {
     });
     let (status, _) = post_json(app, "/api/v1/wallet/import", overwrite).await;
     assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn btc_send_requires_an_unlocked_wallet() {
+    // The API key is a transport credential; it must not by itself authorize
+    // moving BTC. A locked wallet must be rejected before any signing.
+    let app = build_router(AppState::new());
+    let (status, _) = post_json(
+        app,
+        "/api/v1/btc/send",
+        serde_json::json!({ "to_address": "bcrt1qtest", "amount_satoshis": 1000 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn btc_fund_requires_an_unlocked_wallet() {
+    let app = build_router(AppState::new());
+    let (status, _) = post_json(
+        app,
+        "/api/v1/swap/btc-fund",
+        serde_json::json!({ "order_id": "00".repeat(32), "btc_refund_address": "bcrt1qtest" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }

@@ -52,6 +52,7 @@ medium/low findings listed at the end.
 | **M8 tracker SSRF** | `e62415e` | Scheme allow-list + non-public address rejection (HTTP and UDP) |
 | **M10 wallet import overwrite** | `e62415e` | Requires explicit `overwrite: true` |
 | **M15 TOTP replay** | `e62415e` | Matched time-step tracked; a used step is rejected |
+| **M12 BTC spend authorization** | `TBD` | `btc/send` and `btc-fund` now require an unlocked wallet |
 
 ## C1 — fixed (`a3dd177`)
 
@@ -158,9 +159,35 @@ neither is available.
 M2 (`getdata` bandwidth accounting), M5 (PEX per-peer quota), M6 (DHT source
 validation — the torrent DHT already validates source and tid), M7 (overlay
 relay auth), M9 (torrent session cap), M11 (full-chain scans under the chain
-mutex), M12 (`btc_fund` authorization), M16 (`fork()` safety), M17 (quadratic
-eviction), and the remaining low-severity items. These are documented in the
-review and are candidates for follow-up work.
+mutex), M16 (`fork()` safety), M17 (quadratic eviction), and the remaining
+low-severity items. These are documented in the review and are candidates for
+follow-up work.
+
+## M12 — fixed (broader than reported)
+
+The review described M12 as "`btc_fund` spends the node's BTC wallet with only
+the shared key". Investigation found the exposure was wider: **`POST
+/api/v1/btc/send` had no wallet-unlock gate either**, so any holder of the RPC
+API key could drain the node's BTC wallet directly — the key was effectively a
+BTC spending credential.
+
+Both paths now require an unlocked wallet, matching the existing VTR behaviour
+(`send_vtr` already returns `WalletLocked`):
+
+- `send_btc` (`vtorrent-rpc/src/handlers/btc.rs`) checks
+  `is_wallet_unlocked` before signing.
+- `fund_btc_with_broadcast` (`vtorrent-rpc/src/handlers/swap.rs`) does the
+  same.
+- The Tauri `send_btc` command talks to the wallet directly and would have
+  bypassed the RPC handler, so it checks too.
+
+**Deliberately not gated:** the refund path. `docs/rpc-api.md` documents that
+"BTC refund is independent of VTR expiry and VTR wallet unlock", and a refund
+must remain possible when the wallet is locked. The existing test
+`btc_refund_is_independent_and_retry_preserves_raw_transaction` locks the
+wallet and asserts the refund still works; it still passes.
+
+Tests: `btc/send` and `btc-fund` both return 403 with a locked wallet.
 
 ## Security batch (M8, M10, M15)
 
