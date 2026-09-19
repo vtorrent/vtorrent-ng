@@ -60,11 +60,11 @@ medium/low findings listed at the end.
 | **M11 full-chain scans under the lock** | `506c344` | Bounded scan depth (200k blocks) |
 | **M17 quadratic eviction scan** | `506c344` | Frontier is a HashSet (linear per level) |
 | **M16 `fork()` safety** | `a2d56a1` | Replaced raw fork/execvp with `std::process::Command` |
-| **L7 PEX accepts multicast/CGNAT/reserved** | `TBD` | Added the missing IPv4 range checks |
-| **L8 overlay send-counter overflow** | `TBD` | `checked_add` instead of `+= 1` |
-| **L10 seed ban escalation** | `TBD` | Bootstrap seeds exempt from failure bans |
-| **L18 unbounded SPV header batch** | `TBD` | Batch capped at 2000 headers |
-| **DNS_SEEDS missing seed3** | `TBD` | Added `seed3.vtorrent.org` (deferred item) |
+| **L7 PEX accepts multicast/CGNAT/reserved** | `bdc6868` | Added the missing IPv4 range checks |
+| **L8 overlay send-counter overflow** | `bdc6868` | `checked_add` instead of `+= 1` |
+| **L10 seed ban escalation** | `bdc6868` | Bootstrap seeds exempt from failure bans |
+| **L18 unbounded SPV header batch** | `bdc6868` | Batch capped at 2000 headers |
+| **DNS_SEEDS missing seed3** | `bdc6868` | Added `seed3.vtorrent.org` (deferred item) |
 
 ## C1 — fixed (`a3dd177`)
 
