@@ -758,3 +758,33 @@ VDR9EJdw…`. Chain advanced 9957 → 9961 with zero errors.
 
 **Soak impact.** The seven-day window is reset again. Earliest sign-off is
 now no earlier than seven days after this upgrade (`2026-09-26`).
+
+## 2026-09-19 (later) — M12 + DoS + low-severity batch deployed (1226e4f)
+
+Deployed the accumulated non-consensus batch: M12 (BTC spend authorization),
+M2/M5/M7/M9/M11/M17 (resource-exhaustion bounds), M16 (`fork()` safety), and
+L7/L8/L10/L18 plus the deferred `DNS_SEEDS` seed3 entry.
+
+**Pre-deployment verification.** The new image replayed a copy of node3's live
+data to height 10769 with the exact same tip hash as the running old binary
+(`12ecb6706fd033ac9149c469838cd3c925e661ac2e6219ad05800397bb42df14`), zero
+errors. Volumes backed up to `vtr-preupgrade-backup` (52 MB each); pre-upgrade
+tip 10773 (`1548a22b`).
+
+**Rollout.** All three stopped together, image pin `96aef91` → `1226e4f`,
+recreated. Auto-unlock and staking auto-resume worked with no manual action
+(`Wallet auto-unlocked from /run/secrets/wallet-passphrase` →
+`Auto-resuming staking for VDR9EJdw…`). All three replayed to the pre-upgrade
+tip with zero errors.
+
+**Live verification of the deployed fixes:**
+- L18 — `POST /api/v1/spv/headers` with 2001 headers returns
+  `Too many headers in one request (2001 > 2000)`.
+- M12 — `POST /api/v1/btc/send` passes the unlock gate (wallet unlocked) and
+  fails on address validation, confirming the gate is on the path.
+
+**Result.** All three agree and produce blocks at 61s intervals after the
+restart gap. Zero ERROR/panic/reorg lines.
+
+**Soak impact.** The seven-day window is reset again. Earliest sign-off is now
+no earlier than seven days after this upgrade (`2026-09-26`).
