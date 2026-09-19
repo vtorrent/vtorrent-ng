@@ -697,3 +697,37 @@ superseded.
 **Rollback.** Restore the `vtr-preupgrade-backup` volumes and re-pin
 `eb4dd0c`. This batch is not consensus-breaking, so unlike the C1 upgrade the
 old binary can replay a chain produced by it.
+
+## 2026-09-19 — wallet auto-unlock deployed (staking resumes without operator)
+
+Deployed `625de28` to all three nodes, adding `--wallet-passphrase-file` so
+the daemon unlocks the wallet at boot and the existing staking-intent
+auto-resume re-enables staking. This removes the post-restart stall hazard
+that caused the 2026-09-18 ~46-minute outage.
+
+**Pre-deployment verification.** The new image replayed a copy of node3's
+live data to height 9820 with the exact same tip hash as the running old
+binary (`884925f7562eff80518c415cab089e7d1e0a9601472cb8fa68735d8e5b45c6de`),
+zero errors. Volumes backed up to `vtr-preupgrade-backup` (49 MB each);
+pre-upgrade tip 9823 (`7a8113cb`).
+
+**Rollout.** All three stopped together, image pin bumped, recreated. All
+three replayed to the pre-upgrade tip with zero errors.
+
+**Verification of the fix.** No manual unlock was performed at any point:
+- On first start, node1 logged `Restored encrypted wallet … (locked)` then
+  `Wallet auto-unlocked from /run/secrets/wallet-passphrase` and
+  `Auto-resuming staking for VDR9EJdw…`.
+- `docker compose restart node1` (the exact 09-18 scenario) again
+  auto-unlocked and auto-resumed; staking status `enabled: true`, 4 UTXOs,
+  and the chain advanced 9827 → 9830.
+
+**Security.** The passphrase is read from a 0600 file mounted read-only at
+`/run/secrets/wallet-passphrase`, sourced from the gitignored
+`.ops-backups/` path. It never enters argv, the environment, `docker
+inspect`, or logs. An unreadable passphrase file aborts startup (fail
+closed) rather than silently running locked.
+
+**Soak impact.** The seven-day window is reset again. Earliest sign-off is
+now no earlier than seven days after this upgrade (`2026-09-26`), contingent
+on uninterrupted evidence.
