@@ -236,6 +236,20 @@ pub struct Node {
     pub(crate) order_book: Option<Arc<RwLock<SwapOrderBook>>>,
     /// Order IDs already seen via gossip, for deduplication.
     pub(crate) seen_orders: HashSet<[u8; 32]>,
+    /// Per-peer count of addresses accepted from PEX, and the window start.
+    ///
+    /// A single peer could otherwise fill the 10k-entry address book and
+    /// evict legitimate entries (a single-peer eclipse). Each peer may
+    /// contribute at most `PEX_PER_PEER_QUOTA` addresses per window.
+    pub(crate) pex_contributions:
+        std::collections::HashMap<std::net::SocketAddr, (u32, std::time::Instant)>,
+    /// Per-peer bytes served via `getdata`, and the window start.
+    ///
+    /// A small `getdata` (500 items, ~16 KB) can request up to 500 blocks
+    /// (~500 MB out), so the message-count limiter alone does not bound
+    /// egress. Each peer gets a byte budget per window.
+    pub(crate) peer_served_bytes:
+        std::collections::HashMap<std::net::SocketAddr, (u64, std::time::Instant)>,
     /// Receiver for locally-submitted transactions (from RPC/wallet).
     /// When a transaction is placed here, the node broadcasts it to all peers.
     tx_submit_rx: mpsc::Receiver<Transaction>,
@@ -320,6 +334,8 @@ impl Node {
             peer_versions: std::collections::HashMap::new(),
             order_book: None,
             seen_orders: HashSet::new(),
+            pex_contributions: std::collections::HashMap::new(),
+            peer_served_bytes: std::collections::HashMap::new(),
             tx_submit_rx,
             tx_submit_tx,
             block_submit_rx,
@@ -390,6 +406,8 @@ impl Node {
             peer_versions: std::collections::HashMap::new(),
             order_book: None,
             seen_orders: HashSet::new(),
+            pex_contributions: std::collections::HashMap::new(),
+            peer_served_bytes: std::collections::HashMap::new(),
             tx_submit_rx,
             tx_submit_tx,
             block_submit_rx,

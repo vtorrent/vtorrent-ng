@@ -44,7 +44,16 @@ pub struct RelayEngine {
     sessions: Arc<RwLock<Vec<RelaySession>>>,
     /// Max number of relay sessions this node will accept.
     max_sessions: usize,
+    /// Per-requester relay requests in the current window, and the window
+    /// start. Bounds how much traffic one requester can push through this
+    /// relay; the session cap alone does not, since sessions are short-lived.
+    request_counts: Arc<RwLock<HashMap<SocketAddr, (u32, std::time::Instant)>>>,
 }
+
+/// Maximum relay requests accepted from one requester per window.
+const RELAY_PER_REQUESTER_QUOTA: u32 = 60;
+/// Window over which the per-requester quota applies.
+const RELAY_QUOTA_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl RelayEngine {
     pub fn new(socket: Arc<UdpSocket>, max_sessions: usize) -> Self {
@@ -52,7 +61,25 @@ impl RelayEngine {
             socket,
             sessions: Arc::new(RwLock::new(Vec::new())),
             max_sessions,
+            request_counts: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Whether `from` may issue another relay request right now.
+    async fn within_quota(&self, from: SocketAddr) -> bool {
+        let now = std::time::Instant::now();
+        let mut counts = self.request_counts.write().await;
+        let entry = counts.entry(from).or_insert((0, now));
+        if now.duration_since(entry.1) >= RELAY_QUOTA_WINDOW {
+            *entry = (0, now);
+        }
+        entry.0 += 1;
+        let within = entry.0 <= RELAY_PER_REQUESTER_QUOTA;
+        // Bound the map: entries are only pruned on use.
+        if counts.len() > 10_000 {
+            counts.retain(|_, (_, start)| now.duration_since(*start) < RELAY_QUOTA_WINDOW);
+        }
+        within
     }
 
     /// Handle an incoming RELAY_REQUEST packet.
@@ -73,6 +100,18 @@ impl RelayEngine {
     ) -> Result<()> {
         if data.len() < 33 || data[0] != TAG_RELAY_REQUEST {
             return Err(OverlayError::HolePunch("invalid RELAY_REQUEST".into()));
+        }
+
+        // Per-requester quota: relay requests are unauthenticated at this
+        // layer, so without a limit one host can consume the relay's bandwidth
+        // and session slots.
+        if !self.within_quota(from).await {
+            let decline = build_relay_decline(&data[1..33]);
+            self.socket
+                .send_to(&decline, from)
+                .await
+                .map_err(OverlayError::Io)?;
+            return Ok(());
         }
 
         let target_id = hex::encode(&data[1..33]);

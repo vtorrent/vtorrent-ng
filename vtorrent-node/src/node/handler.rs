@@ -788,6 +788,34 @@ pub(crate) async fn handle_getdata(
                 .await;
             return Ok(());
         }
+        // Per-peer egress budget: a 500-item getdata is ~16 KB in but can
+        // request ~500 MB out, so the message-count limiter alone does not
+        // bound amplification. Reset the window hourly.
+        const GETDATA_BYTE_BUDGET: u64 = 64 * 1024 * 1024;
+        const GETDATA_BUDGET_WINDOW: std::time::Duration = std::time::Duration::from_secs(3600);
+        let budget_now = std::time::Instant::now();
+        let (served, budget_start) = node
+            .peer_served_bytes
+            .get(&peer_addr)
+            .copied()
+            .unwrap_or((0, budget_now));
+        let (served, budget_start) =
+            if budget_now.duration_since(budget_start) >= GETDATA_BUDGET_WINDOW {
+                (0, budget_now)
+            } else {
+                (served, budget_start)
+            };
+        if served >= GETDATA_BYTE_BUDGET {
+            tracing::debug!(
+                "getdata from {} rejected: peer exceeded its {} byte/hour egress budget",
+                peer_addr,
+                GETDATA_BYTE_BUDGET
+            );
+            node.peer_served_bytes
+                .insert(peer_addr, (served, budget_start));
+            return Ok(());
+        }
+        let mut served = served;
         for item in &req.items {
             match item.inv_type {
                 InvType::Block => {
@@ -798,6 +826,7 @@ pub(crate) async fn handle_getdata(
                     if let Some(block) = maybe_block {
                         let payload = node.serialize_block_for_peer(&block, peer_version);
                         if !payload.is_empty() {
+                            served = served.saturating_add(payload.len() as u64);
                             node.peer_manager
                                 .send_to(peer_addr, NetMessage::new("block", payload))
                                 .await;
@@ -828,6 +857,7 @@ pub(crate) async fn handle_getdata(
                     if let Some(tx) = maybe_tx {
                         let payload = node.serialize_tx_for_peer(&tx, peer_version);
                         if !payload.is_empty() {
+                            served = served.saturating_add(payload.len() as u64);
                             node.peer_manager
                                 .send_to(peer_addr, NetMessage::new("tx", payload))
                                 .await;
@@ -852,6 +882,15 @@ pub(crate) async fn handle_getdata(
                 }
                 _ => {}
             }
+        }
+        // Record the bytes served this request against the peer's budget.
+        node.peer_served_bytes
+            .insert(peer_addr, (served, budget_start));
+        // Bound the map: entries are only pruned on use, so many distinct
+        // source addresses would otherwise grow it without limit.
+        if node.peer_served_bytes.len() > 10_000 {
+            node.peer_served_bytes
+                .retain(|_, (_, start)| budget_now.duration_since(*start) < GETDATA_BUDGET_WINDOW);
         }
     }
     Ok(())
@@ -1712,6 +1751,46 @@ pub(crate) async fn dispatch_message(
                         vtorrent_p2p::pex::MAX_ADDR_PER_MSG
                     );
                     addr_msg.addrs.truncate(vtorrent_p2p::pex::MAX_ADDR_PER_MSG);
+                }
+                // Per-peer quota: without it one peer can fill the whole
+                // address book and evict legitimate entries (single-peer
+                // eclipse). The window resets hourly.
+                const PEX_PER_PEER_QUOTA: u32 = 2_000;
+                const PEX_QUOTA_WINDOW: std::time::Duration = std::time::Duration::from_secs(3600);
+                let now = std::time::Instant::now();
+                let (used, window_start) = node
+                    .pex_contributions
+                    .get(&peer_addr)
+                    .copied()
+                    .unwrap_or((0, now));
+                let (used, window_start) = if now.duration_since(window_start) >= PEX_QUOTA_WINDOW {
+                    (0, now)
+                } else {
+                    (used, window_start)
+                };
+                if used >= PEX_PER_PEER_QUOTA {
+                    tracing::debug!(
+                        "PEX: {} exceeded its address quota ({}); ignoring",
+                        peer_addr,
+                        PEX_PER_PEER_QUOTA
+                    );
+                    node.pex_contributions
+                        .insert(peer_addr, (used, window_start));
+                    return Ok(());
+                }
+                let allowed = (PEX_PER_PEER_QUOTA - used) as usize;
+                if addr_msg.addrs.len() > allowed {
+                    addr_msg.addrs.truncate(allowed);
+                }
+                node.pex_contributions.insert(
+                    peer_addr,
+                    (used + addr_msg.addrs.len() as u32, window_start),
+                );
+                // Bound the map itself: entries are only pruned on use, so a
+                // flood of distinct source addresses would grow it.
+                if node.pex_contributions.len() > 10_000 {
+                    node.pex_contributions
+                        .retain(|_, (_, start)| now.duration_since(*start) < PEX_QUOTA_WINDOW);
                 }
                 let count = addr_msg.addrs.len();
                 node.peer_manager.handle_addr_msg(&addr_msg);

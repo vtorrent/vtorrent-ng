@@ -217,7 +217,10 @@ impl Mempool {
 
             // Evict descendants: entries spending outputs of the replaced
             // transactions become orphaned (their parent no longer exists).
-            let mut frontier: Vec<[u8; 32]> = conflicts.to_vec();
+            // The frontier is a set so each level is O(spent_inputs) rather
+            // than O(spent_inputs * frontier), which was quadratic.
+            let mut frontier: std::collections::HashSet<[u8; 32]> =
+                conflicts.iter().copied().collect();
             while !frontier.is_empty() {
                 let doomed: Vec<[u8; 32]> = self
                     .spent_inputs
@@ -231,7 +234,7 @@ impl Mempool {
                 for txid in &doomed {
                     self.remove_entry(txid);
                 }
-                frontier = doomed;
+                frontier = doomed.into_iter().collect();
             }
         }
 
@@ -280,7 +283,8 @@ impl Mempool {
             // confirm, and occupy capacity until the TTL — an attacker can
             // permanently consume slots by pairing a low-fee tx with a child
             // (mirrors the RBF frontier eviction above).
-            let mut frontier: Vec<[u8; 32]> = vec![lowest_txid];
+            let mut frontier: std::collections::HashSet<[u8; 32]> =
+                std::iter::once(lowest_txid).collect();
             while !frontier.is_empty() {
                 let doomed: Vec<[u8; 32]> = self
                     .spent_inputs
@@ -294,7 +298,7 @@ impl Mempool {
                 for txid in &doomed {
                     self.remove_entry(txid);
                 }
-                frontier = doomed;
+                frontier = doomed.into_iter().collect();
             }
             // Raise the dynamic minimum fee rate
             self.min_fee_rate = lowest_rate + 1;

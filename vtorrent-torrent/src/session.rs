@@ -210,6 +210,11 @@ pub struct SessionManager {
     sessions: HashMap<String, TorrentSession>,
 }
 
+/// Maximum concurrent torrent sessions. Each session spawns a download task
+/// and holds peer connections, so an unbounded count is a resource-exhaustion
+/// vector via repeated `add_torrent` calls.
+pub const MAX_TORRENT_SESSIONS: usize = 64;
+
 impl SessionManager {
     pub fn new() -> Self {
         SessionManager {
@@ -217,11 +222,27 @@ impl SessionManager {
         }
     }
 
+    /// Number of active sessions.
+    pub fn len(&self) -> usize {
+        self.sessions.len()
+    }
+
+    /// Whether there are no active sessions.
+    pub fn is_empty(&self) -> bool {
+        self.sessions.is_empty()
+    }
+
     /// Add a new session and return its ID.
-    pub fn add_session(&mut self, session: TorrentSession) -> String {
+    ///
+    /// Returns `None` when the session cap is reached; the caller must reject
+    /// the request rather than spawning an unbounded number of tasks.
+    pub fn add_session(&mut self, session: TorrentSession) -> Option<String> {
+        if self.sessions.len() >= MAX_TORRENT_SESSIONS {
+            return None;
+        }
         let id = session.id.clone();
         self.sessions.insert(id.clone(), session);
-        id
+        Some(id)
     }
 
     /// Get a session by ID.
@@ -326,9 +347,26 @@ mod tests {
         let mut manager = SessionManager::new();
         let session =
             TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
-        let id = manager.add_session(session);
+        let id = manager
+            .add_session(session)
+            .expect("session cap not reached");
         assert!(manager.get_session(&id).is_ok());
         assert!(manager.get_session("nonexistent").is_err());
+    }
+
+    #[test]
+    fn test_session_manager_enforces_cap() {
+        let mut manager = SessionManager::new();
+        for _ in 0..MAX_TORRENT_SESSIONS {
+            let session =
+                TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+            assert!(manager.add_session(session).is_some());
+        }
+        // The cap must reject further sessions rather than growing unbounded.
+        let extra =
+            TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+        assert!(manager.add_session(extra).is_none());
+        assert_eq!(manager.len(), MAX_TORRENT_SESSIONS);
     }
 
     #[test]

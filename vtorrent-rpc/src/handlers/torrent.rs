@@ -61,7 +61,17 @@ pub async fn add_torrent(
     let info_hash = hex::encode(metainfo.info_hash);
     let name = metainfo.name.clone();
     let session = TorrentSession::new(metainfo, req.wallet_address);
-    let session_id = state.torrent_sessions.write().await.add_session(session);
+    let session_id = state
+        .torrent_sessions
+        .write()
+        .await
+        .add_session(session)
+        .ok_or_else(|| {
+            RpcError::BadRequest(format!(
+                "Too many active torrent sessions (max {})",
+                vtorrent_torrent::session::MAX_TORRENT_SESSIONS
+            ))
+        })?;
 
     // Spawn the download engine for this session.
     let cancel = tokio_util::sync::CancellationToken::new();

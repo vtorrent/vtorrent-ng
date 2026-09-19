@@ -561,7 +561,15 @@ impl Chain {
         }
 
         let mut result = Vec::new();
-        for height in (0..=self.best_height()).rev() {
+        // Bound the scan depth. This walks the chain newest-first and stops
+        // early once `limit` matches are found, so the worst case is a wallet
+        // with few or no matching transactions — which would otherwise scan
+        // every block while holding the chain lock and stall P2P block
+        // processing. The cap bounds that worst case; a full address→txids
+        // index is the proper fix for unbounded history.
+        const MAX_SCAN_BLOCKS: u32 = 200_000;
+        let floor = self.best_height().saturating_sub(MAX_SCAN_BLOCKS);
+        for height in (floor..=self.best_height()).rev() {
             let Some(block) = self.get_block_at_height(height) else {
                 continue;
             };

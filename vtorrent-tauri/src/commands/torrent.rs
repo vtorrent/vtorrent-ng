@@ -96,7 +96,13 @@ pub async fn add_torrent(
         .torrent_sessions
         .write()
         .await
-        .add_session(session);
+        .add_session(session)
+        .ok_or_else(|| {
+            TauriError::InvalidInput(format!(
+                "Too many active torrent sessions (max {})",
+                vtorrent_torrent::session::MAX_TORRENT_SESSIONS
+            ))
+        })?;
 
     let cancel = tokio_util::sync::CancellationToken::new();
     handle

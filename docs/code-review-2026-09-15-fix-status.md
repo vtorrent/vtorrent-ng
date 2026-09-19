@@ -53,6 +53,12 @@ medium/low findings listed at the end.
 | **M10 wallet import overwrite** | `e62415e` | Requires explicit `overwrite: true` |
 | **M15 TOTP replay** | `e62415e` | Matched time-step tracked; a used step is rejected |
 | **M12 BTC spend authorization** | `e346879` | `btc/send` and `btc-fund` now require an unlocked wallet |
+| **M2 getdata bandwidth amplification** | `TBD` | Per-peer egress byte budget (64 MB/hour) |
+| **M5 PEX address-book flooding** | `TBD` | Per-peer address quota (2000/hour) |
+| **M7 overlay relay abuse** | `TBD` | Per-requester relay quota (60/min) |
+| **M9 unbounded torrent sessions** | `TBD` | Cap of 64 concurrent sessions |
+| **M11 full-chain scans under the lock** | `TBD` | Bounded scan depth (200k blocks) |
+| **M17 quadratic eviction scan** | `TBD` | Frontier is a HashSet (linear per level) |
 
 ## C1 — fixed (`a3dd177`)
 
@@ -156,12 +162,36 @@ neither is available.
 
 ### Lower-priority medium/low
 
-M2 (`getdata` bandwidth accounting), M5 (PEX per-peer quota), M6 (DHT source
-validation — the torrent DHT already validates source and tid), M7 (overlay
-relay auth), M9 (torrent session cap), M11 (full-chain scans under the chain
-mutex), M16 (`fork()` safety), M17 (quadratic eviction), and the remaining
-low-severity items. These are documented in the review and are candidates for
-follow-up work.
+M6 (DHT source validation — the torrent DHT already validates source and tid),
+M16 (`fork()` safety), and the remaining low-severity items. These are
+documented in the review and are candidates for follow-up work.
+
+## DoS-hardening batch (M2, M5, M7, M9, M11, M17)
+
+Six resource-exhaustion findings fixed together. None is security-critical
+(no fund or key exposure), but each lets a remote peer or caller consume
+disproportionate resources:
+
+- **M2 `getdata` amplification.** A 500-item `getdata` is ~16 KB in but can
+  request ~500 MB out; the message-count limiter did not bound egress. Added a
+  per-peer served-byte budget (64 MB/hour), with the map bounded and pruned.
+- **M5 PEX address-book flooding.** One peer could fill the 10k-entry address
+  book and evict legitimate entries (single-peer eclipse). Added a per-peer
+  contribution quota (2000 addresses/hour).
+- **M7 overlay relay abuse.** Relay requests were unauthenticated and
+  unrate-limited at that layer. Added a per-requester quota (60/min).
+- **M9 unbounded torrent sessions.** `add_session` had no cap, and each
+  session spawns a task. Now capped at 64; both the RPC and Tauri callers
+  reject with a clear error.
+- **M11 full-chain scans under the chain mutex.** `get_transactions` walked
+  from height 0, holding the chain lock shared with P2P block processing. The
+  scan is now bounded to 200k blocks. A full address→txids index remains the
+  proper fix for unbounded history.
+- **M17 quadratic eviction scan.** The descendant-eviction frontier was a
+  `Vec` scanned with `contains` per entry; now a `HashSet`, making each level
+  linear.
+
+Tests: the torrent session cap rejects past the limit.
 
 ## M12 — fixed (broader than reported)
 
