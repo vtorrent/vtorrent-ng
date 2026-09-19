@@ -656,3 +656,44 @@ previous window (`2026-09-17T21:09Z`) is superseded.
 stalls the chain until an operator unlocks. Consider persisting the staking
 intent so it can auto-resume without the passphrase, or documenting the
 unlock step in the on-call runbook as a mandatory post-restart action.
+
+## 2026-09-19 — S4/S5/M8/M10/M15 deployed (fleet upgrade, window reset)
+
+The pending non-consensus fix batch was deployed to all three nodes:
+`eb4dd0c` → `2160eb9`.
+
+**Pre-deployment verification (non-destructive).** The new image was run
+against a copy of node3's live data before any fleet action. It replayed the
+entire chain to height 9759 with the **exact same tip hash** as the running
+old binary (`5f9a2b0fb663702ac92708bfe14f83bb33ea160c28b291aeb02591395bde5fe2`)
+and zero errors.
+
+**Backup.** All three `/data/nodeN` volumes copied to
+`vtr-preupgrade-backup` (49 MB each). Pre-upgrade tip was height 9761
+(`751285e9f55bb6ea2e4f37a97cfea72117ebb68f67edb7d9454e5c7fc7e93e6d`),
+agreed by all three nodes.
+
+**Rollout.** All three stopped together, compose image pin bumped, recreated.
+All three replayed to the pre-upgrade tip with zero errors. Staking restored
+with the documented unlock helper (wallet restores locked).
+
+**Live verification of the deployed fixes:**
+- S4 — `POST /api/v1/swap/btc-claim-bump` is present and validating (400 on a
+  malformed body, not 405).
+- M10 — `POST /api/v1/wallet/import` on the running node returns
+  `A wallet is already imported; set "overwrite": true to replace it`.
+- M8/M15 — covered by unit tests; the tracker announce error is swallowed by
+  `if let Ok(...)` in the engine, so a live rejection is not observable in the
+  logs (noted as a logging gap, not a functional one).
+
+**Result.** All three agree and produce blocks at **61.0s average** over six
+consecutive intervals. Zero ERROR/panic/reorg lines, zero restarts.
+
+**Soak impact.** The seven-day window is reset again. Earliest sign-off is now
+no earlier than seven days after this upgrade (`2026-09-26`), contingent on
+uninterrupted evidence. The previous window (`2026-09-18T14:33Z`) is
+superseded.
+
+**Rollback.** Restore the `vtr-preupgrade-backup` volumes and re-pin
+`eb4dd0c`. This batch is not consensus-breaking, so unlike the C1 upgrade the
+old binary can replay a chain produced by it.
