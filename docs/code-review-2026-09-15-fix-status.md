@@ -59,6 +59,7 @@ medium/low findings listed at the end.
 | **M9 unbounded torrent sessions** | `506c344` | Cap of 64 concurrent sessions |
 | **M11 full-chain scans under the lock** | `506c344` | Bounded scan depth (200k blocks) |
 | **M17 quadratic eviction scan** | `506c344` | Frontier is a HashSet (linear per level) |
+| **M16 `fork()` safety** | `TBD` | Replaced raw fork/execvp with `std::process::Command` |
 
 ## C1 — fixed (`a3dd177`)
 
@@ -162,9 +163,26 @@ neither is available.
 
 ### Lower-priority medium/low
 
-M6 (DHT source validation — the torrent DHT already validates source and tid),
-M16 (`fork()` safety), and the remaining low-severity items. These are
-documented in the review and are candidates for follow-up work.
+M6 (DHT source validation — the torrent DHT already validates source and tid)
+and the remaining low-severity items. These are documented in the review and
+are candidates for follow-up work.
+
+## M16 — fixed
+
+`vtorrent-migrate/src/bdb.rs`. The legacy-wallet extractor shelled out to
+`db5.3_dump` using a raw `libc::fork`/`execvp`, and the child called
+`CString::new(..).unwrap()` and `libc::open` between `fork` and `execvp`. In a
+multithreaded process only async-signal-safe functions are legal there:
+allocation can deadlock on a lock held by another thread at fork time, and a
+panic in the child unwinds into an undefined state.
+
+Replaced with `std::process::Command`, which sets up the stdio redirection
+before forking and execs directly. Behaviour is unchanged (stdout captured to
+a temp file, stderr to /dev/null, non-zero exit surfaced as an error), and the
+now-unused `libc` dependency was removed (`cargo machete` clean).
+
+Tests: a non-BDB input and a bad flag both return an error rather than
+panicking.
 
 ## DoS-hardening batch (M2, M5, M7, M9, M11, M17)
 

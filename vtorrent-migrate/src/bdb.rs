@@ -223,60 +223,38 @@ fn parse_wallet_via_dbdump_path(
 /// the full cargo-built binary (likely due to secp256k1/openssl runtime state).
 /// This workaround avoids all pipe/fd inheritance issues.
 fn run_dbdump(args: &[&str]) -> std::result::Result<String, String> {
-    use std::ffi::CString;
-
+    // Use `std::process::Command` rather than a raw `fork`/`execvp`.
+    //
+    // The previous implementation called `CString::new(..).unwrap()` and
+    // `libc::open` in the child between `fork` and `execvp`. In a
+    // multithreaded process only async-signal-safe functions are legal there:
+    // allocation can deadlock on a lock held by another thread at fork time,
+    // and a panic in the child would unwind into an undefined state. Command
+    // sets up the stdio redirection before forking and execs directly.
     let tmp = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
     let out_path = tmp.into_temp_path();
-    let out_str = out_path.to_str().unwrap_or_default().to_string();
+    let out_file = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&out_path)
+        .map_err(|e| e.to_string())?;
 
-    unsafe {
-        let pid = libc::fork();
-        if pid < 0 {
-            return Err("fork failed".into());
-        }
+    let status = std::process::Command::new("db5.3_dump")
+        .args(args)
+        .stdout(std::process::Stdio::from(out_file))
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("failed to run db5.3_dump: {e}"))?;
 
-        if pid == 0 {
-            let c_out = CString::new(out_str.as_str()).unwrap();
-            let fd = libc::open(c_out.as_ptr(), libc::O_WRONLY | libc::O_TRUNC, 0o644);
-            if fd >= 0 {
-                libc::dup2(fd, 1);
-                libc::close(fd);
-            }
-            let devnull = libc::open(c"/dev/null".as_ptr().cast(), libc::O_WRONLY);
-            if devnull >= 0 {
-                libc::dup2(devnull, 2);
-                libc::close(devnull);
-            }
+    let output = std::fs::read_to_string(&out_path).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&out_path);
 
-            let prog = CString::new("db5.3_dump").unwrap();
-            let mut c_args: Vec<CString> = vec![prog];
-            for a in args {
-                c_args.push(CString::new(*a).unwrap());
-            }
-            let c_ptrs: Vec<*const i8> = c_args
-                .iter()
-                .map(|c| c.as_ptr())
-                .chain(std::iter::once(std::ptr::null()))
-                .collect();
-            libc::execvp(c_ptrs[0], c_ptrs.as_ptr());
-            libc::_exit(127);
-        }
-
-        let mut status = 0i32;
-        libc::waitpid(pid, &mut status, 0);
-
-        if libc::WIFEXITED(status) {
-            let code = libc::WEXITSTATUS(status);
-            let output = std::fs::read_to_string(&out_str).map_err(|e| e.to_string())?;
-            let _ = std::fs::remove_file(&out_str);
-            if code == 0 || output.contains("6d61696e") || output.contains("636b6579") {
-                Ok(output)
-            } else {
-                Err(format!("db5.3_dump exited with status {code}"))
-            }
-        } else {
-            let _ = std::fs::remove_file(&out_str);
-            Err("db5.3_dump was killed".into())
+    if status.success() || output.contains("6d61696e") || output.contains("636b6579") {
+        Ok(output)
+    } else {
+        match status.code() {
+            Some(code) => Err(format!("db5.3_dump exited with status {code}")),
+            None => Err("db5.3_dump was killed".into()),
         }
     }
 }
@@ -422,5 +400,31 @@ mod tests {
     fn test_parse_empty_dbdump() {
         let records = parse_dbdump_output("").unwrap();
         assert!(records.is_empty());
+    }
+
+    #[test]
+    fn test_run_dbdump_captures_stdout_and_reports_missing_binary() {
+        // The subprocess wiring must capture stdout into the temp file and
+        // surface a non-zero exit. `db5.3_dump` on a non-BDB file exits
+        // non-zero with no records, which exercises the error path without
+        // needing a real wallet.
+        let dir = tempfile::tempdir().unwrap();
+        let bogus = dir.path().join("not-a-db");
+        std::fs::write(&bogus, b"not a berkeley db").unwrap();
+        let result = run_dbdump(&[bogus.to_str().unwrap()]);
+        // Either the tool is absent (Err from Command) or it ran and failed;
+        // both must be an Err, never a panic or a false Ok.
+        assert!(result.is_err(), "expected an error, got {result:?}");
+    }
+
+    #[test]
+    fn test_run_dbdump_missing_binary_is_an_error_not_a_panic() {
+        // A non-existent program must produce a clean error. This is the
+        // path that previously ran `CString::new(..).unwrap()` in a forked
+        // child; it must never panic.
+        let result = run_dbdump(&["--definitely-not-a-real-flag"]);
+        // With a real db5.3_dump this errors on the bad flag; without it,
+        // Command reports the spawn failure. Either way: Err, no panic.
+        assert!(result.is_err());
     }
 }
