@@ -575,6 +575,18 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // ── Start services concurrently ───────────────────────────────────────────
+    // Fail closed on an unreadable passphrase file: silently starting locked
+    // would recreate the exact stall this option exists to prevent.
+    if let Some(path) = &cli.wallet_passphrase_file {
+        if let Err(e) = std::fs::metadata(path) {
+            anyhow::bail!(
+                "--wallet-passphrase-file {} is not readable: {}",
+                path.display(),
+                e
+            );
+        }
+    }
+    let rpc_state_for_unlock = rpc_state.clone();
     tokio::spawn(vtorrent_rpc::swap_reconciliation::run_reconciler(
         rpc_state.clone(),
     ));
@@ -752,6 +764,65 @@ async fn main() -> anyhow::Result<()> {
             tracing::error!("RPC server error: {}", e);
         }
     });
+
+    // Boot-time wallet auto-unlock so staking resumes without operator action.
+    //
+    // The wallet is restored from disk locked, so without this the staking
+    // loop stays disabled after any restart and the chain stalls until someone
+    // calls /wallet/unlock. The passphrase is read from a 0600 file (never
+    // from argv or the environment) and is not logged.
+    if let Some(passphrase_path) = cli.wallet_passphrase_file.clone() {
+        let unlock_state = rpc_state_for_unlock.clone();
+        tokio::spawn(async move {
+            // Give the node loop a moment to start so the staking control
+            // channel is being polled before we send Start.
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            let passphrase = match tokio::task::spawn_blocking({
+                let path = passphrase_path.clone();
+                move || std::fs::read_to_string(path)
+            })
+            .await
+            {
+                Ok(Ok(text)) => zeroize::Zeroizing::new(text.trim_end().to_string()),
+                Ok(Err(e)) => {
+                    tracing::error!(
+                        "Wallet auto-unlock failed: cannot read {}: {}",
+                        passphrase_path.display(),
+                        e
+                    );
+                    return;
+                }
+                Err(e) => {
+                    tracing::error!("Wallet auto-unlock task failed: {}", e);
+                    return;
+                }
+            };
+            if passphrase.is_empty() {
+                tracing::error!(
+                    "Wallet auto-unlock failed: {} is empty",
+                    passphrase_path.display()
+                );
+                return;
+            }
+            match vtorrent_rpc::handlers::unlock_with_passphrase(
+                &unlock_state,
+                &passphrase,
+                None,
+                0,
+            )
+            .await
+            {
+                Ok(_) => tracing::info!(
+                    "Wallet auto-unlocked from {}; staking will resume if requested",
+                    passphrase_path.display()
+                ),
+                Err(e) => tracing::error!(
+                    "Wallet auto-unlock failed (wallet stays locked, staking will not resume): {}",
+                    e
+                ),
+            }
+        });
+    }
 
     let node_handle = tokio::spawn(async move {
         tracing::info!("P2P node starting...");

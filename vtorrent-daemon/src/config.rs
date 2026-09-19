@@ -38,6 +38,16 @@ pub struct Cli {
     #[arg(long, env = "VTORRENT_STAKING_WIF")]
     pub staking_wif: Option<String>,
 
+    /// File containing the wallet encryption passphrase, used to auto-unlock
+    /// the wallet at startup so staking resumes without operator action.
+    ///
+    /// The file must be readable only by the daemon's user (0600). The
+    /// passphrase is never logged or placed in the process arguments. If the
+    /// file is set but unreadable, the daemon refuses to start rather than
+    /// silently running locked (which would stall staking).
+    #[arg(long, value_name = "PATH")]
+    pub wallet_passphrase_file: Option<PathBuf>,
+
     /// Disable DHT bootstrap (use DNS seeds only).
     #[arg(long, default_value_t = false)]
     pub no_dht: bool,

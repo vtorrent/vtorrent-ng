@@ -47,6 +47,8 @@ services:
       - "btc:18448"
       - --btc-seed
       - "11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111"
+      - --wallet-passphrase-file
+      - /run/secrets/wallet-passphrase
       - --log-level
       - debug
     ports:
@@ -56,6 +58,11 @@ services:
       - "22525"
     volumes:
       - vtr-data1:/data/node1
+      # Read-only passphrase for boot-time wallet auto-unlock so staking
+      # resumes after a restart without operator action. The file is 0600 and
+      # lives outside the repo (gitignored .ops-backups/); it is never placed
+      # in argv or the environment.
+      - ${VTORRENT_WALLET_PASSPHRASE_FILE:-./secrets/wallet-passphrase}:/run/secrets/wallet-passphrase:ro
     networks:
       - vtrnet
     restart: unless-stopped

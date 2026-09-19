@@ -470,10 +470,34 @@ pub async fn unlock_wallet(
         ));
     }
 
+    let expires_at = unlock_with_passphrase(
+        &state,
+        &req.passphrase,
+        req.otp_code.as_deref(),
+        req.timeout_secs,
+    )
+    .await?;
+
+    Ok(Json(UnlockResponse {
+        success: true,
+        expires_at,
+    }))
+}
+
+/// Unlock the wallet and auto-resume staking, returning the unlock expiry.
+///
+/// Shared by the RPC handler and the daemon's boot-time auto-unlock so both
+/// paths behave identically (including the staking auto-resume).
+pub async fn unlock_with_passphrase(
+    state: &AppState,
+    passphrase: &str,
+    otp_code: Option<&str>,
+    timeout_secs: u64,
+) -> RpcResult<Option<u64>> {
     // Verify the passphrase (and TOTP if 2FA is enabled) and decrypt the WIF
     // into memory. The wallet stays locked unless the credentials are correct.
-    let wif = verify_wallet_auth(&state, &req.passphrase, req.otp_code.as_deref()).await?;
-    if let Err(error) = crate::swap_recovery::restore_with_wif(&state, &wif).await {
+    let wif = verify_wallet_auth(state, passphrase, otp_code).await?;
+    if let Err(error) = crate::swap_recovery::restore_with_wif(state, &wif).await {
         state.lock_wallet().await;
         return Err(error);
     }
@@ -494,14 +518,24 @@ pub async fn unlock_wallet(
         *state.wallet_change_address.write().await = Some(address);
     }
 
-    let expires_at = if req.timeout_secs == 0 {
+    let expires_at = if timeout_secs == 0 {
         Some(0u64)
     } else {
-        Some(now_secs().saturating_add(req.timeout_secs))
+        Some(now_secs().saturating_add(timeout_secs))
     };
 
     *state.wallet_unlock_expiry.write().await = expires_at;
 
+    resume_staking_if_requested(state).await;
+
+    Ok(expires_at)
+}
+
+/// Re-enable staking if the persisted intent file says it was on.
+///
+/// Requires the wallet to be unlocked (the coinstake must be signed), which is
+/// why this runs at the end of an unlock rather than at startup.
+pub async fn resume_staking_if_requested(state: &AppState) {
     // Auto-resume staking if it was enabled before the last restart: the
     // intent file records the address; signing now works because the wallet
     // is unlocked.
@@ -547,11 +581,6 @@ pub async fn unlock_wallet(
             }
         }
     }
-
-    Ok(Json(UnlockResponse {
-        success: true,
-        expires_at,
-    }))
 }
 
 pub async fn lock_wallet(State(state): State<Arc<AppState>>) -> RpcResult<Json<Value>> {
@@ -635,4 +664,100 @@ pub async fn get_txout(
         height: utxo.height,
         coinbase,
     }))
+}
+
+#[cfg(test)]
+mod auto_unlock_tests {
+    use super::*;
+
+    /// A state whose encrypted wallet is protected by `passphrase`.
+    async fn wallet_state(passphrase: &str) -> AppState {
+        let state = AppState::new();
+        let wif = vtorrent_core::keys::PrivateKey::from_bytes([4u8; 32], true)
+            .unwrap()
+            .to_wif(198);
+        let data = super::super::HotWalletData {
+            version: 1,
+            wif: zeroize::Zeroizing::new(wif.to_string()),
+            otp_secret: None,
+        };
+        let plaintext = zeroize::Zeroizing::new(serde_json::to_vec(&data).unwrap());
+        let encrypted =
+            vtorrent_wallet::encryption::encrypt_wallet(&plaintext, passphrase).unwrap();
+        *state.wallet_encrypted.write().await = Some(encrypted);
+        state
+    }
+
+    async fn state_with_intent(
+        passphrase: &str,
+        intent: Option<&str>,
+    ) -> (
+        AppState,
+        tokio::sync::mpsc::Receiver<vtorrent_node::staking::StakingCommand>,
+        tempfile::TempDir,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let mut state = wallet_state(passphrase).await;
+        let path = directory.path().join("staking.json");
+        if let Some(body) = intent {
+            std::fs::write(&path, body).unwrap();
+        }
+        state.staking_state_path = Some(path);
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        state.staking_control = Some(tx);
+        (state, rx, directory)
+    }
+
+    const INTENT: &str = r#"{"enabled":true,"address":"VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k"}"#;
+
+    #[tokio::test]
+    async fn auto_unlock_resumes_staking_from_intent_file() {
+        let (state, mut rx, _dir) = state_with_intent("correct horse", Some(INTENT)).await;
+        unlock_with_passphrase(&state, "correct horse", None, 0)
+            .await
+            .expect("auto-unlock must succeed with the right passphrase");
+
+        assert!(*state.staking_enabled.read().await);
+        assert_eq!(
+            state.staking_address.read().await.as_deref(),
+            Some("VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k")
+        );
+        match rx.try_recv() {
+            Ok(vtorrent_node::staking::StakingCommand::Start { address, wif }) => {
+                assert_eq!(address, "VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k");
+                assert!(wif.is_some_and(|w| !w.is_empty()), "WIF must be supplied");
+            }
+            Ok(_) => panic!("expected StakingCommand::Start"),
+            Err(e) => panic!("no staking command was sent: {e}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn auto_unlock_with_wrong_passphrase_fails_closed() {
+        let (state, mut rx, _dir) = state_with_intent("correct horse", Some(INTENT)).await;
+        let err = unlock_with_passphrase(&state, "wrong", None, 0)
+            .await
+            .expect_err("a wrong passphrase must fail");
+        assert!(err.to_string().contains("Incorrect passphrase"));
+        assert!(
+            state.wallet_wif.read().await.is_none(),
+            "wallet stays locked"
+        );
+        assert!(!*state.staking_enabled.read().await, "staking stays off");
+        assert!(rx.try_recv().is_err(), "no staking command may be sent");
+    }
+
+    #[tokio::test]
+    async fn auto_unlock_without_intent_file_does_not_enable_staking() {
+        let (state, mut rx, _dir) = state_with_intent("correct horse", None).await;
+        unlock_with_passphrase(&state, "correct horse", None, 0)
+            .await
+            .expect("unlock must still succeed");
+        assert!(
+            state.wallet_wif.read().await.is_some(),
+            "wallet is unlocked"
+        );
+        assert!(!*state.staking_enabled.read().await, "staking stays off");
+        assert!(rx.try_recv().is_err());
+    }
 }
