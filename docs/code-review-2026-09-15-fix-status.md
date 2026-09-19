@@ -53,12 +53,12 @@ medium/low findings listed at the end.
 | **M10 wallet import overwrite** | `e62415e` | Requires explicit `overwrite: true` |
 | **M15 TOTP replay** | `e62415e` | Matched time-step tracked; a used step is rejected |
 | **M12 BTC spend authorization** | `e346879` | `btc/send` and `btc-fund` now require an unlocked wallet |
-| **M2 getdata bandwidth amplification** | `TBD` | Per-peer egress byte budget (64 MB/hour) |
-| **M5 PEX address-book flooding** | `TBD` | Per-peer address quota (2000/hour) |
-| **M7 overlay relay abuse** | `TBD` | Per-requester relay quota (60/min) |
-| **M9 unbounded torrent sessions** | `TBD` | Cap of 64 concurrent sessions |
-| **M11 full-chain scans under the lock** | `TBD` | Bounded scan depth (200k blocks) |
-| **M17 quadratic eviction scan** | `TBD` | Frontier is a HashSet (linear per level) |
+| **M2 getdata bandwidth amplification** | `506c344` | Per-peer egress byte budget (64 MB/hour) |
+| **M5 PEX address-book flooding** | `506c344` | Per-peer address quota (2000/hour) |
+| **M7 overlay relay abuse** | `506c344` | Per-requester relay quota (60/min) |
+| **M9 unbounded torrent sessions** | `506c344` | Cap of 64 concurrent sessions |
+| **M11 full-chain scans under the lock** | `506c344` | Bounded scan depth (200k blocks) |
+| **M17 quadratic eviction scan** | `506c344` | Frontier is a HashSet (linear per level) |
 
 ## C1 — fixed (`a3dd177`)
 
