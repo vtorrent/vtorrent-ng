@@ -816,3 +816,29 @@ ERROR/panic/reorg lines.
 
 **Soak impact.** The seven-day window is reset again. Earliest sign-off is now
 no earlier than seven days after this upgrade (`2026-09-27`).
+
+## 2026-09-20 (later) — final low-severity batch deployed (13489d4)
+
+Deployed the last actionable review batch: L3 (startup lock order), L4 (block
+size estimate + bits), L9 (Tor control reply timeout), L11 (onion/i2p
+dialing), L12 (overlay ingest ordering), L17 (WebSocket cap + idle timeout),
+L19 (rate limiter cost), L20 (constant-time compare length leak).
+
+**Pre-deployment verification.** The new image replayed a copy of node3's live
+data to height 11213 with the exact same tip hash as the running old binary
+(`f484d0c0f57842363dabe96ba05fd3a47e048d656bea5677fe078a44e7a03b3c`), zero
+errors. Volumes backed up (53 MB each); pre-upgrade tip 11216 (`e88d2681`).
+
+**Rollout.** All three stopped together, image pin `38ef9de` → `13489d4`,
+recreated. Auto-unlock and staking auto-resume worked with no manual action.
+All three replayed to the pre-upgrade tip with zero errors.
+
+**Result.** All three agree and produce blocks at 61s intervals. Zero
+ERROR/panic/reorg lines.
+
+**Soak impact.** The seven-day window is reset again. Earliest sign-off is now
+no earlier than seven days after this upgrade (`2026-09-27`).
+
+**Review status.** With this batch, every finding from both 2026-09-15 review
+passes is fixed or explicitly documented as accepted. The only item not fixed
+is M6 (DHT source validation), which the torrent DHT already handles.
