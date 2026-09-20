@@ -842,3 +842,42 @@ no earlier than seven days after this upgrade (`2026-09-27`).
 **Review status.** With this batch, every finding from both 2026-09-15 review
 passes is fixed or explicitly documented as accepted. The only item not fixed
 is M6 (DHT source validation), which the torrent DHT already handles.
+
+## 2026-09-20 — production seed fleet upgraded (stale binary + false-positive alert)
+
+While verifying the post-soak checklist, found that the three production seeds
+were running a **stale binary** (built 2026-08-29, `2.0.0-beta.2`) — 217
+commits behind `main`, missing every fix from the 2026-09-15 review and the
+protocol-v3 change (`c5c863b`, 2026-09-02).
+
+**Symptom.** `PeerCountZero` was firing on seed3. It was a false positive: the
+node's own log said `Peers: 4` and `/peers` returned `count: 4`, but the
+`vtorrent_peer_count` metric reported `0`. The stale binary only refreshed
+sync status on the event-bridge *lag* path; the fix (`c9d00a6`, 2026-09-09)
+was not deployed. `/info` also misreported `connections: 0`.
+
+**Also corrected:** the checklist item "seed3 monitoring not applied" was
+stale — the deployed `prometheus.yml` on seed1 and the nginx config on seed3
+are byte-identical to the repo, and all six targets were already `up`.
+
+**Upgrade.** Built `target/release/vtorrent-daemon` from `main`
+(sha256 `920a733b53c76f4d85507f3d6cb665a3a1cc082d2bc8512d57a5609f7c4809b3`),
+verified it against a copy of seed1's real data, then upgraded all three
+together (the protocol version is a hard boundary — `70001` → `3` — and the
+seeds peer only with each other, so a partial upgrade would partition them).
+
+- Backed up each seed's data dir and old binary to
+  `/root/vtorrent-preupgrade-<ts>/` (36 MB each).
+- Stopped the service, installed the new binary, removed the legacy `chain.db`
+  (the new store rejects pre-protocol-3 stores; the seeds are at height 0, so
+  nothing was lost), restarted.
+- `overlay.key` and `peers.dat` were preserved, so node identity is unchanged.
+
+**Result.** All three seeds report `version=2.0.0-beta.2`, `height=0`,
+`connections=4`, `syncing=false`. The `vtorrent_peer_count` metric now reads
+4 on all three, all seven Prometheus targets are `up`, and the `PeerCountZero`
+alert has cleared.
+
+**Note.** The seeds are mainnet and the soak fleet is regtest, so this upgrade
+does not affect the soak window. The seeds now carry the C1 consensus rule and
+all review fixes, which is what mainnet launch requires.
