@@ -905,3 +905,29 @@ where it was and comfortably under the 150 MiB budget.
 **Soak impact.** This was a container recreate, not an image change, so the
 chain and staking continued without a window reset. The seven-day window is
 unchanged (earliest sign-off 2026-09-27).
+
+## 2026-09-20 — seven-day window baseline (read-only)
+
+Baseline for the current seven-day window, which started when the
+`MALLOC_ARENA_MAX` containers were recreated at `2026-09-20T03:22:35Z`. Read at
+`2026-09-20T07:07Z` (~3h20m in). All checks read-only; no fleet action.
+
+- All three nodes agree at height **11568**, hash
+  `38b97354e0dbdbec1ac98ba1dfe063a53ca8f8e0258bc8ebe017e297693496c8`,
+  `syncing: false`, mempool 0. Node1 (staker) holds 2 connections; each
+  follower holds 1.
+- Staking enabled for `VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k`, 4 eligible UTXOs,
+  222 blocks staked.
+- Prometheus over the window: `min_over_time(up) = 1` on all three (zero
+  scrape outages); `min_over_time(peer_count) = 2/1/1` (no zero-peer dips);
+  `max_over_time(syncing) = 0` on all three; `delta(block_height) = +177.2`
+  on all three (~61s/block).
+- Scrape coverage: 720/720 expected 15s samples on each node (100%).
+- Zero ERROR/panic/reorg/rollback/rejected lines on all three since the
+  window start; restart count 0 on all three.
+- Memory: node1 114.7, node2 99.0, node3 96.8 MiB, **1 malloc arena each**
+  (the `MALLOC_ARENA_MAX=2` cap is holding). Node1 is ~40 MiB below its
+  pre-cap 154 MiB.
+
+Earliest sign-off remains **2026-09-27T03:22Z**, contingent on uninterrupted
+evidence. Next daily observation entry due 2026-09-21.
