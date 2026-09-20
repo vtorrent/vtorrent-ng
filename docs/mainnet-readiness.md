@@ -149,18 +149,18 @@ apply any of these before the seven-day sign-off (earliest
 `2026-09-20T10:12Z`); each needs its own green CI run and, for the seed
 actions, operator approval.
 
-- [ ] **`DNS_SEEDS` missing seed3** — `vtorrent-p2p/src/peer_manager.rs:55`
-      lists only `seed1.vtorrent.org` and `seed2.vtorrent.org`.
-      `BOOTSTRAP_PEERS` (`:45`) already has all three IPs, so this is a
-      DNS-path gap only. Verified 2026-09-15: `seed3.vtorrent.org` already
-      resolves to `5.161.90.55` via both the system resolver and Cloudflare
-      DoH (A record, TTL ~1h), so the record is live and adding it to
-      `DNS_SEEDS` is a low-risk code change → build + fleet deploy.
-- [ ] **seed3 monitoring not applied** — `deploy/seeds-monitoring/prometheus.yml`
-      already targets `5.161.90.55:9105`/`:9100`, but the config has not been
-      copied to `/etc/prometheus/prometheus.yml` on vtr-seed1 (reload), and the
-      nginx metrics proxy + node_exporter are not installed on vtr-seed3.
-      Production-seed action → operator approval required.
+- [x] **`DNS_SEEDS` missing seed3** — fixed in `bdc6868`; `seed3.vtorrent.org`
+      is now in `DNS_SEEDS` alongside seed1/seed2. The A record was already
+      live (`5.161.90.55`).
+- [x] **seed3 monitoring** — verified applied 2026-09-20: the deployed
+      `prometheus.yml` on vtr-seed1 and the nginx metrics config on vtr-seed3
+      are byte-identical to `deploy/seeds-monitoring/`, and all six targets
+      (daemon + node_exporter on all three seeds) report `up`.
+- [x] **Production seed binary upgrade** — 2026-09-20: all three seeds were
+      running a stale 2026-08-29 binary (217 commits behind, missing the
+      protocol-v3 change and every review fix), which caused a false-positive
+      `PeerCountZero` alert. Upgraded all three together; see
+      `docs/soak-log.md`. Seeds now report `connections=4`, `syncing=false`.
 - [ ] **`MALLOC_ARENA_MAX` review** — node1's staker holds a 5-arena/64 MiB
       glibc high-water mark vs 3/25 MiB on followers; steady-state RSS is flat
       and under the <150 MiB budget, so this is optional. Decide whether to pin
