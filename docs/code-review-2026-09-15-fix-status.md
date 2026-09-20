@@ -65,8 +65,8 @@ medium/low findings listed at the end.
 | **L10 seed ban escalation** | `bdc6868` | Bootstrap seeds exempt from failure bans |
 | **L18 unbounded SPV header batch** | `bdc6868` | Batch capped at 2000 headers |
 | **DNS_SEEDS missing seed3** | `bdc6868` | Added `seed3.vtorrent.org` (deferred item) |
-| **L5 partial legacy claim strands funds** | `TBD` | Claim must match the snapshot balance exactly |
-| **L6 conflicting claims both admitted** | `TBD` | Mempool tracks pending claim addresses |
+| **L5 partial legacy claim strands funds** | `3cce704` | Claim must match the snapshot balance exactly |
+| **L6 conflicting claims both admitted** | `3cce704` | Mempool tracks pending claim addresses |
 
 ## C1 — fixed (`a3dd177`)
 
