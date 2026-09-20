@@ -67,14 +67,14 @@ medium/low findings listed at the end.
 | **DNS_SEEDS missing seed3** | `bdc6868` | Added `seed3.vtorrent.org` (deferred item) |
 | **L5 partial legacy claim strands funds** | `3cce704` | Claim must match the snapshot balance exactly |
 | **L6 conflicting claims both admitted** | `3cce704` | Mempool tracks pending claim addresses |
-| **L3 startup lock order** | `TBD` | Acquire chain before mempool |
-| **L4 block size estimate + bits** | `TBD` | Real serialized size; reference GENESIS_BITS |
-| **L9 Tor control reply timeout** | `TBD` | Whole reply read is now bounded |
-| **L11 onion/i2p dialing** | `TBD` | Anonymous addresses bypass DNS |
-| **L12 overlay ingest before rate limit** | `TBD` | Rate-limit check moved before ingest |
-| **L17 WebSocket cap + idle timeout** | `TBD` | 128 connections; 300s idle close |
-| **L19 rate limiter cost + cap** | `TBD` | Periodic prune + tracked-client cap |
-| **L20 constant-time compare length leak** | `TBD` | Compare fixed-size SHA-256 digests |
+| **L3 startup lock order** | `1726ba5` | Acquire chain before mempool |
+| **L4 block size estimate + bits** | `1726ba5` | Real serialized size; reference GENESIS_BITS |
+| **L9 Tor control reply timeout** | `1726ba5` | Whole reply read is now bounded |
+| **L11 onion/i2p dialing** | `1726ba5` | Anonymous addresses bypass DNS |
+| **L12 overlay ingest before rate limit** | `1726ba5` | Rate-limit check moved before ingest |
+| **L17 WebSocket cap + idle timeout** | `1726ba5` | 128 connections; 300s idle close |
+| **L19 rate limiter cost + cap** | `1726ba5` | Periodic prune + tracked-client cap |
+| **L20 constant-time compare length leak** | `1726ba5` | Compare fixed-size SHA-256 digests |
 
 ## C1 — fixed (`a3dd177`)
 
