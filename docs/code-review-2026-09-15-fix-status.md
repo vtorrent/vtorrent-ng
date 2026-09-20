@@ -65,6 +65,8 @@ medium/low findings listed at the end.
 | **L10 seed ban escalation** | `bdc6868` | Bootstrap seeds exempt from failure bans |
 | **L18 unbounded SPV header batch** | `bdc6868` | Batch capped at 2000 headers |
 | **DNS_SEEDS missing seed3** | `bdc6868` | Added `seed3.vtorrent.org` (deferred item) |
+| **L5 partial legacy claim strands funds** | `TBD` | Claim must match the snapshot balance exactly |
+| **L6 conflicting claims both admitted** | `TBD` | Mempool tracks pending claim addresses |
 
 ## C1 — fixed (`a3dd177`)
 
@@ -169,9 +171,29 @@ neither is available.
 ### Lower-priority medium/low
 
 M6 (DHT source validation — the torrent DHT already validates source and tid)
-and the remaining low-severity items (L3, L4, L5, L6, L9, L11, L12, L17,
-L19, L20). These are documented in the review and are candidates for
-follow-up work.
+and the remaining low-severity items (L3, L4, L9, L11, L12, L17, L19, L20).
+These are documented in the review and are candidates for follow-up work.
+
+## L5 / L6 — fixed (legacy-claim fund safety)
+
+Two legacy-claim edge cases that could strand funds:
+
+- **L5 partial claim.** `validate_legacy_claim` accepted any amount up to the
+  snapshot balance. A claim for less than the full balance would permanently
+  strand the remainder, because the address is marked claimed and can never be
+  claimed again. The check now requires an exact match. Both claim builders
+  (RPC `submit_claim`, Tauri `claim_legacy`) already used the full snapshot
+  balance, so the stricter rule is compatible with the existing flow.
+- **L6 conflicting claims.** Legacy claims have no inputs, so the mempool's
+  spent-input conflict detection could not see two claims for the same
+  address; both could sit in the mempool even though only one can confirm.
+  The mempool now tracks pending claim addresses and rejects a competing
+  claim, clearing the entry when the claim leaves.
+
+Tests: an under-claim and an over-claim are both rejected while an exact
+claim passes; a competing claim for a pending address is rejected, a claim
+for a different address is accepted, and the address frees up once the first
+claim leaves the mempool.
 
 ## Low-severity batch (L7, L8, L10, L18) + deferred seed3
 

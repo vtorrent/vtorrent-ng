@@ -421,11 +421,16 @@ pub fn validate_legacy_claim(tx: &Transaction, snapshot_balance: u64) -> Result<
         )));
     }
 
-    // Verify the claimed amount matches the snapshot
+    // Verify the claimed amount matches the snapshot exactly.
+    //
+    // A claim for less than the snapshot balance would permanently strand the
+    // remainder: the address is marked claimed, so the difference can never be
+    // claimed again. Requiring equality makes the whole balance claimable in
+    // one transaction and rejects accidental partial claims.
     let claimed_amount = tx.total_output();
-    if claimed_amount > snapshot_balance {
+    if claimed_amount != snapshot_balance {
         return Err(NodeError::InvalidClaim(format!(
-            "Claimed {} but snapshot shows {}",
+            "Claimed {} but snapshot shows {} (a claim must match the snapshot balance exactly)",
             claimed_amount, snapshot_balance
         )));
     }
@@ -854,7 +859,7 @@ mod tests {
             outputs: honest,
             ..attacker_tx
         };
-        assert!(validate_legacy_claim(&honest_tx, 1000 * COIN).is_ok());
+        assert!(validate_legacy_claim(&honest_tx, 500 * COIN).is_ok());
     }
 
     #[test]
@@ -884,14 +889,19 @@ mod tests {
             claim_signature: Some(sig_bytes),
         };
 
-        assert!(validate_legacy_claim(&tx, 1000 * COIN).is_ok());
+        // The claim must match the snapshot balance exactly.
+        assert!(validate_legacy_claim(&tx, 500 * COIN).is_ok());
+        // Over-claiming is rejected.
         assert!(validate_legacy_claim(&tx, 100 * COIN).is_err());
+        // Under-claiming is also rejected: the remainder would be stranded
+        // because the address is marked claimed.
+        assert!(validate_legacy_claim(&tx, 1000 * COIN).is_err());
 
         let bad_tx = Transaction {
             claim_signature: None,
             ..tx.clone()
         };
-        assert!(validate_legacy_claim(&bad_tx, 1000 * COIN).is_err());
+        assert!(validate_legacy_claim(&bad_tx, 500 * COIN).is_err());
     }
 
     fn make_test_block(first_tx: Transaction, bits: u32, nonce: u32) -> Block {

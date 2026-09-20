@@ -61,6 +61,11 @@ impl MempoolEntry {
 pub struct Mempool {
     /// Transactions indexed by txid.
     entries: HashMap<[u8; 32], MempoolEntry>,
+    /// Legacy-claim addresses currently in the mempool, mapped to the claim
+    /// txid. Claims have no inputs, so `spent_inputs` cannot detect two claims
+    /// for the same address; without this both could sit in the mempool and
+    /// only one could ever confirm.
+    pending_claims: HashMap<String, [u8; 32]>,
     /// Spent-input index: (prev_txid, prev_vout) → owning txid. Keeps conflict
     /// detection O(1) instead of scanning every entry on each insertion.
     spent_inputs: HashMap<([u8; 32], u32), [u8; 32]>,
@@ -89,6 +94,7 @@ impl Mempool {
     pub fn with_byte_limit(max_size: usize, max_bytes: u64) -> Self {
         Self {
             entries: HashMap::new(),
+            pending_claims: HashMap::new(),
             spent_inputs: HashMap::new(),
             max_size,
             max_bytes,
@@ -134,6 +140,24 @@ impl Mempool {
         }
 
         let txid = tx.txid();
+
+        // A legacy claim has no inputs, so `find_conflicts` cannot see a
+        // competing claim for the same address. Reject a second pending claim
+        // for an address that already has one: only one can ever confirm, and
+        // admitting both wastes mempool capacity and confuses fee accounting.
+        if tx.is_legacy_claim() {
+            if let Some(addr) = &tx.claim_address {
+                if let Some(existing) = self.pending_claims.get(addr) {
+                    if *existing != txid {
+                        return Err(NodeError::PolicyRejected(format!(
+                            "A claim for {} is already pending ({})",
+                            addr,
+                            hex::encode(existing)
+                        )));
+                    }
+                }
+            }
+        }
 
         // Compute size and fee rate.
         let size_bytes = tx.serialized_size();
@@ -330,6 +354,12 @@ impl Mempool {
         for input in &entry.tx.inputs {
             self.spent_inputs
                 .insert((input.prev_txid, input.prev_vout), txid);
+        }
+        // Track the claim address so a competing claim can be rejected.
+        if entry.tx.is_legacy_claim() {
+            if let Some(addr) = &entry.tx.claim_address {
+                self.pending_claims.insert(addr.clone(), txid);
+            }
         }
 
         tracing::debug!(
@@ -660,6 +690,14 @@ impl Mempool {
             for input in &entry.tx.inputs {
                 self.spent_inputs
                     .remove(&(input.prev_txid, input.prev_vout));
+            }
+            if entry.tx.is_legacy_claim() {
+                if let Some(addr) = &entry.tx.claim_address {
+                    // Only clear the mapping if it still points at this txid.
+                    if self.pending_claims.get(addr) == Some(txid) {
+                        self.pending_claims.remove(addr);
+                    }
+                }
             }
         }
     }
@@ -1091,6 +1129,41 @@ mod tests {
             parent_pos < child_pos,
             "parent must precede child despite the child's higher fee rate"
         );
+    }
+
+    #[test]
+    fn test_conflicting_legacy_claims_rejected() {
+        // Claims have no inputs, so spent-input conflict detection cannot see
+        // them. Two claims for the same address must not both be admitted:
+        // only one can ever confirm.
+        let mut mp = Mempool::new(100);
+        // `sig` varies the txid so the two claims are genuinely distinct
+        // (identical bytes would be the same txid, i.e. a retry).
+        let claim = |addr: &str, value: u64, sig: u8| Transaction {
+            version: 1,
+            tx_type: TxType::LegacyClaim,
+            inputs: vec![],
+            outputs: vec![TxOutput {
+                value,
+                script_pubkey: vec![0x76, 0xa9, 0x14, 0x00, 0x88, 0xac],
+            }],
+            lock_time: 0,
+            claim_address: Some(addr.to_string()),
+            claim_signature: Some(vec![sig; 65]),
+        };
+
+        mp.add_transaction(claim("VAddrOne", 1_000, 1)).unwrap();
+        // A competing claim for the same address is rejected.
+        let err = mp.add_transaction(claim("VAddrOne", 1_000, 2)).unwrap_err();
+        assert!(err.to_string().contains("already pending"), "got: {err}");
+        // A claim for a different address is fine.
+        mp.add_transaction(claim("VAddrTwo", 1_000, 3)).unwrap();
+        assert_eq!(mp.size(), 2);
+
+        // Once the first claim leaves the mempool, the address is free again.
+        let first = claim("VAddrOne", 1_000, 1).txid();
+        mp.remove_transaction(&first);
+        mp.add_transaction(claim("VAddrOne", 1_000, 4)).unwrap();
     }
 
     #[test]
