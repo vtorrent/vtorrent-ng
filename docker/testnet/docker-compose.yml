@@ -30,6 +30,12 @@ services:
     # Named volumes are root-owned; run as root for this local testnet only.
     user: "0:0"
     container_name: vtr-node1
+    environment:
+      # Cap glibc malloc arenas. The staker otherwise grows to ~4-5
+      # arenas (~154 MiB RSS, over the 150 MiB budget) because the
+      # multi-threaded staking path allocates from several threads.
+      # Measured: 4 arenas/154 MiB -> 1 arena/~115 MiB, stable.
+      MALLOC_ARENA_MAX: "2"
     command:
       - --listen
       - "0.0.0.0:22526"
@@ -93,6 +99,12 @@ services:
     # Named volumes are root-owned; run as root for this local testnet only.
     user: "0:0"
     container_name: vtr-node2
+    environment:
+      # Cap glibc malloc arenas. The staker otherwise grows to ~4-5
+      # arenas (~154 MiB RSS, over the 150 MiB budget) because the
+      # multi-threaded staking path allocates from several threads.
+      # Measured: 4 arenas/154 MiB -> 1 arena/~115 MiB, stable.
+      MALLOC_ARENA_MAX: "2"
     command:
       - --listen
       - "0.0.0.0:22526"
@@ -136,6 +148,12 @@ services:
     # Named volumes are root-owned; run as root for this local testnet only.
     user: "0:0"
     container_name: vtr-node3
+    environment:
+      # Cap glibc malloc arenas. The staker otherwise grows to ~4-5
+      # arenas (~154 MiB RSS, over the 150 MiB budget) because the
+      # multi-threaded staking path allocates from several threads.
+      # Measured: 4 arenas/154 MiB -> 1 arena/~115 MiB, stable.
+      MALLOC_ARENA_MAX: "2"
     command:
       - --listen
       - "0.0.0.0:22526"

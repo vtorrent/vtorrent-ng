@@ -222,13 +222,18 @@ entry (69.0 MiB at recovery → 137.2 MiB RSS at `2026-09-15T03:2xZ`):
   (`get_utxos_for_address`). The `.values().cloned()` calls at
   `staking.rs:793/835` are inside `#[cfg(test)]`. So this is not a
   regression of that fix.
-- Implication for the budget: RSS sits at ~137 MiB, under the <150 MiB
-  target, and is not trending upward at steady state. The remaining
-  question is whether the arena high-water mark (5 arenas / 64 MiB) is
-  acceptable; pinning `MALLOC_ARENA_MAX=2` would reduce it but is not
-  required by the current data. Re-check at sign-off with a fresh sample.
-- Not a soak interruption and not a consensus issue; no action taken during
-  the window. Candidate post-soak item alongside the gauge work.
+- Implication for the budget: RSS sat at ~137 MiB at the 09-15 sample, under
+  the <150 MiB target, and was not trending upward at steady state. By
+  2026-09-20 it had reached **154.4 MiB — over budget** (4 arenas / 53 MiB),
+  still flat over a 10-minute sample (+308 kB while 8 blocks staked), so the
+  growth is allocator high-water, not a leak.
+- **Resolved 2026-09-20: `MALLOC_ARENA_MAX=2` is now pinned in compose.**
+  Measured empirically against a copy of node1's live data (isolated, with
+  the wallet unlocked and staking): arenas dropped from 4 to **1** and RSS
+  from **154 MiB to ~115 MiB**, stable across four samples while staking
+  (111.5 → 115.1 MiB, 2 → 6 blocks). The setting is applied to all three
+  nodes in `docker/testnet/docker-compose.yml`.
+- Not a soak interruption and not a consensus issue.
 
 ## 8. Open Questions
 
@@ -239,8 +244,9 @@ entry (69.0 MiB at recovery → 137.2 MiB RSS at `2026-09-15T03:2xZ`):
 - Node1 `debug` vs `info`: memory pressure from `debug` tracing may skew
   comparison; consider switching node1 to `info` at same time (prior soak
   note suggested this, post-soak).
-- Should `MALLOC_ARENA_MAX` be pinned in the image/compose (see §7.1), and
-  should the RSS budget be restated against live heap instead of RSS?
+- ~~Should `MALLOC_ARENA_MAX` be pinned?~~ Resolved: pinned to 2 (see §7.1).
+  The RSS budget remains stated against RSS; with the cap in place the
+  staker sits ~115 MiB, comfortably under 150 MiB.
 
 ## 9. References
 
