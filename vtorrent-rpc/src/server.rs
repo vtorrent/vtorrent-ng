@@ -17,12 +17,17 @@ use tower_http::cors::{Any, CorsLayer};
 pub const DEFAULT_RPC_PORT: u16 = 22525;
 
 /// Constant-time string comparison to avoid timing side-channels on the API key.
+///
+/// Both inputs are hashed to a fixed 32-byte digest first, so the comparison
+/// runs in constant time regardless of the candidate's length. Comparing the
+/// raw bytes would return early on a length mismatch, leaking the configured
+/// key's length to an attacker.
 fn constant_time_eq(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
+    use sha2::{Digest, Sha256};
+    let da = Sha256::digest(a.as_bytes());
+    let db = Sha256::digest(b.as_bytes());
     let mut diff: u8 = 0;
-    for (x, y) in a.as_bytes().iter().zip(b.as_bytes()) {
+    for (x, y) in da.iter().zip(db.iter()) {
         diff |= x ^ y;
     }
     diff == 0

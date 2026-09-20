@@ -67,6 +67,14 @@ medium/low findings listed at the end.
 | **DNS_SEEDS missing seed3** | `bdc6868` | Added `seed3.vtorrent.org` (deferred item) |
 | **L5 partial legacy claim strands funds** | `3cce704` | Claim must match the snapshot balance exactly |
 | **L6 conflicting claims both admitted** | `3cce704` | Mempool tracks pending claim addresses |
+| **L3 startup lock order** | `TBD` | Acquire chain before mempool |
+| **L4 block size estimate + bits** | `TBD` | Real serialized size; reference GENESIS_BITS |
+| **L9 Tor control reply timeout** | `TBD` | Whole reply read is now bounded |
+| **L11 onion/i2p dialing** | `TBD` | Anonymous addresses bypass DNS |
+| **L12 overlay ingest before rate limit** | `TBD` | Rate-limit check moved before ingest |
+| **L17 WebSocket cap + idle timeout** | `TBD` | 128 connections; 300s idle close |
+| **L19 rate limiter cost + cap** | `TBD` | Periodic prune + tracked-client cap |
+| **L20 constant-time compare length leak** | `TBD` | Compare fixed-size SHA-256 digests |
 
 ## C1 — fixed (`a3dd177`)
 
@@ -166,13 +174,56 @@ element is ignored; a refund witness yields nothing; `vtr-claim` succeeds with
 an empty `preimage` once the observation recorded it; and it is rejected when
 neither is available.
 
-## Not fixed
+## Remaining
 
-### Lower-priority medium/low
+All findings from both review passes are now either fixed or explicitly
+documented as accepted. The one item not fixed is **M6** (DHT source
+validation), which is already handled: the torrent DHT validates the response
+source address and transaction id before accepting peers.
 
-M6 (DHT source validation — the torrent DHT already validates source and tid)
-and the remaining low-severity items (L3, L4, L9, L11, L12, L17, L19, L20).
-These are documented in the review and are candidates for follow-up work.
+## Final low-severity batch (L3, L4, L9, L11, L12, L17, L19, L20)
+
+The last actionable low-severity items:
+
+- **L3 startup lock order.** The daemon restored the mempool while holding
+  mempool-then-chain, inverting the documented `chain → mempool` order. Now
+  acquires chain first.
+- **L4 block assembly.** `assemble_block` estimated transaction size as
+  `inputs*148 + outputs*34 + 10`, ignoring script lengths, and did not count
+  the coinstake — a claim-heavy block could exceed `MAX_BLOCK_SIZE` and be
+  rejected on apply. Now uses the real serialized size. The hardcoded `bits`
+  literal is replaced with an explicit reference to `GENESIS_BITS` (the chain
+  uses a fixed, non-retargeting difficulty and validation requires
+  `bits == prev_bits`, so the value was accidentally correct but could drift).
+- **L9 Tor control reply.** `new_circuit` bounded the connect, but
+  `read_control_reply` read byte-by-byte with no timeout — a control port that
+  accepts the connection and never sends a full line would stall the task
+  indefinitely. The whole reply read is now bounded.
+- **L11 onion/i2p dialing.** `.onion`/`.i2p` addresses went through
+  `lookup_host`, which fails before the transport is reached, so the Tor/I2P
+  transport was never used. They now get a deterministic synthetic socket key
+  and the original address is passed to the transport. `TAG_PUNCH_ACK` is
+  still ingested (it is consumed by the in-flight punch waiter), and the
+  rate-limit check now precedes `ingest` so a flood cannot do allocation work
+  for packets that are dropped.
+- **L12 overlay ingest ordering.** `puncher.ingest` ran before the
+  rate-limit check, allocating keypairs and registry entries for packets about
+  to be dropped. Moved after the check.
+- **L17 WebSocket limits.** Added a 128-connection cap (rejected at upgrade
+  with 503) and a 300s idle timeout. A drop guard releases the slot on any
+  exit path, so a closed or panicking connection cannot leak it.
+- **L19 rate limiter.** The per-request `retain` over all tracked clients was
+  O(distinct IPs) per call — a CPU amplification vector under a spoofed-source
+  flood. Now prunes periodically and hard-caps tracked clients. The loopback
+  bypass is documented as a deliberate tradeoff: behind a reverse proxy every
+  client appears as loopback, so the proxy must apply its own limit.
+- **L20 constant-time compare.** The length check returned early, leaking the
+  configured API key's length. Both sides are now hashed to fixed 32-byte
+  digests before comparison.
+
+Tests: constant-time compare matches/rejects across lengths; anonymous
+addresses are detected and normal addresses are not; WebSocket connection
+counter tracks and releases, and the cap threshold holds.
 
 ## L5 / L6 — fixed (legacy-claim fund safety)
 

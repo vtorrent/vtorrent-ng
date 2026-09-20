@@ -213,20 +213,29 @@ fn build_auth_command(password: &str) -> String {
 
 async fn read_control_reply(stream: &mut TcpStream) -> Result<()> {
     const MAX_CONTROL_REPLY: usize = 4096;
-    let mut response = Vec::new();
-    loop {
-        if response.len() >= MAX_CONTROL_REPLY {
-            return Err(OnionError::HiddenServiceError(
-                "Tor control response exceeded maximum length".into(),
-            ));
+    // Bound the whole reply read: the loop reads one byte at a time, so a
+    // control port that accepts the connection but never sends a full line
+    // would otherwise stall this task indefinitely.
+    let read = async {
+        let mut response = Vec::new();
+        loop {
+            if response.len() >= MAX_CONTROL_REPLY {
+                return Err(OnionError::HiddenServiceError(
+                    "Tor control response exceeded maximum length".into(),
+                ));
+            }
+            let mut byte = [0u8; 1];
+            stream.read_exact(&mut byte).await?;
+            response.push(byte[0]);
+            if response.ends_with(b"\r\n") {
+                break;
+            }
         }
-        let mut byte = [0u8; 1];
-        stream.read_exact(&mut byte).await?;
-        response.push(byte[0]);
-        if response.ends_with(b"\r\n") {
-            break;
-        }
-    }
+        Ok::<Vec<u8>, OnionError>(response)
+    };
+    let response = tokio::time::timeout(CONTROL_TIMEOUT, read)
+        .await
+        .map_err(|_| OnionError::HiddenServiceError("Tor control reply timed out".into()))??;
 
     if !response.starts_with(b"250") {
         return Err(OnionError::HiddenServiceError(format!(

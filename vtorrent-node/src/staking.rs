@@ -512,12 +512,18 @@ impl StakingEngine {
         // PoS blocks have nonce = 0 (identified by BlockHeader::is_pos())
         let mut transactions = vec![coinstake];
 
-        // Include pending transactions from mempool (up to block size limit)
-        let mut block_size = 0usize;
+        // Include pending transactions from mempool (up to block size limit).
+        //
+        // Use the real serialized size rather than an estimate: the previous
+        // `inputs*148 + outputs*34 + 10` ignored script lengths, so a
+        // claim-heavy or large-script transaction could push the assembled
+        // block past MAX_BLOCK_SIZE and be rejected on apply. The coinstake
+        // itself counts toward the limit too.
         const MAX_BLOCK_SIZE: usize = 1_000_000;
+        let mut block_size = transactions[0].serialized_size();
 
         for tx in pending_txs {
-            let tx_size = tx.inputs.len() * 148 + tx.outputs.len() * 34 + 10;
+            let tx_size = tx.serialized_size();
             if block_size + tx_size > MAX_BLOCK_SIZE {
                 break;
             }
@@ -536,7 +542,11 @@ impl StakingEngine {
             merkle_root,
             utxo_root: [0u8; 32],
             timestamp,
-            bits: 0x1e0fffff,
+            // The chain uses a fixed, non-retargeting difficulty, and
+            // validation requires `bits == prev_bits` (consensus.rs). Reference
+            // the genesis constant explicitly rather than a bare literal so the
+            // two cannot drift.
+            bits: crate::genesis::GENESIS_BITS,
             nonce: 0,
             stake_modifier: compute_stake_modifier(prev_stake_modifier, &prev_hash),
         };

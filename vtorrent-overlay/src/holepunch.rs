@@ -40,7 +40,7 @@ use crate::endpoint::Endpoint;
 use crate::error::{OverlayError, Result};
 
 pub const TAG_PUNCH: u8 = 0x01;
-const TAG_PUNCH_ACK: u8 = 0x02;
+pub(crate) const TAG_PUNCH_ACK: u8 = 0x02;
 pub const TAG_DATA: u8 = 0x03;
 pub const TAG_PUNCH_CONFIRM: u8 = 0x04;
 

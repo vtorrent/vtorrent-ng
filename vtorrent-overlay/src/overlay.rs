@@ -269,14 +269,21 @@ async fn receive_loop(
         let tag = buf[0];
         let data = &buf[..n];
 
-        // Fan out to punch attempts BEFORE tag dispatch.
-        puncher.ingest(data, from);
+        // PUNCH_ACK is consumed by the in-flight `punch_addr` waiter via the
+        // ingest channel, and is not rate-limited here (it is a small reply to
+        // a punch we initiated). It must reach `ingest` or hole punching never
+        // completes.
+        if tag == crate::holepunch::TAG_PUNCH_ACK {
+            puncher.ingest(data, from);
+            continue;
+        }
 
         match tag {
             crate::holepunch::TAG_PUNCH | crate::holepunch::TAG_PUNCH_CONFIRM => {
-                // Rate-limit unauthenticated handshake traffic per source IP:
-                // each datagram otherwise allocates keypairs and registry
-                // entries on the responder.
+                // Rate-limit unauthenticated handshake traffic per source IP
+                // BEFORE `puncher.ingest`: ingest allocates keypairs and
+                // registry entries, so doing it first would let a flood do
+                // that work for packets that are immediately dropped.
                 let now = std::time::Instant::now();
                 if punch_tokens.len() >= PUNCH_MAX_ENTRIES && !punch_tokens.contains_key(&from.ip())
                 {
@@ -301,6 +308,9 @@ async fn receive_loop(
                     continue;
                 }
                 entry.0 -= 1.0;
+
+                // Fan out to punch attempts only after the rate-limit check.
+                puncher.ingest(data, from);
 
                 if tag == crate::holepunch::TAG_PUNCH {
                     if let Err(e) = puncher.handle_punch(from, data).await {

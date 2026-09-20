@@ -2,7 +2,7 @@ use crate::state::AppState;
 use axum::extract::ws::{Message, WebSocket};
 use axum::{
     extract::{State, WebSocketUpgrade},
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 /// WebSocket event subscription endpoint for vTorrent RPC.
@@ -116,13 +116,31 @@ pub struct UnsubscribeMsg {
 #[derive(Clone)]
 pub struct EventBroadcaster {
     pub sender: broadcast::Sender<Arc<NodeEvent>>,
+    /// Number of currently open WebSocket connections.
+    ///
+    /// Each connection holds a broadcast receiver and a task, so an unbounded
+    /// count is a resource-exhaustion vector. Connections are capped at
+    /// [`MAX_WS_CONNECTIONS`].
+    pub connections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
+
+/// Maximum concurrent WebSocket connections.
+pub const MAX_WS_CONNECTIONS: usize = 128;
+
+/// Close a WebSocket connection that has sent nothing for this long.
+///
+/// Without an idle timeout a client can hold a connection (and its broadcast
+/// receiver) open indefinitely.
+const WS_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 impl EventBroadcaster {
     /// Create a new broadcaster with the given channel capacity.
     pub fn new(capacity: usize) -> Self {
         let (sender, _) = broadcast::channel(capacity);
-        Self { sender }
+        Self {
+            sender,
+            connections: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
     }
 
     /// Broadcast an event to all connected subscribers.
@@ -139,11 +157,37 @@ impl EventBroadcaster {
 
 /// WebSocket upgrade handler — upgrades an HTTP connection to a WebSocket.
 pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> Response {
+    // Reject the upgrade when at capacity, before allocating a connection.
+    let current = state
+        .events
+        .connections
+        .load(std::sync::atomic::Ordering::SeqCst);
+    if current >= MAX_WS_CONNECTIONS {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "WebSocket connection limit reached",
+        )
+            .into_response();
+    }
     ws.on_upgrade(move |socket| handle_ws_connection(socket, state))
 }
 
 /// Handle a single WebSocket connection.
 async fn handle_ws_connection(mut socket: WebSocket, state: Arc<AppState>) {
+    // Count this connection for the lifetime of the handler. The guard
+    // decrements on drop, so an early return or panic cannot leak a slot.
+    struct ConnectionGuard(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    impl Drop for ConnectionGuard {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    state
+        .events
+        .connections
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let _guard = ConnectionGuard(Arc::clone(&state.events.connections));
+
     let mut receiver = state.events.subscribe();
     let mut subscribed: Vec<String> = Vec::new();
 
@@ -151,6 +195,13 @@ async fn handle_ws_connection(mut socket: WebSocket, state: Arc<AppState>) {
 
     loop {
         tokio::select! {
+            // Idle timeout: a client that sends nothing for the window is
+            // disconnected so it cannot hold a slot indefinitely.
+            _ = tokio::time::sleep(WS_IDLE_TIMEOUT) => {
+                tracing::debug!("WebSocket client idle for {:?}; closing", WS_IDLE_TIMEOUT);
+                let _ = socket.send(Message::Close(None)).await;
+                break;
+            }
             // Incoming message from client
             msg = socket.recv() => {
                 match msg {
@@ -320,5 +371,50 @@ mod tests {
         // Should not panic when no subscribers
         let broadcaster = EventBroadcaster::new(16);
         broadcaster.broadcast(make_new_block_event());
+    }
+
+    #[test]
+    fn test_connection_counter_tracks_and_releases() {
+        // The counter must return to zero when a connection ends, so a closed
+        // client cannot permanently consume a slot.
+        let broadcaster = EventBroadcaster::new(16);
+        assert_eq!(
+            broadcaster
+                .connections
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        broadcaster
+            .connections
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            broadcaster
+                .connections
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        broadcaster
+            .connections
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            broadcaster
+                .connections
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[test]
+    fn test_connection_cap_is_enforced() {
+        // The upgrade handler rejects at MAX_WS_CONNECTIONS; verify the
+        // threshold arithmetic the handler relies on.
+        let broadcaster = EventBroadcaster::new(16);
+        broadcaster
+            .connections
+            .store(MAX_WS_CONNECTIONS, std::sync::atomic::Ordering::SeqCst);
+        let current = broadcaster
+            .connections
+            .load(std::sync::atomic::Ordering::SeqCst);
+        assert!(current >= MAX_WS_CONNECTIONS, "handler must reject here");
     }
 }

@@ -1291,3 +1291,13 @@ async fn btc_fund_requires_an_unlocked_wallet() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+#[test]
+fn constant_time_eq_matches_and_rejects() {
+    assert!(super::constant_time_eq("secret-key", "secret-key"));
+    assert!(!super::constant_time_eq("secret-key", "secret-kez"));
+    assert!(!super::constant_time_eq("secret-key", "secret"));
+    assert!(!super::constant_time_eq("secret", "secret-key"));
+    assert!(!super::constant_time_eq("", "secret-key"));
+    assert!(super::constant_time_eq("", ""));
+}

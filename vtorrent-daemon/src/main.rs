@@ -161,8 +161,11 @@ async fn main() -> anyhow::Result<()> {
     {
         let saved = vtorrent_node::mempool::Mempool::load_saved(&mempool_path);
         if !saved.is_empty() {
-            let mut mp = mempool_arc.lock().await;
+            // Lock order is chain → mempool (see vtorrent-node/src/node/mod.rs).
+            // Acquiring them the other way here would invert the order the
+            // node loop uses and risk a deadlock.
             let chain = chain_arc_clone.lock().await;
+            let mut mp = mempool_arc.lock().await;
             let mut admitted = 0usize;
             for (tx, _old_fee) in saved {
                 // Re-verify against the loaded UTXO set: entries may reference

@@ -265,14 +265,24 @@ impl PeerManager {
         // Resolve hostnames up front so dedup/ban checks apply to the actual
         // socket address — otherwise repeated dials of the same hostname seed
         // would each open a fresh connection and orphan the previous peer task.
-        let sock_addr: SocketAddr = match addr.parse::<SocketAddr>() {
-            Ok(sa) => sa,
-            Err(_) => {
-                let mut it = tokio::net::lookup_host(addr)
-                    .await
-                    .map_err(|e| P2pError::Transport(format!("resolution failed: {}", e)))?;
-                it.next()
-                    .ok_or_else(|| P2pError::Transport(format!("no addresses for {}", addr)))?
+        //
+        // Anonymous addresses (.onion / .i2p) must NOT go through DNS: they are
+        // resolved by the Tor/I2P transport, and `lookup_host` would fail
+        // first, so the transport was never reached. Give them a deterministic
+        // synthetic socket key instead.
+        let is_anonymous = is_anonymous_address(addr);
+        let sock_addr: SocketAddr = if is_anonymous {
+            anonymous_peer_key(addr)
+        } else {
+            match addr.parse::<SocketAddr>() {
+                Ok(sa) => sa,
+                Err(_) => {
+                    let mut it = tokio::net::lookup_host(addr)
+                        .await
+                        .map_err(|e| P2pError::Transport(format!("resolution failed: {}", e)))?;
+                    it.next()
+                        .ok_or_else(|| P2pError::Transport(format!("no addresses for {}", addr)))?
+                }
             }
         };
 
@@ -696,6 +706,15 @@ impl PeerManager {
 /// `PeerManager` is keyed by `SocketAddr` because TCP peers expose one naturally.
 /// Tor and I2P do not, so use the benchmarking range 198.18.0.0/15 strictly as an
 /// internal key; this address is never added to PEX address entries.
+/// Whether `addr` is an anonymous-network address that must be resolved by the
+/// Tor/I2P transport rather than DNS.
+fn is_anonymous_address(addr: &str) -> bool {
+    addr.ends_with(".onion")
+        || addr.contains(".onion:")
+        || addr.ends_with(".i2p")
+        || addr.contains(".i2p:")
+}
+
 fn anonymous_peer_key(addr: &str) -> SocketAddr {
     use std::net::{IpAddr, Ipv4Addr};
 
@@ -878,6 +897,19 @@ mod disconnect_liveness_tests {
         }
         // An arbitrary address is not a seed.
         assert!(!is_bootstrap_seed("203.0.113.9".parse().unwrap()));
+    }
+
+    #[test]
+    fn anonymous_addresses_are_detected() {
+        // .onion/.i2p must bypass DNS so the Tor/I2P transport is reached.
+        assert!(is_anonymous_address("abc.onion:22526"));
+        assert!(is_anonymous_address("abc.onion"));
+        assert!(is_anonymous_address("xyz.i2p:22526"));
+        assert!(is_anonymous_address("xyz.i2p"));
+        // Normal addresses must not be treated as anonymous.
+        assert!(!is_anonymous_address("127.0.0.1:22526"));
+        assert!(!is_anonymous_address("seed1.vtorrent.org:22526"));
+        assert!(!is_anonymous_address("91.98.80.38:22526"));
     }
 
     #[test]
