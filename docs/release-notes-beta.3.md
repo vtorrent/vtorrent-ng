@@ -111,3 +111,78 @@ and the swap + claim paths are now exercised end-to-end on testnet.
   `GET /api/v1/staking/rewards`.
 - **Soak status** — three-node regtest soak running `vtorrent/node:7db5da3`;
   sign-off pending (see `docs/soak-log.md`). No fleet deploy until sign-off.
+
+## Addendum 2 — changes since the first addendum (2026-09-15 → 2026-09-20)
+
+Two full codebase reviews (`docs/code-review-2026-09-15.md` and
+`-second-pass.md`) covered all 19 crates plus the frontend; every finding is
+now fixed or documented as accepted (`docs/code-review-2026-09-15-fix-status.md`).
+
+### Consensus
+
+- **Stake-kernel normalization (C1)** — the v1 target saturated at `u32::MAX`
+  for any UTXO worth ≥ 42,949.67 VTR, so such an owner could produce every
+  block; 72 legacy addresses hold 85.4% of the legacy supply. Replaced with a
+  proportional rule (`P = value / total_staked`), so a staker's block share
+  equals its stake share. `Chain::total_staked` is tracked incrementally over
+  stakeable UTXOs and journaled across reorgs. **This is a consensus-rule
+  change and requires a coordinated fleet upgrade.**
+- **Legacy-claim signature binding (S1)** — the v1 claim signature signed only
+  the address, so anyone observing a claim in the mempool could redirect the
+  outputs to themselves and permanently lock out the real owner. The v2 hash
+  commits to the outputs; validation and both signing paths use it.
+- **Legacy-claim fund safety (L5/L6)** — a claim must now match the snapshot
+  balance exactly (a partial claim stranded the remainder), and the mempool
+  rejects a competing claim for an address that already has one pending.
+
+### Security
+
+- **RPC auth boundary** — wallet/staking/DEX read endpoints now require the API
+  key, and auth runs before the concurrency limiter so unauthenticated
+  requests cannot starve the wallet owner.
+- **BTC spend authorization (M12)** — `btc/send` and `btc-fund` now require an
+  unlocked wallet; the API key alone no longer authorizes moving BTC. The
+  refund path is deliberately not gated (documented invariant).
+- **Tracker SSRF (M8)** — tracker URLs from untrusted torrents are restricted
+  to http/https and rejected when they resolve to loopback, private,
+  link-local, CGNAT, benchmarking, reserved, multicast, or IPv6 ULA addresses;
+  redirects are disabled.
+- **Wallet import overwrite (M10)** — requires an explicit `overwrite: true`.
+- **TOTP replay (M15)** — the matched time-step is tracked, so a code cannot be
+  reused within its ±1-step validity window.
+- **Key material** — the migrate tool no longer dumps WIFs via `--json` or
+  prints the derived AES key; decryption and signing intermediates are
+  zeroized.
+- **Remote panics** — non-ASCII hex no longer panics RPC handlers; DHT bencode
+  length overflow, snapshot amount overflow, and torrent piece-length overflow
+  are all bounded.
+
+### DoS hardening
+
+- Mempool byte budget (was count-only, ~10 GB reachable), dependency-ordered
+  block templates, duplicate-input rejection.
+- Per-peer `getdata` egress budget, PEX contribution quota, overlay relay
+  quota, torrent session cap, bounded chain scans, linear eviction.
+- WebSocket connection cap + idle timeout; rate-limiter prune cost and tracked
+  client cap; constant-time API-key compare no longer leaks key length.
+
+### Operations
+
+- **Wallet auto-unlock** — `--wallet-passphrase-file` reads a 0600 file at
+  boot, unlocks the wallet, and resumes staking automatically. This removes
+  the post-restart stall that caused a ~46-minute outage on 2026-09-18. Fails
+  closed on a missing, unreadable, or non-file path.
+- **`MALLOC_ARENA_MAX=2`** pinned on the soak fleet: node1's staker dropped
+  from 154 MiB / 4 arenas to ~115 MiB / 1 arena, under the 150 MiB budget.
+- **`DNS_SEEDS`** now includes `seed3.vtorrent.org`.
+- **Production seeds upgraded** from a stale 2026-08-29 binary (217 commits
+  behind) to current `main`, fixing a false-positive `PeerCountZero` alert.
+
+### Upgrade notes (in addition to those above)
+
+- The C1 stake-kernel change is consensus-breaking. All nodes must upgrade
+  together; a mixed fleet would diverge once `total_staked` exceeds
+  42,949.67 VTR.
+- The legacy-claim v2 signature is replay-compatible with the current chain
+  (which contains no legacy claims), but a fleet on the old binary would
+  reject v2 claims.
