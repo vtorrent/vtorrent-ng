@@ -881,3 +881,27 @@ alert has cleared.
 **Note.** The seeds are mainnet and the soak fleet is regtest, so this upgrade
 does not affect the soak window. The seeds now carry the C1 consensus rule and
 all review fixes, which is what mainnet launch requires.
+
+## 2026-09-20 (later) — MALLOC_ARENA_MAX=2 pinned on the soak fleet
+
+Node1's staker had reached **154.4 MiB RSS — over the <150 MiB budget** — with
+4 glibc malloc arenas (53 MiB). RSS was flat over a 10-minute sample (+308 kB
+while 8 blocks staked), confirming allocator high-water rather than a leak.
+
+**Measured before applying.** Ran the current image against a copy of node1's
+live data (isolated, wallet unlocked, staking) with `MALLOC_ARENA_MAX=2`:
+arenas dropped from 4 to **1** and RSS from **154 MiB to ~115 MiB**, stable
+across four samples while staking (111.5 → 115.1 MiB, 2 → 6 blocks).
+
+**Applied.** Added `MALLOC_ARENA_MAX: "2"` to all three nodes in
+`docker/testnet/docker-compose.yml` and recreated the containers (same image,
+config-only change). Auto-unlock and staking auto-resume worked with no manual
+action.
+
+**Result.** All three agree at height 11349, `syncing: false`. Arenas are 1 on
+all three; RSS is **123.5 / 109.1 / 109.1 MiB** — node1 is now ~31 MiB below
+where it was and comfortably under the 150 MiB budget.
+
+**Soak impact.** This was a container recreate, not an image change, so the
+chain and staking continued without a window reset. The seven-day window is
+unchanged (earliest sign-off 2026-09-27).
