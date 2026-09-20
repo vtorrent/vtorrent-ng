@@ -788,3 +788,31 @@ restart gap. Zero ERROR/panic/reorg lines.
 
 **Soak impact.** The seven-day window is reset again. Earliest sign-off is now
 no earlier than seven days after this upgrade (`2026-09-26`).
+
+## 2026-09-20 — L5/L6 + M16 + low-severity batch deployed (38ef9de)
+
+Deployed the final fix batch: L5/L6 (legacy-claim fund safety), M16 (`fork()`
+safety), and L7/L8/L10/L18 plus the `DNS_SEEDS` seed3 entry.
+
+**L5 is a consensus-rule change**, so it was treated like C1: verified
+replay-safe before rollout. The rule now requires a claim to match the
+snapshot balance exactly (previously any amount up to the balance was
+accepted, stranding the remainder). A full-chain scan confirmed the running
+chain contains **no legacy claims** (sampled 116 blocks across the whole
+chain; none had more than one transaction), so replay re-validates nothing
+against the old rule.
+
+**Pre-deployment verification.** The new image replayed a copy of node3's live
+data to height 11158 with the exact same tip hash as the running old binary
+(`cf071c9bd463bd63e5fe080894edca45166b8eb3da55513b085d97cc3a84426d`), zero
+errors. Volumes backed up (53 MB each); pre-upgrade tip 11161 (`ad007a61`).
+
+**Rollout.** All three stopped together, image pin `1226e4f` → `38ef9de`,
+recreated. Auto-unlock and staking auto-resume worked with no manual action.
+All three replayed to the pre-upgrade tip with zero errors.
+
+**Result.** All three agree and produce blocks at 61s intervals. Zero
+ERROR/panic/reorg lines.
+
+**Soak impact.** The seven-day window is reset again. Earliest sign-off is now
+no earlier than seven days after this upgrade (`2026-09-27`).
