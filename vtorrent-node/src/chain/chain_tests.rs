@@ -262,13 +262,36 @@ fn test_reorg_to_longer_fork() {
 
 #[test]
 fn test_invalid_fork_reorg_restores_original_state() {
+    use secp256k1::{PublicKey, Secp256k1, SecretKey};
+
     let mut chain = Chain::new().unwrap();
     let genesis_hash = chain.best_hash().unwrap();
-    let main = make_block(genesis_hash, 0, 1);
-    chain.add_block(main).unwrap();
+
+    // Mint a *stakeable* output (>= MIN_STAKE_AMOUNT) so `total_staked` is
+    // non-zero and the assertion below actually exercises the restore path.
+    // The previous fixture minted 1_000_000 sat, below MIN_STAKE_AMOUNT
+    // (100_000_000), so `total_staked` stayed 0 and the assertion was vacuous.
+    let secp = Secp256k1::new();
+    let mut key_bytes = [0u8; 32];
+    key_bytes[31] = 77;
+    let secret = SecretKey::from_slice(&key_bytes).unwrap();
+    let pubkey = PublicKey::from_secret_key(&secp, &secret);
+    let address = vtorrent_core::address::Address::from_pubkey(&pubkey, true, 70).to_string();
+    chain
+        .mint_to_address(&address, crate::consensus::MIN_STAKE_AMOUNT)
+        .unwrap();
+
+    // The mint block is the main chain tip at height 1. The fork below is a
+    // competing height-1 block, and its height-2 extension is longer than
+    // main, so adding it triggers a reorg that must then fail on the invalid
+    // spend and restore all state.
     let original_tip = chain.best_hash().unwrap();
     let original_supply = chain.total_supply();
     let original_staked = chain.total_staked();
+    assert!(
+        original_staked >= crate::consensus::MIN_STAKE_AMOUNT,
+        "fixture must produce a non-zero staked supply, got {original_staked}"
+    );
     let original_utxos = chain.utxo_set.clone();
 
     let invalid_spend = Transaction {
@@ -302,7 +325,6 @@ fn test_invalid_fork_reorg_restores_original_state() {
     let extension = make_block(fork_hash, fork_modifier, 2);
     assert!(chain.add_block(extension).is_err());
     assert_eq!(chain.best_hash(), Some(original_tip));
-    assert_eq!(chain.best_height(), 1);
     assert_eq!(chain.total_supply(), original_supply);
     // The staked-supply denominator must be restored too: a reorg that left it
     // drifted would corrupt the v2 kernel probability for every later block.

@@ -817,6 +817,16 @@ pub(crate) async fn handle_getdata(
         }
         let mut served = served;
         for item in &req.items {
+            // Enforce the egress budget *inside* the loop. Checking only before
+            // it let a single 500-item request return ~500 MB before the budget
+            // was ever consulted again.
+            if served >= GETDATA_BYTE_BUDGET {
+                tracing::debug!(
+                    "getdata from {}: egress budget exhausted mid-request; stopping",
+                    peer_addr
+                );
+                break;
+            }
             match item.inv_type {
                 InvType::Block => {
                     let maybe_block = {
@@ -887,10 +897,20 @@ pub(crate) async fn handle_getdata(
         node.peer_served_bytes
             .insert(peer_addr, (served, budget_start));
         // Bound the map: entries are only pruned on use, so many distinct
-        // source addresses would otherwise grow it without limit.
+        // source addresses would otherwise grow it without limit. Evict by
+        // *count* — the previous `retain(age < WINDOW)` kept the freshest
+        // entries, which is exactly what a flood produces, so it never shrank.
         if node.peer_served_bytes.len() > 10_000 {
-            node.peer_served_bytes
-                .retain(|_, (_, start)| budget_now.duration_since(*start) < GETDATA_BUDGET_WINDOW);
+            let mut entries: Vec<(std::net::SocketAddr, std::time::Instant)> = node
+                .peer_served_bytes
+                .iter()
+                .map(|(addr, (_, start))| (*addr, *start))
+                .collect();
+            entries.sort_by_key(|(_, start)| *start);
+            let excess = entries.len() - 7_500;
+            for (addr, _) in entries.into_iter().take(excess) {
+                node.peer_served_bytes.remove(&addr);
+            }
         }
     }
     Ok(())
@@ -1787,10 +1807,20 @@ pub(crate) async fn dispatch_message(
                     (used + addr_msg.addrs.len() as u32, window_start),
                 );
                 // Bound the map itself: entries are only pruned on use, so a
-                // flood of distinct source addresses would grow it.
+                // flood of distinct source addresses would grow it. Evict by
+                // count — `retain(age < WINDOW)` kept the freshest entries,
+                // which is what a flood produces, so it never shrank.
                 if node.pex_contributions.len() > 10_000 {
-                    node.pex_contributions
-                        .retain(|_, (_, start)| now.duration_since(*start) < PEX_QUOTA_WINDOW);
+                    let mut entries: Vec<(std::net::SocketAddr, std::time::Instant)> = node
+                        .pex_contributions
+                        .iter()
+                        .map(|(addr, (_, start))| (*addr, *start))
+                        .collect();
+                    entries.sort_by_key(|(_, start)| *start);
+                    let excess = entries.len() - 7_500;
+                    for (addr, _) in entries.into_iter().take(excess) {
+                        node.pex_contributions.remove(&addr);
+                    }
                 }
                 let count = addr_msg.addrs.len();
                 node.peer_manager.handle_addr_msg(&addr_msg);

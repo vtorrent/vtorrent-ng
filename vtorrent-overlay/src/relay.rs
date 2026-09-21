@@ -45,9 +45,10 @@ pub struct RelayEngine {
     /// Max number of relay sessions this node will accept.
     max_sessions: usize,
     /// Per-requester relay requests in the current window, and the window
-    /// start. Bounds how much traffic one requester can push through this
-    /// relay; the session cap alone does not, since sessions are short-lived.
-    request_counts: Arc<RwLock<HashMap<SocketAddr, (u32, std::time::Instant)>>>,
+    /// start. Keyed by **IP**, not `SocketAddr`: UDP source ports are
+    /// attacker-chosen, so keying by the full address let a requester rotate
+    /// ports for a fresh quota each time.
+    request_counts: Arc<RwLock<HashMap<std::net::IpAddr, (u32, std::time::Instant)>>>,
 }
 
 /// Maximum relay requests accepted from one requester per window.
@@ -68,16 +69,26 @@ impl RelayEngine {
     /// Whether `from` may issue another relay request right now.
     async fn within_quota(&self, from: SocketAddr) -> bool {
         let now = std::time::Instant::now();
+        let ip = from.ip();
         let mut counts = self.request_counts.write().await;
-        let entry = counts.entry(from).or_insert((0, now));
+        let entry = counts.entry(ip).or_insert((0, now));
         if now.duration_since(entry.1) >= RELAY_QUOTA_WINDOW {
             *entry = (0, now);
         }
         entry.0 += 1;
         let within = entry.0 <= RELAY_PER_REQUESTER_QUOTA;
-        // Bound the map: entries are only pruned on use.
+        // Bound the map by *count*: `retain(age < WINDOW)` kept the freshest
+        // entries, which is exactly what a flood produces.
         if counts.len() > 10_000 {
-            counts.retain(|_, (_, start)| now.duration_since(*start) < RELAY_QUOTA_WINDOW);
+            let mut entries: Vec<(std::net::IpAddr, std::time::Instant)> = counts
+                .iter()
+                .map(|(addr, (_, start))| (*addr, *start))
+                .collect();
+            entries.sort_by_key(|(_, start)| *start);
+            let excess = entries.len() - 7_500;
+            for (addr, _) in entries.into_iter().take(excess) {
+                counts.remove(&addr);
+            }
         }
         within
     }

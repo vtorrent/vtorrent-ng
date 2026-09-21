@@ -288,7 +288,15 @@ fn apply_transaction_journaled(
                 }
 
                 if crate::consensus::is_stakeable(&utxo) {
-                    journal.staked_delta -= utxo.value as i64;
+                    // Checked: a crafted block can carry tens of thousands of
+                    // MAX_MONEY outputs, and `overflow-checks = true` would
+                    // turn an unchecked `-=` into a panic on the block path.
+                    journal.staked_delta = journal
+                        .staked_delta
+                        .checked_sub(utxo.value as i64)
+                        .ok_or_else(|| {
+                            NodeError::InvalidTransaction("Staked-supply delta underflow".into())
+                        })?;
                 }
                 journal.changes.push(UtxoChange::Removed { key, utxo });
             } else if !tx.is_legacy_claim() {
@@ -335,7 +343,14 @@ fn apply_transaction_journaled(
             timestamp,
         };
         if crate::consensus::is_stakeable(&utxo) {
-            journal.staked_delta += output.value as i64;
+            // Checked for the same reason as the removal above: an unchecked
+            // `+=` over many MAX_MONEY outputs panics under overflow-checks.
+            journal.staked_delta = journal
+                .staked_delta
+                .checked_add(output.value as i64)
+                .ok_or_else(|| {
+                    NodeError::InvalidTransaction("Staked-supply delta overflow".into())
+                })?;
         }
         chain.utxo_set.insert(key, utxo);
         journal.changes.push(UtxoChange::Added { key });
@@ -416,6 +431,12 @@ pub(crate) fn reorganize_to(
     let claimed_addresses = chain.claimed_addresses.clone();
     let journals = chain.journals.clone();
     let total_supply = chain.total_supply;
+    // `reorganize_to_inner` mutates `total_staked` (rollback reverses each
+    // rolled-back block's delta, apply adds each fork block's) before it can
+    // fail. Omitting it here would leave the v2 kernel denominator drifted
+    // after a failed reorg, so two nodes with identical UTXO sets could
+    // disagree on kernel validity — a silent consensus split.
+    let total_staked = chain.total_staked;
 
     match reorganize_to_inner(chain, new_tip, new_tip_height) {
         Ok(result) => Ok(result),
@@ -426,6 +447,7 @@ pub(crate) fn reorganize_to(
             chain.claimed_addresses = claimed_addresses;
             chain.journals = journals;
             chain.total_supply = total_supply;
+            chain.total_staked = total_staked;
             Err(error)
         }
     }

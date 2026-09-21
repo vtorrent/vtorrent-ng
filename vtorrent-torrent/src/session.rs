@@ -29,6 +29,19 @@ pub enum SessionState {
     Stopped,
 }
 
+impl SessionState {
+    /// Whether the session has finished and no longer consumes a download
+    /// slot. `Seeding` counts as terminal here because the engine's peer tasks
+    /// have all exited (see `run_engine`'s final state update) — nothing is
+    /// actively running.
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            SessionState::Seeding | SessionState::Error | SessionState::Stopped
+        )
+    }
+}
+
 impl std::fmt::Display for SessionState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -234,11 +247,26 @@ impl SessionManager {
 
     /// Add a new session and return its ID.
     ///
-    /// Returns `None` when the session cap is reached; the caller must reject
-    /// the request rather than spawning an unbounded number of tasks.
+    /// Returns `None` when the *active* session cap is reached. Completed
+    /// sessions (`Seeding`/`Error`/`Stopped`) do not count, and the oldest
+    /// completed one is evicted to make room — otherwise 64 `add_torrent`
+    /// calls would permanently lock out new sessions, since the engine never
+    /// removes them itself.
     pub fn add_session(&mut self, session: TorrentSession) -> Option<String> {
-        if self.sessions.len() >= MAX_TORRENT_SESSIONS {
-            return None;
+        let active = self
+            .sessions
+            .values()
+            .filter(|s| !s.state.is_terminal())
+            .count();
+        if active >= MAX_TORRENT_SESSIONS {
+            // Try to evict the oldest completed session to make room.
+            let oldest_terminal = self
+                .sessions
+                .iter()
+                .filter(|(_, s)| s.state.is_terminal())
+                .min_by_key(|(_, s)| s.last_active)
+                .map(|(id, _)| id.clone())?;
+            self.sessions.remove(&oldest_terminal);
         }
         let id = session.id.clone();
         self.sessions.insert(id.clone(), session);
@@ -367,6 +395,44 @@ mod tests {
             TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
         assert!(manager.add_session(extra).is_none());
         assert_eq!(manager.len(), MAX_TORRENT_SESSIONS);
+    }
+
+    #[test]
+    fn test_completed_sessions_do_not_block_new_ones() {
+        // The engine never removes sessions, so a hard count cap would lock
+        // out new adds after 64 completions. Terminal sessions must not count
+        // and must be evictable.
+        let mut manager = SessionManager::new();
+        for _ in 0..MAX_TORRENT_SESSIONS {
+            let mut s =
+                TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+            s.state = SessionState::Seeding; // terminal
+            assert!(manager.add_session(s).is_some());
+        }
+        // A new session must still be accepted, evicting a completed one.
+        let extra =
+            TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+        assert!(
+            manager.add_session(extra).is_some(),
+            "a completed session must be evicted to make room"
+        );
+    }
+
+    #[test]
+    fn test_active_sessions_still_enforce_the_cap() {
+        let mut manager = SessionManager::new();
+        for _ in 0..MAX_TORRENT_SESSIONS {
+            let mut s =
+                TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+            s.state = SessionState::Downloading; // active
+            assert!(manager.add_session(s).is_some());
+        }
+        let extra =
+            TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+        assert!(
+            manager.add_session(extra).is_none(),
+            "active sessions must still hit the cap"
+        );
     }
 
     #[test]

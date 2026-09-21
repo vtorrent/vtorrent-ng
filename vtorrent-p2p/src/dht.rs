@@ -290,6 +290,12 @@ impl DhtBootstrap {
         let mut discovered_peers: Vec<SocketAddr> = Vec::new();
         let mut queried_nodes: HashMap<SocketAddr, bool> = HashMap::new();
         let mut pending_nodes: Vec<SocketAddr> = Vec::new();
+        // Bound the frontier: a hostile node returns ~2500 addresses per reply
+        // and `queried_nodes` is only populated when an address is popped, so
+        // the same addresses can be re-pushed before being queried. Without a
+        // cap the queue grows without bound. (The torrent DHT already has this
+        // guard; the P2P DHT — which bootstrap actually uses — did not.)
+        const MAX_PENDING: usize = 1024;
 
         // Seed the queue with the well-known bootstrap nodes
         for seed in DHT_BOOTSTRAP_NODES {
@@ -332,7 +338,13 @@ impl DhtBootstrap {
             // the read times out. Foreign/stale responses are ignored so a slow
             // or misbehaving node cannot stall the whole bootstrap.
             let mut buf = [0u8; 65536];
-            while let Ok((len, _from)) = socket.recv_from(&mut buf) {
+            while let Ok((len, from)) = socket.recv_from(&mut buf) {
+                // Only accept a reply from the node we actually queried.
+                // Matching the 2-byte transaction id alone let any host on the
+                // internet inject peers into our address book.
+                if from != node_addr {
+                    continue;
+                }
                 if parse_tid(&buf[..len]) != Some(tid_bytes) {
                     continue;
                 }
@@ -351,7 +363,12 @@ impl DhtBootstrap {
 
                 // Nodes found — add to pending queue for further querying
                 for node in nodes {
-                    if !queried_nodes.contains_key(&node.addr) {
+                    if pending_nodes.len() >= MAX_PENDING {
+                        break;
+                    }
+                    if !queried_nodes.contains_key(&node.addr)
+                        && !pending_nodes.contains(&node.addr)
+                    {
                         pending_nodes.push(node.addr);
                     }
                 }

@@ -1,5 +1,10 @@
 # Codebase review — third pass (2026-09-20)
 
+> **Fix status (2026-09-20).** T1, T2, T5, T6, T7, T8, and T9 are fixed; see
+> `docs/code-review-2026-09-20-fix-status.md`. T3 (genesis bootstrap) and T4
+> (stake dilution) are open pending a design decision; the low findings T10–T17
+> remain as documented.
+
 Third read-only pass, scoped to the **46 commits / 4,138 insertions** landed
 since the second pass (`6d1403a`). Most of that delta is the fix code from the
 2026-09-15 reviews, which had never itself been reviewed — so this pass is
