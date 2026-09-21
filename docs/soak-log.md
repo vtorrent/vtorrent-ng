@@ -976,3 +976,82 @@ Earliest sign-off is now no earlier than seven days after this recovery
 **Follow-up.** The host had two competing Docker installs (snap + apt). The
 apt `docker.service`/`docker.socket` are now disabled; a host-readiness check
 should assert a single daemon before a soak window starts.
+
+## 2026-09-21 — host lid-close suspend froze the fleet for 16.7h; recovered
+
+**Symptom.** Node1's log stopped at `2026-09-20T08:12:33Z` (last line: PEX
+`getaddr` after staking block 11632) and stayed silent for 16.7 hours. All
+three nodes froze at the same time; Prometheus marked all three `up = 0` from
+`08:12:23Z` to `08:18:08Z`, after which the scrapes themselves stopped
+(Prometheus was on the same suspended host, so no data points were recorded —
+not zeros). Block height metrics show no samples in the window.
+
+**Root cause.** Operator closed the laptop lid at `2026-09-20T15:13:05 +07`
+(`08:13:05Z`). `systemd-logind` suspended the host (`PM: suspend entry
+(s2idle)` at `08:13:14Z`). The last node log line is 41s before the kernel
+suspend entry, consistent with the fleet being frozen, not crashed. The
+container processes were never killed (`RestartCount` 0, `OOMKilled` false,
+exit code 0 on the later stop).
+
+**Recovery.** Lid opened `2026-09-21T07:56:19 +07` (`00:56:19Z`); kernel
+`PM: suspend exit` the same second. Node1 resumed staking within the same
+second (block 11633 at `00:56:19Z`) with no manual action — the staking loop
+survived the freeze. Node2/node3 were still partitioned from the earlier
+Docker-daemon incident (their bridge was gone), so they stayed at 11627.
+
+At `01:55:31Z` the operator's recovery of the Docker-daemon conflict
+(`snap restart docker`, see the previous entry) restarted all containers via
+the `unless-stopped` restart policy. All three nodes replayed the full chain
+from genesis (node1 1→11691 in ~2m35s, node2 1→11627 then caught up
+11628→11695 by `02:02:17Z`, node3 1→11691 then 11692→11702) with **zero
+height gaps** in the replay logs, zero ERROR/panic/reorg/rollback lines, and
+no store corruption. Wallet auto-unlock re-fired (`01:58:12Z`) and staking
+auto-resumed. Peers reconnected (node2 at `01:59:09Z`); all three agreed at
+height 11695 by `02:03Z`.
+
+**Result.** Fleet healthy: height 11938, identical best hash
+`ad0ba7186aa0…` on all three, `syncing: false`, peers 2/1/1, mempool 0,
+staking enabled (4 UTXOs, 248 blocks staked this run). Post-resume block
+intervals: n=235, min 61 / median 61 / max 62 s — exactly the 60s target.
+Memory: node1 117.9, node2 101.6, node3 102.6 MiB (1 malloc arena each, the
+`MALLOC_ARENA_MAX=2` cap holding). Prometheus scrape coverage since the
+containers came back: 960/960 expected 15s samples on each node (100%),
+zero gaps >30s. BTC-regtest SPV reconnected and stays synced (height 140,
+`synced: true`); the BTC container logs "stale tip" warnings because no new
+regtest blocks are being mined, which is expected.
+
+**Soak impact.** Two interruptions in one window: the host suspend
+(`08:13:14Z` → `00:56:19Z`, 16.7h) and the subsequent container restart
+(`01:55:31Z`). The seven-day window resets to the first post-recovery stake
+at `2026-09-21T01:58:13Z` (height 11691). Earliest sign-off is now
+**2026-09-28 after 01:58Z**.
+
+**Follow-up.** The soak host is a laptop; lid-close suspends it. Before the
+next window, disable automatic suspend on lid close (or run the fleet on the
+seed servers instead). `soak-status.sh` cannot detect a suspended host — the
+scrapes simply stop — so a gap detector over `up` (e.g. `present_over_time`)
+would make this visible in Grafana.
+
+## 2026-09-21 (later) — daily observation (post-suspend, window restarted)
+
+Read-only check at `2026-09-21T06:10Z`, ~4h11m after the window restart
+(first post-recovery stake `01:58:13Z`, height 11691).
+
+- All three nodes agree at height **11938**, hash `ad0ba7186aa0…`,
+  `syncing: false`, mempool 0. Node1 (staker) holds 2 connections; each
+  follower holds 1.
+- Staking enabled for `VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k`, 4 eligible
+  UTXOs, 248 blocks staked this run; wallet auto-unlock re-fired on
+  container start with no manual action.
+- Block cadence since resume: 235 intervals, min 61 / median 61 / max 62 s.
+- Prometheus over the window: `up = 1` on all three with 960/960 expected
+  15s samples (100% coverage, zero gaps >30s); `max_over_time(syncing) = 0`;
+  `min_over_time(peer_count) = 2/1/1` (no zero-peer dips).
+- Zero ERROR/panic/reorg/rollback lines on all three since the window start;
+  container `RestartCount` 0 on all three.
+- Memory: node1 117.9, node2 101.6, node3 102.6 MiB; 1 malloc arena each
+  (`MALLOC_ARENA_MAX=2` holding).
+- BTC-regtest SPV: connected, height 140, `synced: true`.
+
+Earliest sign-off: **2026-09-28 after 01:58Z**, contingent on uninterrupted
+evidence. Next daily observation entry due 2026-09-22.
