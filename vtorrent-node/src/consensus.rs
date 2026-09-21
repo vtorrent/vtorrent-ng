@@ -141,14 +141,16 @@ pub fn check_stake_kernel(stake_modifier: u64, utxo: &Utxo, timestamp: u32) -> b
 
 /// Whether `utxo` counts toward the staked supply for the v2 kernel rule.
 ///
-/// Only spendable outputs at or above the minimum stake amount can ever win a
-/// kernel, so unspendable (OP_RETURN) and dust outputs must not dilute the
-/// denominator.
+/// Only P2PKH outputs at or above the minimum stake amount can ever win a
+/// kernel: the staking engine only stakes a UTXO whose script equals its own
+/// P2PKH script (`staking.rs:242`). Counting P2SH/P2MS/P2PK/HTLC/NonStandard
+/// outputs would let a holder park coins to dilute every honest staker's hit
+/// probability without ever winning a kernel.
 pub fn is_stakeable(utxo: &Utxo) -> bool {
     utxo.value >= MIN_STAKE_AMOUNT
         && vtorrent_script::classify_script(
             &vtorrent_script::Script::from_bytes(utxo.script_pubkey.clone()).unwrap_or_default(),
-        ) != vtorrent_script::ScriptType::OpReturn
+        ) == vtorrent_script::ScriptType::P2PKH
 }
 
 /// Check whether a UTXO satisfies the v2 stake kernel.
@@ -612,11 +614,16 @@ mod tests {
     use secp256k1::SecretKey;
 
     fn stake_utxo(value: u64) -> Utxo {
+        // A valid 25-byte P2PKH script: OP_DUP OP_HASH160 <20> OP_EQUALVERIFY
+        // OP_CHECKSIG. `is_stakeable` accepts only this class (T4).
+        let mut script_pubkey = vec![0x76, 0xa9, 0x14];
+        script_pubkey.extend_from_slice(&[0x00u8; 20]);
+        script_pubkey.extend_from_slice(&[0x88, 0xac]);
         Utxo {
             txid: [3u8; 32],
             vout: 0,
             value,
-            script_pubkey: vec![0x76, 0xa9, 0x14, 0x00, 0x88, 0xac],
+            script_pubkey,
             height: 1,
             timestamp: 1_700_000_000,
         }
@@ -703,6 +710,42 @@ mod tests {
         assert!(!is_stakeable(&stake_utxo(MIN_STAKE_AMOUNT - 1)));
         // A normal P2PKH at or above the minimum counts.
         assert!(is_stakeable(&stake_utxo(MIN_STAKE_AMOUNT)));
+    }
+
+    #[test]
+    fn test_is_stakeable_accepts_only_p2pkh() {
+        // The staking engine only ever stakes a UTXO whose script equals its
+        // own P2PKH script, so any other class would dilute the denominator
+        // without ever winning a kernel (T4).
+        fn with_script(script: Vec<u8>) -> Utxo {
+            let mut u = stake_utxo(MIN_STAKE_AMOUNT);
+            u.script_pubkey = script;
+            u
+        }
+
+        // P2PKH: OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG
+        let mut p2pkh = vec![0x76, 0xa9, 0x14];
+        p2pkh.extend_from_slice(&[0x11u8; 20]);
+        p2pkh.extend_from_slice(&[0x88, 0xac]);
+        assert!(is_stakeable(&with_script(p2pkh)));
+
+        // P2SH: OP_HASH160 <20> OP_EQUAL
+        let mut p2sh = vec![0xa9, 0x14];
+        p2sh.extend_from_slice(&[0x22u8; 20]);
+        p2sh.push(0x87);
+        assert!(!is_stakeable(&with_script(p2sh)));
+
+        // P2PK: <33-byte pubkey> OP_CHECKSIG
+        let mut p2pk = vec![33];
+        p2pk.extend_from_slice(&[0x33u8; 33]);
+        p2pk.push(0xac);
+        assert!(!is_stakeable(&with_script(p2pk)));
+
+        // OP_RETURN
+        assert!(!is_stakeable(&with_script(vec![0x6a, 0x01, 0x00])));
+
+        // NonStandard
+        assert!(!is_stakeable(&with_script(vec![0x51, 0x52])));
     }
 
     #[test]
