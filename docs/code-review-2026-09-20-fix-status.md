@@ -10,13 +10,13 @@ failures), `cargo clippy --workspace --all-targets --all-features` (clean),
 
 | Finding | Commit | Notes |
 |---|---|---|
-| T1 failed reorg leaves `total_staked` drifted | `TBD` | Restore it in the error path; test proven non-vacuous |
-| T2 `i64` overflow in `staked_delta` | `TBD` | `checked_add`/`checked_sub` with a clean error |
-| T5 `getdata` budget checked only before the loop | `TBD` | Now checked inside the loop |
-| T6 inverted map prunes (getdata, PEX, relay) | `TBD` | Evict by count, not window age |
-| T7 relay quota keyed by `SocketAddr` | `TBD` | Keyed by `IpAddr` |
-| T8 P2P DHT missing pending cap + source check | `TBD` | Both ported from the torrent DHT |
-| T9 torrent session cap never released | `TBD` | Terminal sessions don't count and are evictable |
+| T1 failed reorg leaves `total_staked` drifted | `d39d902` | Restore it in the error path; test proven non-vacuous |
+| T2 `i64` overflow in `staked_delta` | `d39d902` | `checked_add`/`checked_sub` with a clean error |
+| T5 `getdata` budget checked only before the loop | `d39d902` | Now checked inside the loop |
+| T6 inverted map prunes (getdata, PEX, relay) | `d39d902` | Evict by count, not window age |
+| T7 relay quota keyed by `SocketAddr` | `d39d902` | Keyed by `IpAddr` |
+| T8 P2P DHT missing pending cap + source check | `d39d902` | Both ported from the torrent DHT |
+| T9 torrent session cap never released | `d39d902` | Terminal sessions don't count and are evictable |
 
 ### T1 — failed reorg left `total_staked` drifted
 
