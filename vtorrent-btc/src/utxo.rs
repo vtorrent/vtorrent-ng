@@ -29,6 +29,13 @@ pub struct SwapContract {
     pub expiry: u32,
     pub amount: u64,
     pub refund_raw: Option<Vec<u8>>,
+    /// The wallet outpoint reserved to fund this swap, so the reservation can
+    /// be released after the funding tx is confirmed dead. `None` for
+    /// contracts persisted before this field existed (never auto-released).
+    #[serde(default)]
+    pub input_txid: Option<String>,
+    #[serde(default)]
+    pub input_vout: Option<u32>,
 }
 
 /// In-memory UTXO set with optional disk persistence.
@@ -78,6 +85,29 @@ impl UtxoSet {
     pub fn reserve(&mut self, txid: &str, vout: u32) {
         self.remove(txid, vout);
         self.reserved.insert((txid.to_owned(), vout));
+    }
+
+    /// Release a reservation so the input can be selected again.
+    ///
+    /// Only safe once the funding transaction is known not to be live (see
+    /// `BtcWallet::release_swap_reservation`): releasing an input whose signed
+    /// funding tx could still confirm would let a second swap spend it.
+    /// Returns true if a reservation was actually removed.
+    pub fn release(&mut self, txid: &str, vout: u32) -> bool {
+        self.reserved.remove(&(txid.to_owned(), vout))
+    }
+
+    /// All persisted swap contracts, for reconciliation.
+    pub fn swap_contracts(&self) -> Vec<SwapContract> {
+        self.swap_contracts.values().cloned().collect()
+    }
+
+    /// Drop a swap contract and its retained signed transaction.
+    pub fn remove_swap_contract(&mut self, order_id: &str) -> Option<SwapContract> {
+        let contract = self.swap_contracts.remove(order_id)?;
+        self.pending_swap_transactions
+            .remove(&contract.funding_txid);
+        Some(contract)
     }
 
     pub fn record_swap_transaction(&mut self, txid: String, raw: Vec<u8>) {
@@ -235,5 +265,43 @@ mod tests {
         let path = std::env::temp_dir().join("nonexistent_utxo_file.json");
         let set = UtxoSet::load(&path).unwrap();
         assert_eq!(set.total(), 0);
+    }
+
+    #[test]
+    fn test_release_restores_selectability() {
+        let mut set = UtxoSet::new();
+        set.add(utxo("a", 0, 5000));
+        set.reserve("a", 0);
+        assert!(set.list().is_empty(), "reserved input must leave selection");
+        assert!(set.release("a", 0), "release must report the reservation");
+        assert!(!set.release("a", 0), "second release is a no-op");
+        // A rescan can now re-add it.
+        set.add(utxo("a", 0, 5000));
+        assert_eq!(set.list().len(), 1);
+    }
+
+    #[test]
+    fn test_remove_swap_contract_drops_pending_tx() {
+        let mut set = UtxoSet::new();
+        set.record_swap_transaction("tx1".into(), vec![1, 2, 3]);
+        set.record_swap_contract(SwapContract {
+            order_id: "order1".into(),
+            funding_txid: "tx1".into(),
+            hash_lock: [0u8; 32],
+            recipient: "bc1q".into(),
+            refund_address: "bc1q".into(),
+            expiry: 100,
+            amount: 1000,
+            refund_raw: None,
+            input_txid: Some("a".into()),
+            input_vout: Some(0),
+        });
+        let removed = set.remove_swap_contract("order1").unwrap();
+        assert_eq!(removed.funding_txid, "tx1");
+        assert!(set.swap_contract("order1").is_none());
+        assert!(
+            set.pending_swap_transactions().is_empty(),
+            "pending tx must be dropped with the contract"
+        );
     }
 }

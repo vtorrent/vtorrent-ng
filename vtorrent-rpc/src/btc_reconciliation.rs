@@ -260,6 +260,151 @@ fn observe(
     }
 }
 
+/// Whether a persisted BTC reservation is a release candidate.
+///
+/// Requires a tracked input and an expired HTLC. Confirmation status is checked
+/// separately against a fresh scan.
+fn is_release_candidate(contract: &vtorrent_btc::utxo::SwapContract, now: u64) -> bool {
+    contract.input_txid.is_some() && u64::from(contract.expiry) < now
+}
+
+/// Whether a fresh scan proves the funding transaction is not confirmed, so the
+/// reservation can be released.
+fn scan_proves_unfunded(scan: &SwapScan) -> bool {
+    scan.funding.is_none()
+}
+
+/// Release BTC input reservations whose funding transaction can no longer be
+/// claimed.
+///
+/// A reservation is only released when **both** hold:
+/// 1. The HTLC has expired (`now > contract.expiry`). After expiry the maker
+///    can no longer claim, so a funding tx that later confirms can only be
+///    refunded by us — it can never be claimed out from under a new swap.
+/// 2. A fresh scan reports the funding tx as not observed (`FundingNotObserved`
+///    or `InvalidFunding`), so it is not confirmed in the chain.
+///
+/// The scan is BIP-158 (confirmed-only), so condition 2 does not prove absence
+/// from a mempool; condition 1 is what makes release safe regardless.
+///
+/// Returns the number of reservations released. Failures on individual
+/// contracts are logged and skipped; they are retried on the next call.
+pub async fn release_expired_reservations(state: &AppState) -> usize {
+    let now = crate::handlers::now_secs_mock(state).await;
+    let network = *state.btc_network.read().await;
+    let candidates: Vec<vtorrent_btc::utxo::SwapContract> = {
+        let btc = state.btc_wallet.read().await;
+        let Some(wallet) = btc.as_ref() else {
+            return 0;
+        };
+        wallet
+            .swap_contracts()
+            .into_iter()
+            .filter(|c| is_release_candidate(c, now))
+            .collect()
+    };
+    let mut released = 0;
+    for contract in candidates {
+        let htlc = BtcHtlc {
+            hash_lock: contract.hash_lock,
+            recipient: contract.recipient.clone(),
+            refund_address: contract.refund_address.clone(),
+            expiry: contract.expiry,
+            amount: contract.amount,
+            network,
+        };
+        let funding_txid = match bitcoin::Txid::from_str(&contract.funding_txid) {
+            Ok(txid) => txid.to_byte_array(),
+            Err(_) => {
+                tracing::warn!(
+                    order_id = %contract.order_id,
+                    "BTC reservation has an invalid funding txid; not releasing"
+                );
+                continue;
+            }
+        };
+        let scan = match scan_contract(state, &htlc, funding_txid).await {
+            Ok(scan) => scan,
+            Err(error) => {
+                tracing::debug!(
+                    order_id = %contract.order_id,
+                    error = %error,
+                    "BTC reservation release scan failed; will retry"
+                );
+                continue;
+            }
+        };
+        // Only release when the funding tx is provably not confirmed.
+        if !scan_proves_unfunded(&scan) {
+            tracing::info!(
+                order_id = %contract.order_id,
+                "BTC funding is confirmed; keeping reservation for refund"
+            );
+            continue;
+        }
+        let btc = state.btc_wallet.read().await;
+        let Some(wallet) = btc.as_ref() else {
+            break;
+        };
+        match wallet.release_swap_reservation(&contract.order_id) {
+            Ok(true) => {
+                released += 1;
+                tracing::info!(
+                    order_id = %contract.order_id,
+                    "Released expired BTC input reservation"
+                );
+            }
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(
+                    order_id = %contract.order_id,
+                    error = %error,
+                    "Could not persist BTC reservation release"
+                );
+            }
+        }
+    }
+    released
+}
+
+/// Run a BTC settlement scan for a contract, resolving peers the same way the
+/// RPC reconcile path does.
+async fn scan_contract(
+    state: &AppState,
+    htlc: &BtcHtlc,
+    funding_txid: [u8; 32],
+) -> RpcResult<SwapScan> {
+    let peers = if let Some(host) = state.btc_peer.read().await.clone() {
+        tokio::net::lookup_host(host)
+            .await
+            .map_err(|e| RpcError::BadRequest(format!("BTC peer resolution failed: {e}")))?
+            .collect::<Vec<_>>()
+    } else if htlc.network == bitcoin::Network::Bitcoin {
+        vtorrent_btc::sync::resolve_seeds()
+            .await
+            .map_err(|e| RpcError::BadRequest(e.to_string()))?
+    } else {
+        return Err(RpcError::BadRequest(
+            "Configure a BTC peer for this network".into(),
+        ));
+    };
+    let btc = state.btc_wallet.read().await;
+    let wallet = btc
+        .as_ref()
+        .ok_or_else(|| RpcError::BadRequest("BTC wallet not initialized".into()))?;
+    let scan = wallet
+        .observe_swap(
+            htlc,
+            funding_txid,
+            &peers,
+            crate::handlers::now_secs_mock(state).await,
+            &[],
+        )
+        .await
+        .map_err(|e| RpcError::BadRequest(format!("BTC settlement scan failed: {e}")))?;
+    Ok(scan)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,5 +454,55 @@ mod tests {
         scan.funding = None;
         assert_eq!(observe(&scan).state, FundingNotObserved);
         assert!(observe(&scan).spend.is_some());
+    }
+
+    fn contract(expiry: u32, input: Option<&str>) -> vtorrent_btc::utxo::SwapContract {
+        vtorrent_btc::utxo::SwapContract {
+            order_id: "order".into(),
+            funding_txid: "ab".repeat(32),
+            hash_lock: [0u8; 32],
+            recipient: "bc1q".into(),
+            refund_address: "bc1q".into(),
+            expiry,
+            amount: 1000,
+            refund_raw: None,
+            input_txid: input.map(str::to_string),
+            input_vout: input.map(|_| 0),
+        }
+    }
+
+    #[test]
+    fn release_candidate_requires_expiry_and_tracked_input() {
+        // Expired + tracked input: a candidate.
+        assert!(is_release_candidate(&contract(100, Some("cd")), 101));
+        // Not yet expired: never released.
+        assert!(!is_release_candidate(&contract(100, Some("cd")), 100));
+        assert!(!is_release_candidate(&contract(100, Some("cd")), 99));
+        // No tracked input (legacy contract): never released.
+        assert!(!is_release_candidate(&contract(100, None), 101));
+    }
+
+    #[test]
+    fn release_requires_unconfirmed_funding() {
+        let mut scan = SwapScan {
+            tip_hash: [8; 32],
+            tip_height: 20,
+            scan_start: 1,
+            funding: None,
+            spend: None,
+            invalid_funding: false,
+            coinbase: false,
+            invalidated_anchor: false,
+            preimage: None,
+        };
+        // Funding not observed: safe to release.
+        assert!(scan_proves_unfunded(&scan));
+        // Funding confirmed: must keep the reservation for refund.
+        scan.funding = Some(SwapAnchor {
+            txid: [4; 32],
+            block_hash: [5; 32],
+            height: 16,
+        });
+        assert!(!scan_proves_unfunded(&scan));
     }
 }

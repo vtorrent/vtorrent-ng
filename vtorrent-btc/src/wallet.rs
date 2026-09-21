@@ -202,6 +202,8 @@ impl BtcWallet {
             expiry: htlc.expiry,
             amount: htlc.amount,
             refund_raw: None,
+            input_txid: Some(input.txid.clone()),
+            input_vout: Some(input.vout),
         });
         if let Some(path) = &self.utxo_path {
             if let Err(error) = set.save(path) {
@@ -221,6 +223,43 @@ impl BtcWallet {
 
     pub fn swap_contract(&self, order_id: &str) -> Option<crate::utxo::SwapContract> {
         self.utxos.lock().swap_contract(order_id).cloned()
+    }
+
+    /// All persisted swap contracts, for startup reconciliation.
+    pub fn swap_contracts(&self) -> Vec<crate::utxo::SwapContract> {
+        self.utxos.lock().swap_contracts()
+    }
+
+    /// Release the input reservation for `order_id` and drop its contract.
+    ///
+    /// The caller must have established that the funding transaction is not
+    /// live (not in the chain and not observed in the mempool) and that the
+    /// HTLC has expired. Releasing an input whose signed funding tx could still
+    /// confirm would let a second swap spend the same outpoint.
+    ///
+    /// Returns true if a reservation was released. Persists atomically; a
+    /// failed save rolls the in-memory set back.
+    pub fn release_swap_reservation(&self, order_id: &str) -> Result<bool> {
+        let mut set = self.utxos.lock();
+        let Some(contract) = set.swap_contract(order_id).cloned() else {
+            return Ok(false);
+        };
+        let (Some(txid), Some(vout)) = (contract.input_txid.clone(), contract.input_vout) else {
+            // Contract predates input tracking; nothing to release safely.
+            return Ok(false);
+        };
+        let previous = set.clone();
+        let released = set.release(&txid, vout);
+        set.remove_swap_contract(order_id);
+        if let Some(path) = &self.utxo_path {
+            if let Err(error) = set.save(path) {
+                *set = previous;
+                return Err(crate::error::BtcError::Bitcoin(format!(
+                    "Could not persist BTC reservation release: {error}"
+                )));
+            }
+        }
+        Ok(released)
     }
 
     pub fn record_swap_refund(&self, order_id: &str, raw: &[u8]) -> Result<()> {
@@ -562,5 +601,90 @@ mod tests {
     fn test_synced_default_false() {
         let w = BtcWallet::new([7u8; 64]);
         assert!(!w.synced());
+    }
+
+    fn contract(order_id: &str, input: Option<(&str, u32)>) -> crate::utxo::SwapContract {
+        crate::utxo::SwapContract {
+            order_id: order_id.into(),
+            funding_txid: "ab".repeat(32),
+            hash_lock: [0u8; 32],
+            recipient: "bc1qrecipient".into(),
+            refund_address: "bc1qrefund".into(),
+            expiry: 100,
+            amount: 10_000,
+            refund_raw: None,
+            input_txid: input.map(|(t, _)| t.to_string()),
+            input_vout: input.map(|(_, v)| v),
+        }
+    }
+
+    #[test]
+    fn test_release_swap_reservation_restores_input_and_persists() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-release-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+
+        let w = BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
+            .unwrap();
+        w.add_utxo(Utxo {
+            txid: "cd".repeat(32),
+            vout: 0,
+            value: 50_000,
+            address: "bc1qtest".into(),
+            height: 1,
+        });
+        // Reserve the input and record a contract pointing at it.
+        let mut set = w.utxos.lock();
+        set.reserve(&"cd".repeat(32), 0);
+        set.record_swap_contract(contract("order1", Some((&"cd".repeat(32), 0))));
+        set.save(&path).unwrap();
+        drop(set);
+        assert!(w.list_utxos().is_empty());
+
+        assert!(w.release_swap_reservation("order1").unwrap());
+        // The contract is gone and the input can be re-added by a rescan.
+        assert!(w.swap_contract("order1").is_none());
+        w.add_utxo(Utxo {
+            txid: "cd".repeat(32),
+            vout: 0,
+            value: 50_000,
+            address: "bc1qtest".into(),
+            height: 1,
+        });
+        assert_eq!(w.list_utxos().len(), 1);
+
+        // The release persisted: a fresh wallet sees no reservation.
+        let reloaded =
+            BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
+                .unwrap();
+        reloaded.add_utxo(Utxo {
+            txid: "cd".repeat(32),
+            vout: 0,
+            value: 50_000,
+            address: "bc1qtest".into(),
+            height: 1,
+        });
+        assert_eq!(reloaded.list_utxos().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_release_skips_contract_without_tracked_input() {
+        // Contracts persisted before input tracking existed must never be
+        // auto-released, since we cannot identify the reserved outpoint.
+        let w = BtcWallet::new([7u8; 64]);
+        {
+            let mut set = w.utxos.lock();
+            set.record_swap_contract(contract("legacy", None));
+        }
+        assert!(!w.release_swap_reservation("legacy").unwrap());
+        assert!(w.swap_contract("legacy").is_some(), "contract must remain");
     }
 }

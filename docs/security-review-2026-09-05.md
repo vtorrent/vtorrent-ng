@@ -269,7 +269,18 @@ ambiguous funding/refund broadcasts, reservation persistence failures, and two
 restarts during BTC refund recovery. Script and confirmation-boundary tests
 cover the funding policy.
 
-Still open: automatic reconciliation/release of unused reservations after
-restart. Signed funding transactions and contract terms remain available in
-the BTC wallet file for recovery, but they are not automatically rebroadcast
-without re-establishing the counterparty funding facts.
+Still open: automatic rebroadcast of a signed funding transaction without
+re-establishing the counterparty funding facts.
+
+Reservation release (2026-09-21): a persisted BTC input reservation is now
+released automatically once the HTLC has expired **and** a fresh BIP-158 scan
+reports the funding transaction is not confirmed. After expiry the maker can no
+longer claim, so a funding tx that later confirms can only be refunded by us —
+it can never be claimed out from under a new swap. The scan is confirmed-only,
+so it does not prove absence from a mempool; expiry is what makes release safe
+regardless. Contracts persisted before input tracking existed are never
+auto-released. Implemented in `UtxoSet::release` /
+`BtcWallet::release_swap_reservation` (`vtorrent-btc`) and
+`btc_reconciliation::release_expired_reservations` (`vtorrent-rpc`), driven by
+the daemon's BTC sync loop. Regression tests cover release/restore, persistence
+across reload, the legacy-contract skip, and the expiry/confirmation policy.

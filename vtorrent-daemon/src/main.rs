@@ -676,6 +676,7 @@ async fn main() -> anyhow::Result<()> {
     let btc_wallet = Arc::clone(&rpc_state.btc_wallet);
     let btc_network = Arc::clone(&rpc_state.btc_network);
     let btc_peer = Arc::clone(&rpc_state.btc_peer);
+    let reservation_state = rpc_state_for_unlock.clone();
     tokio::spawn(async move {
         tracing::info!("Bitcoin SPV sync task started");
         loop {
@@ -752,6 +753,15 @@ async fn main() -> anyhow::Result<()> {
                     }
                     Err(e) => tracing::warn!("BTC peer {} failed: {}", addr, e),
                 }
+            }
+            // Release BTC input reservations whose HTLC has expired and whose
+            // funding tx is not confirmed, so a failed funding attempt does not
+            // lock the input forever across restarts.
+            let released =
+                vtorrent_rpc::btc_reconciliation::release_expired_reservations(&reservation_state)
+                    .await;
+            if released > 0 {
+                tracing::info!("Released {} expired BTC input reservation(s)", released);
             }
             tokio::time::sleep(tokio::time::Duration::from_secs(300)).await;
         }
