@@ -38,3 +38,21 @@ fi
 if systemctl is-enabled docker.service >/dev/null 2>&1; then
     echo "WARNING: system docker.service is enabled; it can conflict with snap.docker.dockerd."
 fi
+
+# ── Host readiness: no suspend since boot ────────────────────────────────────
+# A lid-close suspend freezes every container without killing it, so the fleet
+# stalls and Prometheus scrapes simply stop (no zeros). CLOCK_BOOTTIME includes
+# suspended time while CLOCK_MONOTONIC does not, so their difference is the
+# total time the host has slept since boot. This happened on 2026-09-20 (16.7h
+# freeze). Falls back to the /proc/uptime-vs-btime gap if python3 is missing.
+SUSPEND_GAP=$(python3 -c 'import time; print(int(time.clock_gettime(time.CLOCK_BOOTTIME) - time.clock_gettime(time.CLOCK_MONOTONIC)))' 2>/dev/null || echo "")
+if [ -z "$SUSPEND_GAP" ]; then
+    BTIME=$(awk '/^btime/{print $2}' /proc/stat 2>/dev/null || echo 0)
+    if [ "$BTIME" -gt 0 ]; then
+        SUSPEND_GAP=$(( $(date +%s) - BTIME - $(cut -d. -f1 /proc/uptime) ))
+    fi
+fi
+if [ -n "$SUSPEND_GAP" ] && [ "$SUSPEND_GAP" -gt 120 ]; then
+    echo "WARNING: host suspended ~$(( SUSPEND_GAP / 60 )) min since boot (boottime/monotonic gap)."
+    echo "         Containers were frozen during that time; soak evidence is interrupted."
+fi
