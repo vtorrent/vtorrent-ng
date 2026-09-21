@@ -31,6 +31,10 @@
       baselines in `vtorrent-node/benches/baselines/`; CI measures the previous
       and current revisions on the same runner to avoid cross-host timing noise,
       then remeasures once before confirming a threshold breach.
+- [x] **Genesis bootstrap path**: height-1 bootstrap claim block defined and
+      tested; `POST /api/v1/blockchain/bootstrap` mines it. Genesis has no
+      stakeable UTXO, so this is the only way a fresh chain begins staking.
+      See `docs/superpowers/specs/2026-09-21-genesis-bootstrap-and-stakeable-script-design.md`.
 - [ ] **External security review** of wallet encryption (Argon2id +
       ChaCha20-Poly1305), RPC auth, and the atomic-swap HTLC flow.
 

@@ -458,6 +458,35 @@ Check eligibility for a legacy UTXO claim.
 
 Submit a legacy UTXO claim transaction.
 
+### POST /api/v1/blockchain/bootstrap
+
+Mine the height-1 bootstrap claim block. Genesis has no stakeable UTXO, so no
+coinstake can be produced and staking can never start; this endpoint builds a
+signed legacy claim and mines it directly into a height-1 PoS block, seeding
+`total_staked` so normal PoS begins at height 2.
+
+**One-shot:** valid only while the chain is at genesis (`best_height == 0`).
+**Permissionless:** the first valid claim wins.
+
+**Request:**
+```json
+{
+  "wif_private_key": "7...",
+  "recipient_address": "V..."
+}
+```
+
+**Response:**
+```json
+{
+  "txid": "...",
+  "block_hash": "...",
+  "block_height": 1,
+  "claimed_satoshis": 50000000000,
+  "recipient_address": "V..."
+}
+```
+
 ---
 
 ## BTC Bridge

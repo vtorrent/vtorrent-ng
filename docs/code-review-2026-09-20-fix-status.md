@@ -6,6 +6,12 @@ All fixes verified with `cargo test --workspace` (47 test binaries, 0
 failures), `cargo clippy --workspace --all-targets --all-features` (clean),
 `cargo fmt --all -- --check`, and `cargo machete`.
 
+T3 and T4 are consensus-rule changes that are **no-ops on every existing
+chain** (the soak chain is P2PKH-only and its height-1 block is a regtest
+faucet coinbase, not a claim), so they replay unchanged. They ship with the
+post-soak batch, not the running soak fleet. See
+`docs/superpowers/specs/2026-09-21-genesis-bootstrap-and-stakeable-script-design.md`.
+
 ## Fixed
 
 | Finding | Commit | Notes |
@@ -17,6 +23,8 @@ failures), `cargo clippy --workspace --all-targets --all-features` (clean),
 | T7 relay quota keyed by `SocketAddr` | `d39d902` | Keyed by `IpAddr` |
 | T8 P2P DHT missing pending cap + source check | `d39d902` | Both ported from the torrent DHT |
 | T9 torrent session cap never released | `d39d902` | Terminal sessions don't count and are evictable |
+| T3 genesis bootstrap: `total_staked == 0` rejects every kernel | `09c3674`, `3f6294d`, `e9fc213` | Height-1 bootstrap claim block + `POST /api/v1/blockchain/bootstrap`; see design spec |
+| T4 `is_stakeable` over-counts non-P2PKH outputs | `f4d1ad0` | Restricted to P2PKH (the class the engine can spend) |
 
 ### T1 — failed reorg left `total_staked` drifted
 
@@ -78,31 +86,6 @@ Tests: completed sessions do not block new ones; active sessions still hit the
 cap.
 
 ## Open
-
-### T3 — genesis bootstrap: `total_staked == 0` rejects every kernel
-
-`check_stake_kernel_v2` returns `false` when `total_staked == 0`, and genesis
-has zero stakeable UTXOs (all distribution outputs are OP_RETURN; the coinbase
-is 0). Production rejects PoW, and the only production paths that create
-spendable outputs are staking (needs `total_staked > 0`) and `mint_to_address`
-(regtest-only faucet). So from a fresh mainnet genesis, staking can never
-start.
-
-The same condition predates C1 (v1 also could not build a coinstake), so there
-is likely an out-of-band launch/bootstrap procedure not in-repo. **Not fixed**:
-this needs a product decision on the bootstrap path (a launch block, a
-height-1 staking allowance, or a seeded spendable output), not a mechanical
-edit. Flagged as a mainnet-launch blocker.
-
-### T4 — `is_stakeable` over-counts outputs that can never stake
-
-`is_stakeable` accepts any non-OP_RETURN output ≥ `MIN_STAKE_AMOUNT`, but the
-engine only stakes P2PKH outputs matching its own script. P2SH/P2MS/P2PK/HTLC/
-`NonStandard` outputs ≥ 1 VTR count in the denominator but can never win a
-kernel, so a holder can park coins to dilute every honest staker's hit
-probability. **Not fixed**: the correct fix is to restrict `is_stakeable` to
-the script class the engine can spend, which is a consensus-rule change and
-needs the same coordinated-upgrade treatment as C1. Dilution only (no split).
 
 ### Low findings (T10–T17)
 
