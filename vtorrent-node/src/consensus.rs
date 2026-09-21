@@ -379,7 +379,21 @@ pub fn validate_transaction(tx: &Transaction) -> Result<()> {
         return Ok(());
     }
 
-    if tx.is_coinbase() || tx.is_coinstake() {
+    if tx.is_coinstake() {
+        // A coinstake must have exactly one input. The reward and `minted`
+        // accounting only consider `inputs[0]`, so a multi-input coinstake
+        // would let the producer and validator disagree on the reward (T17).
+        // The producer only ever emits single-input coinstakes.
+        if tx.inputs.len() != 1 {
+            return Err(NodeError::InvalidTransaction(format!(
+                "Coinstake must have exactly one input, got {}",
+                tx.inputs.len()
+            )));
+        }
+        return Ok(());
+    }
+
+    if tx.is_coinbase() {
         return Ok(());
     }
 
@@ -539,6 +553,13 @@ pub fn verify_claim_signature(
 /// DEPRECATED for validation: this v1 scheme does not commit to the claim's
 /// outputs, so a valid signature can be replayed with a different recipient.
 /// Use [`claim_message_hash_v2`] for new claims.
+///
+/// **Compatibility note (T16):** validation accepts only the v2 scheme, so a
+/// v1-signed claim can no longer be verified. This is replay-safe — the live
+/// and persisted chains contain no legacy claims — but any v1 signature
+/// produced by an old client is unusable. Retained only for external callers;
+/// no in-repo code calls it.
+#[deprecated(note = "v1 claim scheme is unverifiable; use claim_message_hash_v2")]
 pub fn claim_message_hash(claim_address: &str) -> [u8; 32] {
     bitcoin_signed_message_hash("vTorrent Signed Message", claim_address)
 }
@@ -809,6 +830,49 @@ mod tests {
     }
 
     #[test]
+    fn test_coinstake_must_have_exactly_one_input() {
+        use crate::block::TxInput;
+        let input = || TxInput {
+            prev_txid: [1u8; 32],
+            prev_vout: 0,
+            script_sig: vec![0x51],
+            sequence: u32::MAX,
+        };
+        let outputs = vec![
+            TxOutput {
+                value: 0,
+                script_pubkey: Vec::new(),
+            },
+            TxOutput {
+                value: COIN,
+                script_pubkey: p2pkh_script(),
+            },
+        ];
+        // One input is valid.
+        let ok = Transaction {
+            version: 1,
+            tx_type: TxType::Coinstake,
+            inputs: vec![input()],
+            outputs: outputs.clone(),
+            lock_time: 1,
+            claim_address: None,
+            claim_signature: None,
+        };
+        assert!(validate_transaction(&ok).is_ok());
+        // Zero or multiple inputs are rejected (T17).
+        let none = Transaction {
+            inputs: vec![],
+            ..ok.clone()
+        };
+        assert!(validate_transaction(&none).is_err());
+        let two = Transaction {
+            inputs: vec![input(), input()],
+            ..ok
+        };
+        assert!(validate_transaction(&two).is_err());
+    }
+
+    #[test]
     fn test_validate_legacy_claim_requires_identity_and_signature() {
         let tx = Transaction {
             version: 1,
@@ -915,7 +979,12 @@ mod tests {
         let coinstake = Transaction {
             version: 1,
             tx_type: TxType::Coinstake,
-            inputs: vec![],
+            inputs: vec![crate::block::TxInput {
+                prev_txid: [1u8; 32],
+                prev_vout: 0,
+                script_sig: vec![0x51],
+                sequence: u32::MAX,
+            }],
             outputs: vec![TxOutput {
                 value: COIN,
                 script_pubkey: p2pkh_script(),

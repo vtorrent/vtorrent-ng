@@ -58,17 +58,32 @@ pub const DNS_SEEDS: &[&str] = &[
     "seed3.vtorrent.org",
 ];
 
-/// Whether `ip` belongs to a configured bootstrap seed.
+/// Whether `addr` (the address we dialed) or `ip` (its resolved address)
+/// belongs to a configured bootstrap seed.
 ///
 /// Seeds are exempt from escalating connection-failure bans: a transient
 /// network problem or a brief seed restart must not escalate into an hour-long
 /// ban of a well-known node, which would cut the node off from bootstrap.
-pub fn is_bootstrap_seed(ip: std::net::IpAddr) -> bool {
-    BOOTSTRAP_PEERS.iter().any(|peer| {
+///
+/// Matching the dialed hostname as well as the literal IP list keeps the
+/// exemption working when a DNS seed's A record changes (T14).
+pub fn is_bootstrap_seed(addr: &str, ip: std::net::IpAddr) -> bool {
+    // Literal hardcoded peers.
+    if BOOTSTRAP_PEERS.iter().any(|peer| {
         peer.parse::<std::net::SocketAddr>()
-            .map(|addr| addr.ip() == ip)
+            .map(|sa| sa.ip() == ip)
             .unwrap_or(false)
-    })
+    }) {
+        return true;
+    }
+    // DNS seed hostnames: strip an optional port and compare case-insensitively.
+    let host = addr
+        .rsplit_once(':')
+        .map(|(h, _)| h)
+        .unwrap_or(addr)
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    DNS_SEEDS.iter().any(|seed| seed.eq_ignore_ascii_case(host))
 }
 
 /// Default mainnet P2P port.
@@ -307,11 +322,13 @@ impl PeerManager {
         let (stream, transport_mode) = match self.transport.connect(addr).await {
             Ok(result) => result,
             Err(e) => {
-                // Track connection failure — bans Tor/I2P synthetic addresses
-                // harmlessly (they don't match real peer IPs). Configured
-                // bootstrap seeds are exempt: a transient failure must not
-                // escalate into an hour-long ban of a well-known node.
-                if !is_bootstrap_seed(sock_addr.ip()) {
+                // Track connection failure. Configured bootstrap seeds are
+                // exempt: a transient failure must not escalate into an
+                // hour-long ban of a well-known node. Anonymous peers are also
+                // exempt: their synthetic key is not a real IP, so banning it
+                // is meaningless and a colliding name could suppress a victim
+                // (T11).
+                if !is_bootstrap_seed(addr, sock_addr.ip()) && !is_anonymous {
                     self.ban_manager
                         .write()
                         .await
@@ -706,28 +723,42 @@ impl PeerManager {
 /// `PeerManager` is keyed by `SocketAddr` because TCP peers expose one naturally.
 /// Tor and I2P do not, so use the benchmarking range 198.18.0.0/15 strictly as an
 /// internal key; this address is never added to PEX address entries.
+///
 /// Whether `addr` is an anonymous-network address that must be resolved by the
 /// Tor/I2P transport rather than DNS.
+///
+/// Delegates to `vtorrent_onion::addr::is_anon_addr`, which lowercases before
+/// matching, so `ABC.ONION:22526` is recognised (T12).
 fn is_anonymous_address(addr: &str) -> bool {
-    addr.ends_with(".onion")
-        || addr.contains(".onion:")
-        || addr.ends_with(".i2p")
-        || addr.contains(".i2p:")
+    vtorrent_onion::addr::is_anon_addr(addr)
 }
 
+/// Whether an anonymous peer's synthetic key may feed the IP ban table.
+///
+/// The synthetic key is derived from the `.onion`/`.i2p` name, not a real IP,
+/// so a failure ban on it is meaningless and — because the key space is finite
+/// — an attacker who grinds a colliding name could suppress a victim (T11).
+/// Anonymous peers are therefore never banned by synthetic IP.
 fn anonymous_peer_key(addr: &str) -> SocketAddr {
     use std::net::{IpAddr, Ipv4Addr};
 
-    let mut hash: u32 = 0x811c_9dc5;
-    for byte in addr.bytes() {
-        hash ^= byte as u32;
-        hash = hash.wrapping_mul(0x0100_0193);
+    // 64-bit FNV-1a over the lowercased address. A 32-bit hash made collisions
+    // between two `.onion` peers likely enough to be ground out, which would
+    // let the second peer be rejected by dedup and the first suppressed via a
+    // failure ban on the shared synthetic key (T11).
+    let lower = addr.to_lowercase();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in lower.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
 
-    let second = 18 + ((hash >> 8) & 1) as u8;
-    let third = (hash >> 16) as u8;
-    let fourth = (hash >> 24) as u8;
-    let port = 1_024 + (hash as u16 % (u16::MAX - 1_024));
+    // Map into the 198.18.0.0/15 benchmarking range: 17 bits of address space
+    // (2 in the second octet, 8 in the third, 7 in the fourth) plus a port.
+    let second = 18 + ((hash >> 16) & 1) as u8;
+    let third = (hash >> 24) as u8;
+    let fourth = (hash >> 32) as u8;
+    let port = 1_024 + ((hash >> 40) as u16 % (u16::MAX - 1_024));
     SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, second, third, fourth)), port)
 }
 
@@ -893,10 +924,30 @@ mod disconnect_liveness_tests {
     fn bootstrap_seeds_are_recognised_and_exempt_from_bans() {
         for peer in BOOTSTRAP_PEERS {
             let ip = peer.parse::<std::net::SocketAddr>().unwrap().ip();
-            assert!(is_bootstrap_seed(ip), "{peer} must be recognised as a seed");
+            assert!(
+                is_bootstrap_seed(peer, ip),
+                "{peer} must be recognised as a seed"
+            );
         }
+        // DNS seed hostnames are recognised even if their A record changes, so
+        // the ban exemption keeps applying (T14).
+        for seed in DNS_SEEDS {
+            let addr = format!("{seed}:22526");
+            assert!(
+                is_bootstrap_seed(&addr, "203.0.113.9".parse().unwrap()),
+                "{addr} must be recognised as a seed by hostname"
+            );
+        }
+        // Case-insensitive hostname match.
+        assert!(is_bootstrap_seed(
+            "SEED1.VTORRENT.ORG:22526",
+            "203.0.113.9".parse().unwrap()
+        ));
         // An arbitrary address is not a seed.
-        assert!(!is_bootstrap_seed("203.0.113.9".parse().unwrap()));
+        assert!(!is_bootstrap_seed(
+            "203.0.113.9:22526",
+            "203.0.113.9".parse().unwrap()
+        ));
     }
 
     #[test]
@@ -906,10 +957,28 @@ mod disconnect_liveness_tests {
         assert!(is_anonymous_address("abc.onion"));
         assert!(is_anonymous_address("xyz.i2p:22526"));
         assert!(is_anonymous_address("xyz.i2p"));
+        // Case-insensitive, matching the transport (T12).
+        assert!(is_anonymous_address("ABC.ONION:22526"));
+        assert!(is_anonymous_address("XYZ.I2P"));
         // Normal addresses must not be treated as anonymous.
         assert!(!is_anonymous_address("127.0.0.1:22526"));
         assert!(!is_anonymous_address("seed1.vtorrent.org:22526"));
         assert!(!is_anonymous_address("91.98.80.38:22526"));
+    }
+
+    #[test]
+    fn anonymous_peer_keys_are_stable_and_64_bit() {
+        // The synthetic key must be deterministic and case-insensitive, and
+        // distinct names must not collide (T11).
+        let a = anonymous_peer_key("abc.onion:22526");
+        let b = anonymous_peer_key("abc.onion:22526");
+        let c = anonymous_peer_key("ABC.ONION:22526");
+        assert_eq!(a, b, "key must be deterministic");
+        assert_eq!(a, c, "key must be case-insensitive");
+        let d = anonymous_peer_key("def.onion:22526");
+        assert_ne!(a, d, "distinct names must not collide");
+        // The key lives in the 198.18.0.0/15 benchmarking range.
+        assert_eq!(a.ip().to_string().split('.').next().unwrap(), "198");
     }
 
     #[test]

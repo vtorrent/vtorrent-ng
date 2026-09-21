@@ -223,6 +223,70 @@ impl Overlay {
 /// to the puncher's ingest channel so concurrent punch attempts observe their
 /// replies without racing this loop (tokio delivers each datagram to exactly
 /// one recv()).
+/// Per-source-IP token-bucket rate limiter for unauthenticated handshake
+/// packets.
+///
+/// Entries are pruned by TTL on a timer and evicted oldest-first when the map
+/// hits its cap. Eviction uses an insertion-order queue so it is O(1) amortized
+/// per packet; a full-map `min_by_key` scan was O(100k) per packet (T10).
+struct PunchRateLimiter {
+    tokens: HashMap<std::net::IpAddr, (f64, std::time::Instant)>,
+    order: std::collections::VecDeque<std::net::IpAddr>,
+    last_prune: std::time::Instant,
+}
+
+impl PunchRateLimiter {
+    const BURST: u32 = 20;
+    const RATE: u32 = 10; // tokens per second
+    const PRUNE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
+    const ENTRY_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+    const MAX_ENTRIES: usize = 100_000;
+
+    fn new() -> Self {
+        Self {
+            tokens: HashMap::new(),
+            order: std::collections::VecDeque::new(),
+            last_prune: std::time::Instant::now(),
+        }
+    }
+
+    fn prune_if_due(&mut self, now: std::time::Instant) {
+        if now.duration_since(self.last_prune) < Self::PRUNE_INTERVAL {
+            return;
+        }
+        self.tokens
+            .retain(|_, (_, seen)| now.duration_since(*seen) < Self::ENTRY_TTL);
+        self.order.retain(|ip| self.tokens.contains_key(ip));
+        self.last_prune = now;
+    }
+
+    /// Consume one token for `ip`. Returns false when the bucket is empty.
+    fn allow(&mut self, ip: std::net::IpAddr, now: std::time::Instant) -> bool {
+        self.prune_if_due(now);
+        if !self.tokens.contains_key(&ip) {
+            // New source: evict oldest entries until there is room.
+            while self.tokens.len() >= Self::MAX_ENTRIES {
+                match self.order.pop_front() {
+                    Some(oldest) => {
+                        self.tokens.remove(&oldest);
+                    }
+                    None => break,
+                }
+            }
+            self.order.push_back(ip);
+        }
+        let entry = self.tokens.entry(ip).or_insert((Self::BURST as f64, now));
+        let elapsed = now.duration_since(entry.1).as_secs_f64();
+        entry.0 = (entry.0 + elapsed * Self::RATE as f64).min(Self::BURST as f64);
+        entry.1 = now;
+        if entry.0 < 1.0 {
+            return false;
+        }
+        entry.0 -= 1.0;
+        true
+    }
+}
+
 async fn receive_loop(
     socket: Arc<UdpSocket>,
     puncher: Arc<HolePuncher>,
@@ -232,20 +296,7 @@ async fn receive_loop(
     _our_pubkey: [u8; 32],
 ) {
     let mut buf = [0u8; 65536];
-    // Per-source-IP rate limiting for unauthenticated handshake packets:
-    // token bucket of PUNCH_BURST tokens refilled at PUNCH_RATE per second.
-    const PUNCH_BURST: u32 = 20;
-    const PUNCH_RATE: u32 = 10; // tokens per second
-    let mut punch_tokens: HashMap<std::net::IpAddr, (f64, std::time::Instant)> = HashMap::new();
-    // Prune stale token-bucket entries periodically: each unique source IP
-    // inserts an entry, so without pruning a spoofed-UDP flood leaks memory.
-    const PUNCH_PRUNE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
-    const PUNCH_ENTRY_TTL: std::time::Duration = std::time::Duration::from_secs(600);
-    // Hard cap: the TTL (600s) exceeds the prune interval (300s), so peak size
-    // is every distinct source IP seen in a 600s window — unbounded under a
-    // spoofed-source flood. Evict the oldest entries once over the cap.
-    const PUNCH_MAX_ENTRIES: usize = 100_000;
-    let mut last_prune = std::time::Instant::now();
+    let mut punch_limiter = PunchRateLimiter::new();
 
     loop {
         let (n, from) = match socket.recv_from(&mut buf).await {
@@ -258,12 +309,6 @@ async fn receive_loop(
 
         if n == 0 {
             continue;
-        }
-
-        if last_prune.elapsed() >= PUNCH_PRUNE_INTERVAL {
-            let now = std::time::Instant::now();
-            punch_tokens.retain(|_, (_, seen)| now.duration_since(*seen) < PUNCH_ENTRY_TTL);
-            last_prune = now;
         }
 
         let tag = buf[0];
@@ -284,30 +329,10 @@ async fn receive_loop(
                 // BEFORE `puncher.ingest`: ingest allocates keypairs and
                 // registry entries, so doing it first would let a flood do
                 // that work for packets that are immediately dropped.
-                let now = std::time::Instant::now();
-                if punch_tokens.len() >= PUNCH_MAX_ENTRIES && !punch_tokens.contains_key(&from.ip())
-                {
-                    // Over the cap and this is a new source: evict the oldest
-                    // entry rather than growing without bound.
-                    if let Some(oldest) = punch_tokens
-                        .iter()
-                        .min_by_key(|(_, (_, seen))| *seen)
-                        .map(|(ip, _)| *ip)
-                    {
-                        punch_tokens.remove(&oldest);
-                    }
-                }
-                let entry = punch_tokens
-                    .entry(from.ip())
-                    .or_insert((PUNCH_BURST as f64, now));
-                let elapsed = now.duration_since(entry.1).as_secs_f64();
-                entry.0 = (entry.0 + elapsed * PUNCH_RATE as f64).min(PUNCH_BURST as f64);
-                entry.1 = now;
-                if entry.0 < 1.0 {
+                if !punch_limiter.allow(from.ip(), std::time::Instant::now()) {
                     tracing::debug!("Dropping handshake packet from {} (rate limited)", from);
                     continue;
                 }
-                entry.0 -= 1.0;
 
                 // Fan out to punch attempts only after the rate-limit check.
                 puncher.ingest(data, from);
@@ -499,5 +524,70 @@ mod tests {
         let kp1 = load_or_generate_keypair(&Some(path.clone())).unwrap();
         let kp2 = load_or_generate_keypair(&Some(path)).unwrap();
         assert_eq!(kp1.node_id(), kp2.node_id());
+    }
+
+    #[test]
+    fn test_punch_rate_limiter_burst_then_throttle() {
+        use std::net::{IpAddr, Ipv4Addr};
+        let mut limiter = PunchRateLimiter::new();
+        let ip = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5));
+        let now = std::time::Instant::now();
+        // The first BURST packets pass.
+        for _ in 0..PunchRateLimiter::BURST {
+            assert!(limiter.allow(ip, now), "burst packet must be allowed");
+        }
+        // The next one is throttled (no time has passed to refill).
+        assert!(
+            !limiter.allow(ip, now),
+            "over-burst packet must be throttled"
+        );
+        // After a second, RATE tokens have refilled.
+        let later = now + std::time::Duration::from_secs(1);
+        assert!(limiter.allow(ip, later), "refilled token must be allowed");
+    }
+
+    #[test]
+    fn test_punch_rate_limiter_evicts_oldest_at_cap() {
+        use std::net::{IpAddr, Ipv4Addr};
+        let mut limiter = PunchRateLimiter::new();
+        let now = std::time::Instant::now();
+        // Fill to the cap with distinct sources.
+        for i in 0..PunchRateLimiter::MAX_ENTRIES {
+            let ip = IpAddr::V4(Ipv4Addr::from((i as u32).to_be_bytes()));
+            assert!(limiter.allow(ip, now));
+        }
+        assert_eq!(limiter.tokens.len(), PunchRateLimiter::MAX_ENTRIES);
+        // A new source evicts exactly one (the oldest) and keeps the cap.
+        let new_ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        assert!(limiter.allow(new_ip, now));
+        assert_eq!(
+            limiter.tokens.len(),
+            PunchRateLimiter::MAX_ENTRIES,
+            "cap must hold after eviction"
+        );
+        // The first-inserted source was evicted.
+        let oldest = IpAddr::V4(Ipv4Addr::from(0u32.to_be_bytes()));
+        assert!(!limiter.tokens.contains_key(&oldest));
+        assert!(limiter.tokens.contains_key(&new_ip));
+        // The insertion order stayed consistent with the map.
+        assert_eq!(limiter.order.len(), limiter.tokens.len());
+    }
+
+    #[test]
+    fn test_punch_rate_limiter_prunes_stale_entries() {
+        use std::net::{IpAddr, Ipv4Addr};
+        let mut limiter = PunchRateLimiter::new();
+        let now = std::time::Instant::now();
+        let ip = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
+        assert!(limiter.allow(ip, now));
+        assert_eq!(limiter.tokens.len(), 1);
+        // Advance past the prune interval and TTL; the entry is dropped.
+        let later = now + PunchRateLimiter::PRUNE_INTERVAL + PunchRateLimiter::ENTRY_TTL;
+        assert!(limiter.allow(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10)), later));
+        assert!(
+            !limiter.tokens.contains_key(&ip),
+            "stale entry must be pruned"
+        );
+        assert_eq!(limiter.order.len(), limiter.tokens.len());
     }
 }

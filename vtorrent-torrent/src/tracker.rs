@@ -110,10 +110,11 @@ pub fn tracker_target_allowed(ip: std::net::IpAddr) -> bool {
 
 /// Validate a tracker URL before fetching it.
 ///
-/// Rejects non-HTTP(S) schemes and, unless explicitly allowed, any host that
-/// resolves to a non-public address. Resolution happens here (not just a
-/// literal-IP check) so a hostname pointing at an internal address is also
-/// rejected.
+/// Rejects non-HTTP(S) schemes and, unless explicitly allowed, any literal host
+/// that is a non-public address. Hostname resolution is **not** done here: it
+/// must be async to avoid blocking the executor, and its result must be pinned
+/// into the request client to close the DNS-rebinding TOCTOU. Use
+/// [`resolve_tracker_url`] for the full check.
 pub fn validate_tracker_url(raw: &str) -> Result<()> {
     validate_tracker_url_with(raw, private_targets_allowed())
 }
@@ -135,10 +136,14 @@ pub fn validate_tracker_url_with(raw: &str, allow_private: bool) -> Result<()> {
     let host = parsed
         .host_str()
         .ok_or_else(|| TorrentError::TrackerError("Tracker URL has no host".into()))?;
+    if host.is_empty() {
+        return Err(TorrentError::TrackerError("Tracker URL has no host".into()));
+    }
     if allow_private {
         return Ok(());
     }
-    // A literal IP can be checked directly; a hostname must be resolved.
+    // A literal IP can be checked directly; a hostname is resolved (and pinned)
+    // by `resolve_tracker_url`.
     // `host_str()` keeps the brackets around IPv6 literals, so strip them
     // before parsing.
     let literal = host.trim_start_matches('[').trim_end_matches(']');
@@ -149,22 +154,59 @@ pub fn validate_tracker_url_with(raw: &str, allow_private: bool) -> Result<()> {
                 host
             )));
         }
-        return Ok(());
     }
-    let port = parsed.port_or_known_default().unwrap_or(80);
-    let resolved: Vec<std::net::SocketAddr> =
-        std::net::ToSocketAddrs::to_socket_addrs(&(host, port))
+    Ok(())
+}
+
+/// Resolve a tracker URL and return its host plus the validated public socket
+/// addresses to pin the connection to.
+///
+/// Uses `tokio::net::lookup_host` so resolution does not block the executor
+/// (T13). The returned addresses must be pinned via
+/// `ClientBuilder::resolve_to_addrs`; otherwise `reqwest` re-resolves on
+/// connect and a low-TTL hostname can pass the check as public, then resolve
+/// private (DNS rebinding).
+///
+/// Returns an empty address list for a literal-IP host (nothing to pin).
+pub async fn resolve_tracker_url(raw: &str) -> Result<(String, Vec<std::net::SocketAddr>)> {
+    validate_tracker_url(raw)?;
+    let parsed = reqwest::Url::parse(raw)
+        .map_err(|e| TorrentError::TrackerError(format!("Invalid tracker URL: {}", e)))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| TorrentError::TrackerError("Tracker URL has no host".into()))?
+        .to_string();
+    let literal = host.trim_start_matches('[').trim_end_matches(']');
+    if literal.parse::<std::net::IpAddr>().is_ok() {
+        // Literal IP: already validated, nothing to resolve or pin.
+        return Ok((host, Vec::new()));
+    }
+    if private_targets_allowed() {
+        // Private targets are explicitly permitted; still resolve so the
+        // caller can pin, but skip the public-address check.
+        let port = parsed.port_or_known_default().unwrap_or(80);
+        let addrs: Vec<_> = tokio::net::lookup_host((host.as_str(), port))
+            .await
             .map_err(|e| {
                 TorrentError::TrackerError(format!("Cannot resolve tracker host {}: {}", host, e))
             })?
             .collect();
-    if resolved.is_empty() {
+        return Ok((host, addrs));
+    }
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), port))
+        .await
+        .map_err(|e| {
+            TorrentError::TrackerError(format!("Cannot resolve tracker host {}: {}", host, e))
+        })?
+        .collect();
+    if addrs.is_empty() {
         return Err(TorrentError::TrackerError(format!(
             "Tracker host {} did not resolve",
             host
         )));
     }
-    for addr in resolved {
+    for addr in &addrs {
         if is_non_public(addr.ip()) {
             return Err(TorrentError::TrackerError(format!(
                 "Tracker host {} resolves to non-public address {}",
@@ -173,7 +215,7 @@ pub fn validate_tracker_url_with(raw: &str, allow_private: bool) -> Result<()> {
             )));
         }
     }
-    Ok(())
+    Ok((host, addrs))
 }
 
 /// Whether an address is loopback, private, link-local, unspecified,
@@ -229,8 +271,24 @@ impl HttpTracker {
 
     /// Send an announce request to an HTTP tracker.
     pub async fn announce(&self, req: &AnnounceRequest) -> Result<AnnounceResponse> {
-        // Reject SSRF targets before building or sending the request.
-        validate_tracker_url(&req.tracker_url)?;
+        // Resolve the tracker host asynchronously and pin the validated public
+        // addresses into the client. Without pinning, `reqwest` re-resolves on
+        // connect and a low-TTL hostname can pass the check as public, then
+        // resolve private (DNS rebinding, T13).
+        let (host, pinned) = resolve_tracker_url(&req.tracker_url).await?;
+        let client = if pinned.is_empty() {
+            // Literal IP: already validated, nothing to pin.
+            self.client.clone()
+        } else {
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .user_agent("vTorrent-NG/2.0")
+                .redirect(reqwest::redirect::Policy::none())
+                .resolve_to_addrs(&host, &pinned)
+                .build()
+                .map_err(|e| TorrentError::TrackerError(e.to_string()))?
+        };
+
         // Build the URL with query parameters. The tracker URL may already
         // carry a query string (e.g. passkey trackers: ".../a?passkey=X"),
         // so join with '?' only when absent, otherwise '&'.
@@ -259,8 +317,7 @@ impl HttpTracker {
             url.push_str(&format!("&event={}", event));
         }
 
-        let response = self
-            .client
+        let response = client
             .get(&url)
             .send()
             .await
@@ -510,6 +567,37 @@ mod tests {
 
     #[test]
     fn rejects_url_without_host() {
-        assert!(validate_tracker_url("http:///announce").is_err());
+        // `http://` has no host at all and fails URL parsing.
+        assert!(validate_tracker_url("http://").is_err());
+    }
+
+    #[tokio::test]
+    async fn resolve_rejects_unresolvable_host() {
+        // `http:///announce` parses with host "announce"; it is rejected when
+        // resolution fails, which now happens in the async resolver.
+        assert!(resolve_tracker_url("http:///announce").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn resolve_tracker_url_returns_pinned_public_addrs() {
+        // A literal public IP needs no pinning but must resolve cleanly.
+        let (host, pinned) = resolve_tracker_url("http://93.184.216.34/announce")
+            .await
+            .expect("public literal must resolve");
+        assert_eq!(host, "93.184.216.34");
+        assert!(pinned.is_empty(), "literal IP has nothing to pin");
+
+        // A literal private IP is rejected before any resolution.
+        assert!(resolve_tracker_url("http://127.0.0.1/announce")
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn resolve_tracker_url_rejects_non_http_schemes() {
+        assert!(resolve_tracker_url("ftp://tracker.example.com/announce")
+            .await
+            .is_err());
+        assert!(resolve_tracker_url("file:///etc/passwd").await.is_err());
     }
 }

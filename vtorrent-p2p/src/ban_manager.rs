@@ -210,6 +210,7 @@ impl BanManager {
         );
         // Reset score after ban
         self.scores.remove(&ip);
+        self.enforce_ban_cap();
     }
 
     /// Record a connection failure for an IP address.
@@ -251,6 +252,7 @@ impl BanManager {
             );
             // Reset score after ban
             self.scores.remove(&ip);
+            self.enforce_ban_cap();
             true
         } else {
             false
@@ -283,6 +285,7 @@ impl BanManager {
         );
         // Reset score after ban
         self.scores.remove(&ip);
+        self.enforce_ban_cap();
     }
 
     /// Returns true if the given IP is currently banned.
@@ -307,6 +310,26 @@ impl BanManager {
 
     /// Maximum number of tracked peer scores to prevent memory exhaustion.
     const MAX_TRACKED_PEERS: usize = 50_000;
+
+    /// Bound the ban map, evicting the bans closest to expiry first.
+    ///
+    /// Called on every ban insertion as well as from `prune`, so the map cannot
+    /// grow freely between prune ticks (T15).
+    fn enforce_ban_cap(&mut self) {
+        if self.bans.len() <= Self::MAX_TRACKED_PEERS {
+            return;
+        }
+        let mut entries: Vec<(IpAddr, Duration)> = self
+            .bans
+            .iter()
+            .map(|(ip, ban)| (*ip, ban.duration.saturating_sub(ban.banned_at.elapsed())))
+            .collect();
+        entries.sort_by_key(|(_, remaining)| *remaining);
+        let excess = entries.len() - Self::MAX_TRACKED_PEERS * 3 / 4;
+        for (ip, _) in entries.into_iter().take(excess) {
+            self.bans.remove(&ip);
+        }
+    }
 
     /// Prune expired bans and decay old scores.
     ///
@@ -352,18 +375,7 @@ impl BanManager {
         // attacker with many source IPs (botnet / IPv6) could grow it without
         // limit — each entry holds a heap `reason` string. Evict the bans
         // closest to expiry first.
-        if self.bans.len() > Self::MAX_TRACKED_PEERS {
-            let mut entries: Vec<(IpAddr, Duration)> = self
-                .bans
-                .iter()
-                .map(|(ip, ban)| (*ip, ban.duration.saturating_sub(ban.banned_at.elapsed())))
-                .collect();
-            entries.sort_by_key(|(_, remaining)| *remaining);
-            let excess = entries.len() - Self::MAX_TRACKED_PEERS * 3 / 4;
-            for (ip, _) in entries.into_iter().take(excess) {
-                self.bans.remove(&ip);
-            }
-        }
+        self.enforce_ban_cap();
 
         // Bound the connection-failure tracker: IPs with no active ban and no
         // recorded misbehaviour score no longer need their failure count.
@@ -541,5 +553,26 @@ mod tests {
         }
         mgr.prune();
         assert_eq!(mgr.list_scores().len(), 0);
+    }
+
+    #[test]
+    fn test_ban_cap_enforced_on_insert_not_only_prune() {
+        // The cap must engage as bans are added, not only on the periodic
+        // prune, or `bans` grows freely between prune ticks (T15).
+        let mut mgr = BanManager::default();
+        let cap = BanManager::MAX_TRACKED_PEERS;
+        // Insert cap + 100 bans without ever calling prune.
+        for i in 0..(cap + 100) {
+            let octets = (i as u32).to_be_bytes();
+            let addr = IpAddr::V4(Ipv4Addr::from(octets));
+            mgr.ban_ip(addr, "flood".into());
+        }
+        assert!(
+            mgr.bans.len() <= cap,
+            "bans must be capped on insert, got {}",
+            mgr.bans.len()
+        );
+        // Eviction trims to 75% of the cap, so the map is comfortably bounded.
+        assert!(mgr.bans.len() <= cap * 3 / 4 + 100);
     }
 }

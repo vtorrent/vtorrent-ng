@@ -131,6 +131,11 @@ fn is_private_ip(ip: IpAddr) -> bool {
                 || v6.is_unicast_link_local() // fe80::/10
                 || (v6.segments()[0] & 0xffc0) == 0x2000 && v6.segments()[1] == 0x0db8
             // 2001:db8::/32
+                // IPv4-mapped (::ffff:a.b.c.d): re-check the embedded v4
+                // address, or `::ffff:10.0.0.1` would pass on mainnet (T14).
+                || v6
+                    .to_ipv4_mapped()
+                    .is_some_and(|v4| is_private_ip(IpAddr::V4(v4)))
         }
     }
 }

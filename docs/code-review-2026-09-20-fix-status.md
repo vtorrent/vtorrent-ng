@@ -2,7 +2,7 @@
 
 Per-finding ledger for `docs/code-review-2026-09-20.md`.
 
-All fixes verified with `cargo test --workspace` (47 test binaries, 0
+All fixes verified with `cargo test --workspace` (49 test binaries, 0
 failures), `cargo clippy --workspace --all-targets --all-features` (clean),
 `cargo fmt --all -- --check`, and `cargo machete`.
 
@@ -25,6 +25,14 @@ post-soak batch, not the running soak fleet. See
 | T9 torrent session cap never released | `d39d902` | Terminal sessions don't count and are evictable |
 | T3 genesis bootstrap: `total_staked == 0` rejects every kernel | `09c3674`, `3f6294d`, `e9fc213` | Height-1 bootstrap claim block + `POST /api/v1/blockchain/bootstrap`; see design spec |
 | T4 `is_stakeable` over-counts non-P2PKH outputs | `f4d1ad0` | Restricted to P2PKH (the class the engine can spend) |
+| T10 overlay punch eviction is O(100k)/packet | (this commit) | `PunchRateLimiter` with an insertion-order queue; O(1) amortized eviction |
+| T11 anonymous synthetic key is 32-bit and bannable | (this commit) | 64-bit FNV-1a; anonymous peers never feed the IP ban table |
+| T12 `is_anonymous_address` case-sensitive | (this commit) | Delegates to `vtorrent_onion::addr::is_anon_addr` |
+| T13 tracker SSRF DNS-rebinding TOCTOU + blocking resolve | (this commit) | Async `resolve_tracker_url` + `resolve_to_addrs` pinning |
+| T14 PEX IPv4-mapped gap; `is_bootstrap_seed` ignores DNS seeds | (this commit) | `to_ipv4_mapped` re-check; hostname-aware seed match |
+| T15 ban cap only enforced during prune | (this commit) | `enforce_ban_cap` on every ban insertion |
+| T16 v1 claim signatures unverifiable | (this commit) | `#[deprecated]` on `claim_message_hash`; documented compatibility note |
+| T17 multi-input coinstake accounting | (this commit) | `validate_transaction` requires exactly one coinstake input |
 
 ### T1 — failed reorg left `total_staked` drifted
 
@@ -87,11 +95,5 @@ cap.
 
 ## Open
 
-### Low findings (T10–T17)
-
-Not fixed; documented in the review. T10 (overlay eviction is O(100k) per
-packet), T11 (32-bit synthetic-key collisions), T12 (`is_anonymous_address`
-case-sensitivity), T13 (tracker SSRF DNS-rebinding TOCTOU + blocking resolve),
-T14 (PEX IPv4-mapped gap; `is_bootstrap_seed` ignores DNS seeds), T15 (ban cap
-only enforced during prune), T16 (v1 claim signatures now unverifiable — a
-compatibility note), T17 (multi-input coinstake accounting — not exploitable).
+None. All findings from the third pass are fixed or explicitly documented as
+compatibility notes (T16).
