@@ -931,3 +931,48 @@ Baseline for the current seven-day window, which started when the
 
 Earliest sign-off remains **2026-09-27T03:22Z**, contingent on uninterrupted
 evidence. Next daily observation entry due 2026-09-21.
+
+## 2026-09-21 — host Docker daemon conflict partitioned the fleet; recovered
+
+**Symptom.** `docker ps` returned nothing while the RPC ports still answered
+with 22h uptime. Node1 kept staking (height 11689) but node2/node3 were
+stalled at 11627 with `connections=0`.
+
+**Root cause.** Two Docker daemons were running on the host:
+
+| Daemon | Started | Data root | Containers |
+|---|---|---|---|
+| snap `dockerd` (pid 1564872) | Sep 18 20:45 | `/var/snap/docker/...` | 12 (the soak fleet) |
+| system `dockerd` (pid 2353143) | **Sep 20 15:07** | `/var/lib/docker` | 0 |
+
+The system `docker.service` (enabled, and it should not have been) started at
+15:07 on Sep 20 and took over `/run/docker.sock`. The CLI therefore talked to
+the *empty* system daemon, while the snap daemon still owned the real
+containers. The snap daemon was still alive (pidfile intact, 31 sockets open)
+and the three `vtorrent-daemon` processes kept running — which is why the RPC
+ports responded.
+
+**Impact.** Node2 and node3 lost the `vtrnet` bridge interface (their network
+namespaces held only `lo`), so they were partitioned from node1 and stalled.
+Monitoring was blind: `docker ps`/`logs`/`stats`/`inspect` all queried the
+wrong daemon, so `scripts/soak-status.sh` reported misleading values.
+
+**Recovery.**
+1. Backed up all three node volumes to `vtr-preincident-backup` (55 MB each).
+2. `systemctl stop docker.service docker.socket` and **disabled** both, so the
+   stray daemon cannot recur at boot.
+3. `snap restart docker` to re-establish the snap daemon's socket.
+4. The CLI immediately saw the real containers; the fleet restarted cleanly.
+
+**Result.** All three nodes replayed to the pre-incident tip and now agree at
+height 11695, `syncing: false`, peers 2/1/1, all containers healthy. Staking
+auto-resumed with no manual action (the `--wallet-passphrase-file` path
+worked). Exactly one `dockerd` is running, and the system units are disabled.
+
+**Soak impact.** The fleet restarted, so the seven-day window is reset again.
+Earliest sign-off is now no earlier than seven days after this recovery
+(`2026-09-28`).
+
+**Follow-up.** The host had two competing Docker installs (snap + apt). The
+apt `docker.service`/`docker.socket` are now disabled; a host-readiness check
+should assert a single daemon before a soak window starts.
