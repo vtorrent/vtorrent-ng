@@ -272,7 +272,14 @@ pub(crate) fn validate_block_inner(
     // deterministic chain-state fixtures and is never enabled by production.
     let first_tx = &block.transactions[0];
     if block.header.is_pos() {
-        if first_tx.tx_type != TxType::Coinstake {
+        // Height 1 may be a bootstrap block: a single LegacyClaim that seeds
+        // the first stakeable UTXO. Genesis has no stakeable output, so no
+        // coinstake can exist yet (T3). The claim itself is validated in the
+        // journal (`apply_block_journaled`).
+        let is_bootstrap = prev_height == 0
+            && first_tx.tx_type == TxType::LegacyClaim
+            && block.transactions.len() == 1;
+        if first_tx.tx_type != TxType::Coinstake && !is_bootstrap {
             return Err(NodeError::InvalidBlock(
                 "PoS block must begin with a coinstake transaction".into(),
             ));
@@ -834,6 +841,99 @@ mod tests {
         };
         let block = make_test_block(coinbase, 0x1e0fffff, 42);
         assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0fffff, 0, [0u8; 32]).is_err());
+    }
+
+    fn p2pkh_script() -> Vec<u8> {
+        let mut s = vec![0x76, 0xa9, 0x14];
+        s.extend_from_slice(&[0x11u8; 20]);
+        s.extend_from_slice(&[0x88, 0xac]);
+        s
+    }
+
+    fn claim_tx(height: u32, value: u64) -> Transaction {
+        Transaction {
+            version: 1,
+            tx_type: TxType::LegacyClaim,
+            inputs: vec![],
+            outputs: vec![TxOutput {
+                value,
+                script_pubkey: p2pkh_script(),
+            }],
+            lock_time: height,
+            claim_address: Some("VTest".into()),
+            claim_signature: Some(vec![0u8; 65]),
+        }
+    }
+
+    #[test]
+    fn test_height1_bootstrap_claim_block_is_valid() {
+        // A PoS block at height 1 whose only tx is a LegacyClaim is a bootstrap
+        // block: genesis has no stakeable UTXO, so no coinstake can exist (T3).
+        let mut block = make_test_block(claim_tx(1, MIN_STAKE_AMOUNT), 0x1e0fffff, 0);
+        block.header.prev_block_hash = [9u8; 32];
+        block.header.stake_modifier = compute_stake_modifier(0, &[9u8; 32]);
+        block.header.merkle_root = block.compute_merkle_root();
+
+        let res = validate_block_inner(&block, 0, 1_700_000_000, 0x1e0fffff, 0, [9u8; 32], false);
+        assert!(
+            res.is_ok(),
+            "bootstrap claim block must validate: {:?}",
+            res
+        );
+    }
+
+    #[test]
+    fn test_height1_bootstrap_requires_single_transaction() {
+        // A bootstrap block carries only the claim; extra txs would let a
+        // non-claim tx ride along at height 1.
+        let mut block = make_test_block(claim_tx(1, MIN_STAKE_AMOUNT), 0x1e0fffff, 0);
+        block.transactions.push(claim_tx(1, MIN_STAKE_AMOUNT));
+        block.header.prev_block_hash = [9u8; 32];
+        block.header.stake_modifier = compute_stake_modifier(0, &[9u8; 32]);
+        block.header.merkle_root = block.compute_merkle_root();
+
+        let res = validate_block_inner(&block, 0, 1_700_000_000, 0x1e0fffff, 0, [9u8; 32], false);
+        assert!(res.is_err(), "bootstrap block must have exactly one tx");
+    }
+
+    #[test]
+    fn test_height2_claim_block_is_rejected() {
+        // The bootstrap rule is height-1 only.
+        let mut block = make_test_block(claim_tx(2, MIN_STAKE_AMOUNT), 0x1e0fffff, 0);
+        block.header.prev_block_hash = [9u8; 32];
+        block.header.stake_modifier = compute_stake_modifier(0, &[9u8; 32]);
+        block.header.merkle_root = block.compute_merkle_root();
+
+        let res = validate_block_inner(&block, 1, 1_700_000_000, 0x1e0fffff, 0, [9u8; 32], false);
+        assert!(res.is_err(), "claim block at height 2 must be rejected");
+    }
+
+    #[test]
+    fn test_height1_coinstake_still_requires_stakeable_utxo() {
+        // A height-1 coinstake block is not a bootstrap block and must still
+        // begin with a coinstake (it will fail later for lack of a stake UTXO).
+        let coinstake = Transaction {
+            version: 1,
+            tx_type: TxType::Coinstake,
+            inputs: vec![],
+            outputs: vec![TxOutput {
+                value: COIN,
+                script_pubkey: p2pkh_script(),
+            }],
+            lock_time: 1,
+            claim_address: None,
+            claim_signature: None,
+        };
+        let mut block = make_test_block(coinstake, 0x1e0fffff, 0);
+        block.header.prev_block_hash = [9u8; 32];
+        block.header.stake_modifier = compute_stake_modifier(0, &[9u8; 32]);
+        block.header.merkle_root = block.compute_merkle_root();
+
+        // Block-level validation accepts the coinstake shape; the journal
+        // rejects it for having no stake input. Here we only assert the
+        // bootstrap rule did not accidentally accept a non-claim first tx.
+        let res = validate_block_inner(&block, 0, 1_700_000_000, 0x1e0fffff, 0, [9u8; 32], false);
+        assert!(res.is_ok(), "coinstake shape is block-valid: {:?}", res);
     }
 
     #[test]
