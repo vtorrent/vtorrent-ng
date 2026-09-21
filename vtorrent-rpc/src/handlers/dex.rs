@@ -204,37 +204,35 @@ pub async fn check_claim(
     }))
 }
 
-/// POST /api/v1/claim/submit
+/// Build and sign a legacy claim transaction.
 ///
-/// Verifies ownership of a legacy vTorrent address via WIF signature and
-/// creates a claim transaction that mints the equivalent VTR on the new chain.
-///
-/// This uses `vtorrent-snapshot` to verify the legacy balance and
-/// `vtorrent-wallet::TxBuilder` to build the claim transaction.
-pub async fn submit_claim(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<ClaimSubmitRequest>,
-) -> RpcResult<Json<ClaimSubmitResponse>> {
+/// Shared by `POST /api/v1/claim/submit` and
+/// `POST /api/v1/blockchain/bootstrap` so the v2 signature construction exists
+/// in exactly one place. Returns the transaction and the claimed amount.
+pub fn build_legacy_claim_tx(
+    wif_private_key: &str,
+    recipient_address: &str,
+) -> RpcResult<(vtorrent_node::block::Transaction, u64)> {
     use secp256k1::{Secp256k1, SecretKey};
     use vtorrent_core::keys::PrivateKey;
     use vtorrent_node::block::{Transaction, TxOutput, TxType};
     use vtorrent_node::genesis::get_legacy_balance;
     use vtorrent_wallet::tx_builder::{p2pkh_script_pubkey, pubkey_to_vtorrent_address};
 
-    if req.wif_private_key.is_empty() {
+    if wif_private_key.is_empty() {
         return Err(RpcError::BadRequest(
             "WIF private key is required — provide the legacy address's WIF key to prove ownership"
                 .into(),
         ));
     }
-    if req.recipient_address.is_empty() {
+    if recipient_address.is_empty() {
         return Err(RpcError::BadRequest(
             "Recipient address is required — provide a valid VTR address to receive the claim"
                 .into(),
         ));
     }
 
-    let key = PrivateKey::from_wif(&req.wif_private_key).map_err(|e| {
+    let key = PrivateKey::from_wif(wif_private_key).map_err(|e| {
         RpcError::BadRequest(format!(
             "Invalid WIF key: {} — expected base58 with valid checksum",
             e
@@ -264,20 +262,10 @@ pub async fn submit_claim(
         )));
     }
 
-    {
-        let chain = state.chain.lock().await;
-        if chain.is_claimed(&derived_address) {
-            return Err(RpcError::BadRequest(format!(
-                "Address {} has already been claimed",
-                derived_address
-            )));
-        }
-    }
-
-    let script_pubkey = p2pkh_script_pubkey(&req.recipient_address).map_err(|e| {
+    let script_pubkey = p2pkh_script_pubkey(recipient_address).map_err(|e| {
         RpcError::BadRequest(format!(
             "Invalid recipient address {}: {}",
-            truncate_chars(&req.recipient_address, 64),
+            truncate_chars(recipient_address, 64),
             e
         ))
     })?;
@@ -303,9 +291,39 @@ pub async fn submit_claim(
         inputs: vec![],
         outputs,
         lock_time: 0,
-        claim_address: Some(derived_address.clone()),
+        claim_address: Some(derived_address),
         claim_signature: Some(sig_bytes),
     };
+
+    Ok((tx, claimable))
+}
+
+/// POST /api/v1/claim/submit
+///
+/// Verifies ownership of a legacy vTorrent address via WIF signature and
+/// creates a claim transaction that mints the equivalent VTR on the new chain.
+///
+/// This uses `vtorrent-snapshot` to verify the legacy balance and
+/// `vtorrent-wallet::TxBuilder` to build the claim transaction.
+pub async fn submit_claim(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ClaimSubmitRequest>,
+) -> RpcResult<Json<ClaimSubmitResponse>> {
+    let (tx, claimable) = build_legacy_claim_tx(&req.wif_private_key, &req.recipient_address)?;
+    let derived_address = tx
+        .claim_address
+        .clone()
+        .ok_or_else(|| RpcError::Internal("Claim transaction missing address".into()))?;
+
+    {
+        let chain = state.chain.lock().await;
+        if chain.is_claimed(&derived_address) {
+            return Err(RpcError::BadRequest(format!(
+                "Address {} has already been claimed",
+                derived_address
+            )));
+        }
+    }
 
     let txid = hex::encode(tx.txid());
 
@@ -335,4 +353,64 @@ pub async fn submit_claim(
         claimed_satoshis: claimable,
         recipient_address: req.recipient_address,
     }))
+}
+
+#[cfg(test)]
+mod bootstrap_tests {
+    use super::*;
+
+    /// A WIF whose derived address is registered as a synthetic legacy holder.
+    fn legacy_wif_with_balance(balance: u64) -> (String, String) {
+        use secp256k1::{PublicKey, Secp256k1, SecretKey};
+        use vtorrent_core::keys::PrivateKey;
+        use vtorrent_wallet::tx_builder::pubkey_to_vtorrent_address;
+
+        let key = PrivateKey::from_bytes([91u8; 32], true).unwrap();
+        let secp = Secp256k1::new();
+        let secret = SecretKey::from_slice(key.as_bytes()).unwrap();
+        let pubkey = PublicKey::from_secret_key(&secp, &secret);
+        let pubkey_bytes = vtorrent_core::keys::serialize_pubkey(&pubkey, true);
+        let address = pubkey_to_vtorrent_address(&pubkey_bytes).unwrap();
+        vtorrent_node::genesis::set_test_legacy_balance(&address, balance);
+        (key.to_wif(198), address)
+    }
+
+    #[test]
+    fn build_legacy_claim_tx_matches_expected_shape() {
+        let (wif, address) = legacy_wif_with_balance(500 * 100_000_000);
+        let (_, recipient) = {
+            use secp256k1::{PublicKey, Secp256k1, SecretKey};
+            use vtorrent_core::keys::PrivateKey;
+            let key = PrivateKey::from_bytes([92u8; 32], true).unwrap();
+            let secp = Secp256k1::new();
+            let secret = SecretKey::from_slice(key.as_bytes()).unwrap();
+            let pubkey = PublicKey::from_secret_key(&secp, &secret);
+            (
+                key.to_wif(198),
+                vtorrent_core::address::Address::from_pubkey(&pubkey, true, 70).to_string(),
+            )
+        };
+
+        let (tx, claimed) = build_legacy_claim_tx(&wif, &recipient).expect("helper builds");
+        assert_eq!(tx.tx_type, vtorrent_node::block::TxType::LegacyClaim);
+        assert_eq!(tx.claim_address.as_deref(), Some(address.as_str()));
+        assert_eq!(claimed, 500 * 100_000_000);
+        assert_eq!(tx.total_output(), claimed);
+        assert!(tx.claim_signature.is_some());
+        assert!(tx.inputs.is_empty());
+    }
+
+    #[test]
+    fn build_legacy_claim_tx_rejects_unknown_address() {
+        // A WIF whose address has no snapshot balance must be rejected.
+        use secp256k1::{PublicKey, Secp256k1, SecretKey};
+        use vtorrent_core::keys::PrivateKey;
+        let key = PrivateKey::from_bytes([93u8; 32], true).unwrap();
+        let secp = Secp256k1::new();
+        let secret = SecretKey::from_slice(key.as_bytes()).unwrap();
+        let pubkey = PublicKey::from_secret_key(&secp, &secret);
+        let recipient = vtorrent_core::address::Address::from_pubkey(&pubkey, true, 70).to_string();
+        let err = build_legacy_claim_tx(&key.to_wif(198), &recipient).unwrap_err();
+        assert!(err.to_string().contains("No claimable balance"));
+    }
 }

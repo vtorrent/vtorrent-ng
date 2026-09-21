@@ -47,6 +47,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 criterion = { workspace = true }
 tempfile = { workspace = true }
 
+[features]
+# Exposes test-only seams (e.g. synthetic legacy balances) to dependent crates'
+# test targets. Never enabled in release builds.
+test-util = []
+
 [[bench]]
 name = "consensus_hotpath"
 harness = false

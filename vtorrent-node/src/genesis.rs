@@ -181,7 +181,7 @@ pub fn create_genesis_block() -> Block {
 pub fn get_legacy_balance(address: &str) -> u64 {
     // Test-only override: chain tests need to exercise the claim path but do
     // not hold a real legacy private key. Compiled out entirely in release.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     if let Some(balance) = test_legacy_balances()
         .lock()
         .expect("test legacy balance lock poisoned")
@@ -197,17 +197,16 @@ pub fn get_legacy_balance(address: &str) -> u64 {
 }
 
 /// Test-only registry of synthetic legacy balances, keyed by address.
-#[cfg(test)]
-pub(crate) fn test_legacy_balances(
-) -> &'static std::sync::Mutex<std::collections::HashMap<String, u64>> {
+#[cfg(any(test, feature = "test-util"))]
+pub fn test_legacy_balances() -> &'static std::sync::Mutex<std::collections::HashMap<String, u64>> {
     static BALANCES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
         std::sync::OnceLock::new();
     BALANCES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
 /// Register a synthetic legacy balance for a test address.
-#[cfg(test)]
-pub(crate) fn set_test_legacy_balance(address: &str, balance: u64) {
+#[cfg(any(test, feature = "test-util"))]
+pub fn set_test_legacy_balance(address: &str, balance: u64) {
     test_legacy_balances()
         .lock()
         .expect("test legacy balance lock poisoned")
