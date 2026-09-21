@@ -330,6 +330,28 @@ fn apply_transaction_journaled(
             chain.claimed_addresses.insert(addr.clone());
             journal.claimed_addresses.push(addr.clone());
         }
+
+        // A height-1 bootstrap block exists solely to seed the first stakeable
+        // UTXO (genesis has none, so no coinstake can be produced — T3). If its
+        // claim output is not stakeable it cannot unblock staking, so reject it.
+        if height == 1 {
+            let creates_stakeable = tx.outputs.iter().enumerate().any(|(vout, output)| {
+                crate::consensus::is_stakeable(&Utxo {
+                    txid,
+                    vout: vout as u32,
+                    value: output.value,
+                    script_pubkey: output.script_pubkey.clone(),
+                    height,
+                    timestamp,
+                })
+            });
+            if !creates_stakeable {
+                return Err(NodeError::InvalidTransaction(
+                    "Bootstrap claim must create a stakeable (P2PKH >= MIN_STAKE_AMOUNT) output"
+                        .into(),
+                ));
+            }
+        }
     }
 
     for (vout, output) in tx.outputs.iter().enumerate() {
@@ -378,7 +400,20 @@ fn apply_transaction_journaled(
             )));
         }
         let coin_age = u64::from(coin_age);
-        if coin_age < chain.min_stake_age || coin_age > chain.max_stake_age {
+        // The height-1 bootstrap UTXO is brand new at height 2, so it is exempt
+        // from the minimum age for exactly that one block. Identify it by its
+        // parent block being the bootstrap claim block (a height-1 block whose
+        // only tx is a LegacyClaim), so regtest faucet coinbases at height 1 are
+        // not accidentally exempted. It can only be staked at height 2, so the
+        // exemption expires naturally.
+        let is_bootstrap_utxo = staked.height == 1
+            && chain
+                .get_block_at_height(1)
+                .and_then(|b| b.transactions.first())
+                .map(|tx| tx.is_legacy_claim())
+                .unwrap_or(false);
+        let min_age_ok = is_bootstrap_utxo || coin_age >= chain.min_stake_age;
+        if !min_age_ok || coin_age > chain.max_stake_age {
             return Err(NodeError::InvalidTransaction(format!(
                 "Stake age {} is outside the allowed range {}..={}",
                 coin_age, chain.min_stake_age, chain.max_stake_age

@@ -51,6 +51,11 @@ pub struct StakingEngine {
     pub min_stake_age: u64,
     /// Maximum coin age in seconds for UTXO eligibility.
     pub max_stake_age: u64,
+    /// When true, a height-1 UTXO is exempt from `min_stake_age`. Set by the
+    /// node when the tip is the height-1 bootstrap claim block, so its
+    /// brand-new UTXO can be staked at height 2 (T3). The validator applies the
+    /// same exemption.
+    pub bootstrap_exempt: bool,
 }
 
 fn compute_post_apply_root(
@@ -126,6 +131,7 @@ impl StakingEngine {
             wif: None,
             min_stake_age: MIN_STAKE_AGE,
             max_stake_age: MAX_STAKE_AGE,
+            bootstrap_exempt: false,
         }
     }
 
@@ -136,6 +142,7 @@ impl StakingEngine {
             wif: Some(wif.into()),
             min_stake_age: MIN_STAKE_AGE,
             max_stake_age: MAX_STAKE_AGE,
+            bootstrap_exempt: false,
         }
     }
 
@@ -148,6 +155,7 @@ impl StakingEngine {
             wif: None,
             min_stake_age: REGTEST_FAST_MIN_STAKE_AGE,
             max_stake_age: REGTEST_FAST_MAX_STAKE_AGE,
+            bootstrap_exempt: false,
         }
     }
 
@@ -158,6 +166,7 @@ impl StakingEngine {
             wif: Some(wif.into()),
             min_stake_age: REGTEST_FAST_MIN_STAKE_AGE,
             max_stake_age: REGTEST_FAST_MAX_STAKE_AGE,
+            bootstrap_exempt: false,
         }
     }
 
@@ -368,9 +377,13 @@ impl StakingEngine {
             return false;
         }
 
-        // Must have minimum coin age
+        // Must have minimum coin age. The height-1 bootstrap UTXO is exempt
+        // for the single block that follows it (T3); the validator applies the
+        // same exemption in `chain_reorg.rs`.
         let coin_age_seconds = current_timestamp.saturating_sub(utxo.timestamp);
-        if (coin_age_seconds as u64) < self.min_stake_age {
+        let min_age_ok = (self.bootstrap_exempt && utxo.height == 1)
+            || (coin_age_seconds as u64) >= self.min_stake_age;
+        if !min_age_ok {
             return false;
         }
 
@@ -656,6 +669,25 @@ mod tests {
             MIN_STAKE_AMOUNT / 2,
             (MIN_STAKE_AGE as u32).saturating_add(3600),
         );
+        assert!(!engine.is_eligible(&utxo, 1_700_000_000));
+    }
+
+    #[test]
+    fn test_bootstrap_exempt_only_height1() {
+        // A brand-new height-1 UTXO is eligible only when the engine is told
+        // the tip is the bootstrap claim block (T3).
+        let mut engine = StakingEngine::new("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string());
+        let mut utxo = make_utxo(100 * COIN, 0);
+        utxo.height = 1;
+        // Fresh (age 0): ineligible by default.
+        assert!(!engine.is_eligible(&utxo, 1_700_000_000));
+        // Exempt: eligible despite age 0.
+        engine.bootstrap_exempt = true;
+        assert!(engine.is_eligible(&utxo, 1_700_000_000));
+
+        // The exemption is height-1 only: a fresh height-2 UTXO stays
+        // ineligible even with the flag set.
+        utxo.height = 2;
         assert!(!engine.is_eligible(&utxo, 1_700_000_000));
     }
 

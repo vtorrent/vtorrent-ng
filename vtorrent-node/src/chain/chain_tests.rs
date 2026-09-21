@@ -1563,3 +1563,171 @@ fn test_reorg_preserves_block_hash_identity() {
     assert_eq!(chain.get_block(&b1_hash).unwrap().hash(), b1_hash);
     assert_eq!(chain.get_block(&b2_hash).unwrap().hash(), b2_hash);
 }
+
+// ─── T3: genesis bootstrap claim ─────────────────────────────────────────────
+
+/// Build a signed legacy claim for a synthetic snapshot address.
+///
+/// Registers a test-only balance for the address derived from the deterministic
+/// key so the journal's `validate_legacy_claim` (snapshot balance + v2
+/// signature) passes without a real legacy key.
+fn make_signed_bootstrap_claim(seed: u8, recipient: &str, amount: u64) -> Transaction {
+    use secp256k1::{Message, Secp256k1, SecretKey};
+    use vtorrent_core::keys::PrivateKey;
+
+    // Deterministic key for the synthetic legacy address.
+    let mut key_bytes = [0u8; 32];
+    key_bytes[31] = seed;
+    let key = PrivateKey::from_bytes(key_bytes, true).unwrap();
+    let secp = Secp256k1::new();
+    let secret = SecretKey::from_slice(key.as_bytes()).unwrap();
+    let pubkey = secp256k1::PublicKey::from_secret_key(&secp, &secret);
+
+    // The claim address must be the one the signature recovers, so derive it
+    // from the key rather than passing an arbitrary string.
+    let claim_address = vtorrent_core::address::Address::from_pubkey(&pubkey, true, 70).to_string();
+    crate::genesis::set_test_legacy_balance(&claim_address, amount);
+
+    let script = vtorrent_core::address::Address::parse(recipient)
+        .map(|a| a.p2pkh_script_pubkey())
+        .expect("recipient must be a valid address");
+    let outputs = vec![TxOutput {
+        value: amount,
+        script_pubkey: script,
+    }];
+
+    let msg = Message::from_digest(crate::consensus::claim_message_hash_v2(
+        &claim_address,
+        &outputs,
+    ));
+    let rec_sig = secp.sign_ecdsa_recoverable(&msg, &secret);
+    let (rec_id, sig64) = rec_sig.serialize_compact();
+    let mut sig_bytes = vec![27 + rec_id.to_i32() as u8 + 4];
+    sig_bytes.extend_from_slice(&sig64);
+
+    Transaction {
+        version: 1,
+        tx_type: TxType::LegacyClaim,
+        inputs: vec![],
+        outputs,
+        lock_time: 1,
+        claim_address: Some(claim_address),
+        claim_signature: Some(sig_bytes),
+    }
+}
+
+fn test_address(seed: u8) -> (String, String) {
+    use secp256k1::{PublicKey, Secp256k1, SecretKey};
+    let secp = Secp256k1::new();
+    let mut key_bytes = [0u8; 32];
+    key_bytes[31] = seed;
+    let key = vtorrent_core::keys::PrivateKey::from_bytes(key_bytes, true).unwrap();
+    let secret = SecretKey::from_slice(key.as_bytes()).unwrap();
+    let pubkey = PublicKey::from_secret_key(&secp, &secret);
+    let address = vtorrent_core::address::Address::from_pubkey(&pubkey, true, 70).to_string();
+    (address, key.to_wif(198))
+}
+
+#[test]
+fn test_bootstrap_claim_unblocks_staking() {
+    let (recipient, _) = test_address(42);
+    let mut chain = Chain::new().expect("Chain init failed");
+    assert_eq!(chain.best_height(), 0);
+    assert_eq!(chain.total_staked(), 0);
+
+    let claim = make_signed_bootstrap_claim(77, &recipient, 100 * crate::consensus::COIN);
+    let claim_address = claim.claim_address.clone().unwrap();
+    let block_hash = chain
+        .apply_bootstrap_claim(claim)
+        .expect("bootstrap claim should apply");
+
+    assert_eq!(chain.best_height(), 1);
+    assert_eq!(chain.block_hash_at_height(1), Some(block_hash));
+    assert_eq!(
+        chain.total_staked(),
+        100 * crate::consensus::COIN,
+        "bootstrap output must seed the staking denominator"
+    );
+    assert!(chain.is_claimed(&claim_address));
+}
+
+#[test]
+fn test_bootstrap_claim_rejected_when_not_at_genesis() {
+    let (recipient, _) = test_address(43);
+    let mut chain = Chain::new().expect("Chain init failed");
+    let claim = make_signed_bootstrap_claim(77, &recipient, 100 * crate::consensus::COIN);
+    chain
+        .apply_bootstrap_claim(claim.clone())
+        .expect("first bootstrap ok");
+    assert!(
+        chain.apply_bootstrap_claim(claim).is_err(),
+        "bootstrap is one-shot: rejected once height > 0"
+    );
+}
+
+#[test]
+fn test_bootstrap_claim_must_create_stakeable_output() {
+    let (recipient, _) = test_address(44);
+    let mut chain = Chain::new().expect("Chain init failed");
+    // Below MIN_STAKE_AMOUNT: cannot unblock staking, so the journal rejects it.
+    let claim = make_signed_bootstrap_claim(78, &recipient, crate::consensus::MIN_STAKE_AMOUNT - 1);
+    let err = chain
+        .apply_bootstrap_claim(claim)
+        .expect_err("sub-minimum bootstrap output must be rejected");
+    assert!(
+        err.to_string().contains("stakeable"),
+        "unexpected error: {}",
+        err
+    );
+    assert_eq!(chain.best_height(), 0, "chain must not advance");
+}
+
+#[test]
+fn test_bootstrap_utxo_age_exempt_at_height2() {
+    use crate::staking::StakingEngine;
+
+    let (recipient, wif) = test_address(45);
+    let mut chain = Chain::new().expect("Chain init failed");
+    let claim = make_signed_bootstrap_claim(77, &recipient, 100 * crate::consensus::COIN);
+    chain.apply_bootstrap_claim(claim).expect("bootstrap ok");
+    assert_eq!(chain.best_height(), 1);
+
+    let mut engine = StakingEngine::with_wif(recipient.clone(), wif);
+    // Mirror what the staking loop does when the tip is the bootstrap block.
+    engine.bootstrap_exempt = true;
+    let utxos = chain.get_utxos_for_address(&recipient);
+    assert_eq!(utxos.len(), 1);
+    let bootstrap_utxo = utxos[0].clone();
+    // The producer computes the post-apply UTXO root over the full UTXO set,
+    // so pass the whole set (as the staking loop does), not just the staker's.
+    let all_utxos: Vec<Utxo> = chain.get_utxo_set().values().cloned().collect();
+    let prev_modifier = chain
+        .get_block_at_height(1)
+        .map(|b| b.header.stake_modifier)
+        .unwrap_or(0);
+
+    // The bootstrap UTXO is ~0s old. Without the exemption no kernel would be
+    // accepted; with it, a kernel at height 2 must be found and accepted.
+    let stake_block = (bootstrap_utxo.timestamp + 1..bootstrap_utxo.timestamp + 10_000)
+        .find_map(|ts| {
+            engine.build_stake_block(
+                chain.best_hash().unwrap(),
+                prev_modifier,
+                2,
+                ts,
+                chain.total_staked(),
+                all_utxos.clone(),
+                vec![],
+            )
+        })
+        .expect("bootstrap UTXO should be stakeable at height 2");
+
+    let result = chain
+        .add_block(stake_block)
+        .expect("height-2 stake accepted");
+    assert!(matches!(
+        result,
+        BlockAcceptance::MainChain { height: 2, .. }
+    ));
+    assert_eq!(chain.best_height(), 2);
+}

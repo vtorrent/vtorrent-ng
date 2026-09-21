@@ -324,6 +324,71 @@ impl Chain {
         Ok(txid)
     }
 
+    /// Apply the height-1 bootstrap claim block.
+    ///
+    /// Genesis has no stakeable UTXO, so no coinstake can be produced and
+    /// staking can never start (T3). The first legacy claim is mined directly
+    /// into a height-1 PoS block whose only transaction is the claim; its P2PKH
+    /// output seeds `total_staked` and unblocks normal PoS from height 2.
+    ///
+    /// One-shot: only valid while the chain is at genesis.
+    pub fn apply_bootstrap_claim(&mut self, claim: Transaction) -> Result<[u8; 32]> {
+        use crate::block::{BlockHeader, TxType};
+
+        if self.best_height() != 0 {
+            return Err(NodeError::Chain(
+                "Bootstrap claim is only valid at height 1 (chain is not at genesis)".into(),
+            ));
+        }
+        if claim.tx_type != TxType::LegacyClaim {
+            return Err(NodeError::InvalidTransaction(
+                "Bootstrap transaction must be a LegacyClaim".into(),
+            ));
+        }
+
+        let genesis = self.genesis_block().clone();
+        let genesis_hash = genesis.hash();
+        let timestamp = now_timestamp_u32().max(genesis.header.timestamp.saturating_add(1));
+
+        let mut block = Block {
+            header: BlockHeader {
+                version: 2,
+                prev_block_hash: genesis_hash,
+                merkle_root: [0u8; 32],
+                utxo_root: [0u8; 32],
+                timestamp,
+                bits: crate::genesis::GENESIS_BITS,
+                nonce: 0, // PoS
+                stake_modifier: compute_stake_modifier(
+                    genesis.header.stake_modifier,
+                    &genesis_hash,
+                ),
+            },
+            transactions: vec![claim.clone()],
+        };
+        block.header.merkle_root = block.compute_merkle_root();
+
+        // Post-apply UTXO root: the genesis UTXO set plus the claim's outputs
+        // (the claim has no inputs). Must match the journal or `add_block`
+        // rejects the PoS block on the utxo_root check.
+        let txid = claim.txid();
+        let mut post: Vec<Utxo> = self.utxo_set.values().cloned().collect();
+        for (vout, output) in claim.outputs.iter().enumerate() {
+            post.push(Utxo {
+                txid,
+                vout: vout as u32,
+                value: output.value,
+                script_pubkey: output.script_pubkey.clone(),
+                height: 1,
+                timestamp,
+            });
+        }
+        block.header.utxo_root = crate::block::compute_utxo_root_sorted(&post);
+
+        self.add_block(block)?;
+        Ok(self.best_hash().unwrap_or([0u8; 32]))
+    }
+
     /// Get a block by hash.
     pub fn get_block(&self, hash: &[u8; 32]) -> Option<&Block> {
         self.blocks.get(hash)

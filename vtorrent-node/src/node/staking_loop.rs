@@ -18,10 +18,9 @@ use vtorrent_core::time::now_timestamp_u32;
 impl Node {
     /// Attempt to produce a new PoS block.
     pub(crate) async fn attempt_stake(&mut self) -> Result<()> {
-        let staking = self
-            .staking
-            .as_ref()
-            .ok_or_else(|| NodeError::Chain("Staking not enabled".into()))?;
+        if self.staking.is_none() {
+            return Err(NodeError::Chain("Staking not enabled".into()));
+        }
 
         let (
             best_height,
@@ -30,6 +29,7 @@ impl Node {
             best_stake_modifier,
             stake_utxos,
             total_staked,
+            tip_is_bootstrap,
         ) = {
             let chain = self.chain.lock().await;
             let best_height = chain.best_height();
@@ -37,7 +37,19 @@ impl Node {
             let best_block = chain.get_block_at_height(best_height);
             let best_timestamp = best_block.map(|b| b.header.timestamp).unwrap_or(0);
             let best_stake_modifier = best_block.map(|b| b.header.stake_modifier).unwrap_or(0);
-            let utxos = chain.get_utxos_for_address(&staking.address);
+            let staking_address = self
+                .staking
+                .as_ref()
+                .map(|s| s.address.clone())
+                .unwrap_or_default();
+            let utxos = chain.get_utxos_for_address(&staking_address);
+            // The height-1 bootstrap block's UTXO is brand new, so the next
+            // block (height 2) must exempt it from the minimum stake age (T3).
+            let tip_is_bootstrap = best_height == 1
+                && best_block
+                    .and_then(|b| b.transactions.first())
+                    .map(|tx| tx.is_legacy_claim())
+                    .unwrap_or(false);
             (
                 best_height,
                 best_hash,
@@ -45,8 +57,16 @@ impl Node {
                 best_stake_modifier,
                 utxos,
                 chain.total_staked(),
+                tip_is_bootstrap,
             )
         };
+        if let Some(staking) = self.staking.as_mut() {
+            staking.bootstrap_exempt = tip_is_bootstrap;
+        }
+        let staking = self
+            .staking
+            .as_ref()
+            .ok_or_else(|| NodeError::Chain("Staking not enabled".into()))?;
 
         tracing::trace!(
             "Stake tick: evaluating {} wallet UTXOs for address {}",
