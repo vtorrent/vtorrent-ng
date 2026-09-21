@@ -355,6 +355,65 @@ pub async fn submit_claim(
     }))
 }
 
+/// POST /api/v1/blockchain/bootstrap
+///
+/// Mines the height-1 bootstrap claim block. Genesis has no stakeable UTXO, so
+/// no coinstake can be produced and staking can never start (T3). This endpoint
+/// is the only way a fresh chain begins: it builds a signed legacy claim and
+/// mines it directly into a height-1 PoS block, seeding `total_staked`.
+///
+/// One-shot: valid only while the chain is at genesis. Permissionless: the
+/// first valid claim wins (a real legacy holder bootstraps the chain).
+pub async fn bootstrap_chain(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<BootstrapRequest>,
+) -> RpcResult<Json<BootstrapResponse>> {
+    let (mut claim, claimed) = build_legacy_claim_tx(&req.wif_private_key, &req.recipient_address)?;
+    // The height-1 bootstrap block encodes its height in the first tx's
+    // lock_time. The v2 claim signature commits to the outputs, not lock_time,
+    // so setting it after signing does not invalidate the claim.
+    claim.lock_time = 1;
+    let txid = hex::encode(claim.txid());
+
+    let (block_hash, height) = {
+        let mut chain = state.chain.lock().await;
+        if chain.best_height() != 0 {
+            return Err(RpcError::BadRequest(
+                "Bootstrap is only valid while the chain is at genesis".into(),
+            ));
+        }
+        let hash = chain
+            .apply_bootstrap_claim(claim)
+            .map_err(|e| RpcError::BadRequest(format!("Bootstrap claim rejected: {}", e)))?;
+        (hex::encode(hash), chain.best_height() as u64)
+    };
+
+    // Announce to peers, mirroring the regtest faucet path: the block was mined
+    // directly into the chain, bypassing the node's normal block-production
+    // path, so the node event loop must emit the NewBlock event and broadcast.
+    if let Some(sender) = &state.block_submit {
+        let chain = state.chain.lock().await;
+        if let Some(block) = chain.get_block_at_height(height as u32).cloned() {
+            let _ = sender.try_send(block);
+        }
+    }
+
+    tracing::info!(
+        "Bootstrap claim {} mined at height {} ({})",
+        txid,
+        height,
+        block_hash
+    );
+
+    Ok(Json(BootstrapResponse {
+        txid,
+        block_hash,
+        block_height: height,
+        claimed_satoshis: claimed,
+        recipient_address: req.recipient_address,
+    }))
+}
+
 #[cfg(test)]
 mod bootstrap_tests {
     use super::*;
@@ -412,5 +471,52 @@ mod bootstrap_tests {
         let recipient = vtorrent_core::address::Address::from_pubkey(&pubkey, true, 70).to_string();
         let err = build_legacy_claim_tx(&key.to_wif(198), &recipient).unwrap_err();
         assert!(err.to_string().contains("No claimable balance"));
+    }
+
+    fn recipient_address(seed: u8) -> String {
+        use secp256k1::{PublicKey, Secp256k1, SecretKey};
+        use vtorrent_core::keys::PrivateKey;
+        let key = PrivateKey::from_bytes([seed; 32], true).unwrap();
+        let secp = Secp256k1::new();
+        let secret = SecretKey::from_slice(key.as_bytes()).unwrap();
+        let pubkey = PublicKey::from_secret_key(&secp, &secret);
+        vtorrent_core::address::Address::from_pubkey(&pubkey, true, 70).to_string()
+    }
+
+    #[tokio::test]
+    async fn bootstrap_endpoint_mines_height1_and_is_one_shot() {
+        let (wif, _) = legacy_wif_with_balance(500 * 100_000_000);
+        let recipient = recipient_address(94);
+        let state = std::sync::Arc::new(AppState::new());
+
+        let res = bootstrap_chain(
+            State(state.clone()),
+            Json(BootstrapRequest {
+                wif_private_key: wif.clone(),
+                recipient_address: recipient.clone(),
+            }),
+        )
+        .await
+        .expect("first bootstrap must succeed")
+        .0;
+        assert_eq!(res.block_height, 1);
+        assert_eq!(res.claimed_satoshis, 500 * 100_000_000);
+        assert!(!res.block_hash.is_empty());
+
+        // One-shot: a second call must be rejected because height > 0.
+        let err = bootstrap_chain(
+            State(state),
+            Json(BootstrapRequest {
+                wif_private_key: wif,
+                recipient_address: recipient,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("genesis"),
+            "unexpected error: {}",
+            err
+        );
     }
 }

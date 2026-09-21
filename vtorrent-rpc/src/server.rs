@@ -144,6 +144,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/v1/blockchain/broadcast", post(broadcast_transaction))
         .route("/api/v1/claim/submit", post(submit_claim))
+        .route("/api/v1/blockchain/bootstrap", post(bootstrap_chain))
         .route("/api/v1/spv/headers", post(add_spv_headers))
         .route("/api/v1/btc/send", post(send_btc))
         .route(

@@ -345,6 +345,14 @@ impl Chain {
                 "Bootstrap transaction must be a LegacyClaim".into(),
             ));
         }
+        // The block height is encoded in the first transaction's lock_time, so
+        // the bootstrap claim must carry lock_time = 1. Require it rather than
+        // rewriting it, so the caller's txid matches the mined transaction.
+        if claim.lock_time != 1 {
+            return Err(NodeError::InvalidTransaction(
+                "Bootstrap claim must have lock_time = 1 (the block height)".into(),
+            ));
+        }
 
         let genesis = self.genesis_block().clone();
         let genesis_hash = genesis.hash();

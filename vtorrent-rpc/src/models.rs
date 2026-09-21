@@ -338,6 +338,27 @@ pub struct ClaimSubmitResponse {
     pub recipient_address: String,
 }
 
+/// Request body for `POST /api/v1/blockchain/bootstrap`.
+///
+/// Mines the height-1 bootstrap claim block. Genesis has no stakeable UTXO, so
+/// this is the only way a fresh chain can begin staking (T3).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BootstrapRequest {
+    /// WIF-encoded private key for a legacy snapshot address.
+    pub wif_private_key: String,
+    /// New-chain address to receive the bootstrap claim.
+    pub recipient_address: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BootstrapResponse {
+    pub txid: String,
+    pub block_hash: String,
+    pub block_height: u64,
+    pub claimed_satoshis: u64,
+    pub recipient_address: String,
+}
+
 // ─── Wallet Import ───────────────────────────────────────────────────────────
 
 /// Request body for `POST /api/v1/wallet/import`.
