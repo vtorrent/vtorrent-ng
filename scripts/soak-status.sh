@@ -24,3 +24,17 @@ done
 echo "────"
 docker ps --filter name=vtr-node --filter name=vtr-btc-regtest --filter name=vtr-prometheus --filter name=vtr-grafana \
     --format '{{.Names}}: {{.Status}}'
+
+# ── Host readiness: exactly one Docker daemon ────────────────────────────────
+# A second daemon (e.g. an apt-installed docker.service alongside the snap)
+# can take over /run/docker.sock, leaving the CLI blind to the real containers
+# while they keep running. This happened on 2026-09-21.
+DOCKERD_COUNT=$(pgrep -c -x dockerd 2>/dev/null || echo 0)
+if [ "$DOCKERD_COUNT" -ne 1 ]; then
+    echo "WARNING: $DOCKERD_COUNT dockerd processes running (expected 1)."
+    echo "         A second daemon may own /run/docker.sock; container state below may be wrong."
+    pgrep -a -x dockerd 2>/dev/null | sed 's/^/         /'
+fi
+if systemctl is-enabled docker.service >/dev/null 2>&1; then
+    echo "WARNING: system docker.service is enabled; it can conflict with snap.docker.dockerd."
+fi
