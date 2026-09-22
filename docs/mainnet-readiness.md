@@ -165,11 +165,13 @@ actions, operator approval.
       protocol-v3 change and every review fix), which caused a false-positive
       `PeerCountZero` alert. Upgraded all three together; see
       `docs/soak-log.md`. Seeds now report `connections=4`, `syncing=false`.
-- [ ] **`MALLOC_ARENA_MAX` review** — node1's staker holds a 5-arena/64 MiB
-      glibc high-water mark vs 3/25 MiB on followers; steady-state RSS is flat
-      and under the <150 MiB budget, so this is optional. Decide whether to pin
-      `MALLOC_ARENA_MAX` and/or restate the budget against live heap. See
-      `docs/memory-observability-design.md` §7.1.
+- [x] **`MALLOC_ARENA_MAX` review** — resolved 2026-09-22. `MALLOC_ARENA_MAX=2`
+      is pinned in compose and verified live: each node now holds **1** malloc
+      arena (was 5/3/3), and `VmHWM > VmRSS` (node1 168 vs 136 MiB), so RSS is
+      returned to the OS rather than retained. Node1 (the staker) held
+      136200→136212 kB (+12 kB) over 3 minutes while staking, and all three sit
+      at 106–136 MiB, under the <150 MiB budget. The budget stays stated
+      against RSS. See `docs/memory-observability-design.md` §7.1.
 - [ ] **`v2.0.0-beta.3` tag** — `docs/release-notes-beta.3.md` addendum is a
       draft; no tag exists (only beta.1/beta.2). Tag after sign-off, with the
       desktop build matrix and checksums.

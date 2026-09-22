@@ -237,16 +237,26 @@ entry (69.0 MiB at recovery → 137.2 MiB RSS at `2026-09-15T03:2xZ`):
 
 ## 8. Open Questions
 
-- Include `VmHWM` (peak) as `vtorrent_process_memory_peak_bytes`?
-  Debatable — useful for post-mortem, but adds another series.
+- ~~Should `MALLOC_ARENA_MAX` be pinned?~~ **Resolved 2026-09-22.** Pinned to 2
+  in `docker/testnet/docker-compose.yml` for all three nodes and verified live
+  on the running fleet: each node holds **1** malloc arena (was 5/3/3), and
+  `VmHWM > VmRSS` (node1 168384 vs 136200 kB), so RSS is returned to the OS
+  rather than retained. Node1 (the staker) held 136200→136212 kB (+12 kB) over
+  3 minutes while staking; all three sit at 106–136 MiB, under the <150 MiB
+  budget. The budget stays stated against RSS.
+- Include `VmHWM` (peak) as `vtorrent_process_memory_peak_bytes`? Debatable —
+  useful for post-mortem, but adds another series. **Decision: defer.** With
+  the arena cap in place RSS is flat and `VmHWM` is a one-time warmup peak, so
+  the series would add noise without a decision it informs. Revisit if a leak
+  is suspected.
 - Cadvisor on macOS dev hosts (Darwin): `/var/run` path differs; compose
-  cadvisor is Linux-only testnet helper — gate with `profiles: ["linux"]`?
+  cadvisor is Linux-only testnet helper — **decision: gate with
+  `profiles: ["linux"]`** when the observability deploy lands post-soak.
 - Node1 `debug` vs `info`: memory pressure from `debug` tracing may skew
   comparison; consider switching node1 to `info` at same time (prior soak
-  note suggested this, post-soak).
-- ~~Should `MALLOC_ARENA_MAX` be pinned?~~ Resolved: pinned to 2 (see §7.1).
-  The RSS budget remains stated against RSS; with the cap in place the
-  staker sits ~115 MiB, comfortably under 150 MiB.
+  note suggested this, post-soak). **Decision: switch node1 to `info` in the
+  same post-soak deploy**, so the next window's memory comparison is not
+  confounded by debug-level tracing.
 
 ## 9. References
 
