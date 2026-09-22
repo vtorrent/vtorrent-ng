@@ -300,6 +300,67 @@ async fn mainnet_requires_distinct_peer_ips_before_scanning() {
         .contains("requires 2 distinct"));
 }
 
+#[tokio::test]
+async fn mainnet_rejects_same_network_group_peers() {
+    // Two IPs in the same /16 are one operator; they must not count as two
+    // independent peers, or a sybil could eclipse the scan (T-eclipse).
+    let mut htlc = contract();
+    htlc.network = bitcoin::Network::Bitcoin;
+    let sync = BtcSync::new(
+        Arc::new(Mutex::new(HeaderChain::new())),
+        Arc::new(Mutex::new(UtxoSet::new())),
+        vec![],
+        htlc.network,
+    );
+    let result = sync
+        .verify_swap_funding(
+            &htlc,
+            [0; 32],
+            &[
+                "203.0.113.10:8333".parse().unwrap(),
+                "203.0.114.20:8333".parse().unwrap(),
+            ],
+            NOW,
+        )
+        .await;
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("distinct compact-filter network groups"),
+        "same-/16 peers must be rejected"
+    );
+}
+
+#[test]
+fn network_groups_bucket_by_prefix() {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    // Same /16 -> same group.
+    assert_eq!(
+        network_group(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1))),
+        network_group(IpAddr::V4(Ipv4Addr::new(203, 0, 114, 2)))
+    );
+    // Different /16 -> different group.
+    assert_ne!(
+        network_group(IpAddr::V4(Ipv4Addr::new(203, 0, 1, 1))),
+        network_group(IpAddr::V4(Ipv4Addr::new(203, 1, 1, 1)))
+    );
+    // IPv6 buckets by /32 (first segment).
+    assert_eq!(
+        network_group(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1))),
+        network_group(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2)))
+    );
+    assert_ne!(
+        network_group(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1))),
+        network_group(IpAddr::V6(Ipv6Addr::new(0x2002, 0xdb8, 0, 0, 0, 0, 0, 1)))
+    );
+    // v4 and v6 never share a group.
+    assert_ne!(
+        network_group(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))),
+        network_group(IpAddr::V6(Ipv6Addr::UNSPECIFIED))
+    );
+}
+
 #[test]
 fn incomplete_scan_or_changed_tip_cannot_authorize_claim() {
     let htlc = contract();

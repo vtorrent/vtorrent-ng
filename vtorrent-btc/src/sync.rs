@@ -107,6 +107,34 @@ pub async fn broadcast_tx_to(
     Err(last_err.unwrap_or_else(|| BtcError::P2p("no reachable peers".into())))
 }
 
+/// The network group an address belongs to, for peer-diversity checks.
+///
+/// Two addresses in the same group are likely controlled by the same operator
+/// (same hosting provider or allocation), so counting them as independent peers
+/// would let a sybil satisfy the agreement requirement. Bitcoin Core buckets
+/// IPv4 by /16 and IPv6 by /32 for the same reason.
+pub(crate) fn network_group(ip: std::net::IpAddr) -> (u8, u16) {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            (4, u16::from_be_bytes([o[0], o[1]]))
+        }
+        std::net::IpAddr::V6(v6) => {
+            let s = v6.segments();
+            (6, s[0])
+        }
+    }
+}
+
+/// Count distinct network groups among `addrs`.
+fn distinct_network_groups(addrs: &[SocketAddr]) -> usize {
+    addrs
+        .iter()
+        .map(|addr| network_group(addr.ip()))
+        .collect::<std::collections::HashSet<_>>()
+        .len()
+}
+
 /// A Bitcoin SPV sync engine.
 pub struct BtcSync {
     headers: Arc<Mutex<HeaderChain>>,
@@ -144,20 +172,22 @@ impl BtcSync {
         } else {
             2
         };
-        if addrs
-            .iter()
-            .map(|addr| addr.ip())
-            .collect::<std::collections::HashSet<_>>()
-            .len()
-            < required
-        {
+        // Require distinct *network groups*, not merely distinct IPs: two
+        // addresses in the same /16 (or one hosting provider) can be the same
+        // operator, so counting them as independent would let a sybil satisfy
+        // the agreement requirement and eclipse the scan.
+        if distinct_network_groups(addrs) < required {
             return Err(BtcError::Sync(format!(
-                "BTC contract verification requires {required} distinct compact-filter peers"
+                "BTC contract verification requires {required} distinct compact-filter network groups"
             )));
         }
         let mut peers = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        for addr in addrs.iter().filter(|addr| seen.insert(addr.ip())).take(8) {
+        for addr in addrs
+            .iter()
+            .filter(|addr| seen.insert(network_group(addr.ip())))
+            .take(8)
+        {
             let attempt = async {
                 let mut peer = BtcPeer::connect_with_network(*addr, self.network).await?;
                 if !peer.supports_compact_filters() {
@@ -183,7 +213,7 @@ impl BtcSync {
         }
         if peers.len() < required {
             return Err(BtcError::Sync(format!(
-                "BTC contract verification requires {required} distinct compact-filter peers"
+                "BTC contract verification requires {required} distinct compact-filter network groups"
             )));
         }
         let (tip_hash, tip_height) = {

@@ -108,10 +108,13 @@ inspect its own mempool for conflicting spends; BTC refunds have no equivalent.
 
 The claim scan uses the existing anchored header verifier and BIP-157/158
 filter validation, downloads matching blocks, and checks their transaction
-commitments. Filters must agree across at least two distinct peer IPs outside
-regtest (one configured peer suffices on regtest). With a configured peer,
-only that hostname's resolved addresses are used; a single non-regtest IP
-fails closed. Without a configured peer, DNS discovery is mainnet-only.
+commitments. Filters must agree across at least two distinct **network groups**
+(IPv4 /16, IPv6 /32) outside regtest (one configured peer suffices on regtest).
+Two addresses in the same /16 are treated as one operator, so a sybil cannot
+satisfy the agreement requirement by holding several nearby IPs. With a
+configured peer, only that hostname's resolved addresses are used; a single
+non-regtest group fails closed. Without a configured peer, DNS discovery is
+mainnet-only.
 
 Each verification scans at most the latest 1,008 blocks, requires a tip timestamp
 within two hours of the local clock, and has a 120-second network-verification
@@ -238,7 +241,7 @@ of current BTC settlement or completion of the entire swap.
 API key requests a fresh BTC scan; the desktop exposes the same action. The
 network phase is bounded to 120 seconds, with one settlement scan at a time.
 It reuses anchored header validation and compact-filter agreement (two distinct
-peer IPs outside regtest, one on regtest), but uses an isolated scan tracker,
+network groups outside regtest, one on regtest), but uses an isolated scan tracker,
 not the wallet's persisted UTXO cache. Downloaded blocks must match their header,
 transaction Merkle root, and witness commitment. It checks the exact funding
 txid, output zero, amount, and contract script, and retains confirmed spends.

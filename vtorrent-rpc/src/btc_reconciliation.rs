@@ -405,22 +405,45 @@ async fn scan_contract(
     Ok(scan)
 }
 
+/// Confirmations after which a settled BTC observation is treated as final.
+///
+/// A claim or refund seen at 6 confirmations can still be reorged out; if
+/// monitoring stopped immediately the swap would stay stuck believing it
+/// settled. Keep re-checking until the settling transaction is buried this
+/// deep, then stop. 100 blocks is the same depth Bitcoin uses for coinbase
+/// maturity and is far beyond any realistic reorg.
+pub const BTC_SETTLEMENT_FINALITY_CONFIRMATIONS: u32 = 100;
+
 /// Whether a swap's BTC leg still needs periodic monitoring.
 ///
-/// Stops once the BTC leg is settled (claimed or refunded with confirmations)
-/// or provably unspendable (invalid funding / spent elsewhere), so the
-/// expensive BIP-158 scan is not repeated forever.
+/// Stops once the BTC leg is settled (claimed or refunded) and buried past
+/// `BTC_SETTLEMENT_FINALITY_CONFIRMATIONS`, or provably unspendable (invalid
+/// funding / spent elsewhere), so the expensive BIP-158 scan is not repeated
+/// forever. A settled-but-shallow observation keeps being monitored so a reorg
+/// that removes the settling transaction is detected.
 pub fn btc_leg_needs_monitoring(swap: &SwapState) -> bool {
     if swap.btc_funding_txid.is_none() {
         return false;
     }
-    !matches!(
-        swap.btc_observation.as_ref().map(|o| o.state),
-        Some(BtcSettlementState::Claimed)
-            | Some(BtcSettlementState::Refunded)
-            | Some(BtcSettlementState::SpentElsewhere)
-            | Some(BtcSettlementState::InvalidFunding)
-    )
+    let Some(observation) = swap.btc_observation.as_ref() else {
+        // Funded but never observed: keep monitoring.
+        return true;
+    };
+    match observation.state {
+        BtcSettlementState::SpentElsewhere | BtcSettlementState::InvalidFunding => false,
+        BtcSettlementState::Claimed | BtcSettlementState::Refunded => {
+            // Settled, but only final once deeply buried. The settling anchor
+            // is the spend; fall back to funding if it is somehow absent.
+            let depth = observation
+                .spend
+                .as_ref()
+                .or(observation.funding.as_ref())
+                .map(|anchor| anchor.confirmations)
+                .unwrap_or(0);
+            depth < BTC_SETTLEMENT_FINALITY_CONFIRMATIONS
+        }
+        _ => true,
+    }
 }
 
 /// Interval between automatic BTC settlement scans.
@@ -568,7 +591,13 @@ mod tests {
         assert!(!scan_proves_unfunded(&scan));
     }
 
-    fn observation(state: BtcSettlementState) -> BtcSwapObservation {
+    fn observation(state: BtcSettlementState, confirmations: u32) -> BtcSwapObservation {
+        let anchor = |confirmations| SwapConfirmation {
+            txid: "11".repeat(32),
+            block_hash: "22".repeat(32),
+            height: 100,
+            confirmations,
+        };
         BtcSwapObservation {
             network: "regtest".into(),
             observed_at: 0,
@@ -576,31 +605,49 @@ mod tests {
             tip_height: 1,
             scan_start: 1,
             state,
-            funding: None,
-            spend: None,
+            funding: Some(anchor(confirmations)),
+            spend: Some(anchor(confirmations)),
             reorg_count: 0,
         }
     }
 
     #[test]
-    fn monitoring_stops_once_btc_leg_is_settled() {
+    fn monitoring_stops_once_btc_leg_is_settled_and_final() {
         use BtcSettlementState::*;
         let mut swap = SwapState::new([1; 32], [2; 32]);
         // No BTC funding yet: nothing to monitor.
         assert!(!btc_leg_needs_monitoring(&swap));
         swap.btc_funding_txid = Some([3; 32]);
-        // Funded and unsettled: keep monitoring.
+        // Funded but unobserved: keep monitoring.
         assert!(btc_leg_needs_monitoring(&swap));
-        swap.btc_observation = Some(observation(FundingConfirming));
+        swap.btc_observation = Some(observation(FundingConfirming, 1));
         assert!(btc_leg_needs_monitoring(&swap));
-        // Terminal states stop the scan.
-        for terminal in [Claimed, Refunded, SpentElsewhere, InvalidFunding] {
-            swap.btc_observation = Some(observation(terminal));
+
+        // Provably unspendable: stop immediately.
+        for terminal in [SpentElsewhere, InvalidFunding] {
+            swap.btc_observation = Some(observation(terminal, 1));
             assert!(
                 !btc_leg_needs_monitoring(&swap),
                 "{terminal:?} must stop monitoring"
             );
         }
+
+        // Settled but shallow: keep monitoring so a reorg is detected.
+        for settled in [Claimed, Refunded] {
+            swap.btc_observation = Some(observation(settled, 6));
+            assert!(
+                btc_leg_needs_monitoring(&swap),
+                "{settled:?} at 6 confirmations must keep monitoring"
+            );
+            // Deeply buried: final, stop.
+            swap.btc_observation =
+                Some(observation(settled, BTC_SETTLEMENT_FINALITY_CONFIRMATIONS));
+            assert!(
+                !btc_leg_needs_monitoring(&swap),
+                "{settled:?} at finality depth must stop monitoring"
+            );
+        }
+
         // Non-terminal states keep monitoring.
         for active in [
             Funded,
@@ -608,11 +655,43 @@ mod tests {
             ClaimConfirming,
             RefundConfirming,
         ] {
-            swap.btc_observation = Some(observation(active));
+            swap.btc_observation = Some(observation(active, 50));
             assert!(
                 btc_leg_needs_monitoring(&swap),
                 "{active:?} must keep monitoring"
             );
         }
+    }
+
+    #[test]
+    fn reorg_downgrade_keeps_the_swap_monitored() {
+        // A claim observed at 6 confirmations, then reorged out, is downgraded
+        // to a non-terminal state. The swap must stay monitored so the lost
+        // settlement is not treated as final.
+        let mut swap = SwapState::new([1; 32], [2; 32]);
+        swap.btc_funding_txid = Some([3; 32]);
+        swap.btc_observation = Some(observation(BtcSettlementState::Claimed, 6));
+        assert!(
+            btc_leg_needs_monitoring(&swap),
+            "shallow claim is monitored"
+        );
+
+        // The reorg removes the spend: state falls back to funded, and the
+        // reorg counter increments. Monitoring continues.
+        let mut reorged = observation(BtcSettlementState::Funded, 7);
+        reorged.spend = None;
+        reorged.reorg_count = 1;
+        swap.btc_observation = Some(reorged);
+        assert!(
+            btc_leg_needs_monitoring(&swap),
+            "a reorged-out claim must keep the swap monitored"
+        );
+
+        // Once a fresh claim is deeply buried, monitoring stops.
+        swap.btc_observation = Some(observation(
+            BtcSettlementState::Claimed,
+            BTC_SETTLEMENT_FINALITY_CONFIRMATIONS,
+        ));
+        assert!(!btc_leg_needs_monitoring(&swap));
     }
 }

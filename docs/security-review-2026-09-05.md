@@ -90,7 +90,7 @@ Follow-up implemented locally: BTC claim now requires a fresh isolated SPV scan
 of the exact P2WSH contract before signing. It verifies txid/vout, amount, full
 script, six confirmations, and no confirmed spend through a complete scanned
 tip. Persisted wallet UTXOs cannot authorize claims. Non-regtest scans require
-filter agreement from distinct peer IPs. Stale/future tips, partial scans,
+filter agreement from distinct network groups. Stale/future tips, partial scans,
 changed tips, immature coinbase outputs, invalid commitments, and deadlines
 crossed during verification fail closed. The handler also checks order/secret
 consistency and rechecks confirmed unspent VTR funding before revelation.
@@ -105,6 +105,30 @@ limits (eclipse attacks, mempool conflicts, and reorgs after verification).
 Claim scans are bounded to the latest 1,008 blocks and 120 seconds; older or
 unverifiable funding is rejected, not assumed safe. These changes do not provide
 full per-chain settlement reconciliation; durable maker/VTR recovery is covered below.
+
+Peer diversity and reorg re-verification (2026-09-22). Two SPV trust limits are
+now mitigated in code:
+
+- **Network-group peer diversity.** The scan previously required two *distinct
+  IPs*, which two addresses in the same /16 (or one hosting provider) satisfy
+  trivially — the sybil/eclipse case. It now requires two distinct *network
+  groups* (IPv4 /16, IPv6 /32, matching Bitcoin Core's bucketing), and peer
+  selection dedups by group. `vtorrent-btc/src/sync.rs::network_group`.
+- **Bounded reorg re-verification.** Automatic BTC monitoring previously stopped
+  as soon as a claim or refund was seen at 6 confirmations. A reorg could then
+  remove the settling transaction and the swap would stay stuck believing it
+  settled. Monitoring now continues until the settling anchor is buried
+  `BTC_SETTLEMENT_FINALITY_CONFIRMATIONS` (100) deep, then stops.
+  `vtorrent-rpc/src/btc_reconciliation.rs::btc_leg_needs_monitoring`.
+
+Adversarial tests assert the fail-closed behavior: same-/16 peers are rejected,
+a reorged-out claim downgrades the observation and keeps the swap monitored, and
+the existing suite already covers a higher-work fork invalidating an old spend,
+incomplete scans, filter/merkle tampering, peer disconnects, and stale/future
+tips. The remaining limit is structural: these are SPV observations, not
+full-node validation, and cannot prove the absence of a claim from an unqueried
+or eclipsing peer. Independent-node adversarial validation remains a release
+requirement.
 
 Automatic BTC monitoring (2026-09-22): the daemon now runs a BTC settlement
 reconciler (`btc_reconciliation::run_btc_reconciler`) every 5 minutes for every
