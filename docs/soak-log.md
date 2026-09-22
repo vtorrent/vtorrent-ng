@@ -1055,3 +1055,28 @@ Read-only check at `2026-09-21T06:10Z`, ~4h11m after the window restart
 
 Earliest sign-off: **2026-09-28 after 01:58Z**, contingent on uninterrupted
 evidence. Next daily observation entry due 2026-09-22.
+
+## 2026-09-22 — daily observation (window day 1)
+
+Read-only check at `2026-09-22T01:10Z`, ~23h12m into the restarted window
+(first post-recovery stake `2026-09-21T01:58:13Z`, height 11691).
+
+- All three nodes agree at height **13057**, hash `c7078b418b0afe9b…`,
+  `syncing: false`, mempool 0. Node1 (staker) holds 2 connections; each
+  follower holds 1.
+- Staking enabled, 4 eligible UTXOs, **1367 blocks staked** this window.
+- Block cadence within the window: n=1367, min 61 / median 61 / max 62 s,
+  mean 61.0 — exactly the 60s target, **zero intervals >120s**.
+- Prometheus since the window start: **5559/5559 expected 15s samples** on
+  each node (100% coverage), zero gaps >30s. The 204 `up = 0` samples in the
+  trailing 24h are all `01:07:44Z → 01:58:14Z`, i.e. the tail of the Docker
+  incident recovery, ending exactly at the window start — not a new event.
+- Zero ERROR/panic/reorg/rollback lines on all three; container
+  `RestartCount` 0 on all three.
+- Memory: node1 131.5, node2 111.9, node3 114.7 MiB (under the <150 MiB
+  budget; node1's staker high-water is the known glibc arena effect).
+- BTC-regtest SPV: connected, height 140, `synced: true`, balance
+  4,999.48 mBTC; VTR SPV header chain at 13058.
+
+Earliest sign-off: **2026-09-28 after 01:58Z**. Next daily observation due
+2026-09-23.
