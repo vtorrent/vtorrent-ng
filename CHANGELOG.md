@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — vTorrent 2.0.0
 
-### Since v2.0.0-beta.2 (114 commits)
+### Since v2.0.0-beta.2 (332 commits)
 
 **Legacy Claim Rehearsal + Staking Fix (2026-08-31)**
 - Legacy claim rehearsal PASSED on soak: all 7 genesis-snapshot addresses verified claimable (686,314.02 VTR), one claim mined at height 3, double-claim protection verified

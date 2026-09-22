@@ -40,7 +40,7 @@ This is a Cargo workspace with 19 crates plus a frontend:
 # Build the whole workspace
 cargo build --workspace
 
-# Run all tests (539 tests currently pass)
+# Run all tests (914 tests currently pass)
 cargo test --workspace
 
 # Formatting and linting (enforced in CI)
