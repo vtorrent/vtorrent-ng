@@ -589,6 +589,13 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(vtorrent_rpc::swap_reconciliation::run_reconciler(
         rpc_state.clone(),
     ));
+    // Automatic BTC settlement monitoring. The VTR reconciler above only
+    // refreshes VTR evidence; without this, a maker's BTC claim (which reveals
+    // the preimage the taker needs) and BTC refunds are only observed when the
+    // RPC endpoint is called by hand.
+    tokio::spawn(vtorrent_rpc::btc_reconciliation::run_btc_reconciler(
+        rpc_state.clone(),
+    ));
 
     // Periodic DEX order expiry maintenance — runs every 60 seconds.
     let order_book_for_maintenance = Arc::clone(&rpc_state.order_book);

@@ -106,6 +106,17 @@ Claim scans are bounded to the latest 1,008 blocks and 120 seconds; older or
 unverifiable funding is rejected, not assumed safe. These changes do not provide
 full per-chain settlement reconciliation; durable maker/VTR recovery is covered below.
 
+Automatic BTC monitoring (2026-09-22): the daemon now runs a BTC settlement
+reconciler (`btc_reconciliation::run_btc_reconciler`) every 5 minutes for every
+swap with a live BTC leg, mirroring the 30s VTR reconciler. Previously the BTC
+scan was only reachable via the RPC endpoint, so a maker's BTC claim (which
+reveals the preimage the taker needs) and BTC refunds were observed only when
+someone polled by hand. Monitoring stops once the BTC leg reaches a terminal
+state (claimed, refunded, spent elsewhere, or invalid funding), so the
+expensive BIP-158 scan is not repeated forever. The interval is deliberately
+slower than the VTR reconciler because each scan is a full 1,008-block pass
+with up to three peers.
+
 ### High: swap recovery combines independent legs
 
 `handlers/swap.rs::swap_refund` and the desktop equivalent require VTR expiry

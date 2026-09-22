@@ -405,6 +405,68 @@ async fn scan_contract(
     Ok(scan)
 }
 
+/// Whether a swap's BTC leg still needs periodic monitoring.
+///
+/// Stops once the BTC leg is settled (claimed or refunded with confirmations)
+/// or provably unspendable (invalid funding / spent elsewhere), so the
+/// expensive BIP-158 scan is not repeated forever.
+pub fn btc_leg_needs_monitoring(swap: &SwapState) -> bool {
+    if swap.btc_funding_txid.is_none() {
+        return false;
+    }
+    !matches!(
+        swap.btc_observation.as_ref().map(|o| o.state),
+        Some(BtcSettlementState::Claimed)
+            | Some(BtcSettlementState::Refunded)
+            | Some(BtcSettlementState::SpentElsewhere)
+            | Some(BtcSettlementState::InvalidFunding)
+    )
+}
+
+/// Interval between automatic BTC settlement scans.
+///
+/// Each scan is a full BIP-158 pass over the last 1,008 blocks with up to three
+/// peers (up to 120s), so this is deliberately much slower than the 30s VTR
+/// reconciler. BTC blocks are ~10 minutes, so 5 minutes is ample.
+const BTC_RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Periodically scan every swap with a live BTC leg.
+///
+/// Without this, a maker's BTC claim (which reveals the preimage the taker
+/// needs) and refunds are only observed when someone calls the RPC endpoint by
+/// hand. Mirrors `swap_reconciliation::run_reconciler`, but at the slower
+/// cadence BTC scanning requires and gated on the wallet being unlocked.
+pub async fn run_btc_reconciler(state: AppState) {
+    let mut interval = tokio::time::interval(BTC_RECONCILE_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        interval.tick().await;
+        if !state.is_wallet_unlocked().await {
+            continue;
+        }
+        let ids: Vec<String> = {
+            let swaps = state.swaps.read().await;
+            swaps
+                .iter()
+                .filter(|(_, swap)| btc_leg_needs_monitoring(swap))
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        for id in ids {
+            if !state.is_wallet_unlocked().await {
+                break;
+            }
+            if let Err(error) = reconcile(&state, &id).await {
+                tracing::debug!(
+                    order_id = %id,
+                    error = %error,
+                    "Automatic BTC swap reconciliation failed"
+                );
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -504,5 +566,53 @@ mod tests {
             height: 16,
         });
         assert!(!scan_proves_unfunded(&scan));
+    }
+
+    fn observation(state: BtcSettlementState) -> BtcSwapObservation {
+        BtcSwapObservation {
+            network: "regtest".into(),
+            observed_at: 0,
+            tip_hash: "00".repeat(32),
+            tip_height: 1,
+            scan_start: 1,
+            state,
+            funding: None,
+            spend: None,
+            reorg_count: 0,
+        }
+    }
+
+    #[test]
+    fn monitoring_stops_once_btc_leg_is_settled() {
+        use BtcSettlementState::*;
+        let mut swap = SwapState::new([1; 32], [2; 32]);
+        // No BTC funding yet: nothing to monitor.
+        assert!(!btc_leg_needs_monitoring(&swap));
+        swap.btc_funding_txid = Some([3; 32]);
+        // Funded and unsettled: keep monitoring.
+        assert!(btc_leg_needs_monitoring(&swap));
+        swap.btc_observation = Some(observation(FundingConfirming));
+        assert!(btc_leg_needs_monitoring(&swap));
+        // Terminal states stop the scan.
+        for terminal in [Claimed, Refunded, SpentElsewhere, InvalidFunding] {
+            swap.btc_observation = Some(observation(terminal));
+            assert!(
+                !btc_leg_needs_monitoring(&swap),
+                "{terminal:?} must stop monitoring"
+            );
+        }
+        // Non-terminal states keep monitoring.
+        for active in [
+            Funded,
+            FundingNotObserved,
+            ClaimConfirming,
+            RefundConfirming,
+        ] {
+            swap.btc_observation = Some(observation(active));
+            assert!(
+                btc_leg_needs_monitoring(&swap),
+                "{active:?} must keep monitoring"
+            );
+        }
     }
 }
