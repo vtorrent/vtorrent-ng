@@ -137,6 +137,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Full fleet join proven 0 → 4885 with byte-identical tip hash
 - New auth-gated `POST /api/v1/peers/unban` (operator recourse for false positives)
 
+**Consensus & Review Fixes (2026-09-13 → 2026-09-20)**
+- **CRITICAL — stake-kernel normalization (C1)**: the v1 target saturated at `u32::MAX` for any UTXO ≥ 42,949.67 VTR, so a large holder could produce every block; replaced with a proportional rule (`P = value / total_staked`), tracked incrementally and journaled across reorgs. Consensus-rule change requiring a coordinated fleet upgrade
+- **CRITICAL — legacy-claim signature binding (S1)**: the v1 signature signed only the address, so a mempool observer could redirect a claim's outputs and lock out the owner; the v2 hash commits to the outputs
+- **CRITICAL — timelock enforcement**: `OP_CHECKLOCKTIMEVERIFY`/`OP_CHECKSEQUENCEVERIFY` now consult the chain's actual height/time (BIP-65/BIP-68); previously a spender could self-declare locktimes and spend time-locked outputs early
+- Legacy-claim fund safety (L5/L6): a claim must match the snapshot balance exactly; the mempool rejects a competing claim for an address with one pending
+- Mempool script gating, byte budget, dependency-ordered templates, duplicate-input rejection
+- RPC auth boundary: wallet/staking/DEX reads require the API key, checked before the concurrency limiter
+- BTC spend authorization (M12): `btc/send` and `btc-fund` require an unlocked wallet
+- Tracker SSRF (M8), wallet-import overwrite (M10), TOTP replay (M15), key-material zeroization, remote-panic bounds
+- Wallet auto-unlock via `--wallet-passphrase-file`; `MALLOC_ARENA_MAX=2` pinned; `DNS_SEEDS` gains seed3; production seeds upgraded from a stale binary
+- Third review pass (`docs/code-review-2026-09-20.md`) closed with no open findings
+
+**Genesis Bootstrap + Stakeable Restriction (2026-09-21)**
+- **Genesis bootstrap (T3)**: genesis has no stakeable UTXO, so staking could never start; a height-1 bootstrap block whose only tx is a legacy claim is now valid, seeding `total_staked`; mined via `POST /api/v1/blockchain/bootstrap` (one-shot, genesis-only). No premine; genesis hash unchanged
+- **Stakeable-script restriction (T4)**: `is_stakeable` now counts only P2PKH (the class the engine can spend), closing a stake-dilution vector; a no-op on existing chains
+- Single-input coinstake rule (T17)
+
+**Atomic-Swap Recovery + SPV Hardening (2026-09-21 → 2026-09-22)**
+- Automatic BTC settlement monitoring every 5 minutes for swaps with a live BTC leg (was RPC-only)
+- Expired BTC input reservations released once the HTLC expired and a fresh scan shows the funding unconfirmed (was locked forever)
+- Bounded reorg re-verification: monitoring continues until a settled anchor is buried 100 deep, so a reorged-out claim is detected
+- SPV peer diversity now requires distinct network groups (IPv4 /16, IPv6 /32), not merely distinct IPs
+- Overlay punch rate limiter O(1) eviction; 64-bit anonymous peer keys; case-insensitive `.onion`/`.i2p`; tracker SSRF DNS-rebinding pinning; PEX IPv4-mapped gap; ban cap on insert; v1 claim hash deprecated
+- BTC refunds documented as intentionally non-fee-replaceable (safety interlock)
+
 **Desktop: Testnet Mode + Staking Dashboard (2026-09-10)**
 - Tauri app can join the soak network: Mainnet/Testnet picker, seed peers (persisted + local auto-detect via `probe_seed_peers`), TESTNET badge, separate `~/.vtorrent/testnet` datadir, network-mismatch guard
 - Staking ops dashboard: health strip, lazy reward history via new `GET /api/v1/staking/rewards`, start-error mapping, copyable address (Tauri snake_case normalization fix included)
