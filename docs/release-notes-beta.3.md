@@ -186,3 +186,79 @@ now fixed or documented as accepted (`docs/code-review-2026-09-15-fix-status.md`
 - The legacy-claim v2 signature is replay-compatible with the current chain
   (which contains no legacy claims), but a fleet on the old binary would
   reject v2 claims.
+
+## Addendum 3 — changes since the second addendum (2026-09-21 → 2026-09-22)
+
+A third full review (`docs/code-review-2026-09-20.md`) covered the codebase
+again; every finding is fixed or documented (`docs/code-review-2026-09-20-fix-status.md`
+has no open items). This addendum also closes the remaining atomic-swap
+recovery items and two SPV trust limits.
+
+### Consensus
+
+- **Genesis bootstrap (T3)** — genesis has no stakeable UTXO, so no coinstake
+  could ever be produced and mainnet staking could never start. A height-1
+  "bootstrap block" whose only transaction is a legacy claim is now valid; its
+  P2PKH output seeds `total_staked`, and normal PoS begins at height 2. The
+  bootstrap UTXO is exempt from `MIN_STAKE_AGE` for exactly the block that
+  follows it. Mined via `POST /api/v1/blockchain/bootstrap` (one-shot, gated to
+  `best_height == 0`). No premine; the frozen genesis hash is unchanged.
+- **Stakeable-script restriction (T4)** — `is_stakeable` counted any
+  non-OP_RETURN output ≥ 1 VTR, but the engine only stakes P2PKH. P2SH/P2MS/
+  P2PK/HTLC outputs inflated the kernel denominator and diluted honest stakers.
+  Restricted to P2PKH. A no-op on every existing chain.
+- **Single-input coinstake (T17)** — `validate_transaction` now requires exactly
+  one coinstake input, matching the reward accounting.
+
+Both consensus changes are no-ops on existing chains (the soak chain is
+P2PKH-only and its height-1 block is a faucet coinbase, not a claim), so they
+replay unchanged and do not require a coordinated fleet upgrade.
+
+### Atomic-swap recovery
+
+- **Automatic BTC settlement monitoring** — the daemon now runs a BTC
+  reconciler every 5 minutes for every swap with a live BTC leg, mirroring the
+  30s VTR reconciler. Previously a maker's BTC claim (which reveals the preimage
+  the taker needs) and BTC refunds were observed only when the RPC endpoint was
+  called by hand.
+- **Expired reservation release** — a persisted BTC input reservation is
+  released once the HTLC has expired **and** a fresh BIP-158 scan reports the
+  funding tx unconfirmed. Previously a failed funding attempt locked the input
+  forever, across restarts.
+- **Bounded reorg re-verification** — monitoring no longer stops at 6
+  confirmations; it continues until the settling anchor is buried 100 deep, so
+  a reorg that removes a claim is detected instead of leaving the swap stuck.
+- **BTC refunds are not fee-replaceable (documented)** — the refund and claim
+  spend the same HTLC output, and the claim reveals the preimage; an RBF refund
+  would let a taker replace a pending claim, recover BTC, then claim VTR with
+  the public preimage. The non-RBF sequence is a deliberate interlock. `OP_CLTV`
+  is a lower bound only, so the claim branch cannot be given an upper-bound
+  deadline.
+
+### Security hardening
+
+- **SPV peer diversity** — the BTC scan required two distinct IPs, which two
+  addresses in the same /16 satisfy trivially. It now requires two distinct
+  *network groups* (IPv4 /16, IPv6 /32), matching Bitcoin Core's bucketing.
+- **Overlay punch rate limiter (T10)** — oldest-first eviction via an
+  insertion-order queue, O(1) amortized instead of an O(100k) full-map scan per
+  packet.
+- **Anonymous peer keys (T11/T12)** — 64-bit FNV-1a synthetic keys (was 32-bit,
+  collision-grindable) and case-insensitive `.onion`/`.i2p` detection; anonymous
+  peers never feed the IP ban table.
+- **Tracker SSRF (T13)** — hostname resolution moved to an async resolver and
+  the validated addresses are pinned into the request client, closing a
+  DNS-rebinding TOCTOU; no blocking resolve on the executor.
+- **PEX IPv4-mapped gap (T14)** — `::ffff:a.b.c.d` is re-checked against the
+  embedded v4 address; `is_bootstrap_seed` now also matches DNS seed hostnames.
+- **Ban cap (T15)** — enforced on every ban insertion, not only during prune.
+- **v1 claim signatures (T16)** — `claim_message_hash` is `#[deprecated]` with a
+  documented compatibility note; validation accepts only the v2 scheme.
+
+### Upgrade notes (in addition to those above)
+
+- The T3/T4 consensus changes are no-ops on existing chains and need no
+  coordinated upgrade. The bootstrap endpoint is inert until a fresh mainnet
+  genesis exists.
+- BTC refund fee replacement is intentionally unsupported; do not "fix" the
+  non-RBF sequence without a sound protocol-level replacement.
