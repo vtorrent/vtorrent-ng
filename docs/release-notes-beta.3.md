@@ -63,7 +63,7 @@ and the swap + claim paths are now exercised end-to-end on testnet.
 
 ## Testing
 
-- 625 workspace tests (was 523 at beta.2), zero-fuzz-marathon clean
+- 914 workspace tests (was 523 at beta.2), zero-fuzz-marathon clean
 - Twelve full audit passes; all findings fixed with regression tests
 - Docker testnet: 3-node mesh, restart persistence, self-healing verified
 
