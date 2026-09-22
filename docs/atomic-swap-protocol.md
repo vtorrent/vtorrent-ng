@@ -4,8 +4,10 @@ The maker sells VTR, generates the secret, and claims BTC first. The taker
 learns the secret from that BTC claim and uses it to claim VTR.
 
 This implementation is not yet approved for real-value swaps. Automatic
-recovery, BTC/claim/funding fee replacement, and adversarial multi-node testing remain open in
-[the security review](security-review-2026-09-05.md).
+recovery and adversarial multi-node testing remain open in
+[the security review](security-review-2026-09-05.md). BTC refunds are
+deliberately not fee-replaceable (see "BTC refunds are not fee-replaceable"
+below).
 
 ## Funding and claim sequence
 
@@ -83,6 +85,24 @@ a refund becomes valid; it does not disable the preimage claim branch after
 that time. Safety depends on confirmation, monitoring, and timely action.
 Bitcoin time-based locktime uses its chain's median-time-past, so advancing a
 local debug clock does not make a transaction valid on Bitcoin.
+
+### BTC refunds are not fee-replaceable
+
+The BTC claim and refund spend the same HTLC output, and the claim is the
+transaction that reveals the preimage. The refund is built with a non-RBF
+sequence (`ENABLE_LOCKTIME_NO_RBF`) on purpose: if it signalled RBF, a taker
+could replace a pending claim with a refund, recover BTC, and then claim VTR
+with the now-public preimage — costing the maker both legs. The claim, by
+contrast, is RBF-signalling so a stalled claim can be bumped; it is the
+terminal action and has no competing spend to race.
+
+This asymmetry is a safety property, not a missing feature. It cannot be
+removed by giving the claim branch an upper-bound deadline: `OP_CLTV` (BIP-65)
+is a lower bound only and Bitcoin has no "not after" timelock opcode, so the
+preimage branch stays valid after expiry. A mempool probe is also insufficient
+— a claim can be withheld or sit in an unqueried peer's mempool, and the SPV
+scan is confirmed-only. The VTR refund is fee-replaceable because the node can
+inspect its own mempool for conflicting spends; BTC refunds have no equivalent.
 
 ### BTC verification limits
 
@@ -176,11 +196,13 @@ and submit the identical saved transaction. A transaction already in the local
 chain or mempool is recognized. An expired, conflicting, or otherwise invalid
 transaction is not blindly rebroadcast.
 
-Automatic BTC settlement monitoring, fee-bumped BTC/claim/funding recovery, release of unused
-reservations, and protection against rollback to an older authentic journal remain
-open. Locking does not yet wipe every in-memory preimage copy. Existing swaps do
-not gain secrets lost before journaling. Do not delete recovery records to retry
-an ambiguous broadcast.
+Automatic BTC settlement monitoring and release of unused reservations are
+implemented. Fee-bumped recovery covers the VTR refund and the BTC claim; the
+BTC refund is deliberately not replaceable (see "BTC refunds are not
+fee-replaceable"). Protection against rollback to an older authentic journal
+remains open. Locking does not yet wipe every in-memory preimage copy. Existing
+swaps do not gain secrets lost before journaling. Do not delete recovery
+records to retry an ambiguous broadcast.
 
 ### VTR settlement observations
 
@@ -237,14 +259,16 @@ an input safe to reuse. Results depend on the selected peers and remain subject
 to eclipse attacks and later reorgs. Observations persist in the encrypted
 recovery journal when enabled. No secrets/witnesses are returned; no transaction
 is signed, rebroadcast, fee-bumped, deleted, or automatically claimed, and no
-input reservation is released. BTC replacement lineage remains open.
+input reservation is released. BTC claim replacement lineage is tracked; BTC refunds are not replaceable by design.
 
 ### Fee-approved VTR refund replacement
 
-Only an already-prepared VTR refund can currently be fee-bumped. Funding and
-claim transactions, and all BTC transactions, are unchanged. In particular,
-changing an HTLC funding txid would require counterparty coordination; this
-endpoint never changes the funding outpoint, refund destination, or timelock.
+Only an already-prepared VTR refund can currently be fee-bumped. Funding
+transactions and all BTC transactions are unchanged. In particular, changing an
+HTLC funding txid would require counterparty coordination; this endpoint never
+changes the funding outpoint, refund destination, or timelock. BTC claims are
+also fee-bumpable (`POST /api/v1/swap/btc-claim-bump`); BTC refunds are not, by
+design (see "BTC refunds are not fee-replaceable").
 
 Read `GET /api/v1/swap/{order_id}/vtr-refund-history` for the original refund and
 its replacements (txids, parent IDs, total fees, approval times; no signed data).

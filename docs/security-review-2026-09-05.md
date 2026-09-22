@@ -248,11 +248,27 @@ daemon's store-call sequence without production failpoints. Interruption inside
 a single redb transaction, legacy-claim rollback, complete swap recovery through
 daemon RPC, and public-network operation remain outside this matrix.
 
-Still open: automatic BTC monitoring, BTC/claim/funding fee replacement,
-and automatic resolution (not merely detection) of conflicting spends. Submission
-IDs do not prove confirmations. This journal does not prevent replay of an older
-authentic file or wipe all in-memory preimages on lock. Existing swaps created
-before journaling do not gain missing recovery metadata retroactively.
+Still open: automatic resolution (not merely detection) of conflicting spends.
+Submission IDs do not prove confirmations. This journal does not prevent replay
+of an older authentic file or wipe all in-memory preimages on lock. Existing
+swaps created before journaling do not gain missing recovery metadata
+retroactively.
+
+BTC refund fee replacement is intentionally unsupported (2026-09-22). The BTC
+claim and refund spend the same HTLC output, and the claim is the transaction
+that reveals the preimage. If the refund signalled RBF, a taker could replace a
+pending claim with a refund — recovering BTC and then claiming VTR with the
+now-public preimage, costing the maker both legs. The refund therefore uses
+`Sequence::ENABLE_LOCKTIME_NO_RBF` deliberately (`vtorrent-btc/src/htlc.rs`),
+and the asymmetry is what stops a refund replacing a claim. This cannot be
+fixed by giving the claim branch an upper-bound deadline: `OP_CLTV` (BIP-65) is
+a lower bound only, and Bitcoin has no "not after" timelock opcode, so the
+preimage branch cannot be disabled after expiry. A mempool probe would not
+close the gap either — a claim can be withheld or sit in an unqueried peer's
+mempool, and the scan is confirmed-only. The VTR refund remains bumpable
+because the node can inspect its own mempool for conflicts
+(`vtorrent-rpc/src/refund_bump.rs`); BTC refunds have no equivalent. Do not
+"fix" the non-RBF sequence without a sound protocol-level replacement.
 
 ### High: BTC funding has no reservation across broadcast
 
