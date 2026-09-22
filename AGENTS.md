@@ -53,6 +53,10 @@ cargo run -p vtorrent-daemon -- --rpc-addr 127.0.0.1:22525 --listen 0.0.0.0:2252
 # Testnet mode (LAN/localhost multi-node testing)
 cargo run -p vtorrent-daemon -- --testnet --listen 127.0.0.1:22526 --seed 127.0.0.1:22527
 
+# Soak fleet status / daily observation (read-only)
+scripts/soak-status.sh
+scripts/soak-observe.sh
+
 # Frontend
 cd vtorrent-ui && pnpm install && pnpm dev
 cd vtorrent-ui && pnpm lint
