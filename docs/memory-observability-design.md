@@ -235,6 +235,46 @@ entry (69.0 MiB at recovery → 137.2 MiB RSS at `2026-09-15T03:2xZ`):
   nodes in `docker/testnet/docker-compose.yml`.
 - Not a soak interruption and not a consensus issue.
 
+### 7.2 Root cause found — redb's 1 GiB default cache (2026-09-23)
+
+The `MALLOC_ARENA_MAX` cap fixed the arena high-water mark but **did not stop
+RSS growth**. A 3-minute sample on 2026-09-22 showed +12 kB and was briefly
+recorded as "flat"; that sample was too short. The soak-log's own daily
+observations show sustained linear growth:
+
+| Time | node1 RSS |
+|---|---|
+| 2026-09-21 06:10Z | 117.9 MiB |
+| 2026-09-22 01:10Z | 131.5 MiB (+13.6 over 19.2h = 726 kB/h) |
+| 2026-09-23 00:06Z | 144.8 MiB (+13.3 over 22.9h = 594 kB/h) |
+
+All three nodes grow linearly, node1 (the staker) fastest. Live at
+`2026-09-23T01:00Z`: node1 VmRSS 144.9 MiB (96.6% of the 150 MiB budget),
+**VmHWM 164.4 MiB — the peak was already over budget**. Projected at sign-off
+(5.08 days): ~225 MiB.
+
+**Cause.** `BlockStore::open` called `redb::Database::create`, and redb's
+`Builder::new()` defaults to `set_cache_size(1024 * 1024 * 1024)` — a **1 GiB**
+cache (921 MiB read + 102 MiB write). The cache accumulates pages as the store
+is written and read, so RSS climbs steadily toward that cap. The observed
+~650–850 kB/h is consistent with a cache filling toward 1 GiB over days, not a
+logical leak.
+
+**Ruled out:** malloc arenas (1 each; cap holding), chain in-memory structures
+(~30 kB/h — a small fraction of the observed rate), reorg journals (bounded to
+100), stake-proof cache (bounded to 2048), and the redb file itself (mmap'd
+read-only, not resident).
+
+**Fix.** `BlockStore::open` now bounds the cache to 64 MiB via
+`redb::Builder::set_cache_size`; `BlockStore::open_with_cache` allows an
+explicit value. Unit-tested (`test_open_with_cache_bounds_redb_cache`).
+
+**Caveat.** The fix is **not yet verified on the fleet** — the running nodes
+still use the pre-fix binary, so this is a root-cause hypothesis with strong
+circumstantial evidence, not a confirmed fix. It must be re-measured after the
+post-soak deploy. If RSS still grows with a 64 MiB cache, the cause is
+elsewhere and this doc must be corrected again.
+
 ## 8. Open Questions
 
 - ~~Should `MALLOC_ARENA_MAX` be pinned?~~ **Resolved 2026-09-22.** Pinned to 2

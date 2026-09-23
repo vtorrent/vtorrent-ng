@@ -167,11 +167,18 @@ actions, operator approval.
       `docs/soak-log.md`. Seeds now report `connections=4`, `syncing=false`.
 - [x] **`MALLOC_ARENA_MAX` review** — resolved 2026-09-22. `MALLOC_ARENA_MAX=2`
       is pinned in compose and verified live: each node now holds **1** malloc
-      arena (was 5/3/3), and `VmHWM > VmRSS` (node1 168 vs 136 MiB), so RSS is
-      returned to the OS rather than retained. Node1 (the staker) held
-      136200→136212 kB (+12 kB) over 3 minutes while staking, and all three sit
-      at 106–136 MiB, under the <150 MiB budget. The budget stays stated
-      against RSS. See `docs/memory-observability-design.md` §7.1.
+      arena (was 5/3/3). The arena cap fixed the arena-driven high-water mark,
+      but it did **not** stop RSS growth — see the redb cache finding below.
+- [x] **redb cache bound** — resolved 2026-09-23. `BlockStore::open` used
+      `redb::Database::create`, whose default cache is **1 GiB** (921 MiB read +
+      102 MiB write) — far above the node's <150 MiB RSS budget. RSS grew
+      linearly (~650–850 kB/h; node1 117.9 MiB on 09-21 → 144.8 MiB on 09-23,
+      VmHWM 164 MiB) toward that cap, projecting to ~225 MiB at sign-off.
+      `BlockStore::open` now bounds the cache to 64 MiB via
+      `redb::Builder::set_cache_size`; `open_with_cache` allows an explicit
+      value. **Not yet verified on the fleet** — the running nodes still use the
+      old binary, so the fix lands with the post-soak deploy and must be
+      re-measured then. See `docs/memory-observability-design.md` §7.2.
 - [ ] **`v2.0.0-beta.3` tag** — `docs/release-notes-beta.3.md` addendum is a
       draft; no tag exists (only beta.1/beta.2). Tag after sign-off, with the
       desktop build matrix and checksums.
