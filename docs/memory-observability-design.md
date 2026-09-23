@@ -283,6 +283,43 @@ stake-proof cache (bounded to 2048).
 non-production copy of node1's data, since static analysis has not located the
 allocation. This is an open finding, not a resolved one.
 
+### 7.3 Isolation experiment — the BTC SPV path is implicated (2026-09-23)
+
+No profiler is installed on the host or in the image, and `gdb` cannot cross
+PID namespaces, so the cause was narrowed by **differential isolation** instead.
+Three probe containers were run on the `4d1ae47` image against a copy of node1's
+data, each adding one subsystem:
+
+| Configuration | RSS trend | Rate |
+|---|---|---|
+| Isolated (`--network none`, no peers, no BTC, no staking) | 122828 → 122828 kB over 24 min | **0 kB/h (flat)** |
+| Peers only (`--seed vtr-node1`, no BTC, no staking) | 148160 → 148192 kB over 21 min | ~91 kB/h |
+| Peers + BTC (`--btc-regtest --btc-peer`, no staking) | 139360 → 140028 kB over 18 min | ~2227 kB/h |
+| Fleet node1 (peers + BTC + staking) | ~600–1100 kB/h | — |
+
+**Conclusions:**
+
+1. **The leak is not in chain replay, the store, or the RPC layer** — the
+   isolated probe was perfectly flat.
+2. **Staking is not required** — the peers+BTC probe grows without staking.
+3. **The BTC SPV path is the dominant contributor.** Adding BTC to a
+   peers-only probe raised the rate from ~91 kB/h to ~2227 kB/h.
+
+The daemon's BTC sync loop (`vtorrent-daemon/src/main.rs:687`) connects to the
+BTC peer, syncs headers, runs a BIP-158 UTXO scan, then drops the connection —
+every cycle. Prime suspects, none yet confirmed:
+
+- `FilterHeaderStore::candidates` (`vtorrent-btc/src/filters.rs:24`) is keyed by
+  `(tip, fingerprint)` and only ever `entry().or_default()`-inserts; the inner
+  `HashSet<SocketAddr>` accumulates a **new ephemeral peer port each reconnect**.
+  It is never pruned.
+- `HeaderChain::headers` and `FilterHeaderStore::records` grow with the BTC
+  chain (bounded by BTC height, so slow on regtest).
+
+**Next step:** confirm by pruning `candidates` (and any per-connection state) and
+re-running the peers+BTC probe. A `dhat`-gated build is the fallback if the
+candidate is not it. This remains an **open finding**.
+
 ## 8. Open Questions
 
 - ~~Should `MALLOC_ARENA_MAX` be pinned?~~ **Resolved 2026-09-22.** Pinned to 2

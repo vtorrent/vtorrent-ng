@@ -176,19 +176,19 @@ actions, operator approval.
       allows an explicit value). **This did not fix the growth** — see the open
       finding below. The bound is still correct on its own merits (a 1 GiB cache
       on a 150 MiB-budget node is a misconfiguration), but it is not the cause.
-- [ ] **RSS growth (OPEN, root cause unknown)** — all three nodes grow
+- [ ] **RSS growth (OPEN, cause narrowed to BTC SPV)** — all three nodes grow
       ~600–1100 kB/h. node1: 117.9 MiB (09-21) → 144.8 MiB (09-23) → 152.7 MiB
       after the 2026-09-23 redeploy; VmHWM 188.9 MiB. **The redb-cache
-      hypothesis was tested and disproven**: the fleet was redeployed on
-      `vtorrent/node:4d1ae47` (binary `2e47d80e…`, verified in the running
-      container) with the cache bounded to 64 MiB, and growth continued at the
-      same rate. The growth is in the `[heap]` region (115.9 MiB of 149.4 MiB
-      total). Ruled out so far: malloc arenas (1 each), redb cache, chain
-      in-memory structures, reorg journals (bounded 100), stake-proof cache
-      (bounded 2048). Needs a heap profiler (e.g. `heaptrack`/`jemalloc`
-      profiling) on a non-production copy. **Not a functional failure** — the
-      node stakes and syncs correctly; this is a budget breach. See
-      `docs/memory-observability-design.md` §7.2.
+      hypothesis was tested and disproven** (redeployed on
+      `vtorrent/node:4d1ae47` with the cache bounded to 64 MiB; growth
+      continued). **Differential isolation narrowed it to the BTC SPV path**:
+      an isolated probe (no peers/BTC/staking) was flat (0 kB/h), peers-only
+      grew ~91 kB/h, and peers+BTC grew ~2227 kB/h — so staking is not required
+      and BTC SPV is the dominant contributor. Prime suspect:
+      `FilterHeaderStore::candidates` accumulating a new ephemeral peer port per
+      reconnect and never pruning. **Not a functional failure** — nodes stake
+      and sync correctly; this is a budget breach. See
+      `docs/memory-observability-design.md` §7.2–7.3.
 - [ ] **`v2.0.0-beta.3` tag** — `docs/release-notes-beta.3.md` addendum is a
       draft; no tag exists (only beta.1/beta.2). Tag after sign-off, with the
       desktop build matrix and checksums.
