@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-WINDOW_START="${1:-1789955893}" # 2026-09-21T01:58:13Z
+WINDOW_START="${1:-1790140560}" # 2026-09-23T05:16:00Z (first post-redeploy stake)
 NODES=("22625:vtr-node1" "22627:vtr-node2" "22629:vtr-node3")
 API_KEY="${VTORRENT_RPC_KEY:-testnet-soak-key}"
 PROM="${PROM_URL:-http://127.0.0.1:9090}"
@@ -62,6 +62,20 @@ done
 echo
 
 # ── Tip agreement ────────────────────────────────────────────────────────────
+# The nodes are queried sequentially, so a block propagating between two
+# requests can show a transient one-height disagreement. Re-read once before
+# declaring a real disagreement.
+if [[ "$(printf '%s\n' "${HEIGHTS[@]}" | sort -u | wc -l)" -ne 1 ]]; then
+    sleep 5
+    for entry in "${NODES[@]}"; do
+        port="${entry%%:*}"
+        name="${entry##*:}"
+        info=$(curl -s --max-time 3 "http://127.0.0.1:${port}/api/v1/info" || true)
+        [[ -z "$info" ]] && continue
+        HEIGHTS[$name]=$(echo "$info" | grep -o '"block_height":[0-9]*' | cut -d: -f2)
+        HASHES[$name]=$(echo "$info" | grep -o '"best_block_hash":"[0-9a-f]*"' | cut -d: -f2 | tr -d '"')
+    done
+fi
 unique_heights=$(printf '%s\n' "${HEIGHTS[@]}" | sort -u | wc -l)
 unique_hashes=$(printf '%s\n' "${HASHES[@]}" | sort -u | wc -l)
 if [[ "$unique_heights" -eq 1 && "$unique_hashes" -eq 1 ]]; then
@@ -150,6 +164,6 @@ if [[ -n "$btc" ]]; then
     echo "- BTC SPV: height=${btc_height}, synced=${btc_synced}."
 fi
 echo
-echo "Earliest sign-off: **2026-09-28 after 01:58Z**. Next daily observation due $(date -u -d 'tomorrow' +%Y-%m-%d)."
+echo "Earliest sign-off: **2026-09-30 after 05:16Z**. Next daily observation due $(date -u -d 'tomorrow' +%Y-%m-%d)."
 
 exit "$fail"

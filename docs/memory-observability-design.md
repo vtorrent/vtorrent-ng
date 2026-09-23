@@ -253,27 +253,35 @@ All three nodes grow linearly, node1 (the staker) fastest. Live at
 **VmHWM 164.4 MiB — the peak was already over budget**. Projected at sign-off
 (5.08 days): ~225 MiB.
 
-**Cause.** `BlockStore::open` called `redb::Database::create`, and redb's
-`Builder::new()` defaults to `set_cache_size(1024 * 1024 * 1024)` — a **1 GiB**
-cache (921 MiB read + 102 MiB write). The cache accumulates pages as the store
-is written and read, so RSS climbs steadily toward that cap. The observed
-~650–850 kB/h is consistent with a cache filling toward 1 GiB over days, not a
-logical leak.
+**Cause (HYPOTHESIS — DISPROVEN 2026-09-23).** `BlockStore::open` called
+`redb::Database::create`, and redb's `Builder::new()` defaults to
+`set_cache_size(1024 * 1024 * 1024)` — a **1 GiB** cache (921 MiB read +
+102 MiB write). This looked consistent with the observed growth, so the cache
+was bounded to 64 MiB (`redb::Builder::set_cache_size`) and the fleet was
+redeployed on `vtorrent/node:4d1ae47` on 2026-09-23.
 
-**Ruled out:** malloc arenas (1 each; cap holding), chain in-memory structures
-(~30 kB/h — a small fraction of the observed rate), reorg journals (bounded to
-100), stake-proof cache (bounded to 2048), and the redb file itself (mmap'd
-read-only, not resident).
+**The hypothesis was wrong.** The running container was verified to carry the
+fixed binary (`sha256 2e47d80e…`, image `809294d6…`), yet growth continued at
+the same rate:
 
-**Fix.** `BlockStore::open` now bounds the cache to 64 MiB via
-`redb::Builder::set_cache_size`; `BlockStore::open_with_cache` allows an
-explicit value. Unit-tested (`test_open_with_cache_bounds_redb_cache`).
+| Node | 05:53 → 06:21 (28 min) | Rate |
+|---|---|---|
+| node1 | 152212 → 152724 kB | ~1097 kB/h |
+| node2 | 134168 → 134452 kB | ~609 kB/h |
+| node3 | 133768 → 134060 kB | ~626 kB/h |
 
-**Caveat.** The fix is **not yet verified on the fleet** — the running nodes
-still use the pre-fix binary, so this is a root-cause hypothesis with strong
-circumstantial evidence, not a confirmed fix. It must be re-measured after the
-post-soak deploy. If RSS still grows with a 64 MiB cache, the cause is
-elsewhere and this doc must be corrected again.
+The growth is in the `[heap]` region (115.9 MiB of 149.4 MiB total RSS on
+node1). The 64 MiB cache bound is retained as a defensive correction — a 1 GiB
+cache on a 150 MiB-budget node is a misconfiguration — but it is **not** the
+cause of the growth.
+
+**Still ruled out:** malloc arenas (1 each; cap holding), redb cache (tested),
+chain in-memory structures (~30 kB/h), reorg journals (bounded to 100),
+stake-proof cache (bounded to 2048).
+
+**Next step:** heap profiling (`heaptrack`, or a `jemalloc`/`dhat` build) on a
+non-production copy of node1's data, since static analysis has not located the
+allocation. This is an open finding, not a resolved one.
 
 ## 8. Open Questions
 

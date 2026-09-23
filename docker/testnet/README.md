@@ -1,19 +1,21 @@
 # Local testnet images
 
-All three nodes use the locally built PEX top-K randomization release
-`vtorrent/node:7db5da3`. No node has a Compose
-`build` entry, so recreation cannot
-silently replace that version with the current working tree. No image was pushed
-to a registry. Provision the image locally before bringing up this stack on
-another host.
+All three nodes use the locally built release `vtorrent/node:4d1ae47`. No node
+has a Compose `build` entry, so recreation cannot silently replace that version
+with the current working tree. No image was pushed to a registry. Provision the
+image locally before bringing up this stack on another host.
 
 ## Current release image
 
-Source revision: `7db5da31ed87ff18e3b86db7e1ef7d9d0c272374`.
+Source revision: `4d1ae473b110e7bd7d32325f2dd5591c6c69fcec`.
 Binary SHA-256:
-`fda13af3a58c4d19a4eec86246273ddc9abca7f8ac2ff20eb30ab8cb33e821aa`.
+`2e47d80e41e2a3383e10463293f2fe11cef924e3e27b96a5d368c409862853b1`.
 Image ID:
-`sha256:1308257446d5a6a3c381dcdeb693a1dfb36ddc0c7337ccb77978ef4753c69935`.
+`sha256:809294d6968b0e88512cbec36a90ec5489b25c5374b4aeafb92acc0e940f33bf`.
+
+This release bounds redb's cache to 64 MiB (was redb's 1 GiB default). It did
+**not** fix the observed RSS growth — see `docs/soak-log.md` 2026-09-23. The
+prior image `vtorrent/node:13489d4` remains available for rollback.
 
 The private exact-image archive is
 `.ops-backups/pex-20260913-97BzX7/vtorrent-node-7db5da3.tar`, SHA-256

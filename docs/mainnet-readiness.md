@@ -169,16 +169,26 @@ actions, operator approval.
       is pinned in compose and verified live: each node now holds **1** malloc
       arena (was 5/3/3). The arena cap fixed the arena-driven high-water mark,
       but it did **not** stop RSS growth — see the redb cache finding below.
-- [x] **redb cache bound** — resolved 2026-09-23. `BlockStore::open` used
+- [x] **redb cache bound (defensive)** — `BlockStore::open` used
       `redb::Database::create`, whose default cache is **1 GiB** (921 MiB read +
-      102 MiB write) — far above the node's <150 MiB RSS budget. RSS grew
-      linearly (~650–850 kB/h; node1 117.9 MiB on 09-21 → 144.8 MiB on 09-23,
-      VmHWM 164 MiB) toward that cap, projecting to ~225 MiB at sign-off.
-      `BlockStore::open` now bounds the cache to 64 MiB via
-      `redb::Builder::set_cache_size`; `open_with_cache` allows an explicit
-      value. **Not yet verified on the fleet** — the running nodes still use the
-      old binary, so the fix lands with the post-soak deploy and must be
-      re-measured then. See `docs/memory-observability-design.md` §7.2.
+      102 MiB write) — far above the node's <150 MiB RSS budget, so it was
+      bounded to 64 MiB via `redb::Builder::set_cache_size` (`open_with_cache`
+      allows an explicit value). **This did not fix the growth** — see the open
+      finding below. The bound is still correct on its own merits (a 1 GiB cache
+      on a 150 MiB-budget node is a misconfiguration), but it is not the cause.
+- [ ] **RSS growth (OPEN, root cause unknown)** — all three nodes grow
+      ~600–1100 kB/h. node1: 117.9 MiB (09-21) → 144.8 MiB (09-23) → 152.7 MiB
+      after the 2026-09-23 redeploy; VmHWM 188.9 MiB. **The redb-cache
+      hypothesis was tested and disproven**: the fleet was redeployed on
+      `vtorrent/node:4d1ae47` (binary `2e47d80e…`, verified in the running
+      container) with the cache bounded to 64 MiB, and growth continued at the
+      same rate. The growth is in the `[heap]` region (115.9 MiB of 149.4 MiB
+      total). Ruled out so far: malloc arenas (1 each), redb cache, chain
+      in-memory structures, reorg journals (bounded 100), stake-proof cache
+      (bounded 2048). Needs a heap profiler (e.g. `heaptrack`/`jemalloc`
+      profiling) on a non-production copy. **Not a functional failure** — the
+      node stakes and syncs correctly; this is a budget breach. See
+      `docs/memory-observability-design.md` §7.2.
 - [ ] **`v2.0.0-beta.3` tag** — `docs/release-notes-beta.3.md` addendum is a
       draft; no tag exists (only beta.1/beta.2). Tag after sign-off, with the
       desktop build matrix and checksums.

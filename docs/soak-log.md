@@ -1084,3 +1084,49 @@ Read-only check at `2026-09-22T01:10Z`, ~23h12m into the restarted window
 
 Earliest sign-off: **2026-09-28 after 01:58Z**. Next daily observation due
 2026-09-23.
+
+## 2026-09-23 — fleet redeploy `13489d4` → `4d1ae47` (redb cache bound)
+
+Operator-approved redeploy to test whether bounding redb's default 1 GiB cache
+fixes the RSS growth. **It did not** — recorded here as a disproven hypothesis.
+
+**Preflight.** All three agreed at height 14705, node1 staking (3014 blocks),
+node2/node3 healthy. Volumes backed up (stopped, read-only copy) to
+`.ops-backups/redb-cache-20260923-FzjyQ/` (0700): `node1/`, `node1-vtorrent/`,
+`node2/`, `node3/`.
+
+**Image.** Built from `4d1ae473b110e7bd7d32325f2dd5591c6c69fcec` (includes the
+cache bound `65c897f`). Binary SHA-256
+`2e47d80e41e2a3383e10463293f2fe11cef924e3e27b96a5d368c409862853b1`, image ID
+`sha256:809294d6968b0e88512cbec36a90ec5489b25c5374b4aeafb92acc0e940f33bf`,
+tag `vtorrent/node:4d1ae47`. Verified in the running container after deploy.
+
+**Rolling recreate** (one at a time, followers first):
+- node3: stop 05:03:2xZ, start 05:03:41Z; replayed genesis→tip in ~3m20s, zero
+  errors, `RestartCount` 0.
+- node2: stop 05:07:4xZ, start 05:08:0xZ; replayed in ~3m, zero errors.
+- node1: stop 05:12:3xZ, start 05:12:4xZ; replayed in ~3m30s; wallet
+  auto-unlocked at 05:15:54Z and staking auto-resumed; first stake within a
+  minute. `VTORRENT_WALLET_PASSPHRASE_FILE` was set explicitly for the recreate
+  (the compose default path does not exist on this host).
+- All three agreed at 14716 by 05:18Z; fresh blocks propagate to all three.
+
+**Result — hypothesis disproven.** Growth continued at the same rate on the
+fixed binary:
+
+| Node | 05:53 → 06:21 (28 min) | Rate |
+|---|---|---|
+| node1 | 152212 → 152724 kB | ~1097 kB/h |
+| node2 | 134168 → 134452 kB | ~609 kB/h |
+| node3 | 133768 → 134060 kB | ~626 kB/h |
+
+node1 settled at ~152.7 MiB (VmHWM 188.9 MiB), over the 150 MiB budget. The
+growth is in the `[heap]` region (115.9 MiB of 149.4 MiB total). The 64 MiB
+cache bound is retained (a 1 GiB cache on a 150 MiB-budget node is a
+misconfiguration) but is **not** the cause. Root cause remains open; next step
+is heap profiling on a non-production copy.
+
+**Soak impact.** This is the fourth interruption of the window (after the host
+reboot, the Docker-daemon incident, and the host suspend). The seven-day window
+resets to the first post-redeploy stake at `2026-09-23T05:16Z`. Earliest
+sign-off is now **2026-09-30 after 05:16Z**.
