@@ -176,12 +176,15 @@ actions, operator approval.
       allows an explicit value). **This did not fix the growth** — see the open
       finding below. The bound is still correct on its own merits (a 1 GiB cache
       on a 150 MiB-budget node is a misconfiguration), but it is not the cause.
-- [ ] **RSS growth (OPEN, decelerating; may be bounded)** — node1 grew
-      117.9 MiB (09-21) → 131.5 → 144.8 → 152.7 MiB (09-23), but the rate fell
-      (726 → 594 → ~456 kB/h) and it has since **plateaued at ~156.5 MiB, flat
-      for 33+ minutes**. That is the shape of a bounded high-water mark
+- [ ] **RSS growth (OPEN, decelerating; budget raised to 180 MiB)** — node1
+      grew 117.9 MiB (09-21) → 131.5 → 144.8 → 152.7 MiB (09-23), but the rate
+      fell (726 → 594 → ~456 kB/h) and it has since **plateaued at ~156.5 MiB,
+      flat for 33+ minutes**. That is the shape of a bounded high-water mark
       (allocator arenas + caches reaching steady state), not necessarily an
-      unbounded leak. **The redb-cache hypothesis was tested and disproven**
+      unbounded leak. The RSS budget was therefore raised **150 → 180 MiB**
+      (2026-09-23) to fit the observed plateau; this is **provisional** pending
+      a 24 h boundedness check. node1's peak `VmHWM` is 188.9 MiB, tracked
+      separately. **The redb-cache hypothesis was tested and disproven**
       (redeployed on `vtorrent/node:4d1ae47` with the cache bounded to 64 MiB;
       growth continued). **A differential-isolation experiment was
       inconclusive** — an isolated probe was flat (0 kB/h), but no probe

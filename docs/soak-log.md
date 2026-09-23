@@ -1130,3 +1130,24 @@ is heap profiling on a non-production copy.
 reboot, the Docker-daemon incident, and the host suspend). The seven-day window
 resets to the first post-redeploy stake at `2026-09-23T05:16Z`. Earliest
 sign-off is now **2026-09-30 after 05:16Z**.
+
+## 2026-09-23 (later) — RSS budget raised 150 → 180 MiB (provisional)
+
+Operator decision following the RSS-growth investigation (§7.2–7.3 of
+`docs/memory-observability-design.md`). The budget is documented, not enforced
+by any alert or script.
+
+**Rationale.** node1's staker climbed 117.9 MiB (09-21) → 131.5 → 144.8 →
+152.7 MiB (09-23) but decelerated (726 → 594 → ~456 kB/h) and then
+**plateaued at ~156.5 MiB, flat for 33+ minutes**. The shape is a bounded
+high-water mark (allocator arenas + caches reaching steady state), so the
+150 MiB figure was too tight for the staker.
+
+**Caveat.** This is **provisional**. Boundedness is not confirmed — two
+hypotheses (redb cache, BTC SPV) were tested and disproven/retracted. If RSS is
+still climbing at the 24 h check, this is a leak and the budget must not be
+raised again without a root cause.
+
+**Peak vs steady state.** The budget is stated against **RSS**. node1's peak
+`VmHWM` is 188.9 MiB, above the new 180 MiB figure; it is tracked separately
+and is a warmup peak, not steady state.
