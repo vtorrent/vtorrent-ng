@@ -176,18 +176,20 @@ actions, operator approval.
       allows an explicit value). **This did not fix the growth** — see the open
       finding below. The bound is still correct on its own merits (a 1 GiB cache
       on a 150 MiB-budget node is a misconfiguration), but it is not the cause.
-- [ ] **RSS growth (OPEN, cause narrowed to BTC SPV)** — all three nodes grow
-      ~600–1100 kB/h. node1: 117.9 MiB (09-21) → 144.8 MiB (09-23) → 152.7 MiB
-      after the 2026-09-23 redeploy; VmHWM 188.9 MiB. **The redb-cache
-      hypothesis was tested and disproven** (redeployed on
-      `vtorrent/node:4d1ae47` with the cache bounded to 64 MiB; growth
-      continued). **Differential isolation narrowed it to the BTC SPV path**:
-      an isolated probe (no peers/BTC/staking) was flat (0 kB/h), peers-only
-      grew ~91 kB/h, and peers+BTC grew ~2227 kB/h — so staking is not required
-      and BTC SPV is the dominant contributor. Prime suspect:
-      `FilterHeaderStore::candidates` accumulating a new ephemeral peer port per
-      reconnect and never pruning. **Not a functional failure** — nodes stake
-      and sync correctly; this is a budget breach. See
+- [ ] **RSS growth (OPEN, decelerating; may be bounded)** — node1 grew
+      117.9 MiB (09-21) → 131.5 → 144.8 → 152.7 MiB (09-23), but the rate fell
+      (726 → 594 → ~456 kB/h) and it has since **plateaued at ~156.5 MiB, flat
+      for 33+ minutes**. That is the shape of a bounded high-water mark
+      (allocator arenas + caches reaching steady state), not necessarily an
+      unbounded leak. **The redb-cache hypothesis was tested and disproven**
+      (redeployed on `vtorrent/node:4d1ae47` with the cache bounded to 64 MiB;
+      growth continued). **A differential-isolation experiment was
+      inconclusive** — an isolated probe was flat (0 kB/h), but no probe
+      reproduced the fleet's rate, and an earlier claim that BTC SPV was the
+      cause has been **retracted** (it averaged in a warmup spike; the probe
+      then plateaued). **Not a functional failure** — nodes stake and sync
+      correctly. Next: re-run probes with a warmup-discard period and compare
+      the fleet over 24 h to decide bounded-vs-unbounded. See
       `docs/memory-observability-design.md` §7.2–7.3.
 - [ ] **`v2.0.0-beta.3` tag** — `docs/release-notes-beta.3.md` addendum is a
       draft; no tag exists (only beta.1/beta.2). Tag after sign-off, with the

@@ -283,42 +283,40 @@ stake-proof cache (bounded to 2048).
 non-production copy of node1's data, since static analysis has not located the
 allocation. This is an open finding, not a resolved one.
 
-### 7.3 Isolation experiment — the BTC SPV path is implicated (2026-09-23)
+### 7.3 Isolation experiment — inconclusive; earlier BTC claim retracted (2026-09-23)
 
 No profiler is installed on the host or in the image, and `gdb` cannot cross
-PID namespaces, so the cause was narrowed by **differential isolation** instead.
-Three probe containers were run on the `4d1ae47` image against a copy of node1's
-data, each adding one subsystem:
+PID namespaces, so the cause was probed by **differential isolation**: probe
+containers on the `4d1ae47` image against a copy of node1's data, each adding
+one subsystem.
 
-| Configuration | RSS trend | Rate |
+| Configuration | RSS trend | Post-warmup rate |
 |---|---|---|
-| Isolated (`--network none`, no peers, no BTC, no staking) | 122828 → 122828 kB over 24 min | **0 kB/h (flat)** |
-| Peers only (`--seed vtr-node1`, no BTC, no staking) | 148160 → 148192 kB over 21 min | ~91 kB/h |
-| Peers + BTC (`--btc-regtest --btc-peer`, no staking) | 139360 → 140028 kB over 18 min | ~2227 kB/h |
-| Fleet node1 (peers + BTC + staking) | ~600–1100 kB/h | — |
+| Isolated (`--network none`, no peers/BTC/staking) | 122828 → 122828 kB over 24 min | **0 kB/h (flat)** |
+| Peers only (`--seed vtr-node1`) | 148160 → 148192 kB over 21 min | ~91 kB/h |
+| Peers + BTC | 139360 → 140028 kB, then **plateaued at 152032 kB** | ~100–200 kB/h, then flat |
 
-**Conclusions:**
+**Retraction.** An earlier version of this section claimed peers+BTC grew at
+~2227 kB/h and that "the BTC SPV path is the dominant contributor". **That was
+wrong.** The figure averaged in a one-time warmup spike (+4912 kB in the first
+3-minute sample); the subsequent samples were +68, +184, +136, +176, +84, +20 kB
+and then the probe **plateaued** at 152032 kB for 10+ minutes. The BTC SPV path
+is **not** established as the cause.
 
-1. **The leak is not in chain replay, the store, or the RPC layer** — the
-   isolated probe was perfectly flat.
-2. **Staking is not required** — the peers+BTC probe grows without staking.
-3. **The BTC SPV path is the dominant contributor.** Adding BTC to a
-   peers-only probe raised the rate from ~91 kB/h to ~2227 kB/h.
+**What the probes do establish:** the isolated probe is perfectly flat, so chain
+replay, the store, and the RPC layer do not grow on their own. Beyond that the
+experiment is inconclusive — **no probe reproduced the fleet's rate.**
 
-The daemon's BTC sync loop (`vtorrent-daemon/src/main.rs:687`) connects to the
-BTC peer, syncs headers, runs a BIP-158 UTXO scan, then drops the connection —
-every cycle. Prime suspects, none yet confirmed:
+**Fleet behaviour is decelerating and may be bounded.** node1 grew
+117.9 MiB (09-21) → 131.5 → 144.8 → 152.7 MiB (09-23), but the rate fell
+(726 → 594 → ~456 kB/h) and it has since **plateaued at ~156.5 MiB, flat for
+33+ minutes**. That is the shape of a bounded high-water mark (allocator arenas
+plus caches reaching steady state), not necessarily an unbounded leak.
 
-- `FilterHeaderStore::candidates` (`vtorrent-btc/src/filters.rs:24`) is keyed by
-  `(tip, fingerprint)` and only ever `entry().or_default()`-inserts; the inner
-  `HashSet<SocketAddr>` accumulates a **new ephemeral peer port each reconnect**.
-  It is never pruned.
-- `HeaderChain::headers` and `FilterHeaderStore::records` grow with the BTC
-  chain (bounded by BTC height, so slow on regtest).
-
-**Next step:** confirm by pruning `candidates` (and any per-connection state) and
-re-running the peers+BTC probe. A `dhat`-gated build is the fallback if the
-candidate is not it. This remains an **open finding**.
+**Next step:** re-run the isolation probes with a warmup-discard period (measure
+only after RSS is flat for 10 min), and run the fleet comparison over a full
+24 h to decide bounded-vs-unbounded. A `dhat`-gated build remains the fallback.
+This is an **open finding**; do not cite the retracted BTC claim.
 
 ## 8. Open Questions
 
