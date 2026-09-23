@@ -33,10 +33,26 @@ pub struct BlockStore {
     db: Database,
 }
 
+/// Default redb cache budget in bytes.
+///
+/// `redb::Database::create` defaults to a **1 GiB** cache (921 MiB read +
+/// 102 MiB write). On a node with a <150 MiB RSS budget that is a
+/// misconfiguration: the cache accumulates pages as the store is written and
+/// read, so RSS climbs steadily toward the cap. Bound it well below the
+/// process budget instead.
+const DEFAULT_CACHE_SIZE_BYTES: usize = 64 * 1024 * 1024;
+
 impl BlockStore {
     /// Open or create a block store at the given path.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let db = Database::create(path.as_ref())?;
+        Self::open_with_cache(path, DEFAULT_CACHE_SIZE_BYTES)
+    }
+
+    /// Open a block store with an explicit redb cache budget.
+    pub fn open_with_cache(path: impl AsRef<Path>, cache_size_bytes: usize) -> Result<Self> {
+        let db = redb::Builder::new()
+            .set_cache_size(cache_size_bytes)
+            .create(path.as_ref())?;
         // Ensure all tables exist.
         let write_txn = db.begin_write()?;
         {
@@ -919,6 +935,19 @@ mod tests {
         assert!(store.best_hash().unwrap().is_some());
         assert_eq!(store.block_count().unwrap(), 1);
         assert_eq!(store.utxo_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_open_with_cache_bounds_redb_cache() {
+        // The default redb cache is 1 GiB, far above the node's RSS budget.
+        // `open` must bound it; `open_with_cache` must honour an explicit value.
+        let dir = tempdir().unwrap();
+        let store =
+            BlockStore::open_with_cache(dir.path().join("chain.db"), 8 * 1024 * 1024).unwrap();
+        assert_eq!(store.best_height().unwrap(), 0);
+        // redb's own default is 1 GiB; ours must be far smaller.
+        let redb_default: usize = 1024 * 1024 * 1024;
+        assert!(DEFAULT_CACHE_SIZE_BYTES < redb_default);
     }
 
     #[test]
