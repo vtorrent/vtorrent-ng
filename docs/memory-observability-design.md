@@ -185,13 +185,16 @@ soak sign-off. Alerts can be added post-soak (e.g. `>250MiB for 10m`).
 
 ## 7. Metrics and Targets
 
-- Process RSS: <180 MiB per node over 7 days at regtest stake rate (60s blocks,
+- Process RSS: <220 MiB per node over 7 days at regtest stake rate (60s blocks,
   4 UTXOs) — compare with `soak-status.sh` baseline ~99/71/70 MiB at 06:07Z.
-  Raised from 150 MiB on 2026-09-23 to fit node1's observed level. **This raise
-  does not solve the growth**: node1 is still climbing ~450 kB/h and would
-  breach 180 MiB in ~2.2 days (projecting ~222 MiB at sign-off). The raise is a
-  stopgap; the underlying growth is an open finding (§7.3). This is an **RSS**
-  budget; node1's peak `VmHWM` is 188.9 MiB and is tracked separately.
+  Raised 150 → 180 MiB on 2026-09-23, then 180 → **220 MiB on 2026-09-24**.
+  **Neither raise solves the growth.** Post-deploy the level is ~133 MiB but the
+  rate is unchanged at ~477 kB/h (chain-proportional, ~8 kB/block, §7.7), so
+  7 days projects ~211 MiB. 220 MiB covers that plus the ~189 MiB restart
+  transient (`VmHWM`). **This budget is a stopgap so the current window can be
+  observed; unbounded chain-proportional growth is a mainnet blocker**, fixed
+  only by pruning in-memory block bodies (post-soak batch). This is an **RSS**
+  budget; peak `VmHWM` is tracked separately.
 - Container working set must not diverge >10% from process RSS (indicates leaks
   outside daemon).
 - No expected throughput regression; bench-gate `scripts/bench-gate.sh` must

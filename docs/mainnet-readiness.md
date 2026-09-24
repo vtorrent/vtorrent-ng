@@ -197,8 +197,10 @@ actions, operator approval.
       three nodes 2026-09-24** (env-only rolling recreate, same image).
       **Fleet result: level 163 → 133 MiB (startup transient returned), but the
       steady-state rate was unchanged at ~477 kB/h** — see the item above; the
-      tunables do not bound the chain-proportional growth. RSS budget stays
-      180 MiB. Also still worth doing pre-mainnet: exclude unspendable OP_RETURN
+      tunables do not bound the chain-proportional growth. RSS budget raised
+      180 → 220 MiB on 2026-09-24 as a stopgap (7-day projection ~211 MiB);
+      this does not make the growth acceptable for mainnet — see the pruning
+      item above. Also still worth doing pre-mainnet: exclude unspendable OP_RETURN
       outputs from the UTXO set (consensus change — moves `utxo_root`; needs a
       fresh genesis, post-soak consensus batch). Disproven along the way: the
       redb-cache hypothesis; retracted: the BTC-SPV and "plateau" claims. See

@@ -1189,3 +1189,24 @@ That is the only fix for unbounded chain-proportional growth. See
 **Soak impact.** Fifth interruption. Window resets to the first post-redeploy
 stake at `2026-09-24T06:58:52Z`. Earliest sign-off is now **2026-10-01 after
 06:58Z**.
+
+## 2026-09-24 (later) — RSS budget raised 180 → 220 MiB (stopgap)
+
+Operator decision after the post-deploy measurement: **keep the env fix, raise
+the budget so the current window can be observed, and fix the real cause
+(chain-proportional growth) in the post-soak batch.**
+
+**Rationale.** Post-deploy the level is ~133 MiB but the rate is unchanged at
+~477 kB/h (§7.7 of the memory design), which is chain-proportional — the
+in-memory `Chain` retains every block body, ~8 kB/block, and is unbounded.
+Over the 7-day window that projects 133 + (477 × 168 / 1024) ≈ **211 MiB**. A
+220 MiB budget covers that plus the ~189 MiB restart transient (`VmHWM`).
+
+**This is a stopgap, not a fix.** The budget is documented, not enforced (no
+Prometheus alert), so the raise changes the target we grade against, not
+runtime behaviour. The unbounded growth remains a **mainnet blocker** tracked
+in `docs/mainnet-readiness.md`; the real fix is pruning in-memory block bodies
+(keep the full index, drop old bodies — reorg only needs `max_reorg_depth`).
+
+Budget history: 150 MiB (original) → 180 MiB (2026-09-23) → **220 MiB
+(2026-09-24)**. See `docs/memory-observability-design.md` §7.
