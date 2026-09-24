@@ -369,7 +369,7 @@ pub async fn validate_vtr(
     transaction: &vtorrent_node::block::Transaction,
 ) -> RpcResult<()> {
     let chain = state.chain.lock().await;
-    if chain.get_transaction(&transaction.txid()).is_some() {
+    if chain.get_transaction_owned(&transaction.txid()).is_some() {
         return Ok(());
     }
     if chain.compute_tx_fee(transaction).is_none() {
@@ -379,8 +379,8 @@ pub async fn validate_vtr(
     }
     let height = chain.best_height();
     let timestamp = chain
-        .get_block_at_height(height)
-        .map(|b| b.header.timestamp)
+        .get_header_at_height(height)
+        .map(|h| h.timestamp)
         .unwrap_or(0);
     chain
         .verify_tx_scripts(transaction, height, timestamp)
@@ -394,7 +394,7 @@ pub async fn submit_vtr(
 ) -> RpcResult<()> {
     let chain = state.chain.lock().await;
     let txid = transaction.txid();
-    if chain.get_transaction(&txid).is_some() {
+    if chain.get_transaction_owned(&txid).is_some() {
         return Ok(());
     }
     let mut mempool = state.mempool.lock().await;

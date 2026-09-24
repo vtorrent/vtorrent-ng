@@ -72,7 +72,7 @@ pub async fn match_dex_order_with_wif(
                         .chain
                         .lock()
                         .await
-                        .get_transaction(&tx.txid())
+                        .get_transaction_owned(&tx.txid())
                         .is_none()
                 {
                     return Err(RpcError::BadRequest("Prepared VTR funding window has elapsed; retain the record for reconciliation/refund".into()));

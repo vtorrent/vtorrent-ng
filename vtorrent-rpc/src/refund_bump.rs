@@ -104,7 +104,7 @@ fn confirmed_refund(chain: &vtorrent_node::chain::Chain, swap: &SwapState) -> Op
                 .iter()
                 .map(|r| r.transaction.txid()),
         )
-        .find(|id| chain.get_transaction(id).is_some())
+        .find(|id| chain.get_transaction_owned(id).is_some())
 }
 
 /// Retry the latest approved refund, or recognize an earlier version that confirmed.

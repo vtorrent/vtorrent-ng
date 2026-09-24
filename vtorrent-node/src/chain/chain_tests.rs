@@ -1731,3 +1731,154 @@ fn test_bootstrap_utxo_age_exempt_at_height2() {
     ));
     assert_eq!(chain.best_height(), 2);
 }
+
+// ── In-memory block-body pruning (docs/block-body-pruning-design.md) ──────────
+
+/// Test `BlockBodySource` backed by a map (stands in for the store).
+struct MapBodySource {
+    blocks: HashMap<[u8; 32], Block>,
+}
+
+impl BlockBodySource for MapBodySource {
+    fn block_body(&self, hash: &[u8; 32]) -> Option<Block> {
+        self.blocks.get(hash).cloned()
+    }
+    fn block_body_at_height(&self, _height: u32) -> Option<Block> {
+        None
+    }
+}
+
+/// Build a main chain of `n` coinbase blocks, returning each block's hash
+/// (index 0 = genesis) plus the blocks keyed by hash.
+fn build_coinbase_chain(chain: &mut Chain, n: u32) -> (Vec<[u8; 32]>, HashMap<[u8; 32], Block>) {
+    let mut hashes = vec![chain.best_hash().unwrap()];
+    let mut store = HashMap::new();
+    for h in 1..=n {
+        let prev = *hashes.last().unwrap();
+        let prev_mod = chain.get_header(&prev).unwrap().stake_modifier;
+        let block = make_block(prev, prev_mod, h);
+        let hash = block.hash();
+        store.insert(hash, block.clone());
+        let acc = chain.add_block(block).unwrap();
+        assert!(matches!(acc, BlockAcceptance::MainChain { .. }));
+        assert_eq!(chain.best_hash(), Some(hash));
+        hashes.push(hash);
+    }
+    (hashes, store)
+}
+
+#[test]
+fn test_body_pruning_keeps_headers_and_falls_back() {
+    let mut chain = Chain::new().unwrap();
+    // Cache must exceed max_reorg_depth, which pins journal-referenced bodies.
+    chain.set_max_reorg_depth(4);
+    chain.set_block_body_cache(8);
+    let (hashes, blocks) = build_coinbase_chain(&mut chain, 30);
+    assert_eq!(chain.best_height(), 30);
+
+    // Pruning is per-height for the main chain; the window is the last 8.
+    // Height 5's body must be gone, but its header retained.
+    let old = hashes[5];
+    assert!(chain.get_block(&old).is_none(), "old body should be pruned");
+    assert!(chain.get_header(&old).is_some(), "header must be retained");
+    // Recent body retained.
+    let recent = hashes[30];
+    assert!(chain.get_block(&recent).is_some(), "tip body retained");
+    // Pinned heights 0 and 1 are never pruned.
+    assert!(chain.get_block(&hashes[0]).is_some(), "genesis pinned");
+    assert!(chain.get_block(&hashes[1]).is_some(), "height 1 pinned");
+
+    // Without a source the owned lookup misses...
+    assert!(chain.get_block_owned(&old).is_none());
+    // ...and with a source it resolves.
+    chain.set_body_source(Arc::new(MapBodySource { blocks }));
+    let owned = chain.get_block_owned(&old).expect("fallback body");
+    assert_eq!(owned.hash(), old);
+    assert!(chain.get_block_at_height_owned(5).is_none()); // source has no by-height
+}
+
+#[test]
+fn test_duplicate_after_prune_is_still_duplicate() {
+    let mut chain = Chain::new().unwrap();
+    // Cache must exceed max_reorg_depth (100), which pins journals.
+    chain.set_max_reorg_depth(4);
+    chain.set_block_body_cache(8);
+    let (hashes, blocks) = build_coinbase_chain(&mut chain, 30);
+    let old = hashes[5];
+    assert!(chain.get_block(&old).is_none());
+    // Re-receiving the pruned block must be reported Duplicate (index-based),
+    // not orphan/rejected.
+    let again = blocks.get(&old).unwrap().clone();
+    assert_eq!(chain.add_block(again).unwrap(), BlockAcceptance::Duplicate);
+}
+
+#[test]
+fn test_headers_retained_allow_header_accessors_after_prune() {
+    let mut chain = Chain::new().unwrap();
+    chain.set_max_reorg_depth(4);
+    chain.set_block_body_cache(8);
+    let (hashes, _blocks) = build_coinbase_chain(&mut chain, 30);
+    // Header-based accessors work for pruned heights without a source.
+    for h in 0..=30u32 {
+        let hash = hashes[h as usize];
+        assert_eq!(chain.block_hash_at_height(h), Some(hash));
+        assert!(chain.utxo_root_at_height(h).is_some());
+        assert!(chain.get_header_at_height(h).is_some());
+    }
+}
+
+#[test]
+fn test_fork_body_cap_bounds_memory() {
+    let mut chain = Chain::new().unwrap();
+    // Disable main-chain pruning; exercise only the fork cap.
+    chain.set_block_body_cache(usize::MAX);
+    let genesis = chain.best_hash().unwrap();
+    // Build a main-chain block and many competing forks at height 1.
+    let mut main = make_block(genesis, 0, 1);
+    main.header.nonce = 1;
+    chain.add_block(main).unwrap();
+    let bound = chain.body_count() + MAX_FORK_BODIES + 1;
+    for i in 0..(MAX_FORK_BODIES as u32 + 100) {
+        let mut fork = make_block(genesis, 0, 1);
+        fork.header.nonce = 1000 + i;
+        fork.transactions[0].inputs[0].script_sig = vec![(i % 251) as u8, (i / 251) as u8];
+        fork.header.merkle_root = fork.compute_merkle_root();
+        chain.add_block(fork).unwrap();
+    }
+    assert!(
+        chain.body_count() <= bound,
+        "fork bodies must be bounded: {} > {}",
+        chain.body_count(),
+        bound
+    );
+}
+
+#[test]
+fn test_reorg_works_after_pruning() {
+    let mut chain = Chain::new().unwrap();
+    chain.set_max_reorg_depth(10);
+    chain.set_block_body_cache(12);
+    let (main_hashes, _) = build_coinbase_chain(&mut chain, 30);
+    assert!(chain.get_block(&main_hashes[5]).is_none(), "old body pruned");
+
+    // Longer fork branching from height 25 (rollback depth 5 <= 10).
+    let mut prev = main_hashes[25];
+    let mut prev_mod = chain.get_header(&prev).unwrap().stake_modifier;
+    let mut reorged = false;
+    for i in 0..8u32 {
+        let h = 26 + i;
+        let mut b = make_block(prev, prev_mod, h);
+        b.header.nonce = 50_000 + i;
+        b.transactions[0].inputs[0].script_sig = vec![200, i as u8];
+        b.header.merkle_root = b.compute_merkle_root();
+        prev_mod = b.header.stake_modifier;
+        prev = b.hash();
+        let acc = chain.add_block(b).unwrap();
+        if matches!(acc, BlockAcceptance::Reorg { .. }) {
+            reorged = true;
+        }
+    }
+    assert!(reorged, "expected a reorg onto the longer fork");
+    assert_eq!(chain.best_height(), 33);
+    assert_eq!(chain.best_hash(), Some(prev));
+}

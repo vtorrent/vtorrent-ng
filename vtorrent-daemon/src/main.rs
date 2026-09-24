@@ -149,14 +149,18 @@ async fn main() -> anyhow::Result<()> {
         } else {
             tracing::info!("No persisted chain found — starting from genesis");
         }
-        let chain = if cli.regtest && cli.regtest_fast_stake {
-            block_store.load_into_fast_regtest_chain()
+        let mut chain = if cli.regtest && cli.regtest_fast_stake {
+            block_store.load_into_fast_regtest_chain_with_cache(cli.block_body_cache)
         } else if cli.regtest {
-            block_store.load_into_regtest_chain()
+            block_store.load_into_regtest_chain_with_cache(cli.block_body_cache)
         } else {
-            block_store.load_into_chain()
+            block_store.load_into_chain_with_cache(cli.block_body_cache)
         }
         .map_err(|e| anyhow::anyhow!("Failed to load chain from store: {}", e))?;
+        // Serve bodies pruned from memory during replay from the store.
+        let body_source: std::sync::Arc<dyn vtorrent_node::chain::BlockBodySource> =
+            block_store.clone();
+        chain.set_body_source(body_source);
         Node::new_with_chain(config.clone(), chain)
             .map_err(|e| anyhow::anyhow!("Node::new_with_chain failed: {}", e))?
     };
@@ -525,27 +529,42 @@ async fn main() -> anyhow::Result<()> {
                             "Event bridge lagged, {} events lost — reconciling block store",
                             n
                         );
-                        let blocks: Vec<vtorrent_node::block::Block> = {
+                        // Reconcile only the missing tail (store tip+1 ..= chain
+                        // tip). A full genesis rebuild is impossible once older
+                        // block bodies have been pruned from memory; the missing
+                        // tail is recent and therefore still resident.
+                        let start = store_for_bridge.best_height().unwrap_or(0) + 1;
+                        let tail: Option<Vec<vtorrent_node::block::Block>> = {
                             let chain = chain_ref.lock().await;
-                            (0..=chain.best_height())
-                                .filter_map(|h| chain.get_block_at_height(h))
-                                .cloned()
+                            let tip = chain.best_height();
+                            (start..=tip)
+                                .map(|h| chain.get_block_at_height(h).cloned())
                                 .collect()
                         };
-                        let rebuild = if config.regtest && config.regtest_fast_stake {
-                            store_for_bridge.rebuild_from_fast_regtest_blocks(&blocks)
-                        } else if config.regtest {
-                            store_for_bridge.rebuild_from_regtest_blocks(&blocks)
-                        } else {
-                            store_for_bridge.rebuild_from_blocks(&blocks)
-                        };
-                        if let Err(e) = rebuild {
-                            tracing::error!("Block store reconciliation failed: {}", e);
-                        } else {
-                            tracing::info!(
-                                "Block store reconciled to height {} after lag",
-                                blocks.len().saturating_sub(1)
-                            );
+                        match tail {
+                            Some(blocks) => {
+                                let rebuild = store_for_bridge.reconcile_tail(
+                                    config.regtest,
+                                    config.regtest_fast_stake,
+                                    start,
+                                    &blocks,
+                                );
+                                if let Err(e) = rebuild {
+                                    tracing::error!("Block store reconciliation failed: {}", e);
+                                } else if !blocks.is_empty() {
+                                    tracing::info!(
+                                        "Block store reconciled: {} blocks (heights {}..={}) after lag",
+                                        blocks.len(),
+                                        start,
+                                        start + blocks.len() as u32 - 1
+                                    );
+                                }
+                            }
+                            None => tracing::error!(
+                                "Block store reconciliation aborted: a required body at height >= {} \
+                                 was pruned from memory; store left behind",
+                                start
+                            ),
                         }
                         let local_height = chain_ref.lock().await.best_height();
                         sync_status.refresh(local_height).await;

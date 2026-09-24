@@ -208,7 +208,10 @@ impl Chain {
         let mut chain = Self {
             blocks: HashMap::new(),
             headers: HashMap::new(),
-            block_body_cache: DEFAULT_BLOCK_BODY_CACHE,
+            // Pruning is opt-in: library/`Node::new` callers with no body source
+            // retain every body (pre-pruning behaviour). The daemon passes
+            // `DEFAULT_BLOCK_BODY_CACHE` into `load_into_*_with_cache`.
+            block_body_cache: usize::MAX,
             body_source: None,
             height_index: Vec::new(),
             tx_index: HashMap::new(),
@@ -534,6 +537,13 @@ impl Chain {
     /// keep all). Takes effect on the next accepted block.
     pub fn set_block_body_cache(&mut self, cache: usize) {
         self.block_body_cache = cache;
+    }
+
+    /// Shrink the reorg-journal window. Test-only: lets body-pruning tests run
+    /// with a small cache (journal-referenced bodies are always pinned).
+    #[cfg(test)]
+    pub(crate) fn set_max_reorg_depth(&mut self, depth: u32) {
+        self.max_reorg_depth = depth;
     }
 
     /// Number of block bodies currently retained in memory (diagnostics/tests).
@@ -1071,6 +1081,7 @@ impl Chain {
                     depth
                 );
 
+                self.prune_bodies();
                 Ok(BlockAcceptance::Reorg {
                     old_tip,
                     new_tip: block_hash,
@@ -1087,6 +1098,7 @@ impl Chain {
                     fork_work,
                     main_work
                 );
+                self.prune_bodies();
                 Ok(BlockAcceptance::Fork {
                     fork_tip: block_hash,
                 })
