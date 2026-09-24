@@ -44,6 +44,11 @@ use vtorrent_store::store::BlockStore;
 
 // ─── Entry Point ──────────────────────────────────────────────────────────────
 
+/// Node-event broadcast buffer. A store that falls this far behind is
+/// reconciled by replaying the chain tail, which must therefore be resident in
+/// memory — so `--block-body-cache` must be >= this value.
+const EVENT_CHANNEL_CAPACITY: usize = 1024;
+
 /// Heap profiler, active only under the `heap-profile` feature.
 ///
 /// Writes `dhat-heap.json` on exit. Never enabled in release builds; used to
@@ -81,6 +86,16 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Validate startup configuration (before any network connections) ───────
     validate_startup_config(&cli, &data_dir)?;
+
+    if cli.block_body_cache < EVENT_CHANNEL_CAPACITY {
+        tracing::warn!(
+            block_body_cache = cli.block_body_cache,
+            event_channel_capacity = EVENT_CHANNEL_CAPACITY,
+            "block-body cache is smaller than the event-bridge buffer; a max-lag \
+             store reconciliation may not find the tail resident and will abort. \
+             Raise --block-body-cache."
+        );
+    }
 
     // ── Resolve data directory ────────────────────────────────────────────────
     let data_dir = cli.data_dir.unwrap_or_else(|| {
@@ -312,11 +327,12 @@ async fn main() -> anyhow::Result<()> {
     // Additionally, every `NewBlock` event triggers an atomic `BlockStore::append_block`
     // call to persist the block to disk.
     {
-        let (node_tx, mut node_rx) = node_events::channel(1024);
+        let (node_tx, mut node_rx) = node_events::channel(EVENT_CHANNEL_CAPACITY);
         node.set_event_sender(node_tx);
 
         let rpc_broadcaster = rpc_state.events.clone();
         let store_for_bridge = Arc::clone(&block_store);
+        let block_body_cache = cli.block_body_cache;
         let sync_status = sync_status::SyncStatus::new(&rpc_state);
         let spv_chain_ref = Arc::clone(&rpc_state.spv_chain);
         let chain_ref = Arc::clone(&rpc_state.chain);
@@ -529,42 +545,85 @@ async fn main() -> anyhow::Result<()> {
                             "Event bridge lagged, {} events lost — reconciling block store",
                             n
                         );
-                        // Reconcile only the missing tail (store tip+1 ..= chain
-                        // tip). A full genesis rebuild is impossible once older
-                        // block bodies have been pruned from memory; the missing
-                        // tail is recent and therefore still resident.
-                        let start = store_for_bridge.best_height().unwrap_or(0) + 1;
-                        let tail: Option<Vec<vtorrent_node::block::Block>> = {
+                        // Decide how to reconcile, then act outside the chain
+                        // lock. Normal case: the store is a prefix of the chain
+                        // and only its tail is missing → append the tail. If the
+                        // store is *not* a prefix (e.g. a dropped reorg rollback),
+                        // heal by rebuilding from the chain (pruned bodies are
+                        // fetched back from the store itself).
+                        enum Plan {
+                            Tail(u32, Vec<vtorrent_node::block::Block>),
+                            Full(Vec<vtorrent_node::block::Block>),
+                            Unavailable(String),
+                        }
+                        let plan = {
                             let chain = chain_ref.lock().await;
                             let tip = chain.best_height();
-                            (start..=tip)
-                                .map(|h| chain.get_block_at_height(h).cloned())
-                                .collect()
-                        };
-                        match tail {
-                            Some(blocks) => {
-                                let rebuild = store_for_bridge.reconcile_tail(
-                                    config.regtest,
-                                    config.regtest_fast_stake,
-                                    start,
-                                    &blocks,
-                                );
-                                if let Err(e) = rebuild {
-                                    tracing::error!("Block store reconciliation failed: {}", e);
-                                } else if !blocks.is_empty() {
-                                    tracing::info!(
-                                        "Block store reconciled: {} blocks (heights {}..={}) after lag",
-                                        blocks.len(),
-                                        start,
-                                        start + blocks.len() as u32 - 1
-                                    );
+                            let store_height = store_for_bridge.best_height().unwrap_or(0);
+                            let store_tip = store_for_bridge.best_hash().ok().flatten();
+                            let diverged = store_tip.is_some()
+                                && store_tip != chain.block_hash_at_height(store_height);
+                            if diverged {
+                                // Gathering may read pruned bodies from the
+                                // store under the lock, but this path is rare and
+                                // needs a consistent snapshot.
+                                match (0..=tip)
+                                    .map(|h| chain.get_block_at_height_owned(h))
+                                    .collect::<Option<Vec<_>>>()
+                                {
+                                    Some(blocks) => Plan::Full(blocks),
+                                    None => Plan::Unavailable(format!(
+                                        "store diverged at height {store_height} and a chain body \
+                                         needed for a full rebuild is unavailable"
+                                    )),
+                                }
+                            } else {
+                                let start = store_height + 1;
+                                match (start..=tip)
+                                    .map(|h| chain.get_block_at_height(h).cloned())
+                                    .collect::<Option<Vec<_>>>()
+                                {
+                                    Some(blocks) => Plan::Tail(start, blocks),
+                                    None => Plan::Unavailable(format!(
+                                        "tail body at height >= {start} was pruned and the store \
+                                         lags; raise --block-body-cache"
+                                    )),
                                 }
                             }
-                            None => tracing::error!(
-                                "Block store reconciliation aborted: a required body at height >= {} \
-                                 was pruned from memory; store left behind",
-                                start
+                        };
+                        let result: Result<String, String> = match plan {
+                            Plan::Tail(start, blocks) => store_for_bridge
+                                .reconcile_tail(
+                                    config.regtest,
+                                    config.regtest_fast_stake,
+                                    block_body_cache,
+                                    start,
+                                    &blocks,
+                                )
+                                .map(|()| {
+                                    format!("appended {} tail block(s) from {start}", blocks.len())
+                                })
+                                .map_err(|e| format!("tail append failed: {e}")),
+                            Plan::Full(blocks) => {
+                                let r = if config.regtest && config.regtest_fast_stake {
+                                    store_for_bridge.rebuild_from_fast_regtest_blocks(&blocks)
+                                } else if config.regtest {
+                                    store_for_bridge.rebuild_from_regtest_blocks(&blocks)
+                                } else {
+                                    store_for_bridge.rebuild_from_blocks(&blocks)
+                                };
+                                r.map(|()| format!("full rebuild of {} block(s)", blocks.len()))
+                                    .map_err(|e| format!("full rebuild failed: {e}"))
+                            }
+                            Plan::Unavailable(reason) => Err(reason),
+                        };
+                        match result {
+                            Ok(what) => tracing::info!(
+                                "Block store reconciled after event-bridge lag ({what})"
                             ),
+                            Err(e) => {
+                                tracing::error!("Block store reconciliation failed: {e}");
+                            }
                         }
                         let local_height = chain_ref.lock().await.best_height();
                         sync_status.refresh(local_height).await;

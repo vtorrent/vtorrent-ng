@@ -17,9 +17,10 @@ use vtorrent_core::time::now_timestamp_u32;
 
 /// Default number of most-recent block *bodies* retained in memory.
 ///
-/// Must exceed `max_reorg_depth` (100) with margin, and cover the maximum
-/// event-bridge lag so the daemon's store reconciliation stays contiguous.
-pub const DEFAULT_BLOCK_BODY_CACHE: usize = 1_000;
+/// Must exceed `max_reorg_depth` (100) and the event-bridge channel capacity
+/// (1024 in the daemon): the daemon reconciles a lagging store by replaying the
+/// chain tail, which must still be resident. 4096 is 4× the buffer.
+pub const DEFAULT_BLOCK_BODY_CACHE: usize = 4_096;
 
 /// Maximum number of off-main-chain (fork) block bodies retained in memory.
 /// Bounds connected-fork spam; lowest-cumulative-work *leaf* forks are evicted.

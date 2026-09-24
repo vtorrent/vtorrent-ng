@@ -681,6 +681,7 @@ impl BlockStore {
         &self,
         regtest: bool,
         fast_stake: bool,
+        cache: usize,
         start_height: u32,
         blocks: &[vtorrent_node::block::Block],
     ) -> Result<()> {
@@ -688,11 +689,11 @@ impl BlockStore {
             return self.rebuild_from_blocks_with_mode(blocks, regtest, fast_stake);
         }
         let mut chain = if regtest && fast_stake {
-            self.load_into_fast_regtest_chain()?
+            self.load_into_fast_regtest_chain_with_cache(cache)?
         } else if regtest {
-            self.load_into_regtest_chain()?
+            self.load_into_regtest_chain_with_cache(cache)?
         } else {
-            self.load_into_chain()?
+            self.load_into_chain_with_cache(cache)?
         };
         let expected = chain.best_height() + 1;
         if expected != start_height {
@@ -1401,18 +1402,62 @@ mod tests {
         let tail: Vec<Block> = (4..=tip)
             .map(|h| chain.get_block_at_height(h).unwrap().clone())
             .collect();
-        store.reconcile_tail(true, false, 4, &tail).unwrap();
+        store
+            .reconcile_tail(true, false, usize::MAX, 4, &tail)
+            .unwrap();
         assert_eq!(store.best_height().unwrap(), tip);
         assert!(store.get_block_at_height(tip).unwrap().is_some());
 
         // A wrong start (not store tip + 1) must be rejected, not mis-applied.
         let err = store
-            .reconcile_tail(true, false, 2, &tail)
+            .reconcile_tail(true, false, usize::MAX, 2, &tail)
             .expect_err("wrong start height must error");
         let msg = format!("{err}");
         assert!(
             msg.contains("reconcile tail start"),
             "unexpected error: {msg}"
         );
+    }
+    /// F2: when the store has diverged from the chain, a full rebuild from the
+    /// chain replaces it (the mechanism the daemon uses to heal a dropped
+    /// reorg rollback under pruning).
+    #[test]
+    fn rebuild_heals_divergent_store() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("chain.db");
+        let store = BlockStore::open(&path).unwrap();
+
+        // Chain A persisted to height 3.
+        let mut a = Chain::new_regtest().unwrap();
+        for amt in [1_000_000u64, 2_000_000, 3_000_000] {
+            a.mint_to_address("VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k", amt)
+                .unwrap();
+        }
+        for h in 1..=3u32 {
+            let block = a.get_block_at_height(h).unwrap().clone();
+            append_with_diff(&store, &a, &block, h);
+        }
+        let a_tip = a.best_hash().unwrap();
+        assert_eq!(store.best_hash().unwrap(), Some(a_tip));
+
+        // Chain B diverges (different coinbase values → different hashes).
+        let mut b = Chain::new_regtest().unwrap();
+        for amt in [9_000_000u64, 8_000_000, 7_000_000] {
+            b.mint_to_address("VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k", amt)
+                .unwrap();
+        }
+        assert_ne!(b.best_hash().unwrap(), a_tip);
+        let b_blocks: Vec<Block> = (0..=3)
+            .map(|h| b.get_block_at_height(h).unwrap().clone())
+            .collect();
+        // Divergence detection: store tip != chain tip at store height.
+        assert_ne!(
+            store.best_hash().unwrap(),
+            Some(b.block_hash_at_height(3).unwrap())
+        );
+
+        store.rebuild_from_regtest_blocks(&b_blocks).unwrap();
+        assert_eq!(store.best_height().unwrap(), 3);
+        assert_eq!(store.best_hash().unwrap(), Some(b.best_hash().unwrap()));
     }
 }
