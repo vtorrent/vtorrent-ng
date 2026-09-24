@@ -1210,3 +1210,41 @@ in `docs/mainnet-readiness.md`; the real fix is pruning in-memory block bodies
 
 Budget history: 150 MiB (original) → 180 MiB (2026-09-23) → **220 MiB
 (2026-09-24)**. See `docs/memory-observability-design.md` §7.
+
+## 2026-09-24 (later still) — deploy block-body pruning `1e254b8`
+
+Operator chose to merge and deploy `feat/block-body-pruning` immediately rather
+than after sign-off (we were only ~9 h into the current window, so the window
+reset is cheap). Merge `1e254b8`; image `vtorrent/node:1e254b8` (binary
+`c5953eb7cb5fae1598031c71c1b40baa1c291beff5bc69630bfd155bebd0d0be`),
+`--block-body-cache 4096`. Rolling recreate; node1 unlocked 16:31:14Z, staking
+resumed. Backups `.ops-backups/pruning-20260924-NSak1w/`.
+
+**Functional result — good.** All three agree at 16788, `syncing=false`,
+0 ERROR/panic. Store fallback works: `/api/v1/blockchain/block/height/5000`
+(pruned from memory) serves from disk. Bodies are capped: heights below
+tip−4096 are gone from memory, headers and indexes retained.
+
+**Memory result — level improves, rate does NOT.** RSS dropped ~13 MiB
+(136 → ~123 MiB, consistent with ~12.7k × ~1 kB bodies no longer resident),
+but the growth rate did not fall and looks *worse* for the staker:
+
+| Window | node1 (staker) | node2 (non-staker) |
+|---|---|---|
+| pre-pruning (4d1ae47, post-malloc) | ~477 kB/h | — |
+| 16:32→18:33 (this build, 2 h) | **~1455 kB/h** (declining: 1835 → 1264) | ~600 kB/h (last 30 min) |
+
+So capping bodies did **not** address the driver of the rate. The body data
+is only ~1 kB/block ≈ 60 kB/h; the observed 500–1500 kB/h is allocator churn
+(the staking full-UTXO merkle tree) plus, likely, added free-churn from
+evicting a body per block. Pruning bounds body *residency* (important for a
+long-running node — previously ~0.5 GB/yr of bodies) but the RSS *rate*
+remains dominated by the staking tree churn, still an open item (a separate
+"cache the UTXO merkle tree between blocks" change).
+
+**Budget risk.** At ~1264 kB/h from ~126 MiB, sign-off in ~6.5 days projects
+~320 MiB — over the 220 MiB budget. node2 at ~600 kB/h projects ~223 MiB
+(borderline). This deploy therefore **worsens the soak-budget outlook** even
+though it improves the long-run asymptote. Decision pending: keep (bounded
+bodies, accept rate) or roll back to `4d1ae47` (known ~477 kB/h). Window resets
+to 2026-09-24T16:31:14Z → sign-off 2026-10-01 after 16:31Z.
