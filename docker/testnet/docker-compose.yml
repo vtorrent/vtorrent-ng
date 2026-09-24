@@ -36,6 +36,16 @@ services:
       # multi-threaded staking path allocates from several threads.
       # Measured: 4 arenas/154 MiB -> 1 arena/~115 MiB, stable.
       MALLOC_ARENA_MAX: "2"
+      # Pin the mmap/trim thresholds. The staking path builds a full-UTXO
+      # merkle tree (~1.8 MiB + tree) on every attempt; glibc's *dynamic*
+      # mmap threshold rises toward 32 MiB, so those transients come from
+      # the heap and are never returned, ratcheting RSS. Pinning the
+      # threshold makes them use mmap, which the kernel reclaims on free.
+      # Measured (staking probe, 45 min): RSS 183 -> 125 MiB, growth
+      # 21,600 -> 1280 kB/h with these set. See
+      # docs/memory-observability-design.md 7.5-7.6.
+      MALLOC_MMAP_THRESHOLD_: "131072"
+      MALLOC_TRIM_THRESHOLD_: "131072"
     command:
       - --listen
       - "0.0.0.0:22526"
@@ -105,6 +115,16 @@ services:
       # multi-threaded staking path allocates from several threads.
       # Measured: 4 arenas/154 MiB -> 1 arena/~115 MiB, stable.
       MALLOC_ARENA_MAX: "2"
+      # Pin the mmap/trim thresholds. The staking path builds a full-UTXO
+      # merkle tree (~1.8 MiB + tree) on every attempt; glibc's *dynamic*
+      # mmap threshold rises toward 32 MiB, so those transients come from
+      # the heap and are never returned, ratcheting RSS. Pinning the
+      # threshold makes them use mmap, which the kernel reclaims on free.
+      # Measured (staking probe, 45 min): RSS 183 -> 125 MiB, growth
+      # 21,600 -> 1280 kB/h with these set. See
+      # docs/memory-observability-design.md 7.5-7.6.
+      MALLOC_MMAP_THRESHOLD_: "131072"
+      MALLOC_TRIM_THRESHOLD_: "131072"
     command:
       - --listen
       - "0.0.0.0:22526"
@@ -154,6 +174,16 @@ services:
       # multi-threaded staking path allocates from several threads.
       # Measured: 4 arenas/154 MiB -> 1 arena/~115 MiB, stable.
       MALLOC_ARENA_MAX: "2"
+      # Pin the mmap/trim thresholds. The staking path builds a full-UTXO
+      # merkle tree (~1.8 MiB + tree) on every attempt; glibc's *dynamic*
+      # mmap threshold rises toward 32 MiB, so those transients come from
+      # the heap and are never returned, ratcheting RSS. Pinning the
+      # threshold makes them use mmap, which the kernel reclaims on free.
+      # Measured (staking probe, 45 min): RSS 183 -> 125 MiB, growth
+      # 21,600 -> 1280 kB/h with these set. See
+      # docs/memory-observability-design.md 7.5-7.6.
+      MALLOC_MMAP_THRESHOLD_: "131072"
+      MALLOC_TRIM_THRESHOLD_: "131072"
     command:
       - --listen
       - "0.0.0.0:22526"

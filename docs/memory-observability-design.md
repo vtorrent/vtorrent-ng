@@ -427,6 +427,39 @@ the sawtooth and the slow RSS ratchet.
 3. `malloc_trim` (tested: did **not** visibly help — the probe still settled at
    ~157 MiB, because the transients recur every second).
 
+### 7.6 Fix validated — pin glibc's mmap/trim thresholds (2026-09-24)
+
+The root of the *retention* (as opposed to the churn) is glibc's **dynamic mmap
+threshold**: it rises toward 32 MiB as glibc sees large blocks freed, so the
+~1.8 MiB staking transients eventually come from the heap instead of mmap and
+are never returned to the OS.
+
+Two isolated staking probes were run head-to-head on the same data, both
+staking their own local chains (no peers, so no fleet interaction):
+
+| | Control | Treatment (`MALLOC_MMAP_THRESHOLD_=131072`, `MALLOC_TRIM_THRESHOLD_=131072`) |
+|---|---|---|
+| VmHWM (startup replay peak) | 187588 kB | 187248 kB |
+| RSS after 45 min | **183048 kB** | **125704 kB** |
+| Growth rate | ~21,600 kB/h | ~1,280 kB/h |
+
+Both peaked at the same 187 MB replay high-water mark, but only the treatment
+returned it. **RSS 58 MiB lower and 18× slower growth.**
+
+The residual ~1.3 MB/h is the *chain itself* growing: regtest-fast stakes a
+block per second (~3600 blocks/h × ~500 B/block ≈ 1.8 MB/h). On mainnet the
+stake tick is 60 s, so chain growth is ~60× lower (~30 kB/h) — negligible.
+
+**Applied** to all three nodes in `docker/testnet/docker-compose.yml`. This is a
+container env change (no code, no consensus), so it needs a fleet redeploy to
+take effect. **It does not change the live heap** — it only lets the allocator
+return freed transients, so it is safe for consensus.
+
+**Remaining, still worth doing pre-mainnet (fix 1 above):** exclude unspendable
+OP_RETURN outputs from the UTXO set. That is a consensus change (it moves
+`utxo_root`), so it needs a fresh genesis and belongs with the post-soak
+consensus batch — not urgent now that the env fix bounds RSS.
+
 ## 8. Open Questions
 
 - ~~Should `MALLOC_ARENA_MAX` be pinned?~~ **Resolved 2026-09-22.** Pinned to 2

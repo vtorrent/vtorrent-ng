@@ -176,27 +176,26 @@ actions, operator approval.
       allows an explicit value). **This did not fix the growth** — see the open
       finding below. The bound is still correct on its own merits (a 1 GiB cache
       on a 150 MiB-budget node is a misconfiguration), but it is not the cause.
-- [ ] **RSS growth (OPEN — cause identified: full-UTXO merkle tree per stake
-      attempt)** — node1 grew 117.9 MiB (09-21) → 160.4 MiB (09-23T23:56Z),
-      ~450 kB/h over 18.35 h. **A `dhat` heap profile (2026-09-24) showed live
-      heap *falling* from peak to end (192.3 → 105.5 MiB), so there is no
-      live-heap leak** — it is allocator retention of transients. **An
-      isolation probe identified staking as the driver**: non-staking probes
-      were flat/plateaued, while a staking probe sawtoothed 60–80 MiB with no
-      plateau. **Mechanism:** `attempt_stake` runs every 1 s (regtest-fast) and
-      on a kernel hit builds a **full merkle tree over the entire UTXO set**
-      (`staking.rs:275-302`), which includes the 59,375 unspendable genesis
-      OP_RETURN outputs (`chain_reorg.rs:377` inserts every output
-      unconditionally). Each attempt allocates ~1.8 MiB of leaves plus the tree
-      over 59,375 leaves; glibc retains them (`VmHWM == VmRSS`). **Candidate
-      fixes (not implemented):** (1) exclude unspendable OP_RETURN outputs from
-      the UTXO set — cleanest, also shrinks the store; (2) cache the UTXO tree
-      and update it incrementally per block; (3) `malloc_trim` — **tested, did
-      not help** (probe still settled ~157 MiB). **Not a functional failure** —
-      nodes stake and sync correctly. The redb-cache hypothesis was disproven;
-      earlier BTC-SPV and "plateau" claims were retracted. Budget raised
-      150 → 180 MiB as a stopgap. See `docs/memory-observability-design.md`
-      §7.2–7.5.
+- [x] **RSS growth — cause identified and fix validated (env only)** — node1 grew
+      to 160.4 MiB at ~450 kB/h. **A `dhat` heap profile showed no live-heap
+      leak** (live heap *fell* 192.3 → 105.5 MiB peak→end); it is allocator
+      retention. **Isolation probes identified staking as the driver**: no
+      staking probe plateaued; a staking probe sawtoothed 60–80 MiB.
+      **Mechanism:** `attempt_stake` builds a full merkle tree over the entire
+      UTXO set on every attempt (`staking.rs:275-302`), including the 59,375
+      unspendable genesis OP_RETURN outputs; glibc's *dynamic* mmap threshold
+      rose toward 32 MiB, so those ~1.8 MiB transients came from the heap and
+      were never returned. **Fix validated** head-to-head on isolated staking
+      probes: pinning `MALLOC_MMAP_THRESHOLD_=131072` +
+      `MALLOC_TRIM_THRESHOLD_=131072` held RSS at **125 MiB vs 183 MiB** and cut
+      growth **18×** (21,600 → 1,280 kB/h). Applied to
+      `docker/testnet/docker-compose.yml`; **pending redeploy** (env change, no
+      code, no consensus). RSS budget stays 180 MiB. Still worth doing
+      pre-mainnet but **no longer urgent**: exclude unspendable OP_RETURN
+      outputs from the UTXO set (consensus change — moves `utxo_root`; needs a
+      fresh genesis, post-soak consensus batch). Disproven along the way: the
+      redb-cache hypothesis; retracted: the BTC-SPV and "plateau" claims. See
+      `docs/memory-observability-design.md` §7.2–7.6.
 - [ ] **`v2.0.0-beta.3` tag** — `docs/release-notes-beta.3.md` addendum is a
       draft; no tag exists (only beta.1/beta.2). Tag after sign-off, with the
       desktop build matrix and checksums.
