@@ -1859,7 +1859,10 @@ fn test_reorg_works_after_pruning() {
     chain.set_max_reorg_depth(10);
     chain.set_block_body_cache(12);
     let (main_hashes, _) = build_coinbase_chain(&mut chain, 30);
-    assert!(chain.get_block(&main_hashes[5]).is_none(), "old body pruned");
+    assert!(
+        chain.get_block(&main_hashes[5]).is_none(),
+        "old body pruned"
+    );
 
     // Longer fork branching from height 25 (rollback depth 5 <= 10).
     let mut prev = main_hashes[25];

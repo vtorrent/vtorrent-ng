@@ -1410,6 +1410,9 @@ mod tests {
             .reconcile_tail(true, false, 2, &tail)
             .expect_err("wrong start height must error");
         let msg = format!("{err}");
-        assert!(msg.contains("reconcile tail start"), "unexpected error: {msg}");
+        assert!(
+            msg.contains("reconcile tail start"),
+            "unexpected error: {msg}"
+        );
     }
 }

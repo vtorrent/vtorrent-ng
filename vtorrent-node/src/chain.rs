@@ -500,10 +500,7 @@ impl Chain {
 
     /// Look up a transaction, falling back to the `body_source` for pruned
     /// bodies. Owned variant of [`Chain::get_transaction`].
-    pub fn get_transaction_owned(
-        &self,
-        txid: &[u8; 32],
-    ) -> Option<(Transaction, [u8; 32], u32)> {
+    pub fn get_transaction_owned(&self, txid: &[u8; 32]) -> Option<(Transaction, [u8; 32], u32)> {
         let (block_hash, tx_offset) = self.tx_index.get(txid).copied()?;
         let height = self.block_height(&block_hash)?;
         let block = self.get_block_owned(&block_hash)?;
