@@ -76,8 +76,8 @@ pub async fn get_block_height(
         .map(hex::encode)
         .unwrap_or_else(|| "0".repeat(64));
     let timestamp = chain
-        .get_block_at_height(chain.best_height())
-        .map(|b| b.header.timestamp)
+        .get_header_at_height(chain.best_height())
+        .map(|h| h.timestamp)
         .unwrap_or_else(|| now_secs() as u32);
 
     Ok(Json(BlockHeightResponse {
@@ -96,13 +96,13 @@ pub async fn get_block_by_hash(
     let height = chain
         .block_height(&hash)
         .ok_or_else(|| RpcError::NotFound(format!("Block not found at hash {}", hash_hex)))?;
-    let block = chain.get_block(&hash).ok_or_else(|| {
+    let block = chain.get_block_owned(&hash).ok_or_else(|| {
         RpcError::Internal(format!(
             "Block at height {} indexed but block data missing — store may be corrupt",
             height
         ))
     })?;
-    Ok(Json(block_response(hash, height, block)))
+    Ok(Json(block_response(hash, height, &block)))
 }
 
 /// Get an active-chain block by height.
@@ -118,13 +118,13 @@ pub async fn get_block_by_height(
             chain.best_height()
         ))
     })?;
-    let block = chain.get_block_at_height(height).ok_or_else(|| {
+    let block = chain.get_block_at_height_owned(height).ok_or_else(|| {
         RpcError::Internal(format!(
             "Block at height {} has hash but block data missing — store may be corrupt",
             height
         ))
     })?;
-    Ok(Json(block_response(hash, height, block)))
+    Ok(Json(block_response(hash, height, &block)))
 }
 
 /// Get a transaction by txid, searching the active chain first and then mempool.

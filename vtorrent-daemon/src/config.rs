@@ -103,6 +103,14 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub regtest_fast_stake: bool,
 
+    /// Number of most-recent block bodies retained in memory.
+    ///
+    /// Bounds the node's in-memory chain footprint. Older block bodies are
+    /// pruned (headers and indexes are always retained) and served on demand
+    /// from the block store. Use a very large value to keep every body.
+    #[arg(long, default_value_t = vtorrent_node::chain::DEFAULT_BLOCK_BODY_CACHE)]
+    pub block_body_cache: usize,
+
     /// Optional API key required for sensitive RPC endpoints.
     ///
     /// When set, wallet, staking, torrent, DEX, claim and broadcast endpoints

@@ -1,7 +1,7 @@
 mod chain_reorg;
 
 use crate::{
-    block::{Block, Transaction},
+    block::{Block, BlockHeader, Transaction},
     consensus::{compute_stake_modifier, validate_block_inner, validate_legacy_claim},
     error::{NodeError, Result},
     genesis::create_genesis_block,
@@ -12,7 +12,33 @@ use crate::{
 /// Supports chain reorganization (reorg) when a competing fork accumulates
 /// more cumulative work than the current main chain.
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 use vtorrent_core::time::now_timestamp_u32;
+
+/// Default number of most-recent block *bodies* retained in memory.
+///
+/// Must exceed `max_reorg_depth` (100) and the event-bridge channel capacity
+/// (1024 in the daemon): the daemon reconciles a lagging store by replaying the
+/// chain tail, which must still be resident. 4096 is 4× the buffer.
+pub const DEFAULT_BLOCK_BODY_CACHE: usize = 4_096;
+
+/// Maximum number of off-main-chain (fork) block bodies retained in memory.
+/// Bounds connected-fork spam; lowest-cumulative-work *leaf* forks are evicted.
+pub const MAX_FORK_BODIES: usize = 256;
+
+/// Source of block bodies pruned from the in-memory [`Chain`].
+///
+/// Implemented by the persistent store (which owns every block body) and set on
+/// the chain at startup by the daemon/tauri layer. Keeps `vtorrent-node` free of
+/// a dependency on the store crate. Implementations must be cheap enough not to
+/// stall the caller — the fallback is invoked while callers may hold the chain
+/// lock, so it must not perform unbounded work.
+pub trait BlockBodySource: Send + Sync {
+    /// Return the full block for `hash`, if available.
+    fn block_body(&self, hash: &[u8; 32]) -> Option<Block>;
+    /// Return the full main-chain block at `height`, if available.
+    fn block_body_at_height(&self, height: u32) -> Option<Block>;
+}
 
 /// Current Unix timestamp as u32 (valid until year 2106).
 #[allow(clippy::cast_possible_truncation)]
@@ -127,8 +153,20 @@ impl PartialEq for BlockAcceptance {
 
 /// The blockchain state.
 pub struct Chain {
-    /// All blocks indexed by hash (main chain + all known forks).
+    /// Block bodies indexed by hash (main chain + all known forks). Bounded to
+    /// the most recent `block_body_cache` heights; older bodies are pruned and
+    /// served on demand by `body_source` (see [`Chain::get_block_owned`]).
     blocks: HashMap<[u8; 32], Block>,
+    /// Headers for every known block (main chain + forks). Retained even after a
+    /// block's body is pruned, because consensus reads only header fields
+    /// (`stake_modifier`, `timestamp`, `bits`, `utxo_root`) from ancestors.
+    headers: HashMap<[u8; 32], BlockHeader>,
+    /// Maximum number of most-recent block bodies retained in `blocks`.
+    /// `usize::MAX` disables pruning (keeps every body, the pre-pruning
+    /// behaviour). Heights 0 and 1 are always retained regardless.
+    block_body_cache: usize,
+    /// Optional source for pruned bodies (usually the persistent store).
+    body_source: Option<Arc<dyn BlockBodySource>>,
     /// Block hash at each height on the main chain.
     height_index: Vec<[u8; 32]>,
     /// Main-chain transaction index: txid → (containing block hash, transaction offset).
@@ -170,6 +208,12 @@ impl Chain {
 
         let mut chain = Self {
             blocks: HashMap::new(),
+            headers: HashMap::new(),
+            // Pruning is opt-in: library/`Node::new` callers with no body source
+            // retain every body (pre-pruning behaviour). The daemon passes
+            // `DEFAULT_BLOCK_BODY_CACHE` into `load_into_*_with_cache`.
+            block_body_cache: usize::MAX,
+            body_source: None,
             height_index: Vec::new(),
             tx_index: HashMap::new(),
             utxo_set: BTreeMap::new(),
@@ -187,6 +231,7 @@ impl Chain {
         };
 
         chain.blocks.insert(genesis_hash, genesis.clone());
+        chain.headers.insert(genesis_hash, genesis.header.clone());
         chain.height_index.push(genesis_hash);
         chain.cumulative_work.insert(genesis_hash, 1);
         chain.block_heights.insert(genesis_hash, 0);
@@ -264,8 +309,8 @@ impl Chain {
             .ok_or_else(|| NodeError::Chain("Cannot mint: chain has no tip".into()))?;
         let height = self.best_height() + 1;
         let prev_timestamp = self
-            .get_block_at_height(self.best_height())
-            .map(|b| b.header.timestamp)
+            .get_header_at_height(self.best_height())
+            .map(|h| h.timestamp)
             .unwrap_or(0);
         let timestamp = now_timestamp_u32();
         let timestamp = timestamp.max(prev_timestamp.saturating_add(1));
@@ -310,8 +355,8 @@ impl Chain {
                 bits: crate::genesis::GENESIS_BITS,
                 nonce: height,
                 stake_modifier: compute_stake_modifier(
-                    self.get_block_at_height(self.best_height())
-                        .map(|b| b.header.stake_modifier)
+                    self.get_header_at_height(self.best_height())
+                        .map(|h| h.stake_modifier)
                         .unwrap_or(0),
                     &prev_hash,
                 ),
@@ -402,7 +447,10 @@ impl Chain {
         self.blocks.get(hash)
     }
 
-    /// Get a block by height (main chain only).
+    /// Get a block by height from memory (main chain only).
+    ///
+    /// Returns `None` for a pruned body; use [`Chain::get_block_at_height_owned`]
+    /// to fall back to the `body_source`.
     pub fn get_block_at_height(&self, height: u32) -> Option<&Block> {
         self.height_index
             .get(height as usize)
@@ -414,15 +462,30 @@ impl Chain {
         self.height_index.get(height as usize).copied()
     }
 
+    /// Get the retained header for a block by hash (main chain or fork).
+    pub fn get_header(&self, hash: &[u8; 32]) -> Option<&BlockHeader> {
+        self.headers.get(hash)
+    }
+
     /// Get the UTXO commitment root at a given height (main chain only).
+    ///
+    /// Reads the retained header, so it works for pruned heights without a
+    /// store round-trip.
     pub fn utxo_root_at_height(&self, height: u32) -> Option<[u8; 32]> {
-        self.get_block_at_height(height).map(|b| b.header.utxo_root)
+        self.get_header_at_height(height).map(|h| h.utxo_root)
+    }
+
+    /// Header at a main-chain height (retained for every block).
+    pub fn get_header_at_height(&self, height: u32) -> Option<&BlockHeader> {
+        self.height_index
+            .get(height as usize)
+            .and_then(|hash| self.headers.get(hash))
     }
 
     /// Current UTXO commitment root (tip's `utxo_root`).
     pub fn current_utxo_root(&self) -> Option<[u8; 32]> {
-        self.get_block_at_height(self.best_height())
-            .map(|b| b.header.utxo_root)
+        self.get_header_at_height(self.best_height())
+            .map(|h| h.utxo_root)
     }
 
     /// Look up a transaction that is currently part of the active main chain.
@@ -434,6 +497,126 @@ impl Chain {
         let block = self.blocks.get(&block_hash)?;
         let tx = block.transactions.get(tx_offset)?;
         Some((tx, block_hash, height))
+    }
+
+    /// Look up a transaction, falling back to the `body_source` for pruned
+    /// bodies. Owned variant of [`Chain::get_transaction`].
+    pub fn get_transaction_owned(&self, txid: &[u8; 32]) -> Option<(Transaction, [u8; 32], u32)> {
+        let (block_hash, tx_offset) = self.tx_index.get(txid).copied()?;
+        let height = self.block_height(&block_hash)?;
+        let block = self.get_block_owned(&block_hash)?;
+        let tx = block.transactions.get(tx_offset)?.clone();
+        Some((tx, block_hash, height))
+    }
+
+    /// Get a block body by hash, falling back to the `body_source` if the body
+    /// has been pruned from memory.
+    pub fn get_block_owned(&self, hash: &[u8; 32]) -> Option<Block> {
+        if let Some(block) = self.blocks.get(hash) {
+            return Some(block.clone());
+        }
+        self.body_source
+            .as_ref()
+            .and_then(|source| source.block_body(hash))
+    }
+
+    /// Get a main-chain block body by height, falling back to the `body_source`
+    /// if the body has been pruned from memory.
+    pub fn get_block_at_height_owned(&self, height: u32) -> Option<Block> {
+        if let Some(block) = self.get_block_at_height(height) {
+            return Some(block.clone());
+        }
+        self.body_source
+            .as_ref()
+            .and_then(|source| source.block_body_at_height(height))
+    }
+
+    /// Set how many recent block bodies to retain in memory (`usize::MAX` =
+    /// keep all). Takes effect on the next accepted block.
+    pub fn set_block_body_cache(&mut self, cache: usize) {
+        self.block_body_cache = cache;
+    }
+
+    /// Shrink the reorg-journal window. Test-only: lets body-pruning tests run
+    /// with a small cache (journal-referenced bodies are always pinned).
+    #[cfg(test)]
+    pub(crate) fn set_max_reorg_depth(&mut self, depth: u32) {
+        self.max_reorg_depth = depth;
+    }
+
+    /// Number of block bodies currently retained in memory (diagnostics/tests).
+    pub fn body_count(&self) -> usize {
+        self.blocks.len()
+    }
+
+    /// Attach a source for pruned block bodies (usually the persistent store).
+    pub fn set_body_source(&mut self, source: Arc<dyn BlockBodySource>) {
+        self.body_source = Some(source);
+    }
+
+    /// Drop block bodies outside the retention window.
+    ///
+    /// Main-chain bodies below the window are removed one height at a time
+    /// (amortized O(1) per accepted block); off-main-chain fork bodies are
+    /// bounded separately by [`MAX_FORK_BODIES`]. Headers and all index maps are
+    /// retained. Heights 0 and 1 are pinned, and any block still referenced by a
+    /// reorg journal is kept.
+    fn prune_bodies(&mut self) {
+        if self.block_body_cache != usize::MAX {
+            let len = self.height_index.len();
+            if len > self.block_body_cache {
+                let victim_height = (len - 1 - self.block_body_cache) as u32;
+                if victim_height >= 2 {
+                    if let Some(hash) = self.height_index.get(victim_height as usize).copied() {
+                        let journalled = self
+                            .journals
+                            .iter()
+                            .any(|journal| journal.block_hash == hash);
+                        if !journalled {
+                            self.blocks.remove(&hash);
+                        }
+                    }
+                }
+            }
+        }
+        self.prune_fork_bodies();
+    }
+
+    /// Number of main-chain bodies the window permits (plus pinned heights).
+    fn retained_main_bodies(&self) -> usize {
+        let len = self.height_index.len();
+        if self.block_body_cache == usize::MAX {
+            len
+        } else {
+            len.min(self.block_body_cache.max(2))
+        }
+    }
+
+    /// Evict lowest-cumulative-work fork *leaves* until the fork body count is
+    /// within [`MAX_FORK_BODIES`]. Only leaves are removed, so no stored
+    /// descendant chain is broken.
+    fn prune_fork_bodies(&mut self) {
+        let bound = self.retained_main_bodies() + MAX_FORK_BODIES;
+        while self.blocks.len() > bound {
+            let main: HashSet<[u8; 32]> = self.height_index.iter().copied().collect();
+            let has_child: HashSet<[u8; 32]> = self.parent_map.values().copied().collect();
+            let victim = self
+                .blocks
+                .keys()
+                .filter(|hash| !main.contains(*hash) && !has_child.contains(*hash))
+                .min_by_key(|hash| self.cumulative_work.get(*hash).copied().unwrap_or(u64::MAX))
+                .copied();
+            match victim {
+                Some(hash) => {
+                    self.blocks.remove(&hash);
+                    self.headers.remove(&hash);
+                    self.parent_map.remove(&hash);
+                    self.block_heights.remove(&hash);
+                    self.cumulative_work.remove(&hash);
+                }
+                None => break,
+            }
+        }
     }
 
     /// Get the UTXO for a specific output.
@@ -727,8 +910,10 @@ impl Chain {
     pub fn add_block(&mut self, block: Block) -> Result<BlockAcceptance> {
         let block_hash = block.hash();
 
-        // Duplicate check
-        if self.blocks.contains_key(&block_hash) {
+        // Duplicate check. Uses `block_heights` (the full index, retained even
+        // after a body is pruned) rather than `blocks`, so a re-received old
+        // block is still recognised as a duplicate.
+        if self.block_heights.contains_key(&block_hash) {
             return Ok(BlockAcceptance::Duplicate);
         }
 
@@ -740,16 +925,16 @@ impl Chain {
         if prev_hash == main_tip {
             // ── Happy path: extends the main chain ───────────────────────
             let height = self.best_height() + 1;
-            let prev_block = self
-                .get_block_at_height(height - 1)
+            let prev_header = self
+                .get_header_at_height(height - 1)
                 .ok_or_else(|| NodeError::Chain("Previous block not found".into()))?;
 
             validate_block_inner(
                 &block,
                 height - 1,
-                prev_block.header.timestamp,
-                prev_block.header.bits,
-                prev_block.header.stake_modifier,
+                prev_header.timestamp,
+                prev_header.bits,
+                prev_header.stake_modifier,
                 prev_hash,
                 self.allow_pow_test_blocks,
             )
@@ -816,8 +1001,10 @@ impl Chain {
             let tx_count = block.transactions.len();
             let block_timestamp = block.header.timestamp;
             self.index_block_transactions(block_hash, &block);
+            self.headers.insert(block_hash, block.header.clone());
             self.blocks.insert(block_hash, block);
             self.height_index.push(block_hash);
+            self.prune_bodies();
 
             tracing::info!(
                 height = %height,
@@ -833,22 +1020,19 @@ impl Chain {
                 utxos_removed,
                 claimed_addresses,
             })
-        } else if self.blocks.contains_key(&prev_hash) {
+        } else if self.block_heights.contains_key(&prev_hash) {
             // ── Fork: block's parent is known but not the main tip ────────
-            // Use block_heights (covers all blocks, not just main chain)
-            let parent_height = self
-                .block_heights
-                .get(&prev_hash)
-                .copied()
-                .or_else(|| self.block_height(&prev_hash))
-                .unwrap_or(0);
+            // Classify from the index (`block_heights` covers genesis too, which
+            // has no `parent_map` entry) and read the parent's header fields —
+            // never its body, which may be pruned.
+            let parent_height = self.block_heights.get(&prev_hash).copied().unwrap_or(0);
             let fork_height = parent_height + 1;
-            let parent = self.blocks.get(&prev_hash).ok_or_else(|| {
-                NodeError::Chain(format!("missing parent block {}", hex::encode(prev_hash)))
+            let parent_header = self.headers.get(&prev_hash).ok_or_else(|| {
+                NodeError::Chain(format!("missing parent header {}", hex::encode(prev_hash)))
             })?;
-            let parent_timestamp = parent.header.timestamp;
-            let parent_bits = parent.header.bits;
-            let parent_modifier = parent.header.stake_modifier;
+            let parent_timestamp = parent_header.timestamp;
+            let parent_bits = parent_header.bits;
+            let parent_modifier = parent_header.stake_modifier;
 
             // Validate against the fork parent
             validate_block_inner(
@@ -866,6 +1050,7 @@ impl Chain {
             self.cumulative_work.insert(block_hash, fork_work);
             self.parent_map.insert(block_hash, prev_hash);
             self.block_heights.insert(block_hash, fork_height);
+            self.headers.insert(block_hash, block.header.clone());
             self.blocks.insert(block_hash, block);
 
             let main_work = self.cumulative_work.get(&main_tip).copied().unwrap_or(0);
@@ -881,6 +1066,7 @@ impl Chain {
                             self.cumulative_work.remove(&block_hash);
                             self.parent_map.remove(&block_hash);
                             self.block_heights.remove(&block_hash);
+                            self.headers.remove(&block_hash);
                             return Err(error);
                         }
                     };
@@ -893,6 +1079,7 @@ impl Chain {
                     depth
                 );
 
+                self.prune_bodies();
                 Ok(BlockAcceptance::Reorg {
                     old_tip,
                     new_tip: block_hash,
@@ -909,6 +1096,7 @@ impl Chain {
                     fork_work,
                     main_work
                 );
+                self.prune_bodies();
                 Ok(BlockAcceptance::Fork {
                     fork_tip: block_hash,
                 })

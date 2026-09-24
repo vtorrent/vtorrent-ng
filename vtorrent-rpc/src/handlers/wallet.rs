@@ -652,7 +652,7 @@ pub async fn get_txout(
         ))
     })?;
     let coinbase = chain
-        .get_transaction(&txid_bytes)
+        .get_transaction_owned(&txid_bytes)
         .map(|(tx, _, _)| tx.is_coinbase() || tx.is_coinstake())
         .unwrap_or(false);
 

@@ -439,21 +439,43 @@ impl BlockStore {
     /// For large chains this is fast because we skip validation on trusted
     /// stored data.
     pub fn load_into_chain(&self) -> Result<vtorrent_node::chain::Chain> {
-        self.load_into_chain_with_mode(false, false)
+        self.load_into_chain_with_mode(false, false, usize::MAX)
     }
 
     pub fn load_into_regtest_chain(&self) -> Result<vtorrent_node::chain::Chain> {
-        self.load_into_chain_with_mode(true, false)
+        self.load_into_chain_with_mode(true, false, usize::MAX)
     }
 
     pub fn load_into_fast_regtest_chain(&self) -> Result<vtorrent_node::chain::Chain> {
-        self.load_into_chain_with_mode(true, true)
+        self.load_into_chain_with_mode(true, true, usize::MAX)
+    }
+
+    /// Load a chain bounded to the most recent `cache` block bodies. Older
+    /// bodies are pruned during replay and served from this store via
+    /// [`BlockBodySource`](vtorrent_node::chain::BlockBodySource).
+    pub fn load_into_chain_with_cache(&self, cache: usize) -> Result<vtorrent_node::chain::Chain> {
+        self.load_into_chain_with_mode(false, false, cache)
+    }
+
+    pub fn load_into_regtest_chain_with_cache(
+        &self,
+        cache: usize,
+    ) -> Result<vtorrent_node::chain::Chain> {
+        self.load_into_chain_with_mode(true, false, cache)
+    }
+
+    pub fn load_into_fast_regtest_chain_with_cache(
+        &self,
+        cache: usize,
+    ) -> Result<vtorrent_node::chain::Chain> {
+        self.load_into_chain_with_mode(true, true, cache)
     }
 
     fn load_into_chain_with_mode(
         &self,
         regtest: bool,
         fast_stake: bool,
+        cache: usize,
     ) -> Result<vtorrent_node::chain::Chain> {
         use vtorrent_node::chain::Chain;
 
@@ -471,6 +493,7 @@ impl BlockStore {
             .map_err(|e| StoreError::Corrupted(format!("chain init failed: {}", e)))
         };
         let mut chain = make_chain()?;
+        chain.set_block_body_cache(cache);
 
         // Replay blocks from height 1 (genesis is already in Chain::new()).
         // On failure the store is truncated to the last good height and
@@ -645,6 +668,65 @@ impl BlockStore {
         Ok(())
     }
 
+    /// Append a contiguous block tail `start_height..` to a store that is
+    /// already persisted up to `start_height - 1`.
+    ///
+    /// Unlike [`BlockStore::rebuild_from_blocks`] (which rebuilds from genesis),
+    /// this replays only the store's current chain and appends the missing tail,
+    /// so it works when older block bodies are no longer available in the
+    /// caller's memory (see `docs/block-body-pruning-design.md` §10, H1).
+    /// `start_height` must be exactly `best_height() + 1`, and `blocks` must be
+    /// contiguous from there.
+    pub fn reconcile_tail(
+        &self,
+        regtest: bool,
+        fast_stake: bool,
+        cache: usize,
+        start_height: u32,
+        blocks: &[vtorrent_node::block::Block],
+    ) -> Result<()> {
+        if start_height == 0 {
+            return self.rebuild_from_blocks_with_mode(blocks, regtest, fast_stake);
+        }
+        let mut chain = if regtest && fast_stake {
+            self.load_into_fast_regtest_chain_with_cache(cache)?
+        } else if regtest {
+            self.load_into_regtest_chain_with_cache(cache)?
+        } else {
+            self.load_into_chain_with_cache(cache)?
+        };
+        let expected = chain.best_height() + 1;
+        if expected != start_height {
+            return Err(StoreError::Corrupted(format!(
+                "reconcile tail start {} != store tip + 1 ({})",
+                start_height, expected
+            )));
+        }
+        for (i, block) in blocks.iter().enumerate() {
+            let h = start_height + i as u32;
+            let acceptance = chain.add_block(block.clone()).map_err(|e| {
+                StoreError::Corrupted(format!("reconcile failed at height {}: {}", h, e))
+            })?;
+            match acceptance {
+                vtorrent_node::chain::BlockAcceptance::MainChain {
+                    utxos_added,
+                    utxos_removed,
+                    claimed_addresses,
+                    ..
+                } => {
+                    self.append_block(block, h, &utxos_added, &utxos_removed, &claimed_addresses)?;
+                }
+                _ => {
+                    return Err(StoreError::Corrupted(format!(
+                        "unexpected acceptance during reconcile at height {}",
+                        h
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Replay `from..=to` through the in-memory chain only.
     fn replay_range(
         &self,
@@ -780,6 +862,16 @@ impl BlockStore {
     }
 }
 
+impl vtorrent_node::chain::BlockBodySource for BlockStore {
+    fn block_body(&self, hash: &[u8; 32]) -> Option<vtorrent_node::block::Block> {
+        self.get_block(hash).ok().flatten()
+    }
+
+    fn block_body_at_height(&self, height: u32) -> Option<vtorrent_node::block::Block> {
+        self.get_block_at_height(height).ok().flatten()
+    }
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -787,6 +879,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
     use vtorrent_node::block::{Block, BlockHeader, Transaction, TxOutput, TxType};
+    use vtorrent_node::chain::Chain;
 
     fn make_block(prev_hash: [u8; 32], height: u32) -> Block {
         let coinbase = Transaction {
@@ -1239,5 +1332,132 @@ mod tests {
         assert_eq!(store.best_height().unwrap(), 2);
         assert!(store.get_block_at_height(1).unwrap().is_some());
         assert!(store.get_block_at_height(2).unwrap().is_some());
+    }
+
+    /// Append a block plus its UTXO diff (mirrors the event bridge).
+    fn append_with_diff(store: &BlockStore, chain: &Chain, block: &Block, height: u32) {
+        let utxos_added: Vec<Utxo> = block
+            .transactions
+            .iter()
+            .flat_map(|tx| {
+                let txid = tx.txid();
+                tx.outputs
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(vout, _)| {
+                        let vout = vout as u32;
+                        chain.get_utxo(&txid, vout).map(|u| Utxo {
+                            txid,
+                            vout,
+                            value: u.value,
+                            script_pubkey: u.script_pubkey.clone(),
+                            height,
+                            timestamp: u.timestamp,
+                        })
+                    })
+                    .collect::<Vec<Utxo>>()
+            })
+            .collect();
+        let utxos_removed: Vec<([u8; 32], u32)> = block
+            .transactions
+            .iter()
+            .flat_map(|tx| tx.inputs.iter().map(|i| (i.prev_txid, i.prev_vout)))
+            .collect();
+        let claimed: Vec<String> = block
+            .transactions
+            .iter()
+            .filter_map(|tx| tx.claim_address.clone())
+            .collect();
+        store
+            .append_block(block, height, &utxos_added, &utxos_removed, &claimed)
+            .unwrap();
+    }
+
+    /// H1 regression: a lagging store is reconciled by appending only the
+    /// missing tail, not by rebuilding from genesis (which is impossible once
+    /// older bodies are pruned from the caller's memory).
+    #[test]
+    fn reconcile_tail_appends_only_missing_blocks() {
+        use vtorrent_node::chain::Chain;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("chain.db");
+        let store = BlockStore::open(&path).unwrap();
+
+        let mut chain = Chain::new_regtest().unwrap();
+        for _ in 0..6 {
+            chain
+                .mint_to_address("VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k", 1_000_000)
+                .unwrap();
+        }
+        let tip = chain.best_height();
+        assert_eq!(tip, 6);
+
+        // Persist only heights 1..=3; leave 4..=6 "lost" in the event bridge.
+        for h in 1..=3u32 {
+            let block = chain.get_block_at_height(h).unwrap().clone();
+            append_with_diff(&store, &chain, &block, h);
+        }
+        assert_eq!(store.best_height().unwrap(), 3);
+
+        let tail: Vec<Block> = (4..=tip)
+            .map(|h| chain.get_block_at_height(h).unwrap().clone())
+            .collect();
+        store
+            .reconcile_tail(true, false, usize::MAX, 4, &tail)
+            .unwrap();
+        assert_eq!(store.best_height().unwrap(), tip);
+        assert!(store.get_block_at_height(tip).unwrap().is_some());
+
+        // A wrong start (not store tip + 1) must be rejected, not mis-applied.
+        let err = store
+            .reconcile_tail(true, false, usize::MAX, 2, &tail)
+            .expect_err("wrong start height must error");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("reconcile tail start"),
+            "unexpected error: {msg}"
+        );
+    }
+    /// F2: when the store has diverged from the chain, a full rebuild from the
+    /// chain replaces it (the mechanism the daemon uses to heal a dropped
+    /// reorg rollback under pruning).
+    #[test]
+    fn rebuild_heals_divergent_store() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("chain.db");
+        let store = BlockStore::open(&path).unwrap();
+
+        // Chain A persisted to height 3.
+        let mut a = Chain::new_regtest().unwrap();
+        for amt in [1_000_000u64, 2_000_000, 3_000_000] {
+            a.mint_to_address("VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k", amt)
+                .unwrap();
+        }
+        for h in 1..=3u32 {
+            let block = a.get_block_at_height(h).unwrap().clone();
+            append_with_diff(&store, &a, &block, h);
+        }
+        let a_tip = a.best_hash().unwrap();
+        assert_eq!(store.best_hash().unwrap(), Some(a_tip));
+
+        // Chain B diverges (different coinbase values → different hashes).
+        let mut b = Chain::new_regtest().unwrap();
+        for amt in [9_000_000u64, 8_000_000, 7_000_000] {
+            b.mint_to_address("VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k", amt)
+                .unwrap();
+        }
+        assert_ne!(b.best_hash().unwrap(), a_tip);
+        let b_blocks: Vec<Block> = (0..=3)
+            .map(|h| b.get_block_at_height(h).unwrap().clone())
+            .collect();
+        // Divergence detection: store tip != chain tip at store height.
+        assert_ne!(
+            store.best_hash().unwrap(),
+            Some(b.block_hash_at_height(3).unwrap())
+        );
+
+        store.rebuild_from_regtest_blocks(&b_blocks).unwrap();
+        assert_eq!(store.best_height().unwrap(), 3);
+        assert_eq!(store.best_hash().unwrap(), Some(b.best_hash().unwrap()));
     }
 }
