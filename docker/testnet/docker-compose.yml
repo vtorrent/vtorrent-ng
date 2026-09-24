@@ -15,7 +15,7 @@ name: vtorrent-testnet
 
 services:
   node1:
-    image: vtorrent/node:4d1ae47
+    image: vtorrent/node:1e254b8
     cap_add:
       - NET_ADMIN
       - NET_RAW
@@ -57,6 +57,8 @@ services:
       - /data/node1
       - --regtest
       - --regtest-fast-stake
+      - --block-body-cache
+      - "4096"
       - --isolated
       - --btc-regtest
       - --btc-peer
@@ -94,7 +96,7 @@ services:
     restart: unless-stopped
 
   node2:
-    image: vtorrent/node:4d1ae47
+    image: vtorrent/node:1e254b8
     cap_add:
       - NET_ADMIN
       - NET_RAW
@@ -139,6 +141,8 @@ services:
       - --no-dht
       - --regtest
       - --regtest-fast-stake
+      - --block-body-cache
+      - "4096"
       - --isolated
       - --log-level
       - info
@@ -153,7 +157,7 @@ services:
     restart: unless-stopped
 
   node3:
-    image: vtorrent/node:4d1ae47
+    image: vtorrent/node:1e254b8
     cap_add:
       - NET_ADMIN
       - NET_RAW
@@ -198,6 +202,8 @@ services:
       - --no-dht
       - --regtest
       - --regtest-fast-stake
+      - --block-body-cache
+      - "4096"
       - --isolated
       - --log-level
       - info
