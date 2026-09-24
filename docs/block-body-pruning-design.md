@@ -83,6 +83,11 @@ so a body miss degrades gracefully (fee/sent shows 0). Genesis must be pinned.
 
 ## 4. Design
 
+> **Revised by §10 (adversarial review).** Where this section says "prune
+> main-chain bodies below tip-K", the shipped rule is broader: prune **all**
+> block bodies (main + fork) by height, **pin heights 0–1**, and **cap retained
+> forks**. See the Revised invariants in §10.
+
 **Keep, for every known block:** header + the existing index fields. Add
 `headers: HashMap<[u8;32], BlockHeader>` (all blocks + forks) so consensus
 never needs a body. `height_index`, `parent_map`, `cumulative_work`,
@@ -173,6 +178,15 @@ allocator, not the *rate* driver. Two separate post-soak items:
   peak RSS bounded (no full-body retention).
 - **Regression**: `cargo test -p vtorrent-node` (`chain_tests.rs`, reorg tests)
   pass with pruning enabled and with `K=0`.
+- **Event-bridge reconciliation** (H1): with a store truncated to height `h < tip`
+  and pruning on, the lag path must reconcile contiguously to `tip` — or fail
+  loudly, never write a gappy store.
+- **Re-received pruned block** (H3): after pruning, a duplicate of an old block
+  is still reported `Duplicate`, not orphan.
+- **Fork cap** (H2): spam connected forks at the tip; retained bodies/maps stay
+  bounded.
+- **Lock hold** (H8): `get_recent_transactions` does not perform store I/O while
+  holding the chain lock (assert via a blocking/instrumented `BlockBodySource`).
 
 ## 9. Risks / open questions
 
@@ -191,7 +205,131 @@ allocator, not the *rate* driver. Two separate post-soak items:
 - **`K` sizing**: 1000 covers the 100-deep reorg bound with margin; larger `K`
   only shifts the plateau, it does not change the asymptote.
 
-## 10. Non-goals
+## 10. Adversarial review (2026-09-24) — findings and required revisions
+
+Result: the core claim (no consensus path needs an old body) **holds**, but the
+design as first drafted **does not ship** — H1 is a blocker and H2–H4 are high.
+Severity-ranked; each cites the code that forces it.
+
+### H1 — BLOCKER: event-bridge store reconciliation assumes memory is complete
+
+`vtorrent-daemon/src/main.rs:529-540` rebuilds the store from
+`(0..=chain.best_height()).filter_map(|h| chain.get_block_at_height(h))` and
+calls `rebuild_from_blocks`. That function assigns **height = Vec index** and
+requires a **contiguous genesis→tip** list
+(`vtorrent-store/src/store.rs:621,633`). With pruning, `filter_map` drops pruned
+heights; the gap makes `add_block` reject the next block as an orphan, the
+rebuild errors, and the store stays behind — **the exact recovery this path
+exists for is broken.** Since the path only runs because the store *is* behind,
+the store fallback cannot save it.
+
+Required: reconcile only the missing **tail** (`store.best_height()+1 ..= tip`),
+assert contiguity, and require `block_body_cache >= max event-bridge lag`
+(hard error otherwise — never a silent gappy rebuild). Or persist blocks
+synchronously so the store never lags. Must land before pruning ships.
+
+### H2 — HIGH: connected-fork bodies (and maps) have no cap
+
+Pruning "main-chain bodies below tip-K" leaves every `BlockAcceptance::Fork`
+body in `blocks` forever (`chain.rs:869`). `Chain` has **no** fork cap — only
+`MAX_ORPHAN_BLOCKS=64` for *unconnected* orphans in the node layer
+(`node/mod.rs:55`). High-height fork spam (parent = tip) is unbounded, and
+`parent_map` / `cumulative_work` / `block_heights` grow with it.
+
+Required: (a) prune bodies by **block height** for *all* blocks, main + fork;
+(b) add a count/bytes cap on retained forks, evicting lowest-cumulative-work
+forks and removing their descending map entries. (b) is partly pre-existing
+growth, but pruning must not claim to bound memory while forks do not.
+
+### H3 — HIGH: pruning breaks duplicate/orphan classification
+
+`add_block` uses `self.blocks.contains_key(...)` for the duplicate check
+(`chain.rs:731`) and the fork-parent test (`chain.rs:836`). After pruning, a
+re-received old block is not detected as a duplicate, and its parent body is
+gone, so it is misclassified as an orphan (`chain.rs:915`).
+
+Required: classify from the retained index — duplicate iff
+`block_heights.contains_key(hash)`, fork-parent iff
+`parent_map.contains_key(prev_hash)`. Read a body only where it is genuinely
+needed.
+
+### H4 — HIGH: consensus-adjacent body read at height 1
+
+Stake-age validation reads the height-1 block's transactions to detect the
+bootstrap-claim UTXO (`chain_reorg.rs:411`). It is safe only because tip ≫ K by
+the time pruning activates (`staked.height == 1` ⟹ tip ≤ 2). Make it explicit:
+pin heights 0–1 (H5), or gate the lookup behind `staked.height == 1`.
+
+### H5 — MEDIUM: genesis (and height 1) must be pinned
+
+`genesis_block()` `.expect()`s the body (`chain.rs:574-578`); RPC and tests call
+`get_block_at_height(0)` (`swap_recovery.rs:51`, `server_tests.rs:496`).
+Invariant: **never prune heights 0 and 1**; pruning starts at height ≥ 2.
+
+### H6 — MEDIUM: header-only accessors must not go through bodies
+
+`utxo_root_at_height` (`chain.rs:419`) and the stake-modifier reads
+(`chain.rs:313`) currently call `get_block_at_height`. They must read the kept
+`headers` map, else old heights trigger store I/O or return `None`. This is a
+primary reason `headers` exists.
+
+### H7 — MEDIUM: borrowed API blocks the store fallback
+
+`get_block`, `get_block_at_height`, `get_transaction`, `resolve_output` return
+borrows (`&Block`, `&Transaction`, `&TxOutput`) and cannot serve an owned store
+body. Add owned-returning variants (or clone at the boundary — `Block`,
+`Transaction`, `TxOutput` are `Clone`, `block.rs:6,18,27,237,278`). Pin the
+exact surface before coding.
+
+### H8 — MEDIUM: fallback does blocking disk I/O under the chain lock
+
+RPC handlers hold `Arc<Mutex<Chain>>` across lookups. `get_recent_transactions`
+scans up to `MAX_SCAN_BLOCKS = 200_000` heights (`chain.rs:643`) and would hit
+the store per height — a multi-hundred-thousand-read stall that blocks block
+processing and staking. Required: bound the scan to the in-memory window, or
+snapshot the needed hashes under the lock and do store reads outside it.
+
+### H9 — LOW: history/reward scans truncate at the prune boundary
+
+`get_recent_transactions` (`chain.rs:601`, `None => break`) and the
+staking-reward scans (`handlers/staking.rs:213`, `tauri/commands/staking.rs:176`;
+each capped at 5,000 blocks) stop at the first missing body. With K=1000 they
+cover only the last ~1000 blocks. Accept and document, or add a store-backed
+path.
+
+### H10 — LOW: swap reconciliation silently skips pruned heights
+
+`swap_reconciliation.rs:176-183` uses `find_map` with `?`, so a missing body is
+skipped rather than an error — but an old funding block will not be found.
+Verify the cache window (K=1000 ≈ 4+ days at 60 s blocks) exceeds the swap
+funding→recovery horizon.
+
+### H11 — NOTE: startup wiring order
+
+`load_into_chain` returns a pruned `Chain` with no body source; any lookup of a
+pruned height before the source is set returns `None`. Wire the source in the
+same construction step, and audit non-daemon callers (CLI/tests) that load and
+then query old heights.
+
+### Confirmed safe (no change needed)
+
+- Reorg depth is hard-bounded at `max_reorg_depth = 100` by the journal check
+  (`chain_reorg.rs:525-530`); rollback/apply reads stay inside the body window.
+- `apply_block_journaled` needs only the parent's `stake_modifier` header field;
+  input/reward validation uses the `utxo_set`.
+- `Chain` has no `Clone`/`Serialize` derive, so adding
+  `Arc<dyn BlockBodySource + Send + Sync>` is safe.
+
+### Revised invariants (supersede §4/§5 wording where they differ)
+
+1. Never prune heights 0–1 (H5, H4).
+2. Prune bodies by height for all blocks (main + fork); cap retained forks (H2).
+3. Classify duplicate/orphan/fork from the index maps, never from `blocks` (H3).
+4. Header accessors read `headers` (H6).
+5. Reconcile the store from its own tail, contiguous, with cache ≥ lag (H1).
+6. No store I/O while holding the chain lock (H8).
+
+## 11. Non-goals
 
 - No consensus change, no genesis/Snapshot change, no store-schema change.
 - Does not shrink the `utxo_set` or the per-block index maps (those are needed
@@ -199,7 +337,7 @@ allocator, not the *rate* driver. Two separate post-soak items:
 - Does not implement the staking-tree cache or OP_RETURN exclusion (§6).
 - No fleet deploy until after sign-off.
 
-## 11. References
+## 12. References
 
 - `vtorrent-node/src/chain.rs:129` `Chain`, `:401` `get_block`, `:406`
   `get_block_at_height`, `:431` `get_transaction`, `:574` `genesis_block`,
