@@ -446,9 +446,9 @@ staking their own local chains (no peers, so no fleet interaction):
 Both peaked at the same 187 MB replay high-water mark, but only the treatment
 returned it. **RSS 58 MiB lower and 18× slower growth.**
 
-The residual ~1.3 MB/h is the *chain itself* growing: regtest-fast stakes a
-block per second (~3600 blocks/h × ~500 B/block ≈ 1.8 MB/h). On mainnet the
-stake tick is 60 s, so chain growth is ~60× lower (~30 kB/h) — negligible.
+The residual ~1.3 MB/h was initially attributed to chain growth with the
+assumption that regtest-fast stakes a block per second. **That assumption was
+wrong — see §7.7**, which corrects it and reports the fleet result.
 
 **Applied** to all three nodes in `docker/testnet/docker-compose.yml`. This is a
 container env change (no code, no consensus), so it needs a fleet redeploy to
@@ -459,6 +459,44 @@ return freed transients, so it is safe for consensus.
 OP_RETURN outputs from the UTXO set. That is a consensus change (it moves
 `utxo_root`), so it needs a fresh genesis and belongs with the post-soak
 consensus batch — not urgent now that the env fix bounds RSS.
+
+### 7.7 Fleet result — level fixed, rate is chain-proportional (2026-09-24)
+
+The env fix was deployed to the fleet (env-only rolling recreate, same image
+`4d1ae47`). Over a 70-minute steady-state window (07:30–08:40Z, 59 blocks/h):
+
+| | Pre-fix | Post-fix |
+|---|---|---|
+| node1 RSS level | ~163 MiB | **~133 MiB** |
+| Steady-state rate | ~450 kB/h | **~477 kB/h** |
+
+So the tunables returned the **30 MiB startup-replay transient** (the level win
+the head-to-head probe predicted) but left the **steady-state rate unchanged**.
+At 477 kB/h ÷ 59 blocks = **~8 kB per block** — the growth is chain-proportional,
+i.e. the in-memory `Chain` retaining every block plus allocator overhead on that
+churn. Staking is what exercises it (the merkle-tree churn aggravates
+fragmentation), but the driver of the *rate* is the unbounded in-memory chain.
+
+Two corrections to §7.6 follow:
+
+- **The regtest-fast block rate is ~60/h, not ~3600/h.** `attempt_stake` returns
+  early while `now <= best_timestamp + TARGET_BLOCK_TIME` (60 s), so the 1 s
+  stake tick only *checks*; a block is produced at most once per 60 s — the same
+  rate as mainnet. Chain growth is therefore **not** 60× lower on mainnet; it is
+  ~477 kB/h on both.
+- **The probe's "~1.3 MB/h residual ≈ chain growth" was wrong**: over 45 min a
+  60/h chain adds ~45 blocks, nowhere near 1 MB. The residual was the same
+  per-block churn the fleet shows, just at a lower level.
+
+**Consequence for the window.** At 477 kB/h from ~133 MiB, the 180 MiB budget is
+breached in ~4.5 days; sign-off is ~6 days out, projecting ~197 MiB. The env fix
+helps (lower level, longer headroom) but **does not carry the 7-day window**.
+
+**Real fix (pre-mainnet, now the top memory item):** bound the in-memory chain.
+Keep the full index (heights, parents, cumulative work, tx index) but **prune
+old block bodies**, or move block bodies/index to the store. That is the only
+fix for unbounded chain-proportional growth. Tracked in
+`docs/mainnet-readiness.md`.
 
 ## 8. Open Questions
 

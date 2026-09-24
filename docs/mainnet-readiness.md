@@ -176,26 +176,33 @@ actions, operator approval.
       allows an explicit value). **This did not fix the growth** — see the open
       finding below. The bound is still correct on its own merits (a 1 GiB cache
       on a 150 MiB-budget node is a misconfiguration), but it is not the cause.
-- [x] **RSS growth — cause identified and fix validated (env only)** — node1 grew
+- [ ] **Block bodies stay in memory forever — the actual RSS-growth fix** —
+      **top open memory item.** The node holds every `Block` in the in-memory
+      `Chain` (plus tx index, heights, parents, cumulative work). Post-deploy
+      measurement: **~477 kB/h ÷ 59 blocks/h = ~8 kB per block, unbounded.**
+      Fix: keep the full index but **prune old block bodies**, or move bodies /
+      the tx index to the store. Only then is RSS flat for a long-running node.
+      See `docs/memory-observability-design.md` §7.7.
+- [x] **RSS growth — startup transient fixed (env only), deployed** — node1 grew
       to 160.4 MiB at ~450 kB/h. **A `dhat` heap profile showed no live-heap
       leak** (live heap *fell* 192.3 → 105.5 MiB peak→end); it is allocator
       retention. **Isolation probes identified staking as the driver**: no
       staking probe plateaued; a staking probe sawtoothed 60–80 MiB.
       **Mechanism:** `attempt_stake` builds a full merkle tree over the entire
-      UTXO set on every attempt (`staking.rs:275-302`), including the 59,375
-      unspendable genesis OP_RETURN outputs; glibc's *dynamic* mmap threshold
-      rose toward 32 MiB, so those ~1.8 MiB transients came from the heap and
-      were never returned. **Fix validated** head-to-head on isolated staking
-      probes: pinning `MALLOC_MMAP_THRESHOLD_=131072` +
-      `MALLOC_TRIM_THRESHOLD_=131072` held RSS at **125 MiB vs 183 MiB** and cut
-      growth **18×** (21,600 → 1,280 kB/h). Applied to
-      `docker/testnet/docker-compose.yml`; **pending redeploy** (env change, no
-      code, no consensus). RSS budget stays 180 MiB. Still worth doing
-      pre-mainnet but **no longer urgent**: exclude unspendable OP_RETURN
+      UTXO set (`staking.rs:275-302`), including the 59,375 unspendable genesis
+      OP_RETURN outputs; glibc's *dynamic* mmap threshold rose toward 32 MiB, so
+      those ~1.8 MiB transients came from the heap and were never returned.
+      Pinning `MALLOC_MMAP_THRESHOLD_=131072` + `MALLOC_TRIM_THRESHOLD_=131072`
+      was validated head-to-head (RSS 125 vs 183 MiB) and **deployed to all
+      three nodes 2026-09-24** (env-only rolling recreate, same image).
+      **Fleet result: level 163 → 133 MiB (startup transient returned), but the
+      steady-state rate was unchanged at ~477 kB/h** — see the item above; the
+      tunables do not bound the chain-proportional growth. RSS budget stays
+      180 MiB. Also still worth doing pre-mainnet: exclude unspendable OP_RETURN
       outputs from the UTXO set (consensus change — moves `utxo_root`; needs a
       fresh genesis, post-soak consensus batch). Disproven along the way: the
       redb-cache hypothesis; retracted: the BTC-SPV and "plateau" claims. See
-      `docs/memory-observability-design.md` §7.2–7.6.
+      `docs/memory-observability-design.md` §7.2–7.7.
 - [ ] **`v2.0.0-beta.3` tag** — `docs/release-notes-beta.3.md` addendum is a
       draft; no tag exists (only beta.1/beta.2). Tag after sign-off, with the
       desktop build matrix and checksums.

@@ -1149,3 +1149,43 @@ were tested and disproven/retracted.
 
 **Peak vs steady state.** The budget is stated against **RSS**. node1's peak
 `VmHWM` is 188.9 MiB, above the new 180 MiB figure; it is tracked separately.
+
+## 2026-09-24 — redeploy with malloc mmap/trim tunables (RSS level fix)
+
+Operator-approved rolling redeploy to apply the validated allocator fix
+(`MALLOC_MMAP_THRESHOLD_=131072`, `MALLOC_TRIM_THRESHOLD_=131072`). Same image
+`vtorrent/node:4d1ae47`; **env-only change**, no new binary. Followers first,
+node1 last with `VTORRENT_WALLET_PASSPHRASE_FILE` set explicitly. Backups to
+`.ops-backups/malloc-tune-20260924-DN0zyQ/` (0700).
+
+- node3 stop/start, replayed to tip, 0 errors. node2 same. node1 replayed,
+  wallet auto-unlocked at 06:58:51Z, staking resumed.
+- All three agree at height 16230; `syncing=false`; 0 ERROR/panic on any node.
+
+**Result — level down, rate unchanged.** Over a 70-minute steady-state window
+(07:30–08:40Z):
+
+| | Pre-fix | Post-fix |
+|---|---|---|
+| node1 RSS level | ~163 MiB | **~133 MiB** |
+| Steady-state rate | ~450 kB/h | **~477 kB/h** |
+| Blocks produced | — | 59/h (~61 s) |
+
+The tunables returned the 30 MiB startup-replay transient (the level win the
+head-to-head probe predicted), **but did not change the steady-state rate.**
+At 477 kB/h / 59 blocks = **~8 kB per block — the growth is chain-proportional**,
+i.e. the in-memory `Chain` retaining every block and index, plus allocator
+overhead on that churn. Not the staking transient alone.
+
+**Consequence.** At 477 kB/h from ~133 MiB, the 180 MiB budget is breached in
+~4.5 days; sign-off is ~6 days out, projecting ~197 MiB. The fix helps but does
+not carry the window on its own.
+
+**Next (real fix, pre-mainnet):** bound the in-memory chain — keep the full
+index but prune old block bodies, or move the block/tx index to the store.
+That is the only fix for unbounded chain-proportional growth. See
+`docs/memory-observability-design.md` §7.6–7.7.
+
+**Soak impact.** Fifth interruption. Window resets to the first post-redeploy
+stake at `2026-09-24T06:58:52Z`. Earliest sign-off is now **2026-10-01 after
+06:58Z**.
