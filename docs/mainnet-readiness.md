@@ -176,21 +176,27 @@ actions, operator approval.
       allows an explicit value). **This did not fix the growth** — see the open
       finding below. The bound is still correct on its own merits (a 1 GiB cache
       on a 150 MiB-budget node is a misconfiguration), but it is not the cause.
-- [ ] **RSS growth (OPEN — allocator retention, not a live-object leak)** —
-      node1 grew 117.9 MiB (09-21) → 160.4 MiB (09-23T23:56Z), ~450 kB/h over
-      18.35 h. **A `dhat` heap profile (2026-09-24) showed live heap *falling*
-      from peak to end (192.3 → 105.5 MiB), so there is no live-heap leak.**
-      Process RSS (196 MiB) exceeded live heap by ~90 MiB — that gap is
-      allocator retention/fragmentation (`VmHWM == VmRSS`: RSS never shrinks).
-      The large transient peak during startup/replay ratchets the RSS
-      high-water mark. **Not a functional failure** — nodes stake and sync
-      correctly. **The redb-cache hypothesis was tested and disproven**
-      (redeployed on `vtorrent/node:4d1ae47` with the cache bounded to 64 MiB;
-      growth continued). An earlier BTC-SPV claim and an earlier "plateau"
-      claim were both **retracted**. The budget was raised 150 → 180 MiB as a
-      stopgap. Next: sample the live-heap-vs-RSS gap over 24 h to confirm
-      fragmentation; if so, `malloc_trim` or a different allocator is the fix.
-      See `docs/memory-observability-design.md` §7.2–7.4.
+- [ ] **RSS growth (OPEN — cause identified: full-UTXO merkle tree per stake
+      attempt)** — node1 grew 117.9 MiB (09-21) → 160.4 MiB (09-23T23:56Z),
+      ~450 kB/h over 18.35 h. **A `dhat` heap profile (2026-09-24) showed live
+      heap *falling* from peak to end (192.3 → 105.5 MiB), so there is no
+      live-heap leak** — it is allocator retention of transients. **An
+      isolation probe identified staking as the driver**: non-staking probes
+      were flat/plateaued, while a staking probe sawtoothed 60–80 MiB with no
+      plateau. **Mechanism:** `attempt_stake` runs every 1 s (regtest-fast) and
+      on a kernel hit builds a **full merkle tree over the entire UTXO set**
+      (`staking.rs:275-302`), which includes the 59,375 unspendable genesis
+      OP_RETURN outputs (`chain_reorg.rs:377` inserts every output
+      unconditionally). Each attempt allocates ~1.8 MiB of leaves plus the tree
+      over 59,375 leaves; glibc retains them (`VmHWM == VmRSS`). **Candidate
+      fixes (not implemented):** (1) exclude unspendable OP_RETURN outputs from
+      the UTXO set — cleanest, also shrinks the store; (2) cache the UTXO tree
+      and update it incrementally per block; (3) `malloc_trim` — **tested, did
+      not help** (probe still settled ~157 MiB). **Not a functional failure** —
+      nodes stake and sync correctly. The redb-cache hypothesis was disproven;
+      earlier BTC-SPV and "plateau" claims were retracted. Budget raised
+      150 → 180 MiB as a stopgap. See `docs/memory-observability-design.md`
+      §7.2–7.5.
 - [ ] **`v2.0.0-beta.3` tag** — `docs/release-notes-beta.3.md` addendum is a
       draft; no tag exists (only beta.1/beta.2). Tag after sign-off, with the
       desktop build matrix and checksums.

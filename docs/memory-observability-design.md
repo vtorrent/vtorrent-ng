@@ -388,6 +388,45 @@ live-heap-vs-RSS gap over 24 h on the fleet (or a long-running probe): if the
 gap grows, it is fragmentation and `malloc_trim` is the fix; if the gap is flat,
 the earlier fleet growth was transient ratcheting that has since stopped.
 
+### 7.5 Staking is the driver; full-UTXO merkle tree per attempt (2026-09-24)
+
+A final isolation probe added the one variable never tested — **staking** — to a
+peers+BTC probe. It behaved completely differently from every non-staking probe:
+
+| Probe | Behaviour |
+|---|---|
+| Isolated (no peers/BTC/staking) | flat, 0 kB/h |
+| Peers only | ~91 kB/h, then flat |
+| Peers + BTC | plateaued at 152032 kB |
+| **Peers + BTC + staking** | **sawtooth: 146896 → 225700 → 159268 → 195952 kB** |
+
+The staking probe swings 60–80 MiB with no plateau. **Staking is the driver.**
+
+**Mechanism.** `Node::attempt_stake` runs every `stake_tick_secs` (1 s under
+`--regtest-fast-stake`; `TARGET_BLOCK_TIME` = 60 s otherwise). On a kernel hit it
+calls `StakingEngine::build_from_kernel_with_proof` (`staking.rs:275`), which
+builds a **full merkle tree over the entire UTXO set on every attempt**:
+
+- `staking.rs:292` — `utxo_leaves: Vec<[u8; 32]>` over `ordered_utxos` (the whole set)
+- `staking.rs:302` — `ProofMerkleTree::build(&utxo_leaves)`
+- `staking.rs:854`/`897` — `chain.get_utxo_set().values().cloned().collect()`
+
+The UTXO set contains the **59,375 genesis distribution outputs**
+(`chain_reorg.rs:377` inserts every output unconditionally, including the
+OP_RETURN ones that `is_stakeable` excludes). So each attempt allocates a
+~1.8 MiB leaf vector plus the full tree over 59,375 leaves, plus a full
+`Vec<Utxo>` clone. glibc retains these transients (`VmHWM == VmRSS`), producing
+the sawtooth and the slow RSS ratchet.
+
+**Candidate fixes (not yet implemented):**
+1. **Do not insert unspendable OP_RETURN outputs into the UTXO set** — they can
+   never be spent or staked, so they only bloat every tree build. This is the
+   cleanest fix and also shrinks the store.
+2. **Cache the UTXO merkle tree** and update it incrementally per block instead
+   of rebuilding per attempt.
+3. `malloc_trim` (tested: did **not** visibly help — the probe still settled at
+   ~157 MiB, because the transients recur every second).
+
 ## 8. Open Questions
 
 - ~~Should `MALLOC_ARENA_MAX` be pinned?~~ **Resolved 2026-09-22.** Pinned to 2
