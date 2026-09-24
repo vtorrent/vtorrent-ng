@@ -498,8 +498,8 @@ helps (lower level, longer headroom) but **does not carry the 7-day window**.
 **Real fix (pre-mainnet, now the top memory item):** bound the in-memory chain.
 Keep the full index (heights, parents, cumulative work, tx index) but **prune
 old block bodies**, or move block bodies/index to the store. That is the only
-fix for unbounded chain-proportional growth. Tracked in
-`docs/mainnet-readiness.md`.
+fix for unbounded chain-proportional growth. Design drafted in
+`docs/block-body-pruning-design.md`; tracked in `docs/mainnet-readiness.md`.
 
 ## 8. Open Questions
 

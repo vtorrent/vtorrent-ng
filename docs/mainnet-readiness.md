@@ -182,7 +182,10 @@ actions, operator approval.
       measurement: **~477 kB/h ÷ 59 blocks/h = ~8 kB per block, unbounded.**
       Fix: keep the full index but **prune old block bodies**, or move bodies /
       the tx index to the store. Only then is RSS flat for a long-running node.
-      See `docs/memory-observability-design.md` §7.7.
+      Design drafted: `docs/block-body-pruning-design.md` (keep headers + recent
+      `K=1000` bodies, store fallback; consensus-safe — no validation path reads
+      a body older than `max_reorg_depth`). See
+      `docs/memory-observability-design.md` §7.7.
 - [x] **RSS growth — startup transient fixed (env only), deployed** — node1 grew
       to 160.4 MiB at ~450 kB/h. **A `dhat` heap profile showed no live-heap
       leak** (live heap *fell* 192.3 → 105.5 MiB peak→end); it is allocator
