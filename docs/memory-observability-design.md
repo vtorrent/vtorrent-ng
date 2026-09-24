@@ -187,12 +187,11 @@ soak sign-off. Alerts can be added post-soak (e.g. `>250MiB for 10m`).
 
 - Process RSS: <180 MiB per node over 7 days at regtest stake rate (60s blocks,
   4 UTXOs) — compare with `soak-status.sh` baseline ~99/71/70 MiB at 06:07Z.
-  Raised from 150 MiB on 2026-09-23: node1's staker plateaus at ~156.5 MiB
-  (flat 33+ min) after a decelerating climb, so 150 MiB was too tight. This is
-  an **RSS** budget; node1's peak `VmHWM` is 188.9 MiB and is tracked
-  separately. **Provisional** — boundedness is not yet confirmed (see §7.3);
-  if RSS is still climbing at the 24 h check, treat this as a leak, not a
-  budget to raise again.
+  Raised from 150 MiB on 2026-09-23 to fit node1's observed level. **This raise
+  does not solve the growth**: node1 is still climbing ~450 kB/h and would
+  breach 180 MiB in ~2.2 days (projecting ~222 MiB at sign-off). The raise is a
+  stopgap; the underlying growth is an open finding (§7.3). This is an **RSS**
+  budget; node1's peak `VmHWM` is 188.9 MiB and is tracked separately.
 - Container working set must not diverge >10% from process RSS (indicates leaks
   outside daemon).
 - No expected throughput regression; bench-gate `scripts/bench-gate.sh` must
@@ -313,16 +312,29 @@ is **not** established as the cause.
 replay, the store, and the RPC layer do not grow on their own. Beyond that the
 experiment is inconclusive — **no probe reproduced the fleet's rate.**
 
-**Fleet behaviour is decelerating and may be bounded.** node1 grew
-117.9 MiB (09-21) → 131.5 → 144.8 → 152.7 MiB (09-23), but the rate fell
-(726 → 594 → ~456 kB/h) and it has since **plateaued at ~156.5 MiB, flat for
-33+ minutes**. That is the shape of a bounded high-water mark (allocator arenas
-plus caches reaching steady state), not necessarily an unbounded leak.
+**Fleet behaviour is sustained growth, not a plateau.** An earlier version of
+this section called node1's RSS a "bounded high-water mark" based on a
+33-minute flat window (14:57→15:33Z). **That was wrong** — the window was a
+lull, and growth resumed. Measured over 18.35 h post-redeploy:
+
+| Interval | Rate |
+|---|---|
+| 05:35 → 08:29 | 574 kB/h |
+| 08:29 → 09:25 | 527 kB/h |
+| 09:25 → 14:57 | 385 kB/h |
+| 14:57 → 15:33 | 7 kB/h (lull) |
+| 15:33 → 23:31 | 479 kB/h |
+| 23:31 → 23:56 | 355 kB/h |
+| **05:35 → 23:56 overall** | **~450 kB/h** |
+
+node1 reached 160.4 MiB by 23:56Z and is still climbing. At ~450 kB/h the
+180 MiB budget is breached in ~2.2 days, projecting ~222 MiB at sign-off. **The
+growth is real and sustained; the budget raise does not solve it.**
 
 **Next step:** re-run the isolation probes with a warmup-discard period (measure
-only after RSS is flat for 10 min), and run the fleet comparison over a full
-24 h to decide bounded-vs-unbounded. A `dhat`-gated build remains the fallback.
-This is an **open finding**; do not cite the retracted BTC claim.
+only after RSS is flat for 10 min) and run the fleet comparison over a full
+24 h. A `dhat`-gated build remains the fallback. This is an **open finding**; do
+not cite the retracted BTC claim or the retracted plateau claim.
 
 ## 8. Open Questions
 
