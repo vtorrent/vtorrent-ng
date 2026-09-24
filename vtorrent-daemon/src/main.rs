@@ -44,8 +44,21 @@ use vtorrent_store::store::BlockStore;
 
 // ─── Entry Point ──────────────────────────────────────────────────────────────
 
+/// Heap profiler, active only under the `heap-profile` feature.
+///
+/// Writes `dhat-heap.json` on exit. Never enabled in release builds; used to
+/// locate the sustained RSS growth (see `docs/memory-observability-design.md`
+/// §7.3). The global allocator must be installed for the whole process, so the
+/// guard is held for the lifetime of `main`.
+#[cfg(feature = "heap-profile")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    #[cfg(feature = "heap-profile")]
+    let _profiler = dhat::Profiler::new_heap();
+
     let cli = Cli::parse();
 
     // Initialise structured logging

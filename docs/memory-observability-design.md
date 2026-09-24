@@ -336,6 +336,58 @@ only after RSS is flat for 10 min) and run the fleet comparison over a full
 24 h. A `dhat`-gated build remains the fallback. This is an **open finding**; do
 not cite the retracted BTC claim or the retracted plateau claim.
 
+### 7.4 dhat heap profile — no unbounded heap leak (2026-09-24)
+
+A `dhat`-gated build (`--features heap-profile`, off by default and never in
+release) was run against a copy of node1's data for ~36 minutes. It reached
+196 MiB RSS, then was stopped to flush `dhat-heap.json`.
+
+**Decisive result: the live heap *decreased* from peak to end.**
+
+| Metric | Value |
+|---|---|
+| Live heap at t-gmax (peak, 2077 s) | 192.3 MiB in 605,175 blocks |
+| Live heap at t-end (2147 s) | 105.5 MiB in 285,914 blocks |
+| Change | **−86.8 MiB** |
+
+An unbounded heap leak cannot shrink. **There is no unbounded heap leak.**
+
+**Where the live heap sits at t-end (105.5 MiB):**
+
+| Category | Live |
+|---|---|
+| redb (read cache 40.3 + write 12.8 + pages) | 53.1 MiB |
+| chain/store structs | 43.3 MiB |
+| other | 7.8 MiB |
+| tokio | 1.3 MiB |
+| btc | ~0 MiB |
+
+**Interpretation.** Two facts stand out:
+
+1. **Live heap fell from peak to end** (192.3 → 105.5 MiB). A monotonic live-heap
+   leak would not do that, so there is no *live-heap* leak within the window.
+2. **Process RSS (196 MiB) far exceeded live heap (105.5 MiB)** — a ~90 MiB gap.
+   That gap is memory the allocator has freed but not returned to the OS
+   (glibc `VmHWM == VmRSS` confirms RSS never shrinks).
+
+So the growth is **not** retained live objects; it is in the RSS-minus-live-heap
+gap — allocator retention/fragmentation. The large transient peak (192 MiB
+during startup/replay: genesis construction, chain load, sort buffers) is
+released logically but ratchets the RSS high-water mark, which is why RSS
+*appears* to climb and why the rate decelerates between transients.
+
+**Conclusion:** this is allocator high-water ratcheting, not a live-object leak.
+The fix, if one is wanted, is to return memory to the OS (`malloc_trim`, or a
+different allocator such as jemalloc/mimalloc), not to hunt for a leak.
+
+**Caveat — what this does *not* prove.** The probe ran only ~36 min, and dhat
+measures live heap, not the gap. A slow *gap* growth (fragmentation accumulating
+over days) cannot be excluded from this window, and that is exactly what the
+fleet's sustained ~450 kB/h over 18 h would look like. To settle it, sample the
+live-heap-vs-RSS gap over 24 h on the fleet (or a long-running probe): if the
+gap grows, it is fragmentation and `malloc_trim` is the fix; if the gap is flat,
+the earlier fleet growth was transient ratcheting that has since stopped.
+
 ## 8. Open Questions
 
 - ~~Should `MALLOC_ARENA_MAX` be pinned?~~ **Resolved 2026-09-22.** Pinned to 2

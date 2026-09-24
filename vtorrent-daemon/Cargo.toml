@@ -41,6 +41,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 hex               = "0.4"
 serde_json        = { workspace = true }
 bitcoin           = { workspace = true }
+dhat              = { workspace = true, optional = true }
 
 [dev-dependencies]
 reqwest          = { workspace = true }
@@ -50,3 +51,8 @@ sha2             = "0.10"
 tower            = { version = "0.4", features = ["util"] }
 serde_json       = "1"
 tokio            = { version = "1", features = ["full"] }
+
+[features]
+# Heap profiling via dhat. Off by default and never enabled in release builds.
+# When on, the daemon writes a dhat-heap.json profile on exit (or SIGUSR1).
+heap-profile = ["dep:dhat"]

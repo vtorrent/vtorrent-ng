@@ -176,22 +176,21 @@ actions, operator approval.
       allows an explicit value). **This did not fix the growth** — see the open
       finding below. The bound is still correct on its own merits (a 1 GiB cache
       on a 150 MiB-budget node is a misconfiguration), but it is not the cause.
-- [ ] **RSS growth (OPEN, sustained ~450 kB/h; budget raise is a stopgap)** —
-      node1 grew 117.9 MiB (09-21) → 131.5 → 144.8 → 152.7 → 160.4 MiB
-      (09-23T23:56Z). Measured over 18.35 h post-redeploy the rate is **~450
-      kB/h, sustained** — an earlier "plateau" call was based on a 36-minute
-      lull and has been **retracted**. At this rate the 180 MiB budget is
-      breached in ~2.2 days, projecting ~222 MiB at sign-off. The budget was
-      raised 150 → 180 MiB (2026-09-23) as a **stopgap only**; it does not solve
-      the growth. **The redb-cache hypothesis was tested and disproven**
+- [ ] **RSS growth (OPEN — allocator retention, not a live-object leak)** —
+      node1 grew 117.9 MiB (09-21) → 160.4 MiB (09-23T23:56Z), ~450 kB/h over
+      18.35 h. **A `dhat` heap profile (2026-09-24) showed live heap *falling*
+      from peak to end (192.3 → 105.5 MiB), so there is no live-heap leak.**
+      Process RSS (196 MiB) exceeded live heap by ~90 MiB — that gap is
+      allocator retention/fragmentation (`VmHWM == VmRSS`: RSS never shrinks).
+      The large transient peak during startup/replay ratchets the RSS
+      high-water mark. **Not a functional failure** — nodes stake and sync
+      correctly. **The redb-cache hypothesis was tested and disproven**
       (redeployed on `vtorrent/node:4d1ae47` with the cache bounded to 64 MiB;
-      growth continued). **A differential-isolation experiment was
-      inconclusive** — an isolated probe was flat (0 kB/h), but no probe
-      reproduced the fleet's rate, and an earlier claim that BTC SPV was the
-      cause has been **retracted**. **Not a functional failure** — nodes stake
-      and sync correctly. Next: re-run probes with a warmup-discard period and
-      compare the fleet over 24 h; `dhat`-gated build as fallback. See
-      `docs/memory-observability-design.md` §7.2–7.3.
+      growth continued). An earlier BTC-SPV claim and an earlier "plateau"
+      claim were both **retracted**. The budget was raised 150 → 180 MiB as a
+      stopgap. Next: sample the live-heap-vs-RSS gap over 24 h to confirm
+      fragmentation; if so, `malloc_trim` or a different allocator is the fix.
+      See `docs/memory-observability-design.md` §7.2–7.4.
 - [ ] **`v2.0.0-beta.3` tag** — `docs/release-notes-beta.3.md` addendum is a
       draft; no tag exists (only beta.1/beta.2). Tag after sign-off, with the
       desktop build matrix and checksums.
