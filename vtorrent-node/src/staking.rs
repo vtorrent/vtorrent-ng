@@ -58,8 +58,14 @@ pub struct StakingEngine {
     pub bootstrap_exempt: bool,
 }
 
+/// Compute the UTXO commitment root *after* applying `transactions` to `utxos`.
+///
+/// `utxo_leaves` must be the pre-apply leaf hashes aligned with `utxos`
+/// (same order/length); unchanged entries reuse them instead of re-hashing the
+/// whole set on every stake attempt.
 fn compute_post_apply_root(
     utxos: &BTreeMap<([u8; 32], u32), Utxo>,
+    utxo_leaves: &[[u8; 32]],
     transactions: &[Transaction],
     height: u32,
     timestamp: u32,
@@ -98,7 +104,7 @@ fn compute_post_apply_root(
             .saturating_add(added.len()),
     );
     let mut added_iter = added.iter().peekable();
-    for (key, utxo) in utxos {
+    for ((key, _utxo), leaf) in utxos.iter().zip(utxo_leaves.iter()) {
         while let Some((added_key, added_utxo)) = added_iter.peek() {
             if *added_key >= key {
                 break;
@@ -114,7 +120,7 @@ fn compute_post_apply_root(
             }
         }
         if !removed.contains(key) {
-            leaves.push(hash_node_utxo(utxo));
+            leaves.push(*leaf);
         }
     }
     for (_, utxo) in added_iter {
@@ -328,8 +334,13 @@ impl StakingEngine {
             coinstake.clone(),
             non_conflicting,
         );
-        block.header.utxo_root =
-            compute_post_apply_root(ordered_utxos, &block.transactions, height, timestamp);
+        block.header.utxo_root = compute_post_apply_root(
+            ordered_utxos,
+            &utxo_leaves,
+            &block.transactions,
+            height,
+            timestamp,
+        );
 
         let utxo_proof_mp = utxo_tree.proof(leaf_index)?;
         let utxo_proof = UtxoInclusionProof {
