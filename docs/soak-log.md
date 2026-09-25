@@ -1278,3 +1278,42 @@ Findings:
 Target for the rate fix: cut the per-build allocation churn — reuse scratch
 buffers (leaves/tree/`seen`/`removed`/`added`) across attempts and derive the
 post-apply root from the pre-apply leaves instead of a second full traversal.
+
+## 2026-09-25 — deploy UTXO-commitment scratch `1d67618`
+
+Merged `perf/utxo-scratch` and deployed (image `vtorrent/node:1d67618`, binary
+`2b262a2c3dab0076f9da3104dd4057290370321ee49c86ffd343a229beccb9a0`). Rolling
+recreate; node1 unlocked 05:47:35Z, staking resumed; all three agree, 0 errors.
+Backups `.ops-backups/utxo-scratch-20260925-RRxMcQ/`.
+
+**Controlled probe — the fix works.** Isolated dhat probe, identical to the
+earlier ones (35 min, 35 blocks staked):
+
+| build | staking-path alloc | dhat RSS growth /35 min |
+|---|---|---|
+| `1e254b8` (baseline) | 637.6 MB | +40.4 MB |
+| `perf/staking-churn` | 430.3 MB | +32.9 MB |
+| **`1d67618`** | **30.7 MB (−95%)** | **+6.1 MB (−85%)** |
+
+The per-block UTXO commitment now allocates nothing once warm; remaining top
+allocations are redb's bounded cache and the one-time Argon2 unlock.
+
+**Fleet — much smaller improvement than the probe.** VmRSS over 2.7 h
+(05:48→08:28):
+
+| node | start | end | rate |
+|---|---|---|---|
+| node1 (staker) | 142.5 MiB | 145.5 MiB | ~1133 kB/h |
+| node2 (non-staker) | 133.2 MiB | 135.8 MiB | ~941 kB/h |
+
+Both nodes now grow at a similar ~900–1100 kB/h — i.e. the staking-specific
+delta (previously ~670 kB/h between them) is gone, consistent with the probe.
+But the **shared** ~900–1000 kB/h remains, so the growth is dominated by a
+non-staking component the isolated probe excludes: the redb store cache filling
+toward its 64 MiB bound, BTC SPV (node1), or P2P/mempool. Not yet attributed.
+
+**Budget.** At ~1000 kB/h from ~145 MiB, 7 days projects ~310 MiB — still over
+220 MiB. The scratch did not, on its own, make the window pass; the shared
+component must be attributed (a fleet-build dhat probe, or longer observation to
+see whether the redb cache plateaus). Window resets to 2026-09-25T05:47:35Z →
+sign-off 2026-10-02 after 05:47Z.
