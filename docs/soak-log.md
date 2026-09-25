@@ -1317,3 +1317,29 @@ toward its 64 MiB bound, BTC SPV (node1), or P2P/mempool. Not yet attributed.
 component must be attributed (a fleet-build dhat probe, or longer observation to
 see whether the redb cache plateaus). Window resets to 2026-09-25T05:47:35Z →
 sign-off 2026-10-02 after 05:47Z.
+
+## 2026-09-25 (later) — 5 h RSS trend after `1d67618`; node1 confounded
+
+Detached 5-minute sampler (`/tmp/opencode/rss-watch.tsv`), 09:12→14:01Z:
+
+| node | whole window | last hour | role |
+|---|---|---|---|
+| node1 | 614 kB/h | **1226 kB/h** | staker + **BTC SPV** + 2 peers |
+| node2 | 475 kB/h | 550 kB/h | apply-only, 1 peer |
+| node3 | 229 kB/h | **192 kB/h** | apply-only, 1 peer |
+
+Two conclusions:
+
+1. **The scratch removed the staking/commitment churn.** node1 plateaued for
+   ~85 min mid-window, and node3 (apply-only) settled at ~192 kB/h — over 7 days
+   from ~134 MiB that projects ~161 MiB, **under the 220 MiB budget**.
+2. **node1's residual is confounded.** It is the only node with BTC SPV
+   (`--btc-regtest/--btc-peer/--btc-seed`; node2/3 have none) *and* the only
+   staker *and* has an extra peer. Its ~1.2 MB/h cannot be attributed to the
+   UTXO commitment (proven eliminated) — most likely the BTC SPV path and/or the
+   block-production path, not the chain commitment.
+
+**So the window's outcome hinges on node1 only.** node2/3 are on track. Next:
+attribute node1's residual (BTC SPV vs production) — the cheapest test is to
+compare node1 with the BTC args removed, or a fleet-like dhat probe with SPV.
+Sampler continues to 09:12Z tomorrow for the full 24 h.
