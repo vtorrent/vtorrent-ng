@@ -49,7 +49,10 @@ impl MerkleTree {
                 break;
             }
 
-            let mut next = Vec::new();
+            // Pre-size each level: `MerkleTree::build` runs on the block-
+            // production hot path (staking), where unsized per-level growth
+            // churns many small allocations. Capacity is exact.
+            let mut next = Vec::with_capacity(current.len().div_ceil(2));
             let mut i = 0;
             while i < current.len() {
                 let left = current[i];
