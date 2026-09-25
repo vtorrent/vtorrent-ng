@@ -113,6 +113,108 @@ impl MerkleTree {
     }
 }
 
+/// Reusable Merkle-tree builder.
+///
+/// Same construction as [`MerkleTree`] but keeps its level buffers between
+/// builds, so it can be called once per block (block production and the chain's
+/// UTXO commitment) without churning the allocator. Call [`MerkleScratch::build`]
+/// before [`MerkleScratch::root`] / [`MerkleScratch::proof`].
+#[derive(Debug, Default)]
+pub struct MerkleScratch {
+    levels: Vec<Vec<[u8; 32]>>,
+}
+
+impl MerkleScratch {
+    pub fn new() -> Self {
+        Self { levels: Vec::new() }
+    }
+
+    /// Build the tree from `leaves`, reusing internal buffers. Returns the root.
+    ///
+    /// Matches [`MerkleTree::build`] exactly (same odd-node duplication).
+    pub fn build(&mut self, leaves: &[[u8; 32]]) -> [u8; 32] {
+        if leaves.is_empty() {
+            self.levels.clear();
+            self.levels.push(vec![[0u8; 32]]);
+            return [0u8; 32];
+        }
+
+        if self.levels.is_empty() {
+            self.levels.push(Vec::new());
+        }
+        self.levels[0].clear();
+        self.levels[0].extend_from_slice(leaves);
+
+        let mut li = 0;
+        loop {
+            if self.levels[li].len() == 1 {
+                break;
+            }
+            if self.levels.len() == li + 1 {
+                self.levels.push(Vec::new());
+            }
+            let (lower, upper) = self.levels.split_at_mut(li + 1);
+            let current = &lower[li];
+            let next = &mut upper[0];
+            next.clear();
+            let mut i = 0;
+            while i < current.len() {
+                let left = current[i];
+                let right = if i + 1 < current.len() {
+                    current[i + 1]
+                } else {
+                    current[i]
+                };
+                next.push(combine(&left, &right));
+                i += 2;
+            }
+            li += 1;
+        }
+        // Drop any stale higher levels from a previous, larger build (capacity
+        // retained for reuse).
+        self.levels.truncate(li + 1);
+        self.root()
+    }
+
+    /// Returns the Merkle root of the last [`MerkleScratch::build`].
+    pub fn root(&self) -> [u8; 32] {
+        self.levels
+            .last()
+            .and_then(|level| level.first())
+            .copied()
+            .unwrap_or([0u8; 32])
+    }
+
+    /// Generate an inclusion proof for the leaf at `index` (same rules as
+    /// [`MerkleTree::proof`]).
+    pub fn proof(&self, index: usize) -> Option<MerkleProof> {
+        if self.levels.is_empty() || index >= self.levels[0].len() {
+            return None;
+        }
+        let txid = self.levels[0][index];
+        let mut siblings = Vec::new();
+        let mut current_index = index;
+        for level in &self.levels[..self.levels.len() - 1] {
+            let sibling_index = if current_index.is_multiple_of(2) {
+                (current_index + 1).min(level.len() - 1)
+            } else {
+                current_index - 1
+            };
+            siblings.push(ProofNode {
+                hash: level[sibling_index],
+                is_left: current_index % 2 == 1,
+            });
+            current_index /= 2;
+        }
+        Some(MerkleProof {
+            txid,
+            index,
+            siblings,
+            root: self.root(),
+        })
+    }
+}
+
 /// A single node in a Merkle proof path.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProofNode {
@@ -274,5 +376,25 @@ mod tests {
         proof
             .verify_self()
             .expect("proof for large tree should be valid");
+    }
+
+    #[test]
+    fn test_merkle_scratch_matches_tree_and_reuses_buffers() {
+        let mut scratch = MerkleScratch::new();
+        // Build over several sizes, including shrink-then-grow, to prove stale
+        // level data is cleared and the root always matches MerkleTree.
+        for n in [1usize, 5, 64, 3, 100, 7, 129] {
+            let leaves = make_txids(n);
+            let expected = MerkleTree::build(&leaves).root();
+            let got = scratch.build(&leaves);
+            assert_eq!(got, expected, "root mismatch at n={n}");
+            for i in [0, n / 2, n - 1] {
+                let p = scratch.proof(i).unwrap();
+                p.verify_self().expect("scratch proof valid");
+                assert_eq!(p.root, expected);
+            }
+        }
+        // Empty set.
+        assert_eq!(scratch.build(&[]), [0u8; 32]);
     }
 }

@@ -203,8 +203,9 @@ pub(crate) fn apply_block_journaled(
             .saturating_sub(journal.staked_delta.unsigned_abs())
     };
 
-    let utxo_root = crate::block::compute_utxo_root_ordered(chain.utxo_set.values());
-    journal.utxo_root = utxo_root;
+    // Reuse the chain's commitment buffers (byte-identical to
+    // `compute_utxo_root_ordered`; see docs/utxo-commitment-scratch-design.md).
+    journal.utxo_root = chain.recompute_utxo_root();
 
     Ok(journal)
 }
