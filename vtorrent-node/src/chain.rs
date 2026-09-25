@@ -14,6 +14,7 @@ use crate::{
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use vtorrent_core::time::now_timestamp_u32;
+use vtorrent_spv::merkle::MerkleScratch;
 
 /// Default number of most-recent block *bodies* retained in memory.
 ///
@@ -167,6 +168,12 @@ pub struct Chain {
     block_body_cache: usize,
     /// Optional source for pruned bodies (usually the persistent store).
     body_source: Option<Arc<dyn BlockBodySource>>,
+    /// Reused leaf buffer for the per-block UTXO commitment. Kept alive so the
+    /// commitment does not churn the allocator every block
+    /// (docs/utxo-commitment-scratch-design.md).
+    utxo_leaves: Vec<[u8; 32]>,
+    /// Reused Merkle levels for the per-block UTXO commitment.
+    utxo_tree: MerkleScratch,
     /// Block hash at each height on the main chain.
     height_index: Vec<[u8; 32]>,
     /// Main-chain transaction index: txid → (containing block hash, transaction offset).
@@ -214,6 +221,8 @@ impl Chain {
             // `DEFAULT_BLOCK_BODY_CACHE` into `load_into_*_with_cache`.
             block_body_cache: usize::MAX,
             body_source: None,
+            utxo_leaves: Vec::new(),
+            utxo_tree: MerkleScratch::new(),
             height_index: Vec::new(),
             tx_index: HashMap::new(),
             utxo_set: BTreeMap::new(),
@@ -486,6 +495,21 @@ impl Chain {
     pub fn current_utxo_root(&self) -> Option<[u8; 32]> {
         self.get_header_at_height(self.best_height())
             .map(|h| h.utxo_root)
+    }
+
+    /// Recompute the UTXO commitment root into reused buffers.
+    ///
+    /// Byte-identical to `compute_utxo_root_ordered` over `utxo_set.values()`
+    /// (the `BTreeMap` iterates in `(txid, vout)` order), but allocates nothing
+    /// once its buffers have grown. See
+    /// `docs/utxo-commitment-scratch-design.md`.
+    pub(crate) fn recompute_utxo_root(&mut self) -> [u8; 32] {
+        self.utxo_leaves.clear();
+        self.utxo_leaves.reserve(self.utxo_set.len());
+        for utxo in self.utxo_set.values() {
+            self.utxo_leaves.push(crate::block::hash_utxo(utxo));
+        }
+        self.utxo_tree.build(&self.utxo_leaves)
     }
 
     /// Look up a transaction that is currently part of the active main chain.

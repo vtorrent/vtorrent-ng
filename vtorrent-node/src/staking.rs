@@ -23,7 +23,7 @@ use crate::{
 use secp256k1::{All, Secp256k1};
 use std::{collections::BTreeMap, sync::LazyLock};
 use vtorrent_script::{classify_script, Script, ScriptType};
-use vtorrent_spv::merkle::MerkleTree as ProofMerkleTree;
+use vtorrent_spv::merkle::{MerkleScratch, MerkleTree as ProofMerkleTree};
 use vtorrent_spv::stake::{
     SpvUtxo, StakeProof, Transaction as SpvTransaction, TxInput as SpvTxInput,
     TxOutput as SpvTxOutput, TxType as SpvTxType, UtxoInclusionProof,
@@ -42,6 +42,17 @@ pub enum StakingCommand {
 }
 
 /// The staking engine.
+/// Reusable buffers for the per-block UTXO commitment
+/// (`docs/utxo-commitment-scratch-design.md`).
+#[derive(Default)]
+struct CommitScratch {
+    pre_leaves: Vec<[u8; 32]>,
+    post_leaves: Vec<[u8; 32]>,
+    removed: std::collections::HashSet<([u8; 32], u32)>,
+    added: BTreeMap<([u8; 32], u32), Utxo>,
+    tree: MerkleScratch,
+}
+
 pub struct StakingEngine {
     /// The address whose UTXOs are used for staking.
     pub address: String,
@@ -56,22 +67,32 @@ pub struct StakingEngine {
     /// brand-new UTXO can be staked at height 2 (T3). The validator applies the
     /// same exemption.
     pub bootstrap_exempt: bool,
+    /// Reused UTXO-commitment buffers. `Mutex` (not `RefCell`) keeps
+    /// `StakingEngine: Send + Sync`; locked once per stake build, not per tick.
+    commit_scratch: std::sync::Mutex<CommitScratch>,
 }
 
-/// Compute the UTXO commitment root *after* applying `transactions` to `utxos`.
+/// Fill `out` with the UTXO commitment leaves *after* applying `transactions`
+/// to `utxos`.
 ///
 /// `utxo_leaves` must be the pre-apply leaf hashes aligned with `utxos`
 /// (same order/length); unchanged entries reuse them instead of re-hashing the
-/// whole set on every stake attempt.
-fn compute_post_apply_root(
+/// whole set. `out`, `removed` and `added` are caller-owned scratch so the
+/// stake path allocates nothing per block
+/// (`docs/utxo-commitment-scratch-design.md`).
+#[allow(clippy::too_many_arguments)]
+fn build_post_apply_leaves(
     utxos: &BTreeMap<([u8; 32], u32), Utxo>,
     utxo_leaves: &[[u8; 32]],
     transactions: &[Transaction],
     height: u32,
     timestamp: u32,
-) -> [u8; 32] {
-    let mut removed = std::collections::HashSet::new();
-    let mut added = BTreeMap::new();
+    out: &mut Vec<[u8; 32]>,
+    removed: &mut std::collections::HashSet<([u8; 32], u32)>,
+    added: &mut BTreeMap<([u8; 32], u32), Utxo>,
+) {
+    removed.clear();
+    added.clear();
 
     for tx in transactions {
         for input in &tx.inputs {
@@ -97,7 +118,8 @@ fn compute_post_apply_root(
         }
     }
 
-    let mut leaves = Vec::with_capacity(
+    out.clear();
+    out.reserve(
         utxos
             .len()
             .saturating_sub(removed.len())
@@ -109,24 +131,23 @@ fn compute_post_apply_root(
             if *added_key >= key {
                 break;
             }
-            leaves.push(hash_node_utxo(added_utxo));
+            out.push(hash_node_utxo(added_utxo));
             added_iter.next();
         }
         if let Some((added_key, added_utxo)) = added_iter.peek() {
             if *added_key == key {
-                leaves.push(hash_node_utxo(added_utxo));
+                out.push(hash_node_utxo(added_utxo));
                 added_iter.next();
                 continue;
             }
         }
         if !removed.contains(key) {
-            leaves.push(*leaf);
+            out.push(*leaf);
         }
     }
     for (_, utxo) in added_iter {
-        leaves.push(hash_node_utxo(utxo));
+        out.push(hash_node_utxo(utxo));
     }
-    compute_merkle_root_from_txids(&mut leaves)
 }
 
 impl StakingEngine {
@@ -138,6 +159,7 @@ impl StakingEngine {
             min_stake_age: MIN_STAKE_AGE,
             max_stake_age: MAX_STAKE_AGE,
             bootstrap_exempt: false,
+            commit_scratch: std::sync::Mutex::new(CommitScratch::default()),
         }
     }
 
@@ -149,6 +171,7 @@ impl StakingEngine {
             min_stake_age: MIN_STAKE_AGE,
             max_stake_age: MAX_STAKE_AGE,
             bootstrap_exempt: false,
+            commit_scratch: std::sync::Mutex::new(CommitScratch::default()),
         }
     }
 
@@ -162,6 +185,7 @@ impl StakingEngine {
             min_stake_age: REGTEST_FAST_MIN_STAKE_AGE,
             max_stake_age: REGTEST_FAST_MAX_STAKE_AGE,
             bootstrap_exempt: false,
+            commit_scratch: std::sync::Mutex::new(CommitScratch::default()),
         }
     }
 
@@ -173,6 +197,7 @@ impl StakingEngine {
             min_stake_age: REGTEST_FAST_MIN_STAKE_AGE,
             max_stake_age: REGTEST_FAST_MAX_STAKE_AGE,
             bootstrap_exempt: false,
+            commit_scratch: std::sync::Mutex::new(CommitScratch::default()),
         }
     }
 
@@ -294,19 +319,34 @@ impl StakingEngine {
             return None;
         }
 
+        // Per-block UTXO commitment, reusing buffers so a stake build does not
+        // churn the allocator (docs/utxo-commitment-scratch-design.md).
+        let mut scratch = self
+            .commit_scratch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let CommitScratch {
+            pre_leaves,
+            post_leaves,
+            removed,
+            added,
+            tree,
+        } = &mut *scratch;
+
+        // Pre-apply tree over the current UTXO set (also the inclusion proof).
+        pre_leaves.clear();
+        pre_leaves.reserve(ordered_utxos.len());
         let mut leaf_index = None;
-        let utxo_leaves: Vec<[u8; 32]> = ordered_utxos
-            .iter()
-            .enumerate()
-            .map(|(index, (key, current))| {
-                if *key == staked_key {
-                    leaf_index = Some(index);
-                }
-                hash_node_utxo(current)
-            })
-            .collect();
-        let utxo_tree = ProofMerkleTree::build(&utxo_leaves);
+        for (index, (key, current)) in ordered_utxos.iter().enumerate() {
+            if *key == staked_key {
+                leaf_index = Some(index);
+            }
+            pre_leaves.push(hash_node_utxo(current));
+        }
+        tree.build(pre_leaves);
         let leaf_index = leaf_index?;
+        let utxo_proof_mp = tree.proof(leaf_index)?;
+        let pre_root = tree.root();
 
         let stake_outpoint = staked_key;
         let mut seen: std::collections::HashSet<([u8; 32], u32)> = std::collections::HashSet::new();
@@ -334,19 +374,23 @@ impl StakingEngine {
             coinstake.clone(),
             non_conflicting,
         );
-        block.header.utxo_root = compute_post_apply_root(
+        // Post-apply root into the same reused tree (proof already extracted).
+        build_post_apply_leaves(
             ordered_utxos,
-            &utxo_leaves,
+            pre_leaves,
             &block.transactions,
             height,
             timestamp,
+            post_leaves,
+            removed,
+            added,
         );
+        block.header.utxo_root = tree.build(post_leaves);
 
-        let utxo_proof_mp = utxo_tree.proof(leaf_index)?;
         let utxo_proof = UtxoInclusionProof {
             leaf_index,
             siblings: utxo_proof_mp.siblings,
-            root: utxo_tree.root(),
+            root: pre_root,
         };
 
         let txids: Vec<[u8; 32]> = block.transactions.iter().map(|tx| tx.txid()).collect();
