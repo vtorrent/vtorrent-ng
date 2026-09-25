@@ -1248,3 +1248,33 @@ remains dominated by the staking tree churn, still an open item (a separate
 though it improves the long-run asymptote. Decision pending: keep (bounded
 bodies, accept rate) or roll back to `4d1ae47` (known ~477 kB/h). Window resets
 to 2026-09-24T16:31:14Z → sign-off 2026-10-01 after 16:31Z.
+
+## 2026-09-25 — dhat profile of the staking path (post-pruning)
+
+Isolated staking probe on a copy of node1 data (network-none, 35 min, 35 blocks
+staked) with the `heap-profile` image. Ranked dhat allocation points by peak
+live and total churn:
+
+| Allocation point | peak live | total for 35 builds |
+|---|---|---|
+| `ProofMerkleTree::build` (pre-apply tree) | 4.19 MiB | ~294 MiB |
+| `compute_post_apply_root` (2nd full tree) | ~2.5 MiB ×3 | ~258 MiB |
+| redb page reads (bounded 64 MiB cache) | 47–59 MiB | store cache |
+| `apply_block_journaled` BTreeMap splits | 10.9 MiB | genesis/UTXO load |
+
+Findings:
+- **The staking path is the largest *repeated* allocator**: ~11 MB churn per
+  staked block × ~60/h ≈ **660 MB/h churn**, even though the peak is only
+  ~4 MiB. The big Vecs are >128 KiB so mmap-backed and returned; the retained
+  ~0.5–1.5 MB/h is consistent with the many *small* allocations per build
+  (`HashSet`/`BTreeMap`/clones in `build_from_kernel_with_proof` +
+  `compute_post_apply_root`) fragmenting the heap.
+- `build_from_kernel_with_proof` builds the UTXO tree **twice per block**: the
+  inclusion tree over `ordered_utxos`, then `compute_post_apply_root` re-walks
+  the entire UTXO set to derive the post-apply root.
+- redb's largest peaks are the store cache + open-time checksum verification
+  (bounded), not a leak.
+
+Target for the rate fix: cut the per-build allocation churn — reuse scratch
+buffers (leaves/tree/`seen`/`removed`/`added`) across attempts and derive the
+post-apply root from the pre-apply leaves instead of a second full traversal.
