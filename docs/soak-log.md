@@ -1343,3 +1343,35 @@ Two conclusions:
 attribute node1's residual (BTC SPV vs production) — the cheapest test is to
 compare node1 with the BTC args removed, or a fleet-like dhat probe with SPV.
 Sampler continues to 09:12Z tomorrow for the full 24 h.
+
+## 2026-09-25 (later) — node1 BTC-SPV attribution test
+
+Per the plan, node1 was restarted **without** `--btc-regtest/--btc-peer/--btc-seed`
+(node2/3 never had them); temp compose change, backups retained.
+
+**Result: BTC SPV was holding ~40 MiB and dominated node1's level.**
+
+| node | before | after node1 BTC removed |
+|---|---|---|
+| node1 level | ~145–148 MiB | **dropped to ~97–105 MiB** |
+| node2 (no BTC) | 138.5 MiB | 140.5 MiB, ~652 kB/h |
+| node3 (no BTC) | 135.5 MiB | 136.2 MiB, ~245 kB/h |
+
+Two structural facts fall out:
+
+1. **node1's high level was largely BTC SPV, not the chain.** Removing it freed
+   ~40–47 MiB (the RSS fell from 144 → 97 MiB at the 15:31 trim). The chain-only
+   footprint of the staker is ~100 MiB — *lower* than node2/3.
+2. **RSS is sawtoothed, not monotonic.** A single `malloc_trim` released 47 MiB
+   at 15:36, then it re-grew ~4 MiB/h toward the previous working set. Any rate
+   computed over a window that straddles a trim is misleading — several of the
+   earlier "rate" numbers are contaminated by this.
+
+**Core chain is slow-growing:** the cleanest node (node3, apply-only, no BTC)
+sits at ~245 kB/h → 7 days from 136 MiB ≈ **171 MiB, under the 220 MiB budget.**
+node2's ~652 kB/h is the remaining outlier and needs the full 24 h sample.
+node1 (staker, no BTC) re-warms to ~4 MiB/h after a trim but has not been
+observed through a full trim cycle.
+
+**Decision needed:** keep node1 BTC-less for a cleaner core-chain soak, or
+restore the BTC args (swap-testing role). Sampler runs to 09:12Z tomorrow.
