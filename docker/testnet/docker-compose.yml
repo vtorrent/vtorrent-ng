@@ -60,11 +60,10 @@ services:
       - --block-body-cache
       - "4096"
       - --isolated
-      - --btc-regtest
-      - --btc-peer
-      - "btc:18448"
-      - --btc-seed
-      - "11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111"
+      # NOTE: BTC SPV args (--btc-regtest/--btc-peer/--btc-seed) are
+      # intentionally omitted for this soak window to isolate core-node memory;
+      # BTC SPV held ~40 MiB. Restore before swap testing and soak it with its
+      # own budget. See docs/soak-log.md 2026-09-25.
       - --wallet-passphrase-file
       - /run/secrets/wallet-passphrase
       - --log-level

@@ -176,16 +176,24 @@ actions, operator approval.
       allows an explicit value). **This did not fix the growth** — see the open
       finding below. The bound is still correct on its own merits (a 1 GiB cache
       on a 150 MiB-budget node is a misconfiguration), but it is not the cause.
-- [ ] **Block bodies stay in memory forever — the actual RSS-growth fix** —
-      **top open memory item.** The node holds every `Block` in the in-memory
-      `Chain` (plus tx index, heights, parents, cumulative work). Post-deploy
-      measurement: **~477 kB/h ÷ 59 blocks/h = ~8 kB per block, unbounded.**
-      Fix: keep the full index but **prune old block bodies**, or move bodies /
-      the tx index to the store. Only then is RSS flat for a long-running node.
-      Design drafted: `docs/block-body-pruning-design.md` (keep headers + recent
-      `K=1000` bodies, store fallback; consensus-safe — no validation path reads
-      a body older than `max_reorg_depth`). See
-      `docs/memory-observability-design.md` §7.7.
+- [ ] **BTC SPV holds ~40 MiB and is not independently soaked** — BTC SPV (only
+      enabled when `--btc-*` is passed, for atomic swaps) held **~40–47 MiB** on
+      node1 and confounded the RSS measurements. It was disabled for the current
+      window to isolate core-node memory. Restore before swap testing and soak
+      the BTC-SPV path against its own budget. See `docs/soak-log.md` 2026-09-25.
+- [x] **Per-block UTXO-commitment churn — fixed** — the chain and staking rebuilt
+      the whole UTXO Merkle tree into fresh buffers every block. Now they reuse
+      persistent buffers (`MerkleScratch` + a chain/staking scratch); the root is
+      byte-identical (no consensus change). Measured: staking-path allocation
+      **637.6 → 30.7 MB (−95%)**, controlled growth **−85%**. Deployed `1d67618`;
+      the apply-only node settled at ~245 kB/h (under budget). Design:
+      `docs/utxo-commitment-scratch-design.md`.
+- [x] **Block bodies — pruned** — `1e254b8` (env + code) bounds in-memory bodies
+      to the recent window, serving older bodies from the store. Design:
+      `docs/block-body-pruning-design.md`.
+- [ ] **RSS is sawtoothed, not monotonic** — allocator trims release tens of MiB
+      at once (a single 47 MiB drop observed). Rate figures must be computed over
+      whole trim cycles or they mislead. `docs/soak-log.md` 2026-09-25.
 - [x] **RSS growth — startup transient fixed (env only), deployed** — node1 grew
       to 160.4 MiB at ~450 kB/h. **A `dhat` heap profile showed no live-heap
       leak** (live heap *fell* 192.3 → 105.5 MiB peak→end); it is allocator
