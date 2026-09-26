@@ -1375,3 +1375,29 @@ observed through a full trim cycle.
 
 **Decision needed:** keep node1 BTC-less for a cleaner core-chain soak, or
 restore the BTC args (swap-testing role). Sampler runs to 09:12Z tomorrow.
+
+## 2026-09-26 — fleet-like follower dhat probe
+
+Follower probe on a copy of node1 data (connected to node2, **no wallet → no
+staking**, so no fork risk), 35 min under `heap-profile`:
+
+- RSS +1012 kB/35 min (dhat-inflated) vs the isolated **staker** probe's
+  +6124 kB/35 min — so P2P/apply adds far less than block production.
+- Top allocation points are **redb reads**: `verify_checksum_helper` (76 MB),
+  `visit_pages_helper` (66 MB), `get_page_extended` (51 MB) — i.e. **store
+  open-time checksum verification and startup replay**, a one-time cost, not a
+  steady-state leak.
+- `recompute_utxo_root` shows only **121 allocations over 35 min** — the scratch
+  is working (no per-block allocation).
+
+**Why attribution keeps stalling:** short probes are dominated by startup
+(replay + checksum verify), and RSS is sawtoothed by allocator trims, so a 35-min
+window cannot isolate the steady-state residual. Doing so needs a mid-run heap
+snapshot (dhat `SIGUSR1` dump) over a long window — the daemon does not yet
+implement SIGUSR1, so that would need a small, soak-safe code change
+(`dhat::Profiler` + a signal handler under the `heap-profile` feature).
+
+**Where this leaves the window:** the UTXO-commitment churn is fixed and
+verified; BTC SPV (~40 MiB) is out; the cleanest node projects under budget. The
+remaining ~300–1700 kB/h across nodes is unattributed but bounded-ish and
+dominated by startup/store-cache effects rather than an obvious live leak.
