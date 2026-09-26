@@ -59,10 +59,48 @@ const EVENT_CHANNEL_CAPACITY: usize = 1024;
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
+/// Current heap profiler. Held in a global so a signal handler can drop it
+/// (which writes `dhat-heap.json`) and start a fresh interval.
+#[cfg(feature = "heap-profile")]
+static HEAP_PROFILER: std::sync::Mutex<Option<dhat::Profiler>> = std::sync::Mutex::new(None);
+
+/// Count of heap-dump intervals written.
+#[cfg(feature = "heap-profile")]
+static HEAP_DUMP_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(feature = "heap-profile")]
+fn init_heap_profiler() {
+    *HEAP_PROFILER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(dhat::Profiler::new_heap());
+}
+
+/// End the current profiling interval (writes `dhat-heap.json`), rename it to
+/// `dhat-heap-<n>.json`, and begin a new interval.
+///
+/// Lets a long-running soak be profiled in windows: the first interval covers
+/// startup + warmup; later intervals are steady state. Triggered by `SIGUSR1`
+/// (`docker kill -s USR1`). Feature-gated and never compiled into release
+/// builds.
+#[cfg(feature = "heap-profile")]
+fn dump_heap_interval() {
+    let mut guard = HEAP_PROFILER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = None; // Drop writes ./dhat-heap.json
+    let n = HEAP_DUMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dst = format!("dhat-heap-{n}.json");
+    match std::fs::rename("dhat-heap.json", &dst) {
+        Ok(()) => tracing::info!("heap interval written to {dst}; starting next interval"),
+        Err(e) => tracing::warn!("heap interval rename failed: {e}"),
+    }
+    *guard = Some(dhat::Profiler::new_heap());
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "heap-profile")]
-    let _profiler = dhat::Profiler::new_heap();
+    init_heap_profiler();
 
     let cli = Cli::parse();
 
@@ -72,6 +110,19 @@ async fn main() -> anyhow::Result<()> {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&cli.log_level)),
         )
         .init();
+
+    #[cfg(feature = "heap-profile")]
+    tokio::spawn(async move {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::user_defined1()) {
+            Ok(mut sig) => {
+                while sig.recv().await.is_some() {
+                    dump_heap_interval();
+                }
+            }
+            Err(e) => tracing::warn!("could not install SIGUSR1 heap-dump handler: {e}"),
+        }
+    });
 
     print_banner();
 
