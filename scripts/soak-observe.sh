@@ -164,6 +164,7 @@ if [[ -n "$btc" ]]; then
     echo "- BTC SPV: height=${btc_height}, synced=${btc_synced}."
 fi
 echo
-echo "Earliest sign-off: **2026-09-30 after 05:16Z**. Next daily observation due $(date -u -d 'tomorrow' +%Y-%m-%d)."
+signoff=$(date -u -d "@$(( WINDOW_START + 604800 ))" +%Y-%m-%dT%H:%MZ)
+echo "Earliest sign-off: **${signoff}** (window start + 7 days). Next daily observation due $(date -u -d 'tomorrow' +%Y-%m-%d)."
 
 exit "$fail"

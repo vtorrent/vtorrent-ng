@@ -1452,3 +1452,31 @@ decelerating and may plateau like node2.
 
 Action: keep monitoring daily; if node1 does not plateau, either tighten the
 allocator trim or raise the budget before sign-off.
+
+## 2026-09-26 — daily observation (window +27h)
+
+Read-only check at `2026-09-26T09:46Z` (window start `2026-09-25T05:47:35Z`).
+
+- vtr-node1: height **19215**, hash `16d4c260c4d9399c…`, syncing=false, connections=2, mempool=0, mem=113.3MiB
+- vtr-node2: height **19215**, hash `16d4c260c4d9399c…`, syncing=false, connections=1, mempool=0, mem=130.2MiB
+- vtr-node3: height **19215**, hash `16d4c260c4d9399c…`, syncing=false, connections=1, mempool=0, mem=123.2MiB
+
+All three nodes agree on height and tip hash.
+
+- Staking enabled=true, eligible UTXOs=4, blocks staked this run=1155.
+
+- Block cadence within the window: n=1647 min=61 median=61 max=293 mean=61.1 slow(>120s)=1.
+
+- Prometheus since window start:
+  - node1:22525: 6717/6717 samples, down=19, gaps>30s=0
+  - node2:22525: 6717/6717 samples, down=0, gaps>30s=0
+  - node3:22525: 6717/6717 samples, down=0, gaps>30s=0
+
+- Errors since window start:
+  - vtr-node1: errors=0, restarts=0
+  - vtr-node2: errors=0, restarts=0
+  - vtr-node3: errors=0, restarts=0
+
+- BTC SPV: height=0, synced=false.
+
+Earliest sign-off: **2026-10-02T05:47Z** (window start + 7 days). Next daily observation due 2026-09-27.
