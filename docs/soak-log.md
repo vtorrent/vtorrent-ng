@@ -1401,3 +1401,32 @@ implement SIGUSR1, so that would need a small, soak-safe code change
 verified; BTC SPV (~40 MiB) is out; the cleanest node projects under budget. The
 remaining ~300–1700 kB/h across nodes is unattributed but bounded-ish and
 dominated by startup/store-cache effects rather than an obvious live leak.
+
+## 2026-09-26 — interval heap profile: steady state has no live leak
+
+Added a `SIGUSR1` interval heap-dump to the daemon (`heap-profile` feature:
+`drop_and_get_memory_output`-style Drop+rename+restart; never in release). Ran an
+isolated staking probe and dumped two windows:
+
+- **Interval 0** (startup + first hour): 487 KB profile — dominated by store
+  open-time checksum verification (`verify_checksum_helper`) and startup replay.
+- **Interval 1** (steady state, 02:32→04:02, 90 min): **95 KB profile, 372
+  allocation points, ~15 MB total transient churn, peak live ≤ ~0.3 MB.**
+
+Steady-state top allocation points:
+
+| point | total / 90 min | peak live |
+|---|---|---|
+| redb `finalize_dirty_checksums_helper` (store writes) | 3.9 + 1.5 MB | 0.016 MB |
+| `get_utxos_for_address` (`from_iter`/`next`, per stake tick) | 1.7 + 0.4 MB | ~0 |
+| redb `write`/`allocate_helper` (block writes) | ~0.7 MB each | ~0.3 MB |
+
+**Conclusion: there is no significant live-heap leak.** Steady-state allocations
+are small, transient, and retain essentially nothing (peak live ~0.3 MB). The
+residual RSS behaviour is **allocator high-water + redb page cache**, which is
+bounded and seesaws with trims — not unbounded growth. `get_utxos_for_address`
+runs every 1 s stake tick (5416 calls/90 min) and allocates a small Vec each
+time; a minor optimisation (cache per tip), not a leak.
+
+This closes the RSS investigation: body pruning + UTXO-commitment scratch
+removed the real drivers; what remains is allocator/cache behavior.
