@@ -70,6 +70,10 @@ pub struct StakingEngine {
     /// Reused UTXO-commitment buffers. `Mutex` (not `RefCell`) keeps
     /// `StakingEngine: Send + Sync`; locked once per stake build, not per tick.
     commit_scratch: std::sync::Mutex<CommitScratch>,
+    /// This address's UTXOs, cached against the tip hash they were gathered at.
+    /// The UTXO set only changes when the tip changes, so the 1 s stake tick can
+    /// reuse the result instead of rescanning the whole set every second.
+    utxo_cache: std::sync::Mutex<Option<([u8; 32], Vec<Utxo>)>>,
 }
 
 /// Fill `out` with the UTXO commitment leaves *after* applying `transactions`
@@ -160,6 +164,7 @@ impl StakingEngine {
             max_stake_age: MAX_STAKE_AGE,
             bootstrap_exempt: false,
             commit_scratch: std::sync::Mutex::new(CommitScratch::default()),
+            utxo_cache: std::sync::Mutex::new(None),
         }
     }
 
@@ -172,6 +177,7 @@ impl StakingEngine {
             max_stake_age: MAX_STAKE_AGE,
             bootstrap_exempt: false,
             commit_scratch: std::sync::Mutex::new(CommitScratch::default()),
+            utxo_cache: std::sync::Mutex::new(None),
         }
     }
 
@@ -186,6 +192,7 @@ impl StakingEngine {
             max_stake_age: REGTEST_FAST_MAX_STAKE_AGE,
             bootstrap_exempt: false,
             commit_scratch: std::sync::Mutex::new(CommitScratch::default()),
+            utxo_cache: std::sync::Mutex::new(None),
         }
     }
 
@@ -198,7 +205,26 @@ impl StakingEngine {
             max_stake_age: REGTEST_FAST_MAX_STAKE_AGE,
             bootstrap_exempt: false,
             commit_scratch: std::sync::Mutex::new(CommitScratch::default()),
+            utxo_cache: std::sync::Mutex::new(None),
         }
+    }
+
+    /// This address's UTXOs if cached for `tip`, otherwise `None`.
+    pub(crate) fn cached_utxos(&self, tip: [u8; 32]) -> Option<Vec<Utxo>> {
+        self.utxo_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|(cached_tip, _)| *cached_tip == tip)
+            .map(|(_, utxos)| utxos.clone())
+    }
+
+    /// Cache this address's UTXOs against `tip`.
+    pub(crate) fn store_utxos(&self, tip: [u8; 32], utxos: Vec<Utxo>) {
+        *self
+            .utxo_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((tip, utxos));
     }
 
     /// Try to build a valid PoS block from available UTXOs.
@@ -1062,5 +1088,36 @@ mod conflict_tests {
                 vec![],
             )
             .is_none());
+    }
+    #[test]
+    fn test_stake_utxo_cache_keyed_by_tip() {
+        let engine = StakingEngine::new("VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k".into());
+        let tip_a = [1u8; 32];
+        let tip_b = [2u8; 32];
+        let utxo = Utxo {
+            txid: [3u8; 32],
+            vout: 0,
+            value: 1_000_000,
+            script_pubkey: vec![0x76, 0xa9],
+            height: 1,
+            timestamp: 0,
+        };
+
+        assert!(engine.cached_utxos(tip_a).is_none(), "cold cache");
+
+        engine.store_utxos(tip_a, vec![utxo.clone()]);
+        assert_eq!(engine.cached_utxos(tip_a).map(|v| v.len()), Some(1));
+        // A different tip must miss (stale entry is not served).
+        assert!(
+            engine.cached_utxos(tip_b).is_none(),
+            "tip change invalidates"
+        );
+
+        engine.store_utxos(tip_b, vec![]);
+        assert_eq!(
+            engine.cached_utxos(tip_b).map(|v| v.len()),
+            Some(0),
+            "empty result is cached too"
+        );
     }
 }

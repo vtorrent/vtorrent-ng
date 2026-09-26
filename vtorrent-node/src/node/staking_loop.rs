@@ -27,7 +27,6 @@ impl Node {
             best_hash,
             best_timestamp,
             best_stake_modifier,
-            stake_utxos,
             total_staked,
             tip_is_bootstrap,
         ) = {
@@ -37,12 +36,6 @@ impl Node {
             let best_block = chain.get_block_at_height(best_height);
             let best_timestamp = best_block.map(|b| b.header.timestamp).unwrap_or(0);
             let best_stake_modifier = best_block.map(|b| b.header.stake_modifier).unwrap_or(0);
-            let staking_address = self
-                .staking
-                .as_ref()
-                .map(|s| s.address.clone())
-                .unwrap_or_default();
-            let utxos = chain.get_utxos_for_address(&staking_address);
             // The height-1 bootstrap block's UTXO is brand new, so the next
             // block (height 2) must exempt it from the minimum stake age (T3).
             let tip_is_bootstrap = best_height == 1
@@ -55,10 +48,35 @@ impl Node {
                 best_hash,
                 best_timestamp,
                 best_stake_modifier,
-                utxos,
                 chain.total_staked(),
                 tip_is_bootstrap,
             )
+        };
+
+        // The UTXO set only changes when the tip changes, so reuse this
+        // address's UTXOs across the 1 s ticks at the same tip instead of
+        // rescanning the whole UTXO set every second.
+        let staking_address = self
+            .staking
+            .as_ref()
+            .map(|s| s.address.clone())
+            .unwrap_or_default();
+        let stake_utxos = match self
+            .staking
+            .as_ref()
+            .and_then(|s| s.cached_utxos(best_hash))
+        {
+            Some(utxos) => utxos,
+            None => {
+                let utxos = {
+                    let chain = self.chain.lock().await;
+                    chain.get_utxos_for_address(&staking_address)
+                };
+                if let Some(staking) = self.staking.as_ref() {
+                    staking.store_utxos(best_hash, utxos.clone());
+                }
+                utxos
+            }
         };
         if let Some(staking) = self.staking.as_mut() {
             staking.bootstrap_exempt = tip_is_bootstrap;
