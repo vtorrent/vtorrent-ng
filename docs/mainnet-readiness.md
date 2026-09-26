@@ -176,6 +176,10 @@ actions, operator approval.
       allows an explicit value). **This did not fix the growth** — see the open
       finding below. The bound is still correct on its own merits (a 1 GiB cache
       on a 150 MiB-budget node is a misconfiguration), but it is not the cause.
+- [ ] **BTC SPV header chain may be unbounded** — the SPV header store is an
+      in-memory map grown with BTC height (~870k headers ≈ ≥100 MiB on mainnet)
+      and is not obviously persisted/bounded. Quantify in the BTC-SPV soak; if
+      linear, persist/bound the header store. See `docs/btc-spv-soak-plan.md`.
 - [ ] **BTC SPV holds ~40 MiB and is not independently soaked** — BTC SPV (only
       enabled when `--btc-*` is passed, for atomic swaps) held **~40–47 MiB** on
       node1 and confounded the RSS measurements. It was disabled for the current
