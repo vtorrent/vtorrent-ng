@@ -1430,3 +1430,25 @@ time; a minor optimisation (cache per tip), not a leak.
 
 This closes the RSS investigation: body pruning + UTXO-commitment scratch
 removed the real drivers; what remains is allocator/cache behavior.
+
+## 2026-09-26 — 24 h RSS sampler summary
+
+Detached 5-min sampler, 09:12Z (09-25) → 09:11Z (09-26). Rates by trailing window:
+
+| node | 24 h | 12 h | 6 h | 2 h | shape |
+|---|---|---|---|---|---|
+| node1 (staker, BTC off since 14:12) | −847 kB/h | +1164 | +1047 | +989 | dropped ~40 MiB at BTC removal, then re-climbed |
+| node2 (apply) | +486 | +345 | +268 | +200 | **decelerating → plateau** |
+| node3 (apply) | +250 | +213 | +224 | +232 | steady ~230 kB/h |
+
+Levels now: node1 125 MiB, node2 147 MiB, node3 140 MiB — all under 220.
+
+Read: node2 is clearly plateauing; node3 is steady and low; node1 (the staker)
+re-climbed after the BTC-removal drop and is still creeping ~1 MB/h — consistent
+with **allocator high-water** given the interval heap profile showed no live
+leak (peak live ≤ ~0.3 MB). At ~1 MB/h node1 would reach ~265 MiB by sign-off,
+so it is the only node whose projection is tight; its rate is slowly
+decelerating and may plateau like node2.
+
+Action: keep monitoring daily; if node1 does not plateau, either tighten the
+allocator trim or raise the budget before sign-off.
