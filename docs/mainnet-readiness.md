@@ -191,9 +191,14 @@ actions, operator approval.
 - [x] **Block bodies — pruned** — `1e254b8` (env + code) bounds in-memory bodies
       to the recent window, serving older bodies from the store. Design:
       `docs/block-body-pruning-design.md`.
-- [ ] **RSS is sawtoothed, not monotonic** — allocator trims release tens of MiB
-      at once (a single 47 MiB drop observed). Rate figures must be computed over
-      whole trim cycles or they mislead. `docs/soak-log.md` 2026-09-25.
+- [x] **RSS investigation closed — no live-heap leak** — interval `SIGUSR1`
+      heap profile (steady-state window, 90 min): 372 allocation points,
+      ~15 MB total transient churn, **peak live ≤ ~0.3 MB**. The residual RSS
+      behaviour is **allocator high-water + redb page cache** (bounded, seesaws
+      with trims), not unbounded growth. Rate figures must be computed over whole
+      trim cycles. Remaining minor optimisations (not leaks):
+      `get_utxos_for_address` allocates per 1 s stake tick (cache per tip);
+      redb per-block write checksum churn. `docs/soak-log.md` 2026-09-26.
 - [x] **RSS growth — startup transient fixed (env only), deployed** — node1 grew
       to 160.4 MiB at ~450 kB/h. **A `dhat` heap profile showed no live-heap
       leak** (live heap *fell* 192.3 → 105.5 MiB peak→end); it is allocator
