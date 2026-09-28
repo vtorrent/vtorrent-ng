@@ -1480,3 +1480,59 @@ All three nodes agree on height and tip hash.
 - BTC SPV: height=0, synced=false.
 
 Earliest sign-off: **2026-10-02T05:47Z** (window start + 7 days). Next daily observation due 2026-09-27.
+
+## 2026-09-27 — daily observation (window +51h)
+
+Read-only check at `2026-09-27T09:11Z` (window start `2026-09-25T05:47:35Z`).
+
+- vtr-node1: height **20596**, hash `70c714f6656fc437…`, syncing=false, connections=2, mempool=0, mem=117.4MiB
+- vtr-node2: height **20597**, hash `e20474802dfc36d7…`, syncing=false, connections=1, mempool=0, mem=115.8MiB
+- vtr-node3: height **20597**, hash `e20474802dfc36d7…`, syncing=false, connections=1, mempool=0, mem=124.4MiB
+
+All three nodes agree on height and tip hash.
+
+- Staking enabled=true, eligible UTXOs=4, blocks staked this run=2537.
+
+- Block cadence within the window: n=3029 min=61 median=61 max=293 mean=61.1 slow(>120s)=1.
+
+- Prometheus since window start:
+  - Prometheus unavailable
+
+- Errors since window start:
+  - vtr-node1: errors=0, restarts=0
+  - vtr-node2: errors=0, restarts=0
+  - vtr-node3: errors=0, restarts=0
+
+- BTC SPV: height=0, synced=false.
+
+Earliest sign-off: **2026-10-02T05:47Z** (window start + 7 days). Next daily observation due 2026-09-28.
+
+> Note: the 2026-09-27 entry above reported "Prometheus unavailable" and a transient one-height lag — both were script bugs, fixed in `scripts/soak-observe.sh` (dynamic Prometheus step for >45h windows; re-read heights now shown). Corrected observation:
+
+## 2026-09-28 — daily observation (window +67h)
+
+Read-only check at `2026-09-28T01:12Z` (window start `2026-09-25T05:47:35Z`).
+
+- vtr-node1: height **21542**, hash `98292cf21a7e718f…`, syncing=false, connections=2, mempool=0, mem=127MiB
+- vtr-node2: height **21542**, hash `98292cf21a7e718f…`, syncing=false, connections=1, mempool=0, mem=122.5MiB
+- vtr-node3: height **21542**, hash `98292cf21a7e718f…`, syncing=false, connections=1, mempool=0, mem=128.7MiB
+
+All three nodes agree on height and tip hash.
+
+- Staking enabled=true, eligible UTXOs=4, blocks staked this run=3482.
+
+- Block cadence within the window: n=3974 min=61 median=61.0 max=293 mean=61.1 slow(>120s)=1.
+
+- Prometheus since window start:
+  - node1:22525: 10113/10113 samples, down=12, gaps>30s=0
+  - node2:22525: 10113/10113 samples, down=0, gaps>30s=0
+  - node3:22525: 10113/10113 samples, down=0, gaps>30s=0
+
+- Errors since window start:
+  - vtr-node1: errors=0, restarts=0
+  - vtr-node2: errors=0, restarts=0
+  - vtr-node3: errors=0, restarts=0
+
+- BTC SPV: height=0, synced=false.
+
+Earliest sign-off: **2026-10-02T05:47Z** (window start + 7 days). Next daily observation due 2026-09-29.

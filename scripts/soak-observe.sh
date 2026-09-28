@@ -75,6 +75,9 @@ if [[ "$(printf '%s\n' "${HEIGHTS[@]}" | sort -u | wc -l)" -ne 1 ]]; then
         HEIGHTS[$name]=$(echo "$info" | grep -o '"block_height":[0-9]*' | cut -d: -f2)
         HASHES[$name]=$(echo "$info" | grep -o '"best_block_hash":"[0-9a-f]*"' | cut -d: -f2 | tr -d '"')
     done
+    # The per-node lines above are from the first read; report the re-read so the
+    # displayed heights match the verdict.
+    echo "- (re-read after a transient lag: $(for n in "${!HEIGHTS[@]}"; do printf '%s=%s ' "$n" "${HEIGHTS[$n]}"; done))"
 fi
 unique_heights=$(printf '%s\n' "${HEIGHTS[@]}" | sort -u | wc -l)
 unique_hashes=$(printf '%s\n' "${HASHES[@]}" | sort -u | wc -l)
@@ -125,11 +128,15 @@ echo
 # Note: the sample at exactly WINDOW_START can read down=1 on nodes that were
 # still finishing recovery at that instant; it is a boundary artifact, not an
 # in-window outage. Check the reported timestamps before treating it as one.
-coverage=$(curl -s --max-time 5 "${PROM}/api/v1/query_range?query=up%7Bjob%3D%22vtorrent-nodes%22%7D&start=${WINDOW_START}&end=${now_epoch}&step=15s" \
+# Prometheus caps a query at 11,000 points per series, so widen the step as the
+# window grows (15 s for short windows, coarser for multi-day ones).
+prom_step=$(( (now_epoch - WINDOW_START) / 10000 ))
+[[ "$prom_step" -lt 15 ]] && prom_step=15
+coverage=$(curl -s --max-time 10 "${PROM}/api/v1/query_range?query=up%7Bjob%3D%22vtorrent-nodes%22%7D&start=${WINDOW_START}&end=${now_epoch}&step=${prom_step}s" \
     | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
-expected=(${now_epoch}-${WINDOW_START})//15+1
+expected=(${now_epoch}-${WINDOW_START})//${prom_step}+1
 for r in d['data']['result']:
     vals=r['values']
     downs=sum(1 for _,v in vals if float(v)==0)
