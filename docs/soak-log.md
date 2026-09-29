@@ -1564,3 +1564,16 @@ All three nodes agree on height and tip hash.
 - BTC SPV: height=0, synced=false.
 
 Earliest sign-off: **2026-10-02T05:47Z** (window start + 7 days). Next daily observation due 2026-09-30.
+
+## 2026-09-29 — host reboot (6th interruption)
+
+Host rebooted at **2026-09-29T13:30:44Z** (20:30 GMT+7). Containers
+auto-restarted (restart policy); node1 auto-unlocked at **13:36:22Z** and
+staking resumed. All three agree at 23721, 0 ERROR/panic. The `/tmp` RSS
+samplers were lost with the reboot.
+
+**Window resets to `2026-09-29T13:36:22Z`** → earliest sign-off
+**2026-10-06T13:36:22Z** (12:36 GMT+7 on 2026-10-06). This is the sixth
+interruption (host reboot, Docker-daemon incident, host suspend ×2, and the
+2026-09-24/25 deploys). The host is a laptop — disable automatic suspend/reboot
+before the next window, or move the fleet to the seed hosts.
