@@ -142,7 +142,9 @@ for r in d['data']['result']:
     downs=sum(1 for _,v in vals if float(v)==0)
     gaps=0; prev=None
     for ts,_ in vals:
-        if prev is not None and float(ts)-prev>30: gaps+=1
+        # A real scrape gap is more than two steps; the step grows with the
+        # window, so a fixed 30 s threshold would flag every sample.
+        if prev is not None and float(ts)-prev>2*${prom_step}: gaps+=1
         prev=float(ts)
     print(f\"  - {r['metric']['instance']}: {len(vals)}/{expected} samples, down={downs}, gaps>30s={gaps}\")
 " 2>/dev/null || echo "  - Prometheus unavailable")
