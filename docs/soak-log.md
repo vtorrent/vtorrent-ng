@@ -1577,3 +1577,59 @@ samplers were lost with the reboot.
 interruption (host reboot, Docker-daemon incident, host suspend ×2, and the
 2026-09-24/25 deploys). The host is a laptop — disable automatic suspend/reboot
 before the next window, or move the fleet to the seed hosts.
+
+## 2026-09-30 — daily observation (window +18h)
+
+Read-only check at `2026-09-30T07:37Z` (window start `2026-09-29T13:36:22Z`).
+
+- vtr-node1: height **24747**, hash `ab08d99652757cea…`, syncing=false, connections=2, mempool=0, mem=147.7MiB
+- vtr-node2: height **24747**, hash `ab08d99652757cea…`, syncing=false, connections=1, mempool=0, mem=163.1MiB
+- vtr-node3: height **24747**, hash `ab08d99652757cea…`, syncing=false, connections=1, mempool=0, mem=130.1MiB
+
+All three nodes agree on height and tip hash.
+
+- Staking enabled=true, eligible UTXOs=4, blocks staked this run=1064.
+
+- Block cadence within the window: n=1062 min=61 median=61.0 max=62 mean=61.0 slow(>120s)=0.
+
+- Prometheus since window start:
+  - node1:22525: 4324/4324 samples, down=1, gaps>30s=0
+  - node2:22525: 4324/4324 samples, down=2, gaps>30s=0
+  - node3:22525: 4324/4324 samples, down=1, gaps>30s=0
+
+- Errors since window start:
+  - vtr-node1: errors=0, restarts=0
+  - vtr-node2: errors=0, restarts=0
+  - vtr-node3: errors=0, restarts=0
+
+- BTC SPV: height=0, synced=false.
+
+Earliest sign-off: **2026-10-06T13:36Z** (window start + 7 days). Next daily observation due 2026-10-01.
+
+## 2026-10-01 — daily observation (window +35h)
+
+Read-only check at `2026-10-01T01:30Z` (window start `2026-09-29T13:36:22Z`).
+
+- vtr-node1: height **25802**, hash `5dbfba920e5dc4e0…`, syncing=false, connections=2, mempool=0, mem=151.6MiB
+- vtr-node2: height **25802**, hash `5dbfba920e5dc4e0…`, syncing=false, connections=1, mempool=0, mem=169.6MiB
+- vtr-node3: height **25802**, hash `5dbfba920e5dc4e0…`, syncing=false, connections=1, mempool=0, mem=133MiB
+
+All three nodes agree on height and tip hash.
+
+- Staking enabled=true, eligible UTXOs=4, blocks staked this run=2119.
+
+- Block cadence within the window: n=2064 min=61 median=61.0 max=62 mean=61.0 slow(>120s)=0.
+
+- Prometheus since window start:
+  - node1:22525: 8616/8616 samples, down=1, gaps>30s=0
+  - node2:22525: 8616/8616 samples, down=2, gaps>30s=0
+  - node3:22525: 8616/8616 samples, down=1, gaps>30s=0
+
+- Errors since window start:
+  - vtr-node1: errors=0, restarts=0
+  - vtr-node2: errors=0, restarts=0
+  - vtr-node3: errors=0, restarts=0
+
+- BTC SPV: height=0, synced=false.
+
+Earliest sign-off: **2026-10-06T13:36Z** (window start + 7 days). Next daily observation due 2026-10-02.
