@@ -1690,3 +1690,31 @@ All three nodes agree on height and tip hash.
 - BTC SPV: height=0, synced=false.
 
 Earliest sign-off: **2026-10-06T13:36Z** (window start + 7 days). Next daily observation due 2026-10-04.
+
+## 2026-10-04 — daily observation (window +109h)
+
+Read-only check at `2026-10-04T03:10Z` (window start `2026-09-29T13:36:22Z`).
+
+- vtr-node1: height **30149**, hash `9e805fa4e910c066…`, syncing=false, connections=2, mempool=0, mem=169.4MiB
+- vtr-node2: height **30149**, hash `9e805fa4e910c066…`, syncing=false, connections=1, mempool=0, mem=167.2MiB
+- vtr-node3: height **30149**, hash `9e805fa4e910c066…`, syncing=false, connections=1, mempool=0, mem=148.5MiB
+
+All three nodes agree on height and tip hash.
+
+- Staking enabled=true, eligible UTXOs=4, blocks staked this run=6466.
+
+- Block cadence within the window: n=6431 min=61 median=61 max=62 mean=61.0 slow(>120s)=0.
+
+- Prometheus since window start:
+  - node1:22525: 10114/10114 samples, down=1, gaps>30s=0
+  - node2:22525: 10114/10114 samples, down=1, gaps>30s=0
+  - node3:22525: 10114/10114 samples, down=1, gaps>30s=0
+
+- Errors since window start:
+  - vtr-node1: errors=0, restarts=0
+  - vtr-node2: errors=0, restarts=0
+  - vtr-node3: errors=0, restarts=0
+
+- BTC SPV: height=0, synced=false.
+
+Earliest sign-off: **2026-10-06T13:36Z** (window start + 7 days). Next daily observation due 2026-10-05.
