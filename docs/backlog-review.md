@@ -32,20 +32,31 @@ they surfaced, and prioritize.
 codec, tx deser, BTC PSBT); RPC rate limiting + metrics exist; Tor/I2P transport
 exists; `ut_metadata` (BEP-9) exists.
 
-## 3. Bugs the designs surfaced (fix regardless)
+## 3. Bugs the designs surfaced
+
+**Verified (fix now):**
+
+3. **WIF in the browser** — `TradePage.tsx:53,528` takes a raw `takerWif` and
+   passes it to `vtrClaim`, violating the "keys never reach the JS frontend"
+   rule. (`atomic-swap-ux-design.md` R1.) **Real, active.**
+4. **`prefer_onion` silently falls back to clearnet** — `transport.rs` dials
+   clearnet when the Tor connect fails. (`privacy-design.md` R2.)
+   **Real, active — FIXED** in `33dfe3e` (`strict_onion` refuses the fallback).
+5. **Torrent incentives are unverifiable** — self-reported bytes drive real
+   on-chain payments. (`incentive-verification-design.md`.) **Real, active.**
+
+**Latent (verify before "fixing" — the RPC wallet is single-key today):**
 
 1. **Incomplete history** — `get_transactions` (`handlers/wallet.rs:594`) queries
-   only the **change address**, so history is wrong for multi-address wallets.
-   (`wallet-organization-design.md` R1.)
-2. **HD restore can't find addresses** — `HdAccount` (`hd.rs:16`) stores no
-   derivation index and there is no gap-limit scan, so a restored HD wallet
-   shows empty balances. (`hd-discovery-design.md`.)
-3. **WIF in the browser** — `TradePage.tsx` takes a raw `takerWif`, violating the
-   "keys never reach the JS frontend" rule. (`atomic-swap-ux-design.md` R1.)
-4. **`prefer_onion` silently falls back to clearnet** — a deanonymization bug.
-   (`privacy-design.md` R2.)
-5. **Torrent incentives are unverifiable** — self-reported bytes drive real
-   on-chain payments. (`incentive-verification-design.md`.)
+   only the change address. **Latent**: the RPC wallet is single-key
+   (`HotWalletData { wif }`), so it's currently correct; it becomes a bug the
+   moment multi-address/HD is wired. Fix alongside `wallet-organization-design.md`.
+2. **HD restore can't find addresses** — `HdAccount` (`hd.rs:16`) has no
+   derivation index / gap-limit scan. **Latent**: HD is not wired to the RPC
+   wallet yet; becomes a bug when it is. Fix with `hd-discovery-design.md`.
+
+**Lesson:** verify "bugs" against the code before asserting them — two of the
+five were latent, not active.
 
 ## 4. Prioritization
 
