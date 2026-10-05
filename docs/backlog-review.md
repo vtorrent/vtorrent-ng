@@ -36,9 +36,10 @@ exists; `ut_metadata` (BEP-9) exists.
 
 **Verified (fix now):**
 
-3. **WIF in the browser** — `TradePage.tsx:53,528` takes a raw `takerWif` and
-   passes it to `vtrClaim`, violating the "keys never reach the JS frontend"
-   rule. (`atomic-swap-ux-design.md` R1.) **Real, active.**
+3. **WIF in the browser** — `TradePage.tsx` took a raw `takerWif` and passed it
+   to `vtrClaim`. **Real, active — FIXED** in `a050bd1`: the handler signs with
+   the unlocked wallet key (passphrase + optional OTP); the UI sends a
+   passphrase. A non-empty `taker_wif` remains an explicit CLI/test override.
 4. **`prefer_onion` silently falls back to clearnet** — `transport.rs` dials
    clearnet when the Tor connect fails. (`privacy-design.md` R2.)
    **Real, active — FIXED** in `33dfe3e` (`strict_onion` refuses the fallback).
