@@ -19,6 +19,14 @@ pub struct TransportConfig {
     /// If false, onion routing is only used for .onion/.i2p addresses.
     pub prefer_onion: bool,
 
+    /// Whether to refuse clearnet connections entirely.
+    ///
+    /// When true, a clearnet address is never dialed directly: the connection
+    /// must go through Tor (or I2P), and if that is unavailable the dial fails
+    /// rather than silently deanonymizing the user. This closes the
+    /// `prefer_onion` fallback hole where a failed Tor dial drops to clearnet.
+    pub strict_onion: bool,
+
     /// Whether to create a Tor hidden service for inbound connections.
     pub create_hidden_service: bool,
 
@@ -39,6 +47,7 @@ impl Default for TransportConfig {
             i2p_enabled: false,
             i2p_sam_addr: "127.0.0.1:7656".to_string(),
             prefer_onion: false,
+            strict_onion: false,
             create_hidden_service: false,
             hidden_service_dir: String::new(),
             connect_timeout_secs: 30,

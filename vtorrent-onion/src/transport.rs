@@ -71,12 +71,19 @@ impl OnionTransport {
         }
 
         // Clearnet address
-        if self.config.prefer_onion && self.config.tor_enabled {
+        if (self.config.prefer_onion || self.config.strict_onion) && self.config.tor_enabled {
             // Try Tor first for clearnet addresses too
             if self.tor.is_available().await {
                 match self.tor.connect(addr).await {
                     Ok(stream) => return Ok((stream, TransportMode::Tor)),
                     Err(e) => {
+                        if self.config.strict_onion {
+                            // Refuse to deanonymize: never fall back to clearnet.
+                            return Err(OnionError::NotConfigured(format!(
+                                "strict onion mode: Tor connect to {} failed ({}) and clearnet is disabled",
+                                addr, e
+                            )));
+                        }
                         tracing::warn!(
                             "Tor connect to {} failed ({}), falling back to clearnet",
                             addr,
@@ -84,7 +91,17 @@ impl OnionTransport {
                         );
                     }
                 }
+            } else if self.config.strict_onion {
+                return Err(OnionError::NotConfigured(format!(
+                    "strict onion mode: Tor unavailable, refusing clearnet dial to {}",
+                    addr
+                )));
             }
+        } else if self.config.strict_onion {
+            return Err(OnionError::NotConfigured(format!(
+                "strict onion mode: refusing clearnet dial to {} (Tor not enabled)",
+                addr
+            )));
         }
 
         // Direct clearnet connection (with a timeout so a non-responsive peer
@@ -193,6 +210,34 @@ mod tests {
         };
         let transport = OnionTransport::new(config);
         let result = transport.connect("zzz.i2p:22526").await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), OnionError::NotConfigured(_)));
+    }
+
+    #[tokio::test]
+    async fn test_strict_onion_refuses_clearnet_when_tor_unavailable() {
+        // Tor is pointed at a dead port, so it is unavailable; strict mode must
+        // refuse the clearnet dial rather than silently deanonymize.
+        let config = TransportConfig {
+            tor_socks_addr: "127.0.0.1:19051".to_string(),
+            strict_onion: true,
+            ..Default::default()
+        };
+        let transport = OnionTransport::new(config);
+        let result = transport.connect("203.0.113.7:22526").await;
+        assert!(result.is_err(), "strict onion must not dial clearnet");
+        assert!(matches!(result.unwrap_err(), OnionError::NotConfigured(_)));
+    }
+
+    #[tokio::test]
+    async fn test_strict_onion_refuses_clearnet_when_tor_disabled() {
+        let config = TransportConfig {
+            tor_enabled: false,
+            strict_onion: true,
+            ..Default::default()
+        };
+        let transport = OnionTransport::new(config);
+        let result = transport.connect("203.0.113.7:22526").await;
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), OnionError::NotConfigured(_)));
     }
