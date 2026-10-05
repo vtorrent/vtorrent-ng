@@ -150,6 +150,45 @@ impl IncentiveSummary {
 }
 
 /// Aggregate incentive accounts into a session summary.
+/// Default tolerance for bilateral receipt agreement, in parts per 10,000
+/// (500 = 5%). Lost packets and retransmits mean the two sides rarely agree
+/// exactly; a payment is made on the **agreed** (minimum) figure when the two
+/// receipts are within this tolerance, and withheld otherwise.
+pub const RECEIPT_TOLERANCE_BPS: u64 = 500;
+
+/// Outcome of comparing two signed receipts for the same window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReceiptAgreement {
+    /// Both sides agree within tolerance; pay this many satoshis (the minimum
+    /// of the two claims, so neither side can inflate the payment).
+    Agreed { satoshis: u64 },
+    /// The claims differ by more than the tolerance — withhold payment.
+    Disputed { mine: u64, theirs: u64 },
+}
+
+/// Compare what we earned from a peer against what the peer's signed receipt
+/// claims we uploaded, and decide whether to pay.
+///
+/// `mine_satoshis` is what our own accounting says we are owed for uploads to
+/// the peer; `their_receipt_uploaded` is the bytes the peer's signed receipt says
+/// it downloaded from us. Both are converted at the same 1 VTR/GB rate.
+pub fn agree_on_upload(mine_satoshis: u64, their_receipt_uploaded: u64) -> ReceiptAgreement {
+    const GB: u128 = 1024 * 1024 * 1024;
+    let theirs = ((their_receipt_uploaded as u128 * COIN as u128) / GB) as u64;
+    let hi = mine_satoshis.max(theirs);
+    let lo = mine_satoshis.min(theirs);
+    // |mine - theirs| <= tolerance * hi
+    let diff = hi - lo;
+    if diff.saturating_mul(10_000) <= hi.saturating_mul(RECEIPT_TOLERANCE_BPS) {
+        ReceiptAgreement::Agreed { satoshis: lo }
+    } else {
+        ReceiptAgreement::Disputed {
+            mine: mine_satoshis,
+            theirs,
+        }
+    }
+}
+
 pub fn aggregate_summary(accounts: &[PeerBandwidthAccount]) -> IncentiveSummary {
     let mut summary = IncentiveSummary {
         total_earned_satoshis: 0,
@@ -275,5 +314,31 @@ mod tests {
         assert_eq!(summary.paid_vtr_display(), "0.500000 VTR");
         assert_eq!(summary.uploaded_display(), "2.00 GB");
         assert_eq!(summary.downloaded_display(), "512.00 MB");
+    }
+    #[test]
+    fn test_receipt_agreement_within_tolerance_pays_minimum() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        // We claim 1 VTR (COIN sat); peer's receipt says 0.97 VTR (3% less).
+        let mine = COIN;
+        let their_bytes = GB * 97 / 100;
+        match agree_on_upload(mine, their_bytes) {
+            ReceiptAgreement::Agreed { satoshis } => {
+                assert!(satoshis <= mine, "never pay more than we claim");
+                assert!(satoshis > 0);
+            }
+            other => panic!("expected agreement, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_receipt_agreement_beyond_tolerance_disputes() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        // We claim 1 VTR; peer's receipt claims 2 VTR (100% more) -> dispute.
+        let mine = COIN;
+        let their_bytes = GB * 2;
+        assert!(matches!(
+            agree_on_upload(mine, their_bytes),
+            ReceiptAgreement::Disputed { .. }
+        ));
     }
 }
