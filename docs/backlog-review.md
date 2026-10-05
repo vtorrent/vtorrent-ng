@@ -43,8 +43,11 @@ exists; `ut_metadata` (BEP-9) exists.
 4. **`prefer_onion` silently falls back to clearnet** — `transport.rs` dials
    clearnet when the Tor connect fails. (`privacy-design.md` R2.)
    **Real, active — FIXED** in `33dfe3e` (`strict_onion` refuses the fallback).
-5. **Torrent incentives are unverifiable** — self-reported bytes drive real
-   on-chain payments. (`incentive-verification-design.md`.) **Real, active.**
+5. **Torrent incentives are unverifiable** — self-reported bytes drove real
+   on-chain payments. **Real, active — core landed** in `d5d832b`:
+   `vtorrent-core::receipt::BandwidthReceipt` (signed, domain-separated,
+   anti-replay) + `agree_on_upload` (pay the minimum within tolerance, withhold
+   on dispute). The BEP-10 wire exchange + settlement wiring remain.
 
 **Latent (verify before "fixing" — the RPC wallet is single-key today):**
 
