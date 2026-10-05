@@ -313,6 +313,8 @@ async fn reconciliation_distinguishes_submissions_confirmations_and_reorgs() {
         VtrClaimRequest {
             order_id: id.clone(),
             preimage: hex::encode(preimage),
+            passphrase: String::new().into(),
+            otp_code: None,
             taker_wif: vtr_identity(2).0,
         },
     )
@@ -522,6 +524,8 @@ async fn vtr_claim_and_refund_retry_exact_signed_transactions_after_restart() {
                 VtrClaimRequest {
                     order_id: id.clone(),
                     preimage: hex::encode(order.preimage.unwrap()),
+                    passphrase: String::new().into(),
+                    otp_code: None,
                     taker_wif: vtr_identity(3).0,
                 },
             )
@@ -536,6 +540,8 @@ async fn vtr_claim_and_refund_retry_exact_signed_transactions_after_restart() {
                     VtrClaimRequest {
                         order_id: id.clone(),
                         preimage: hex::encode(order.preimage.unwrap()),
+                        passphrase: String::new().into(),
+                        otp_code: None,
                         taker_wif: vtr_identity(2).0,
                     },
                 )
@@ -1546,6 +1552,8 @@ async fn vtr_claim_uses_preimage_recovered_from_the_observed_btc_claim() {
         VtrClaimRequest {
             order_id: id.clone(),
             preimage: String::new(),
+            passphrase: String::new().into(),
+            otp_code: None,
             taker_wif: vtr_identity(2).0,
         },
     )
@@ -1566,6 +1574,8 @@ async fn vtr_claim_without_preimage_or_observation_is_rejected() {
         VtrClaimRequest {
             order_id: id.clone(),
             preimage: String::new(),
+            passphrase: String::new().into(),
+            otp_code: None,
             taker_wif: vtr_identity(2).0,
         },
     )

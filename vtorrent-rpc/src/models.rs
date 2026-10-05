@@ -563,7 +563,20 @@ pub struct VtrClaimRequest {
     /// taker on a different node does not need it out of band.
     #[serde(default)]
     pub preimage: String,
-    /// The taker's WIF private key, used to sign the claim transaction.
+    /// Wallet passphrase, used to sign the claim with the wallet's own key.
+    ///
+    /// Preferred path: the private key never leaves the backend, so the UI must
+    /// not send a WIF. Used when `taker_wif` is empty.
+    #[serde(default)]
+    pub passphrase: zeroize::Zeroizing<String>,
+    /// Optional TOTP code when 2FA is enabled.
+    #[serde(default)]
+    pub otp_code: Option<String>,
+    /// Optional explicit taker WIF override (CLI/tests only).
+    ///
+    /// When non-empty it is used directly instead of the wallet key. The web UI
+    /// never sets this; it exists for headless tooling and single-node tests.
+    #[serde(default)]
     pub taker_wif: zeroize::Zeroizing<String>,
 }
 

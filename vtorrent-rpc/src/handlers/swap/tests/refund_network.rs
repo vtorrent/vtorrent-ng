@@ -488,6 +488,8 @@ async fn claim_refund_fork(claim_wins: bool, loser_confirmed: bool) {
         VtrClaimRequest {
             order_id: id.clone(),
             preimage: hex::encode(preimage),
+            passphrase: String::new().into(),
+            otp_code: None,
             taker_wif: vtr_identity(2).0,
         },
     )

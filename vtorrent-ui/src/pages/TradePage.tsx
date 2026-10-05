@@ -50,7 +50,7 @@ export default function TradePage() {
   // Swap lifecycle state
   const [swapOrderId, setSwapOrderId] = useState('')
   const [takerAddress, setTakerAddress] = useState('')
-  const [takerWif, setTakerWif] = useState('')
+  const [takerPassphrase, setTakerPassphrase] = useState('')
   const [btcRefundAddress, setBtcRefundAddress] = useState('')
   const [preimage, setPreimage] = useState('')
   const [swapBusy, setSwapBusy] = useState(false)
@@ -395,14 +395,17 @@ export default function TradePage() {
             </div>
 
             <div>
-              <label className="label">Taker WIF (for VTR claim)</label>
+              <label className="label">Wallet passphrase (for VTR claim)</label>
               <input
                 type="password"
-                className="input-field font-mono"
-                placeholder="7…"
-                value={takerWif}
-                onChange={e => setTakerWif(e.target.value)}
+                className="input-field"
+                placeholder="Wallet passphrase"
+                value={takerPassphrase}
+                onChange={e => setTakerPassphrase(e.target.value)}
               />
+              <p className="text-xs text-slate-500 mt-1">
+                Signs with the imported wallet key — the private key never leaves the backend.
+              </p>
             </div>
 
             <div>
@@ -523,9 +526,9 @@ export default function TradePage() {
                 Fund BTC
               </button>
               <button
-                disabled={swapBusy || !swapOrderId || !preimage || !takerWif}
+                disabled={swapBusy || !swapOrderId || !preimage || !takerPassphrase}
                 onClick={() => runSwap(
-                  () => vtrClaim({ orderId: swapOrderId, preimage, takerWif }),
+                  () => vtrClaim({ orderId: swapOrderId, preimage, passphrase: takerPassphrase }),
                   'VTR claim submitted — confirmation pending'
                 )}
                 className="btn-primary text-xs disabled:opacity-50"

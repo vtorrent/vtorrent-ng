@@ -434,11 +434,12 @@ export async function btcFund(req: {
   ) as SwapActionResult
 }
 
-/** Claim VTR by revealing the preimage (taker). */
+/** Claim VTR by revealing the preimage (taker). Signs with the wallet key. */
 export async function vtrClaim(req: {
   orderId: string
   preimage: string
-  takerWif: string
+  passphrase: string
+  otpCode?: string
 }): Promise<SwapActionResult> {
   if (isTauri()) {
     return tauriInvoke<SwapActionResult>('vtr_claim', req)
@@ -447,7 +448,8 @@ export async function vtrClaim(req: {
     await rpcPost<unknown>('/api/v1/swap/vtr-claim', {
       order_id: req.orderId,
       preimage: req.preimage,
-      taker_wif: req.takerWif,
+      passphrase: req.passphrase,
+      otp_code: req.otpCode,
     })
   ) as SwapActionResult
 }

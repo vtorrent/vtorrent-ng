@@ -355,7 +355,8 @@ pub async fn vtr_claim(
     state: tauri::State<'_, AppState>,
     order_id: String,
     preimage: String,
-    taker_wif: String,
+    passphrase: String,
+    otp_code: Option<String>,
 ) -> Result<SwapActionResult> {
     let guard = state.node.lock().await;
     let handle = guard
@@ -367,7 +368,9 @@ pub async fn vtr_claim(
         vtorrent_rpc::models::VtrClaimRequest {
             order_id,
             preimage,
-            taker_wif: taker_wif.into(),
+            passphrase: passphrase.into(),
+            otp_code,
+            taker_wif: String::new().into(),
         },
     )
     .await

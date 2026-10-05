@@ -380,9 +380,13 @@ pub async fn vtr_claim_with_state(
     state: &AppState,
     req: VtrClaimRequest,
 ) -> RpcResult<SwapActionResponse> {
-    if req.taker_wif.is_empty() {
-        return Err(RpcError::BadRequest("Taker WIF is required".into()));
-    }
+    // Sign with the wallet's own key — the private key never reaches the client.
+    // A non-empty `taker_wif` is an explicit override for CLI/tests only.
+    let taker_wif = if req.taker_wif.is_empty() {
+        verify_wallet_auth(state, &req.passphrase, req.otp_code.as_deref()).await?
+    } else {
+        req.taker_wif.clone()
+    };
 
     let order = {
         let order_book = state.order_book.read().await;
@@ -465,7 +469,7 @@ pub async fn vtr_claim_with_state(
             vtr_amount: order.vtr_amount,
             funding_txid,
             preimage,
-            taker_wif: &req.taker_wif,
+            taker_wif: &taker_wif,
         })
         .map_err(RpcError::BadRequest)?;
     let claim_txid = claim_tx.txid();
