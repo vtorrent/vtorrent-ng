@@ -58,9 +58,12 @@ Node1 subsequently joined the same release after another green CI gate and
 recorded follower observation. All maintenance interruptions remain excluded
 from uninterrupted soak measurements.
 
-- [ ] **3+ node Docker testnet** (`docker/testnet/docker-compose.yml`) runs
-      ≥7 days: blocks propagate between all nodes, no forks beyond expected
-      PoS reorg depth, no memory growth, no peer churn storms. *(Mechanics
+- [x] **3+ node Docker testnet** (`docker/testnet/docker-compose.yml`) ran
+      **≥7 days and PASSED** — window `2026-09-29T13:36:22Z` →
+      `2026-10-06T13:36:22Z` (+169 h): 3/3 nodes agreed on height (33677) and
+      tip hash, 0 reorgs, 0 ERROR/panic, 0 restarts, Prometheus 10002/10002
+      samples/node with 0 gaps, memory 152–162 MiB (under the 220 MiB budget).
+      See `docs/soak-log.md` 2026-10-06 sign-off. *(Mechanics
       verified 2026-08-30: 3 nodes mesh, faucet mints persist across
       restarts, mesh self-heals after node restart. Fresh v3 run produced and
       propagated PoS block `a6b2a648…fab20` at height 2, then replayed it from
