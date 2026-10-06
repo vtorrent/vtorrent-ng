@@ -55,7 +55,7 @@ impact, dependencies, and recommended ship order. Update as designs land.
 
 | Design | Depends on | Notes |
 |---|---|---|
-| `earnings-view-design.md` | — | staking + torrent + swap in one view |
+| `earnings-view-design.md` | — | **SHIPPED** (`4498fe5`): `GET /api/v1/earnings/summary` + Earnings page |
 | `notifications-design.md` | — | toasts + money-critical alerts |
 | `atomic-swap-ux-design.md` | — | guided wizard + deadline tracker |
 | `payment-requests-design.md` | — | VTR URI + receive QR |
