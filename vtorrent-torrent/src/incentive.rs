@@ -150,6 +150,29 @@ impl IncentiveSummary {
 }
 
 /// Aggregate incentive accounts into a session summary.
+/// Build a signed-ready bandwidth receipt for one settlement window from this
+/// account's own accounting. The caller fills `signer` with its own VTR address
+/// and signs with `vtorrent_core::receipt::BandwidthReceipt::sign`.
+pub fn build_receipt(
+    account: &PeerBandwidthAccount,
+    info_hash: [u8; 20],
+    window_start: u64,
+    window_end: u64,
+    signer: &str,
+    settlement_id: u64,
+) -> vtorrent_core::receipt::BandwidthReceipt {
+    vtorrent_core::receipt::BandwidthReceipt {
+        info_hash,
+        window_start,
+        window_end,
+        uploaded_by_me: account.bytes_uploaded,
+        downloaded_by_me: account.bytes_downloaded,
+        peer: account.peer_address.clone(),
+        signer: signer.to_string(),
+        settlement_id,
+    }
+}
+
 /// Default tolerance for bilateral receipt agreement, in parts per 10,000
 /// (500 = 5%). Lost packets and retransmits mean the two sides rarely agree
 /// exactly; a payment is made on the **agreed** (minimum) figure when the two
@@ -340,5 +363,24 @@ mod tests {
             agree_on_upload(mine, their_bytes),
             ReceiptAgreement::Disputed { .. }
         ));
+    }
+    #[test]
+    fn test_build_receipt_from_account() {
+        let mut account = PeerBandwidthAccount::new("VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k".into());
+        account.record_upload(3 * 1024 * 1024 * 1024);
+        account.record_download(1024 * 1024 * 1024);
+        let r = build_receipt(
+            &account,
+            [9u8; 20],
+            100,
+            400,
+            "VH6w62jDRYpYHjR2eJjFzXRC4MQvvs93a6",
+            7,
+        );
+        assert_eq!(r.uploaded_by_me, 3 * 1024 * 1024 * 1024);
+        assert_eq!(r.downloaded_by_me, 1024 * 1024 * 1024);
+        assert_eq!(r.peer, account.peer_address);
+        assert_eq!(r.settlement_id, 7);
+        assert_eq!(r.info_hash, [9u8; 20]);
     }
 }
