@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "vTorrent",
-  "version": "2.0.0-beta.2",
+  "version": "2.0.0-beta.3",
   "identifier": "io.vtorrent.client",
   "build": {
     "beforeDevCommand": "cd ../vtorrent-ui && pnpm dev",
     "devUrl": "http://localhost:3000",
-    "beforeBuildCommand": "cd ../vtorrent-ui && pnpm build",
+    "beforeBuildCommand": "",
     "frontendDist": "../vtorrent-ui/dist"
   },
   "app": {
