@@ -1746,3 +1746,56 @@ All three nodes agree on height and tip hash.
 - BTC SPV: height=0, synced=false.
 
 Earliest sign-off: **2026-10-06T13:36Z** (window start + 7 days). Next daily observation due 2026-10-05.
+
+## 2026-10-06 — daily observation (window +169h)
+
+Read-only check at `2026-10-06T15:04Z` (window start `2026-09-29T13:36:22Z`).
+
+- vtr-node1: height **33677**, hash `ab0f8b8383da726c…`, syncing=false, connections=2, mempool=0, mem=161.9MiB
+- vtr-node2: height **33677**, hash `ab0f8b8383da726c…`, syncing=false, connections=1, mempool=0, mem=160.8MiB
+- vtr-node3: height **33677**, hash `ab0f8b8383da726c…`, syncing=false, connections=1, mempool=0, mem=152.2MiB
+
+All three nodes agree on height and tip hash.
+
+- Staking enabled=true, eligible UTXOs=4, blocks staked this run=1441.
+
+- Block cadence within the window: n=9993 min=61 median=61 max=498 mean=61.0 slow(>120s)=1.
+
+- Prometheus since window start:
+  - node1:22525: 10002/10002 samples, down=8, gaps>30s=0
+  - node2:22525: 10002/10002 samples, down=8, gaps>30s=0
+  - node3:22525: 10002/10002 samples, down=9, gaps>30s=0
+
+- Errors since window start:
+  - vtr-node1: errors=0, restarts=0
+  - vtr-node2: errors=0, restarts=0
+  - vtr-node3: errors=0, restarts=0
+
+- BTC SPV: height=0, synced=false.
+
+Earliest sign-off: **2026-10-06T13:36Z** (window start + 7 days). Next daily observation due 2026-10-07.
+
+## 2026-10-06 — SOAK SIGN-OFF (window complete)
+
+The 7-day window (`2026-09-29T13:36:22Z` → `2026-10-06T13:36:22Z`, +169 h at
+check time) **completed and passed**:
+
+- **Consensus:** 3/3 nodes agree on height (33677) and tip hash; 0 reorgs
+  observed; 0 ERROR/panic; 0 restarts across all three nodes.
+- **Staking:** enabled throughout; 1441 blocks staked this run; 4 eligible UTXOs.
+- **Cadence:** n=9993 intervals, median 61 s, mean 61.0 s, one 498 s outlier
+  (single slow block, not a stall).
+- **Availability:** Prometheus 10002/10002 samples per node, 0 scrape gaps.
+- **Memory:** node1 161.7 / node2 161.3 / node3 151.9 MiB — all under the 220 MiB
+  budget; the RSS investigation is closed (no live leak; allocator high-water +
+  redb cache).
+- **BTC SPV:** off (as intended for this window).
+
+**Verdict: PASS.** The fleet ran a full 7 days with continuous staking, full
+monitoring coverage, no errors, no restarts, and memory within budget.
+
+**Deferred to the post-soak batch** (see `docs/roadmap.md`): restore + soak BTC
+SPV; the consensus batch (`network-upgrade` → `op-return` + `cold-staking` →
+`governance` → `state-rent`); the P0 fixes already landed (`strict_onion`,
+WIF-in-browser, incentive-receipt core); `v2.0.0-beta.3` tag; node1 → `info`
+logging.
