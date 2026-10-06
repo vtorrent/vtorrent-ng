@@ -1,6 +1,6 @@
 # vTorrent 2.0.0-beta.3 Release Notes
 
-*Draft — finalize version number at tag time.*
+**Released 2026-10-06.** Mainnet-readiness candidate; the three-node soak passed a full 7-day window.
 
 ## Highlights
 
@@ -262,3 +262,68 @@ replay unchanged and do not require a coordinated fleet upgrade.
   genesis exists.
 - BTC refund fee replacement is intentionally unsupported; do not "fix" the
   non-RBF sequence without a sound protocol-level replacement.
+
+## Addendum 4 — mainnet-readiness soak + memory work (2026-09-23 → 2026-10-06)
+
+### Soak — PASSED
+
+The three-node regtest fleet completed a **full 7-day continuous window**
+(`2026-09-29T13:36:22Z` → `2026-10-06T13:36:22Z`, +169 h):
+
+- 3/3 nodes agreed on height and tip hash throughout; 0 reorgs.
+- 0 `ERROR`/`panic`, **0 restarts** on any node.
+- Staking continuous (~61 s median block cadence); 1441 blocks staked this run.
+- Prometheus 10002/10002 samples per node, 0 scrape gaps.
+- Memory 152–162 MiB per node — under the 220 MiB budget.
+
+See `docs/soak-log.md` (2026-10-06 sign-off) and `docs/mainnet-readiness.md`.
+
+### Memory (RSS growth — investigated and fixed)
+
+- **Block-body pruning** — the in-memory `Chain` retained every block body
+  forever. Bodies are now pruned to the recent window (headers and indexes
+  retained); older bodies are served from the store. Consensus-safe: no
+  validation path reads a body older than `max_reorg_depth`.
+  (`docs/block-body-pruning-design.md`.)
+- **Reusable UTXO-commitment scratch** — the chain and staking rebuilt the whole
+  UTXO Merkle tree into fresh buffers every block. They now reuse persistent
+  buffers (`MerkleScratch` + a chain/staking scratch); the root is
+  **byte-identical** (no consensus change). Measured: staking-path allocation
+  **637.6 → 30.7 MB (−95%)**, controlled growth **−85%**.
+  (`docs/utxo-commitment-scratch-design.md`.)
+- **BTC SPV** identified as a separable ~40 MiB component (its own budget).
+- **RSS investigation closed**: an interval heap profile shows **no live-heap
+  leak** (peak live ≤ ~0.3 MB); the residual is allocator high-water + redb
+  cache, bounded and sawtoothed by trims.
+
+### Security
+
+- **`strict_onion`** — `prefer_onion` silently fell back to a direct clearnet
+  dial when the Tor connect failed, deanonymizing the user. A new
+  `TransportConfig::strict_onion` refuses the clearnet dial instead.
+- **Swap claim signing** — the Trade page took a raw taker WIF and sent it to
+  `/swap/vtr-claim`, violating the "keys never reach the JS frontend" rule. The
+  handler now signs with the unlocked wallet key (passphrase + optional OTP); a
+  non-empty `taker_wif` remains an explicit CLI/test override.
+- **Incentive verification (core)** — torrent incentives paid peers on
+  self-reported bytes. `vtorrent-core::receipt::BandwidthReceipt` (signed,
+  domain-separated, anti-replay) plus `agree_on_upload` (pay the minimum within
+  tolerance, withhold on dispute) land the verification core; the BEP-10 wire
+  exchange and settlement wiring follow.
+
+### Upgrade notes (in addition to those above)
+
+- The pruning and UTXO-scratch changes are **no-ops on the commitment** (roots
+  are byte-identical) and need no coordinated upgrade.
+- `strict_onion` is opt-in (default off).
+- **Client-facing API change:** `POST /api/v1/swap/vtr-claim` now takes
+  `passphrase` (+ optional `otp_code`) instead of `taker_wif`. The Tauri command
+  and the web UI are updated; external callers must migrate.
+
+### Deferred to a future release
+
+A 40+ document design backlog (see `docs/roadmap.md` and
+`docs/backlog-review.md`): the consensus batch (`network-upgrade` → OP_RETURN
+exclusion + cold staking (P2CS) → governance → state rent), BTC-SPV soak,
+fast-sync, light client, explorer, and the wallet/UX and torrent-economy
+designs.
