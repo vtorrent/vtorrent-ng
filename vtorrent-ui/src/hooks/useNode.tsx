@@ -581,3 +581,30 @@ export async function submitLegacyClaim(
     })
   ) as ClaimSubmitResult
 }
+
+// ─── Earnings summary ────────────────────────────────────────────────────────
+
+export interface EarningsSummary {
+  window: string
+  staking: { rewardsSats: number; blocks: number }
+  torrents: {
+    earnedSats: number
+    paidSats: number
+    sessions: number
+    uploadedBytes: number
+    downloadedBytes: number
+  }
+  swaps: { completed: number; open: number }
+  totalEarnedSats: number
+  asOfHeight: number
+}
+
+/** Unified earnings: staking rewards + torrent incentives + swap activity. */
+export async function getEarningsSummary(window = '30d'): Promise<EarningsSummary> {
+  if (isTauri()) {
+    return tauriInvoke<EarningsSummary>('get_earnings_summary', { window })
+  }
+  return camel(
+    await rpcGet<unknown>(`/api/v1/earnings/summary?window=${encodeURIComponent(window)}`)
+  ) as EarningsSummary
+}

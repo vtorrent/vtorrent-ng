@@ -8,6 +8,7 @@ import SecurityCenterPage from './pages/SecurityCenterPage'
 import TorrentPage from './pages/TorrentPage'
 import TradePage from './pages/TradePage'
 import StakingPage from './pages/StakingPage'
+import EarningsPage from './pages/EarningsPage'
 import LegacyClaimPage from './pages/LegacyClaimPage'
 import BtcWalletPage from './pages/BtcWalletPage'
 import Layout from './components/Layout'
@@ -43,6 +44,10 @@ function AppRoutes() {
         <Route
           path="/staking"
           element={isUnlocked ? <StakingPage /> : <Navigate to="/" replace />}
+        />
+        <Route
+          path="/earnings"
+          element={isUnlocked ? <EarningsPage /> : <Navigate to="/" replace />}
         />
         <Route
           path="/claim"
