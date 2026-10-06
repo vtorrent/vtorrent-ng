@@ -139,7 +139,7 @@ jobs:
             artifact: vtorrent_*_aarch64.dmg
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: vtorrent_*.exe vtorrent_*.msi
+            artifact: vtorrent_*.exe
 
     runs-on: ${{ matrix.platform }}
 
@@ -205,7 +205,7 @@ jobs:
             |----------|------|
             | macOS (Apple Silicon) | `vtorrent_*_aarch64.dmg` |
             | macOS (Intel) | `vtorrent_*_x64.dmg` |
-            | Windows | `vtorrent_*.msi` or `vtorrent_*.exe` |
+            | Windows | `vtorrent_*.exe` (NSIS installer) |
             | Linux (Debian/Ubuntu) | `vtorrent_*.deb` |
             | Linux (AppImage) | `vtorrent_*.AppImage` |
 
