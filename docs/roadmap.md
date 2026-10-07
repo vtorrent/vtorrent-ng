@@ -16,7 +16,7 @@ impact, dependencies, and recommended ship order. Update as designs land.
 
 | Design | Area | Depends on | Notes |
 |---|---|---|---|
-| `op-return-utxo-exclusion-design.md` | consensus | — | exclude unspendable outputs; blocker R1 (producer must match) |
+| `op-return-utxo-exclusion-design.md` | consensus | — | **IMPLEMENTED** (`17c7b28`): OP_RETURN excluded from UTXO set; shared predicate in chain + producer. Needs fresh-genesis activation. |
 | `cold-staking-p2cs-design.md` + `-implementation-plan.md` | consensus | op-return (shares fresh-genesis) | the headline security feature |
 | `governance-design.md` | consensus | network-upgrade | bounded params; no treasury v1 |
 | `state-rent-design.md` | consensus | governance | recommend reclaimable-dust only |
