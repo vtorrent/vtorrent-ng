@@ -17,6 +17,7 @@ pub mod staking;
 pub mod swap;
 pub mod torrent;
 pub mod wallet;
+pub mod wallet_meta;
 
 pub use blockchain::*;
 pub use btc::*;
@@ -28,6 +29,7 @@ pub use staking::*;
 pub use swap::*;
 pub use torrent::*;
 pub use wallet::*;
+pub use wallet_meta::*;
 
 /// Current time in seconds, honoring the regtest mock clock if set.
 pub(crate) async fn now_secs_mock(state: &AppState) -> u64 {
