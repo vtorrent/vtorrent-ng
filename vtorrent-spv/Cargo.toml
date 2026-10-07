@@ -9,6 +9,7 @@ description = "SPV (Simplified Payment Verification) and Bloom filter support fo
 
 [dependencies]
 vtorrent-core  = { path = "../vtorrent-core" }
+vtorrent-script = { path = "../vtorrent-script" }
 
 # Serialization
 serde          = { version = "1", features = ["derive"] }

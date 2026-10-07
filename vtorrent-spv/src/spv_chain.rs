@@ -190,6 +190,72 @@ fn verify_p2pkh_signature(
     Ok(())
 }
 
+/// Verify a P2CS coinstake: the staking key (OP_IF branch) signed it.
+///
+/// scriptSig shape: `<sig> <staking_pubkey> OP_TRUE`. The staking pubkey must
+/// hash to the P2CS script's staking hash. (The spend branch is not a valid
+/// coinstake path.)
+fn verify_p2cs_signature(
+    coinstake: &crate::stake::Transaction,
+    utxo: &crate::stake::SpvUtxo,
+) -> Result<()> {
+    use secp256k1::{ecdsa::Signature, Message, PublicKey, Secp256k1};
+    let script_sig = &coinstake.inputs[0].script_sig;
+    // <len sig><sig><len pk><pk> OP_TRUE
+    if script_sig.len() < 3 {
+        return Err(SpvError::HeaderValidation(
+            "P2CS script_sig too short".into(),
+        ));
+    }
+    let len_sig = script_sig[0] as usize;
+    if script_sig.len() < 1 + len_sig + 1 {
+        return Err(SpvError::HeaderValidation(
+            "P2CS script_sig truncated sig".into(),
+        ));
+    }
+    let sig_bytes = &script_sig[1..1 + len_sig];
+    if sig_bytes.is_empty() || sig_bytes[sig_bytes.len() - 1] != 0x01 {
+        return Err(SpvError::HeaderValidation(
+            "P2CS missing SIGHASH_ALL".into(),
+        ));
+    }
+    let der = &sig_bytes[..sig_bytes.len() - 1];
+    let len_pk = script_sig[1 + len_sig] as usize;
+    if script_sig.len() != 1 + len_sig + 1 + len_pk + 1 {
+        return Err(SpvError::HeaderValidation("P2CS script_sig shape".into()));
+    }
+    let pk_bytes = &script_sig[1 + len_sig + 1..1 + len_sig + 1 + len_pk];
+    // The final byte must be OP_TRUE (select the OP_IF / staking branch).
+    if script_sig[script_sig.len() - 1] != 0x51 {
+        return Err(SpvError::HeaderValidation(
+            "P2CS coinstake must use the staking (OP_IF) branch".into(),
+        ));
+    }
+    // The staking pubkey must hash to the P2CS script's staking hash.
+    let script = vtorrent_script::Script::from_bytes(utxo.script_pubkey.clone())
+        .map_err(|_| SpvError::HeaderValidation("bad P2CS script".into()))?;
+    let vtorrent_script::ScriptType::P2CS { staking_hash, .. } =
+        vtorrent_script::classify_script(&script)
+    else {
+        return Err(SpvError::HeaderValidation("utxo script not P2CS".into()));
+    };
+    if vtorrent_core::crypto::hash160(pk_bytes) != staking_hash {
+        return Err(SpvError::HeaderValidation(
+            "P2CS staking pubkey hash160 mismatch".into(),
+        ));
+    }
+    let sighash = coinstake.sighash(0, &utxo.script_pubkey);
+    let msg = Message::from_digest(sighash);
+    let sig = Signature::from_der(der)
+        .map_err(|e| SpvError::HeaderValidation(format!("bad DER sig: {}", e)))?;
+    let pk = PublicKey::from_slice(pk_bytes)
+        .map_err(|e| SpvError::HeaderValidation(format!("bad pubkey: {}", e)))?;
+    Secp256k1::verification_only()
+        .verify_ecdsa(&msg, &sig, &pk)
+        .map_err(|e| SpvError::HeaderValidation(format!("P2CS sig verify failed: {}", e)))?;
+    Ok(())
+}
+
 /// A lightweight chain of block headers for SPV verification.
 #[derive(Debug, Default)]
 pub struct SpvChain {
@@ -369,7 +435,23 @@ impl SpvChain {
             ));
         }
 
-        verify_p2pkh_signature(&proof.coinstake, &proof.utxo)?;
+        // Dispatch on the staked UTXO's script: P2PKH (own key) or P2CS (cold
+        // staking — the coinstake is signed by the staking key on the OP_IF
+        // branch). See docs/cold-staking-p2cs-design.md.
+        let is_p2cs = vtorrent_script::Script::from_bytes(proof.utxo.script_pubkey.clone())
+            .ok()
+            .map(|s| {
+                matches!(
+                    vtorrent_script::classify_script(&s),
+                    vtorrent_script::ScriptType::P2CS { .. }
+                )
+            })
+            .unwrap_or(false);
+        if is_p2cs {
+            verify_p2cs_signature(&proof.coinstake, &proof.utxo)?;
+        } else {
+            verify_p2pkh_signature(&proof.coinstake, &proof.utxo)?;
+        }
 
         let minted = proof
             .coinstake
@@ -978,5 +1060,84 @@ mod pos_tests {
         assert!(chain.add_pos_header(f.header, f.proof).is_err());
         assert_eq!(chain.best_height(), 0);
         assert_eq!(chain.len(), 1);
+    }
+    #[test]
+    fn test_p2cs_signature_verification() {
+        use crate::stake::{SpvUtxo, Transaction, TxInput, TxType};
+        use secp256k1::{Message, Secp256k1, SecretKey};
+
+        let secp = Secp256k1::new();
+        let staking_sk = SecretKey::from_slice(&[7u8; 32]).unwrap();
+        let staking_pk = secp256k1::PublicKey::from_secret_key(&secp, &staking_sk);
+        let spending_sk = SecretKey::from_slice(&[9u8; 32]).unwrap();
+        let spending_pk = secp256k1::PublicKey::from_secret_key(&secp, &spending_sk);
+
+        let sh = vtorrent_core::crypto::hash160(&staking_pk.serialize());
+        let ph = vtorrent_core::crypto::hash160(&spending_pk.serialize());
+        let script = vtorrent_script::standard::build_p2cs(&sh, &ph, 1_700_000_000).unwrap();
+
+        let utxo = SpvUtxo {
+            txid: [1u8; 32],
+            vout: 0,
+            value: 100_000_000,
+            script_pubkey: script.as_bytes().to_vec(),
+            height: 1,
+            timestamp: 0,
+        };
+
+        // Build a coinstake signed by the staking key on the OP_IF branch.
+        let mut coinstake = Transaction {
+            version: 1,
+            tx_type: TxType::Coinstake,
+            inputs: vec![TxInput {
+                prev_txid: utxo.txid,
+                prev_vout: utxo.vout,
+                script_sig: Vec::new(),
+                sequence: 0xffffffff,
+            }],
+            outputs: vec![crate::stake::TxOutput {
+                value: 100_000_000,
+                script_pubkey: script.as_bytes().to_vec(),
+            }],
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        };
+        let sighash = coinstake.sighash(0, &utxo.script_pubkey);
+        let mut sig = secp
+            .sign_ecdsa(&Message::from_digest(sighash), &staking_sk)
+            .serialize_der()
+            .to_vec();
+        sig.push(0x01);
+        let pk = staking_pk.serialize();
+        let mut ss = Vec::new();
+        ss.push(sig.len() as u8);
+        ss.extend_from_slice(&sig);
+        ss.push(pk.len() as u8);
+        ss.extend_from_slice(&pk);
+        ss.push(0x51); // OP_TRUE
+        coinstake.inputs[0].script_sig = ss;
+
+        verify_p2cs_signature(&coinstake, &utxo).expect("valid P2CS coinstake");
+
+        // Wrong key (spending key) must fail.
+        let mut bad = coinstake.clone();
+        let mut sig2 = secp
+            .sign_ecdsa(&Message::from_digest(sighash), &spending_sk)
+            .serialize_der()
+            .to_vec();
+        sig2.push(0x01);
+        let pk2 = spending_pk.serialize();
+        let mut ss2 = Vec::new();
+        ss2.push(sig2.len() as u8);
+        ss2.extend_from_slice(&sig2);
+        ss2.push(pk2.len() as u8);
+        ss2.extend_from_slice(&pk2);
+        ss2.push(0x51);
+        bad.inputs[0].script_sig = ss2;
+        assert!(
+            verify_p2cs_signature(&bad, &utxo).is_err(),
+            "spending key must not sign a coinstake"
+        );
     }
 }
