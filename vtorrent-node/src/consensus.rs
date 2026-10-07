@@ -147,10 +147,16 @@ pub fn check_stake_kernel(stake_modifier: u64, utxo: &Utxo, timestamp: u32) -> b
 /// outputs would let a holder park coins to dilute every honest staker's hit
 /// probability without ever winning a kernel.
 pub fn is_stakeable(utxo: &Utxo) -> bool {
-    utxo.value >= MIN_STAKE_AMOUNT
-        && vtorrent_script::classify_script(
-            &vtorrent_script::Script::from_bytes(utxo.script_pubkey.clone()).unwrap_or_default(),
-        ) == vtorrent_script::ScriptType::P2PKH
+    if utxo.value < MIN_STAKE_AMOUNT {
+        return false;
+    }
+    let Ok(script) = vtorrent_script::Script::from_bytes(utxo.script_pubkey.clone()) else {
+        return false;
+    };
+    matches!(
+        vtorrent_script::classify_script(&script),
+        vtorrent_script::ScriptType::P2PKH | vtorrent_script::ScriptType::P2CS { .. }
+    )
 }
 
 /// Check whether a UTXO satisfies the v2 stake kernel.
@@ -741,9 +747,9 @@ mod tests {
     }
 
     #[test]
-    fn test_is_stakeable_accepts_only_p2pkh() {
-        // The staking engine only ever stakes a UTXO whose script equals its
-        // own P2PKH script, so any other class would dilute the denominator
+    fn test_is_stakeable_accepts_p2pkh_and_p2cs_only() {
+        // The staking engine stakes a UTXO whose script is P2PKH (its own key)
+        // or P2CS (cold staking); any other class would dilute the denominator
         // without ever winning a kernel (T4).
         fn with_script(script: Vec<u8>) -> Utxo {
             let mut u = stake_utxo(MIN_STAKE_AMOUNT);
@@ -774,6 +780,12 @@ mod tests {
 
         // NonStandard
         assert!(!is_stakeable(&with_script(vec![0x51, 0x52])));
+
+        // P2CS (cold staking) is stakeable.
+        let p2cs =
+            vtorrent_script::standard::build_p2cs(&[0x11u8; 20], &[0x22u8; 20], 1_700_000_000)
+                .unwrap();
+        assert!(is_stakeable(&with_script(p2cs.as_bytes().to_vec())));
     }
 
     #[test]

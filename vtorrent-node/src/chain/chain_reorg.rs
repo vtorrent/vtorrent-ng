@@ -448,6 +448,28 @@ fn apply_transaction_journaled(
                 minted, max_reward
             )));
         }
+
+        // Cold-staking security hinge (R1): a coinstake spending a P2CS input
+        // must re-lock the stake to the **same** P2CS script. Otherwise the hot
+        // staking key could redirect the stake to an arbitrary script and steal
+        // the coins. See docs/cold-staking-p2cs-design.md.
+        if let Ok(staked_script) = vtorrent_script::Script::from_bytes(staked.script_pubkey.clone())
+        {
+            if let vtorrent_script::ScriptType::P2CS { .. } =
+                vtorrent_script::classify_script(&staked_script)
+            {
+                let pays_back_to_same = tx
+                    .outputs
+                    .iter()
+                    .any(|o| o.script_pubkey == staked.script_pubkey);
+                if !pays_back_to_same {
+                    return Err(NodeError::InvalidTransaction(
+                        "P2CS coinstake must re-lock the stake to the same cold-stake script"
+                            .into(),
+                    ));
+                }
+            }
+        }
     }
 
     let total_output = tx.total_output();

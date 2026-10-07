@@ -24,6 +24,13 @@ pub enum ScriptType {
     P2MS { m: u8, n: u8 },
     /// Hash Time-Locked Contract (HTLC) for atomic swaps
     Htlc,
+    /// Pay-to-Cold-Stake: a hot staking key can produce blocks (re-locking the
+    /// stake to the same script); a cold spending key can spend after a delay.
+    P2CS {
+        staking_hash: [u8; 20],
+        spending_hash: [u8; 20],
+        locktime: u32,
+    },
     /// OP_RETURN data carrier (unspendable)
     OpReturn,
     /// Unknown or non-standard script
@@ -78,12 +85,59 @@ pub fn classify_script(script: &Script) -> ScriptType {
         }
     }
 
+    // P2CS: OP_IF <push20 staking> OP_CHECKSIGVERIFY OP_ELSE <push4 locktime>
+    //       OP_CHECKLOCKTIMEVERIFY OP_DROP <push20 spending> OP_CHECKSIGVERIFY OP_ENDIF
+    // Exact-shape match so it cannot be confused with the HTLC (which starts
+    // OP_IF OP_SHA256).
+    if let Some((staking_hash, spending_hash, locktime)) = parse_p2cs(b) {
+        return ScriptType::P2CS {
+            staking_hash,
+            spending_hash,
+            locktime,
+        };
+    }
+
     // HTLC: starts with OP_IF OP_SHA256 (simplified detection)
     if b.len() > 5 && b[0] == 0x63 && b[1] == 0xa8 {
         return ScriptType::Htlc;
     }
 
     ScriptType::NonStandard
+}
+
+/// Parse the exact P2CS script shape, returning `(staking_hash, spending_hash,
+/// locktime)` if it matches.
+fn parse_p2cs(b: &[u8]) -> Option<([u8; 20], [u8; 20], u32)> {
+    // Layout (54 bytes):
+    //  0: OP_IF
+    //  1: PUSH20   2..22: staking_hash
+    // 22: OP_CHECKSIGVERIFY
+    // 23: OP_ELSE
+    // 24: PUSH4   25..29: locktime
+    // 29: OP_CHECKLOCKTIMEVERIFY
+    // 30: OP_DROP
+    // 31: PUSH20  32..52: spending_hash
+    // 52: OP_CHECKSIGVERIFY
+    // 53: OP_ENDIF
+    if b.len() != 54 {
+        return None;
+    }
+    if b[0] != 0x63 || b[1] != 0x14 || b[22] != 0xad {
+        return None;
+    }
+    if b[23] != 0x67 || b[24] != 0x04 || b[29] != 0xb1 || b[30] != 0x75 {
+        return None;
+    }
+    if b[31] != 0x14 || b[52] != 0xad || b[53] != 0x68 {
+        return None;
+    }
+    let mut staking = [0u8; 20];
+    staking.copy_from_slice(&b[2..22]);
+    let mut spending = [0u8; 20];
+    spending.copy_from_slice(&b[32..52]);
+    let mut lt = [0u8; 4];
+    lt.copy_from_slice(&b[25..29]);
+    Some((staking, spending, u32::from_le_bytes(lt)))
 }
 
 /// Build a P2PKH scriptPubKey from a 20-byte public key hash.
@@ -195,6 +249,43 @@ pub fn build_htlc(
     Ok(s)
 }
 
+/// Build a Pay-to-Cold-Stake (P2CS) scriptPubKey.
+///
+/// ```text
+/// OP_IF
+///   <staking_pubkey_hash> OP_CHECKSIGVERIFY
+/// OP_ELSE
+///   <locktime> OP_CHECKLOCKTIMEVERIFY OP_DROP
+///   <spending_pubkey_hash> OP_CHECKSIGVERIFY
+/// OP_ENDIF
+/// ```
+///
+/// The staking key (hot) can only take the `OP_IF` branch, which the coinstake
+/// rules force to re-lock the stake to the same script; the spending key (cold)
+/// takes the `OP_ELSE` branch after `locktime`. See
+/// `docs/cold-staking-p2cs-design.md`.
+pub fn build_p2cs(
+    staking_pubkey_hash: &[u8; 20],
+    spending_pubkey_hash: &[u8; 20],
+    locktime: u32,
+) -> Result<Script> {
+    let mut s = Script::new();
+    s.push_opcode(0x63); // OP_IF
+    s.push_data(staking_pubkey_hash)
+        .map_err(|e| ScriptError::Serialization(e.to_string()))?;
+    s.push_opcode(0xad); // OP_CHECKSIGVERIFY
+    s.push_opcode(0x67); // OP_ELSE
+    s.push_data(&locktime.to_le_bytes())
+        .map_err(|e| ScriptError::Serialization(e.to_string()))?;
+    s.push_opcode(0xb1); // OP_CHECKLOCKTIMEVERIFY
+    s.push_opcode(0x75); // OP_DROP
+    s.push_data(spending_pubkey_hash)
+        .map_err(|e| ScriptError::Serialization(e.to_string()))?;
+    s.push_opcode(0xad); // OP_CHECKSIGVERIFY
+    s.push_opcode(0x68); // OP_ENDIF
+    Ok(s)
+}
+
 /// Build an OP_RETURN data carrier output (unspendable, stores arbitrary data).
 ///
 /// Output: `OP_RETURN <data>` (max 80 bytes of data)
@@ -285,5 +376,30 @@ mod tests {
         let script = build_htlc(&payment_hash, &claim_hash, &refund_hash, 500_000).unwrap();
         assert!(script.len() > 50); // HTLC scripts are complex
         assert_eq!(classify_script(&script), ScriptType::Htlc);
+    }
+    #[test]
+    fn test_p2cs_roundtrip() {
+        let staking = [0x11u8; 20];
+        let spending = [0x22u8; 20];
+        let script = build_p2cs(&staking, &spending, 1_700_000_000).unwrap();
+        match classify_script(&script) {
+            ScriptType::P2CS {
+                staking_hash,
+                spending_hash,
+                locktime,
+            } => {
+                assert_eq!(staking_hash, staking);
+                assert_eq!(spending_hash, spending);
+                assert_eq!(locktime, 1_700_000_000);
+            }
+            other => panic!("expected P2CS, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_p2cs_not_confused_with_htlc() {
+        // An HTLC (OP_IF OP_SHA256 ...) must still classify as Htlc, not P2CS.
+        let htlc = build_htlc(&[0u8; 32], &[1u8; 20], &[2u8; 20], 100).unwrap();
+        assert_eq!(classify_script(&htlc), ScriptType::Htlc);
     }
 }
