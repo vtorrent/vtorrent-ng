@@ -40,8 +40,8 @@ If the scan finds **zero** (expected: the chain is P2PKH-only), the change is a
 no-op historically and can be adopted without a fork. If it finds any, those
 blocks' roots change → a **height activation** (or fresh genesis) is required.
 
-A one-off check: iterate blocks, classify each output, count OP_RETURN/P2CS.
-Add it as a `vtorrent-cli` subcommand or a test against the store.
+**Implemented:** `vtorrent-cli check-consensus [--data-dir] [--regtest] [--regtest-fast-stake]`
+scans the chain and reports OP_RETURN/P2CS counts (zero ⇒ no-op).
 
 ## 4. Activation options
 
