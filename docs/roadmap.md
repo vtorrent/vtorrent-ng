@@ -56,7 +56,7 @@ impact, dependencies, and recommended ship order. Update as designs land.
 | Design | Depends on | Notes |
 |---|---|---|
 | `earnings-view-design.md` | — | **SHIPPED** (`4498fe5`): `GET /api/v1/earnings/summary` + Earnings page |
-| `notifications-design.md` | — | toasts + money-critical alerts |
+| `notifications-design.md` | — | **SHIPPED** (`5518d9f`): toasts + feed over the event WS; swap-deadline alerts pending |
 | `atomic-swap-ux-design.md` | — | guided wizard + deadline tracker |
 | `payment-requests-design.md` | — | VTR URI + receive QR |
 | `wallet-organization-design.md` | — | **PARTIAL** (`5b86513`): contacts + tx notes shipped; full-history fix pending multi-address wallet |
