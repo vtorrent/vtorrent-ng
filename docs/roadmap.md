@@ -31,7 +31,7 @@ impact, dependencies, and recommended ship order. Update as designs land.
 |---|---|---|
 | `network-upgrade-design.md` | — | BIP-9 activation, min-version, fork policy |
 | `node-diagnostics-design.md` | — | **SHIPPED** (`85af58e`): `GET /api/v1/diagnostics` |
-| `reindex-rescan-design.md` | diagnostics | operator rebuild of derived state |
+| `reindex-rescan-design.md` | diagnostics | **PARTIAL** (`cli reindex` shipped): offline full reindex; wallet rescan + checkpoint reindex pending |
 | `fast-sync-design.md` | — | snapshot verified against `utxo_root` |
 | `light-client-design.md` | — | checkpointed SPV; post-state proofs later |
 | `block-explorer-design.md` | — | read-only over the store; no second index |
