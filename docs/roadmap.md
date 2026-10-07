@@ -59,7 +59,7 @@ impact, dependencies, and recommended ship order. Update as designs land.
 | `notifications-design.md` | — | toasts + money-critical alerts |
 | `atomic-swap-ux-design.md` | — | guided wizard + deadline tracker |
 | `payment-requests-design.md` | — | VTR URI + receive QR |
-| `wallet-organization-design.md` | — | address book, tx notes, full history (bug fix) |
+| `wallet-organization-design.md` | — | **PARTIAL** (`5b86513`): contacts + tx notes shipped; full-history fix pending multi-address wallet |
 | `wallet-export-statements-design.md` | wallet-organization, earnings-view | CSV/JSON + statements |
 | `staking-efficiency-design.md` | — | stake health + consolidation |
 | `staking-pools-design.md` | cold-staking | trustless delegation first |
