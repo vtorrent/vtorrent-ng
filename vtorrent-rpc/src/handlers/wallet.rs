@@ -1154,3 +1154,44 @@ mod export_tests {
         assert_eq!(format_unix_utc(1_700_000_000), "2023-11-14T22:13:20Z");
     }
 }
+
+// ─── POST /api/v1/wallet/cold-stake ───────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct ColdStakeReq {
+    /// Spend-path locktime (unix seconds). 0 = no delay.
+    #[serde(default)]
+    pub locktime: u32,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct ColdStakeResp {
+    /// The P2CS (P2SH-wrapped) address to fund.
+    pub address: String,
+    /// The hot staking key (WIF) — export to the staking node.
+    pub staking_wif: String,
+    /// The cold spending key (WIF) — keep offline. Shown once; not persisted.
+    pub spending_wif: String,
+    pub script_pubkey: String,
+    pub locktime: u32,
+}
+
+/// POST /api/v1/wallet/cold-stake — generate a P2CS key pair.
+///
+/// Stateless: the pair is generated and returned; the spending key is **not**
+/// persisted by the node (keep it offline). The staking key is hot. See
+/// `docs/cold-staking-p2cs-design.md`.
+pub async fn create_cold_stake(Json(req): Json<ColdStakeReq>) -> RpcResult<Json<ColdStakeResp>> {
+    let keys =
+        vtorrent_wallet::wallet::generate_cold_stake_keys(req.locktime, req.label.as_deref())
+            .map_err(|e| RpcError::Internal(format!("cold-stake key generation failed: {e}")))?;
+    Ok(Json(ColdStakeResp {
+        address: keys.address,
+        staking_wif: keys.staking_wif.to_string(),
+        spending_wif: keys.spending_wif.to_string(),
+        script_pubkey: hex::encode(&keys.script_pubkey),
+        locktime: keys.locktime,
+    }))
+}

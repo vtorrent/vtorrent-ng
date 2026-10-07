@@ -88,6 +88,38 @@ pub struct ColdStakeKeys {
     pub created_at: u64,
 }
 
+/// Generate a cold-staking key pair and the P2CS script/address, **without**
+/// persisting it. The staking key is hot (for the node); the spending key is
+/// cold (keep offline). See `docs/cold-staking-p2cs-design.md`.
+pub fn generate_cold_stake_keys(locktime: u32, label: Option<&str>) -> Result<ColdStakeKeys> {
+    let staking = generate_private_key()?;
+    let spending = generate_private_key()?;
+    let staking_hash = vtorrent_core::crypto::hash160(
+        &staking.public_key().map_err(WalletError::Core)?.serialize(),
+    );
+    let spending_hash = vtorrent_core::crypto::hash160(
+        &spending
+            .public_key()
+            .map_err(WalletError::Core)?
+            .serialize(),
+    );
+    let script = vtorrent_script::standard::build_p2cs(&staking_hash, &spending_hash, locktime)
+        .map_err(|e| WalletError::KeyGeneration(format!("P2CS build failed: {e}")))?;
+    // The P2CS address is the P2SH of the redeem script (standard wrapping).
+    let script_hash = vtorrent_core::crypto::hash160(script.as_bytes());
+    let address = Address::from_hash160(&script_hash, mainnet::PUBKEY_ADDRESS_PREFIX)?.to_string();
+
+    Ok(ColdStakeKeys {
+        address,
+        staking_wif: staking.to_wif(mainnet::SECRET_KEY_PREFIX).into(),
+        spending_wif: spending.to_wif(mainnet::SECRET_KEY_PREFIX).into(),
+        script_pubkey: script.as_bytes().to_vec(),
+        locktime,
+        label: label.map(|s| s.to_string()),
+        created_at: unix_now(),
+    })
+}
+
 /// Generate a fresh compressed secp256k1 private key.
 fn generate_private_key() -> Result<PrivateKey> {
     use rand::RngCore;
@@ -291,33 +323,7 @@ impl Wallet {
         locktime: u32,
         label: Option<&str>,
     ) -> Result<ColdStakeKeys> {
-        let staking = generate_private_key()?;
-        let spending = generate_private_key()?;
-        let staking_hash = vtorrent_core::crypto::hash160(
-            &staking.public_key().map_err(WalletError::Core)?.serialize(),
-        );
-        let spending_hash = vtorrent_core::crypto::hash160(
-            &spending
-                .public_key()
-                .map_err(WalletError::Core)?
-                .serialize(),
-        );
-        let script = vtorrent_script::standard::build_p2cs(&staking_hash, &spending_hash, locktime)
-            .map_err(|e| WalletError::KeyGeneration(format!("P2CS build failed: {e}")))?;
-        // The P2CS address is the P2SH of the redeem script (standard wrapping).
-        let script_hash = vtorrent_core::crypto::hash160(script.as_bytes());
-        let address =
-            Address::from_hash160(&script_hash, mainnet::PUBKEY_ADDRESS_PREFIX)?.to_string();
-
-        let keys = ColdStakeKeys {
-            address: address.clone(),
-            staking_wif: staking.to_wif(mainnet::SECRET_KEY_PREFIX).into(),
-            spending_wif: spending.to_wif(mainnet::SECRET_KEY_PREFIX).into(),
-            script_pubkey: script.as_bytes().to_vec(),
-            locktime,
-            label: label.map(|s| s.to_string()),
-            created_at: unix_now(),
-        };
+        let keys = generate_cold_stake_keys(locktime, label)?;
         self.data.cold_stake.push(keys.clone());
         self.data.last_modified = unix_now();
         Ok(keys)
