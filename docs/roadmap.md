@@ -47,7 +47,7 @@ impact, dependencies, and recommended ship order. Update as designs land.
 | `multisig-wallets-design.md` | hardware-signing | P2SH P2MS; partial signing |
 | `wallet-backup-recovery-design.md` | — | seed vs file; verify; OTP hygiene |
 | `passphrase-rotation-design.md` | backup-recovery | fresh salt/nonce; key rotation |
-| `message-signing-design.md` | — | proof of ownership; domain-separated |
+| `message-signing-design.md` | — | **SHIPPED** (`961710d`): sign/verify-message RPC |
 | `hd-discovery-design.md` | backup-recovery | gap-limit scan (restore correctness) |
 | `transaction-preview-design.md` | — | **SHIPPED** (`1ce1fe3`): `POST /wallet/preview` dry-run |
 
