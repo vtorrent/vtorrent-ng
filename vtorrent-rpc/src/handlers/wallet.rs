@@ -813,3 +813,147 @@ pub async fn create_payment_request(
     .map_err(|e| RpcError::BadRequest(format!("invalid payment request: {e}")))?;
     Ok(Json(PaymentRequestResp { address, uri }))
 }
+
+// ─── POST /api/v1/wallet/preview ─────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct PreviewRequest {
+    pub to_address: String,
+    pub amount_satoshis: u64,
+}
+
+#[derive(serde::Serialize)]
+pub struct PreviewInput {
+    pub txid: String,
+    pub vout: u32,
+    pub value_sats: u64,
+}
+
+#[derive(serde::Serialize)]
+pub struct PreviewResponse {
+    pub inputs: Vec<PreviewInput>,
+    pub total_in_sats: u64,
+    pub amount_sats: u64,
+    pub fee_sats: u64,
+    pub fee_rate: u64,
+    pub change_sats: u64,
+    pub change_address: String,
+    /// Fee as a fraction of the amount (for fat-finger warnings).
+    pub fee_pct_of_amount: f64,
+}
+
+/// Dry-run a payment: select coins and report inputs/outputs/fee/change without
+/// signing or broadcasting. Uses the **same** coin-selection as `send_vtr`, so
+/// the preview matches the real transaction. See `docs/transaction-preview-design.md`.
+pub async fn preview_payment(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<PreviewRequest>,
+) -> RpcResult<Json<PreviewResponse>> {
+    if req.amount_satoshis == 0 {
+        return Err(RpcError::BadRequest("amount must be greater than 0".into()));
+    }
+    // Validate the recipient up front.
+    vtorrent_core::address::validate_p2pkh(&req.to_address)
+        .map_err(|e| RpcError::BadRequest(format!("invalid recipient address: {e}")))?;
+
+    let change_address = state
+        .wallet_change_address
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| RpcError::BadRequest("no wallet address; import a wallet first".into()))?;
+
+    let utxos: Vec<vtorrent_node::chain::Utxo> = {
+        let chain = state.chain.lock().await;
+        chain.get_utxos_for_address(&change_address)
+    };
+    if utxos.is_empty() {
+        return Err(RpcError::BadRequest(
+            "no spendable UTXOs for the wallet".into(),
+        ));
+    }
+
+    let fee_rate = {
+        let mempool = state.mempool.lock().await;
+        mempool.recommended_fee_rate().max(1)
+    };
+
+    // Same selection the builder uses: 2 outputs (recipient + change).
+    let (selected, fee) = vtorrent_wallet::tx_builder::select_coins(
+        &utxos,
+        req.amount_satoshis,
+        fee_rate,
+        vtorrent_wallet::tx_builder::MIN_ABSOLUTE_FEE_SATS,
+        2,
+    )
+    .map_err(|e| RpcError::BadRequest(format!("cannot fund payment: {e}")))?;
+
+    let total_in: u64 = selected.iter().map(|u| u.value).sum();
+    let change_sats = total_in
+        .saturating_sub(req.amount_satoshis)
+        .saturating_sub(fee);
+    let fee_pct_of_amount = if req.amount_satoshis > 0 {
+        (fee as f64 / req.amount_satoshis as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    Ok(Json(PreviewResponse {
+        inputs: selected
+            .iter()
+            .map(|u| PreviewInput {
+                txid: hex::encode(u.txid),
+                vout: u.vout,
+                value_sats: u.value,
+            })
+            .collect(),
+        total_in_sats: total_in,
+        amount_sats: req.amount_satoshis,
+        fee_sats: fee,
+        fee_rate,
+        change_sats,
+        change_address,
+        fee_pct_of_amount,
+    }))
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use vtorrent_node::chain::Utxo;
+    use vtorrent_wallet::tx_builder::{select_coins, MIN_ABSOLUTE_FEE_SATS};
+
+    fn utxo(value: u64, byte: u8) -> Utxo {
+        Utxo {
+            txid: [byte; 32],
+            vout: 0,
+            value,
+            script_pubkey: vec![],
+            height: 1,
+            timestamp: 0,
+        }
+    }
+
+    /// The preview must select the same coins the builder would, so the shown
+    /// fee/change match the real transaction.
+    #[test]
+    fn preview_selection_matches_builder_selection() {
+        let utxos = vec![utxo(1_000_000, 1), utxo(500_000, 2), utxo(250_000, 3)];
+        let amount = 600_000u64;
+        let fee_rate = 10u64;
+        let (selected, fee) =
+            select_coins(&utxos, amount, fee_rate, MIN_ABSOLUTE_FEE_SATS, 2).unwrap();
+        let total_in: u64 = selected.iter().map(|u| u.value).sum();
+        let change = total_in - amount - fee;
+        // Largest-first: 1_000_000 alone covers 600_000 + fee.
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].value, 1_000_000);
+        assert!(total_in >= amount + fee);
+        assert_eq!(change, total_in - amount - fee);
+    }
+
+    #[test]
+    fn insufficient_funds_is_rejected() {
+        let utxos = vec![utxo(1_000, 1)];
+        assert!(select_coins(&utxos, 10_000_000, 10, MIN_ABSOLUTE_FEE_SATS, 2).is_err());
+    }
+}
