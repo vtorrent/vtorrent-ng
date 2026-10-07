@@ -957,3 +957,59 @@ mod preview_tests {
         assert!(select_coins(&utxos, 10_000_000, 10, MIN_ABSOLUTE_FEE_SATS, 2).is_err());
     }
 }
+
+// ─── Message signing (proof of ownership) ────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct SignMessageRequest {
+    pub message: String,
+    pub passphrase: zeroize::Zeroizing<String>,
+    #[serde(default)]
+    pub otp_code: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct SignMessageResponse {
+    pub address: String,
+    pub signature: String,
+}
+
+/// POST /api/v1/wallet/sign-message — sign with the wallet's key.
+pub async fn sign_message(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SignMessageRequest>,
+) -> RpcResult<Json<SignMessageResponse>> {
+    if req.message.is_empty() {
+        return Err(RpcError::BadRequest("message is required".into()));
+    }
+    let wif = verify_wallet_auth(&state, &req.passphrase, req.otp_code.as_deref()).await?;
+    let key = vtorrent_core::keys::PrivateKey::from_wif(&wif)
+        .map_err(|e| RpcError::Internal(format!("wallet key decode failed: {e}")))?;
+    let signed = vtorrent_core::message::sign_message(&key, &req.message)
+        .map_err(|e| RpcError::Internal(format!("signing failed: {e}")))?;
+    Ok(Json(SignMessageResponse {
+        address: signed.address,
+        signature: signed.signature,
+    }))
+}
+
+#[derive(serde::Deserialize)]
+pub struct VerifyMessageRequest {
+    pub address: String,
+    pub message: String,
+    pub signature: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct VerifyMessageResponse {
+    pub valid: bool,
+}
+
+/// POST /api/v1/wallet/verify-message — verify a signed message (no auth).
+pub async fn verify_message(
+    Json(req): Json<VerifyMessageRequest>,
+) -> RpcResult<Json<VerifyMessageResponse>> {
+    let valid = vtorrent_core::message::verify_message(&req.address, &req.message, &req.signature)
+        .map_err(|e| RpcError::BadRequest(format!("invalid input: {e}")))?;
+    Ok(Json(VerifyMessageResponse { valid }))
+}

@@ -10,6 +10,7 @@ pub mod address;
 pub mod crypto;
 pub mod error;
 pub mod keys;
+pub mod message;
 pub mod network;
 pub mod payment_uri;
 pub mod receipt;
