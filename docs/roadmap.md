@@ -58,7 +58,7 @@ impact, dependencies, and recommended ship order. Update as designs land.
 | `earnings-view-design.md` | — | **SHIPPED** (`4498fe5`): `GET /api/v1/earnings/summary` + Earnings page |
 | `notifications-design.md` | — | **SHIPPED** (`5518d9f`): toasts + feed over the event WS; swap-deadline alerts pending |
 | `atomic-swap-ux-design.md` | — | guided wizard + deadline tracker |
-| `payment-requests-design.md` | — | VTR URI + receive QR |
+| `payment-requests-design.md` | — | **SHIPPED** (`7ed7560`): VTR URI + receive QR; request matching pending |
 | `wallet-organization-design.md` | — | **PARTIAL** (`5b86513`): contacts + tx notes shipped; full-history fix pending multi-address wallet |
 | `wallet-export-statements-design.md` | wallet-organization, earnings-view | CSV/JSON + statements |
 | `staking-efficiency-design.md` | — | stake health + consolidation |
