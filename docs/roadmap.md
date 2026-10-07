@@ -86,7 +86,7 @@ impact, dependencies, and recommended ship order. Update as designs land.
 | `dex-orderbook-design.md` | — | price-time priority, partial fills |
 | `privacy-design.md` | — | Dandelion++, strict onion-only, PEX/torrent hardening |
 | `name-service-design.md` | op-return | `.vtr` names via OP_RETURN registry |
-| `fee-market-design.md` | — | target-based estimation, CPFP |
+| `fee-market-design.md` | — | **PARTIAL** (`fee_estimates` shipped): target-based estimates; CPFP pending |
 
 ## 8. Dependency highlights
 
