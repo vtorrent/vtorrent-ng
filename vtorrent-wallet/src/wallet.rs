@@ -13,6 +13,7 @@ use crate::{
 /// - Serialization to/from the new encrypted wallet file format
 use serde::{Deserialize, Serialize};
 use vtorrent_core::{address::Address, keys::PrivateKey, network::mainnet};
+use vtorrent_script;
 
 /// The wallet file format version.
 const WALLET_FORMAT_VERSION: u32 = 1;
@@ -63,8 +64,44 @@ pub struct WalletData {
     /// Optional HD account (BIP39 mnemonic) used as the shared seed.
     #[serde(default)]
     pub hd: Option<crate::hd::HdAccount>,
+    /// Cold-staking key pairs (P2CS). `#[serde(default)]` keeps old wallets valid.
+    #[serde(default)]
+    pub cold_stake: Vec<ColdStakeKeys>,
     pub created_at: u64,
     pub last_modified: u64,
+}
+
+/// A cold-staking key pair and its P2CS script/address.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ColdStakeKeys {
+    /// The P2CS (P2SH-wrapped) address to fund.
+    pub address: String,
+    /// The hot staking key (WIF) — export to the staking node.
+    pub staking_wif: zeroize::Zeroizing<String>,
+    /// The cold spending key (WIF) — keep offline.
+    pub spending_wif: zeroize::Zeroizing<String>,
+    /// The P2CS redeem script (scriptPubKey).
+    pub script_pubkey: Vec<u8>,
+    /// The spend-path locktime.
+    pub locktime: u32,
+    pub label: Option<String>,
+    pub created_at: u64,
+}
+
+/// Generate a fresh compressed secp256k1 private key.
+fn generate_private_key() -> Result<PrivateKey> {
+    use rand::RngCore;
+    use secp256k1::SecretKey;
+    let mut bytes = [0u8; 32];
+    for _ in 0..1000 {
+        rand::thread_rng().fill_bytes(&mut bytes);
+        if SecretKey::from_slice(&bytes).is_ok() {
+            return PrivateKey::from_bytes(bytes, true).map_err(WalletError::Core);
+        }
+    }
+    Err(WalletError::KeyGeneration(
+        "failed to generate valid key after 1000 attempts".into(),
+    ))
 }
 
 /// The wallet file as stored on disk.
@@ -102,6 +139,7 @@ impl Wallet {
                 default_address: None,
                 otp_config: None,
                 hd: None,
+                cold_stake: Vec::new(),
                 created_at: now,
                 last_modified: now,
             },
@@ -241,6 +279,48 @@ impl Wallet {
         }
         self.data.last_modified = unix_now();
         Ok(address_str)
+    }
+
+    /// Generate a cold-staking key pair and the P2CS script/address.
+    ///
+    /// Returns the **staking** key (hot — for the node) and the **spending** key
+    /// (cold — keep offline). The P2CS script commits to both. See
+    /// `docs/cold-staking-p2cs-design.md`.
+    pub fn generate_cold_stake_keys(
+        &mut self,
+        locktime: u32,
+        label: Option<&str>,
+    ) -> Result<ColdStakeKeys> {
+        let staking = generate_private_key()?;
+        let spending = generate_private_key()?;
+        let staking_hash = vtorrent_core::crypto::hash160(
+            &staking.public_key().map_err(WalletError::Core)?.serialize(),
+        );
+        let spending_hash = vtorrent_core::crypto::hash160(
+            &spending
+                .public_key()
+                .map_err(WalletError::Core)?
+                .serialize(),
+        );
+        let script = vtorrent_script::standard::build_p2cs(&staking_hash, &spending_hash, locktime)
+            .map_err(|e| WalletError::KeyGeneration(format!("P2CS build failed: {e}")))?;
+        // The P2CS address is the P2SH of the redeem script (standard wrapping).
+        let script_hash = vtorrent_core::crypto::hash160(script.as_bytes());
+        let address =
+            Address::from_hash160(&script_hash, mainnet::PUBKEY_ADDRESS_PREFIX)?.to_string();
+
+        let keys = ColdStakeKeys {
+            address: address.clone(),
+            staking_wif: staking.to_wif(mainnet::SECRET_KEY_PREFIX).into(),
+            spending_wif: spending.to_wif(mainnet::SECRET_KEY_PREFIX).into(),
+            script_pubkey: script.as_bytes().to_vec(),
+            locktime,
+            label: label.map(|s| s.to_string()),
+            created_at: unix_now(),
+        };
+        self.data.cold_stake.push(keys.clone());
+        self.data.last_modified = unix_now();
+        Ok(keys)
     }
 
     /// Import a WIF-encoded private key (from legacy wallet migration).
@@ -597,5 +677,25 @@ mod tests {
         assert_eq!(mnemonic.split_whitespace().count(), 24);
         assert!(wallet.data.hd.is_some());
         assert!(wallet.has_hd());
+    }
+    #[test]
+    fn cold_stake_keys_generate_p2cs() {
+        let mut w = Wallet::create("pw").unwrap();
+        let keys = w
+            .generate_cold_stake_keys(1_700_000_000, Some("cold"))
+            .unwrap();
+        // The script is a P2CS and commits to distinct staking/spending keys.
+        let script = vtorrent_script::Script::from_bytes(keys.script_pubkey.clone()).unwrap();
+        match vtorrent_script::classify_script(&script) {
+            vtorrent_script::ScriptType::P2CS { locktime, .. } => {
+                assert_eq!(locktime, 1_700_000_000);
+            }
+            other => panic!("expected P2CS, got {other:?}"),
+        }
+        // The staking and spending WIFs differ.
+        assert_ne!(*keys.staking_wif, *keys.spending_wif);
+        // The pair is recorded on the wallet.
+        assert_eq!(w.data.cold_stake.len(), 1);
+        assert_eq!(w.data.cold_stake[0].address, keys.address);
     }
 }
