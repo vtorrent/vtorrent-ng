@@ -17,7 +17,7 @@ impact, dependencies, and recommended ship order. Update as designs land.
 | Design | Area | Depends on | Notes |
 |---|---|---|---|
 | `op-return-utxo-exclusion-design.md` | consensus | — | **IMPLEMENTED** (`17c7b28`): OP_RETURN excluded from UTXO set; shared predicate in chain + producer. Needs fresh-genesis activation. |
-| `cold-staking-p2cs-design.md` + `-implementation-plan.md` | consensus | op-return (shares fresh-genesis) | **CORE IMPLEMENTED** (`15ca950`): P2CS script + stakeability + R1 rule; script + stakeability + R1 rule + wallet key roles + coinstake signing + cold-stake RPC shipped; UI + SPV proof pending |
+| `cold-staking-p2cs-design.md` + `-implementation-plan.md` | consensus | op-return (shares fresh-genesis) | **CORE IMPLEMENTED** (`15ca950`): P2CS script + stakeability + R1 rule; script + stakeability + R1 rule + wallet key roles + coinstake signing + cold-stake RPC + UI shipped; SPV proof pending |
 | `governance-design.md` | consensus | network-upgrade | bounded params; no treasury v1 |
 | `state-rent-design.md` | consensus | governance | recommend reclaimable-dust only |
 | `multi-asset-swaps-design.md` | no (VTR) | — | other-chain adapters; VTR side unchanged |
