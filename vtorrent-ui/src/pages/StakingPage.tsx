@@ -1,10 +1,10 @@
 import { useState } from 'react'
 import {
-  Zap, ZapOff, RefreshCw, TrendingUp, Coins,
+  Zap, ZapOff, RefreshCw, TrendingUp, Coins, Snowflake,
   CheckCircle, AlertCircle, Info,
 } from 'lucide-react'
 import { formatVTR, useWallet } from '../hooks/useWallet'
-import { useStakingStatus, startStaking, stopStaking, useNodeInfo } from '../hooks/useNode'
+import { useStakingStatus, startStaking, stopStaking, useNodeInfo, createColdStake, type ColdStakeKeys } from '../hooks/useNode'
 import { stakingStartError } from '../utils/stakingOps'
 import HealthStrip from '../components/staking/HealthStrip'
 import RewardHistory from '../components/staking/RewardHistory'
@@ -172,6 +172,8 @@ export default function StakingPage() {
 
       <RewardHistory tipHeight={node?.blockHeight ?? null} blocksStaked={blocksStaked} />
 
+      <ColdStakePanel />
+
       {/* Address selector (only shown when not staking) */}
       {!isEnabled && addressOptions.length > 1 && (
         <div className="space-y-2">
@@ -293,6 +295,63 @@ function DetailRow({ label, value, hint }: DetailRowProps) {
         )}
       </span>
       <span className="text-gray-200 font-mono text-xs">{value}</span>
+    </div>
+  )
+}
+
+// ─── Cold staking (P2CS) ───────────────────────────────────────────────────────
+
+function ColdStakePanel() {
+  const [keys, setKeys] = useState<ColdStakeKeys | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const generate = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      setKeys(await createColdStake(0))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="card">
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="font-semibold text-white text-sm flex items-center gap-2">
+          <Snowflake size={14} className="text-sky-400" /> Cold staking (delegate)
+        </h2>
+        <button onClick={generate} disabled={busy} className="btn-secondary text-xs">
+          {busy ? 'Generating…' : 'Generate key pair'}
+        </button>
+      </div>
+      <p className="text-xs text-gray-500 mb-3">
+        Stake from a node that holds only the <strong>staking key</strong>. The
+        <strong> spending key</strong> stays offline and is the only key that can move funds.
+      </p>
+      {error && <p className="text-xs text-red-400">{error}</p>}
+      {keys && (
+        <div className="space-y-2 text-xs">
+          <div>
+            <div className="text-gray-500">P2CS address (fund this)</div>
+            <div className="font-mono text-vtorrent-300 break-all">{keys.address}</div>
+          </div>
+          <div>
+            <div className="text-gray-500">Staking key (hot — give to the staking node)</div>
+            <div className="font-mono text-amber-300 break-all">{keys.stakingWif}</div>
+          </div>
+          <div>
+            <div className="text-gray-500">Spending key (cold — keep offline, shown once)</div>
+            <div className="font-mono text-red-300 break-all">{keys.spendingWif}</div>
+          </div>
+          <p className="text-red-400">
+            The spending key is not stored by this node. Save it offline now.
+          </p>
+        </div>
+      )}
     </div>
   )
 }

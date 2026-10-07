@@ -633,3 +633,23 @@ export async function createPaymentRequest(req: {
     })
   ) as PaymentRequest
 }
+
+// ─── Cold staking (P2CS) ──────────────────────────────────────────────────────
+
+export interface ColdStakeKeys {
+  address: string
+  stakingWif: string
+  spendingWif: string
+  scriptPubkey: string
+  locktime: number
+}
+
+/** Generate a P2CS cold-staking key pair (stateless; spending key not stored). */
+export async function createColdStake(locktime = 0): Promise<ColdStakeKeys> {
+  if (isTauri()) {
+    return tauriInvoke<ColdStakeKeys>('create_cold_stake', { locktime })
+  }
+  return camel(
+    await rpcPost<unknown>('/api/v1/wallet/cold-stake', { locktime })
+  ) as ColdStakeKeys
+}
