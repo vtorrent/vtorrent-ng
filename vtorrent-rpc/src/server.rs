@@ -109,6 +109,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/staking/status", get(get_staking_status))
         .route("/api/v1/staking/rewards", get(get_staking_rewards))
         .route("/api/v1/earnings/summary", get(get_earnings_summary))
+        .route("/api/v1/diagnostics", get(get_diagnostics))
         .route("/api/v1/torrent/add", post(add_torrent))
         .route("/api/v1/torrent/:id", delete(remove_torrent))
         .route("/api/v1/dex/order", post(place_dex_order))

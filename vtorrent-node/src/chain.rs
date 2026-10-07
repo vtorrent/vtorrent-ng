@@ -503,6 +503,16 @@ impl Chain {
     /// (the `BTreeMap` iterates in `(txid, vout)` order), but allocates nothing
     /// once its buffers have grown. See
     /// `docs/utxo-commitment-scratch-design.md`.
+    /// Verify the tip header's `utxo_root` against a fresh recomputation.
+    ///
+    /// Returns `None` if the tip commitment is unavailable; `Some(true/false)`
+    /// otherwise. Used by the diagnostics endpoint.
+    pub fn verify_utxo_commitment(&mut self) -> Option<bool> {
+        let tip_root = self.current_utxo_root()?;
+        let recomputed = self.recompute_utxo_root();
+        Some(tip_root == recomputed)
+    }
+
     pub(crate) fn recompute_utxo_root(&mut self) -> [u8; 32] {
         self.utxo_leaves.clear();
         self.utxo_leaves.reserve(self.utxo_set.len());
