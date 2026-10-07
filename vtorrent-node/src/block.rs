@@ -326,6 +326,22 @@ pub fn compute_merkle_root_from_txids(txids: &mut [[u8; 32]]) -> [u8; 32] {
 /// Compute the leaf hash for a UTXO commitment.
 ///
 /// Leaf preimage: SHA256d(txid || vout LE || value LE || varint(script.len) || script || height LE || timestamp LE)
+/// Whether an output belongs in the UTXO set (and thus the commitment).
+///
+/// Provably-unspendable `OP_RETURN` outputs are excluded — they can never be
+/// spent or staked, so including them only bloats the set and the commitment.
+/// **Both** the chain apply path and the staking producer must use this same
+/// predicate, or the producer's `utxo_root` will not match the chain's.
+/// See `docs/op-return-utxo-exclusion-design.md`.
+pub fn is_utxo_eligible(output: &crate::block::TxOutput) -> bool {
+    match vtorrent_script::Script::from_bytes(output.script_pubkey.clone()) {
+        Ok(script) => {
+            vtorrent_script::classify_script(&script) != vtorrent_script::ScriptType::OpReturn
+        }
+        Err(_) => false,
+    }
+}
+
 pub fn hash_utxo(utxo: &crate::chain::Utxo) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update(utxo.txid);
@@ -604,5 +620,23 @@ mod tests {
         let mut h2 = h1.clone();
         h2.utxo_root = [4u8; 32];
         assert_ne!(h1.hash(), h2.hash(), "utxo_root must affect header hash");
+    }
+    #[test]
+    fn op_return_outputs_are_not_utxo_eligible() {
+        use crate::block::TxOutput;
+        let opret = vtorrent_script::build_op_return(b"hello").unwrap();
+        let out = TxOutput {
+            value: 0,
+            script_pubkey: opret.as_bytes().to_vec(),
+        };
+        assert!(!is_utxo_eligible(&out), "OP_RETURN must be excluded");
+
+        // A normal P2PKH output is eligible.
+        let p2pkh = vtorrent_script::standard::build_p2pkh(&[0u8; 20]).unwrap();
+        let ok = TxOutput {
+            value: 1_000,
+            script_pubkey: p2pkh.as_bytes().to_vec(),
+        };
+        assert!(is_utxo_eligible(&ok), "P2PKH must be eligible");
     }
 }

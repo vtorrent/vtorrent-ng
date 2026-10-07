@@ -356,6 +356,11 @@ fn apply_transaction_journaled(
     }
 
     for (vout, output) in tx.outputs.iter().enumerate() {
+        // Provably-unspendable outputs never enter the UTXO set (and so never
+        // the commitment). Must match the staking producer's predicate.
+        if !crate::block::is_utxo_eligible(output) {
+            continue;
+        }
         let key = (txid, vout as u32);
         let utxo = Utxo {
             txid,
