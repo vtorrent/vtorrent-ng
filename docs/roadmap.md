@@ -30,7 +30,7 @@ impact, dependencies, and recommended ship order. Update as designs land.
 | Design | Depends on | Notes |
 |---|---|---|
 | `network-upgrade-design.md` | — | BIP-9 activation, min-version, fork policy |
-| `node-diagnostics-design.md` | — | read-only doctor; reuses integrity checks |
+| `node-diagnostics-design.md` | — | **SHIPPED** (`85af58e`): `GET /api/v1/diagnostics` |
 | `reindex-rescan-design.md` | diagnostics | operator rebuild of derived state |
 | `fast-sync-design.md` | — | snapshot verified against `utxo_root` |
 | `light-client-design.md` | — | checkpointed SPV; post-state proofs later |
