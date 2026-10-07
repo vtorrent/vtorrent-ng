@@ -138,6 +138,19 @@ enum Commands {
     Metrics,
     /// List connected P2P peers.
     Peers,
+    /// Rebuild the store's derived state from its blocks (offline; stop the
+    /// daemon first). Repairs a corrupt tx index / UTXO set / commitment.
+    Reindex {
+        /// Data directory containing `chain.db` [default: ~/.vtorrent].
+        #[arg(long)]
+        data_dir: Option<String>,
+        /// Regtest chain (uses the regtest genesis).
+        #[arg(long)]
+        regtest: bool,
+        /// Regtest with fast-stake parameters.
+        #[arg(long)]
+        regtest_fast_stake: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -666,6 +679,87 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                 format::print_peers(&data);
             }
         }
+        Commands::Reindex {
+            data_dir,
+            regtest,
+            regtest_fast_stake,
+        } => {
+            run_reindex(data_dir.as_deref(), *regtest, *regtest_fast_stake)?;
+        }
     }
     Ok(())
+}
+
+/// Rebuild the store's derived state from its own blocks. Offline: the daemon
+/// must be stopped so the store lock is free.
+///
+/// The store's `rebuild_from_blocks` replays a **contiguous genesis→tip** list
+/// (height = index), so this is a full reindex — the correct, self-consistent
+/// operation. A checkpoint-based partial reindex would need a store API that
+/// rebuilds from a non-zero height; that is a documented follow-up.
+fn run_reindex(data_dir: Option<&str>, regtest: bool, regtest_fast_stake: bool) -> Result<()> {
+    use vtorrent_store::store::BlockStore;
+
+    let dir = match data_dir {
+        Some(d) => std::path::PathBuf::from(d),
+        None => dirs_data_dir()?,
+    };
+    let db_path = dir.join("chain.db");
+    if !db_path.exists() {
+        anyhow::bail!(
+            "no store at {} — is the data dir correct?",
+            db_path.display()
+        );
+    }
+    println!("Reindexing {} (full, from genesis)…", db_path.display());
+
+    let store =
+        BlockStore::open(&db_path).map_err(|e| anyhow::anyhow!("failed to open store: {e}"))?;
+    let tip = store.best_height().unwrap_or(0);
+
+    // Load the chain (bodies from the store) and replay genesis→tip.
+    let chain = if regtest_fast_stake {
+        store.load_into_fast_regtest_chain()
+    } else if regtest {
+        store.load_into_regtest_chain()
+    } else {
+        store.load_into_chain()
+    }
+    .map_err(|e| anyhow::anyhow!("failed to load chain: {e}"))?;
+    let blocks: Vec<vtorrent_node::block::Block> = (0..=tip)
+        .filter_map(|h| chain.get_block_at_height(h).cloned())
+        .collect();
+
+    if blocks.len() as u32 != tip + 1 {
+        anyhow::bail!(
+            "chain is not contiguous: got {} blocks for tip {} — refusing to reindex",
+            blocks.len(),
+            tip
+        );
+    }
+
+    let result = if regtest_fast_stake {
+        store.rebuild_from_fast_regtest_blocks(&blocks)
+    } else if regtest {
+        store.rebuild_from_regtest_blocks(&blocks)
+    } else {
+        store.rebuild_from_blocks(&blocks)
+    };
+    result.map_err(|e| anyhow::anyhow!("reindex failed: {e}"))?;
+
+    let new_tip = store.best_height().unwrap_or(0);
+    if new_tip != tip {
+        anyhow::bail!("reindex produced tip {new_tip}, expected {tip} — store may be corrupt");
+    }
+    println!(
+        "Reindex complete: {} block(s) replayed, tip {tip}.",
+        blocks.len()
+    );
+    Ok(())
+}
+
+/// Default data dir (`~/.vtorrent`), matching the daemon.
+fn dirs_data_dir() -> Result<std::path::PathBuf> {
+    let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME not set"))?;
+    Ok(std::path::PathBuf::from(home).join(".vtorrent"))
 }
