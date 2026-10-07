@@ -1265,3 +1265,81 @@ fn test_cltv_with_absolute_locktime() {
         .run(&script)
         .expect("CLTV with absolute locktime should pass");
 }
+
+#[test]
+fn test_p2cs_staking_branch_and_cltv_spend() {
+    use crate::standard::{build_p2cs, classify_script, ScriptType};
+
+    let secp = Secp256k1::new();
+    let staking_sk = SecretKey::from_slice(&[7u8; 32]).unwrap();
+    let staking_pk = secp256k1::PublicKey::from_secret_key(&secp, &staking_sk);
+    let spending_sk = SecretKey::from_slice(&[9u8; 32]).unwrap();
+    let spending_pk = secp256k1::PublicKey::from_secret_key(&secp, &spending_sk);
+
+    let staking_hash = Ripemd160::digest(Sha256::digest(staking_pk.serialize()));
+    let spending_hash = Ripemd160::digest(Sha256::digest(spending_pk.serialize()));
+    let mut sh = [0u8; 20];
+    sh.copy_from_slice(&staking_hash);
+    let mut ph = [0u8; 20];
+    ph.copy_from_slice(&spending_hash);
+
+    let locktime = 1_700_000_000u32;
+    let script_pubkey = build_p2cs(&sh, &ph, locktime).unwrap();
+    assert!(matches!(
+        classify_script(&script_pubkey),
+        ScriptType::P2CS { .. }
+    ));
+
+    let tx_hash = [0x55u8; 32];
+
+    // ── Staking branch (OP_IF): signed by the staking key, OP_TRUE selector ──
+    let msg = Message::from_digest(tx_hash);
+    let mut sig = secp.sign_ecdsa(&msg, &staking_sk).serialize_der().to_vec();
+    sig.push(0x01); // SIGHASH_ALL
+    let mut script_sig = crate::script::Script::new();
+    script_sig.push_data(&sig).unwrap();
+    script_sig.push_data(&staking_pk.serialize()).unwrap();
+    script_sig.push_opcode(0x51); // OP_TRUE → OP_IF branch (pushed last)
+    let env = ScriptEnv {
+        tx_hash,
+        ..Default::default()
+    };
+    Engine::new(env)
+        .execute(&script_sig, &script_pubkey)
+        .expect("staking branch must verify with the staking key");
+
+    // ── Spend branch (OP_ELSE): spending key, CLTV enforced ───────────────────
+    let mut spend_sig = secp.sign_ecdsa(&msg, &spending_sk).serialize_der().to_vec();
+    spend_sig.push(0x01); // SIGHASH_ALL
+    let mut spend_sig_script = crate::script::Script::new();
+    spend_sig_script.push_data(&spend_sig).unwrap();
+    spend_sig_script
+        .push_data(&spending_pk.serialize())
+        .unwrap();
+    spend_sig_script.push_opcode(0x00); // OP_FALSE → OP_ELSE branch (pushed last)
+
+    // Before the locktime: rejected.
+    let early = ScriptEnv {
+        tx_hash,
+        tx_lock_time: locktime,
+        block_time: locktime - 1,
+        ..Default::default()
+    };
+    assert!(
+        Engine::new(early)
+            .execute(&spend_sig_script, &script_pubkey)
+            .is_err(),
+        "CLTV must reject a spend before the locktime"
+    );
+
+    // At/after the locktime: accepted.
+    let ok = ScriptEnv {
+        tx_hash,
+        tx_lock_time: locktime,
+        block_time: locktime,
+        ..Default::default()
+    };
+    Engine::new(ok)
+        .execute(&spend_sig_script, &script_pubkey)
+        .expect("spend branch must verify after the locktime");
+}

@@ -553,18 +553,45 @@ impl StakingEngine {
         let secp = &*SECP_CTX;
         let pubkey = PublicKey::from_secret_key(secp, &secret_key);
 
-        // The subscript is the previous output's scriptPubKey (P2PKH).
+        // The subscript is the previous output's scriptPubKey.
         let sighash = coinstake.sighash(0, &utxo.script_pubkey);
         let message = Message::from_digest(sighash);
         let sig = secp.sign_ecdsa(&message, &secret_key);
         let mut der = sig.serialize_der().to_vec();
         der.push(0x01); // SIGHASH_ALL
 
-        // Build P2PKH scriptSig: <sig> <pubkey>
         let pubkey_bytes = pubkey.serialize();
         if der.len() > 255 || pubkey_bytes.len() > 255 {
             return None;
         }
+
+        // Cold staking: a P2CS input is signed by the staking key on the OP_IF
+        // branch. The scriptSig pushes OP_TRUE (select the staking branch),
+        // then `<sig> <staking_pubkey>`. The chain's coinstake rule forces the
+        // stake to re-lock to the same P2CS script, so the hot key cannot
+        // redirect funds. See docs/cold-staking-p2cs-design.md.
+        let is_p2cs = vtorrent_script::Script::from_bytes(utxo.script_pubkey.clone())
+            .ok()
+            .map(|s| {
+                matches!(
+                    vtorrent_script::classify_script(&s),
+                    vtorrent_script::ScriptType::P2CS { .. }
+                )
+            })
+            .unwrap_or(false);
+        if is_p2cs {
+            // `<sig> <staking_pubkey> OP_TRUE` — the selector is pushed LAST so
+            // OP_IF pops it.
+            let mut script = Vec::with_capacity(1 + der.len() + 1 + pubkey_bytes.len() + 1);
+            script.push(der.len() as u8);
+            script.extend_from_slice(&der);
+            script.push(pubkey_bytes.len() as u8);
+            script.extend_from_slice(&pubkey_bytes);
+            script.push(0x51); // OP_TRUE → take the OP_IF (staking) branch
+            return Some(script);
+        }
+
+        // Build P2PKH scriptSig: <sig> <pubkey>
         let mut script = Vec::with_capacity(1 + der.len() + 1 + pubkey_bytes.len());
         script.push(der.len() as u8);
         script.extend_from_slice(&der);

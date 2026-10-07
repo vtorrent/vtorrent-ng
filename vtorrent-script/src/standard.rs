@@ -108,35 +108,36 @@ pub fn classify_script(script: &Script) -> ScriptType {
 /// Parse the exact P2CS script shape, returning `(staking_hash, spending_hash,
 /// locktime)` if it matches.
 fn parse_p2cs(b: &[u8]) -> Option<([u8; 20], [u8; 20], u32)> {
-    // Layout (54 bytes):
+    // Layout (60 bytes):
     //  0: OP_IF
-    //  1: PUSH20   2..22: staking_hash
-    // 22: OP_CHECKSIGVERIFY
-    // 23: OP_ELSE
-    // 24: PUSH4   25..29: locktime
-    // 29: OP_CHECKLOCKTIMEVERIFY
-    // 30: OP_DROP
-    // 31: PUSH20  32..52: spending_hash
-    // 52: OP_CHECKSIGVERIFY
-    // 53: OP_ENDIF
-    if b.len() != 54 {
+    //  1: OP_DUP  2: OP_HASH160  3: PUSH20  4..24: staking_hash
+    // 24: OP_EQUALVERIFY  25: OP_CHECKSIGVERIFY
+    // 26: OP_ELSE
+    // 27: PUSH4  28..32: locktime  32: OP_CHECKLOCKTIMEVERIFY  33: OP_DROP
+    // 34: OP_DUP  35: OP_HASH160  36: PUSH20  37..57: spending_hash
+    // 57: OP_EQUALVERIFY  58: OP_CHECKSIGVERIFY
+    // 59: OP_ENDIF
+    if b.len() != 60 {
         return None;
     }
-    if b[0] != 0x63 || b[1] != 0x14 || b[22] != 0xad {
+    if b[0] != 0x63 || b[1] != 0x76 || b[2] != 0xa9 || b[3] != 0x14 {
         return None;
     }
-    if b[23] != 0x67 || b[24] != 0x04 || b[29] != 0xb1 || b[30] != 0x75 {
+    if b[24] != 0x88 || b[25] != 0xac || b[26] != 0x67 || b[27] != 0x04 {
         return None;
     }
-    if b[31] != 0x14 || b[52] != 0xad || b[53] != 0x68 {
+    if b[32] != 0xb1 || b[33] != 0x75 || b[34] != 0x76 || b[35] != 0xa9 || b[36] != 0x14 {
+        return None;
+    }
+    if b[57] != 0x88 || b[58] != 0xac || b[59] != 0x68 {
         return None;
     }
     let mut staking = [0u8; 20];
-    staking.copy_from_slice(&b[2..22]);
+    staking.copy_from_slice(&b[4..24]);
     let mut spending = [0u8; 20];
-    spending.copy_from_slice(&b[32..52]);
+    spending.copy_from_slice(&b[37..57]);
     let mut lt = [0u8; 4];
-    lt.copy_from_slice(&b[25..29]);
+    lt.copy_from_slice(&b[28..32]);
     Some((staking, spending, u32::from_le_bytes(lt)))
 }
 
@@ -271,17 +272,23 @@ pub fn build_p2cs(
 ) -> Result<Script> {
     let mut s = Script::new();
     s.push_opcode(0x63); // OP_IF
+    s.push_opcode(0x76); // OP_DUP
+    s.push_opcode(0xa9); // OP_HASH160
     s.push_data(staking_pubkey_hash)
         .map_err(|e| ScriptError::Serialization(e.to_string()))?;
-    s.push_opcode(0xad); // OP_CHECKSIGVERIFY
+    s.push_opcode(0x88); // OP_EQUALVERIFY
+    s.push_opcode(0xac); // OP_CHECKSIG (leaves true)
     s.push_opcode(0x67); // OP_ELSE
     s.push_data(&locktime.to_le_bytes())
         .map_err(|e| ScriptError::Serialization(e.to_string()))?;
     s.push_opcode(0xb1); // OP_CHECKLOCKTIMEVERIFY
     s.push_opcode(0x75); // OP_DROP
+    s.push_opcode(0x76); // OP_DUP
+    s.push_opcode(0xa9); // OP_HASH160
     s.push_data(spending_pubkey_hash)
         .map_err(|e| ScriptError::Serialization(e.to_string()))?;
-    s.push_opcode(0xad); // OP_CHECKSIGVERIFY
+    s.push_opcode(0x88); // OP_EQUALVERIFY
+    s.push_opcode(0xac); // OP_CHECKSIG (leaves true)
     s.push_opcode(0x68); // OP_ENDIF
     Ok(s)
 }
