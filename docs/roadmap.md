@@ -60,7 +60,7 @@ impact, dependencies, and recommended ship order. Update as designs land.
 | `atomic-swap-ux-design.md` | — | guided wizard + deadline tracker |
 | `payment-requests-design.md` | — | **SHIPPED** (`7ed7560`): VTR URI + receive QR; request matching pending |
 | `wallet-organization-design.md` | — | **PARTIAL** (`5b86513`): contacts + tx notes shipped; full-history fix pending multi-address wallet |
-| `wallet-export-statements-design.md` | wallet-organization, earnings-view | CSV/JSON + statements |
+| `wallet-export-statements-design.md` | wallet-organization, earnings-view | **PARTIAL** (`314fb1a`): CSV/JSON export; period statements pending |
 | `staking-efficiency-design.md` | — | stake health + consolidation |
 | `staking-pools-design.md` | cold-staking | trustless delegation first |
 | `mobile-companion-design.md` | notifications, watch-only | scoped paired tokens |
