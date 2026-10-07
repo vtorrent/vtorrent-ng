@@ -1,5 +1,7 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { WalletProvider, useWallet } from './hooks/useWallet'
+import { NotificationsProvider } from './hooks/useNotifications'
+import Toasts from './components/Toasts'
 import WelcomePage from './pages/WelcomePage'
 import ImportWizardPage from './pages/ImportWizardPage'
 import CreateWalletPage from './pages/CreateWalletPage'
@@ -9,6 +11,7 @@ import TorrentPage from './pages/TorrentPage'
 import TradePage from './pages/TradePage'
 import StakingPage from './pages/StakingPage'
 import EarningsPage from './pages/EarningsPage'
+import NotificationsPage from './pages/NotificationsPage'
 import LegacyClaimPage from './pages/LegacyClaimPage'
 import BtcWalletPage from './pages/BtcWalletPage'
 import Layout from './components/Layout'
@@ -50,6 +53,10 @@ function AppRoutes() {
           element={isUnlocked ? <EarningsPage /> : <Navigate to="/" replace />}
         />
         <Route
+          path="/notifications"
+          element={isUnlocked ? <NotificationsPage /> : <Navigate to="/" replace />}
+        />
+        <Route
           path="/claim"
           element={isUnlocked ? <LegacyClaimPage /> : <Navigate to="/" replace />}
         />
@@ -68,7 +75,10 @@ function AppRoutes() {
 export default function App() {
   return (
     <WalletProvider>
-      <AppRoutes />
+      <NotificationsProvider>
+        <AppRoutes />
+        <Toasts />
+      </NotificationsProvider>
     </WalletProvider>
   )
 }

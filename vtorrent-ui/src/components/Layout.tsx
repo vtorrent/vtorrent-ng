@@ -1,10 +1,11 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Shield, Download, ArrowLeftRight,
-  Lock, Wifi, WifiOff, RefreshCw, Cpu, Zap, Gift, Bitcoin, Palette, Coins,
+  Lock, Wifi, WifiOff, RefreshCw, Cpu, Zap, Gift, Bitcoin, Palette, Coins, Bell,
 } from 'lucide-react'
 import { useWallet, formatVTR } from '../hooks/useWallet'
 import { useNodeInfo } from '../hooks/useNode'
+import { useNotifications } from '../hooks/useNotifications'
 import { useTheme } from '../hooks/useTheme'
 import AppIcon from './AppIcon'
 import clsx from 'clsx'
@@ -23,6 +24,7 @@ const navItems = [
 export default function Layout() {
   const { lock, totalBalance, has2FA, keys } = useWallet()
   const { theme, toggle: toggleTheme } = useTheme()
+  const { unread } = useNotifications()
   const navigate = useNavigate()
 
   // Poll node info every 8 seconds for live sidebar status
@@ -170,6 +172,18 @@ export default function Layout() {
               2FA Active
             </div>
           )}
+
+          {/* Notifications */}
+          <button
+            onClick={() => navigate('/notifications')}
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-gray-200 hover:bg-navy-800/60 transition-all duration-150"
+          >
+            <Bell size={14} />
+            Notifications
+            {unread > 0 && (
+              <span className="ml-auto badge-green text-xs px-1.5 py-0.5">{unread}</span>
+            )}
+          </button>
 
           {/* Theme toggle */}
           <button
