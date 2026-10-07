@@ -1013,3 +1013,144 @@ pub async fn verify_message(
         .map_err(|e| RpcError::BadRequest(format!("invalid input: {e}")))?;
     Ok(Json(VerifyMessageResponse { valid }))
 }
+
+// ─── GET /api/v1/wallet/export ───────────────────────────────────────────────
+
+/// Escape a CSV field (quote if it contains a comma, quote, or newline).
+fn csv_field(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+/// Export the wallet transaction history as CSV or JSON.
+///
+/// Columns: date, txid, direction, amount_vtr, amount_sats, block_height,
+/// confirmations, tx_type. Amounts are given in **both** VTR (8 dp) and exact
+/// satoshis so there is no unit ambiguity. Read-only; the export is a full
+/// financial record, so callers should treat it as sensitive.
+pub async fn export_transactions(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> RpcResult<axum::response::Response> {
+    use axum::response::IntoResponse;
+
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(1_000)
+        .min(10_000);
+    let format = params.get("format").map(String::as_str).unwrap_or("csv");
+
+    let address = state.wallet_change_address.read().await.clone();
+    let rows = if let Some(address) = address {
+        state
+            .chain
+            .lock()
+            .await
+            .get_recent_transactions_for_addresses(&[address], limit)
+    } else {
+        Vec::new()
+    };
+
+    let tip = state.chain.lock().await.best_height();
+
+    if format == "json" {
+        let items: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(txid, height, ts, tx_type, amount, fee)| {
+                serde_json::json!({
+                    "txid": txid,
+                    "block_height": height,
+                    "timestamp": ts,
+                    "tx_type": tx_type,
+                    "amount_sats": amount,
+                    "amount_vtr": vtorrent_core::payment_uri::format_sats(*amount),
+                    "fee_sats": fee,
+                    "confirmations": tip.saturating_sub(*height) + 1,
+                })
+            })
+            .collect();
+        let body = serde_json::to_string_pretty(&items).unwrap_or_else(|_| "[]".into());
+        return Ok((
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            body,
+        )
+            .into_response());
+    }
+
+    // CSV
+    let mut csv = String::from(
+        "date,txid,direction,amount_vtr,amount_sats,block_height,confirmations,tx_type\n",
+    );
+    for (txid, height, ts, tx_type, amount, _fee) in &rows {
+        let direction = if tx_type.contains("coinbase") || tx_type.contains("coinstake") {
+            "in"
+        } else {
+            "out"
+        };
+        let date = format_unix_utc(*ts);
+        csv.push_str(&format!(
+            "{},{},{},{},{},{},{},{}\n",
+            date,
+            csv_field(txid),
+            direction,
+            vtorrent_core::payment_uri::format_sats(*amount),
+            amount,
+            height,
+            tip.saturating_sub(*height) + 1,
+            csv_field(tx_type),
+        ));
+    }
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, "text/csv"),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                "attachment; filename=\"vtorrent-transactions.csv\"",
+            ),
+        ],
+        csv,
+    )
+        .into_response())
+}
+
+/// Format a Unix timestamp as `YYYY-MM-DDTHH:MM:SSZ` (UTC), dependency-free.
+fn format_unix_utc(ts: u32) -> String {
+    // Days since epoch → civil date (Howard Hinnant's algorithm).
+    let secs = ts as i64;
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (h, m, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+    format!("{year:04}-{month:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
+}
+
+#[cfg(test)]
+mod export_tests {
+    use super::*;
+
+    #[test]
+    fn csv_field_quoting() {
+        assert_eq!(csv_field("plain"), "plain");
+        assert_eq!(csv_field("a,b"), "\"a,b\"");
+        assert_eq!(csv_field("a\"b"), "\"a\"\"b\"");
+    }
+
+    #[test]
+    fn utc_formatting() {
+        assert_eq!(format_unix_utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(format_unix_utc(1_700_000_000), "2023-11-14T22:13:20Z");
+    }
+}
