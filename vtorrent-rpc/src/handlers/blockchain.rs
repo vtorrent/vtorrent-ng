@@ -241,10 +241,19 @@ pub async fn get_fee_estimate(
     State(state): State<Arc<AppState>>,
 ) -> RpcResult<Json<FeeEstimateResponse>> {
     let mempool = state.mempool.lock().await;
+    let targets = mempool
+        .fee_estimates()
+        .into_iter()
+        .map(|(target_blocks, sat_per_byte)| FeeTarget {
+            target_blocks,
+            sat_per_byte,
+        })
+        .collect();
     Ok(Json(FeeEstimateResponse {
         recommended_sat_per_byte: mempool.recommended_fee_rate(),
         minimum_sat_per_byte: mempool.min_fee_rate(),
         median_sat_per_byte: mempool.median_fee_rate(),
         mempool_transactions: mempool.size(),
+        targets,
     }))
 }

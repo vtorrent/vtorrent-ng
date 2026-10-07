@@ -119,6 +119,15 @@ pub struct FeeEstimateResponse {
     pub minimum_sat_per_byte: u64,
     pub median_sat_per_byte: u64,
     pub mempool_transactions: usize,
+    /// Target-based estimates: `(target_blocks, sat_per_byte)`, monotonic.
+    #[serde(default)]
+    pub targets: Vec<FeeTarget>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FeeTarget {
+    pub target_blocks: u32,
+    pub sat_per_byte: u64,
 }
 
 // ─── Wallet ───────────────────────────────────────────────────────────────────

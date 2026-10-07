@@ -682,6 +682,37 @@ impl Mempool {
         rates.get(p75).copied().unwrap_or(self.min_fee_rate)
     }
 
+    /// Target-based fee estimates (sat/byte) for 1/2/3/6-block confirmation.
+    ///
+    /// Derived from the current mempool's fee-rate distribution: a faster target
+    /// maps to a higher percentile. The result is **monotonic** (target 1 ≥
+    /// target 2 ≥ …) and **bounded** below by `min_fee_rate`, so a wallet can
+    /// pick a target without ever underpaying the relay floor. A quiet mempool
+    /// returns the minimum for every target.
+    ///
+    /// Note: this is mempool-derived, not block-history-derived; a full
+    /// estimator over recent blocks is a documented follow-up.
+    pub fn fee_estimates(&self) -> Vec<(u32, u64)> {
+        let mut rates: Vec<u64> = self.entries.values().map(|e| e.fee_rate()).collect();
+        rates.sort_unstable();
+        let at = |pct: usize| -> u64 {
+            if rates.is_empty() {
+                return self.min_fee_rate;
+            }
+            let idx = (rates.len() * pct / 100).min(rates.len() - 1);
+            rates[idx].max(self.min_fee_rate)
+        };
+        // Faster target → higher percentile.
+        let mut out = vec![(1u32, at(90)), (2, at(75)), (3, at(50)), (6, at(25))];
+        // Enforce monotonicity (a faster target must not be cheaper).
+        for i in 1..out.len() {
+            if out[i].1 > out[i - 1].1 {
+                out[i].1 = out[i - 1].1;
+            }
+        }
+        out
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────────
 
     /// Remove an entry from both the tx map and the spent-input index.
@@ -1174,5 +1205,23 @@ mod tests {
             crate::consensus::validate_transaction(&tx).is_err(),
             "a tx spending the same outpoint twice must be rejected"
         );
+    }
+    #[test]
+    fn fee_estimates_are_monotonic_and_bounded() {
+        let mp = Mempool::new(10_000);
+        let est = mp.fee_estimates();
+        assert_eq!(est.len(), 4);
+        // Targets present and ordered.
+        assert_eq!(est[0].0, 1);
+        assert_eq!(est[3].0, 6);
+        // Monotonic: a faster target is never cheaper.
+        for w in est.windows(2) {
+            assert!(w[0].1 >= w[1].1, "non-monotonic: {est:?}");
+        }
+        // Bounded below by the minimum fee rate.
+        let min = mp.min_fee_rate();
+        for (_, rate) in &est {
+            assert!(*rate >= min, "below min fee rate: {est:?}");
+        }
     }
 }
