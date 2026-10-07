@@ -761,3 +761,55 @@ mod auto_unlock_tests {
         assert!(rx.try_recv().is_err());
     }
 }
+
+// ─── POST /api/v1/wallet/payment-request ─────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct PaymentRequestReq {
+    /// Destination address; defaults to the wallet's own address.
+    #[serde(default)]
+    pub address: Option<String>,
+    /// Amount in satoshis (exact).
+    #[serde(default)]
+    pub amount_sats: Option<u64>,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub req: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct PaymentRequestResp {
+    pub address: String,
+    pub uri: String,
+}
+
+/// Build a VTR payment URI (for a receive QR / invoice). Read-only.
+pub async fn create_payment_request(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<PaymentRequestReq>,
+) -> RpcResult<Json<PaymentRequestResp>> {
+    let address = match req.address {
+        Some(a) => a,
+        None => state
+            .wallet_change_address
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| {
+                RpcError::BadRequest("no wallet address; import a wallet or pass ?address".into())
+            })?,
+    };
+    let uri = vtorrent_core::payment_uri::PaymentUri {
+        address: address.clone(),
+        amount_sats: req.amount_sats,
+        label: req.label,
+        message: req.message,
+        req: req.req,
+    }
+    .build()
+    .map_err(|e| RpcError::BadRequest(format!("invalid payment request: {e}")))?;
+    Ok(Json(PaymentRequestResp { address, uri }))
+}

@@ -116,6 +116,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/v1/wallet/contacts/delete", post(delete_contact))
         .route("/api/v1/wallet/notes", get(list_notes).post(set_note))
+        .route(
+            "/api/v1/wallet/payment-request",
+            post(create_payment_request),
+        )
         .route("/api/v1/torrent/add", post(add_torrent))
         .route("/api/v1/torrent/:id", delete(remove_torrent))
         .route("/api/v1/dex/order", post(place_dex_order))

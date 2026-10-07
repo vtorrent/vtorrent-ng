@@ -608,3 +608,28 @@ export async function getEarningsSummary(window = '30d'): Promise<EarningsSummar
     await rpcGet<unknown>(`/api/v1/earnings/summary?window=${encodeURIComponent(window)}`)
   ) as EarningsSummary
 }
+
+// ─── Payment requests ─────────────────────────────────────────────────────────
+
+export interface PaymentRequest {
+  address: string
+  uri: string
+}
+
+/** Build a VTR payment URI (receive QR / invoice). */
+export async function createPaymentRequest(req: {
+  amountSats?: number
+  label?: string
+  message?: string
+}): Promise<PaymentRequest> {
+  if (isTauri()) {
+    return tauriInvoke<PaymentRequest>('create_payment_request', req)
+  }
+  return camel(
+    await rpcPost<unknown>('/api/v1/wallet/payment-request', {
+      amount_sats: req.amountSats,
+      label: req.label,
+      message: req.message,
+    })
+  ) as PaymentRequest
+}

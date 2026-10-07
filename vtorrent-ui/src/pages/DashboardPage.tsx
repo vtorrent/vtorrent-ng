@@ -5,7 +5,8 @@ import {
   ArrowDownLeft, Clock, Wifi, WifiOff, Send, X, CheckCircle, AlertCircle,
 } from 'lucide-react'
 import { useWallet, formatVTR } from '../hooks/useWallet'
-import { useTransactions, useNodeInfo, type TxRecord } from '../hooks/useNode'
+import { useTransactions, useNodeInfo, createPaymentRequest, type TxRecord } from '../hooks/useNode'
+import QRCode from 'qrcode.react'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -292,6 +293,9 @@ export default function DashboardPage() {
         </div>
       </div>
 
+      {/* Receive / payment request */}
+      <ReceiveCard />
+
       <div className="grid grid-cols-2 gap-4">
         {/* Addresses */}
         <div className="card">
@@ -444,6 +448,76 @@ export default function DashboardPage() {
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+// ─── Receive (payment request + QR) ───────────────────────────────────────────
+
+function ReceiveCard() {
+  const [amount, setAmount] = useState('')
+  const [uri, setUri] = useState('')
+  const [address, setAddress] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const build = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      // Parse the decimal VTR amount to satoshis with integer math.
+      let amountSats: number | undefined
+      if (amount.trim()) {
+        const [i, f = ''] = amount.trim().split('.')
+        if (!/^\d*$/.test(i) || !/^\d*$/.test(f) || f.length > 8) {
+          throw new Error('invalid amount')
+        }
+        const frac = (f + '00000000').slice(0, 8)
+        amountSats = Number(i || '0') * 100_000_000 + Number(frac)
+      }
+      const r = await createPaymentRequest({ amountSats })
+      setUri(r.uri)
+      setAddress(r.address)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2 className="font-semibold text-white text-sm mb-3">Receive</h2>
+      <div className="flex gap-2 items-end">
+        <div className="flex-1">
+          <label className="label">Amount (VTR, optional)</label>
+          <input
+            className="input-field"
+            placeholder="0.0"
+            value={amount}
+            onChange={e => setAmount(e.target.value)}
+          />
+        </div>
+        <button onClick={build} disabled={busy} className="btn-primary text-xs">
+          {busy ? 'Building…' : 'Create request'}
+        </button>
+      </div>
+      {error && <p className="text-xs text-red-400 mt-2">{error}</p>}
+      {uri && (
+        <div className="mt-3 flex items-center gap-4">
+          <QRCode value={uri} size={120} />
+          <div className="min-w-0">
+            <p className="font-mono text-xs text-vtorrent-300 break-all">{address}</p>
+            <p className="font-mono text-[10px] text-gray-500 break-all mt-1">{uri}</p>
+            <button
+              onClick={() => navigator.clipboard.writeText(uri)}
+              className="text-xs text-vtorrent-400 hover:text-vtorrent-300 mt-2"
+            >
+              Copy URI
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
