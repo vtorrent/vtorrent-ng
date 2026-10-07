@@ -49,7 +49,7 @@ impact, dependencies, and recommended ship order. Update as designs land.
 | `passphrase-rotation-design.md` | backup-recovery | fresh salt/nonce; key rotation |
 | `message-signing-design.md` | — | proof of ownership; domain-separated |
 | `hd-discovery-design.md` | backup-recovery | gap-limit scan (restore correctness) |
-| `transaction-preview-design.md` | — | dry-run; shared build path |
+| `transaction-preview-design.md` | — | **SHIPPED** (`1ce1fe3`): `POST /wallet/preview` dry-run |
 
 ## 5. Wallet & UX (Tier 1)
 
