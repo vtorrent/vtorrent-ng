@@ -27,6 +27,7 @@ serde_json = "1"
 # Offline store operations (reindex)
 vtorrent-store = { path = "../vtorrent-store" }
 vtorrent-node = { path = "../vtorrent-node" }
+vtorrent-script = { path = "../vtorrent-script" }
 
 # Terminal output
 colored = "2"

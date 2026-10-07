@@ -151,6 +151,19 @@ enum Commands {
         #[arg(long)]
         regtest_fast_stake: bool,
     },
+    /// Scan the chain for outputs the consensus batch would treat differently
+    /// (OP_RETURN, P2CS). Zero findings ⇒ the batch is a no-op on this chain.
+    CheckConsensus {
+        /// Data directory containing `chain.db` [default: ~/.vtorrent].
+        #[arg(long)]
+        data_dir: Option<String>,
+        /// Regtest chain (uses the regtest genesis).
+        #[arg(long)]
+        regtest: bool,
+        /// Regtest with fast-stake parameters.
+        #[arg(long)]
+        regtest_fast_stake: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -686,6 +699,78 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
         } => {
             run_reindex(data_dir.as_deref(), *regtest, *regtest_fast_stake)?;
         }
+        Commands::CheckConsensus {
+            data_dir,
+            regtest,
+            regtest_fast_stake,
+        } => {
+            run_check_consensus(data_dir.as_deref(), *regtest, *regtest_fast_stake)?;
+        }
+    }
+    Ok(())
+}
+
+/// Scan the chain for outputs the consensus batch would treat differently
+/// (OP_RETURN, P2CS). Zero findings ⇒ the batch is a no-op on this chain.
+/// Offline (reads the store directly). See `docs/consensus-batch-activation-plan.md`.
+fn run_check_consensus(
+    data_dir: Option<&str>,
+    regtest: bool,
+    regtest_fast_stake: bool,
+) -> Result<()> {
+    use vtorrent_store::store::BlockStore;
+
+    let dir = match data_dir {
+        Some(d) => std::path::PathBuf::from(d),
+        None => dirs_data_dir()?,
+    };
+    let db_path = dir.join("chain.db");
+    if !db_path.exists() {
+        anyhow::bail!(
+            "no store at {} — is the data dir correct?",
+            db_path.display()
+        );
+    }
+    let store =
+        BlockStore::open(&db_path).map_err(|e| anyhow::anyhow!("failed to open store: {e}"))?;
+    let tip = store.best_height().unwrap_or(0);
+    let chain = if regtest_fast_stake {
+        store.load_into_fast_regtest_chain()
+    } else if regtest {
+        store.load_into_regtest_chain()
+    } else {
+        store.load_into_chain()
+    }
+    .map_err(|e| anyhow::anyhow!("failed to load chain: {e}"))?;
+
+    let mut op_return = 0u64;
+    let mut p2cs = 0u64;
+    for h in 0..=tip {
+        let Some(block) = chain.get_block_at_height(h) else {
+            continue;
+        };
+        for tx in &block.transactions {
+            for out in &tx.outputs {
+                let Ok(script) = vtorrent_script::Script::from_bytes(out.script_pubkey.clone())
+                else {
+                    continue;
+                };
+                match vtorrent_script::classify_script(&script) {
+                    vtorrent_script::ScriptType::OpReturn => op_return += 1,
+                    vtorrent_script::ScriptType::P2CS { .. } => p2cs += 1,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    println!("Consensus-batch no-op check (heights 0..={tip}):");
+    println!("  OP_RETURN outputs: {op_return}");
+    println!("  P2CS outputs:      {p2cs}");
+    if op_return == 0 && p2cs == 0 {
+        println!("  => NO-OP: the batch changes nothing on this chain (safe to adopt via a coordinated upgrade).");
+    } else {
+        println!("  => NOT a no-op: {op_return} OP_RETURN / {p2cs} P2CS outputs exist; a height activation or fresh genesis is required.");
     }
     Ok(())
 }
