@@ -1,11 +1,11 @@
 # OP_RETURN / Unspendable-Output UTXO Exclusion — Design
 
-Status: **REVERTED** (`e52facf`) — the "no-op" premise was wrong: the genesis
-legacy-distribution outputs are `OP_RETURN <address>` (`genesis.rs:88-93`), so
-excluding OP_RETURN changes the genesis commitment and forks the chain. See
-`docs/consensus-batch-activation-plan.md` §2. A redesigned predicate (exclude
-only *data-carrier* OP_RETURNs, not the genesis distribution) or a fresh genesis
-would be required.
+Status: **IMPLEMENTED + verified no-op**. The first blanket exclusion forked
+(the genesis legacy-distribution outputs are `OP_RETURN <address>`,
+`genesis.rs:88-93`); `is_utxo_eligible(output, tx, height)` now excludes only
+**data-carrier** OP_RETURNs and retains the genesis distribution. Offline replay
+reproduces the canonical tip hash — a genuine no-op. See
+`docs/consensus-batch-activation-plan.md` §2.
 Scope: `vtorrent-node` UTXO set + commitment.
 Constraint: not part of the current soak window; belongs to the post-soak
 consensus batch with a fresh-genesis decision.

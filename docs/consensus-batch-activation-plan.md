@@ -14,13 +14,13 @@ to `docs/network-upgrade-design.md` (the mechanism) and `docs/roadmap.md`.
 
 ## 2. The no-op property — CORRECTED (2026-10-08)
 
-**OP_RETURN exclusion is NOT a no-op — it was reverted (`e52facf`).** Grounding
-it against a real chain (offline replay of a node's store with the batch binary)
-showed it **fails to replay at height 2**: the genesis legacy-distribution
-outputs are `OP_RETURN <address>` (`genesis.rs:88-93`), so they are *claimable*
-distribution outputs, not unspendable data carriers. Excluding OP_RETURN changes
-the genesis commitment and every block's post-state root → a fork. The earlier
-"genesis is P2PKH" claim was **wrong**.
+**OP_RETURN exclusion — redesigned to a true no-op (verified).** The first
+attempt excluded *all* OP_RETURN and **failed to replay at height 2** (reverted
+`e52facf`): the genesis legacy-distribution outputs are `OP_RETURN <address>`
+(`genesis.rs:88-93`) — claimable distribution markers, not data carriers.
+`is_utxo_eligible` now excludes only **data-carrier** OP_RETURNs and retains the
+genesis distribution (height 0, `LegacyClaim`). Verified by offline replay: the
+batch binary reproduces the canonical tip hash (`51c64eed…` at 36065), 0 errors.
 
 **P2CS alone IS a genuine no-op — verified.** With OP_RETURN reverted, the batch
 binary replayed a node's store to the **identical tip hash** at height 35660 as
