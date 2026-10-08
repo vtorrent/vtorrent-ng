@@ -5,6 +5,50 @@ All notable changes to vTorrent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-beta.3] — 2026-10-06
+
+Mainnet-readiness candidate. The three-node regtest fleet completed a **full
+7-day soak** (2026-09-29 → 2026-10-06): 3/3 nodes agreed on height and tip hash,
+0 reorgs, 0 errors, 0 restarts, Prometheus 10002/10002 samples/node, memory
+152–162 MiB (under budget). See `docs/release-notes-beta.3.md` and
+`docs/soak-log.md`.
+
+### Fixed
+- **RSS growth** — block-body pruning (`1e254b8`) bounds the in-memory chain;
+  reusable UTXO-commitment scratch (`1d67618`) removed the per-block Merkle
+  rebuild churn (staking-path allocation 637.6 → 30.7 MB, −95%); BTC SPV
+  identified as a separable ~40 MiB component. Investigation closed: no live
+  heap leak (interval profile, peak live ≤ ~0.3 MB).
+- **`strict_onion`** — `prefer_onion` no longer silently falls back to a direct
+  clearnet dial (deanonymization); a clearnet dial is refused when set.
+- **Swap claim signing** — `POST /swap/vtr-claim` now signs with the unlocked
+  wallet key (passphrase + optional OTP) instead of a client-supplied WIF.
+  **Client-facing API change.**
+- **CI/release** — build the frontend in the workflow (CWD-dependent
+  `beforeBuildCommand`); `contents: write` for the desktop job; ship NSIS `.exe`
+  (MSI rejects non-numeric pre-releases).
+
+### Added
+- **Unified Earnings view** — `GET /api/v1/earnings/summary` + Earnings page.
+- **Node diagnostics** — `GET /api/v1/diagnostics` (read-only health checks).
+- **Wallet contacts + tx notes** — 0600 sidecar; `/wallet/contacts`, `/wallet/notes`.
+- **Offline reindex** — `vtorrent-cli reindex`.
+- **Notifications** — toasts + feed over the event WebSocket.
+- **Payment requests** — VTR URI + receive QR (`vtorrent-core::payment_uri`).
+- **Transaction preview** — `POST /wallet/preview` dry-run.
+- **Message signing** — proof of ownership (`/wallet/sign-message`, `/verify-message`).
+- **Target-based fee estimates** — `Mempool::fee_estimates()`.
+- **Wallet export** — `GET /wallet/export` (CSV/JSON).
+
+### Consensus batch (implemented, not yet deployed — activation-gated)
+- **OP_RETURN UTXO exclusion** (`17c7b28`) — unspendable outputs leave the
+  UTXO set/commitment; a no-op on the current chain.
+- **Cold staking (P2CS)** — script, stakeability, coinstake re-lock rule (R1),
+  wallet key roles, coinstake signing, RPC + UI, SPV proof.
+- **BIP-9 versionbits** activation mechanism + `GET /api/v1/deployments`.
+- Designs + plans: governance, state rent (corrected — needs fresh genesis),
+  consensus-batch activation, and a `check-consensus` no-op verifier.
+
 ## [Unreleased] — vTorrent 2.0.0
 
 ### Since v2.0.0-beta.2 (332 commits)

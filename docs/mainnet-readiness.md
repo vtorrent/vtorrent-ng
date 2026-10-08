@@ -71,11 +71,11 @@ from uninterrupted soak measurements.
       7-day window restarted 2026-09-03. A staking allocation fix deployed
       2026-09-04 reduced node1 from 207.7 MiB to 61.6 MiB after six kernel
       hits; the continuous-window check remains pending.)*
-- [ ] **Staking soak**: at least one node stakes continuously and produces
-      blocks at the expected ~60s average over the soak window. *(Staking
-      verified end-to-end again 2026-09-03: fast-stake candidate passed chain
-      admission, reward block persisted, and all 3 nodes converged; continuous-
-      window check pending.)*
+- [x] **Staking soak**: at least one node staked continuously and produced
+      blocks at the expected ~60s average over the full 7-day window
+      (`2026-09-29T13:36:22Z` → `2026-10-06T13:36:22Z`): node1 staked 1441
+      blocks this run, median block interval 61s, 0 errors/restarts. See
+      `docs/soak-log.md` 2026-10-06 sign-off.
 - [x] **Atomic swap E2E on testnet**: 2026-08-24 via compose stack — full
       VTR↔BTC cycle against BTC regtest: VTR HTLC funded (match), BTC HTLC
       funded and confirmed (P2WSH, block 127), taker claimed VTR revealing
@@ -125,13 +125,17 @@ from uninterrupted soak measurements.
       passed on `d128ed7` (2026-09-05): workspace tests, audit, formatting,
       Clippy, Cargo Machete, and the benchmark gate. Subsequent changes still
       require their own green run.
-- [ ] **Desktop builds verified** on all three platforms from a `v*` tag:
-      Linux (deb/AppImage), macOS (Intel + Apple Silicon), Windows x64.
+- [x] **Desktop builds verified** on all platforms from the `v2.0.0-beta.3`
+      tag (2026-10-06): Linux (deb/rpm/AppImage), macOS (Intel + Apple Silicon),
+      Windows x64 (NSIS). All four matrix jobs green; 8 assets published to the
+      GitHub Release. (Fixed en route: CWD-dependent `beforeBuildCommand`,
+      missing `contents: write`, MSI rejecting a non-numeric pre-release.)
 - [ ] **Reproducible build check**: two independent builds of the same tag
       produce identical daemon binaries where feasible.
-- [ ] **Release notes drafted** from CHANGELOG `[Unreleased]` section.
-- [ ] **Tag created**: `git tag -s v2.0.0-beta.N && git push origin v2.0.0-beta.N`
-      (beta tags first; final `v2.0.0` only after §1–§3 complete).
+- [x] **Release notes drafted** — `docs/release-notes-beta.3.md` (finalized,
+      Addendum 4 covers the soak + memory work + P0 fixes).
+- [x] **Tag created**: `v2.0.0-beta.3` (2026-10-06), pushed, GitHub Release
+      published. (Final `v2.0.0` only after §1–§3 complete.)
 
 ## 5. Operations
 
@@ -228,9 +232,9 @@ actions, operator approval.
       fresh genesis, post-soak consensus batch). Disproven along the way: the
       redb-cache hypothesis; retracted: the BTC-SPV and "plateau" claims. See
       `docs/memory-observability-design.md` §7.2–7.7.
-- [ ] **`v2.0.0-beta.3` tag** — `docs/release-notes-beta.3.md` addendum is a
-      draft; no tag exists (only beta.1/beta.2). Tag after sign-off, with the
-      desktop build matrix and checksums.
+- [x] **`v2.0.0-beta.3` tag** — released 2026-10-06 after the 7-day soak
+      sign-off; desktop build matrix green; GitHub Release published with 8
+      assets. See `docs/release-notes-beta.3.md`.
 - [ ] **Memory observability + parallel-fetch designs** — both are flag-gated
       drafts (`docs/memory-observability-design.md`,
       `docs/parallel-fetch-design.md`); deploy only after sign-off.
