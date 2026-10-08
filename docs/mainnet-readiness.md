@@ -119,6 +119,9 @@ from uninterrupted soak measurements.
       supply); regtest faucet remains for development. See
       `docs/explorer-faucet-policy.md`.
 
+> **Launch procedure:** see `docs/mainnet-launch-runbook.md` (params,
+> pre-launch gate, consensus-batch decision, launch steps, rollback).
+
 ## 4. Release Engineering
 
 - [x] **CI green**: [Actions run 33954016532](https://github.com/vtorrent/vtorrent-ng/actions/runs/33954016532)
