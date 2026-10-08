@@ -284,10 +284,11 @@ impl StakingEngine {
         let staking_script = self.address_to_script(&self.address)?;
         let mut any_eligible = false;
         let kernel = utxos.into_iter().find_map(|candidate| {
-            if candidate.script_pubkey == staking_script
-                && self.is_eligible(candidate, timestamp)
-                && is_spendable(candidate)
-            {
+            // A candidate is ours if it pays our P2PKH address, or if it is a
+            // P2CS (cold-staking) output — the engine holds the staking key for
+            // those. See docs/cold-staking-p2cs-design.md.
+            let is_ours = candidate.script_pubkey == staking_script || is_p2cs_script(candidate);
+            if is_ours && self.is_eligible(candidate, timestamp) && is_spendable(candidate) {
                 any_eligible = true;
                 self.try_stake_kernel(
                     prev_stake_modifier,
@@ -507,8 +508,23 @@ impl StakingEngine {
             script_pubkey: Vec::new(),
         };
 
-        // Output 1: stake return + reward to staking address
-        let stake_script = self.address_to_script(&self.address)?;
+        // Output 1: stake return + reward. For a P2CS (cold-staking) input the
+        // stake MUST re-lock to the same P2CS script (the R1 rule); otherwise
+        // pay the engine's own P2PKH address.
+        let is_p2cs = vtorrent_script::Script::from_bytes(utxo.script_pubkey.clone())
+            .ok()
+            .map(|s| {
+                matches!(
+                    vtorrent_script::classify_script(&s),
+                    vtorrent_script::ScriptType::P2CS { .. }
+                )
+            })
+            .unwrap_or(false);
+        let stake_script = if is_p2cs {
+            utxo.script_pubkey.clone()
+        } else {
+            self.address_to_script(&self.address)?
+        };
         let stake_output = TxOutput {
             value: utxo.value.saturating_add(reward),
             script_pubkey: stake_script,
@@ -675,6 +691,19 @@ static SECP_CTX: LazyLock<Secp256k1<All>> = LazyLock::new(Secp256k1::new);
 /// Unspendable outputs (genesis OP_RETURN legacy-distribution leaves) hold
 /// enormous value and would dominate the kernel race, but a coinstake
 /// spending one is rejected by script verification.
+/// Whether a UTXO's script is a P2CS (cold-staking) output.
+fn is_p2cs_script(utxo: &Utxo) -> bool {
+    vtorrent_script::Script::from_bytes(utxo.script_pubkey.clone())
+        .ok()
+        .map(|s| {
+            matches!(
+                vtorrent_script::classify_script(&s),
+                vtorrent_script::ScriptType::P2CS { .. }
+            )
+        })
+        .unwrap_or(false)
+}
+
 fn is_spendable(utxo: &Utxo) -> bool {
     match Script::from_bytes(utxo.script_pubkey.clone()) {
         Ok(script) => classify_script(&script) != ScriptType::OpReturn,
@@ -986,6 +1015,9 @@ mod proof_tests {
         });
     }
 }
+
+#[cfg(test)]
+mod cold_stake_tests;
 
 #[cfg(test)]
 mod root_parity_tests;
