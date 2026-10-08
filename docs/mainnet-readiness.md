@@ -135,8 +135,9 @@ from uninterrupted soak measurements.
       missing `contents: write`, MSI rejecting a non-numeric pre-release.)
 - [x] **Reproducible build check**: two independent clean (`--no-cache`) builds
       of the same source produce the **identical daemon binary**
-      (`sha256 8c9993fd…`, 2026-10-08). Note: the build is reproducible given the
-      same `rust:1.90-slim` base + `Cargo.lock`; pin both for release builds.
+      (`sha256 8c9993fd…`, 2026-10-08). **Pinned**: `rust-toolchain.toml`
+      (1.90.0) + Docker base images by digest. `Cargo.lock` is gitignored
+      (workspace-library pattern); release builds should archive the lock used.
 - [x] **Release notes drafted** — `docs/release-notes-beta.3.md` (finalized,
       Addendum 4 covers the soak + memory work + P0 fixes).
 - [x] **Tag created**: `v2.0.0-beta.3` (2026-10-06), pushed, GitHub Release
