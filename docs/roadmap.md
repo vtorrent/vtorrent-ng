@@ -29,7 +29,7 @@ impact, dependencies, and recommended ship order. Update as designs land.
 
 | Design | Depends on | Notes |
 |---|---|---|
-| `network-upgrade-design.md` | — | BIP-9 activation, min-version, fork policy |
+| `network-upgrade-design.md` | — | **CORE IMPLEMENTED**: BIP-9 versionbits state machine + `/deployments`; min-version/fork policy pending |
 | `node-diagnostics-design.md` | — | **SHIPPED** (`85af58e`): `GET /api/v1/diagnostics` |
 | `reindex-rescan-design.md` | diagnostics | **PARTIAL** (`cli reindex` shipped): offline full reindex; wallet rescan + checkpoint reindex pending |
 | `fast-sync-design.md` | — | snapshot verified against `utxo_root` |
