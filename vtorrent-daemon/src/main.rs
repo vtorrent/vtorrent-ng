@@ -344,7 +344,11 @@ async fn main() -> anyhow::Result<()> {
             seed,
             network,
             data_dir.join("btc_utxos.json"),
-        );
+        )
+        .inspect(|w| {
+            // Bound the in-memory SPV header chain (mainnet ~870k headers).
+            w.set_header_retention(cli.btc_header_retention);
+        });
         // Zeroize the local seed material; the wallet holds its own copy
         // (zeroized on drop) and the CLI string is process-lifetime anyway.
         seed.zeroize();

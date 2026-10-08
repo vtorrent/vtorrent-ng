@@ -26,6 +26,16 @@ pub struct HeaderChain {
     best_height: u32,
     best_work: u128,
     network: Option<bitcoin::Network>,
+    /// Maximum number of headers retained in memory (0 = unbounded).
+    ///
+    /// On mainnet the header chain is ~870k headers (~100 MiB); bounding it
+    /// keeps SPV memory flat. Pruning removes headers strictly below
+    /// `best_height - retention`, so the retained set stays **contiguous** —
+    /// which difficulty validation (walks back one retarget period, ~2016) and
+    /// the UTXO scan (walks from the tip to a checkpoint) both require. Set the
+    /// retention above the retarget period and above the scan depth.
+    /// See `docs/btc-spv-soak-plan.md`.
+    retention: usize,
 }
 
 impl HeaderChain {
@@ -41,6 +51,7 @@ impl HeaderChain {
             best_height: 0,
             best_work: 0,
             network: None,
+            retention: 0,
         }
     }
 
@@ -63,6 +74,7 @@ impl HeaderChain {
             best_height: 0,
             best_work: work,
             network: Some(network),
+            retention: 0,
         }
     }
 
@@ -190,7 +202,51 @@ impl HeaderChain {
             self.best_hash = Some(hash);
             self.best_work = work;
         }
+        self.prune();
         Ok(())
+    }
+
+    /// Set the in-memory header retention window (0 = unbounded).
+    pub fn set_retention(&mut self, retention: usize) {
+        self.retention = retention;
+        self.prune();
+    }
+
+    /// Drop headers strictly below `best_height - retention`, keeping the
+    /// retained set contiguous. Genesis (height 0) is always kept as the anchor.
+    fn prune(&mut self) {
+        if self.retention == 0 || self.best_height as usize <= self.retention {
+            return;
+        }
+        let keep_from = self.best_height - self.retention as u32;
+        // Walk the best chain from the tip down to `keep_from`, collecting the
+        // hashes to retain; everything else (old main-chain + all forks) is
+        // dropped.
+        let mut keep: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+        let mut cursor = self.best_hash;
+        while let Some(hash) = cursor {
+            let Some(stored) = self.headers.get(&hash) else {
+                break;
+            };
+            if stored.height < keep_from {
+                break;
+            }
+            keep.insert(hash);
+            if stored.height == 0 {
+                break;
+            }
+            cursor = Some(stored.header.prev_blockhash.to_byte_array());
+        }
+        // Always keep genesis.
+        if let Some(genesis) = self
+            .headers
+            .values()
+            .find(|h| h.height == 0)
+            .map(|h| h.header.block_hash().to_byte_array())
+        {
+            keep.insert(genesis);
+        }
+        self.headers.retain(|hash, _| keep.contains(hash));
     }
 
     pub fn best_height(&self) -> u32 {
@@ -455,5 +511,56 @@ mod tests {
             chain.hashes_from(0),
             vec![h0_hash, fork_h1_hash, fork_h2_hash]
         );
+    }
+    #[test]
+    fn test_retention_prunes_to_contiguous_window() {
+        let mut chain = HeaderChain::unanchored_for_tests();
+        chain.set_retention(10);
+        // Build a chain of 50 headers.
+        let mut prev = [0u8; 32];
+        let mut hashes = Vec::new();
+        for h in 0..50u32 {
+            let header = make_header(prev, h);
+            let hash = header.block_hash().to_byte_array();
+            chain.add_header(&serialize(&header), h).unwrap();
+            hashes.push(hash);
+            prev = hash;
+        }
+        assert_eq!(chain.best_height(), 49);
+        // Retained: heights 39..=49 (11) + genesis = 12.
+        assert!(
+            chain.len() <= 12,
+            "expected <=12 retained, got {}",
+            chain.len()
+        );
+        // Genesis is kept.
+        assert!(chain.get(&hashes[0]).is_some(), "genesis retained");
+        // The window is contiguous: every retained height 39..=49 is present.
+        for h in 39..=49u32 {
+            assert!(
+                chain.get(&hashes[h as usize]).is_some(),
+                "height {h} retained"
+            );
+        }
+        // A pruned height is gone.
+        assert!(chain.get(&hashes[20]).is_none(), "old height pruned");
+        // hashes_from within the window works.
+        let from_40 = chain.hashes_from(40);
+        assert_eq!(from_40.len(), 10);
+        assert_eq!(from_40[0], hashes[40]);
+        assert_eq!(*from_40.last().unwrap(), hashes[49]);
+    }
+
+    #[test]
+    fn test_retention_zero_is_unbounded() {
+        let mut chain = HeaderChain::unanchored_for_tests();
+        chain.set_retention(0);
+        let mut prev = [0u8; 32];
+        for h in 0..30u32 {
+            let header = make_header(prev, h);
+            prev = header.block_hash().to_byte_array();
+            chain.add_header(&serialize(&header), h).unwrap();
+        }
+        assert_eq!(chain.len(), 30);
     }
 }

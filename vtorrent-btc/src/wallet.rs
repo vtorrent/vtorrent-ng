@@ -56,6 +56,14 @@ impl BtcWallet {
         }
     }
 
+    /// Bound the in-memory header chain to the most recent `retention` headers
+    /// (0 = unbounded). Keeps SPV memory flat on mainnet (~870k headers).
+    /// Must exceed the difficulty retarget period (~2016) and the UTXO-scan
+    /// depth. See `docs/btc-spv-soak-plan.md`.
+    pub fn set_header_retention(&self, retention: usize) {
+        self.headers.lock().set_retention(retention);
+    }
+
     /// Create a wallet with a UTXO persistence path.  If the file exists,
     /// the UTXO set is loaded from disk on construction.
     pub fn with_persistence(

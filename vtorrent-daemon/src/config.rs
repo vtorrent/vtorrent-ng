@@ -137,6 +137,14 @@ pub struct Cli {
     /// Explicit Bitcoin peer address for regtest (e.g. 127.0.0.1:18444).
     #[arg(long)]
     pub btc_peer: Option<String>,
+
+    /// Max Bitcoin SPV headers retained in memory (0 = unbounded).
+    ///
+    /// Bounds SPV memory on mainnet (~870k headers ≈ 100 MiB). Must exceed the
+    /// difficulty retarget period (~2016) and the UTXO-scan depth. Default
+    /// 100_000 keeps ~11 MiB of headers while covering both.
+    #[arg(long, default_value_t = 100_000)]
+    pub btc_header_retention: usize,
 }
 
 // ─── Startup Validation ──────────────────────────────────────────────────────
