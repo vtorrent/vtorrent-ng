@@ -12,22 +12,25 @@ to `docs/network-upgrade-design.md` (the mechanism) and `docs/roadmap.md`.
 | Governance | (design) | bounded consensus params |
 | State rent | (design) | UTXO expiry/rent |
 
-## 2. The no-op property (read this first)
+## 2. The no-op property — CORRECTED (2026-10-08)
 
-Both shipped changes only alter behaviour for blocks that **contain** an
-OP_RETURN or P2CS output:
+**OP_RETURN exclusion is NOT a no-op — it was reverted (`e52facf`).** Grounding
+it against a real chain (offline replay of a node's store with the batch binary)
+showed it **fails to replay at height 2**: the genesis legacy-distribution
+outputs are `OP_RETURN <address>` (`genesis.rs:88-93`), so they are *claimable*
+distribution outputs, not unspendable data carriers. Excluding OP_RETURN changes
+the genesis commitment and every block's post-state root → a fork. The earlier
+"genesis is P2PKH" claim was **wrong**.
 
-- **OP_RETURN exclusion** changes the commitment only if a block has an
-  OP_RETURN output. The genesis coinbase script is the genesis *message*
-  (`GENESIS_MESSAGE`, not `OP_RETURN`), and the legacy distribution outputs are
-  P2PKH — so **genesis is unaffected**.
-- **P2CS** changes `is_stakeable` and the coinstake rule only for P2CS UTXOs,
-  of which none exist pre-launch.
+**P2CS alone IS a genuine no-op — verified.** With OP_RETURN reverted, the batch
+binary replayed a node's store to the **identical tip hash** at height 35660 as
+the canonical chain (`e12a953d…`), with 0 errors. P2CS changes `is_stakeable`
+and the coinstake rule only for P2CS UTXOs, of which none exist pre-launch.
 
-**Consequence:** on a chain with no OP_RETURN/P2CS outputs, both changes are
-**byte-identical no-ops** — the tip hash and every `utxo_root` are unchanged.
-A **fresh genesis is therefore NOT required** for these two; the earlier
-"fresh genesis" note was conservative.
+**Consequence:** P2CS can be adopted via a coordinated upgrade (no fresh
+genesis). OP_RETURN exclusion needs a **fresh genesis** (or a redesigned
+predicate that distinguishes the genesis distribution OP_RETURNs from
+data-carrier OP_RETURNs) — do not ship it as a no-op.
 
 ## 3. Verify the no-op (required before activation)
 

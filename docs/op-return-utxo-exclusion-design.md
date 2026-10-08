@@ -1,6 +1,11 @@
 # OP_RETURN / Unspendable-Output UTXO Exclusion — Design
 
-Status: DRAFT (post-soak; consensus change — do not deploy without a plan)
+Status: **REVERTED** (`e52facf`) — the "no-op" premise was wrong: the genesis
+legacy-distribution outputs are `OP_RETURN <address>` (`genesis.rs:88-93`), so
+excluding OP_RETURN changes the genesis commitment and forks the chain. See
+`docs/consensus-batch-activation-plan.md` §2. A redesigned predicate (exclude
+only *data-carrier* OP_RETURNs, not the genesis distribution) or a fresh genesis
+would be required.
 Scope: `vtorrent-node` UTXO set + commitment.
 Constraint: not part of the current soak window; belongs to the post-soak
 consensus batch with a fresh-genesis decision.
