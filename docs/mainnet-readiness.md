@@ -193,7 +193,7 @@ actions, operator approval.
       in-memory map grown with BTC height (~870k headers ≈ ≥100 MiB on mainnet)
       and is not obviously persisted/bounded. Quantify in the BTC-SPV soak; if
       linear, persist/bound the header store. See `docs/btc-spv-soak-plan.md`.
-- [ ] **BTC SPV holds ~40 MiB and is not independently soaked** — BTC SPV (only
+- [~] **BTC SPV holds ~40 MiB and is not independently soaked** — regtest isolated soak is flat (~160 MiB, 140 headers); **mainnet scale (≥100 MiB at ~870k headers) still unvalidated**. BTC SPV (only
       enabled when `--btc-*` is passed, for atomic swaps) held **~40–47 MiB** on
       node1 and confounded the RSS measurements. It was disabled for the current
       window to isolate core-node memory. Restore before swap testing and soak
