@@ -1799,3 +1799,15 @@ SPV; the consensus batch (`network-upgrade` → `op-return` + `cold-staking` →
 `governance` → `state-rent`); the P0 fixes already landed (`strict_onion`,
 WIF-in-browser, incentive-receipt core); `v2.0.0-beta.3` tag; node1 → `info`
 logging.
+
+## 2026-10-08 — BTC-SPV isolated soak
+
+Isolated probe (copy of node3 data, connected to the regtest bitcoind, SPV args
+enabled) on the batch binary. BTC SPV synced 140 headers + a BIP-158 UTXO scan;
+RSS **flat** at ~160.1 MiB over 24 min (+~110 kB/h, noise), 0 errors.
+
+**Caveat:** regtest has only **140 BTC headers**, so this does **not** exercise
+mainnet scale. The design flagged the header store as a possible unbounded
+consumer (~870k headers ≈ ≥100 MiB on mainnet, `docs/btc-spv-soak-plan.md`).
+The regtest case is clean; the mainnet-scale question remains open and needs
+either a mainnet-header replay or a bounded/persisted header store.
