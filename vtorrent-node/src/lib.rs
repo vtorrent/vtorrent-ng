@@ -2,6 +2,7 @@ pub mod atomic_swap;
 pub mod block;
 pub mod chain;
 pub mod consensus;
+pub mod deployments;
 /// vTorrent Node — the core consensus and blockchain management layer.
 pub mod error;
 pub mod events;

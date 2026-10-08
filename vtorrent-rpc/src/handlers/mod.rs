@@ -8,6 +8,7 @@ use vtorrent_core::time::now_secs;
 
 pub mod blockchain;
 pub mod btc;
+pub mod deployments;
 pub mod dex;
 pub mod diagnostics;
 pub mod earnings;
@@ -21,6 +22,7 @@ pub mod wallet_meta;
 
 pub use blockchain::*;
 pub use btc::*;
+pub use deployments::*;
 pub use dex::*;
 pub use diagnostics::*;
 pub use earnings::*;

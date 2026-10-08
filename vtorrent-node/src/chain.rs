@@ -491,6 +491,26 @@ impl Chain {
             .and_then(|hash| self.headers.get(hash))
     }
 
+    /// Count, per retarget period, how many main-chain blocks signalled a
+    /// deployment's versionbit. Index `i` is period `i` (blocks
+    /// `i*period .. (i+1)*period - 1`). Used by BIP-9 activation.
+    pub fn count_signals(&self, bit: u8, period: u32) -> Vec<u32> {
+        if period == 0 {
+            return Vec::new();
+        }
+        let tip = self.best_height();
+        let periods = (tip / period + 1) as usize;
+        let mut counts = vec![0u32; periods];
+        for h in 0..=tip {
+            if let Some(header) = self.get_header_at_height(h) {
+                if (header.version >> bit) & 1 == 1 {
+                    counts[(h / period) as usize] += 1;
+                }
+            }
+        }
+        counts
+    }
+
     /// Current UTXO commitment root (tip's `utxo_root`).
     pub fn current_utxo_root(&self) -> Option<[u8; 32]> {
         self.get_header_at_height(self.best_height())

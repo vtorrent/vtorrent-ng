@@ -110,6 +110,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/staking/rewards", get(get_staking_rewards))
         .route("/api/v1/earnings/summary", get(get_earnings_summary))
         .route("/api/v1/diagnostics", get(get_diagnostics))
+        .route("/api/v1/deployments", get(get_deployments))
         .route(
             "/api/v1/wallet/contacts",
             get(list_contacts).post(add_contact),
