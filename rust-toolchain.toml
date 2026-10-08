@@ -1,0 +1,8 @@
+# Pin the Rust toolchain so local, CI, and Docker builds agree.
+#
+# The Dockerfile builds from `rust:1.90-slim`; pinning the same channel here
+# makes `cargo`/`rustup` and the CI toolchain match, which is required for the
+# reproducible-build guarantee (see docs/mainnet-readiness.md §4).
+[toolchain]
+channel = "1.90.0"
+components = ["rustfmt", "clippy"]
