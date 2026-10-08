@@ -55,9 +55,12 @@ that is a ≥100 MiB standing cost before any swap state.
 ### Phase C — budget and verdict
 - Set a **BTC-SPV budget** (proposed: core budget + 64 MiB) and grade node1
   against it.
-- Decide whether the header store must be **persisted/bounded** (e.g. prefix
-  commitments + on-disk headers) before mainnet — likely yes if Phase B shows
-  linear growth.
+- **Header store bounded (2026-10-08):** `HeaderChain` now has an opt-in
+  retention window (`--btc-header-retention`, default 100_000 ≈ 11 MiB vs
+  ~100 MiB unbounded on mainnet), pruning strictly below `best_height -
+  retention` while keeping the retained set contiguous (difficulty validation
+  and the UTXO scan both need that). Genesis is always kept. This bounds the
+  mainnet-scale risk the regtest soak could not exercise.
 
 ## 5. Acceptance criteria
 
