@@ -133,8 +133,10 @@ from uninterrupted soak measurements.
       Windows x64 (NSIS). All four matrix jobs green; 8 assets published to the
       GitHub Release. (Fixed en route: CWD-dependent `beforeBuildCommand`,
       missing `contents: write`, MSI rejecting a non-numeric pre-release.)
-- [ ] **Reproducible build check**: two independent builds of the same tag
-      produce identical daemon binaries where feasible.
+- [x] **Reproducible build check**: two independent clean (`--no-cache`) builds
+      of the same source produce the **identical daemon binary**
+      (`sha256 8c9993fd…`, 2026-10-08). Note: the build is reproducible given the
+      same `rust:1.90-slim` base + `Cargo.lock`; pin both for release builds.
 - [x] **Release notes drafted** — `docs/release-notes-beta.3.md` (finalized,
       Addendum 4 covers the soak + memory work + P0 fixes).
 - [x] **Tag created**: `v2.0.0-beta.3` (2026-10-06), pushed, GitHub Release
