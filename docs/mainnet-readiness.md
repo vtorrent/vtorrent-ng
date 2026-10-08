@@ -35,7 +35,7 @@
       tested; `POST /api/v1/blockchain/bootstrap` mines it. Genesis has no
       stakeable UTXO, so this is the only way a fresh chain begins staking.
       See `docs/superpowers/specs/2026-09-21-genesis-bootstrap-and-stakeable-script-design.md`.
-- [ ] **External security review** of wallet encryption (Argon2id +
+- [ ] **External security review** — **brief drafted**: `docs/security-review-brief.md` (scope, deliverables, 2-phase engagement). Of wallet encryption (Argon2id +
       ChaCha20-Poly1305), RPC auth, and the atomic-swap HTLC flow.
 
 ## 2. Testnet Soak
