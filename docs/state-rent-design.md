@@ -57,6 +57,29 @@ node must hold and commit to every unspent output forever. This design explores
   contract of "your coins are yours forever"), so it belongs behind
   `docs/governance-design.md`, not a unilateral change.
 
+### 3.1 CORRECTION (2026-10-07): sub-dust exclusion is NOT a no-op
+
+Grounding 2.5 in the code before implementing it found that excluding
+**sub-dust** outputs is **not** the safe, no-op subset the design assumed:
+
+- The **genesis coinbase is a value-0 output** (`genesis.rs:99-108`) and is
+  included in `all_genesis_utxos` → `header.utxo_root` (`genesis.rs:154,172`).
+  Excluding value-0 outputs would change the **genesis commitment**, so the
+  chain's apply path (which uses `is_utxo_eligible`) would disagree with the
+  genesis builder → a fork.
+- The **coinstake marker** is a value-0, empty-script output
+  (`staking.rs:506-507`); excluding it changes **every coinstake block's** root.
+
+So sub-dust exclusion requires a **fresh genesis / activation**, exactly like the
+other consensus changes — it is *not* a free add-on to the OP_RETURN exclusion.
+(OP_RETURN exclusion itself remains a genuine no-op: the genesis coinbase script
+is the genesis *message*, not `OP_RETURN`.)
+
+**Revised recommendation:** do **not** implement sub-dust exclusion as a "safe
+subset". Either (a) leave it out entirely, or (b) fold it into the
+activation-gated consensus batch with a fresh genesis. Prefer (a) until the
+chain's growth is measured.
+
 ## 4. Adversarial review
 
 - **R1 — "your coins are yours forever" is a social contract.** Expiry/rent
