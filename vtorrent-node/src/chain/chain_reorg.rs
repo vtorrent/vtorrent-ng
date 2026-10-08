@@ -356,6 +356,11 @@ fn apply_transaction_journaled(
     }
 
     for (vout, output) in tx.outputs.iter().enumerate() {
+        // Exclude data-carrier OP_RETURN outputs (but retain the genesis
+        // legacy-distribution claim markers). Must match the staking producer.
+        if !crate::block::is_utxo_eligible(output, tx, height) {
+            continue;
+        }
         let key = (txid, vout as u32);
         let utxo = Utxo {
             txid,

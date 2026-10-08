@@ -326,6 +326,31 @@ pub fn compute_merkle_root_from_txids(txids: &mut [[u8; 32]]) -> [u8; 32] {
 /// Compute the leaf hash for a UTXO commitment.
 ///
 /// Leaf preimage: SHA256d(txid || vout LE || value LE || varint(script.len) || script || height LE || timestamp LE)
+/// Whether an output belongs in the UTXO set (and thus the commitment).
+///
+/// Data-carrier `OP_RETURN` outputs are excluded — they can never be spent or
+/// staked, so including them only bloats the set and the commitment. **The
+/// genesis legacy-distribution outputs are also `OP_RETURN`** (claim markers,
+/// `genesis.rs:88-93`) and are part of the genesis commitment, so they are
+/// **retained** (height 0, `LegacyClaim` tx); excluding them would fork.
+///
+/// **Both** the chain apply path and the staking producer must use this same
+/// predicate, or the producer's `utxo_root` will not match the chain's.
+/// See `docs/op-return-utxo-exclusion-design.md`.
+pub fn is_utxo_eligible(output: &crate::block::TxOutput, tx: &Transaction, height: u32) -> bool {
+    let is_op_return = matches!(
+        vtorrent_script::Script::from_bytes(output.script_pubkey.clone())
+            .map(|s| vtorrent_script::classify_script(&s)),
+        Ok(vtorrent_script::ScriptType::OpReturn)
+    );
+    if !is_op_return {
+        return true;
+    }
+    // Retain the genesis legacy-distribution OP_RETURN claim markers; exclude
+    // every other (data-carrier) OP_RETURN.
+    height == 0 && tx.is_legacy_claim()
+}
+
 pub fn hash_utxo(utxo: &crate::chain::Utxo) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update(utxo.txid);
@@ -604,5 +629,53 @@ mod tests {
         let mut h2 = h1.clone();
         h2.utxo_root = [4u8; 32];
         assert_ne!(h1.hash(), h2.hash(), "utxo_root must affect header hash");
+    }
+    #[test]
+    fn is_utxo_eligible_excludes_data_carriers_but_keeps_genesis_distribution() {
+        use crate::block::{Transaction, TxOutput, TxType};
+
+        let opret = vtorrent_script::build_op_return(b"hello").unwrap();
+        let out = TxOutput {
+            value: 0,
+            script_pubkey: opret.as_bytes().to_vec(),
+        };
+
+        // A data-carrier OP_RETURN in a normal tx is excluded.
+        let normal = Transaction {
+            version: 1,
+            tx_type: TxType::Standard,
+            inputs: vec![],
+            outputs: vec![out.clone()],
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        };
+        assert!(
+            !is_utxo_eligible(&out, &normal, 5),
+            "data-carrier OP_RETURN excluded"
+        );
+
+        // The genesis legacy-distribution OP_RETURN claim marker is retained.
+        let claim = Transaction {
+            version: 1,
+            tx_type: TxType::LegacyClaim,
+            inputs: vec![],
+            outputs: vec![out.clone()],
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        };
+        assert!(
+            is_utxo_eligible(&out, &claim, 0),
+            "genesis distribution retained"
+        );
+
+        // A normal P2PKH output is always eligible.
+        let p2pkh = vtorrent_script::standard::build_p2pkh(&[0u8; 20]).unwrap();
+        let ok = TxOutput {
+            value: 1_000,
+            script_pubkey: p2pkh.as_bytes().to_vec(),
+        };
+        assert!(is_utxo_eligible(&ok, &normal, 5));
     }
 }

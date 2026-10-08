@@ -103,6 +103,11 @@ fn build_post_apply_leaves(
         }
         let txid = tx.txid();
         for (vout, output) in tx.outputs.iter().enumerate() {
+            // Match the chain's UTXO-set predicate exactly (R1): an excluded
+            // output must not appear in the producer's post-apply root either.
+            if !crate::block::is_utxo_eligible(output, tx, height) {
+                continue;
+            }
             let key = (txid, vout as u32);
             added.insert(
                 key,
