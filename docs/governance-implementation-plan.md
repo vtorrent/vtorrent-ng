@@ -65,7 +65,7 @@ path; do it first, behind tests, with no behaviour change.
   staking operator — the operator holds only the hot staking key. Enforce by
   requiring the vote to be signed by the spending key / owner address.
 
-## 5. Step 3 — Activation
+## 5. Step 3 — Activation — **DECISION NEEDED** (see `docs/governance-step3-design.md`)
 
 - A passed proposal sets the parameter at `activation_height`.
 - **Recommended (design §2.3): scheduled upgrade.** The node reads the active
