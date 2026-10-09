@@ -7,6 +7,7 @@ pub mod deployments;
 pub mod error;
 pub mod events;
 pub mod genesis;
+pub mod governance;
 pub mod mempool;
 #[path = "node/mod.rs"]
 pub mod node;
