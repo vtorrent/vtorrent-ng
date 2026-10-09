@@ -153,6 +153,13 @@ impl IncentiveSummary {
 /// Build a signed-ready bandwidth receipt for one settlement window from this
 /// account's own accounting. The caller fills `signer` with its own VTR address
 /// and signs with `vtorrent_core::receipt::BandwidthReceipt::sign`.
+///
+/// **SECURITY (replay protection):** When the receipt exchange is wired into
+/// settlement, `settlement_id` must be enforced as **single-use** — i.e. the
+/// receiving peer must reject (or ignore) a receipt whose `settlement_id` has
+/// already been seen for this torrent. Without this, a peer can replay the
+/// same receipt across multiple settlement windows to inflate its earnings.
+/// Track used settlement IDs in a `HashSet<u64>` per-peer per-torrent.
 pub fn build_receipt(
     account: &PeerBandwidthAccount,
     info_hash: [u8; 20],

@@ -802,6 +802,16 @@ pub async fn create_payment_request(
                 RpcError::BadRequest("no wallet address; import a wallet or pass ?address".into())
             })?,
     };
+    // Sanity bound: cap at MAX_SUPPLY to prevent overflow in downstream math.
+    if let Some(amt) = req.amount_sats {
+        if amt > vtorrent_node::consensus::MAX_SUPPLY {
+            return Err(RpcError::BadRequest(format!(
+                "amount {} exceeds MAX_SUPPLY {}",
+                amt,
+                vtorrent_node::consensus::MAX_SUPPLY
+            )));
+        }
+    }
     let uri = vtorrent_core::payment_uri::PaymentUri {
         address: address.clone(),
         amount_sats: req.amount_sats,
@@ -851,6 +861,13 @@ pub async fn preview_payment(
 ) -> RpcResult<Json<PreviewResponse>> {
     if req.amount_satoshis == 0 {
         return Err(RpcError::BadRequest("amount must be greater than 0".into()));
+    }
+    if req.amount_satoshis > vtorrent_node::consensus::MAX_SUPPLY {
+        return Err(RpcError::BadRequest(format!(
+            "amount {} exceeds MAX_SUPPLY {}",
+            req.amount_satoshis,
+            vtorrent_node::consensus::MAX_SUPPLY
+        )));
     }
     // Validate the recipient up front.
     vtorrent_core::address::validate_p2pkh(&req.to_address)
@@ -1184,6 +1201,15 @@ pub struct ColdStakeResp {
 /// persisted by the node (keep it offline). The staking key is hot. See
 /// `docs/cold-staking-p2cs-design.md`.
 pub async fn create_cold_stake(Json(req): Json<ColdStakeReq>) -> RpcResult<Json<ColdStakeResp>> {
+    // Sanity bound: locktime must not exceed ~2036-09-09 (unix 2_100_000_000).
+    // A locktime too far in the future would effectively burn the stake.
+    const MAX_LOCKTIME: u32 = 2_100_000_000;
+    if req.locktime != 0 && req.locktime > MAX_LOCKTIME {
+        return Err(RpcError::BadRequest(format!(
+            "locktime {} exceeds maximum {}; locktime must be 0 (no delay) or a unix timestamp ≤ {}",
+            req.locktime, MAX_LOCKTIME, MAX_LOCKTIME
+        )));
+    }
     let keys =
         vtorrent_wallet::wallet::generate_cold_stake_keys(req.locktime, req.label.as_deref())
             .map_err(|e| RpcError::Internal(format!("cold-stake key generation failed: {e}")))?;
