@@ -351,6 +351,30 @@ pub fn is_utxo_eligible(output: &crate::block::TxOutput, tx: &Transaction, heigh
     height == 0 && tx.is_legacy_claim()
 }
 
+/// Cold-staking security rule (R1): a coinstake spending a P2CS input must
+/// re-lock **all value** to the same P2CS script.
+///
+/// Returns the amount redirected away from the P2CS script (0 = valid). The
+/// empty marker output (value 0) is exempt. If the staked script is not P2CS,
+/// returns 0 (the rule does not apply). See
+/// `docs/cold-staking-p2cs-design.md`.
+pub fn p2cs_redirected_value(staked_script: &[u8], outputs: &[TxOutput]) -> u64 {
+    let Ok(script) = vtorrent_script::Script::from_bytes(staked_script.to_vec()) else {
+        return 0;
+    };
+    if !matches!(
+        vtorrent_script::classify_script(&script),
+        vtorrent_script::ScriptType::P2CS { .. }
+    ) {
+        return 0;
+    }
+    outputs
+        .iter()
+        .filter(|o| o.value > 0 && o.script_pubkey != staked_script)
+        .map(|o| o.value)
+        .fold(0u64, u64::saturating_add)
+}
+
 pub fn hash_utxo(utxo: &crate::chain::Utxo) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update(utxo.txid);
@@ -677,5 +701,48 @@ mod tests {
             script_pubkey: p2pkh.as_bytes().to_vec(),
         };
         assert!(is_utxo_eligible(&ok, &normal, 5));
+    }
+    #[test]
+    fn p2cs_redirect_rule_blocks_stake_theft() {
+        use crate::block::TxOutput;
+        let staking = [0x11u8; 20];
+        let spending = [0x22u8; 20];
+        let p2cs = vtorrent_script::standard::build_p2cs(&staking, &spending, 0).unwrap();
+        let p2cs_bytes = p2cs.as_bytes().to_vec();
+        let attacker = vtorrent_script::standard::build_p2pkh(&[0xAAu8; 20]).unwrap();
+
+        // Valid: marker (0) + full re-lock to P2CS.
+        let ok = vec![
+            TxOutput {
+                value: 0,
+                script_pubkey: Vec::new(),
+            },
+            TxOutput {
+                value: 1000,
+                script_pubkey: p2cs_bytes.clone(),
+            },
+        ];
+        assert_eq!(p2cs_redirected_value(&p2cs_bytes, &ok), 0);
+
+        // Attack: 1 sat to P2CS, the rest to the attacker -> redirected > 0.
+        let attack = vec![
+            TxOutput {
+                value: 0,
+                script_pubkey: Vec::new(),
+            },
+            TxOutput {
+                value: 1,
+                script_pubkey: p2cs_bytes.clone(),
+            },
+            TxOutput {
+                value: 999,
+                script_pubkey: attacker.as_bytes().to_vec(),
+            },
+        ];
+        assert_eq!(p2cs_redirected_value(&p2cs_bytes, &attack), 999);
+
+        // Non-P2CS staked script: rule does not apply.
+        let p2pkh = vtorrent_script::standard::build_p2pkh(&[0x11u8; 20]).unwrap();
+        assert_eq!(p2cs_redirected_value(p2pkh.as_bytes(), &attack), 0);
     }
 }

@@ -453,22 +453,19 @@ fn apply_transaction_journaled(
         // must re-lock the stake to the **same** P2CS script. Otherwise the hot
         // staking key could redirect the stake to an arbitrary script and steal
         // the coins. See docs/cold-staking-p2cs-design.md.
-        if let Ok(staked_script) = vtorrent_script::Script::from_bytes(staked.script_pubkey.clone())
-        {
-            if let vtorrent_script::ScriptType::P2CS { .. } =
-                vtorrent_script::classify_script(&staked_script)
-            {
-                let pays_back_to_same = tx
-                    .outputs
-                    .iter()
-                    .any(|o| o.script_pubkey == staked.script_pubkey);
-                if !pays_back_to_same {
-                    return Err(NodeError::InvalidTransaction(
-                        "P2CS coinstake must re-lock the stake to the same cold-stake script"
-                            .into(),
-                    ));
-                }
-            }
+        //
+        // The rule requires **all value** in the coinstake to re-lock to the
+        // same P2CS script — not merely that the script appears among the
+        // outputs. Otherwise the hot staking key could pay 1 satoshi back to
+        // the P2CS script and redirect the entire stake (and the reward) to
+        // itself. The empty marker output (value 0) is exempt.
+        let redirected = crate::block::p2cs_redirected_value(&staked.script_pubkey, &tx.outputs);
+        if redirected > 0 {
+            return Err(NodeError::InvalidTransaction(format!(
+                "P2CS coinstake must re-lock all value to the same cold-stake script; \
+                 {} satoshis were redirected elsewhere",
+                redirected
+            )));
         }
     }
 
