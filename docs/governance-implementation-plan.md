@@ -19,7 +19,15 @@ Governance controls an **enumerable parameter set** only — never arbitrary cod
 
 **Excluded:** `MAX_SUPPLY` (hard cap — immutable by design) and any code change.
 
-## 2. Step 0 — Parameterize the consensus paths (prerequisite)
+## 2. Step 0 — Parameterize the consensus paths (prerequisite) — **DONE**
+
+Implemented (`ConsensusParams` + `compute_pos_reward_with`, threaded through
+`Chain` and the coinstake reward check; parity test proves the default is a
+byte-identical no-op). Note: `reward_age_cap` is kept separate from eligibility
+`max_stake_age` so regtest-fast (`u64::MAX` eligibility) retains the 6-day
+reward cap.
+
+### Original plan
 
 Today `compute_pos_reward` reads the **constants** `MAX_STAKE_AGE` and
 `POS_ANNUAL_RATE` directly, so a governance-set value would not take effect.
