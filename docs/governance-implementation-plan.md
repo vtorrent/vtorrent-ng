@@ -77,7 +77,7 @@ path; do it first, behind tests, with no behaviour change.
 - Fully on-chain activation (params read from the chain) is a larger refactor;
   defer.
 
-## 6. Step 4 — RPC / UI
+## 6. Step 4 — RPC / UI — **DONE**
 
 - `GET /api/v1/governance/proposals`, `POST /governance/propose`,
   `POST /governance/vote`, `GET /governance/params`.
