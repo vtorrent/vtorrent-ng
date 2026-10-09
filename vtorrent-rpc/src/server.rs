@@ -126,6 +126,11 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/wallet/payment-request",
             post(create_payment_request),
         )
+        .route("/api/v1/wallet/preview", post(preview_payment))
+        .route("/api/v1/wallet/export", get(export_transactions))
+        .route("/api/v1/wallet/sign-message", post(sign_message))
+        .route("/api/v1/wallet/verify-message", post(verify_message))
+        .route("/api/v1/wallet/cold-stake", post(create_cold_stake))
         .route("/api/v1/torrent/add", post(add_torrent))
         .route("/api/v1/torrent/:id", delete(remove_torrent))
         .route("/api/v1/dex/order", post(place_dex_order))
@@ -159,6 +164,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/swap/reconcile",
             post(crate::swap_reconciliation::reconcile_swap),
+        )
+        .route(
+            "/api/v1/swap/deadlines",
+            get(crate::swap_reconciliation::get_swap_deadlines),
         )
         .route("/api/v1/blockchain/broadcast", post(broadcast_transaction))
         .route("/api/v1/claim/submit", post(submit_claim))

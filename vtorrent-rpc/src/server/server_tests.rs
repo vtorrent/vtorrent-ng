@@ -1301,3 +1301,43 @@ fn constant_time_eq_matches_and_rejects() {
     assert!(!super::constant_time_eq("", "secret-key"));
     assert!(super::constant_time_eq("", ""));
 }
+
+/// Regression: every handler added in the feature batch must be **routed**.
+///
+/// A handler can exist and compile while its `.route(...)` was never wired
+/// (a silent no-op edit), leaving the endpoint unreachable (404). This test
+/// asserts each returns something other than 404.
+#[tokio::test]
+async fn test_feature_endpoints_are_routed() {
+    // (method, uri) — GET endpoints.
+    let gets = [
+        "/api/v1/earnings/summary",
+        "/api/v1/diagnostics",
+        "/api/v1/deployments",
+        "/api/v1/governance/params",
+        "/api/v1/governance/proposals",
+        "/api/v1/wallet/contacts",
+        "/api/v1/wallet/notes",
+        "/api/v1/wallet/export",
+        "/api/v1/swap/deadlines",
+    ];
+    for uri in gets {
+        let app = build_router(AppState::new());
+        let (status, _) = get(app, uri).await;
+        assert_ne!(status, StatusCode::NOT_FOUND, "GET {uri} is not routed");
+    }
+
+    // POST endpoints (empty body is fine — we only assert it is routed, not 404).
+    let posts = [
+        "/api/v1/wallet/preview",
+        "/api/v1/wallet/sign-message",
+        "/api/v1/wallet/verify-message",
+        "/api/v1/wallet/cold-stake",
+        "/api/v1/wallet/payment-request",
+    ];
+    for uri in posts {
+        let app = build_router(AppState::new());
+        let (status, _) = post_json(app, uri, serde_json::json!({})).await;
+        assert_ne!(status, StatusCode::NOT_FOUND, "POST {uri} is not routed");
+    }
+}
