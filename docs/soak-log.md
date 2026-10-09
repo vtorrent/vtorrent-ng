@@ -1811,3 +1811,21 @@ mainnet scale. The design flagged the header store as a possible unbounded
 consumer (~870k headers ≈ ≥100 MiB on mainnet, `docs/btc-spv-soak-plan.md`).
 The regtest case is clean; the mainnet-scale question remains open and needs
 either a mainnet-header replay or a bounded/persisted header store.
+
+## 2026-10-08/09 — consensus-batch soak (24h)
+
+Deployed the batch binary (`vtorrent/node:batch-205cadb`, sha256 `8c9993fd…`) to
+the fleet via rolling recreate; node1 unlocked 2026-10-08T09:29:09Z, staking
+resumed. Backups `.ops-backups/batch-20261008-uuybcw/`.
+
+24h result (288 samples, 09:30Z→09:26Z):
+
+- 3/3 nodes agreed on height throughout (37585 at end); 0 reorgs, 0 errors,
+  0 restarts.
+- RSS: node1 138 / node2 160 / node3 166 MiB — all under the 220 MiB budget.
+- The batch is a **verified no-op** (offline replay → identical tip hash), so
+  this soak confirms the new code runs cleanly; it does not change consensus.
+- The cold-stake E2E (`cold_stake_end_to_end`) separately proves the new P2CS
+  feature works (and caught two bugs).
+
+**Verdict: batch is soak-clean.** Remaining gate is the external security review.
