@@ -45,10 +45,13 @@ feature endpoint is routed (non-404).
 
 - **Incentive receipts**: `settlement_id` (anti-replay) is defined but the
   receipt exchange is **not wired** into settlement — so there is no live replay
-  surface. Enforce `settlement_id` single-use when the exchange lands.
-- **`cold-stake` locktime** is unbounded — a huge value locks funds forever.
-  Add a sane maximum (e.g. ≤ 1 year) in the RPC.
-- **Payment-request amount** is unbounded — cap at `MAX_SUPPLY`.
+  surface. The single-use requirement is now documented on `build_receipt`
+  (`9733ec1`). Enforce with a `HashSet<u64>` per-peer per-torrent when the
+  exchange lands.
+- **`cold-stake` locktime** was unbounded — capped at ~2036 (unix 2,100,000,000)
+  in `9733ec1`.
+- **Payment-request / preview amount** was unbounded — capped at `MAX_SUPPLY`
+  in `9733ec1`.
 
 ## Verdict
 
@@ -60,4 +63,4 @@ crypto), but the internal pass caught the highest-severity issues.
 ## References
 
 - `docs/cold-staking-p2cs-design.md`, `docs/security-review-brief.md`.
-- Fixes: `7796958` (R1), `26a5d55` (SPV), `f302a5a` (routes).
+- Fixes: `7796958` (R1), `26a5d55` (SPV), `f302a5a` (routes), `9733ec1` (bounds+doc).
