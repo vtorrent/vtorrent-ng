@@ -220,3 +220,12 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
+
+      # Archive the exact Cargo.lock used, so the release is reproducible and
+      # auditable. Cargo.lock is gitignored (workspace-library pattern); cargo
+      # generates it during the build. See docs/mainnet-readiness.md §4.
+      - name: Archive Cargo.lock
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" Cargo.lock --clobber
