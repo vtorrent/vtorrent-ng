@@ -68,13 +68,62 @@ pub const DIFFICULTY_ADJUSTMENT_INTERVAL: u32 = 2016;
 /// stake amounts (20M VTR = 2×10^15 satoshis exceeds f64's 15-digit
 /// significant-figure limit).
 pub fn compute_pos_reward(stake_amount: u64, coin_age_seconds: u64) -> u64 {
-    // Cap the coin age at MAX_STAKE_AGE so an arbitrarily old UTXO cannot earn
-    // an unbounded reward. This matches the staking engine's eligibility cap.
-    let coin_age_seconds = coin_age_seconds.min(MAX_STAKE_AGE);
-    // reward = stake_amount * POS_ANNUAL_RATE * coin_age_seconds / (86400 * 365)
-    // POS_ANNUAL_RATE = 0.05 = 5/100.  Multiply numerator first, divide last.
-    let numerator = stake_amount as u128 * coin_age_seconds as u128 * 5;
-    let denominator = 100u128 * 86400 * 365;
+    compute_pos_reward_with(&ConsensusParams::default(), stake_amount, coin_age_seconds)
+}
+
+/// The consensus parameters that governance may change (see
+/// `docs/governance-implementation-plan.md` Step 0). `Default` equals the
+/// compiled constants, so using the default is a **no-op**.
+///
+/// `MAX_SUPPLY` is deliberately **not** here — it is immutable by design.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConsensusParams {
+    /// Annual reward rate in basis points (500 = 5%).
+    pub pos_annual_rate_bps: u32,
+    /// Coin-age cap for **reward accrual** (seconds). Distinct from the
+    /// eligibility `max_stake_age`: regtest-fast raises eligibility to
+    /// `u64::MAX` but the reward cap stays `MAX_STAKE_AGE`.
+    pub reward_age_cap: u64,
+    /// Maximum coin age for **eligibility** (seconds).
+    pub max_stake_age: u64,
+    /// Minimum coin age to stake (seconds).
+    pub min_stake_age: u64,
+    /// Minimum stakeable amount (satoshis).
+    pub min_stake_amount: u64,
+    /// Target block time (seconds).
+    pub target_block_time: u64,
+}
+
+impl Default for ConsensusParams {
+    fn default() -> Self {
+        Self {
+            pos_annual_rate_bps: (POS_ANNUAL_RATE * 10_000.0) as u32, // 500
+            reward_age_cap: MAX_STAKE_AGE,
+            max_stake_age: MAX_STAKE_AGE,
+            min_stake_age: MIN_STAKE_AGE,
+            min_stake_amount: MIN_STAKE_AMOUNT,
+            target_block_time: TARGET_BLOCK_TIME,
+        }
+    }
+}
+
+/// Compute the PoS reward under explicit [`ConsensusParams`].
+///
+/// Byte-identical to the constant-based path when `params` is the default
+/// (verified by `test_compute_pos_reward_with_default_matches_constants`).
+pub fn compute_pos_reward_with(
+    params: &ConsensusParams,
+    stake_amount: u64,
+    coin_age_seconds: u64,
+) -> u64 {
+    // Cap the coin age so an arbitrarily old UTXO cannot earn an unbounded
+    // reward. This matches the staking engine's eligibility cap.
+    let coin_age_seconds = coin_age_seconds.min(params.reward_age_cap);
+    // reward = stake_amount * rate * coin_age_seconds / (86400 * 365)
+    // rate = bps / 10_000. Multiply numerator first, divide last.
+    let numerator =
+        stake_amount as u128 * coin_age_seconds as u128 * params.pos_annual_rate_bps as u128;
+    let denominator = 10_000u128 * 86400 * 365;
     (numerator / denominator) as u64
 }
 
@@ -1261,5 +1310,22 @@ mod tests {
         };
         let block = make_test_block(coinbase, 0x1e0fffff, 42);
         assert!(validate_block(&block, 0, 1_700_000_000, 0x1e0fffff, 0, [0u8; 32]).is_err());
+    }
+    #[test]
+    fn test_compute_pos_reward_with_default_matches_constants() {
+        // Step 0 parity: the parameterized path must be byte-identical to the
+        // constant-based path for the default params (a no-op).
+        let params = ConsensusParams::default();
+        assert_eq!(params.pos_annual_rate_bps, 500);
+        assert_eq!(params.max_stake_age, MAX_STAKE_AGE);
+        for stake in [COIN, 1000 * COIN, 1_000_000 * COIN] {
+            for age in [0u64, 60, MIN_STAKE_AGE, MAX_STAKE_AGE, MAX_STAKE_AGE * 10] {
+                assert_eq!(
+                    compute_pos_reward(stake, age),
+                    compute_pos_reward_with(&params, stake, age),
+                    "parity mismatch at stake={stake} age={age}"
+                );
+            }
+        }
     }
 }

@@ -203,8 +203,10 @@ pub struct Chain {
     /// share equals its stake share.
     total_staked: u64,
     allow_pow_test_blocks: bool,
-    min_stake_age: u64,
-    max_stake_age: u64,
+    /// Consensus parameters (governance-changeable). Default = compiled
+    /// constants, so the default is a no-op. See
+    /// `docs/governance-implementation-plan.md` Step 0.
+    params: crate::consensus::ConsensusParams,
 }
 
 impl Chain {
@@ -235,8 +237,7 @@ impl Chain {
             total_supply: 0,
             total_staked: 0,
             allow_pow_test_blocks: cfg!(test),
-            min_stake_age: crate::consensus::MIN_STAKE_AGE,
-            max_stake_age: crate::consensus::MAX_STAKE_AGE,
+            params: crate::consensus::ConsensusParams::default(),
         };
 
         chain.blocks.insert(genesis_hash, genesis.clone());
@@ -266,8 +267,8 @@ impl Chain {
     /// Initialize a regtest chain with accelerated stake maturity rules.
     pub fn new_regtest_fast() -> Result<Self> {
         let mut chain = Self::new_regtest()?;
-        chain.min_stake_age = crate::consensus::REGTEST_FAST_MIN_STAKE_AGE;
-        chain.max_stake_age = crate::consensus::REGTEST_FAST_MAX_STAKE_AGE;
+        chain.params.min_stake_age = crate::consensus::REGTEST_FAST_MIN_STAKE_AGE;
+        chain.params.max_stake_age = crate::consensus::REGTEST_FAST_MAX_STAKE_AGE;
         Ok(chain)
     }
 

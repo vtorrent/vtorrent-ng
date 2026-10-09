@@ -1,7 +1,7 @@
 use crate::{
     block::{Block, Transaction},
     consensus::{
-        check_stake_kernel_v2, compute_pos_reward, validate_legacy_claim, MAX_SUPPLY,
+        check_stake_kernel_v2, compute_pos_reward_with, validate_legacy_claim, MAX_SUPPLY,
         MIN_STAKE_AMOUNT,
     },
     error::{NodeError, Result},
@@ -418,11 +418,11 @@ fn apply_transaction_journaled(
                 .and_then(|b| b.transactions.first())
                 .map(|tx| tx.is_legacy_claim())
                 .unwrap_or(false);
-        let min_age_ok = is_bootstrap_utxo || coin_age >= chain.min_stake_age;
-        if !min_age_ok || coin_age > chain.max_stake_age {
+        let min_age_ok = is_bootstrap_utxo || coin_age >= chain.params.min_stake_age;
+        if !min_age_ok || coin_age > chain.params.max_stake_age {
             return Err(NodeError::InvalidTransaction(format!(
                 "Stake age {} is outside the allowed range {}..={}",
-                coin_age, chain.min_stake_age, chain.max_stake_age
+                coin_age, chain.params.min_stake_age, chain.params.max_stake_age
             )));
         }
         // v2 kernel: probability is the staker's share of the total staked
@@ -440,7 +440,7 @@ fn apply_transaction_journaled(
                 "Coinstake kernel hash does not meet the stake target".into(),
             ));
         }
-        let max_reward = compute_pos_reward(staked.value, coin_age);
+        let max_reward = compute_pos_reward_with(&chain.params, staked.value, coin_age);
         let minted = tx.total_output().saturating_sub(staked.value);
         if minted > max_reward {
             return Err(NodeError::InvalidTransaction(format!(
