@@ -11,6 +11,7 @@ import TorrentPage from './pages/TorrentPage'
 import TradePage from './pages/TradePage'
 import StakingPage from './pages/StakingPage'
 import EarningsPage from './pages/EarningsPage'
+import GovernancePage from './pages/GovernancePage'
 import NotificationsPage from './pages/NotificationsPage'
 import LegacyClaimPage from './pages/LegacyClaimPage'
 import BtcWalletPage from './pages/BtcWalletPage'
@@ -51,6 +52,10 @@ function AppRoutes() {
         <Route
           path="/earnings"
           element={isUnlocked ? <EarningsPage /> : <Navigate to="/" replace />}
+        />
+        <Route
+          path="/governance"
+          element={isUnlocked ? <GovernancePage /> : <Navigate to="/" replace />}
         />
         <Route
           path="/notifications"

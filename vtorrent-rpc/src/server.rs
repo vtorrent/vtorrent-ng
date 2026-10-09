@@ -111,6 +111,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/earnings/summary", get(get_earnings_summary))
         .route("/api/v1/diagnostics", get(get_diagnostics))
         .route("/api/v1/deployments", get(get_deployments))
+        .route("/api/v1/governance/params", get(get_governance_params))
+        .route(
+            "/api/v1/governance/proposals",
+            get(get_governance_proposals),
+        )
         .route(
             "/api/v1/wallet/contacts",
             get(list_contacts).post(add_contact),

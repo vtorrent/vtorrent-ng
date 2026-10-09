@@ -293,6 +293,11 @@ impl Chain {
         self.total_staked
     }
 
+    /// The active consensus parameters (governance-changeable).
+    pub fn params(&self) -> crate::consensus::ConsensusParams {
+        self.params
+    }
+
     /// Mint coins to an address by appending a coinbase block (regtest only).
     ///
     /// This is a development/testing primitive: it creates a PoW coinbase block

@@ -653,3 +653,38 @@ export async function createColdStake(locktime = 0): Promise<ColdStakeKeys> {
     await rpcPost<unknown>('/api/v1/wallet/cold-stake', { locktime })
   ) as ColdStakeKeys
 }
+
+// ─── Governance ──────────────────────────────────────────────────────────────
+
+export interface GovernanceParams {
+  posAnnualRateBps: number
+  rewardAgeCap: number
+  maxStakeAge: number
+  minStakeAge: number
+  minStakeAmount: number
+  targetBlockTime: number
+}
+
+export interface GovernanceProposal {
+  id: string
+  param: string
+  newValue: number
+  activationHeight: number
+  votingEnd: number
+  createdHeight: number
+  yes: number
+  no: number
+  abstain: number
+  decided: boolean
+  passed: boolean
+}
+
+export async function getGovernanceParams(): Promise<GovernanceParams> {
+  if (isTauri()) return tauriInvoke<GovernanceParams>('get_governance_params')
+  return camel(await rpcGet<unknown>('/api/v1/governance/params')) as GovernanceParams
+}
+
+export async function getGovernanceProposals(): Promise<{ tipHeight: number; proposals: GovernanceProposal[] }> {
+  if (isTauri()) return tauriInvoke('get_governance_proposals')
+  return camel(await rpcGet<unknown>('/api/v1/governance/proposals')) as { tipHeight: number; proposals: GovernanceProposal[] }
+}
