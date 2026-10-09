@@ -688,3 +688,20 @@ export async function getGovernanceProposals(): Promise<{ tipHeight: number; pro
   if (isTauri()) return tauriInvoke('get_governance_proposals')
   return camel(await rpcGet<unknown>('/api/v1/governance/proposals')) as { tipHeight: number; proposals: GovernanceProposal[] }
 }
+
+// ─── Swap deadlines ───────────────────────────────────────────────────────────
+
+export interface SwapDeadline {
+  orderId: string
+  status: string
+  btcExpiry: number
+  secondsRemaining: number
+  atRisk: boolean
+}
+
+export async function getSwapDeadlines(): Promise<SwapDeadline[]> {
+  if (isTauri()) return tauriInvoke<SwapDeadline[]>('get_swap_deadlines')
+  return camel(
+    await rpcGet<unknown>('/api/v1/swap/deadlines'),
+  ).deadlines as SwapDeadline[]
+}

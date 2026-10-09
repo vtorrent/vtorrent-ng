@@ -330,3 +330,52 @@ pub async fn run_reconciler(state: AppState) {
         }
     }
 }
+
+// ─── Swap deadlines (for notifications) ──────────────────────────────────────
+
+#[derive(Debug, serde::Serialize)]
+pub struct SwapDeadline {
+    pub order_id: String,
+    pub status: String,
+    /// BTC HTLC expiry (unix seconds).
+    pub btc_expiry: u32,
+    /// Seconds until expiry (negative if already past).
+    pub seconds_remaining: i64,
+    /// Whether the swap still has funds at risk (not yet claimed/refunded).
+    pub at_risk: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SwapDeadlinesResponse {
+    pub now: u32,
+    pub deadlines: Vec<SwapDeadline>,
+}
+
+/// GET /api/v1/swap/deadlines
+///
+/// Read-only: every open swap with its BTC HTLC expiry and time remaining, so
+/// the UI can raise escalating, money-critical notifications. A missed
+/// `btc_expiry` can strand funds. See `docs/notifications-design.md`.
+pub async fn get_swap_deadlines(
+    State(state): State<Arc<AppState>>,
+) -> RpcResult<Json<SwapDeadlinesResponse>> {
+    use vtorrent_node::atomic_swap::SwapStatus;
+    let now = vtorrent_core::time::now_secs() as u32;
+    let swaps = state.swaps.read().await;
+    let mut deadlines: Vec<SwapDeadline> = swaps
+        .iter()
+        .map(|(order_id, swap)| {
+            let at_risk = !matches!(swap.status, SwapStatus::Claimed | SwapStatus::Refunded);
+            SwapDeadline {
+                order_id: order_id.clone(),
+                status: format!("{:?}", swap.status),
+                btc_expiry: swap.btc_expiry,
+                seconds_remaining: swap.btc_expiry as i64 - now as i64,
+                at_risk,
+            }
+        })
+        .collect();
+    // Most urgent first.
+    deadlines.sort_by_key(|d| d.seconds_remaining);
+    Ok(Json(SwapDeadlinesResponse { now, deadlines }))
+}

@@ -148,6 +148,45 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
     }
   }, [push])
 
+  // ── Poll swap deadlines (money-critical) ──────────────────────────────────
+  useEffect(() => {
+    let stopped = false
+    const check = async () => {
+      try {
+        const { getSwapDeadlines } = await import('./useNode')
+        const deadlines = await getSwapDeadlines()
+        if (stopped) return
+        for (const d of deadlines) {
+          if (!d.atRisk) continue
+          // Escalate: critical under 1h, warning under 24h.
+          if (d.secondsRemaining <= 3600) {
+            push({
+              category: 'swap',
+              severity: 'critical',
+              title: 'Swap expires within 1 hour',
+              body: `Order ${d.orderId.slice(0, 12)}… — claim or refund now`,
+            })
+          } else if (d.secondsRemaining <= 86_400) {
+            push({
+              category: 'swap',
+              severity: 'warning',
+              title: 'Swap expires within 24 hours',
+              body: `Order ${d.orderId.slice(0, 12)}… — ${Math.round(d.secondsRemaining / 3600)}h left`,
+            })
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    void check()
+    const timer = setInterval(check, 60_000)
+    return () => {
+      stopped = true
+      clearInterval(timer)
+    }
+  }, [push])
+
   const unread = notifications.filter(n => !n.read).length
 
   return (
