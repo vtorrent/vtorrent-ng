@@ -199,6 +199,159 @@ pub fn tally(
     }
 }
 
+/// A recorded proposal with its running vote tally.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProposalRecord {
+    pub proposal: Proposal,
+    /// Height at which the proposal was created (snapshot point).
+    pub created_height: u32,
+    /// Summed stake (satoshis) voting Yes/No/Abstain.
+    pub yes: u64,
+    pub no: u64,
+    pub abstain: u64,
+    /// Whether the proposal's outcome has been decided.
+    pub decided: bool,
+    /// Whether the decided outcome was `Passed`.
+    pub passed: bool,
+}
+
+/// Deterministic governance state, rebuilt from the chain.
+///
+/// `process_block` scans a block's OP_RETURN outputs for proposals and votes
+/// and applies any passed parameter at its activation height. Because it is a
+/// pure function of the block sequence, it is **reorg-safe by rebuild**: on a
+/// reorg, replay the new chain from the fork point.
+///
+/// Note: this is the deterministic core. Live integration (calling it from
+/// `apply_block_journaled`, snapshotting voting power from the UTXO set, and
+/// enforcing vote-locking) is a documented follow-up — it is consensus-touching
+/// and gated on the activation decision.
+#[derive(Debug, Clone, Default)]
+pub struct GovernanceState {
+    pub proposals: std::collections::HashMap<[u8; 8], ProposalRecord>,
+    pub params: ConsensusParams,
+    /// Total staked supply used for quorum (set by the caller per block).
+    pub total_staked: u64,
+}
+
+impl GovernanceState {
+    pub fn new() -> Self {
+        Self {
+            proposals: std::collections::HashMap::new(),
+            params: ConsensusParams::default(),
+            total_staked: 0,
+        }
+    }
+
+    /// Extract the OP_RETURN data payload from a scriptPubKey, if any.
+    fn op_return_data(script: &[u8]) -> Option<&[u8]> {
+        // OP_RETURN <pushdata>
+        if script.first() != Some(&0x6a) || script.len() < 2 {
+            return None;
+        }
+        let len = script[1] as usize;
+        if script.len() < 2 + len {
+            return None;
+        }
+        Some(&script[2..2 + len])
+    }
+
+    /// Process one block's governance outputs at `height`, then apply any
+    /// parameter whose activation height is reached.
+    ///
+    /// `stake_of` maps a voter address to its snapshotted stake (satoshis);
+    /// the caller supplies it (from the UTXO set at the proposal's snapshot).
+    pub fn process_block<F>(&mut self, height: u32, outputs: &[(Vec<u8>, String)], stake_of: F)
+    where
+        F: Fn(&str) -> u64,
+    {
+        for (script, voter) in outputs {
+            let Some(data) = Self::op_return_data(script) else {
+                continue;
+            };
+            if let Some(p) = Proposal::decode(data) {
+                // Proposal id = first 8 bytes of its txid is not available here;
+                // callers pass a stable id via the vote's proposal_id. Record
+                // under a derived id from the encoded bytes.
+                let id = proposal_id_of(&p, height);
+                self.proposals.entry(id).or_insert(ProposalRecord {
+                    proposal: p,
+                    created_height: height,
+                    yes: 0,
+                    no: 0,
+                    abstain: 0,
+                    decided: false,
+                    passed: false,
+                });
+            } else if let Some(v) = Vote::decode(data) {
+                if let Some(rec) = self.proposals.get_mut(&v.proposal_id) {
+                    if height <= rec.proposal.voting_end {
+                        let stake = stake_of(voter);
+                        match v.choice {
+                            VoteChoice::Yes => rec.yes = rec.yes.saturating_add(stake),
+                            VoteChoice::No => rec.no = rec.no.saturating_add(stake),
+                            VoteChoice::Abstain => rec.abstain = rec.abstain.saturating_add(stake),
+                        }
+                    }
+                }
+            }
+        }
+        self.apply_activations(height);
+    }
+
+    /// Decide closed proposals and apply passed parameters at activation.
+    ///
+    /// A passed proposal's parameter is applied on the first block at or after
+    /// its `activation_height` — whether it was decided in this call or an
+    /// earlier one — so a proposal that decided at height 10 still activates at
+    /// height 20.
+    fn apply_activations(&mut self, height: u32) {
+        let total_staked = self.total_staked;
+        let mut to_apply: Vec<(ParamId, u64)> = Vec::new();
+        for rec in self.proposals.values_mut() {
+            if !rec.decided {
+                match tally(
+                    &rec.proposal,
+                    rec.yes,
+                    rec.no,
+                    rec.abstain,
+                    total_staked,
+                    height,
+                ) {
+                    ProposalOutcome::Open => continue,
+                    ProposalOutcome::Failed => {
+                        rec.decided = true;
+                        rec.passed = false;
+                        continue;
+                    }
+                    ProposalOutcome::Passed { .. } => {
+                        rec.decided = true;
+                        rec.passed = true;
+                    }
+                }
+            }
+            // Decided and passed: apply at/after the activation height.
+            if rec.passed && height >= rec.proposal.activation_height {
+                to_apply.push((rec.proposal.param, rec.proposal.new_value));
+            }
+        }
+        for (param, value) in to_apply {
+            param.apply(&mut self.params, value);
+        }
+    }
+}
+
+/// Derive a stable proposal id from its encoded bytes (first 8 bytes of a
+/// hash of the encoding + creation height).
+fn proposal_id_of(p: &Proposal, height: u32) -> [u8; 8] {
+    let mut buf = p.encode();
+    buf.extend_from_slice(&height.to_le_bytes());
+    let h = vtorrent_core::crypto::sha256(&buf);
+    let mut id = [0u8; 8];
+    id.copy_from_slice(&h[..8]);
+    id
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,5 +439,77 @@ mod tests {
         assert_eq!(params.pos_annual_rate_bps, 400);
         ParamId::MinStakeAmount.apply(&mut params, 2_000_000);
         assert_eq!(params.min_stake_amount, 2_000_000);
+    }
+    #[test]
+    fn governance_state_machine_propose_vote_activate() {
+        let mut g = GovernanceState::new();
+        g.total_staked = 1000;
+
+        // A proposal to set the annual rate to 400 bps, activating at height 20.
+        let p = Proposal {
+            param: ParamId::PosAnnualRateBps,
+            new_value: 400,
+            activation_height: 20,
+            voting_end: 10,
+            deposit: 0,
+        };
+        let id = proposal_id_of(&p, 1);
+        let prop_out = vec![(op_return_script(&p.encode()), "proposer".to_string())];
+        g.process_block(1, &prop_out, |_| 0);
+
+        // Votes: 400 yes, 100 no (500/1000 = 50% quorum; 80% yes).
+        let vote_yes = Vote {
+            proposal_id: id,
+            choice: VoteChoice::Yes,
+        };
+        let vote_no = Vote {
+            proposal_id: id,
+            choice: VoteChoice::No,
+        };
+        g.process_block(
+            2,
+            &[(op_return_script(&vote_yes.encode()), "a".to_string())],
+            |addr| {
+                if addr == "a" {
+                    400
+                } else {
+                    0
+                }
+            },
+        );
+        g.process_block(
+            3,
+            &[(op_return_script(&vote_no.encode()), "b".to_string())],
+            |addr| {
+                if addr == "b" {
+                    100
+                } else {
+                    0
+                }
+            },
+        );
+
+        // Before voting_end: still open, param unchanged.
+        assert_eq!(g.params.pos_annual_rate_bps, 500);
+
+        // At voting_end the proposal decides (passed) but doesn't activate yet.
+        g.process_block(10, &[], |_| 0);
+        assert_eq!(
+            g.params.pos_annual_rate_bps, 500,
+            "not active before activation height"
+        );
+
+        // At activation height the param applies.
+        g.process_block(20, &[], |_| 0);
+        assert_eq!(
+            g.params.pos_annual_rate_bps, 400,
+            "param applied at activation"
+        );
+    }
+
+    fn op_return_script(data: &[u8]) -> Vec<u8> {
+        let mut s = vec![0x6a, data.len() as u8];
+        s.extend_from_slice(data);
+        s
     }
 }
