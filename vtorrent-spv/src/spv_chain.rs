@@ -253,6 +253,23 @@ fn verify_p2cs_signature(
     Secp256k1::verification_only()
         .verify_ecdsa(&msg, &sig, &pk)
         .map_err(|e| SpvError::HeaderValidation(format!("P2CS sig verify failed: {}", e)))?;
+
+    // R1 re-lock rule: ALL value in a P2CS coinstake must re-lock to the same
+    // P2CS script (empty marker exempt). Without this, a light client would
+    // accept a stake-redirecting coinstake that full nodes reject — a
+    // consensus divergence. See docs/cold-staking-p2cs-design.md.
+    let redirected: u64 = coinstake
+        .outputs
+        .iter()
+        .filter(|o| o.value > 0 && o.script_pubkey != utxo.script_pubkey)
+        .map(|o| o.value)
+        .fold(0u64, u64::saturating_add);
+    if redirected > 0 {
+        return Err(SpvError::HeaderValidation(format!(
+            "P2CS coinstake redirects {} satoshis away from the cold-stake script",
+            redirected
+        )));
+    }
     Ok(())
 }
 
@@ -1138,6 +1155,21 @@ mod pos_tests {
         assert!(
             verify_p2cs_signature(&bad, &utxo).is_err(),
             "spending key must not sign a coinstake"
+        );
+
+        // R1: a coinstake that redirects value away from the P2CS script must
+        // be rejected even with a valid staking-key signature.
+        let mut redirect = coinstake.clone();
+        redirect.outputs.push(crate::stake::TxOutput {
+            value: 1,
+            script_pubkey: vec![
+                0x76, 0xa9, 0x14, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
+                0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0x88, 0xac,
+            ],
+        });
+        assert!(
+            verify_p2cs_signature(&redirect, &utxo).is_err(),
+            "redirecting value must be rejected"
         );
     }
 }
