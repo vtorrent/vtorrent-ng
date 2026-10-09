@@ -45,7 +45,7 @@ Before any voting, the reward path must read from a **parameter source**:
 This is the largest mechanical piece and the one that touches every consensus
 path; do it first, behind tests, with no behaviour change.
 
-## 3. Step 1 — Proposals (on-chain)
+## 3. Step 1 — Proposals (on-chain) — **CORE DONE**
 
 - A proposal is a transaction carrying an OP_RETURN:
   `"VTRG1" | param_id(1) | new_value(8) | activation_height(4) | voting_end(4) | deposit(8)`.
@@ -53,7 +53,7 @@ path; do it first, behind tests, with no behaviour change.
 - Proposals are recorded in blocks; every node sees the same set (scan OP_RETURNs
   like the torrent/name registries).
 
-## 4. Step 2 — Voting (stake-weighted, snapshot + lock)
+## 4. Step 2 — Voting (stake-weighted, snapshot + lock) — **CORE DONE**
 
 - **Snapshot**: voting power = the voter's stakeable UTXOs at the proposal's
   creation height (anti-flash-stake).
