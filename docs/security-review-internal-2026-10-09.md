@@ -40,6 +40,19 @@ feature endpoint is routed (non-404).
 - **Debug preimage endpoint**: gated on `regtest`.
 - **OP_RETURN eligibility**: correctly retains genesis-distribution markers,
   excludes data carriers; chain + producer use the same predicate.
+- **Swap observation/reconciliation**: correctly checks both value AND script
+  (anti-S1 pattern).
+
+## Pattern-based sweep (second pass)
+
+Searched for the three bug classes across the full codebase. One instance of
+each pattern found:
+
+| # | Pattern | Bug | Fix |
+|---|---|---|---|
+| F1 | S1 (presence-without-value) | Cold-stake E2E test used `.any()` — wouldn't catch R1 regression | Assert P2CS output value ≥ staked amount (`4cbed38`) |
+| F2 | S3 (dead code) | `spv_get_proof` fully implemented, never wired to a route | Routed at `GET /api/v1/spv/proof/:hash` + regression test (`4cbed38`) |
+| F3 | S2 (divergent validation) | SPV uses v1 kernel (dead code, but needs watching) | Documented caveat on the dead code path (`4cbed38`) |
 
 ## Open (design-stage, not exploitable yet)
 
@@ -63,4 +76,4 @@ crypto), but the internal pass caught the highest-severity issues.
 ## References
 
 - `docs/cold-staking-p2cs-design.md`, `docs/security-review-brief.md`.
-- Fixes: `7796958` (R1), `26a5d55` (SPV), `f302a5a` (routes), `9733ec1` (bounds+doc).
+- Fixes: `7796958` (R1), `26a5d55` (SPV), `f302a5a` (routes), `9733ec1` (bounds+doc), `4cbed38` (F1-F3).
