@@ -777,6 +777,24 @@ async fn test_spv_status_empty() {
 }
 
 #[tokio::test]
+async fn test_spv_proof_is_routed() {
+    // The endpoint returns 404 because AppState has no SPV data, but the
+    // response body contains the handler's error message (not a routing 404).
+    let app = build_router(AppState::new());
+    let (status, body) = get(
+        app,
+        "/api/v1/spv/proof/0000000000000000000000000000000000000000000000000000000000000000",
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let msg = body["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("not found"),
+        "expected handler 404, got routing 404: {msg}"
+    );
+}
+
+#[tokio::test]
 async fn test_btc_status_uninitialized() {
     let app = build_router(AppState::new());
     let (status, body) = get(app, "/api/v1/btc/status").await;

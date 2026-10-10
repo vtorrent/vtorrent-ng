@@ -520,6 +520,11 @@ Send BTC to an address.
 
 Returns SPV header chain sync status.
 
+### GET /api/v1/spv/proof/:hash
+
+Retrieve a stored `StakeProof` for a PoS header hash (if available).
+Returns 404 if the header is not in the SPV chain or no proof is stored.
+
 ### POST /api/v1/spv/headers
 
 Submit compact block headers for SPV sync.

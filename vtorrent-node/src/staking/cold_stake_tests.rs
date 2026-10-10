@@ -116,14 +116,20 @@ fn cold_stake_end_to_end() {
     let block = found.expect("staking kernel should hit");
 
     // The coinstake must re-lock the stake to the SAME P2CS script (R1).
+    // Check the value, not just script presence — a broken R1 rule would allow
+    // re-locking 1 sat and redirecting the rest.
     let coinstake = &block.transactions[0];
     assert!(coinstake.is_coinstake());
+    let p2cs_relocked: u64 = coinstake
+        .outputs
+        .iter()
+        .filter(|o| o.script_pubkey == p2cs_script.as_bytes() && o.value > 0)
+        .map(|o| o.value)
+        .sum();
     assert!(
-        coinstake
-            .outputs
-            .iter()
-            .any(|o| o.script_pubkey == p2cs_script.as_bytes()),
-        "coinstake must re-lock to the P2CS script"
+        p2cs_relocked >= 1000 * COIN,
+        "coinstake must re-lock at least the full stake (1000 VTR) to P2CS, got {} sats",
+        p2cs_relocked
     );
 
     // ── The chain accepts the block (R1 rule passes) ──────────────────────────

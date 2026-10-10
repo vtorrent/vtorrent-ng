@@ -211,6 +211,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/btc/status", get(get_btc_status))
         .route("/api/v1/btc/address", get(get_btc_address))
         .route("/api/v1/spv/status", get(get_spv_status))
+        .route("/api/v1/spv/proof/:hash", get(spv_get_proof))
         .route("/api/v1/peers", get(get_peers))
         .route("/ws", get(ws_handler))
         .route("/metrics", get(metrics_handler))

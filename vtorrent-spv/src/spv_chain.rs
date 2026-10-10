@@ -440,6 +440,14 @@ impl SpvChain {
             )));
         }
 
+        // CAVEAT: This uses the v1 stake kernel (saturating target based on
+        // UTXO value). The full node uses v2 (proportional share based on
+        // total_staked). The v1 kernel saturates at u32::MAX for UTXOs worth
+        // ≥ ~42,949 VTR, making the check unconditional. This is acceptable
+        // only because add_pos_header always fails closed below (the entire
+        // path is dead code). If this function is ever made live, the kernel
+        // check MUST be updated to v2 (requires total_staked, which SPV does
+        // not have — see consensus.rs:229). See docs/cold-staking-p2cs-design.md.
         if !check_stake_kernel(
             proof.prev_stake_modifier,
             proof.utxo.value,
