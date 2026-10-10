@@ -117,6 +117,10 @@ pub fn build_router(state: AppState) -> Router {
             get(get_governance_proposals),
         )
         .route(
+            "/api/v1/governance/locks",
+            get(crate::handlers::governance::get_governance_locks),
+        )
+        .route(
             "/api/v1/wallet/contacts",
             get(list_contacts).post(add_contact),
         )

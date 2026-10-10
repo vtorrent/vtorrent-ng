@@ -207,6 +207,9 @@ pub struct Chain {
     /// constants, so the default is a no-op. See
     /// `docs/governance-implementation-plan.md` Step 0.
     params: crate::consensus::ConsensusParams,
+    /// Governance state: proposals, vote tallies, vote-locks, and param
+    /// activations. Rebuilt from the chain on replay (reorg-safe).
+    pub governance: crate::governance::GovernanceState,
 }
 
 impl Chain {
@@ -238,6 +241,12 @@ impl Chain {
             total_staked: 0,
             allow_pow_test_blocks: cfg!(test),
             params: crate::consensus::ConsensusParams::default(),
+            governance: {
+                let mut gov = crate::governance::GovernanceState::new();
+                gov.params = crate::consensus::ConsensusParams::default();
+                gov.min_stake_age = crate::consensus::ConsensusParams::default().min_stake_age;
+                gov
+            },
         };
 
         chain.blocks.insert(genesis_hash, genesis.clone());
@@ -269,6 +278,8 @@ impl Chain {
         let mut chain = Self::new_regtest()?;
         chain.params.min_stake_age = crate::consensus::REGTEST_FAST_MIN_STAKE_AGE;
         chain.params.max_stake_age = crate::consensus::REGTEST_FAST_MAX_STAKE_AGE;
+        chain.governance.params = chain.params;
+        chain.governance.min_stake_age = chain.params.min_stake_age;
         Ok(chain)
     }
 
@@ -296,6 +307,56 @@ impl Chain {
     /// The active consensus parameters (governance-changeable).
     pub fn params(&self) -> crate::consensus::ConsensusParams {
         self.params
+    }
+
+    /// Process governance outputs from a block. Must be called during block
+    /// application (after the block is accepted) to update governance state,
+    /// enforce vote-locks, and apply passed parameter activations.
+    pub fn process_governance_block(&mut self, height: u32, block: &crate::block::Block) {
+        let mut outputs: Vec<(Vec<u8>, String)> = Vec::new();
+        for tx in &block.transactions {
+            let voter = tx.claim_address.clone().unwrap_or_default();
+            for out in &tx.outputs {
+                if out.script_pubkey.first() == Some(&0x6a) {
+                    outputs.push((out.script_pubkey.clone(), voter.clone()));
+                }
+            }
+        }
+
+        // Snapshot the params before processing — only sync if they changed
+        // (a governance activation happened).
+        let params_before = self.params;
+        let utxo_set = &self.utxo_set;
+        self.governance.total_staked = self.total_staked;
+        self.governance.process_block(height, &outputs, |addr| {
+            if addr.is_empty() {
+                vec![]
+            } else {
+                let script = vtorrent_core::address::Address::parse(addr)
+                    .map(|a| a.p2pkh_script_pubkey())
+                    .unwrap_or_default();
+                utxo_set
+                    .values()
+                    .filter(|u| u.script_pubkey == script)
+                    .map(|u| (u.txid, u.vout, u.value, u.height))
+                    .collect()
+            }
+        });
+
+        // Only sync params if a governance activation changed them.
+        if self.governance.params != params_before {
+            tracing::info!(
+                height = %height,
+                "Governance parameter activation: syncing chain params"
+            );
+            self.params = self.governance.params;
+        }
+    }
+
+    /// Returns `true` if the given UTXO is locked by a governance vote at the
+    /// given height. Spends of locked UTXOs must be rejected by consensus.
+    pub fn is_vote_locked(&self, txid: &[u8; 32], vout: u32, height: u32) -> bool {
+        self.governance.is_utxo_locked(txid, vout, height)
     }
 
     /// Mint coins to an address by appending a coinbase block (regtest only).
@@ -1063,6 +1124,14 @@ impl Chain {
             self.index_block_transactions(block_hash, &block);
             self.headers.insert(block_hash, block.header.clone());
             self.blocks.insert(block_hash, block);
+
+            // Process governance: scan for proposals/votes, enforce
+            // vote-locks, and apply any passed parameter activations.
+            if let Some(accepted_block) = self.blocks.get(&block_hash) {
+                let block_clone = accepted_block.clone();
+                self.process_governance_block(height, &block_clone);
+            }
+
             self.height_index.push(block_hash);
             self.prune_bodies();
 

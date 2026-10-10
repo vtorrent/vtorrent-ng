@@ -220,6 +220,24 @@ is reorg-safe by construction.
 
 ---
 
+## Governance
+
+### GET /api/v1/governance/params
+
+Returns the current governance-changeable consensus parameters.
+
+### GET /api/v1/governance/proposals
+
+Scans the chain for governance OP_RETURNs and returns all proposals with
+their vote tallies and outcomes.
+
+### GET /api/v1/governance/locks
+
+Returns UTXOs currently locked by governance votes (with remaining block
+count until unlock).
+
+---
+
 ## DEX
 
 ### GET /api/v1/dex/orders

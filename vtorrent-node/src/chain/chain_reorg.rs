@@ -242,6 +242,17 @@ fn apply_transaction_journaled(
         for (input_index, input) in tx.inputs.iter().enumerate() {
             let key = (input.prev_txid, input.prev_vout);
             if let Some(utxo) = chain.utxo_set.remove(&key) {
+                // Governance vote-lock: reject spends of UTXOs locked by a vote.
+                if chain.is_vote_locked(&utxo.txid, utxo.vout, height) {
+                    // Put the UTXO back — the spend is rejected.
+                    chain.utxo_set.insert(key, utxo);
+                    return Err(NodeError::InvalidTransaction(format!(
+                        "UTXO {}:{} is locked by a governance vote until a future block",
+                        hex::encode(input.prev_txid),
+                        input.prev_vout
+                    )));
+                }
+
                 total_input = total_input.saturating_add(utxo.value);
 
                 let script_bytes = utxo.script_pubkey.clone();
@@ -497,6 +508,7 @@ pub(crate) fn reorganize_to(
     // after a failed reorg, so two nodes with identical UTXO sets could
     // disagree on kernel validity — a silent consensus split.
     let total_staked = chain.total_staked;
+    let governance = chain.governance.clone();
 
     match reorganize_to_inner(chain, new_tip, new_tip_height) {
         Ok(result) => Ok(result),
@@ -508,6 +520,7 @@ pub(crate) fn reorganize_to(
             chain.journals = journals;
             chain.total_supply = total_supply;
             chain.total_staked = total_staked;
+            chain.governance = governance;
             Err(error)
         }
     }
@@ -578,6 +591,10 @@ fn reorganize_to_inner(
     }
     to_apply.reverse();
 
+    // Reset governance state — it will be rebuilt from the fork point.
+    chain.governance = crate::governance::GovernanceState::new();
+    chain.governance.min_stake_age = chain.params.min_stake_age;
+
     for (i, hash) in to_apply.iter().enumerate() {
         let height = fork_height + 1 + i as u32;
         let block = chain
@@ -597,6 +614,7 @@ fn reorganize_to_inner(
             )));
         }
         index_block_transactions(chain, *hash, &block);
+        chain.process_governance_block(height, &block);
         let claimed_addresses = journal.claimed_addresses.clone();
         let (utxos_added, utxos_removed): (Vec<Utxo>, Vec<([u8; 32], u32)>) = journal
             .changes

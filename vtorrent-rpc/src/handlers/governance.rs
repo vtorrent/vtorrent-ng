@@ -89,17 +89,17 @@ pub async fn get_governance_proposals(
                 }
             }
         }
-        // Voting power: the voter's current stakeable UTXOs (a simplification;
-        // the design snapshots at proposal creation — a documented follow-up).
+        // Voting power: the voter's current stakeable UTXOs, with creation
+        // height for min-stake-age validation.
         gov.process_block(h, &outputs, |addr| {
             if addr.is_empty() {
-                0
+                vec![]
             } else {
                 chain
                     .get_utxos_for_address(addr)
                     .iter()
-                    .map(|u| u.value)
-                    .sum()
+                    .map(|u| (u.txid, u.vout, u.value, u.height))
+                    .collect()
             }
         });
     }
@@ -126,6 +126,52 @@ pub async fn get_governance_proposals(
     Ok(Json(ProposalsResponse {
         tip_height: tip as u64,
         proposals,
+    }))
+}
+
+#[derive(Debug, Serialize)]
+pub struct VoteLockView {
+    pub txid: String,
+    pub vout: u32,
+    pub unlock_height: u32,
+    pub voter: String,
+    pub proposal_id: String,
+    pub remaining_blocks: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LocksResponse {
+    pub tip_height: u64,
+    pub locks: Vec<VoteLockView>,
+}
+
+/// GET /api/v1/governance/locks
+///
+/// Returns UTXOs currently locked by governance votes.
+pub async fn get_governance_locks(
+    State(state): State<Arc<AppState>>,
+) -> RpcResult<Json<LocksResponse>> {
+    let chain = state.chain.lock().await;
+    let tip = chain.best_height();
+    let gov = &chain.governance;
+
+    let locks: Vec<VoteLockView> = gov
+        .locked_utxos
+        .values()
+        .filter(|l| tip < l.unlock_height)
+        .map(|l| VoteLockView {
+            txid: hex::encode(l.txid),
+            vout: l.vout,
+            unlock_height: l.unlock_height,
+            voter: l.voter.clone(),
+            proposal_id: hex::encode(l.proposal_id),
+            remaining_blocks: l.unlock_height.saturating_sub(tip),
+        })
+        .collect();
+
+    Ok(Json(LocksResponse {
+        tip_height: tip as u64,
+        locks,
     }))
 }
 

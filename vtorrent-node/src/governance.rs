@@ -1,21 +1,27 @@
-//! On-chain governance: proposals and stake-weighted votes (Steps 1–2).
+//! On-chain governance: proposals, stake-weighted votes, and vote-locking
+//! (Steps 1–3).
 //!
 //! Proposals and votes are OP_RETURN data carriers with a domain prefix, so
 //! they are permanent, censorship-resistant, and visible to every node.
-//! Voting power is snapshotted at proposal creation and coins are locked
-//! through the voting window. See `docs/governance-implementation-plan.md`.
+//! Voting power is counted from coins **locked at vote time** with a minimum
+//! stake age (Option B from `docs/governance-step3-design.md`).
 //!
-//! This module is the **pure core**: encoding/decoding the OP_RETURN payloads
-//! and tallying votes. Chain integration (scanning, snapshot, lock enforcement)
-//! builds on it.
+//! This module is the **pure core**: encoding/decoding the OP_RETURN payloads,
+//! tallying votes, and managing vote-locks. Chain integration (scanning,
+//! lock enforcement) builds on it.
 
 use crate::consensus::ConsensusParams;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Proposal OP_RETURN prefix: `VTRG1`.
 pub const PROPOSAL_PREFIX: &[u8; 5] = b"VTRG1";
 /// Vote OP_RETURN prefix: `VTRV1`.
 pub const VOTE_PREFIX: &[u8; 5] = b"VTRV1";
+
+/// Default lock grace period (blocks) added to a proposal's `voting_end` to
+/// produce the unlock height. Prevents vote-then-spend in the same block.
+pub const DEFAULT_LOCK_GRACE_BLOCKS: u32 = 6;
 
 /// The governance-changeable parameters (a stable id per parameter).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -215,32 +221,63 @@ pub struct ProposalRecord {
     pub passed: bool,
 }
 
+/// A UTXO locked by a vote.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VoteLock {
+    /// The txid:vout of the locked UTXO.
+    pub txid: [u8; 32],
+    pub vout: u32,
+    /// Block height at which the lock expires (proposal voting_end + grace).
+    pub unlock_height: u32,
+    /// The voter address (for display/query).
+    pub voter: String,
+    /// The proposal this lock is associated with.
+    pub proposal_id: [u8; 8],
+}
+
 /// Deterministic governance state, rebuilt from the chain.
 ///
-/// `process_block` scans a block's OP_RETURN outputs for proposals and votes
-/// and applies any passed parameter at its activation height. Because it is a
-/// pure function of the block sequence, it is **reorg-safe by rebuild**: on a
-/// reorg, replay the new chain from the fork point.
-///
-/// Note: this is the deterministic core. Live integration (calling it from
-/// `apply_block_journaled`, snapshotting voting power from the UTXO set, and
-/// enforcing vote-locking) is a documented follow-up — it is consensus-touching
-/// and gated on the activation decision.
+/// `process_block` scans a block's OP_RETURN outputs for proposals and votes,
+/// locks the voter's UTXOs (with min-stake-age validation), and applies any
+/// passed parameter at its activation height. Because it is a pure function of
+/// the block sequence, it is **reorg-safe by rebuild**: on a reorg, replay the
+/// new chain from the fork point.
 #[derive(Debug, Clone, Default)]
 pub struct GovernanceState {
-    pub proposals: std::collections::HashMap<[u8; 8], ProposalRecord>,
+    pub proposals: HashMap<[u8; 8], ProposalRecord>,
     pub params: ConsensusParams,
     /// Total staked supply used for quorum (set by the caller per block).
     pub total_staked: u64,
+    /// UTXOs locked by votes, keyed by (txid, vout).
+    pub locked_utxos: HashMap<([u8; 32], u32), VoteLock>,
+    /// Minimum stake age (blocks/seconds) for a UTXO to be vote-eligible.
+    /// Set by the caller (should match ConsensusParams.min_stake_age).
+    pub min_stake_age: u64,
 }
 
 impl GovernanceState {
     pub fn new() -> Self {
         Self {
-            proposals: std::collections::HashMap::new(),
+            proposals: HashMap::new(),
             params: ConsensusParams::default(),
             total_staked: 0,
+            locked_utxos: HashMap::new(),
+            min_stake_age: crate::consensus::MIN_STAKE_AGE,
         }
+    }
+
+    /// Returns `true` if the given UTXO is currently locked at `height`.
+    pub fn is_utxo_locked(&self, txid: &[u8; 32], vout: u32, height: u32) -> bool {
+        if let Some(lock) = self.locked_utxos.get(&(*txid, vout)) {
+            return height < lock.unlock_height;
+        }
+        false
+    }
+
+    /// Remove all locks that have expired at or before `height`.
+    pub fn prune_expired_locks(&mut self, height: u32) {
+        self.locked_utxos
+            .retain(|_, lock| height < lock.unlock_height);
     }
 
     /// Extract the OP_RETURN data payload from a scriptPubKey, if any.
@@ -259,20 +296,28 @@ impl GovernanceState {
     /// Process one block's governance outputs at `height`, then apply any
     /// parameter whose activation height is reached.
     ///
-    /// `stake_of` maps a voter address to its snapshotted stake (satoshis);
-    /// the caller supplies it (from the UTXO set at the proposal's snapshot).
-    pub fn process_block<F>(&mut self, height: u32, outputs: &[(Vec<u8>, String)], stake_of: F)
-    where
-        F: Fn(&str) -> u64,
+    /// `stake_utxos_of` maps a voter address to its stakeable UTXOs:
+    /// `Vec<(txid, vout, value_sats, creation_height)>`. The caller supplies
+    /// this from the chain's UTXO set.
+    ///
+    /// When a vote is processed:
+    /// 1. Each UTXO must be ≥ `min_stake_age` blocks old (anti-flash-stake).
+    /// 2. Each UTXO is locked until `proposal.voting_end + grace_blocks`.
+    /// 3. If any UTXO fails the age check, the vote is rejected.
+    pub fn process_block<US>(
+        &mut self,
+        height: u32,
+        outputs: &[(Vec<u8>, String)],
+        stake_utxos_of: US,
+    ) where
+        US: Fn(&str) -> Vec<([u8; 32], u32, u64, u32)>,
     {
+        let grace = DEFAULT_LOCK_GRACE_BLOCKS;
         for (script, voter) in outputs {
             let Some(data) = Self::op_return_data(script) else {
                 continue;
             };
             if let Some(p) = Proposal::decode(data) {
-                // Proposal id = first 8 bytes of its txid is not available here;
-                // callers pass a stable id via the vote's proposal_id. Record
-                // under a derived id from the encoded bytes.
                 let id = proposal_id_of(&p, height);
                 self.proposals.entry(id).or_insert(ProposalRecord {
                     proposal: p,
@@ -284,9 +329,32 @@ impl GovernanceState {
                     passed: false,
                 });
             } else if let Some(v) = Vote::decode(data) {
-                if let Some(rec) = self.proposals.get_mut(&v.proposal_id) {
-                    if height <= rec.proposal.voting_end {
-                        let stake = stake_of(voter);
+                if let Some(rec) = self.proposals.get(&v.proposal_id) {
+                    if height > rec.proposal.voting_end {
+                        continue;
+                    }
+                    let unlock_height = rec.proposal.voting_end.saturating_add(grace);
+                    let utxos = stake_utxos_of(voter);
+                    // Anti-flash-stake: all stakeable UTXOs must be ≥ min_stake_age.
+                    let too_young = utxos.iter().any(|(_, _, _, created)| {
+                        let age = height.saturating_sub(*created);
+                        (age as u64) < self.min_stake_age
+                    });
+                    if too_young {
+                        continue; // vote silently rejected
+                    }
+                    let stake: u64 = utxos.iter().map(|(_, _, val, _)| val).sum();
+                    // Lock each UTXO.
+                    for (txid, vout, _, _) in &utxos {
+                        self.locked_utxos.entry((*txid, *vout)).or_insert(VoteLock {
+                            txid: *txid,
+                            vout: *vout,
+                            unlock_height,
+                            voter: voter.clone(),
+                            proposal_id: v.proposal_id,
+                        });
+                    }
+                    if let Some(rec) = self.proposals.get_mut(&v.proposal_id) {
                         match v.choice {
                             VoteChoice::Yes => rec.yes = rec.yes.saturating_add(stake),
                             VoteChoice::No => rec.no = rec.no.saturating_add(stake),
@@ -296,6 +364,7 @@ impl GovernanceState {
                 }
             }
         }
+        self.prune_expired_locks(height);
         self.apply_activations(height);
     }
 
@@ -444,6 +513,9 @@ mod tests {
     fn governance_state_machine_propose_vote_activate() {
         let mut g = GovernanceState::new();
         g.total_staked = 1000;
+        // Use a very small min_stake_age so the test UTXOs (created at
+        // height 0) are old enough for every vote.
+        g.min_stake_age = 1;
 
         // A proposal to set the annual rate to 400 bps, activating at height 20.
         let p = Proposal {
@@ -455,7 +527,7 @@ mod tests {
         };
         let id = proposal_id_of(&p, 1);
         let prop_out = vec![(op_return_script(&p.encode()), "proposer".to_string())];
-        g.process_block(1, &prop_out, |_| 0);
+        g.process_block(1, &prop_out, |_| vec![]);
 
         // Votes: 400 yes, 100 no (500/1000 = 50% quorum; 80% yes).
         let vote_yes = Vote {
@@ -466,50 +538,278 @@ mod tests {
             proposal_id: id,
             choice: VoteChoice::No,
         };
+        // Each voter has one UTXO created at height 0 (well beyond min_stake_age).
+        let utxo_a = make_test_utxo(1, 400, 0);
+        let utxo_b = make_test_utxo(2, 100, 0);
         g.process_block(
             2,
             &[(op_return_script(&vote_yes.encode()), "a".to_string())],
-            |addr| {
-                if addr == "a" {
-                    400
-                } else {
-                    0
-                }
-            },
+            move |addr| if addr == "a" { utxo_a.clone() } else { vec![] },
         );
         g.process_block(
             3,
             &[(op_return_script(&vote_no.encode()), "b".to_string())],
-            |addr| {
-                if addr == "b" {
-                    100
-                } else {
-                    0
-                }
-            },
+            move |addr| if addr == "b" { utxo_b.clone() } else { vec![] },
         );
 
         // Before voting_end: still open, param unchanged.
         assert_eq!(g.params.pos_annual_rate_bps, 500);
 
         // At voting_end the proposal decides (passed) but doesn't activate yet.
-        g.process_block(10, &[], |_| 0);
+        g.process_block(10, &[], |_| vec![]);
         assert_eq!(
             g.params.pos_annual_rate_bps, 500,
             "not active before activation height"
         );
 
         // At activation height the param applies.
-        g.process_block(20, &[], |_| 0);
+        g.process_block(20, &[], |_| vec![]);
         assert_eq!(
             g.params.pos_annual_rate_bps, 400,
             "param applied at activation"
         );
     }
 
+    fn make_test_utxo(
+        vout: u32,
+        value: u64,
+        created_height: u32,
+    ) -> Vec<([u8; 32], u32, u64, u32)> {
+        let txid = [vout as u8; 32];
+        vec![(txid, vout, value, created_height)]
+    }
+
     fn op_return_script(data: &[u8]) -> Vec<u8> {
         let mut s = vec![0x6a, data.len() as u8];
         s.extend_from_slice(data);
         s
+    }
+
+    #[test]
+    fn vote_locks_utxos() {
+        let mut g = GovernanceState::new();
+        g.total_staked = 1000;
+        g.min_stake_age = 1;
+
+        let p = Proposal {
+            param: ParamId::PosAnnualRateBps,
+            new_value: 400,
+            activation_height: 100,
+            voting_end: 50,
+            deposit: 0,
+        };
+        let id = proposal_id_of(&p, 1);
+        g.process_block(
+            1,
+            &[(op_return_script(&p.encode()), "proposer".into())],
+            |_| vec![],
+        );
+
+        let vote = Vote {
+            proposal_id: id,
+            choice: VoteChoice::Yes,
+        };
+        let utxo_txid = [0xAAu8; 32];
+        g.process_block(
+            2,
+            &[(op_return_script(&vote.encode()), "voter".into())],
+            move |addr| {
+                if addr == "voter" {
+                    vec![(utxo_txid, 0, 500, 0)]
+                } else {
+                    vec![]
+                }
+            },
+        );
+
+        // UTXO should be locked.
+        assert!(g.is_utxo_locked(&utxo_txid, 0, 2));
+        assert!(g.is_utxo_locked(&utxo_txid, 0, 50)); // still locked at voting_end
+        assert!(!g.is_utxo_locked(&utxo_txid, 0, 50 + DEFAULT_LOCK_GRACE_BLOCKS)); // unlocked
+        assert_eq!(g.locked_utxos.len(), 1);
+        // Vote should be counted.
+        let rec = g.proposals.get(&id).unwrap();
+        assert_eq!(rec.yes, 500);
+    }
+
+    #[test]
+    fn vote_rejected_if_utxo_too_young() {
+        let mut g = GovernanceState::new();
+        g.total_staked = 1000;
+        g.min_stake_age = 10; // require 10 blocks age
+
+        let p = Proposal {
+            param: ParamId::PosAnnualRateBps,
+            new_value: 400,
+            activation_height: 100,
+            voting_end: 50,
+            deposit: 0,
+        };
+        let id = proposal_id_of(&p, 1);
+        g.process_block(
+            1,
+            &[(op_return_script(&p.encode()), "proposer".into())],
+            |_| vec![],
+        );
+
+        let vote = Vote {
+            proposal_id: id,
+            choice: VoteChoice::Yes,
+        };
+        // UTXO created at height 5, voted at height 8 → age 3 < min_stake_age 10.
+        g.process_block(
+            8,
+            &[(op_return_script(&vote.encode()), "voter".into())],
+            move |addr| {
+                if addr == "voter" {
+                    vec![([0xBBu8; 32], 0, 500, 5)]
+                } else {
+                    vec![]
+                }
+            },
+        );
+
+        // Vote should be rejected: no locks, no tally.
+        assert!(g.locked_utxos.is_empty());
+        let rec = g.proposals.get(&id).unwrap();
+        assert_eq!(rec.yes, 0);
+    }
+
+    #[test]
+    fn param_activation_at_height() {
+        let mut g = GovernanceState::new();
+        g.total_staked = 1000;
+        g.min_stake_age = 1;
+
+        let p = Proposal {
+            param: ParamId::PosAnnualRateBps,
+            new_value: 300,
+            activation_height: 20,
+            voting_end: 10,
+            deposit: 0,
+        };
+        let id = proposal_id_of(&p, 1);
+        g.process_block(
+            1,
+            &[(op_return_script(&p.encode()), "proposer".into())],
+            |_| vec![],
+        );
+
+        // Pass the proposal with overwhelming vote.
+        let vote = Vote {
+            proposal_id: id,
+            choice: VoteChoice::Yes,
+        };
+        g.process_block(
+            2,
+            &[(op_return_script(&vote.encode()), "whale".into())],
+            move |addr| {
+                if addr == "whale" {
+                    vec![([0xCCu8; 32], 0, 900, 0)]
+                } else {
+                    vec![]
+                }
+            },
+        );
+
+        // Before voting_end: param unchanged.
+        g.process_block(9, &[], |_| vec![]);
+        assert_eq!(g.params.pos_annual_rate_bps, 500);
+
+        // At voting_end: decided but not yet active.
+        g.process_block(10, &[], |_| vec![]);
+        assert_eq!(g.params.pos_annual_rate_bps, 500);
+
+        // At activation_height: param applied.
+        g.process_block(20, &[], |_| vec![]);
+        assert_eq!(g.params.pos_annual_rate_bps, 300);
+    }
+
+    #[test]
+    fn lock_expires_and_unlocks() {
+        let mut g = GovernanceState::new();
+        g.total_staked = 1000;
+        g.min_stake_age = 1;
+
+        let p = Proposal {
+            param: ParamId::PosAnnualRateBps,
+            new_value: 400,
+            activation_height: 100,
+            voting_end: 10,
+            deposit: 0,
+        };
+        let id = proposal_id_of(&p, 1);
+        g.process_block(
+            1,
+            &[(op_return_script(&p.encode()), "proposer".into())],
+            |_| vec![],
+        );
+
+        let vote = Vote {
+            proposal_id: id,
+            choice: VoteChoice::Yes,
+        };
+        let utxo_txid = [0xDDu8; 32];
+        g.process_block(
+            2,
+            &[(op_return_script(&vote.encode()), "voter".into())],
+            move |addr| {
+                if addr == "voter" {
+                    vec![(utxo_txid, 0, 500, 0)]
+                } else {
+                    vec![]
+                }
+            },
+        );
+
+        let unlock = 10 + DEFAULT_LOCK_GRACE_BLOCKS;
+        assert!(g.is_utxo_locked(&utxo_txid, 0, unlock - 1));
+        assert!(!g.is_utxo_locked(&utxo_txid, 0, unlock));
+        // After processing a block at unlock height, the lock is pruned.
+        g.process_block(unlock, &[], |_| vec![]);
+        assert!(g.locked_utxos.is_empty());
+    }
+
+    #[test]
+    fn vote_after_voting_end_is_ignored() {
+        let mut g = GovernanceState::new();
+        g.total_staked = 1000;
+        g.min_stake_age = 1;
+
+        let p = Proposal {
+            param: ParamId::PosAnnualRateBps,
+            new_value: 400,
+            activation_height: 100,
+            voting_end: 10,
+            deposit: 0,
+        };
+        let id = proposal_id_of(&p, 1);
+        g.process_block(
+            1,
+            &[(op_return_script(&p.encode()), "proposer".into())],
+            |_| vec![],
+        );
+
+        // Vote at height 11 (after voting_end=10).
+        let vote = Vote {
+            proposal_id: id,
+            choice: VoteChoice::Yes,
+        };
+        g.process_block(
+            11,
+            &[(op_return_script(&vote.encode()), "late_voter".into())],
+            move |addr| {
+                if addr == "late_voter" {
+                    vec![([0xEEu8; 32], 0, 500, 0)]
+                } else {
+                    vec![]
+                }
+            },
+        );
+
+        // No locks, no tally.
+        assert!(g.locked_utxos.is_empty());
+        let rec = g.proposals.get(&id).unwrap();
+        assert_eq!(rec.yes, 0);
     }
 }

@@ -1334,6 +1334,7 @@ async fn test_feature_endpoints_are_routed() {
         "/api/v1/deployments",
         "/api/v1/governance/params",
         "/api/v1/governance/proposals",
+        "/api/v1/governance/locks",
         "/api/v1/wallet/contacts",
         "/api/v1/wallet/notes",
         "/api/v1/wallet/export",
