@@ -777,6 +777,40 @@ async fn test_spv_status_empty() {
 }
 
 #[tokio::test]
+async fn governance_rpc_uses_accepted_state_without_reconstructing_votes() {
+    use vtorrent_node::governance::{ParamId, Proposal, ProposalRecord};
+    let state = AppState::new();
+    state.chain.lock().await.governance.proposals.insert(
+        [7; 8],
+        ProposalRecord {
+            proposal: Proposal {
+                param: ParamId::PosAnnualRateBps,
+                new_value: 300,
+                activation_height: 6000,
+                voting_end: 3000,
+                deposit: 100_000_000,
+            },
+            created_height: 1,
+            yes: 123,
+            no: 10,
+            abstain: 2,
+            decided: false,
+            passed: false,
+            applied: false,
+            activation_failed: false,
+            quorum_supply: 1000,
+            voted_outpoints: Default::default(),
+        },
+    );
+    let (status, body) = get(build_router(state), "/api/v1/governance/proposals").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["proposals"].as_array().unwrap().len(), 1);
+    assert_eq!(body["proposals"][0]["yes"], 123);
+    assert_eq!(body["proposals"][0]["quorum_supply"], 1000);
+    assert_eq!(body["proposals"][0]["applied"], false);
+}
+
+#[tokio::test]
 async fn test_spv_proof_is_routed() {
     // The endpoint returns 404 because AppState has no SPV data, but the
     // response body contains the handler's error message (not a routing 404).

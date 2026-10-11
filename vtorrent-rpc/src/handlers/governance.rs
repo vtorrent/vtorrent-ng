@@ -1,8 +1,6 @@
 //! Governance: read-only proposals, votes, and current parameters.
 //!
-//! Scans the chain for governance OP_RETURNs (like the explorer/indexer
-//! pattern) and reports the current parameters. Read-only; no consensus wiring.
-//! See `docs/governance-implementation-plan.md` Step 4.
+//! Reports the authoritative state maintained by consensus block application.
 
 use axum::{extract::State, Json};
 use serde::Serialize;
@@ -10,7 +8,6 @@ use std::sync::Arc;
 
 use crate::error::RpcResult;
 use crate::state::AppState;
-use vtorrent_node::governance::GovernanceState;
 
 #[derive(Debug, Serialize)]
 pub struct ParamsResponse {
@@ -35,6 +32,9 @@ pub struct ProposalView {
     pub abstain: u64,
     pub decided: bool,
     pub passed: bool,
+    pub applied: bool,
+    pub activation_failed: bool,
+    pub quorum_supply: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -60,51 +60,14 @@ pub async fn get_governance_params(
 
 /// GET /api/v1/governance/proposals
 ///
-/// Scans the chain's governance OP_RETURNs and tallies votes. Read-only; the
-/// scan is bounded by `limit` blocks from the tip.
+/// Returns accepted proposals and their authoritative vote tallies.
 pub async fn get_governance_proposals(
     State(state): State<Arc<AppState>>,
 ) -> RpcResult<Json<ProposalsResponse>> {
     let chain = state.chain.lock().await;
     let tip = chain.best_height();
-    let total_staked = chain.total_staked();
-
-    let mut gov = GovernanceState::new();
-    gov.total_staked = total_staked;
-
-    // Bound the scan (a full address index is the proper long-term fix).
-    const MAX_SCAN_BLOCKS: u32 = 200_000;
-    let start = tip.saturating_sub(MAX_SCAN_BLOCKS);
-    for h in start..=tip {
-        let Some(block) = chain.get_block_at_height(h) else {
-            continue;
-        };
-        // Collect governance OP_RETURN outputs (script, voter address).
-        let mut outputs: Vec<(Vec<u8>, String)> = Vec::new();
-        for tx in &block.transactions {
-            let voter = tx.claim_address.clone().unwrap_or_default();
-            for out in &tx.outputs {
-                if out.script_pubkey.first() == Some(&0x6a) {
-                    outputs.push((out.script_pubkey.clone(), voter.clone()));
-                }
-            }
-        }
-        // Voting power: the voter's current stakeable UTXOs, with creation
-        // height for min-stake-age validation.
-        gov.process_block(h, &outputs, |addr| {
-            if addr.is_empty() {
-                vec![]
-            } else {
-                chain
-                    .get_utxos_for_address(addr)
-                    .iter()
-                    .map(|u| (u.txid, u.vout, u.value, u.height))
-                    .collect()
-            }
-        });
-    }
-
-    let mut proposals: Vec<ProposalView> = gov
+    let mut proposals: Vec<ProposalView> = chain
+        .governance
         .proposals
         .iter()
         .map(|(id, rec)| ProposalView {
@@ -119,6 +82,9 @@ pub async fn get_governance_proposals(
             abstain: rec.abstain,
             decided: rec.decided,
             passed: rec.passed,
+            applied: rec.applied,
+            activation_failed: rec.activation_failed,
+            quorum_supply: rec.quorum_supply,
         })
         .collect();
     proposals.sort_by_key(|p| p.created_height);

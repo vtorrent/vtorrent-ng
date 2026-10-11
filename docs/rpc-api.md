@@ -228,8 +228,9 @@ Returns the current governance-changeable consensus parameters.
 
 ### GET /api/v1/governance/proposals
 
-Scans the chain for governance OP_RETURNs and returns all proposals with
-their vote tallies and outcomes.
+Returns accepted governance proposals with authoritative vote tallies and
+outcomes. Each record includes `applied`, `activation_failed`, and
+`quorum_supply`. No proposals are processed before governance activation.
 
 ### GET /api/v1/governance/locks
 

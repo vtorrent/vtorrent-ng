@@ -40,6 +40,11 @@ pub const DEFAULT_PERIOD: u32 = 2016;
 /// The default signalling threshold (percent of a period).
 pub const DEFAULT_THRESHOLD_PCT: u32 = 90;
 
+/// No governance activation is scheduled on the current network.
+pub fn governance_deployment() -> Option<Deployment> {
+    None
+}
+
 /// Whether `version` signals this deployment's bit.
 pub fn signals(deployment: &Deployment, version: u32) -> bool {
     (version >> deployment.bit) & 1 == 1
@@ -57,7 +62,7 @@ pub fn deployment_state(
     tip_height: u32,
     signals_per_period: &[u32],
 ) -> DeploymentState {
-    if period == 0 {
+    if period == 0 || threshold_pct == 0 || threshold_pct > 100 {
         return DeploymentState::Defined;
     }
     if tip_height < deployment.start_height {
@@ -69,15 +74,16 @@ pub fn deployment_state(
         // (We still scan below in case it locked in earlier.)
     }
 
-    let start_period = deployment.start_height / period;
-    let timeout_period = deployment.timeout_height / period;
+    let start_period = deployment.start_height.div_ceil(period);
     let tip_period = tip_height / period;
 
     // Scan completed periods from the start period up to the last completed one.
     let last_completed = tip_period.saturating_sub(1);
     let mut locked_in_period: Option<u32> = None;
     let mut p = start_period;
-    while p <= last_completed && p <= timeout_period {
+    while p <= last_completed
+        && (u64::from(p) + 1) * u64::from(period) < u64::from(deployment.timeout_height)
+    {
         let signalled = signals_per_period.get(p as usize).copied().unwrap_or(0);
         // A period "signals" if at least `threshold_pct`% of its blocks set the
         // bit. The period's block count is `period` (the last period may be
@@ -91,8 +97,8 @@ pub fn deployment_state(
 
     match locked_in_period {
         Some(lip) => {
-            // LockedIn during period `lip`; Active from period `lip + 1`.
-            if tip_period > lip {
+            // The completed signalling window is followed by a full lock-in window.
+            if tip_period >= lip.saturating_add(2) {
                 DeploymentState::Active
             } else {
                 DeploymentState::LockedIn
@@ -153,11 +159,11 @@ mod tests {
     #[test]
     fn locks_in_then_activates() {
         let d = dep();
-        // Period 1 (100..199) fully signals; tip in period 2 → Active.
+        // Period 1 signals; period 2 locks in; period 3 is active.
         let signals = vec![0, 100, 0];
         assert_eq!(
             deployment_state(&d, 100, 90, 250, &signals),
-            DeploymentState::Active
+            DeploymentState::LockedIn
         );
         // Tip still in period 1 (not completed) → Started.
         assert_eq!(
@@ -184,6 +190,28 @@ mod tests {
         assert_eq!(
             deployment_state(&d, 100, 90, 250, &signals),
             DeploymentState::Started
+        );
+    }
+
+    #[test]
+    fn activation_requires_a_full_locked_in_period() {
+        let d = dep();
+        let signals = [0, 90, 0, 0];
+        assert_eq!(
+            deployment_state(&d, 100, 90, 199, &signals),
+            DeploymentState::Started
+        );
+        assert_eq!(
+            deployment_state(&d, 100, 90, 200, &signals),
+            DeploymentState::LockedIn
+        );
+        assert_eq!(
+            deployment_state(&d, 100, 90, 299, &signals),
+            DeploymentState::LockedIn
+        );
+        assert_eq!(
+            deployment_state(&d, 100, 90, 300, &signals),
+            DeploymentState::Active
         );
     }
 }

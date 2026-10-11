@@ -1,6 +1,7 @@
 # On-Chain Governance — Design
 
-Status: DRAFT (consensus change; post-soak, fresh-genesis decision)
+Status: historical design draft. The current implementation and its changed
+voting and deposit rules are specified in `docs/governance-step3-design.md`.
 Scope: `vtorrent-node` (proposals/votes/activation), `vtorrent-wallet`, RPC/UI.
 Motivation: consensus parameters are **hardcoded constants**
 (`consensus.rs:25-53`: `POS_ANNUAL_RATE`, `MIN/MAX_STAKE_AGE`,

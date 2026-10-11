@@ -2,7 +2,6 @@ use crate::{
     block::{Block, Transaction},
     consensus::{
         check_stake_kernel_v2, compute_pos_reward_with, validate_legacy_claim, MAX_SUPPLY,
-        MIN_STAKE_AMOUNT,
     },
     error::{NodeError, Result},
     genesis::get_legacy_balance,
@@ -29,6 +28,10 @@ pub(crate) struct BlockJournal {
     /// removed). Applied on commit and reversed on rollback.
     pub(crate) staked_delta: i64,
     pub(crate) utxo_root: [u8; 32],
+    previous_governance: Option<crate::governance::GovernanceState>,
+    previous_params: crate::consensus::ConsensusParams,
+    previous_supply: u64,
+    previous_staked: u64,
 }
 
 pub(crate) fn ancestors(chain: &Chain, mut tip: [u8; 32]) -> Vec<[u8; 32]> {
@@ -93,17 +96,12 @@ pub(crate) fn rollback_one_block(chain: &mut Chain) -> Result<(Vec<Transaction>,
         chain.claimed_addresses.remove(addr);
     }
 
-    chain.total_supply = chain.total_supply.saturating_sub(journal.supply_delta);
-    // Reverse the staked-supply delta.
-    chain.total_staked = if journal.staked_delta >= 0 {
-        chain
-            .total_staked
-            .saturating_sub(journal.staked_delta as u64)
-    } else {
-        chain
-            .total_staked
-            .saturating_add(journal.staked_delta.unsigned_abs())
-    };
+    chain.total_supply = journal.previous_supply;
+    chain.total_staked = journal.previous_staked;
+    chain.params = journal.previous_params;
+    if let Some(governance) = journal.previous_governance {
+        chain.governance = governance;
+    }
 
     remove_block_transactions(chain, journal.block_hash);
 
@@ -149,6 +147,7 @@ pub(crate) fn apply_block_journaled(
     block: &Block,
     height: u32,
 ) -> Result<BlockJournal> {
+    let governance_active = chain.governance_active(height);
     let mut journal = BlockJournal {
         block_hash: block.hash(),
         height,
@@ -157,19 +156,49 @@ pub(crate) fn apply_block_journaled(
         supply_delta: 0,
         staked_delta: 0,
         utxo_root: [0u8; 32],
+        previous_governance: governance_active.then(|| chain.governance.clone()),
+        previous_params: chain.params,
+        previous_supply: chain.total_supply,
+        previous_staked: chain.total_staked,
     };
 
     let parent_modifier = if height == 0 {
         0
     } else {
         chain
-            .blocks
+            .headers
             .get(&block.header.prev_block_hash)
-            .map(|b| b.header.stake_modifier)
+            .map(|b| b.stake_modifier)
             .ok_or_else(|| NodeError::Chain("Parent block not found for stake modifier".into()))?
     };
 
+    if governance_active {
+        chain.governance.begin_block(height, &mut chain.params);
+        if chain.params.min_stake_amount != journal.previous_params.min_stake_amount {
+            chain.total_staked = chain
+                .utxo_set
+                .values()
+                .filter(|u| crate::consensus::is_stakeable_with(&chain.params, u))
+                .map(|u| u.value)
+                .sum();
+        }
+    }
+
     for tx in &block.transactions {
+        if governance_active {
+            if let Err(error) = chain.governance.process_transaction(
+                tx,
+                height,
+                block.header.timestamp,
+                &chain.utxo_set,
+                chain.params,
+                chain.total_staked,
+                chain.height_index[0],
+            ) {
+                rollback_journal(chain, &journal);
+                return Err(error);
+            }
+        }
         if let Err(e) = apply_transaction_journaled(
             chain,
             tx,
@@ -211,6 +240,12 @@ pub(crate) fn apply_block_journaled(
 }
 
 pub(crate) fn rollback_journal(chain: &mut Chain, journal: &BlockJournal) {
+    chain.params = journal.previous_params;
+    chain.total_supply = journal.previous_supply;
+    chain.total_staked = journal.previous_staked;
+    if let Some(governance) = &journal.previous_governance {
+        chain.governance = governance.clone();
+    }
     for change in journal.changes.iter().rev() {
         match change {
             UtxoChange::Added { key } => {
@@ -241,17 +276,17 @@ fn apply_transaction_journaled(
     if !tx.is_coinbase() {
         for (input_index, input) in tx.inputs.iter().enumerate() {
             let key = (input.prev_txid, input.prev_vout);
+            if chain.is_vote_locked(&input.prev_txid, input.prev_vout, height) && !tx.is_coinstake()
+            {
+                return Err(NodeError::InvalidTransaction(
+                    "input is locked by a governance vote".into(),
+                ));
+            }
             if let Some(utxo) = chain.utxo_set.remove(&key) {
-                // Governance vote-lock: reject spends of UTXOs locked by a vote.
-                if chain.is_vote_locked(&utxo.txid, utxo.vout, height) {
-                    // Put the UTXO back — the spend is rejected.
-                    chain.utxo_set.insert(key, utxo);
-                    return Err(NodeError::InvalidTransaction(format!(
-                        "UTXO {}:{} is locked by a governance vote until a future block",
-                        hex::encode(input.prev_txid),
-                        input.prev_vout
-                    )));
-                }
+                journal.changes.push(UtxoChange::Removed {
+                    key,
+                    utxo: utxo.clone(),
+                });
 
                 total_input = total_input.saturating_add(utxo.value);
 
@@ -299,7 +334,7 @@ fn apply_transaction_journaled(
                     });
                 }
 
-                if crate::consensus::is_stakeable(&utxo) {
+                if crate::consensus::is_stakeable_with(&chain.params, &utxo) {
                     // Checked: a crafted block can carry tens of thousands of
                     // MAX_MONEY outputs, and `overflow-checks = true` would
                     // turn an unchecked `-=` into a panic on the block path.
@@ -310,7 +345,6 @@ fn apply_transaction_journaled(
                             NodeError::InvalidTransaction("Staked-supply delta underflow".into())
                         })?;
                 }
-                journal.changes.push(UtxoChange::Removed { key, utxo });
             } else if !tx.is_legacy_claim() {
                 return Err(NodeError::InvalidTransaction(format!(
                     "Input {}:{} not found in UTXO set",
@@ -381,7 +415,7 @@ fn apply_transaction_journaled(
             height,
             timestamp,
         };
-        if crate::consensus::is_stakeable(&utxo) {
+        if crate::consensus::is_stakeable_with(&chain.params, &utxo) {
             // Checked for the same reason as the removal above: an unchecked
             // `+=` over many MAX_MONEY outputs panics under overflow-checks.
             journal.staked_delta = journal
@@ -406,14 +440,14 @@ fn apply_transaction_journaled(
     }
 
     if tx.is_coinstake() {
-        let staked = stake_input.ok_or_else(|| {
+        let staked = stake_input.as_ref().ok_or_else(|| {
             NodeError::InvalidTransaction("Coinstake must spend a stake input".into())
         })?;
         let coin_age = timestamp.saturating_sub(staked.timestamp);
-        if staked.value < MIN_STAKE_AMOUNT {
+        if staked.value < chain.params.min_stake_amount {
             return Err(NodeError::InvalidTransaction(format!(
                 "Stake value {} is below minimum {}",
-                staked.value, MIN_STAKE_AMOUNT
+                staked.value, chain.params.min_stake_amount
             )));
         }
         let coin_age = u64::from(coin_age);
@@ -441,12 +475,7 @@ fn apply_transaction_journaled(
         // updated after this loop, so it still holds the pre-state value).
         // This caps a whale's block share at its stake share instead of
         // letting any UTXO >= 42,949.67 VTR win unconditionally.
-        if !check_stake_kernel_v2(
-            parent_stake_modifier,
-            &staked,
-            timestamp,
-            chain.total_staked,
-        ) {
+        if !check_stake_kernel_v2(parent_stake_modifier, staked, timestamp, chain.total_staked) {
             return Err(NodeError::InvalidTransaction(
                 "Coinstake kernel hash does not meet the stake target".into(),
             ));
@@ -480,6 +509,11 @@ fn apply_transaction_journaled(
         }
     }
 
+    if chain.governance_active(height) {
+        if let Some(staked) = &stake_input {
+            chain.governance.transfer_stake_lock(tx, staked, height)?;
+        }
+    }
     let total_output = tx.total_output();
     let supply_delta = compute_supply_delta(tx, total_input, total_output);
     journal.supply_delta = journal.supply_delta.saturating_add(supply_delta);
@@ -509,6 +543,7 @@ pub(crate) fn reorganize_to(
     // disagree on kernel validity — a silent consensus split.
     let total_staked = chain.total_staked;
     let governance = chain.governance.clone();
+    let params = chain.params;
 
     match reorganize_to_inner(chain, new_tip, new_tip_height) {
         Ok(result) => Ok(result),
@@ -521,6 +556,7 @@ pub(crate) fn reorganize_to(
             chain.total_supply = total_supply;
             chain.total_staked = total_staked;
             chain.governance = governance;
+            chain.params = params;
             Err(error)
         }
     }
@@ -591,10 +627,6 @@ fn reorganize_to_inner(
     }
     to_apply.reverse();
 
-    // Reset governance state — it will be rebuilt from the fork point.
-    chain.governance = crate::governance::GovernanceState::new();
-    chain.governance.min_stake_age = chain.params.min_stake_age;
-
     for (i, hash) in to_apply.iter().enumerate() {
         let height = fork_height + 1 + i as u32;
         let block = chain
@@ -614,7 +646,6 @@ fn reorganize_to_inner(
             )));
         }
         index_block_transactions(chain, *hash, &block);
-        chain.process_governance_block(height, &block);
         let claimed_addresses = journal.claimed_addresses.clone();
         let (utxos_added, utxos_removed): (Vec<Utxo>, Vec<([u8; 32], u32)>) = journal
             .changes

@@ -33,9 +33,9 @@ pub struct DeploymentsResponse {
 /// The deployments this node knows about. Empty until a deployment is scheduled
 /// (a fresh genesis / coordinated upgrade defines them).
 fn known_deployments() -> Vec<Deployment> {
-    // No deployments are scheduled on the current chain. When the consensus
-    // batch is activated, add entries here (name, bit, start, timeout).
-    Vec::new()
+    vtorrent_node::deployments::governance_deployment()
+        .into_iter()
+        .collect()
 }
 
 /// GET /api/v1/deployments

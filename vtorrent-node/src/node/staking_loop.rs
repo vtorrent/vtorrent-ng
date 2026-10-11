@@ -7,7 +7,6 @@
 use vtorrent_p2p::message::{InvItem, InvMsg, InvType, NetMessage};
 
 use crate::{
-    consensus::TARGET_BLOCK_TIME,
     error::{NodeError, Result},
     events::NodeEvent,
 };
@@ -30,8 +29,20 @@ impl Node {
             stake_utxos,
             total_staked,
             tip_is_bootstrap,
+            params,
         ) = {
             let chain = self.chain.lock().await;
+            let params = chain.next_block_params();
+            let total_staked = if params.min_stake_amount != chain.params().min_stake_amount {
+                chain
+                    .get_utxo_set()
+                    .values()
+                    .filter(|u| crate::consensus::is_stakeable_with(&params, u))
+                    .map(|u| u.value)
+                    .sum()
+            } else {
+                chain.total_staked()
+            };
             let best_height = chain.best_height();
             let best_hash = chain.best_hash().unwrap_or([0u8; 32]);
             let best_block = chain.get_block_at_height(best_height);
@@ -56,12 +67,14 @@ impl Node {
                 best_timestamp,
                 best_stake_modifier,
                 utxos,
-                chain.total_staked(),
+                total_staked,
                 tip_is_bootstrap,
+                params,
             )
         };
         if let Some(staking) = self.staking.as_mut() {
             staking.bootstrap_exempt = tip_is_bootstrap;
+            staking.set_consensus_params(params);
         }
         let staking = self
             .staking
@@ -80,7 +93,7 @@ impl Node {
 
         let now = now_timestamp_u32();
 
-        if now <= best_timestamp + TARGET_BLOCK_TIME as u32 {
+        if now <= best_timestamp.saturating_add(params.target_block_time as u32) {
             return Ok(());
         }
 

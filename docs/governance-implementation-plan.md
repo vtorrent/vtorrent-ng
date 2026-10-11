@@ -4,6 +4,12 @@ Companion to `docs/governance-design.md` (the design + adversarial review) and
 `docs/network-upgrade-design.md` (the activation mechanism). This is the build
 order for the post-soak consensus batch.
 
+Current status: Step 3 has been repaired after self-review but is inactive.
+`docs/governance-step3-design.md` specifies the current protocol and supersedes
+the original snapshot, unsigned-vote, deposit-refund, and scheduled-table
+activation plans below. RPC and UI support are read-only; proposal and vote
+construction endpoints have not been implemented.
+
 ## 1. Scope (bounded, per the design)
 
 Governance controls an **enumerable parameter set** only — never arbitrary code:
@@ -65,23 +71,21 @@ path; do it first, behind tests, with no behaviour change.
   staking operator — the operator holds only the hot staking key. Enforce by
   requiring the vote to be signed by the spending key / owner address.
 
-## 5. Step 3 — Activation — **DECISION NEEDED** (see `docs/governance-step3-design.md`)
+## 5. Step 3 — Activation — implemented, inactive
 
-- A passed proposal sets the parameter at `activation_height`.
-- **Recommended (design §2.3): scheduled upgrade.** The node reads the active
-  parameter value from a **governance table** (params + activation heights,
-  shipped in the release), and the BIP-9 mechanism
-  (`docs/network-upgrade-design.md`) signals readiness. This avoids
-  parameterizing every path at runtime and is honest about "on-chain" meaning
-  *signalling + scheduled*.
-- Fully on-chain activation (params read from the chain) is a larger refactor;
-  defer.
+- Passed proposals apply bounded parameters once at the activation height.
+- Signed, outpoint-specific votes replace address metadata as authority.
+- Block journals restore governance and parameters across rejection and reorg.
+- The deployment is not scheduled on the current network.
+- See `docs/governance-step3-design.md` for the active-rule specification and
+  remaining activation-review work.
 
 ## 6. Step 4 — RPC / UI — **DONE**
 
-- `GET /api/v1/governance/proposals`, `POST /governance/propose`,
-  `POST /governance/vote`, `GET /governance/params`.
-- UI: a Governance page (proposals, vote, current params, activation schedule).
+- `GET /api/v1/governance/proposals`, `GET /api/v1/governance/locks`, and
+  `GET /api/v1/governance/params` read authoritative chain state.
+- The Governance page is read-only. Proposal and vote construction remain
+  unimplemented.
 
 ## 7. Adversarial review (carried from the design)
 

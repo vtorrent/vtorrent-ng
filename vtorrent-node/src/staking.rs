@@ -15,9 +15,8 @@ use crate::{
     },
     chain::Utxo,
     consensus::{
-        check_stake_kernel_v2, compute_pos_reward, compute_stake_modifier, stake_kernel_hash,
-        MAX_STAKE_AGE, MIN_STAKE_AGE, MIN_STAKE_AMOUNT, REGTEST_FAST_MAX_STAKE_AGE,
-        REGTEST_FAST_MIN_STAKE_AGE,
+        check_stake_kernel_v2, compute_pos_reward_with, compute_stake_modifier, stake_kernel_hash,
+        MAX_STAKE_AGE, MIN_STAKE_AGE, REGTEST_FAST_MAX_STAKE_AGE, REGTEST_FAST_MIN_STAKE_AGE,
     },
 };
 use secp256k1::{All, Secp256k1};
@@ -67,6 +66,7 @@ pub struct StakingEngine {
     /// brand-new UTXO can be staked at height 2 (T3). The validator applies the
     /// same exemption.
     pub bootstrap_exempt: bool,
+    params: crate::consensus::ConsensusParams,
     /// Reused UTXO-commitment buffers. `Mutex` (not `RefCell`) keeps
     /// `StakingEngine: Send + Sync`; locked once per stake build, not per tick.
     commit_scratch: std::sync::Mutex<CommitScratch>,
@@ -164,6 +164,7 @@ impl StakingEngine {
             min_stake_age: MIN_STAKE_AGE,
             max_stake_age: MAX_STAKE_AGE,
             bootstrap_exempt: false,
+            params: crate::consensus::ConsensusParams::default(),
             commit_scratch: std::sync::Mutex::new(CommitScratch::default()),
         }
     }
@@ -176,6 +177,7 @@ impl StakingEngine {
             min_stake_age: MIN_STAKE_AGE,
             max_stake_age: MAX_STAKE_AGE,
             bootstrap_exempt: false,
+            params: crate::consensus::ConsensusParams::default(),
             commit_scratch: std::sync::Mutex::new(CommitScratch::default()),
         }
     }
@@ -190,6 +192,7 @@ impl StakingEngine {
             min_stake_age: REGTEST_FAST_MIN_STAKE_AGE,
             max_stake_age: REGTEST_FAST_MAX_STAKE_AGE,
             bootstrap_exempt: false,
+            params: crate::consensus::ConsensusParams::default(),
             commit_scratch: std::sync::Mutex::new(CommitScratch::default()),
         }
     }
@@ -202,6 +205,7 @@ impl StakingEngine {
             min_stake_age: REGTEST_FAST_MIN_STAKE_AGE,
             max_stake_age: REGTEST_FAST_MAX_STAKE_AGE,
             bootstrap_exempt: false,
+            params: crate::consensus::ConsensusParams::default(),
             commit_scratch: std::sync::Mutex::new(CommitScratch::default()),
         }
     }
@@ -431,10 +435,17 @@ impl StakingEngine {
         Some((block, proof))
     }
 
+    /// Update production rules from the chain's next-block consensus state.
+    pub fn set_consensus_params(&mut self, params: crate::consensus::ConsensusParams) {
+        self.min_stake_age = params.min_stake_age;
+        self.max_stake_age = params.max_stake_age;
+        self.params = params;
+    }
+
     /// Check if a UTXO is eligible for staking.
     fn is_eligible(&self, utxo: &Utxo, current_timestamp: u32) -> bool {
         // Must meet minimum amount
-        if utxo.value < MIN_STAKE_AMOUNT {
+        if utxo.value < self.params.min_stake_amount {
             return false;
         }
 
@@ -491,7 +502,7 @@ impl StakingEngine {
 
         // Compute coin age and stake reward
         let coin_age_seconds = timestamp.saturating_sub(utxo.timestamp);
-        let reward = compute_pos_reward(utxo.value, coin_age_seconds as u64);
+        let reward = compute_pos_reward_with(&self.params, utxo.value, coin_age_seconds as u64);
 
         // Build coinstake transaction
         // Input: the staked UTXO
@@ -750,6 +761,7 @@ fn spv_transaction_mirror(tx: &Transaction) -> SpvTransaction {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consensus::MIN_STAKE_AMOUNT;
     use crate::{chain::Utxo, consensus::COIN};
 
     fn make_utxo(value: u64, age_seconds: u32) -> Utxo {

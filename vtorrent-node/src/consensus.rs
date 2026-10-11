@@ -196,7 +196,12 @@ pub fn check_stake_kernel(stake_modifier: u64, utxo: &Utxo, timestamp: u32) -> b
 /// outputs would let a holder park coins to dilute every honest staker's hit
 /// probability without ever winning a kernel.
 pub fn is_stakeable(utxo: &Utxo) -> bool {
-    if utxo.value < MIN_STAKE_AMOUNT {
+    is_stakeable_with(&ConsensusParams::default(), utxo)
+}
+
+/// Classify stakeable value under the active consensus parameters.
+pub fn is_stakeable_with(params: &ConsensusParams, utxo: &Utxo) -> bool {
+    if utxo.value < params.min_stake_amount {
         return false;
     }
     let Ok(script) = vtorrent_script::Script::from_bytes(utxo.script_pubkey.clone()) else {
