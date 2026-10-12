@@ -105,11 +105,14 @@ This repair does not schedule or deploy governance activation.
 | Axis | Score | Evidence and remaining gap |
 |---|---|---|
 | Accuracy | 4/5 | Executable regressions cover the reported defects. Independent consensus review is still absent. |
-| Completeness | 4/5 | Authorization, uniqueness, locks, activation, rollback, and RPC state are repaired. Activation policy and snapshot-memory measurements remain open. |
+| Completeness | 4/5 | Authorization, uniqueness, locks, activation, rollback, and RPC state are repaired. Activation policy and whole-node load validation remain open. |
 | Clarity | 4/5 | The current protocol document specifies signed votes, bounds, and deposit burns. Historical drafts still need its supersession notice. |
 | Actionability | 4/5 | The changes and tests are ready for code review. Production activation remains deliberately unscheduled. |
 | Conciseness | 4/5 | Unsafe state and duplicate parameter copies were removed. The signed-vote and rollback fixtures add substantial test code. |
 
 Overall: **4.0/5**, as a tested repair ready for review, not a mainnet sign-off.
 The next improvements are independent protocol review, approval of parameter
-and deposit policy, and memory measurements for active governance journals.
+and deposit policy, and whole-node load validation.
+
+The subsequent eligibility guard and compact-journal measurements are recorded
+in `docs/governance-preactivation-validation-2026-10-12.md`.

@@ -326,11 +326,16 @@ impl Chain {
     }
 
     /// Parameters used to validate and produce the next block, including due activations.
-    pub fn next_block_params(&self) -> crate::consensus::ConsensusParams {
+    pub fn next_block_params(&self, timestamp: u32) -> crate::consensus::ConsensusParams {
         let mut params = self.params;
         if self.governance_active(self.best_height() + 1) {
             let mut governance = self.governance.clone();
-            governance.begin_block(self.best_height() + 1, &mut params);
+            governance.begin_block(
+                self.best_height() + 1,
+                &mut params,
+                &self.utxo_set,
+                timestamp,
+            );
         }
         params
     }

@@ -3,7 +3,7 @@
 use crate::{
     block::Transaction,
     chain::Utxo,
-    consensus::{is_stakeable, ConsensusParams, COIN, MAX_SUPPLY},
+    consensus::{is_stakeable, is_stakeable_with, ConsensusParams, COIN, MAX_SUPPLY},
     error::{NodeError, Result},
 };
 use secp256k1::{ecdsa::RecoverableSignature, ecdsa::RecoveryId, Message, Secp256k1, SecretKey};
@@ -335,9 +335,128 @@ pub struct GovernanceState {
     pub locked_utxos: BTreeMap<OutPoint, VoteLock>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProposalUndo {
+    Added([u8; 8]),
+    Removed([u8; 8], Box<ProposalRecord>),
+    Updated {
+        id: [u8; 8],
+        metadata: Box<ProposalRecord>,
+        added_votes: Vec<OutPoint>,
+        removed_votes: Vec<OutPoint>,
+    },
+}
+
+/// Governance changes needed to restore one block's pre-state.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GovernanceUndo {
+    proposals: Vec<ProposalUndo>,
+    locks: Vec<(OutPoint, Option<VoteLock>)>,
+}
+
+fn proposal_metadata(record: &ProposalRecord) -> ProposalRecord {
+    ProposalRecord {
+        proposal: record.proposal.clone(),
+        created_height: record.created_height,
+        yes: record.yes,
+        no: record.no,
+        abstain: record.abstain,
+        decided: record.decided,
+        passed: record.passed,
+        applied: record.applied,
+        activation_failed: record.activation_failed,
+        quorum_supply: record.quorum_supply,
+        voted_outpoints: BTreeSet::new(),
+    }
+}
+
 impl GovernanceState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Build a compact undo record after a tentative block transition.
+    pub fn undo_since(&self, before: &Self) -> GovernanceUndo {
+        let mut undo = GovernanceUndo::default();
+        for (id, record) in &self.proposals {
+            match before.proposals.get(id) {
+                None => undo.proposals.push(ProposalUndo::Added(*id)),
+                Some(old) if old != record => undo.proposals.push(ProposalUndo::Updated {
+                    id: *id,
+                    metadata: Box::new(proposal_metadata(old)),
+                    added_votes: record
+                        .voted_outpoints
+                        .difference(&old.voted_outpoints)
+                        .copied()
+                        .collect(),
+                    removed_votes: old
+                        .voted_outpoints
+                        .difference(&record.voted_outpoints)
+                        .copied()
+                        .collect(),
+                }),
+                _ => {}
+            }
+        }
+        for (id, old) in &before.proposals {
+            if !self.proposals.contains_key(id) {
+                undo.proposals
+                    .push(ProposalUndo::Removed(*id, Box::new(old.clone())));
+            }
+        }
+        for (key, old) in &before.locked_utxos {
+            if self.locked_utxos.get(key) != Some(old) {
+                undo.locks.push((*key, Some(old.clone())));
+            }
+        }
+        for key in self.locked_utxos.keys() {
+            if !before.locked_utxos.contains_key(key) {
+                undo.locks.push((*key, None));
+            }
+        }
+        undo
+    }
+
+    /// Restore a transition using its journaled changes.
+    pub fn restore_undo(&mut self, undo: &GovernanceUndo) {
+        for change in undo.proposals.iter().rev() {
+            match change {
+                ProposalUndo::Added(id) => {
+                    self.proposals.remove(id);
+                }
+                ProposalUndo::Removed(id, record) => {
+                    self.proposals.insert(*id, record.as_ref().clone());
+                }
+                ProposalUndo::Updated {
+                    id,
+                    metadata,
+                    added_votes,
+                    removed_votes,
+                } => {
+                    let record = self
+                        .proposals
+                        .get_mut(id)
+                        .expect("journaled proposal must exist");
+                    let mut votes = std::mem::take(&mut record.voted_outpoints);
+                    for vote in added_votes {
+                        votes.remove(vote);
+                    }
+                    votes.extend(removed_votes.iter().copied());
+                    *record = metadata.as_ref().clone();
+                    record.voted_outpoints = votes;
+                }
+            }
+        }
+        for (key, old) in undo.locks.iter().rev() {
+            match old {
+                Some(lock) => {
+                    self.locked_utxos.insert(*key, lock.clone());
+                }
+                None => {
+                    self.locked_utxos.remove(key);
+                }
+            }
+        }
     }
     pub fn is_utxo_locked(&self, txid: &[u8; 32], vout: u32, height: u32) -> bool {
         self.locked_utxos
@@ -345,7 +464,13 @@ impl GovernanceState {
             .is_some_and(|l| height < l.unlock_height)
     }
     /// Apply each activation once, ordered by activation height, creation height, then id.
-    pub fn begin_block(&mut self, height: u32, params: &mut ConsensusParams) {
+    pub fn begin_block(
+        &mut self,
+        height: u32,
+        params: &mut ConsensusParams,
+        utxos: &BTreeMap<OutPoint, Utxo>,
+        timestamp: u32,
+    ) {
         self.locked_utxos
             .retain(|_, lock| height < lock.unlock_height);
         let mut pending = Vec::new();
@@ -364,6 +489,9 @@ impl GovernanceState {
                     ProposalOutcome::Passed { .. }
                 );
             }
+            if rec.decided && height >= rec.proposal.voting_end {
+                rec.voted_outpoints.clear();
+            }
             if rec.passed && !rec.applied && height >= rec.proposal.activation_height {
                 pending.push((rec.proposal.activation_height, rec.created_height, *id));
             }
@@ -371,11 +499,22 @@ impl GovernanceState {
         pending.sort_unstable();
         for (_, _, id) in pending {
             let rec = self.proposals.get_mut(&id).unwrap();
+            let mut candidate = *params;
             rec.activation_failed = rec
                 .proposal
                 .param
-                .apply(params, rec.proposal.new_value)
-                .is_err();
+                .apply(&mut candidate, rec.proposal.new_value)
+                .is_err()
+                || !utxos.values().any(|u| {
+                    is_stakeable_with(&candidate, u)
+                        && timestamp.checked_sub(u.timestamp).is_some_and(|age| {
+                            u64::from(age) >= candidate.min_stake_age
+                                && u64::from(age) <= candidate.max_stake_age
+                        })
+                });
+            if !rec.activation_failed {
+                *params = candidate;
+            }
             rec.applied = true;
         }
     }

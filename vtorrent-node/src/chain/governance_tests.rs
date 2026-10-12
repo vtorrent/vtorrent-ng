@@ -324,7 +324,7 @@ fn stake_amount_activation_recounts_denominator_and_rollback_restores_it() {
     let (mut chain, _, id, _) = fixture(true);
     let record = chain.governance.proposals.get_mut(&id).unwrap();
     record.proposal.param = ParamId::MinStakeAmount;
-    record.proposal.new_value = 1200 * COIN;
+    record.proposal.new_value = 900 * COIN;
     record.proposal.activation_height = 3;
     record.decided = true;
     record.passed = true;
@@ -334,17 +334,50 @@ fn stake_amount_activation_recounts_denominator_and_rollback_restores_it() {
         &chain,
         chain.best_hash().unwrap(),
         3,
-        FUNDING_TIME + 2,
+        FUNDING_TIME + MIN_STAKE_AGE as u32 + 60,
         62,
         vec![],
     );
     chain.add_block(b).unwrap();
-    assert_eq!(chain.params.min_stake_amount, 1200 * COIN);
-    assert_eq!(chain.total_staked, 0);
+    assert_eq!(chain.params.min_stake_amount, 900 * COIN);
+    assert_eq!(chain.total_staked, 1000 * COIN);
     chain.rollback_one_block().unwrap();
     assert_eq!(chain.params.min_stake_amount, COIN);
     assert_eq!(chain.total_staked, before_staked);
     assert_eq!(chain.governance, before);
+}
+
+#[test]
+fn activation_cannot_remove_every_eligible_stake() {
+    for (param, value) in [
+        (ParamId::MinStakeAmount, 1200 * COIN),
+        (ParamId::MaxStakeAge, MIN_STAKE_AGE),
+        (ParamId::MinStakeAge, MIN_STAKE_AGE * 2),
+    ] {
+        let (mut chain, _, id, _) = fixture(true);
+        let record = chain.governance.proposals.get_mut(&id).unwrap();
+        record.proposal.param = param;
+        record.proposal.new_value = value;
+        record.proposal.activation_height = 3;
+        record.decided = true;
+        record.passed = true;
+        let before = chain.params();
+        let timestamp = FUNDING_TIME + MIN_STAKE_AGE as u32 + 60;
+        assert_eq!(
+            chain.next_block_params(timestamp),
+            before,
+            "producer must predict the same rejected activation as the validator"
+        );
+        let b = block(&chain, chain.best_hash().unwrap(), 3, timestamp, 70, vec![]);
+        chain.add_block(b).unwrap();
+        assert_eq!(
+            chain.params(),
+            before,
+            "{param:?} must not eliminate all eligible stake"
+        );
+        let record = &chain.governance.proposals[&id];
+        assert!(record.applied && record.activation_failed);
+    }
 }
 
 #[test]
@@ -483,7 +516,7 @@ fn activation_and_stake_lock_roll_back_on_bad_root_then_accept_valid_stake() {
             .unwrap()
             .to_wif(198),
     );
-    engine.set_consensus_params(chain.next_block_params());
+    engine.set_consensus_params(chain.next_block_params(FUNDING_TIME + MIN_STAKE_AGE as u32 + 10));
     let parent = chain.best_hash().unwrap();
     let modifier = chain.headers[&parent].stake_modifier;
     let candidate = (FUNDING_TIME + MIN_STAKE_AGE as u32 + 10..)

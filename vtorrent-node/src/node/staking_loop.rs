@@ -21,6 +21,7 @@ impl Node {
             return Err(NodeError::Chain("Staking not enabled".into()));
         }
 
+        let now = now_timestamp_u32();
         let (
             best_height,
             best_hash,
@@ -32,7 +33,7 @@ impl Node {
             params,
         ) = {
             let chain = self.chain.lock().await;
-            let params = chain.next_block_params();
+            let params = chain.next_block_params(now);
             let total_staked = if params.min_stake_amount != chain.params().min_stake_amount {
                 chain
                     .get_utxo_set()
@@ -90,8 +91,6 @@ impl Node {
             tracing::trace!("Stake tick: no UTXOs available");
             return Ok(());
         }
-
-        let now = now_timestamp_u32();
 
         if now <= best_timestamp.saturating_add(params.target_block_time as u32) {
             return Ok(());

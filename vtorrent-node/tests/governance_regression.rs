@@ -152,16 +152,17 @@ fn activation_is_deterministic_and_applied_once() {
             cast(&mut g, &signed(id, &u, 4), &u, NOW).unwrap();
         }
         let mut params = ConsensusParams::default();
-        g.begin_block(end, &mut params);
+        let utxos = BTreeMap::from([((u.txid, u.vout), u.clone())]);
+        g.begin_block(end, &mut params, &utxos, NOW);
         assert_eq!(params.pos_annual_rate_bps, 500);
-        g.begin_block(p.activation_height, &mut params);
+        g.begin_block(p.activation_height, &mut params, &utxos, NOW);
         results.push(params.pos_annual_rate_bps);
         assert!(g
             .proposals
             .values()
             .all(|r| r.applied && !r.activation_failed));
         params.pos_annual_rate_bps = 200;
-        g.begin_block(p.activation_height + 1, &mut params);
+        g.begin_block(p.activation_height + 1, &mut params, &utxos, NOW);
         assert_eq!(
             params.pos_annual_rate_bps, 200,
             "old activations must not overwrite later values"
@@ -382,7 +383,12 @@ fn closed_window_rejects_votes_and_quorum_is_fixed_at_creation() {
         .is_err());
     cast(&mut g, &vote, &u, NOW).unwrap();
     let mut params = ConsensusParams::default();
-    g.begin_block(p.activation_height, &mut params);
+    g.begin_block(
+        p.activation_height,
+        &mut params,
+        &BTreeMap::from([((u.txid, u.vout), u.clone())]),
+        NOW,
+    );
     assert_eq!(params.pos_annual_rate_bps, 300);
     assert_eq!(g.proposals[&id].quorum_supply, 100 * COIN);
 }
@@ -421,4 +427,39 @@ fn codecs_and_quorum_threshold_boundaries() {
         tally(&p, 100, 0, 0, 100, p.voting_end - 1),
         ProposalOutcome::Open
     );
+}
+
+#[test]
+fn compact_undo_restores_proposals_votes_locks_and_expiry() {
+    let mut g = GovernanceState::new();
+    let empty = g.clone();
+    let p = proposal(1 + MIN_VOTING_BLOCKS, 300);
+    let id = propose(&mut g, &p);
+    let proposed = g.clone();
+    let u = utxo(16);
+    cast(&mut g, &signed(id, &u, 16), &u, NOW).unwrap();
+    let voted = g.clone();
+    let undo_vote = g.undo_since(&proposed);
+    g.restore_undo(&undo_vote);
+    assert_eq!(g, proposed);
+    let undo_proposal = g.undo_since(&empty);
+    g.restore_undo(&undo_proposal);
+    assert_eq!(g, empty);
+    g = voted.clone();
+    let mut params = ConsensusParams::default();
+    g.begin_block(
+        p.voting_end + DEFAULT_LOCK_GRACE_BLOCKS,
+        &mut params,
+        &BTreeMap::from([((u.txid, u.vout), u)]),
+        NOW,
+    );
+    assert!(g.locked_utxos.is_empty());
+    assert!(g.proposals[&id].decided);
+    assert!(
+        g.proposals[&id].voted_outpoints.is_empty(),
+        "closed votes must not retain voter identities indefinitely"
+    );
+    let undo_expiry = g.undo_since(&voted);
+    g.restore_undo(&undo_expiry);
+    assert_eq!(g, voted);
 }

@@ -85,8 +85,12 @@ these bounds. Activation is 2,016 to 20,160 blocks after voting closes.
 
 `MAX_SUPPLY` and fee policy are not votable parameters. Bounds and age
 consistency are checked at proposal admission and again at activation.
-These bounds do not guarantee liveness for every parameter choice and UTXO
-distribution. Parameter policy remains part of the activation review.
+At activation, the candidate parameter set must leave at least one stakeable
+UTXO within its amount and age bounds at the activation block's timestamp.
+An unsafe change sets `activation_failed` and keeps the previous parameters.
+The activation attempt is final; a later proposal can request another change.
+This check preserves staking eligibility at that timestamp. It cannot establish
+that the owner is online or will produce a block.
 
 ## Deterministic activation and rollback
 
@@ -98,18 +102,26 @@ Conflicting changes use that same order on every node. If an earlier change
 makes a later candidate invalid, the later record gets `activation_failed` and
 does not change the parameters.
 
-`Chain.params` is the parameter source. The staking loop uses the next block's
-parameters, including due activations. A minimum-stake-amount change recounts
+`Chain.params` is the parameter source. `next_block_params(timestamp)` uses the
+same timestamp-dependent activation checks as the validator. The staking loop
+passes its candidate block timestamp. A minimum-stake-amount change recounts
 the kernel denominator under the new threshold.
 
-The block journal saves governance, parameters, supply, and stakeable supply
-before mutation. Transaction failure, commitment mismatch, rollback, and
-failed reorg restore that state with the UTXOs. Successful reorgs retain the
-common ancestor's state and apply the replacement branch. Restart replay uses
-the same block-application path.
+The block journal saves a compact `GovernanceUndo`, previous parameters,
+supply, and stakeable supply. Undo records contain changed proposal metadata,
+added or removed vote identities, and changed locks. Transaction failure,
+commitment mismatch, rollback, and failed reorg restore that state with the
+UTXOs. Successful reorgs retain the common ancestor's state and apply the
+replacement branch. Restart replay uses the same block-application path.
 
-Active journals currently retain governance snapshots. Memory usage under a
-large voting workload needs measurement before scheduling activation.
+Block application makes one temporary pre-state copy to build its undo record.
+Retained journals do not hold full governance snapshots. Closed proposals drop
+their voter-identity sets but keep their tallies. Their undo records restore
+those identities when the closing block is rolled back.
+
+Memory measurements and their scope are in
+`docs/governance-preactivation-validation-2026-10-12.md`. Whole-node RSS under
+an active governance workload remains an activation-review task.
 
 ## RPC and verification
 
