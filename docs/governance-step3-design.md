@@ -120,8 +120,15 @@ their voter-identity sets but keep their tallies. Their undo records restore
 those identities when the closing block is rolled back.
 
 Memory measurements and their scope are in
-`docs/governance-preactivation-validation-2026-10-12.md`. Whole-node RSS under
-an active governance workload remains an activation-review task.
+`docs/governance-preactivation-validation-2026-10-12.md`. A whole-node load test
+under an active governance workload is in
+`docs/governance-wholenode-load-test.md`; it also records a same-block proposal
+and vote ordering hazard to fix before activation.
+
+Votes carry their payload in a one-satoshi OP_RETURN output, which is burned
+because data carriers never enter the UTXO set. The mempool dust rule exempts
+`OpReturn` outputs so votes relay; the exemption uses the same classification as
+`block::is_utxo_eligible`.
 
 ## RPC and verification
 

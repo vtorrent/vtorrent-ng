@@ -227,6 +227,23 @@ async fn main() -> anyhow::Result<()> {
         let body_source: std::sync::Arc<dyn vtorrent_node::chain::BlockBodySource> =
             block_store.clone();
         chain.set_body_source(body_source);
+        // Test-only governance activation for regtest load testing. The env var
+        // is ignored entirely without the test-util feature (never enabled in
+        // release builds); with it, regtest is still mandatory.
+        #[cfg(feature = "test-util")]
+        if let Ok(raw) = std::env::var("VTR_GOVERNANCE_TEST_ACTIVATION") {
+            if !cli.regtest {
+                anyhow::bail!("VTR_GOVERNANCE_TEST_ACTIVATION requires --regtest");
+            }
+            let height: u32 = raw.parse().map_err(|e| {
+                anyhow::anyhow!("VTR_GOVERNANCE_TEST_ACTIVATION: invalid height {raw:?}: {e}")
+            })?;
+            chain.set_governance_test_activation(height);
+            tracing::warn!(
+                height,
+                "TEST-ONLY governance activation override — never use outside regtest load testing"
+            );
+        }
         Node::new_with_chain(config.clone(), chain)
             .map_err(|e| anyhow::anyhow!("Node::new_with_chain failed: {}", e))?
     };

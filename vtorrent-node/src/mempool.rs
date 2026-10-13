@@ -127,10 +127,20 @@ impl Mempool {
         // exempt: they spend snapshot outputs whose value is fixed by the
         // genesis snapshot, and some legacy balances may be below the
         // threshold — rejecting them would make those funds unclaimable.
+        // Data carriers (OP_RETURN) are exempt too: they never enter the UTXO
+        // set (see `block::is_utxo_eligible`), so the bloat rationale does not
+        // apply, and governance votes carry their payload in a carrier output.
+        // The exemption uses the same classification as `is_utxo_eligible`, so
+        // an exempt output can never become a dust UTXO.
         const DUST_SATOSHIS: u64 = 546;
         if !tx.is_legacy_claim() {
             for output in &tx.outputs {
-                if output.value < DUST_SATOSHIS {
+                let is_data_carrier = matches!(
+                    vtorrent_script::Script::from_bytes(output.script_pubkey.clone())
+                        .map(|s| vtorrent_script::classify_script(&s)),
+                    Ok(vtorrent_script::ScriptType::OpReturn)
+                );
+                if output.value < DUST_SATOSHIS && !is_data_carrier {
                     return Err(NodeError::PolicyRejected(format!(
                         "Output value {} sat is below the dust threshold {} sat",
                         output.value, DUST_SATOSHIS
@@ -793,6 +803,35 @@ mod tests {
         let tx = make_tx(MIN_RELAY_FEE, 1, false);
         assert!(mp.add_transaction(tx).is_ok());
         assert_eq!(mp.size(), 1);
+    }
+
+    #[test]
+    fn test_dust_rule_exempts_data_carriers() {
+        // A normal output below the dust threshold is rejected.
+        let mut mp = Mempool::new(100);
+        let mut dust = make_tx(MIN_RELAY_FEE, 9, false);
+        dust.outputs[0].value = 1;
+        assert!(matches!(
+            mp.add_transaction(dust),
+            Err(NodeError::PolicyRejected(_))
+        ));
+
+        // A data-carrier (OP_RETURN) output below the dust threshold is accepted:
+        // it never enters the UTXO set, so the dust-bloat rationale does not
+        // apply. Governance votes carry their payload in such an output.
+        let opret = vtorrent_script::build_op_return(b"VTRV2 governance vote").unwrap();
+        let mut carrier = make_tx(MIN_RELAY_FEE, 10, false);
+        carrier.outputs = vec![
+            TxOutput {
+                value: 1,
+                script_pubkey: opret.as_bytes().to_vec(),
+            },
+            TxOutput {
+                value: 100_000 - MIN_RELAY_FEE - 1,
+                script_pubkey: vec![0x76, 0xa9, 0x14, 0x00, 0x88, 0xac],
+            },
+        ];
+        assert!(mp.add_transaction(carrier).is_ok());
     }
 
     #[test]

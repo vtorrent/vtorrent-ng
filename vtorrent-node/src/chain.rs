@@ -210,7 +210,10 @@ pub struct Chain {
     /// Governance state: proposals, vote tallies, vote-locks, and param
     /// activations. Rebuilt from the chain on replay (reorg-safe).
     pub governance: crate::governance::GovernanceState,
-    #[cfg(test)]
+    /// Test-only governance activation override (regtest load testing). Never
+    /// set in production builds: the field, setter, and check are compiled out
+    /// unless `test` or the `test-util` feature is enabled.
+    #[cfg(any(test, feature = "test-util"))]
     governance_test_activation: Option<u32>,
 }
 
@@ -244,7 +247,7 @@ impl Chain {
             allow_pow_test_blocks: cfg!(test),
             params: crate::consensus::ConsensusParams::default(),
             governance: crate::governance::GovernanceState::new(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-util"))]
             governance_test_activation: None,
         };
 
@@ -308,7 +311,7 @@ impl Chain {
 
     /// Governance is disabled until a consensus deployment is scheduled and active.
     pub fn governance_active(&self, height: u32) -> bool {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-util"))]
         if let Some(activation) = self.governance_test_activation {
             return height >= activation;
         }
@@ -323,6 +326,14 @@ impl Chain {
             height,
             &signals,
         ) == crate::deployments::DeploymentState::Active
+    }
+
+    /// Test-only governance activation override. Requires the `test-util`
+    /// feature (never enabled in release builds) and is only wired from the
+    /// daemon in regtest mode. See `docs/governance-wholenode-load-test.md`.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_governance_test_activation(&mut self, height: u32) {
+        self.governance_test_activation = Some(height);
     }
 
     /// Parameters used to validate and produce the next block, including due activations.

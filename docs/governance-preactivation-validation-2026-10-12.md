@@ -105,7 +105,8 @@ The highest observed RSS per run varied within these ranges:
 
 Every compact workload was below the probe's 256 MiB component ceiling. Every
 completed full-snapshot workload exceeded it. A whole-node load test is still
-needed to account for the other allocations and validate total RSS.
+needed to account for the other allocations and validate total RSS. That test
+has since been run; see `docs/governance-wholenode-load-test.md`.
 
 ### Reproduce
 
