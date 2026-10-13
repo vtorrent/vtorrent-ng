@@ -116,7 +116,7 @@ fleet's docker proxies hold 22525/22526 and 22625/22626.
 
 ## Remaining activation decisions
 
-The whole-node measurement is one input. Activation still requires agreement on
-the permanent 100 VTR proposal burn, parameter and timing policy, and an
-independent protocol review. This test does not schedule activation or change
-the running fleet.
+The whole-node measurement is one input. The deposit, parameter, and timing
+policy is approved (see `docs/governance-step3-design.md`). Activation still
+requires an independent protocol review and scheduling the deployment. This
+test does not schedule activation or change the running fleet.

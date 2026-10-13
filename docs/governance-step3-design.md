@@ -1,7 +1,37 @@
 # Governance Step 3
 
 Status: repaired after the [self-review](governance-step3-self-review-2026-10-11.md).
-The implementation remains inactive on the current network.
+Policy approved 2026-10-13. The implementation remains inactive on the current
+network.
+
+## Approved policy (2026-10-13)
+
+The following values are approved. They match the constants in
+`vtorrent-node/src/governance.rs`.
+
+| Policy | Value |
+|---|---|
+| Proposal deposit | 100 VTR minimum, permanently burned on pass and on failure |
+| Voting window | 2,880 to 10,080 blocks (48 hours to 7 days at 60 s) |
+| Activation delay | 2,016 to 20,160 blocks after voting closes |
+| Quorum | 33% of the stakeable supply at proposal creation |
+| Approval threshold | 66% of non-abstain votes |
+| Vote lock | through `voting_end + 6` blocks |
+
+| Votable parameter | Allowed value |
+|---|---|
+| Annual reward rate | 1 to 1,000 basis points |
+| Reward age cap | 60 seconds to 365 days |
+| Minimum stake age | 60 seconds to 365 days, no greater than maximum age |
+| Maximum stake age | 60 seconds to 365 days, no less than minimum age |
+| Minimum stake amount | 1 VTR to `MAX_SUPPLY` |
+| Target block time | 30 to 600 seconds |
+
+`MAX_SUPPLY` and fee policy are not votable.
+
+The deposit is burned whether the proposal passes or fails. Refund-on-pass is
+not implemented. If a refund on passage is wanted later, it is a code change,
+not a parameter change.
 
 ## Activation
 
