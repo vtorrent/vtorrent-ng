@@ -9,7 +9,7 @@ the one launch item that needs outside resources.
 A ground-up Rust rewrite of the vTorrent (VTR) client: a Proof-of-Stake
 blockchain that integrates BitTorrent seeding incentives, a built-in
 atomic-swap DEX (VTR↔BTC), and legacy wallet recovery. Desktop UI is React +
-Tauri. 19 Rust crates + a frontend; ~914 workspace tests.
+Tauri. 19 Rust crates + a frontend; 900+ workspace tests.
 
 ## 2. Why now
 
@@ -47,6 +47,31 @@ caught by the project's own tests.
 - **BIP-9 versionbits** — `vtorrent-node/src/deployments.rs`. Activation
   determinism; can a deployment be forced/blocked?
 
+### 3.2b On-chain governance (new, inactive — forks the chain when activated)
+- `vtorrent-node/src/governance.rs` — `SignedVote` (recoverable ECDSA over a
+  domain-separated digest bound to the genesis hash), vote uniqueness per
+  outpoint, vote locks, deterministic activation, and compact undo records.
+  - **Can a vote be forged or replayed?** Can voting power be counted twice,
+    including across a stake transfer?
+  - **Can a locked stake be spent or redirected** before its unlock height?
+  - **Is activation deterministic** across nodes (no map-iteration-order or
+    timestamp divergence), and can a parameter change remove all eligible stake
+    or otherwise halt the chain?
+- `vtorrent-node/src/chain/chain_reorg.rs` — governance processing during block
+  application, lock enforcement, the stake-lock transfer rule, and journal
+  restore on rejection and reorg.
+  - Do the undo journals restore the exact pre-state across a rejected block and
+    a failed or successful reorg?
+- `vtorrent-node/src/chain.rs` (`includable_transactions`,
+  `next_block_params`) and `vtorrent-node/src/node/staking_loop.rs` — the
+  block-assembly filter that defers votes for unrecorded proposals.
+  - Does the filter ever exclude a valid transaction or include one the block
+    would reject?
+- `vtorrent-node/src/deployments.rs` — the governance deployment gate.
+- Deposit handling: the proposal deposit is an OP_RETURN carrier, burned on
+  pass and failure. Verify it cannot be reclaimed and that supply accounting is
+  correct.
+
 ### 3.3 Atomic-swap DEX (cross-chain funds at risk)
 - `vtorrent-node/src/atomic_swap.rs`, `vtorrent-btc/src/htlc.rs` — HTLC
   construction, timing invariants (the preimage-reveal vs refund ordering),
@@ -78,17 +103,28 @@ caught by the project's own tests.
 - A short "residual risk" section for anything accepted.
 
 ## 6. What we provide
-- Source at `v2.0.0-beta.3` (tag) + the consensus batch on `main`.
+- Source at `v2.0.0-beta.3` (tag) plus the consensus and governance work on
+  `main` (current head `4264e38`).
 - `docs/` — designs + adversarial reviews for every subsystem
   (`cold-staking-p2cs-design.md`, `op-return-utxo-exclusion-design.md`,
   `network-upgrade-design.md`, `atomic-swap-protocol.md`,
   `memory-observability-design.md`, the code-review fix-status docs).
+- **Internal security review** (`docs/security-review-internal-2026-10-09.md`)
+  with three findings fixed: the P2CS R1 rule allowed stake theft, SPV did not
+  enforce R1, and six endpoints shipped unrouted. Verify the fixes, do not
+  assume them.
+- **Governance self-review and repair**
+  (`docs/governance-step3-self-review-2026-10-11.md`,
+  `docs/governance-preactivation-validation-2026-10-12.md`,
+  `docs/governance-wholenode-load-test.md`): the original implementation had
+  unauthenticated votes, duplicate counting, nondeterministic activation, and
+  broken reorg restore. The repair is tested; review it adversarially.
 - A regtest fleet + a `docker/testnet/docker-compose.yml` for reproduction.
 - `docs/oncall-runbook.md` for operational context.
 
 ## 7. Suggested engagement
-- **Phase 1 (2–3 weeks):** wallet encryption + consensus batch (the two
-  catastrophic surfaces).
+- **Phase 1 (2–3 weeks):** wallet encryption + consensus batch + governance
+  (the catastrophic surfaces).
 - **Phase 2:** swap DEX + network/RPC + incentive economics.
 - Findings triaged into `docs/mainnet-readiness.md`; fixes with regression tests
   before the mainnet tag.
@@ -96,5 +132,11 @@ caught by the project's own tests.
 ## 8. References
 - `docs/mainnet-readiness.md` (launch checklist), `docs/soak-log.md` (soak).
 - `docs/cold-staking-p2cs-design.md`, `docs/op-return-utxo-exclusion-design.md`,
-  `docs/network-upgrade-design.md`, `docs/atomic-swap-protocol.md`.
+  `docs/network-upgrade-design.md`, `docs/atomic-swap-protocol.md`,
+  `docs/governance-step3-design.md` (approved policy).
+- `docs/security-review-internal-2026-10-09.md` (internal review, findings
+  fixed).
+- `docs/governance-step3-self-review-2026-10-11.md` and
+  `docs/governance-preactivation-validation-2026-10-12.md` (governance
+  self-review and repair).
 - `docs/code-review-2026-09-20-fix-status.md` (internal reviews, all closed).
