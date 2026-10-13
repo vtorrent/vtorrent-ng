@@ -122,8 +122,8 @@ those identities when the closing block is rolled back.
 Memory measurements and their scope are in
 `docs/governance-preactivation-validation-2026-10-12.md`. A whole-node load test
 under an active governance workload is in
-`docs/governance-wholenode-load-test.md`; it also records a same-block proposal
-and vote ordering hazard to fix before activation.
+`docs/governance-wholenode-load-test.md`; it also records the same-block
+proposal and vote ordering fix.
 
 Votes carry their payload in a one-satoshi OP_RETURN output, which is burned
 because data carriers never enter the UTXO set. The mempool dust rule exempts

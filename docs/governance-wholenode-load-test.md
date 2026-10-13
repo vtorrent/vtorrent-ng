@@ -77,22 +77,27 @@ as `block::is_utxo_eligible`, so an exempt output can never become a dust UTXO.
 A regression test covers both the rejection of a normal dust output and the
 acceptance of a sub-dust data carrier.
 
-## Follow-up: same-block proposal and vote ordering
+## Fixed: same-block proposal and vote ordering
 
-The driver confirms the proposal in one block before broadcasting votes, so
-votes always reference a proposal already in the chain. A block that contains a
-vote before the proposal it references is rejected, because
-`GovernanceState::process_transaction` processes transactions in block order and
-the vote finds no proposal yet. The staking loop includes mempool transactions
-in arbitrary order, so a staker holding both a proposal and its votes could
-build a block that its own validation rejects, then retry with the same order
-until the transactions are evicted.
+A vote requires `height > proposal.created_height`, so a block that contains
+both a proposal and its vote is invalid in either order: vote-first fails with
+"unknown governance proposal", proposal-first fails with "voting window is
+closed". A staker holding both in its mempool would build a block its own
+validation rejects, then retry with the same transactions until they were
+evicted — a liveness stall. No invalid state was ever accepted.
 
-This is a liveness hazard, not a safety one: no invalid state is accepted. It
-should be fixed before activation by ordering proposal transactions before vote
-transactions during block assembly, or by excluding votes whose proposal is not
-yet in the chain. It is recorded here rather than fixed because it touches the
-staking loop and is outside this measurement's scope.
+Block assembly now filters mempool transactions through a simulated governance
+pass. `Chain::includable_transactions` clones the governance state, runs each
+candidate transaction through `GovernanceState::process_transaction` at the
+next block height, and keeps only the transactions that succeed. The staking
+loop applies this filter before building a block. A vote whose proposal is not
+yet recorded is deferred, not rejected, so it confirms in a later block once
+the proposal lands. The filter also drops any other governance transaction the
+block would reject, such as an unsigned vote or a vote for a closed proposal.
+
+Two tests cover this: `same_block_proposal_and_vote_is_rejected` records the
+hazard, and `block_assembly_defers_votes_for_unrecorded_proposals` verifies the
+filter keeps the proposal, drops the vote, and yields an accepted block.
 
 ## Reproduce
 
@@ -112,6 +117,6 @@ fleet's docker proxies hold 22525/22526 and 22625/22626.
 ## Remaining activation decisions
 
 The whole-node measurement is one input. Activation still requires agreement on
-the permanent 100 VTR proposal burn, parameter and timing policy, an
-independent protocol review, and the same-block ordering fix above. This test
-does not schedule activation or change the running fleet.
+the permanent 100 VTR proposal burn, parameter and timing policy, and an
+independent protocol review. This test does not schedule activation or change
+the running fleet.

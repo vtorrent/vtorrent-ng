@@ -190,6 +190,125 @@ fn voted_fixture() -> (Chain, Utxo, [u8; 8], Vec<Block>) {
     (chain, owner, id, blocks)
 }
 
+/// A chain at height 1 (voter, proposal payer, and vote payer funded) plus a
+/// proposal transaction and a vote for it, neither yet in a block.
+fn same_block_setup() -> (Chain, Transaction, Transaction, u32) {
+    let mut chain = Chain::new_regtest().unwrap();
+    chain.governance_test_activation = Some(2);
+    let mut funding = block(
+        &chain,
+        chain.best_hash().unwrap(),
+        1,
+        FUNDING_TIME,
+        1,
+        vec![],
+    );
+    funding.transactions[0].outputs = vec![
+        output(1, 1000 * COIN),
+        output(2, 1000 * COIN),
+        output(4, 1000 * COIN),
+    ];
+    funding.header.merkle_root = funding.compute_merkle_root();
+    chain.add_block(funding).unwrap();
+    let voter = chain.get_utxos_for_address(&address(1))[0].clone();
+    let proposal_payer = chain.get_utxos_for_address(&address(2))[0].clone();
+    let vote_payer = chain.get_utxos_for_address(&address(4))[0].clone();
+
+    let proposal = Proposal {
+        param: ParamId::PosAnnualRateBps,
+        new_value: 300,
+        voting_end: 2 + MIN_VOTING_BLOCKS,
+        activation_height: 2 + MIN_VOTING_BLOCKS + MIN_ACTIVATION_DELAY,
+        deposit: MIN_PROPOSAL_DEPOSIT,
+    };
+    let mut script = vtorrent_script::Script::new();
+    script.push_opcode(0x6a);
+    script.push_data(&proposal.encode()).unwrap();
+    let proposal_tx = spend(
+        &proposal_payer,
+        2,
+        vec![
+            TxOutput {
+                value: proposal.deposit,
+                script_pubkey: script.as_bytes().to_vec(),
+            },
+            output(2, 899 * COIN),
+        ],
+    );
+    let id = proposal_id_of(&proposal, 2);
+    let vote = SignedVote::sign(
+        Vote {
+            proposal_id: id,
+            choice: VoteChoice::Yes,
+        },
+        (voter.txid, voter.vout),
+        chain.height_index[0],
+        &key(1),
+    );
+    let vote_tx = spend(
+        &vote_payer,
+        4,
+        vec![
+            TxOutput {
+                value: 1,
+                script_pubkey: vote.script().unwrap(),
+            },
+            output(4, vote_payer.value - COIN),
+        ],
+    );
+    (
+        chain,
+        proposal_tx,
+        vote_tx,
+        FUNDING_TIME + MIN_STAKE_AGE as u32 + 1,
+    )
+}
+
+#[test]
+fn same_block_proposal_and_vote_is_rejected() {
+    // Hazard: a vote requires `height > proposal.created_height`, so a block
+    // containing both a proposal and its vote is invalid in either order.
+    // Block assembly must defer the vote until the proposal confirms.
+    let (mut chain, proposal_tx, vote_tx, ts) = same_block_setup();
+    let parent = chain.best_hash().unwrap();
+    let proposal_first = block(&chain, parent, 2, ts, 5, vec![proposal_tx, vote_tx]);
+    assert!(
+        chain.add_block(proposal_first).is_err(),
+        "proposal and vote in one block must be rejected"
+    );
+
+    let (mut chain, proposal_tx, vote_tx, ts) = same_block_setup();
+    let parent = chain.best_hash().unwrap();
+    let vote_first = block(&chain, parent, 2, ts, 6, vec![vote_tx, proposal_tx]);
+    assert!(
+        chain.add_block(vote_first).is_err(),
+        "vote before its proposal must be rejected"
+    );
+}
+
+#[test]
+fn block_assembly_defers_votes_for_unrecorded_proposals() {
+    // The filter that block assembly applies must drop a vote whose proposal is
+    // not yet recorded, and the resulting block must be accepted.
+    let (mut chain, proposal_tx, vote_tx, ts) = same_block_setup();
+    let proposal_txid = proposal_tx.txid();
+    let kept = chain.includable_transactions(vec![vote_tx, proposal_tx], 2, ts);
+    assert_eq!(
+        kept.len(),
+        1,
+        "the vote must be deferred until the proposal confirms"
+    );
+    assert_eq!(kept[0].txid(), proposal_txid);
+    let parent = chain.best_hash().unwrap();
+    let b = block(&chain, parent, 2, ts, 7, vec![kept[0].clone()]);
+    assert!(
+        chain.add_block(b).is_ok(),
+        "the filtered block must be accepted"
+    );
+    assert_eq!(chain.governance.proposals.len(), 1);
+    assert!(chain.governance.locked_utxos.is_empty());
+}
+
 #[test]
 fn governance_is_inert_without_active_deployment() {
     let (mut chain, owner, id, _) = fixture(false);
