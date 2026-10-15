@@ -265,7 +265,10 @@ async fn main() -> anyhow::Result<()> {
                             height,
                         )
                     } else {
-                        block_store.load_into_regtest_chain_with_cache(cli.block_body_cache)
+                        block_store.load_into_regtest_chain_with_cache_and_governance(
+                            cli.block_body_cache,
+                            height,
+                        )
                     }
                 } else {
                     load_chain_from_store(

@@ -484,6 +484,17 @@ impl BlockStore {
         self.load_into_chain_with_mode(true, true, cache, Some(governance_activation))
     }
 
+    /// Test-only: the regtest (non-fast) variant of
+    /// [`Self::load_into_fast_regtest_chain_with_cache_and_governance`].
+    #[cfg(feature = "test-util")]
+    pub fn load_into_regtest_chain_with_cache_and_governance(
+        &self,
+        cache: usize,
+        governance_activation: u32,
+    ) -> Result<vtorrent_node::chain::Chain> {
+        self.load_into_chain_with_mode(true, false, cache, Some(governance_activation))
+    }
+
     fn load_into_chain_with_mode(
         &self,
         regtest: bool,

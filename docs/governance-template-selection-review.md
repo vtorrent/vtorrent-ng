@@ -104,3 +104,55 @@ Overall: **4.0/5**. The next improvements are broader transaction-type fixtures,
 multi-proposal restart/reorg load tests, and a non-destructive load driver.
 Self-check: this assessment treats the repair as verified against the listed
 cases and does not imply mainnet approval.
+
+## Second self-review
+
+A second pass over the selector, the restart seam, and the load driver found one
+real gap and several unmeasured or untested areas.
+
+### Fixed: silent no-op in the test seam
+
+The daemon ignored `VTR_GOVERNANCE_TEST_ACTIVATION` when `--regtest` was set
+without `--regtest-fast-stake`. It loaded the chain without the override and
+never set it, so governance stayed inactive while the operator believed it was
+active. The store now exposes the regtest (non-fast) variant, and the daemon
+uses it. This is a test-seam gap, not a production path.
+
+### Unmeasured: selection cost
+
+`select_block_transactions` fully applies every mempool candidate, including
+script verification and UTXO mutation. The previous filter ran only governance
+processing. Selection runs once per successful kernel, so the cost is amortized
+over a block, but it is a real increase for a large mempool and has not been
+measured. The 600-outpoint run used twelve transactions.
+
+### Untested: legacy-claim and swap rollback
+
+Selection rolls back `claimed_addresses` and applies atomic-swap transactions
+through the same path, but no regression covers either. The nine tests cover
+votes, proposals, ordinary spends, the coinstake, block size, and the prefix.
+
+### Redundant: conflict filter
+
+`build_from_kernel_with_proof` still runs its `seen` input-conflict filter.
+Selection already guarantees no conflicts, so the filter drops nothing. It is
+harmless, but it could mask a selection regression by silently dropping a
+conflicting transaction instead of failing.
+
+### Leaky: test-only parameter
+
+`load_into_chain_with_mode` carries a `governance_activation` parameter that is
+always `None` in production builds. It is documented as test-only.
+
+### Scores
+
+| Axis | Score | Evidence |
+|---|---|---|
+| Accuracy | 4/5 | Selector transitions match validation and tests pass; the silent no-op was a real inaccuracy, now fixed. |
+| Completeness | 3/5 | Legacy-claim and swap rollback are untested; the selection cost change is unmeasured. |
+| Clarity | 4/5 | The report distinguishes tentative from committed state; the redundant filter is undocumented. |
+| Actionability | 4/5 | Reproduction commands and the red-check are recorded; untested paths are named. |
+| Conciseness | 4/5 | The selector reuses the validation helpers; checkpoint code is the bulk. |
+
+Overall: **3.8/5**. Highest-impact improvements: add legacy-claim and swap
+rollback regressions, then measure selection cost with a large mempool.
