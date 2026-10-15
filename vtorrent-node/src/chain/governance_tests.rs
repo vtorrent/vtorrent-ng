@@ -2,6 +2,7 @@ use super::*;
 use crate::{
     block::{TxInput, TxOutput, TxType},
     consensus::{compute_stake_modifier, COIN, MIN_STAKE_AGE},
+    deployments::Deployment,
     governance::{
         proposal_id_of, ParamId, Proposal, SignedVote, Vote, VoteChoice, MIN_ACTIVATION_DELAY,
         MIN_PROPOSAL_DEPOSIT, MIN_VOTING_BLOCKS,
@@ -992,4 +993,88 @@ fn activation_and_stake_lock_roll_back_on_bad_root_then_accept_valid_stake() {
     assert_eq!(chain.params.pos_annual_rate_bps, 500);
     assert_eq!(chain.governance, before);
     assert_eq!(chain.utxo_set, before_utxos);
+}
+
+/// Build a regtest chain of coinbase blocks up to `tip`, setting version bit 3
+/// on blocks where `signal` is true, optionally with a scheduled governance
+/// deployment. The regtest genesis embeds the legacy snapshot, so each
+/// `add_block` recomputes the UTXO root over ~59k leaves; keep `tip` small.
+fn signalling_chain(
+    tip: u32,
+    signal: impl Fn(u32) -> bool,
+    deployment: Option<(Deployment, u32)>,
+) -> Chain {
+    let mut chain = Chain::new_regtest().unwrap();
+    if let Some((deployment, period)) = deployment {
+        chain.set_governance_test_deployment(deployment, period);
+    }
+    let mut parent = chain.best_hash().unwrap();
+    for height in 1..=tip {
+        let mut b = block(
+            &chain,
+            parent,
+            height,
+            FUNDING_TIME + height,
+            height,
+            vec![],
+        );
+        if signal(height) {
+            b.header.version = 1 | (1 << 3);
+        }
+        chain.add_block(b.clone()).unwrap();
+        parent = b.hash();
+    }
+    chain
+}
+
+fn governance_deployment() -> Deployment {
+    Deployment {
+        name: "governance".into(),
+        bit: 3,
+        start_height: 1,
+        timeout_height: 10_000,
+    }
+}
+
+/// Period 2: period 1 (heights 2..=3) signals, period 2 locks in, period 3
+/// (height 6) is active.
+const SIGNAL: fn(u32) -> bool = |h| (2..=3).contains(&h);
+
+#[test]
+fn count_signals_counts_version_bits_per_period() {
+    let chain = signalling_chain(6, SIGNAL, None);
+    assert_eq!(chain.count_signals(3, 2), vec![0, 2, 0, 0]);
+}
+
+#[test]
+fn governance_activates_through_a_scheduled_deployment() {
+    let chain = signalling_chain(6, SIGNAL, Some((governance_deployment(), 2)));
+    assert!(
+        !chain.governance_active(5),
+        "a locked-in deployment is not yet active"
+    );
+    assert!(
+        chain.governance_active(6),
+        "the deployment is active after the lock-in period"
+    );
+}
+
+#[test]
+fn governance_activation_is_deterministic_across_replay() {
+    let a = signalling_chain(6, SIGNAL, Some((governance_deployment(), 2)));
+    let b = signalling_chain(6, SIGNAL, Some((governance_deployment(), 2)));
+    for height in 0..=6 {
+        assert_eq!(
+            a.governance_active(height),
+            b.governance_active(height),
+            "activation differs at height {height}"
+        );
+    }
+    assert!(a.governance_active(6));
+}
+
+#[test]
+fn governance_stays_inactive_without_a_deployment() {
+    let chain = signalling_chain(6, SIGNAL, None);
+    assert!(!chain.governance_active(6));
 }

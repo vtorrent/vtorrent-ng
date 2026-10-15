@@ -43,6 +43,13 @@ A completed signalling window is followed by a full `LockedIn` window before
 activation. A test-only height override exercises active rules without
 scheduling a production deployment.
 
+The BIP-9 path itself is covered. `Chain::set_governance_test_deployment`
+schedules a deployment with a small signalling period, and the tests build
+blocks that set the version bit, then check that `governance_active` reports
+`LockedIn` before the lock-in window and `Active` after it. A second chain
+replaying the same blocks reports the same activation at every height, and a
+chain with no deployment stays inactive. `count_signals` is covered directly.
+
 ## Authenticated voting
 
 Option B uses an explicit mature UTXO at vote time. There is no historical

@@ -215,6 +215,9 @@ pub struct Chain {
     /// unless `test` or the `test-util` feature is enabled.
     #[cfg(any(test, feature = "test-util"))]
     governance_test_activation: Option<u32>,
+    /// Test-only scheduled governance deployment and signalling period.
+    #[cfg(any(test, feature = "test-util"))]
+    governance_test_deployment: Option<(crate::deployments::Deployment, u32)>,
 }
 
 impl Chain {
@@ -249,6 +252,8 @@ impl Chain {
             governance: crate::governance::GovernanceState::new(),
             #[cfg(any(test, feature = "test-util"))]
             governance_test_activation: None,
+            #[cfg(any(test, feature = "test-util"))]
+            governance_test_deployment: None,
         };
 
         chain.blocks.insert(genesis_hash, genesis.clone());
@@ -315,17 +320,32 @@ impl Chain {
         if let Some(activation) = self.governance_test_activation {
             return height >= activation;
         }
-        let Some(deployment) = crate::deployments::governance_deployment() else {
+        let (deployment, period) = self.governance_deployment_config();
+        let Some(deployment) = deployment else {
             return false;
         };
-        let signals = self.count_signals(deployment.bit, crate::deployments::DEFAULT_PERIOD);
+        let signals = self.count_signals(deployment.bit, period);
         crate::deployments::deployment_state(
             &deployment,
-            crate::deployments::DEFAULT_PERIOD,
+            period,
             crate::deployments::DEFAULT_THRESHOLD_PCT,
             height,
             &signals,
         ) == crate::deployments::DeploymentState::Active
+    }
+
+    /// The scheduled governance deployment and its signalling period. A
+    /// test-only override takes precedence so the BIP-9 activation path can be
+    /// exercised without scheduling a production deployment.
+    fn governance_deployment_config(&self) -> (Option<crate::deployments::Deployment>, u32) {
+        #[cfg(any(test, feature = "test-util"))]
+        if let Some((deployment, period)) = &self.governance_test_deployment {
+            return (Some(deployment.clone()), *period);
+        }
+        (
+            crate::deployments::governance_deployment(),
+            crate::deployments::DEFAULT_PERIOD,
+        )
     }
 
     /// Test-only governance activation override. Requires the `test-util`
@@ -334,6 +354,18 @@ impl Chain {
     #[cfg(any(test, feature = "test-util"))]
     pub fn set_governance_test_activation(&mut self, height: u32) {
         self.governance_test_activation = Some(height);
+    }
+
+    /// Test-only: schedule a governance deployment with a signalling period, so
+    /// `governance_active` runs the real BIP-9 path. See
+    /// `docs/governance-step3-design.md`.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_governance_test_deployment(
+        &mut self,
+        deployment: crate::deployments::Deployment,
+        period: u32,
+    ) {
+        self.governance_test_deployment = Some((deployment, period));
     }
 
     /// Select transactions by tentatively applying the block prefix and each

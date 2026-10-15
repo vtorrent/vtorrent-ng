@@ -168,3 +168,26 @@ always `None` in production builds. It is documented as test-only.
 
 Overall: **3.8/5**. Highest-impact improvements: add legacy-claim and swap
 rollback regressions, then measure selection cost with a large mempool.
+
+## Third self-review
+
+The production activation path was untested. `governance_deployment()` returns
+`None`, and the test seam bypassed the deployment entirely, so no test exercised
+BIP-9 signalling, lock-in, and activation. `count_signals` was also untested.
+
+`Chain::set_governance_test_deployment` now schedules a deployment with a small
+signalling period, so `governance_active` runs the real path. Four tests cover
+it: `count_signals` counts version bits per period;
+`governance_activates_through_a_scheduled_deployment` reports `LockedIn` before
+the lock-in window and `Active` after it;
+`governance_activation_is_deterministic_across_replay` reports the same
+activation at every height for two chains replaying the same blocks; and
+`governance_stays_inactive_without_a_deployment` covers the default.
+
+The tests keep the block count small because the regtest genesis embeds the
+59,375-address snapshot, so every `add_block` recomputes the UTXO root over
+about 59,000 leaves. The governance module dropped from 88 s to 14.5 s once the
+new tests used a period of 2 instead of 10.
+
+Remaining: legacy-claim and swap rollback regressions, a multi-proposal load
+run, and a reorg load scenario.
