@@ -15,3 +15,8 @@ hex = { workspace = true }
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["rt", "macros"] }
+
+[features]
+# Test-only seams (governance activation override for regtest load testing).
+# Off by default and never enabled in release builds.
+test-util = ["vtorrent-node/test-util"]

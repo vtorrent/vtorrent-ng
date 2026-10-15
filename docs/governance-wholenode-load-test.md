@@ -86,18 +86,43 @@ closed". A staker holding both in its mempool would build a block its own
 validation rejects, then retry with the same transactions until they were
 evicted — a liveness stall. No invalid state was ever accepted.
 
-Block assembly now filters mempool transactions through a simulated governance
-pass. `Chain::includable_transactions` clones the governance state, runs each
-candidate transaction through `GovernanceState::process_transaction` at the
-next block height, and keeps only the transactions that succeed. The staking
-loop applies this filter before building a block. A vote whose proposal is not
-yet recorded is deferred, not rejected, so it confirms in a later block once
-the proposal lands. The filter also drops any other governance transaction the
-block would reject, such as an unsigned vote or a vote for a closed proposal.
+Block assembly now uses `Chain::select_block_transactions`. It tentatively
+applies due activations, the selected coinstake, and candidate transactions using
+the same governance and transaction transitions as validation. Rejected
+candidates roll back their own changes before selection continues. The selector
+restores the chain's pre-selection state before the staking engine constructs
+the final block and proof.
+
+A vote whose proposal is not yet recorded is excluded from the current
+template. It can be selected later if the proposal confirms and the voting
+outpoint remains mature and unspent. Selection accounts for earlier spends,
+vote locks, and the coinstake consuming an outpoint. It also applies the block
+size limit before processing each candidate.
 
 Two tests cover this: `same_block_proposal_and_vote_is_rejected` records the
 hazard, and `block_assembly_defers_votes_for_unrecorded_proposals` verifies the
 filter keeps the proposal, drops the vote, and yields an accepted block.
+The broader regression coverage and the correction to the original
+governance-only filter are in `docs/governance-template-selection-review.md`.
+
+## Restart rebuilds governance state
+
+The driver's `--restart` flag kills the daemon after the votes confirm, starts
+it again on the same data directory, and compares the proposals and locks from
+the governance RPC before and after. A four-outpoint run reported
+`restart_verified: true`: replay rebuilt identical proposals and locks.
+
+This exposed a gap in the test seam. The daemon previously applied the
+`VTR_GOVERNANCE_TEST_ACTIVATION` override after the chain load, so replay ran
+with governance inactive and rebuilt no governance state. Production replay is
+correct because `governance_active` reads the deterministic deployment, but the
+seam did not reproduce it. The store now applies the override before replay
+through `load_into_fast_regtest_chain_with_cache_and_governance`.
+
+Red-check: with the override applied after the load, the same run failed with
+`governance state changed across restart: proposals_match=false
+locks_match=false`. With the override applied before replay, it passes. The
+first run succeeds in both cases, so the failure isolates the restart path.
 
 ## Reproduce
 
@@ -112,11 +137,20 @@ target/release/examples/governance_load \
 
 The driver writes the daemon's output to `<data-dir>/daemon.log` and prints a
 JSON report. It requires ports 22825 (RPC) and 22826 (P2P) to be free; the soak
-fleet's docker proxies hold 22525/22526 and 22625/22626.
+fleet's docker proxies hold 22525/22526 and 22625/22626. Add `--restart` to run
+the restart check.
 
-## Remaining activation decisions
+## Remaining follow-ups
 
 The whole-node measurement is one input. The deposit, parameter, and timing
 policy is approved (see `docs/governance-step3-design.md`). Activation still
 requires an independent protocol review and scheduling the deployment. This
 test does not schedule activation or change the running fleet.
+
+Still open on the load path:
+
+- Multiple proposals and voting waves in one run, including overlapping locks.
+- A reorg load scenario. The restart check covers replay; it does not exercise a
+  competing branch.
+- The driver deletes known files from the supplied data directory. It should
+  create a fresh temporary directory and fail when its ports are occupied.

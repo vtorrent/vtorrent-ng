@@ -22,7 +22,7 @@ use std::{
     path::PathBuf,
     process::{Child, Command, Stdio},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Arc,
     },
     time::{Duration, Instant},
@@ -69,19 +69,26 @@ struct Args {
     /// journals and the staking loop are observed under load.
     #[arg(long, default_value_t = 200)]
     tail_secs: u64,
+    /// Restart the daemon after the votes confirm and verify that replay
+    /// rebuilds the same governance state from the store.
+    #[arg(long)]
+    restart: bool,
 }
 
 struct Rss {
     peak_kib: AtomicU64,
     last_kib: AtomicU64,
+    /// Daemon pid to sample. Updated on restart so sampling follows the process.
+    pid: AtomicU32,
     stop: AtomicBool,
 }
 
-fn spawn_sampler(rss: Arc<Rss>, pid: u32) -> std::thread::JoinHandle<()> {
+fn spawn_sampler(rss: Arc<Rss>) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || loop {
         if rss.stop.load(Ordering::Relaxed) {
             return;
         }
+        let pid = rss.pid.load(Ordering::Relaxed);
         if let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) {
             if let Some(kib) = status.lines().find_map(|line| {
                 line.strip_prefix("VmRSS:")?
@@ -192,15 +199,15 @@ async fn main() -> Result<()> {
     let rss = Arc::new(Rss {
         peak_kib: AtomicU64::new(0),
         last_kib: AtomicU64::new(0),
+        pid: AtomicU32::new(daemon.pid),
         stop: AtomicBool::new(false),
     });
-    let sampler = spawn_sampler(Arc::clone(&rss), daemon.pid);
+    let sampler = spawn_sampler(Arc::clone(&rss));
     let started = Instant::now();
 
-    let result = workload(&args, &base, &client, &rss).await;
+    let result = workload(&args, &base, &client, &rss, daemon).await;
 
     rss.stop.store(true, Ordering::Relaxed);
-    drop(daemon);
     let _ = sampler.join();
 
     let report = json!({
@@ -218,7 +225,13 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn workload(args: &Args, base: &str, client: &Client, rss: &Arc<Rss>) -> Result<()> {
+async fn workload(
+    args: &Args,
+    base: &str,
+    client: &Client,
+    rss: &Arc<Rss>,
+    daemon: Daemon,
+) -> Result<()> {
     let pid_sample = |rss: &Arc<Rss>| rss.last_kib.load(Ordering::Relaxed);
     wait_for_rpc(client, base).await?;
     let startup_rss = pid_sample(rss);
@@ -318,6 +331,28 @@ async fn workload(args: &Args, base: &str, client: &Client, rss: &Arc<Rss>) -> R
         pid_sample(rss);
     }
 
+    // ── Restart: verify replay rebuilds the same governance state ────────────
+    let mut restart_ok = None;
+    if args.restart {
+        let before_proposals = get(client, base, "/governance/proposals").await?;
+        let before_locks = get(client, base, "/governance/locks").await?;
+        drop(daemon);
+        let restarted = spawn_daemon(args)?;
+        rss.pid.store(restarted.pid, Ordering::Relaxed);
+        wait_for_rpc(client, base).await?;
+        let after_proposals = get(client, base, "/governance/proposals").await?;
+        let after_locks = get(client, base, "/governance/locks").await?;
+        let proposals_match = before_proposals["proposals"] == after_proposals["proposals"];
+        let locks_match = before_locks["locks"] == after_locks["locks"];
+        if !proposals_match || !locks_match {
+            bail!(
+                "governance state changed across restart: proposals_match={proposals_match} locks_match={locks_match}"
+            );
+        }
+        restart_ok = Some(true);
+        // `restarted` drops here, killing the restarted daemon.
+    }
+
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({
@@ -330,6 +365,7 @@ async fn workload(args: &Args, base: &str, client: &Client, rss: &Arc<Rss>) -> R
             "proposal_height": proposal_height,
             "duration_secs": Instant::now().duration_since(funded_at).as_secs(),
             "vote_confirm_secs": (voted_at - funded_at).as_secs(),
+            "restart_verified": restart_ok,
             "rss_kib": {
                 "startup": startup_rss,
                 "after_funding": funded_rss,

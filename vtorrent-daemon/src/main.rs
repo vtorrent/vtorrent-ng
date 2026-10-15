@@ -97,6 +97,24 @@ fn dump_heap_interval() {
     *guard = Some(dhat::Profiler::new_heap());
 }
 
+/// Load the persisted chain from the block store, choosing the network mode
+/// from the CLI flags. Shared by the normal path and the test-util governance
+/// override path.
+fn load_chain_from_store(
+    block_store: &BlockStore,
+    regtest: bool,
+    fast_stake: bool,
+    cache: usize,
+) -> Result<vtorrent_node::chain::Chain, vtorrent_store::StoreError> {
+    if regtest && fast_stake {
+        block_store.load_into_fast_regtest_chain_with_cache(cache)
+    } else if regtest {
+        block_store.load_into_regtest_chain_with_cache(cache)
+    } else {
+        block_store.load_into_chain_with_cache(cache)
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "heap-profile")]
@@ -215,35 +233,64 @@ async fn main() -> anyhow::Result<()> {
         } else {
             tracing::info!("No persisted chain found — starting from genesis");
         }
-        let mut chain = if cli.regtest && cli.regtest_fast_stake {
-            block_store.load_into_fast_regtest_chain_with_cache(cli.block_body_cache)
-        } else if cli.regtest {
-            block_store.load_into_regtest_chain_with_cache(cli.block_body_cache)
-        } else {
-            block_store.load_into_chain_with_cache(cli.block_body_cache)
+        // Test-only governance activation for regtest load testing. Read before
+        // the chain load so replay rebuilds governance state, matching production
+        // replay under a scheduled deployment. The env var is ignored entirely
+        // without the test-util feature (never enabled in release builds); with
+        // it, regtest is still mandatory.
+        #[cfg(feature = "test-util")]
+        let governance_activation = match std::env::var("VTR_GOVERNANCE_TEST_ACTIVATION") {
+            Ok(raw) => {
+                if !cli.regtest {
+                    anyhow::bail!("VTR_GOVERNANCE_TEST_ACTIVATION requires --regtest");
+                }
+                let height: u32 = raw.parse().map_err(|e| {
+                    anyhow::anyhow!("VTR_GOVERNANCE_TEST_ACTIVATION: invalid height {raw:?}: {e}")
+                })?;
+                tracing::warn!(
+                    height,
+                    "TEST-ONLY governance activation override — never use outside regtest load testing"
+                );
+                Some(height)
+            }
+            Err(_) => None,
+        };
+        let mut chain = {
+            #[cfg(feature = "test-util")]
+            {
+                if let Some(height) = governance_activation {
+                    if cli.regtest_fast_stake {
+                        block_store.load_into_fast_regtest_chain_with_cache_and_governance(
+                            cli.block_body_cache,
+                            height,
+                        )
+                    } else {
+                        block_store.load_into_regtest_chain_with_cache(cli.block_body_cache)
+                    }
+                } else {
+                    load_chain_from_store(
+                        &block_store,
+                        cli.regtest,
+                        cli.regtest_fast_stake,
+                        cli.block_body_cache,
+                    )
+                }
+            }
+            #[cfg(not(feature = "test-util"))]
+            {
+                load_chain_from_store(
+                    &block_store,
+                    cli.regtest,
+                    cli.regtest_fast_stake,
+                    cli.block_body_cache,
+                )
+            }
         }
         .map_err(|e| anyhow::anyhow!("Failed to load chain from store: {}", e))?;
         // Serve bodies pruned from memory during replay from the store.
         let body_source: std::sync::Arc<dyn vtorrent_node::chain::BlockBodySource> =
             block_store.clone();
         chain.set_body_source(body_source);
-        // Test-only governance activation for regtest load testing. The env var
-        // is ignored entirely without the test-util feature (never enabled in
-        // release builds); with it, regtest is still mandatory.
-        #[cfg(feature = "test-util")]
-        if let Ok(raw) = std::env::var("VTR_GOVERNANCE_TEST_ACTIVATION") {
-            if !cli.regtest {
-                anyhow::bail!("VTR_GOVERNANCE_TEST_ACTIVATION requires --regtest");
-            }
-            let height: u32 = raw.parse().map_err(|e| {
-                anyhow::anyhow!("VTR_GOVERNANCE_TEST_ACTIVATION: invalid height {raw:?}: {e}")
-            })?;
-            chain.set_governance_test_activation(height);
-            tracing::warn!(
-                height,
-                "TEST-ONLY governance activation override — never use outside regtest load testing"
-            );
-        }
         Node::new_with_chain(config.clone(), chain)
             .map_err(|e| anyhow::anyhow!("Node::new_with_chain failed: {}", e))?
     };

@@ -439,36 +439,49 @@ impl BlockStore {
     /// For large chains this is fast because we skip validation on trusted
     /// stored data.
     pub fn load_into_chain(&self) -> Result<vtorrent_node::chain::Chain> {
-        self.load_into_chain_with_mode(false, false, usize::MAX)
+        self.load_into_chain_with_mode(false, false, usize::MAX, None)
     }
 
     pub fn load_into_regtest_chain(&self) -> Result<vtorrent_node::chain::Chain> {
-        self.load_into_chain_with_mode(true, false, usize::MAX)
+        self.load_into_chain_with_mode(true, false, usize::MAX, None)
     }
 
     pub fn load_into_fast_regtest_chain(&self) -> Result<vtorrent_node::chain::Chain> {
-        self.load_into_chain_with_mode(true, true, usize::MAX)
+        self.load_into_chain_with_mode(true, true, usize::MAX, None)
     }
 
     /// Load a chain bounded to the most recent `cache` block bodies. Older
     /// bodies are pruned during replay and served from this store via
     /// [`BlockBodySource`](vtorrent_node::chain::BlockBodySource).
     pub fn load_into_chain_with_cache(&self, cache: usize) -> Result<vtorrent_node::chain::Chain> {
-        self.load_into_chain_with_mode(false, false, cache)
+        self.load_into_chain_with_mode(false, false, cache, None)
     }
 
     pub fn load_into_regtest_chain_with_cache(
         &self,
         cache: usize,
     ) -> Result<vtorrent_node::chain::Chain> {
-        self.load_into_chain_with_mode(true, false, cache)
+        self.load_into_chain_with_mode(true, false, cache, None)
     }
 
     pub fn load_into_fast_regtest_chain_with_cache(
         &self,
         cache: usize,
     ) -> Result<vtorrent_node::chain::Chain> {
-        self.load_into_chain_with_mode(true, true, cache)
+        self.load_into_chain_with_mode(true, true, cache, None)
+    }
+
+    /// Test-only: load a fast-regtest chain with a governance activation
+    /// override applied **before** replay, so governance state is rebuilt from
+    /// the stored blocks exactly as production replay would with a scheduled
+    /// deployment. See `docs/governance-wholenode-load-test.md`.
+    #[cfg(feature = "test-util")]
+    pub fn load_into_fast_regtest_chain_with_cache_and_governance(
+        &self,
+        cache: usize,
+        governance_activation: u32,
+    ) -> Result<vtorrent_node::chain::Chain> {
+        self.load_into_chain_with_mode(true, true, cache, Some(governance_activation))
     }
 
     fn load_into_chain_with_mode(
@@ -476,6 +489,8 @@ impl BlockStore {
         regtest: bool,
         fast_stake: bool,
         cache: usize,
+        #[cfg_attr(not(feature = "test-util"), allow(unused_variables))]
+        governance_activation: Option<u32>,
     ) -> Result<vtorrent_node::chain::Chain> {
         use vtorrent_node::chain::Chain;
 
@@ -494,6 +509,13 @@ impl BlockStore {
         };
         let mut chain = make_chain()?;
         chain.set_block_body_cache(cache);
+        // Apply the governance activation override before replay so the replay
+        // rebuilds governance state, matching production replay under a
+        // scheduled deployment.
+        #[cfg(feature = "test-util")]
+        if let Some(activation) = governance_activation {
+            chain.set_governance_test_activation(activation);
+        }
 
         // Replay blocks from height 1 (genesis is already in Chain::new()).
         // On failure the store is truncated to the last good height and
