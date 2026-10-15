@@ -49,8 +49,11 @@ struct Args {
     /// Path to a daemon binary built with `--features test-util`.
     #[arg(long)]
     daemon: PathBuf,
-    #[arg(long, default_value = "/tmp/vtr-governance-load")]
-    data_dir: PathBuf,
+    /// Data directory for the daemon. Must not exist or must be empty; the
+    /// driver never deletes existing files. Defaults to a fresh temporary
+    /// directory that is removed when the run ends.
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
     #[arg(long, default_value_t = 22825)]
     rpc_port: u16,
     #[arg(long, default_value_t = 22826)]
@@ -179,23 +182,36 @@ async fn main() -> Result<()> {
     let base = format!("http://127.0.0.1:{}", args.rpc_port);
     let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
 
-    std::fs::create_dir_all(&args.data_dir)?;
-    for entry in [
-        "blocks",
-        "chain.redb",
-        "mempool.json",
-        "wallet.json",
-        "staking.json",
-    ] {
-        let path = args.data_dir.join(entry);
-        if path.is_dir() {
-            std::fs::remove_dir_all(&path)?;
-        } else if path.exists() {
-            std::fs::remove_file(&path)?;
+    ensure_ports_free(args.rpc_port, args.p2p_port)?;
+    // Resolve the data directory without ever deleting existing files. A
+    // supplied directory must be empty; the default is a fresh temporary
+    // directory held for the run and removed on drop.
+    let _temp_guard;
+    let data_dir = match &args.data_dir {
+        Some(dir) => {
+            if dir.exists() {
+                if std::fs::read_dir(dir)?.next().is_some() {
+                    bail!(
+                        "data directory {} is not empty; pass a fresh path (the driver never deletes existing files)",
+                        dir.display()
+                    );
+                }
+            } else {
+                std::fs::create_dir_all(dir)?;
+            }
+            dir.clone()
         }
-    }
+        None => {
+            let tmp = tempfile::Builder::new()
+                .prefix("vtr-governance-load-")
+                .tempdir()?;
+            let path = tmp.path().to_path_buf();
+            _temp_guard = Some(tmp);
+            path
+        }
+    };
 
-    let daemon = spawn_daemon(&args)?;
+    let daemon = spawn_daemon(&args, &data_dir)?;
     let rss = Arc::new(Rss {
         peak_kib: AtomicU64::new(0),
         last_kib: AtomicU64::new(0),
@@ -205,7 +221,7 @@ async fn main() -> Result<()> {
     let sampler = spawn_sampler(Arc::clone(&rss));
     let started = Instant::now();
 
-    let result = workload(&args, &base, &client, &rss, daemon).await;
+    let result = workload(&args, &data_dir, &base, &client, &rss, daemon).await;
 
     rss.stop.store(true, Ordering::Relaxed);
     let _ = sampler.join();
@@ -227,6 +243,7 @@ async fn main() -> Result<()> {
 
 async fn workload(
     args: &Args,
+    data_dir: &std::path::Path,
     base: &str,
     client: &Client,
     rss: &Arc<Rss>,
@@ -337,7 +354,7 @@ async fn workload(
         let before_proposals = get(client, base, "/governance/proposals").await?;
         let before_locks = get(client, base, "/governance/locks").await?;
         drop(daemon);
-        let restarted = spawn_daemon(args)?;
+        let restarted = spawn_daemon(args, data_dir)?;
         rss.pid.store(restarted.pid, Ordering::Relaxed);
         wait_for_rpc(client, base).await?;
         let after_proposals = get(client, base, "/governance/proposals").await?;
@@ -377,9 +394,20 @@ async fn workload(
     Ok(())
 }
 
-fn spawn_daemon(args: &Args) -> Result<Daemon> {
-    let log =
-        std::fs::File::create(args.data_dir.join("daemon.log")).context("creating daemon.log")?;
+/// Fail early if either port is already bound, so the run does not silently
+/// talk to another process (for example a soak-fleet docker proxy).
+fn ensure_ports_free(rpc_port: u16, p2p_port: u16) -> Result<()> {
+    for (name, port) in [("rpc", rpc_port), ("p2p", p2p_port)] {
+        match std::net::TcpListener::bind(("127.0.0.1", port)) {
+            Ok(listener) => drop(listener),
+            Err(error) => bail!("{name} port {port} is not free: {error}"),
+        }
+    }
+    Ok(())
+}
+
+fn spawn_daemon(args: &Args, data_dir: &std::path::Path) -> Result<Daemon> {
+    let log = std::fs::File::create(data_dir.join("daemon.log")).context("creating daemon.log")?;
     let child = Command::new(&args.daemon)
         .args([
             "--regtest",
@@ -396,9 +424,7 @@ fn spawn_daemon(args: &Args) -> Result<Daemon> {
             "--log-level",
             "info",
             "--data-dir",
-            args.data_dir
-                .to_str()
-                .context("data-dir must be valid UTF-8")?,
+            data_dir.to_str().context("data-dir must be valid UTF-8")?,
         ])
         .env("VTR_GOVERNANCE_TEST_ACTIVATION", "2")
         .stdout(Stdio::from(log.try_clone()?))

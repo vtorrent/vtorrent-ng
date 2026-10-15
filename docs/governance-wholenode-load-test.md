@@ -131,14 +131,18 @@ cargo build -p vtorrent-daemon --release --features test-util
 cargo build -p vtorrent-node --release --example governance_load
 target/release/examples/governance_load \
     --daemon target/release/vtorrent-daemon \
-    --data-dir /tmp/vtr-gov-load \
     --voters 600 --votes-per-tx 50 --tail-secs 200
 ```
 
 The driver writes the daemon's output to `<data-dir>/daemon.log` and prints a
-JSON report. It requires ports 22825 (RPC) and 22826 (P2P) to be free; the soak
-fleet's docker proxies hold 22525/22526 and 22625/22626. Add `--restart` to run
-the restart check.
+JSON report. Add `--restart` to run the restart check.
+
+By default the driver creates a fresh temporary data directory and removes it
+when the run ends. If you pass `--data-dir`, the directory must not exist or
+must be empty; the driver never deletes existing files. It fails before
+starting the daemon when either port is already bound, so it cannot silently
+talk to another process such as a soak-fleet docker proxy. The default ports are
+22825 (RPC) and 22826 (P2P).
 
 ## Remaining follow-ups
 
@@ -152,5 +156,3 @@ Still open on the load path:
 - Multiple proposals and voting waves in one run, including overlapping locks.
 - A reorg load scenario. The restart check covers replay; it does not exercise a
   competing branch.
-- The driver deletes known files from the supplied data directory. It should
-  create a fresh temporary directory and fail when its ports are occupied.
