@@ -336,46 +336,17 @@ impl Chain {
         self.governance_test_activation = Some(height);
     }
 
-    /// Filter mempool transactions to those a block at `height` can include
-    /// without governance validation rejecting the block. When governance is
-    /// inactive, every transaction is includable.
-    ///
-    /// Block assembly uses this so a staker never builds a block its own
-    /// validation rejects. The motivating case is a vote whose proposal is not
-    /// yet recorded: a vote requires `height > proposal.created_height`, so a
-    /// block containing both a proposal and its vote is invalid, and a vote for
-    /// an unrecorded proposal is invalid outright. Deferring such votes avoids a
-    /// stall where every block the staker builds is rejected until the
-    /// transactions are evicted.
-    pub fn includable_transactions(
-        &self,
-        txs: Vec<crate::block::Transaction>,
+    /// Select transactions by tentatively applying the block prefix and each
+    /// candidate under consensus rules. Rejected candidates are rolled back;
+    /// the full pre-selection state is restored before returning.
+    pub fn select_block_transactions(
+        &mut self,
+        first_tx: &Transaction,
+        txs: Vec<Transaction>,
         height: u32,
         timestamp: u32,
-    ) -> Vec<crate::block::Transaction> {
-        if !self.governance_active(height) {
-            return txs;
-        }
-        let genesis = self.genesis_block().hash();
-        let mut simulated = self.governance.clone();
-        let mut kept = Vec::with_capacity(txs.len());
-        for tx in txs {
-            if simulated
-                .process_transaction(
-                    &tx,
-                    height,
-                    timestamp,
-                    &self.utxo_set,
-                    self.params,
-                    self.total_staked,
-                    genesis,
-                )
-                .is_ok()
-            {
-                kept.push(tx);
-            }
-        }
-        kept
+    ) -> Result<Vec<Transaction>> {
+        chain_reorg::select_block_transactions(self, first_tx, txs, height, timestamp)
     }
 
     /// Parameters used to validate and produce the next block, including due activations.

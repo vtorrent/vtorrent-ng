@@ -292,7 +292,7 @@ fn block_assembly_defers_votes_for_unrecorded_proposals() {
     // not yet recorded, and the resulting block must be accepted.
     let (mut chain, proposal_tx, vote_tx, ts) = same_block_setup();
     let proposal_txid = proposal_tx.txid();
-    let kept = chain.includable_transactions(vec![vote_tx, proposal_tx], 2, ts);
+    let kept = select_for_pow(&mut chain, vec![vote_tx, proposal_tx], 2, ts);
     assert_eq!(
         kept.len(),
         1,
@@ -307,6 +307,44 @@ fn block_assembly_defers_votes_for_unrecorded_proposals() {
     );
     assert_eq!(chain.governance.proposals.len(), 1);
     assert!(chain.governance.locked_utxos.is_empty());
+}
+
+fn select_for_pow(
+    chain: &mut Chain,
+    candidates: Vec<Transaction>,
+    height: u32,
+    timestamp: u32,
+) -> Vec<Transaction> {
+    let prefix = block(
+        chain,
+        chain.best_hash().unwrap(),
+        height,
+        timestamp,
+        1,
+        vec![],
+    )
+    .transactions[0]
+        .clone();
+    let before_utxos = chain.utxo_set.clone();
+    let before_governance = chain.governance.clone();
+    let before_params = chain.params;
+    let before_supply = chain.total_supply;
+    let before_staked = chain.total_staked;
+    let before_claims = chain.claimed_addresses.clone();
+    let before_tip = chain.best_hash();
+    let before_journals = chain.journals.len();
+    let selected = chain
+        .select_block_transactions(&prefix, candidates, height, timestamp)
+        .unwrap();
+    assert_eq!(chain.utxo_set, before_utxos);
+    assert_eq!(chain.governance, before_governance);
+    assert_eq!(chain.params, before_params);
+    assert_eq!(chain.total_supply, before_supply);
+    assert_eq!(chain.total_staked, before_staked);
+    assert_eq!(chain.claimed_addresses, before_claims);
+    assert_eq!(chain.best_hash(), before_tip);
+    assert_eq!(chain.journals.len(), before_journals);
+    selected
 }
 
 #[test]
@@ -326,6 +364,276 @@ fn governance_is_inert_without_active_deployment() {
     assert!(chain.governance.proposals.is_empty());
     assert!(chain.governance.locked_utxos.is_empty());
     assert_eq!(chain.params(), crate::consensus::ConsensusParams::default());
+}
+
+#[test]
+fn template_selection_rejected_batch_does_not_poison_later_vote() {
+    let (mut chain, owner, id, _) = fixture(true);
+    let valid = vote_transaction(&chain, &owner, id);
+    let mut rejected = valid.clone();
+    let mut unsigned = vtorrent_script::Script::new();
+    unsigned.push_opcode(0x6a);
+    unsigned
+        .push_data(
+            &Vote {
+                proposal_id: id,
+                choice: VoteChoice::Yes,
+            }
+            .encode(),
+        )
+        .unwrap();
+    rejected.outputs.push(TxOutput {
+        value: 1,
+        script_pubkey: unsigned.as_bytes().to_vec(),
+    });
+    let payer = chain.get_utxos_for_address(&address(2))[0].clone();
+    sign_input(&mut rejected, &payer, 2);
+    let kept = select_for_pow(
+        &mut chain,
+        vec![rejected, valid.clone()],
+        3,
+        FUNDING_TIME + MIN_STAKE_AGE as u32 + 50,
+    );
+    assert_eq!(
+        kept.iter().map(Transaction::txid).collect::<Vec<_>>(),
+        vec![valid.txid()]
+    );
+    let candidate = block(
+        &chain,
+        chain.best_hash().unwrap(),
+        3,
+        FUNDING_TIME + MIN_STAKE_AGE as u32 + 50,
+        80,
+        kept,
+    );
+    chain.add_block(candidate).unwrap();
+    assert_eq!(chain.governance.proposals[&id].yes, owner.value);
+}
+
+#[test]
+fn template_selection_uses_activation_height_parameters() {
+    let (mut chain, _, id, _) = fixture(true);
+    let mut activation = chain.governance.proposals[&id].clone();
+    activation.proposal.param = ParamId::MinStakeAmount;
+    activation.proposal.new_value = 900 * COIN;
+    activation.proposal.activation_height = 3;
+    activation.decided = true;
+    activation.passed = true;
+    chain.governance.proposals.insert([55; 8], activation);
+    let voter = chain.get_utxos_for_address(&address(2))[0].clone();
+    let payer = chain.get_utxos_for_address(&address(1))[0].clone();
+    let vote = SignedVote::sign(
+        Vote {
+            proposal_id: id,
+            choice: VoteChoice::Yes,
+        },
+        (voter.txid, voter.vout),
+        chain.height_index[0],
+        &key(2),
+    );
+    let tx = spend(
+        &payer,
+        1,
+        vec![
+            TxOutput {
+                value: 1,
+                script_pubkey: vote.script().unwrap(),
+            },
+            output(1, payer.value - COIN),
+        ],
+    );
+    let timestamp = FUNDING_TIME + MIN_STAKE_AGE as u32 + 50;
+    assert_eq!(
+        chain.next_block_params(timestamp).min_stake_amount,
+        900 * COIN
+    );
+    assert!(
+        select_for_pow(&mut chain, vec![tx], 3, timestamp).is_empty(),
+        "a vote below the newly activated minimum must not enter the template"
+    );
+    let candidate = block(&chain, chain.best_hash().unwrap(), 3, timestamp, 81, vec![]);
+    chain.add_block(candidate).unwrap();
+    assert_eq!(chain.params.min_stake_amount, 900 * COIN);
+    assert_eq!(chain.governance.proposals[&id].yes, 0);
+}
+
+#[test]
+fn template_selection_tracks_spends_before_votes() {
+    let (mut chain, owner, id, _) = fixture(true);
+    let payment = spend(&owner, 1, vec![output(1, owner.value - COIN)]);
+    let vote = vote_transaction(&chain, &owner, id);
+    let kept = select_for_pow(
+        &mut chain,
+        vec![payment.clone(), vote],
+        3,
+        FUNDING_TIME + MIN_STAKE_AGE as u32 + 50,
+    );
+    assert_eq!(
+        kept.iter().map(Transaction::txid).collect::<Vec<_>>(),
+        vec![payment.txid()]
+    );
+    let candidate = block(
+        &chain,
+        chain.best_hash().unwrap(),
+        3,
+        FUNDING_TIME + MIN_STAKE_AGE as u32 + 50,
+        82,
+        kept,
+    );
+    chain.add_block(candidate).unwrap();
+    assert_eq!(chain.governance.proposals[&id].yes, 0);
+}
+
+#[test]
+fn template_selection_rejected_script_restores_vote_and_inputs() {
+    let (mut chain, owner, id, _) = fixture(true);
+    let valid = vote_transaction(&chain, &owner, id);
+    let mut bad_script = valid.clone();
+    bad_script.inputs[0].script_sig.clear();
+    let timestamp = FUNDING_TIME + MIN_STAKE_AGE as u32 + 50;
+    let kept = select_for_pow(&mut chain, vec![bad_script, valid.clone()], 3, timestamp);
+    assert_eq!(
+        kept.iter().map(Transaction::txid).collect::<Vec<_>>(),
+        vec![valid.txid()]
+    );
+    let candidate = block(&chain, chain.best_hash().unwrap(), 3, timestamp, 83, kept);
+    chain.add_block(candidate).unwrap();
+    assert_eq!(chain.governance.proposals[&id].yes, owner.value);
+}
+
+#[test]
+fn template_selection_tracks_vote_locks_before_spends() {
+    let (mut chain, owner, id, _) = fixture(true);
+    let vote = vote_transaction(&chain, &owner, id);
+    let payment = spend(&owner, 1, vec![output(1, owner.value - COIN)]);
+    let timestamp = FUNDING_TIME + MIN_STAKE_AGE as u32 + 50;
+    let kept = select_for_pow(&mut chain, vec![vote.clone(), payment], 3, timestamp);
+    assert_eq!(
+        kept.iter().map(Transaction::txid).collect::<Vec<_>>(),
+        vec![vote.txid()]
+    );
+    let candidate = block(&chain, chain.best_hash().unwrap(), 3, timestamp, 84, kept);
+    chain.add_block(candidate).unwrap();
+    assert!(chain.is_vote_locked(&owner.txid, owner.vout, 3));
+}
+
+#[test]
+fn template_selection_size_rejection_does_not_reserve_vote_or_input() {
+    let (mut chain, owner, id, _) = fixture(true);
+    let valid = vote_transaction(&chain, &owner, id);
+    let mut oversized = valid.clone();
+    oversized.inputs[0].script_sig = vec![0; crate::consensus::MAX_BLOCK_SIZE];
+    let kept = select_for_pow(
+        &mut chain,
+        vec![oversized, valid.clone()],
+        3,
+        FUNDING_TIME + MIN_STAKE_AGE as u32 + 50,
+    );
+    assert_eq!(
+        kept.iter().map(Transaction::txid).collect::<Vec<_>>(),
+        vec![valid.txid()]
+    );
+}
+
+#[test]
+fn template_selection_supports_parent_child_outputs_when_governance_inactive() {
+    let (mut chain, owner, _, _) = fixture(false);
+    let parent = spend(&owner, 1, vec![output(4, owner.value - COIN)]);
+    let timestamp = FUNDING_TIME + MIN_STAKE_AGE as u32 + 50;
+    let child_input = Utxo {
+        txid: parent.txid(),
+        vout: 0,
+        value: parent.outputs[0].value,
+        script_pubkey: parent.outputs[0].script_pubkey.clone(),
+        height: 3,
+        timestamp,
+    };
+    let child = spend(&child_input, 4, vec![output(5, child_input.value - COIN)]);
+    let kept = select_for_pow(
+        &mut chain,
+        vec![parent.clone(), child.clone()],
+        3,
+        timestamp,
+    );
+    assert_eq!(
+        kept.iter().map(Transaction::txid).collect::<Vec<_>>(),
+        vec![parent.txid(), child.txid()]
+    );
+    let candidate = block(&chain, chain.best_hash().unwrap(), 3, timestamp, 85, kept);
+    chain.add_block(candidate).unwrap();
+    assert!(!chain.utxo_set.contains_key(&(parent.txid(), 0)));
+    assert!(chain.utxo_set.contains_key(&(child.txid(), 0)));
+}
+
+#[test]
+fn template_selection_invalid_prefix_rolls_back_activation() {
+    let (mut chain, _, id, _) = fixture(true);
+    let record = chain.governance.proposals.get_mut(&id).unwrap();
+    record.proposal.activation_height = 3;
+    record.decided = true;
+    record.passed = true;
+    let before_governance = chain.governance.clone();
+    let before_utxos = chain.utxo_set.clone();
+    let before_params = chain.params;
+    let before_staked = chain.total_staked;
+    let timestamp = FUNDING_TIME + MIN_STAKE_AGE as u32 + 50;
+    assert_eq!(chain.next_block_params(timestamp).pos_annual_rate_bps, 300);
+    let mut prefix =
+        block(&chain, chain.best_hash().unwrap(), 3, timestamp, 1, vec![]).transactions[0].clone();
+    prefix.outputs[0].value = 0;
+    assert!(chain
+        .select_block_transactions(&prefix, vec![], 3, timestamp)
+        .is_err());
+    assert_eq!(chain.governance, before_governance);
+    assert_eq!(chain.utxo_set, before_utxos);
+    assert_eq!(chain.params, before_params);
+    assert_eq!(chain.total_staked, before_staked);
+}
+
+#[test]
+fn template_selection_accounts_for_the_selected_coinstake() {
+    let (mut chain, owner, id, _) = fixture(true);
+    let mut engine = StakingEngine::with_wif(
+        address(1),
+        vtorrent_core::keys::PrivateKey::from_bytes([1; 32], true)
+            .unwrap()
+            .to_wif(198),
+    );
+    let parent = chain.best_hash().unwrap();
+    let modifier = chain.headers[&parent].stake_modifier;
+    let (timestamp, kernel) = (FUNDING_TIME + MIN_STAKE_AGE as u32 + 50..)
+        .take(1000)
+        .find_map(|timestamp| {
+            engine.set_consensus_params(chain.next_block_params(timestamp));
+            engine
+                .find_stake_kernel(
+                    modifier,
+                    3,
+                    timestamp,
+                    chain.total_staked(),
+                    std::iter::once(&owner),
+                )
+                .map(|kernel| (timestamp, kernel))
+        })
+        .unwrap();
+    let vote = vote_transaction(&chain, &owner, id);
+    let kept = chain
+        .select_block_transactions(&kernel.1, vec![vote], 3, timestamp)
+        .unwrap();
+    let (candidate, _) = engine
+        .build_from_kernel_with_proof(
+            parent,
+            modifier,
+            3,
+            timestamp,
+            chain.get_utxo_set(),
+            kept,
+            kernel,
+        )
+        .unwrap();
+    chain
+        .add_block(candidate)
+        .expect("the selected template must validate after its coinstake");
 }
 
 #[test]

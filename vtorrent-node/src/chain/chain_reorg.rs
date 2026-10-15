@@ -1,7 +1,8 @@
 use crate::{
     block::{Block, Transaction},
     consensus::{
-        check_stake_kernel_v2, compute_pos_reward_with, validate_legacy_claim, MAX_SUPPLY,
+        check_stake_kernel_v2, compute_pos_reward_with, validate_legacy_claim,
+        validate_transaction, MAX_BLOCK_SIZE, MAX_SUPPLY,
     },
     error::{NodeError, Result},
     genesis::get_legacy_balance,
@@ -142,15 +143,9 @@ pub(crate) fn remove_block_transactions(chain: &mut Chain, block_hash: [u8; 32])
     }
 }
 
-pub(crate) fn apply_block_journaled(
-    chain: &mut Chain,
-    block: &Block,
-    height: u32,
-) -> Result<BlockJournal> {
-    let governance_active = chain.governance_active(height);
-    let governance_before = governance_active.then(|| chain.governance.clone());
-    let mut journal = BlockJournal {
-        block_hash: block.hash(),
+fn new_journal(chain: &Chain, block_hash: [u8; 32], height: u32) -> BlockJournal {
+    BlockJournal {
+        block_hash,
         height,
         changes: Vec::new(),
         claimed_addresses: Vec::new(),
@@ -161,7 +156,70 @@ pub(crate) fn apply_block_journaled(
         previous_params: chain.params,
         previous_supply: chain.total_supply,
         previous_staked: chain.total_staked,
-    };
+    }
+}
+
+fn begin_governance_block(
+    chain: &mut Chain,
+    height: u32,
+    timestamp: u32,
+    governance_active: bool,
+    journal: &BlockJournal,
+) {
+    if governance_active {
+        chain
+            .governance
+            .begin_block(height, &mut chain.params, &chain.utxo_set, timestamp);
+        if chain.params.min_stake_amount != journal.previous_params.min_stake_amount {
+            chain.total_staked = chain
+                .utxo_set
+                .values()
+                .filter(|u| crate::consensus::is_stakeable_with(&chain.params, u))
+                .map(|u| u.value)
+                .sum();
+        }
+    }
+}
+
+fn apply_transaction(
+    chain: &mut Chain,
+    tx: &Transaction,
+    height: u32,
+    timestamp: u32,
+    parent_modifier: u64,
+    journal: &mut BlockJournal,
+    governance_active: bool,
+) -> Result<()> {
+    if governance_active {
+        chain.governance.process_transaction(
+            tx,
+            height,
+            timestamp,
+            &chain.utxo_set,
+            chain.params,
+            chain.total_staked,
+            chain.height_index[0],
+        )?;
+    }
+    apply_transaction_journaled(
+        chain,
+        tx,
+        height,
+        timestamp,
+        parent_modifier,
+        journal,
+        governance_active,
+    )
+}
+
+pub(crate) fn apply_block_journaled(
+    chain: &mut Chain,
+    block: &Block,
+    height: u32,
+) -> Result<BlockJournal> {
+    let governance_active = chain.governance_active(height);
+    let governance_before = governance_active.then(|| chain.governance.clone());
+    let mut journal = new_journal(chain, block.hash(), height);
 
     let parent_modifier = if height == 0 {
         0
@@ -174,36 +232,16 @@ pub(crate) fn apply_block_journaled(
     };
 
     let application = (|| -> Result<()> {
-        if governance_active {
-            chain.governance.begin_block(
-                height,
-                &mut chain.params,
-                &chain.utxo_set,
-                block.header.timestamp,
-            );
-            if chain.params.min_stake_amount != journal.previous_params.min_stake_amount {
-                chain.total_staked = chain
-                    .utxo_set
-                    .values()
-                    .filter(|u| crate::consensus::is_stakeable_with(&chain.params, u))
-                    .map(|u| u.value)
-                    .sum();
-            }
-        }
+        begin_governance_block(
+            chain,
+            height,
+            block.header.timestamp,
+            governance_active,
+            &journal,
+        );
 
         for tx in &block.transactions {
-            if governance_active {
-                chain.governance.process_transaction(
-                    tx,
-                    height,
-                    block.header.timestamp,
-                    &chain.utxo_set,
-                    chain.params,
-                    chain.total_staked,
-                    chain.height_index[0],
-                )?;
-            }
-            apply_transaction_journaled(
+            apply_transaction(
                 chain,
                 tx,
                 height,
@@ -257,7 +295,11 @@ pub(crate) fn rollback_journal(chain: &mut Chain, journal: &BlockJournal) {
     if let Some(governance) = &journal.previous_governance {
         chain.governance.restore_undo(governance);
     }
-    for change in journal.changes.iter().rev() {
+    rollback_changes(chain, &journal.changes, &journal.claimed_addresses);
+}
+
+fn rollback_changes(chain: &mut Chain, changes: &[UtxoChange], claimed_addresses: &[String]) {
+    for change in changes.iter().rev() {
         match change {
             UtxoChange::Added { key } => {
                 chain.utxo_set.remove(key);
@@ -267,9 +309,113 @@ pub(crate) fn rollback_journal(chain: &mut Chain, journal: &BlockJournal) {
             }
         }
     }
-    for addr in journal.claimed_addresses.iter().rev() {
+    for addr in claimed_addresses.iter().rev() {
         chain.claimed_addresses.remove(addr);
     }
+}
+
+pub(crate) fn select_block_transactions(
+    chain: &mut Chain,
+    first_tx: &Transaction,
+    candidates: Vec<Transaction>,
+    height: u32,
+    timestamp: u32,
+) -> Result<Vec<Transaction>> {
+    if height != chain.best_height() + 1 {
+        return Err(NodeError::Chain(
+            "Template height must extend the current tip".into(),
+        ));
+    }
+    if !(first_tx.is_coinstake() || (chain.allow_pow_test_blocks && first_tx.is_coinbase())) {
+        return Err(NodeError::InvalidBlock(
+            "Template must begin with coinstake or regtest coinbase".into(),
+        ));
+    }
+    let parent = chain
+        .best_hash()
+        .ok_or_else(|| NodeError::Chain("Template parent missing".into()))?;
+    let modifier = chain.headers[&parent].stake_modifier;
+    let governance_active = chain.governance_active(height);
+    let governance_before = governance_active.then(|| chain.governance.clone());
+    let mut journal = new_journal(chain, [0; 32], height);
+    let selection = (|| -> Result<Vec<Transaction>> {
+        begin_governance_block(chain, height, timestamp, governance_active, &journal);
+        validate_transaction(first_tx)?;
+        let mut size = first_tx.serialized_size();
+        if size > MAX_BLOCK_SIZE {
+            return Err(NodeError::InvalidBlock(
+                "Template prefix exceeds block size limit".into(),
+            ));
+        }
+        apply_transaction(
+            chain,
+            first_tx,
+            height,
+            timestamp,
+            modifier,
+            &mut journal,
+            governance_active,
+        )?;
+        if chain.total_supply.saturating_add(journal.supply_delta) > MAX_SUPPLY {
+            return Err(NodeError::InvalidBlock(
+                "Template prefix exceeds maximum supply".into(),
+            ));
+        }
+        let mut kept = Vec::new();
+        let mut txids = std::collections::HashSet::from([first_tx.txid()]);
+        for tx in candidates {
+            let tx_size = tx.serialized_size();
+            if tx_size > MAX_BLOCK_SIZE - size
+                || tx.is_coinbase()
+                || tx.is_coinstake()
+                || txids.contains(&tx.txid())
+                || validate_transaction(&tx).is_err()
+            {
+                continue;
+            }
+            let changes = journal.changes.len();
+            let claims = journal.claimed_addresses.len();
+            let supply_delta = journal.supply_delta;
+            let staked_delta = journal.staked_delta;
+            let governance_undo =
+                governance_active.then(|| chain.governance.transaction_undo(&tx, height));
+            let result = apply_transaction(
+                chain,
+                &tx,
+                height,
+                timestamp,
+                modifier,
+                &mut journal,
+                governance_active,
+            );
+            if result.is_err()
+                || chain.total_supply.saturating_add(journal.supply_delta) > MAX_SUPPLY
+            {
+                if let Some(undo) = governance_undo {
+                    chain.governance.restore_undo(&undo);
+                }
+                rollback_changes(
+                    chain,
+                    &journal.changes[changes..],
+                    &journal.claimed_addresses[claims..],
+                );
+                journal.changes.truncate(changes);
+                journal.claimed_addresses.truncate(claims);
+                journal.supply_delta = supply_delta;
+                journal.staked_delta = staked_delta;
+                continue;
+            }
+            size += tx_size;
+            txids.insert(tx.txid());
+            kept.push(tx);
+        }
+        Ok(kept)
+    })();
+    journal.previous_governance = governance_before
+        .as_ref()
+        .map(|before| chain.governance.undo_since(before));
+    rollback_journal(chain, &journal);
+    selection
 }
 
 fn apply_transaction_journaled(

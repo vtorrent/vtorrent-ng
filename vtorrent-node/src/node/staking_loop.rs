@@ -111,28 +111,14 @@ impl Node {
             return Ok(());
         };
 
-        // Only include pending txs whose inputs are still unspent in the
-        // current UTXO set — mempool entries can go stale when a competing
-        // block confirms the same inputs, and including them would make our
-        // block invalid. Governance transactions are additionally filtered so
-        // the block cannot contain a vote its own validation rejects (for
-        // example a vote whose proposal is not yet recorded).
-        let pending_txs = {
-            let chain = self.chain.lock().await;
-            let mempool = self.mempool.lock().await;
-            let candidates: Vec<crate::block::Transaction> = mempool
-                .get_transactions()
-                .into_iter()
-                .filter(|tx| chain.compute_tx_fee(tx).is_some())
-                .collect();
-            chain.includable_transactions(candidates, best_height + 1, now)
-        };
-
         let block_opt = {
-            let chain = self.chain.lock().await;
+            let mut chain = self.chain.lock().await;
             if chain.best_hash() != Some(best_hash) {
                 return Ok(());
             }
+            let candidates = self.mempool.lock().await.get_transactions();
+            let pending_txs =
+                chain.select_block_transactions(&kernel.1, candidates, best_height + 1, now)?;
             staking.build_from_kernel_with_proof(
                 best_hash,
                 best_stake_modifier,

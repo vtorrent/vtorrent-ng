@@ -155,6 +155,11 @@ under an active governance workload is in
 `docs/governance-wholenode-load-test.md`; it also records the same-block
 proposal and vote ordering fix.
 
+The producer's transactional selection and its regression coverage are
+described in `docs/governance-template-selection-review.md`. Selection uses
+next-block activation rules and the actual coinstake, and restores tentative
+changes before block construction.
+
 Votes carry their payload in a one-satoshi OP_RETURN output, which is burned
 because data carriers never enter the UTXO set. The mempool dust rule exempts
 `OpReturn` outputs so votes relay; the exemption uses the same classification as

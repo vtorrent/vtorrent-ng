@@ -458,6 +458,54 @@ impl GovernanceState {
             }
         }
     }
+
+    /// Capture the governance entries a tentative transaction can change.
+    pub(crate) fn transaction_undo(&self, tx: &Transaction, height: u32) -> GovernanceUndo {
+        let mut proposals: BTreeMap<[u8; 8], BTreeSet<OutPoint>> = BTreeMap::new();
+        let mut locks = BTreeMap::new();
+        for output in &tx.outputs {
+            let Some(data) = op_return_data(&output.script_pubkey) else {
+                continue;
+            };
+            if let Some(proposal) = Proposal::decode(data) {
+                proposals
+                    .entry(proposal_id_of(&proposal, height))
+                    .or_default();
+            } else if let Some(signed) = SignedVote::decode(data) {
+                let origin = self
+                    .locked_utxos
+                    .get(&signed.outpoint)
+                    .map(|lock| lock.voting_origin)
+                    .unwrap_or(signed.outpoint);
+                let votes = proposals.entry(signed.vote.proposal_id).or_default();
+                if self
+                    .proposals
+                    .get(&signed.vote.proposal_id)
+                    .is_some_and(|record| !record.voted_outpoints.contains(&origin))
+                {
+                    votes.insert(origin);
+                }
+                locks
+                    .entry(signed.outpoint)
+                    .or_insert_with(|| self.locked_utxos.get(&signed.outpoint).cloned());
+            }
+        }
+        GovernanceUndo {
+            proposals: proposals
+                .into_iter()
+                .map(|(id, votes)| match self.proposals.get(&id) {
+                    Some(record) => ProposalUndo::Updated {
+                        id,
+                        metadata: Box::new(proposal_metadata(record)),
+                        added_votes: votes.into_iter().collect(),
+                        removed_votes: Vec::new(),
+                    },
+                    None => ProposalUndo::Added(id),
+                })
+                .collect(),
+            locks: locks.into_iter().collect(),
+        }
+    }
     pub fn is_utxo_locked(&self, txid: &[u8; 32], vout: u32, height: u32) -> bool {
         self.locked_utxos
             .get(&(*txid, vout))

@@ -62,11 +62,13 @@ caught by the project's own tests.
   restore on rejection and reorg.
   - Do the undo journals restore the exact pre-state across a rejected block and
     a failed or successful reorg?
-- `vtorrent-node/src/chain.rs` (`includable_transactions`,
+- `vtorrent-node/src/chain.rs` (`select_block_transactions`,
   `next_block_params`) and `vtorrent-node/src/node/staking_loop.rs` — the
   block-assembly filter that defers votes for unrecorded proposals.
   - Does the filter ever exclude a valid transaction or include one the block
     would reject?
+  - Are rejected candidates atomic? Do selection and validation agree about
+    activations, the coinstake, preceding spends, and block size?
 - `vtorrent-node/src/deployments.rs` — the governance deployment gate.
 - Deposit handling: the proposal deposit is an OP_RETURN carrier, burned on
   pass and failure. Verify it cannot be reclaimed and that supply accounting is
@@ -104,7 +106,9 @@ caught by the project's own tests.
 
 ## 6. What we provide
 - Source at `v2.0.0-beta.3` (tag) plus the consensus and governance work on
-  `main` (current head `4264e38`).
+  `main`. The engagement must pin an immutable audit commit, including the
+  template-selection repair described in
+  `docs/governance-template-selection-review.md`.
 - `docs/` — designs + adversarial reviews for every subsystem
   (`cold-staking-p2cs-design.md`, `op-return-utxo-exclusion-design.md`,
   `network-upgrade-design.md`, `atomic-swap-protocol.md`,
