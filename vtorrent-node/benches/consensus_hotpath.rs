@@ -270,6 +270,143 @@ fn bench_sighash(c: &mut Criterion) {
     group.finish();
 }
 
+/// `Chain::select_block_transactions`: block-template selection applies every
+/// mempool candidate through the real transaction transitions. This measures
+/// the per-candidate cost so the block-assembly overhead is known.
+fn bench_select_block_transactions(c: &mut Criterion) {
+    use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
+    use vtorrent_node::genesis::GENESIS_BITS;
+
+    const FUNDING_TIME: u32 = 1_700_000_001;
+
+    fn key() -> SecretKey {
+        SecretKey::from_slice(&[7u8; 32]).unwrap()
+    }
+    fn p2pkh() -> Vec<u8> {
+        let pk = PublicKey::from_secret_key(&Secp256k1::new(), &key());
+        vtorrent_core::address::Address::from_pubkey(&pk, true, 70).p2pkh_script_pubkey()
+    }
+    fn sign(tx: &mut Transaction, script_pubkey: &[u8]) {
+        let secp = Secp256k1::new();
+        let mut sig = secp
+            .sign_ecdsa(&Message::from_digest(tx.sighash(0, script_pubkey)), &key())
+            .serialize_der()
+            .to_vec();
+        sig.push(0x01);
+        let mut script = vtorrent_script::Script::new();
+        script.push_data(&sig).unwrap();
+        script
+            .push_data(&PublicKey::from_secret_key(&secp, &key()).serialize())
+            .unwrap();
+        tx.inputs[0].script_sig = script.as_bytes().to_vec();
+    }
+
+    // A chain at height 1 whose coinbase funds `n` spendable outputs, plus `n`
+    // signed candidate transactions (one per output) and a coinbase prefix.
+    fn fixture(n: usize) -> (Chain, Transaction, Vec<Transaction>, u32) {
+        let mut chain = Chain::new_regtest().expect("genesis");
+        let genesis = chain.best_hash().unwrap();
+        let script = p2pkh();
+        let coinbase = Transaction {
+            version: 1,
+            tx_type: TxType::Coinbase,
+            inputs: vec![TxInput {
+                prev_txid: [0; 32],
+                prev_vout: u32::MAX,
+                script_sig: vec![1],
+                sequence: u32::MAX,
+            }],
+            outputs: (0..n)
+                .map(|_| TxOutput {
+                    value: 10_000,
+                    script_pubkey: script.clone(),
+                })
+                .collect(),
+            lock_time: 1,
+            claim_address: None,
+            claim_signature: None,
+        };
+        let mut funding = Block {
+            header: BlockHeader {
+                version: 1,
+                prev_block_hash: genesis,
+                merkle_root: [0; 32],
+                utxo_root: [0; 32],
+                timestamp: FUNDING_TIME,
+                bits: GENESIS_BITS,
+                nonce: 1,
+                stake_modifier: compute_stake_modifier(0, &genesis),
+            },
+            transactions: vec![coinbase],
+        };
+        funding.header.merkle_root = funding.compute_merkle_root();
+        chain.add_block(funding).expect("funding block");
+        let funding_txid = chain.get_block_at_height(1).unwrap().transactions[0].txid();
+
+        let candidates = (0..n)
+            .map(|i| {
+                let mut tx = Transaction {
+                    version: 1,
+                    tx_type: TxType::Standard,
+                    inputs: vec![TxInput {
+                        prev_txid: funding_txid,
+                        prev_vout: i as u32,
+                        script_sig: vec![],
+                        sequence: u32::MAX,
+                    }],
+                    outputs: vec![TxOutput {
+                        value: 9_000,
+                        script_pubkey: script.clone(),
+                    }],
+                    lock_time: 0,
+                    claim_address: None,
+                    claim_signature: None,
+                };
+                sign(&mut tx, &script);
+                tx
+            })
+            .collect();
+
+        let prefix = Transaction {
+            version: 1,
+            tx_type: TxType::Coinbase,
+            inputs: vec![TxInput {
+                prev_txid: [0; 32],
+                prev_vout: u32::MAX,
+                script_sig: vec![1],
+                sequence: u32::MAX,
+            }],
+            outputs: vec![TxOutput {
+                value: 1,
+                script_pubkey: script.clone(),
+            }],
+            lock_time: 2,
+            claim_address: None,
+            claim_signature: None,
+        };
+        (chain, prefix, candidates, FUNDING_TIME + 1)
+    }
+
+    let mut group = c.benchmark_group("select_block_transactions");
+    group.sample_size(10);
+    for n in [100usize, 1_000, 5_000] {
+        let (mut chain, prefix, candidates, timestamp) = fixture(n);
+        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter_batched(
+                || candidates.clone(),
+                |candidates| {
+                    let kept = chain
+                        .select_block_transactions(&prefix, candidates, 2, timestamp)
+                        .expect("selection");
+                    black_box(kept.len())
+                },
+                criterion::BatchSize::SmallInput,
+            )
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_pure_functions,
@@ -277,5 +414,6 @@ criterion_group!(
     bench_add_block,
     bench_merkle_root,
     bench_sighash,
+    bench_select_block_transactions,
 );
 criterion_main!(benches);

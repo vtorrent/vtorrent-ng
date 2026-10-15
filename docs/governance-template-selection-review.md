@@ -118,13 +118,25 @@ never set it, so governance stayed inactive while the operator believed it was
 active. The store now exposes the regtest (non-fast) variant, and the daemon
 uses it. This is a test-seam gap, not a production path.
 
-### Unmeasured: selection cost
+### Measured: selection cost
 
 `select_block_transactions` fully applies every mempool candidate, including
 script verification and UTXO mutation. The previous filter ran only governance
-processing. Selection runs once per successful kernel, so the cost is amortized
-over a block, but it is a real increase for a large mempool and has not been
-measured. The 600-outpoint run used twelve transactions.
+processing. The cost is now measured by
+`benches/consensus_hotpath.rs::bench_select_block_transactions`, which builds a
+chain whose coinbase funds one output per candidate and signs one candidate per
+output, so the accept path is measured.
+
+| Candidates | Time | Per candidate |
+|---:|---:|---:|
+| 100 | 2.55 ms | 25.5 µs |
+| 1,000 | 26.0 ms | 26.0 µs |
+| 5,000 | 131.4 ms | 26.3 µs |
+
+The cost is linear at about 26 µs per candidate, so a full 10,000-transaction
+mempool costs about 260 ms per block attempt. Selection runs once per successful
+kernel, so this is amortized over a block. This is a release build on one host
+with valid signatures; the number is a single run, not a distribution.
 
 ### Untested: legacy-claim and swap rollback
 
