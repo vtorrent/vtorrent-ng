@@ -191,3 +191,18 @@ new tests used a period of 2 instead of 10.
 
 Remaining: legacy-claim and swap rollback regressions, a multi-proposal load
 run, and a reorg load scenario.
+
+## Fourth self-review
+
+`template_selection_keeps_a_valid_claim_and_rolls_back_a_failed_one` covers the
+legacy-claim path through selection. A valid bootstrap claim is kept and applies
+through real block validation, marking the address. A claim below the stake
+minimum fails the height-1 bootstrap check after the address is marked claimed;
+the address is not left claimed.
+
+The per-candidate rollback of `claimed_addresses` is not distinctly observable:
+the final `rollback_journal` restores the same set, and no later candidate reads
+another address's claim state. The test therefore covers the claim path and the
+end state, not the intermediate rollback in isolation. A swap transaction is
+standard-shaped and uses the same path as the tested spends, so no separate test
+was added.

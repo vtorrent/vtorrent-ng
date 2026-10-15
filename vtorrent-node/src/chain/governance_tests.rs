@@ -1078,3 +1078,74 @@ fn governance_stays_inactive_without_a_deployment() {
     let chain = signalling_chain(6, SIGNAL, None);
     assert!(!chain.governance_active(6));
 }
+
+/// Build a signed legacy claim for `sk` with the given snapshot balance.
+fn legacy_claim(sk: &secp256k1::SecretKey, balance: u64) -> (String, Transaction) {
+    use crate::consensus::claim_message_hash_v2;
+    use secp256k1::{Message, PublicKey, Secp256k1};
+
+    let secp = Secp256k1::new();
+    let pk = PublicKey::from_secret_key(&secp, sk);
+    let address = vtorrent_core::address::Address::from_pubkey(&pk, true, 70).to_string();
+    crate::genesis::set_test_legacy_balance(&address, balance);
+    let outputs = vec![TxOutput {
+        value: balance,
+        script_pubkey: vtorrent_core::address::Address::parse(&address)
+            .unwrap()
+            .p2pkh_script_pubkey(),
+    }];
+    let msg = Message::from_digest(claim_message_hash_v2(&address, &outputs));
+    let (rec_id, sig64) = secp.sign_ecdsa_recoverable(&msg, sk).serialize_compact();
+    let mut signature = vec![27 + rec_id.to_i32() as u8 + 4];
+    signature.extend_from_slice(&sig64);
+    let claim = Transaction {
+        version: 1,
+        tx_type: TxType::LegacyClaim,
+        inputs: vec![],
+        outputs,
+        lock_time: 1,
+        claim_address: Some(address.clone()),
+        claim_signature: Some(signature),
+    };
+    (address, claim)
+}
+
+#[test]
+fn template_selection_keeps_a_valid_claim_and_rolls_back_a_failed_one() {
+    // A claim at or above the stake minimum satisfies the height-1 bootstrap
+    // check and is kept.
+    let (address_ok, claim_ok) = legacy_claim(&key(42), COIN);
+    let mut chain = Chain::new_regtest().unwrap();
+    let kept = select_for_pow(&mut chain, vec![claim_ok], 1, FUNDING_TIME);
+    assert_eq!(kept.len(), 1, "a valid bootstrap claim is kept");
+    assert!(
+        !chain.claimed_addresses.contains(&address_ok),
+        "selection restores the claim set"
+    );
+    // The kept claim applies through real block validation.
+    let candidate = block(
+        &chain,
+        chain.best_hash().unwrap(),
+        1,
+        FUNDING_TIME,
+        90,
+        kept,
+    );
+    chain.add_block(candidate).unwrap();
+    assert!(
+        chain.claimed_addresses.contains(&address_ok),
+        "the accepted claim marks the address"
+    );
+
+    // A claim below the stake minimum fails the bootstrap check *after* the
+    // address is marked claimed. The rollback must unmark it, or the funds
+    // could never be claimed again.
+    let (address_bad, claim_bad) = legacy_claim(&key(43), 1);
+    let mut chain = Chain::new_regtest().unwrap();
+    let kept = select_for_pow(&mut chain, vec![claim_bad], 1, FUNDING_TIME);
+    assert!(kept.is_empty(), "a failed bootstrap claim is not kept");
+    assert!(
+        !chain.claimed_addresses.contains(&address_bad),
+        "the failed claim address must be rolled back"
+    );
+}
