@@ -118,5 +118,6 @@ repair adds no reconstruction-specific budget. Concurrent-peer request cost
 and chain-lock latency remain unmeasured.
 
 This repair does not enable SPV PoS header acceptance, which remains
-fail-closed, or exercise a kill during governance-reorg disk writes. No
-production deployment is scheduled.
+fail-closed. A subsequent scenario covers SIGKILL between governance-reorg
+store operations in [the interrupted-reorg test](governance-interrupted-reorg-test.md).
+No production deployment is scheduled.

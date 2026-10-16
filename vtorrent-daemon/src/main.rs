@@ -29,6 +29,14 @@ use std::sync::Arc;
 mod config;
 mod sync_status;
 
+#[cfg(feature = "test-util")]
+async fn pause_reorg_write(requested: Option<usize>, completed: usize) {
+    if requested == Some(completed) {
+        tracing::info!("Test reorg persistence paused after {completed} writes");
+        std::future::pending::<()>().await;
+    }
+}
+
 use clap::Parser;
 use config::{validate_startup_config, Cli};
 use tracing_subscriber::EnvFilter;
@@ -455,6 +463,16 @@ async fn main() -> anyhow::Result<()> {
         let rpc_broadcaster = rpc_state.events.clone();
         let store_for_bridge = Arc::clone(&block_store);
         let block_body_cache = cli.block_body_cache;
+        #[cfg(feature = "test-util")]
+        let reorg_pause = match std::env::var("VTR_TEST_REORG_PAUSE_AFTER") {
+            Ok(raw) => {
+                anyhow::ensure!(cli.regtest, "VTR_TEST_REORG_PAUSE_AFTER requires --regtest");
+                Some(raw.parse::<usize>().map_err(|e| {
+                    anyhow::anyhow!("VTR_TEST_REORG_PAUSE_AFTER: invalid boundary {raw:?}: {e}")
+                })?)
+            }
+            Err(_) => None,
+        };
         let sync_status = sync_status::SyncStatus::new(&rpc_state);
         let spv_chain_ref = Arc::clone(&rpc_state.spv_chain);
         let chain_ref = Arc::clone(&rpc_state.chain);
@@ -608,6 +626,10 @@ async fn main() -> anyhow::Result<()> {
                                 // record the fork blocks now canonical. Without
                                 // this the on-disk state diverges from memory and
                                 // the next restart fails replay.
+                                #[cfg(feature = "test-util")]
+                                pause_reorg_write(reorg_pause, 0).await;
+                                #[cfg(feature = "test-util")]
+                                let mut completed = 0;
                                 for rb in rolled_back_blocks.iter() {
                                     if let Err(e) = store_for_bridge.rollback_tip(
                                         &rb.utxos_to_restore,
@@ -620,6 +642,11 @@ async fn main() -> anyhow::Result<()> {
                                             rb.height,
                                             e
                                         );
+                                    }
+                                    #[cfg(feature = "test-util")]
+                                    {
+                                        completed += 1;
+                                        pause_reorg_write(reorg_pause, completed).await;
                                     }
                                 }
                                 for fb in applied_fork_blocks.iter() {
@@ -635,6 +662,11 @@ async fn main() -> anyhow::Result<()> {
                                             fb.height,
                                             e
                                         );
+                                    }
+                                    #[cfg(feature = "test-util")]
+                                    {
+                                        completed += 1;
+                                        pause_reorg_write(reorg_pause, completed).await;
                                     }
                                 }
 

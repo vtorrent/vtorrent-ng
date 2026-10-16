@@ -686,3 +686,141 @@ async fn fetch_proof(daemon: &Daemon, hash: [u8; 32]) -> vtorrent_spv::stake::St
     probe.disconnect(addr).await;
     proof
 }
+
+fn assert_persisted_governance(directory: &Path, expected: &Chain) {
+    let store = BlockStore::open(directory.join("chain.db")).unwrap();
+    assert_eq!(store.best_height().unwrap(), expected.best_height());
+    assert_eq!(store.best_hash().unwrap(), expected.best_hash());
+    for height in 1..=expected.best_height() {
+        assert_eq!(
+            serde_json::to_value(store.get_block_at_height(height).unwrap().unwrap()).unwrap(),
+            serde_json::to_value(expected.get_block_at_height(height).unwrap()).unwrap()
+        );
+    }
+    assert!(store
+        .get_block_at_height(expected.best_height() + 1)
+        .unwrap()
+        .is_none());
+    let mut actual = store.all_utxos().unwrap();
+    actual.sort_by_key(|u| (u.txid, u.vout));
+    let wanted: Vec<_> = expected
+        .get_utxo_set()
+        .values()
+        .filter(|u| u.height > 0)
+        .cloned()
+        .collect();
+    assert_eq!(actual, wanted);
+    assert!(store.all_claimed_addresses().unwrap().is_empty());
+    let loaded = store
+        .load_into_regtest_chain_with_cache_and_governance(4096, 2)
+        .unwrap();
+    assert_eq!(loaded.best_hash(), expected.best_hash());
+    assert_eq!(loaded.get_utxo_set(), expected.get_utxo_set());
+    assert_eq!(loaded.governance, expected.governance);
+    assert_eq!(loaded.params(), expected.params());
+    assert_eq!(loaded.total_supply(), expected.total_supply());
+    assert_eq!(loaded.total_staked(), expected.total_staked());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn governance_pos_reorg_recovers_at_every_daemon_write_boundary() {
+    let _scenario = RECOVERY_SCENARIO.lock().await;
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = fixture(true);
+    let peer_dir = directory.path().join("winning-peer");
+    let winning = persist(&peer_dir, &fixture.winning);
+    for boundary in 0..=5 {
+        let case_dir = directory.path().join(format!("boundary-{boundary}"));
+        persist(&case_dir, &fixture.old);
+        let mut receiver = Daemon::start_with_reorg_pause(
+            &case_dir,
+            "interrupted.log",
+            None,
+            Some(2),
+            Some(boundary),
+        )
+        .await;
+        let peer = Daemon::start_with_activation(
+            &peer_dir,
+            &format!("peer-{boundary}.log"),
+            Some(&receiver.p2p),
+            Some(2),
+        )
+        .await;
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                assert!(
+                    receiver.child.try_wait().unwrap().is_none(),
+                    "receiver exited at boundary {boundary}: {}",
+                    receiver.logs()
+                );
+                if receiver.logs().contains(&format!(
+                    "Test reorg persistence paused after {boundary} writes"
+                )) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("boundary {boundary} not reached: {}", receiver.logs()));
+        receiver.stop(true).await;
+        peer.stop(false).await;
+
+        let prefix = if boundary <= 2 {
+            &fixture.old[..fixture.old.len() - boundary]
+        } else {
+            &fixture.winning[..boundary]
+        };
+        let expected = replay(prefix);
+        assert_persisted_governance(&case_dir, &expected);
+        let recovered =
+            Daemon::start_with_activation(&case_dir, "recovered.log", None, Some(2)).await;
+        recovered
+            .wait_tip(&hex::encode(expected.best_hash().unwrap()))
+            .await;
+        assert_governance(&recovered, &expected).await;
+        recovered.stop(false).await;
+        assert_persisted_governance(&case_dir, &expected);
+
+        let recovered = Daemon::start_with_activation(&case_dir, "resync.log", None, Some(2)).await;
+        let peer = Daemon::start_with_activation(
+            &peer_dir,
+            &format!("resync-peer-{boundary}.log"),
+            Some(&recovered.p2p),
+            Some(2),
+        )
+        .await;
+        recovered
+            .wait_tip(&hex::encode(winning.best_hash().unwrap()))
+            .await;
+        assert_governance(&recovered, &winning).await;
+        peer.stop(false).await;
+        assert_eq!(
+            recovered.mint(100 + boundary as u8).await["block_height"],
+            6
+        );
+        recovered.persisted(6).await;
+        recovered.stop(false).await;
+        let mut final_expected = replay(&fixture.winning);
+        {
+            let store = BlockStore::open(case_dir.join("chain.db")).unwrap();
+            final_expected
+                .add_block(store.get_block_at_height(6).unwrap().unwrap())
+                .unwrap();
+        }
+        assert_persisted_governance(&case_dir, &final_expected);
+        for block in fixture.old.iter().skip(2) {
+            for tx in &block.transactions {
+                assert!(final_expected.get_transaction(&tx.txid()).is_none());
+            }
+        }
+        let restarted = Daemon::start_with_activation(&case_dir, "final.log", None, Some(2)).await;
+        restarted
+            .wait_tip(&hex::encode(final_expected.best_hash().unwrap()))
+            .await;
+        assert_governance(&restarted, &final_expected).await;
+        restarted.stop(false).await;
+        eprintln!("Verified governance PoS daemon reorg boundary {boundary}/5");
+    }
+}

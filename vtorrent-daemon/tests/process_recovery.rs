@@ -42,6 +42,16 @@ impl Daemon {
         seed: Option<&str>,
         activation: Option<u32>,
     ) -> Self {
+        Self::start_with_reorg_pause(directory, log_name, seed, activation, None).await
+    }
+
+    async fn start_with_reorg_pause(
+        directory: &Path,
+        log_name: &str,
+        seed: Option<&str>,
+        activation: Option<u32>,
+        reorg_pause: Option<usize>,
+    ) -> Self {
         let started = Instant::now();
         std::fs::create_dir_all(directory).unwrap();
         let rpc_port = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -77,6 +87,7 @@ impl Daemon {
             .env_remove("VTORRENT_RPC_API_KEY")
             .env_remove("RUST_LOG")
             .env_remove("VTR_GOVERNANCE_TEST_ACTIVATION")
+            .env_remove("VTR_TEST_REORG_PAUSE_AFTER")
             .stdout(Stdio::from(output.try_clone().unwrap()))
             .stderr(Stdio::from(output))
             .kill_on_drop(true);
@@ -89,6 +100,10 @@ impl Daemon {
                 "governance recovery tests require test-util"
             );
             command.env("VTR_GOVERNANCE_TEST_ACTIVATION", height.to_string());
+        }
+        if let Some(boundary) = reorg_pause {
+            assert!(cfg!(feature = "test-util"));
+            command.env("VTR_TEST_REORG_PAUSE_AFTER", boundary.to_string());
         }
         drop(rpc_port);
         drop(p2p_port);

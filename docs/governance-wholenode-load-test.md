@@ -166,7 +166,8 @@ Still open on the load path:
 
 - Larger repeated multi-proposal runs. The completed two-wave case uses 32
   outpoints and is one observation.
-- Interrupted governance-reorg writes and historical proof availability beyond
-  the undo window. The real-peer branch tests are recorded in
+- Historical proof availability beyond the undo window. The real-peer branch
+  tests are recorded in
   `docs/governance-reorg-load-test.md` and
-  `docs/governance-pos-fork-proof-test.md`.
+  `docs/governance-pos-fork-proof-test.md`. SIGKILL recovery between reorg
+  store operations is recorded in `docs/governance-interrupted-reorg-test.md`.
