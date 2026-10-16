@@ -75,5 +75,6 @@ cargo clippy -p vtorrent-daemon --all-targets -- -D warnings
 The test interrupts the sequence between committed store operations. It does
 not interrupt a redb transaction internally, simulate power loss, or inject
 I/O failures. Both proposals remain open, so these cases do not test a crash
-at proposal decision or parameter activation. Proof reconstruction request
-cost remains unmeasured. Governance activation remains unscheduled.
+at proposal decision or parameter activation. A separate
+[proof request cost experiment](governance-proof-request-cost.md) measures
+finite multi-peer bursts. Governance activation remains unscheduled.

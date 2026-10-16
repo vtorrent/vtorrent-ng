@@ -114,8 +114,9 @@ measurement. A cold-cache P2P request copies the full UTXO set and builds a
 Merkle tree while holding the chain mutex. Successful reconstruction populates
 the bounded proof cache. Requests outside retained history return before
 copying the UTXO set. The existing per-peer message budget applies, but this
-repair adds no reconstruction-specific budget. Concurrent-peer request cost
-and chain-lock latency remain unmeasured.
+repair adds no reconstruction-specific budget. A subsequent
+[proof request cost experiment](governance-proof-request-cost.md) measures
+finite multi-peer bursts and chain-lock latency.
 
 This repair does not enable SPV PoS header acceptance, which remains
 fail-closed. A subsequent scenario covers SIGKILL between governance-reorg

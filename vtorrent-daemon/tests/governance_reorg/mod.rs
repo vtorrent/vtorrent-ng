@@ -17,6 +17,8 @@ use vtorrent_node::{
 const VOTERS: usize = 32;
 const FUNDING_TIME: u32 = 1_700_000_001;
 
+mod proof_load;
+
 fn key(owner: u8) -> SecretKey {
     SecretKey::from_slice(&[owner; 32]).unwrap()
 }

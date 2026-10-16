@@ -1972,11 +1972,21 @@ pub(crate) async fn dispatch_message(
             if let Ok(req) = decode_for_peer::<GetProofMsg>(&msg.payload, peer_version) {
                 let mut proof = node.stake_proofs.read().await.get(&req.block_hash).cloned();
                 if proof.is_none() {
-                    proof = node
-                        .chain
-                        .lock()
-                        .await
-                        .reconstruct_stake_proof(&req.block_hash);
+                    #[cfg(feature = "test-util")]
+                    let requested = std::time::Instant::now();
+                    let chain = node.chain.lock().await;
+                    #[cfg(feature = "test-util")]
+                    let acquired = std::time::Instant::now();
+                    proof = chain.reconstruct_stake_proof(&req.block_hash);
+                    drop(chain);
+                    #[cfg(feature = "test-util")]
+                    tracing::info!(
+                        "proof_reconstruction hash={} wait_us={} hold_us={} found={}",
+                        hex::encode(req.block_hash),
+                        acquired.duration_since(requested).as_micros(),
+                        acquired.elapsed().as_micros(),
+                        proof.is_some()
+                    );
                     if let Some(rebuilt) = &proof {
                         node.cache_stake_proof(req.block_hash, rebuilt.clone())
                             .await;
