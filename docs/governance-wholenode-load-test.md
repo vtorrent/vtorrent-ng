@@ -15,13 +15,14 @@ The driver `vtorrent-node/examples/governance_load.rs`:
    `VTR_GOVERNANCE_TEST_ACTIVATION` override, so governance rules run from
    height 2.
 2. Imports a staking key, unlocks the wallet, and starts staking.
-3. Funds a proposer, fee payers, and voters through the faucet.
-4. Waits for the fast-regtest 60-second minimum stake age.
-5. Broadcasts a signed proposal, waits for a staked block to confirm it, then
-   broadcasts signed votes batched into relayed transactions.
-6. Verifies the tallies and locks through the authoritative governance RPC.
+3. Funds proposers, independent fee payers, and voters through the faucet.
+4. Waits for maturity using the tip timestamp and active minimum stake age.
+5. Broadcasts signed proposals, waits for confirmation, then submits voting
+   waves. Alternate waves use ascending and descending proposal deadlines.
+6. Verifies each proposal's tally by ID and each outpoint's longest lock through
+   the authoritative governance RPC after every voting stage.
 7. Samples the daemon's `VmRSS` from `/proc/<pid>/status` every two seconds
-   throughout, including a tail period after the votes confirm.
+   throughout, with synchronous samples at phase boundaries and an optional tail.
 
 The workload uses the production paths: the public broadcast endpoint admits
 transactions through `Mempool::admit_with_chain_fee`, the staking loop includes
@@ -29,6 +30,10 @@ them in a stake block, and `Chain::add_block` applies the governance rules and
 journals the undo record.
 
 ## Results
+
+This section records the original single-proposal run. The later two-proposal,
+two-wave run and its stronger restart check are recorded in
+`docs/governance-multiproposal-load-test.md`.
 
 One run, 600 voters, 50 votes per relayed transaction (12 transactions):
 
@@ -107,17 +112,21 @@ governance-only filter are in `docs/governance-template-selection-review.md`.
 
 ## Restart rebuilds governance state
 
-The driver's `--restart` flag kills the daemon after the votes confirm, starts
-it again on the same data directory, and compares the proposals and locks from
-the governance RPC before and after. A four-outpoint run reported
-`restart_verified: true`: replay rebuilt identical proposals and locks.
+The current `--restart` check stops staking, requests graceful SIGTERM shutdown,
+and waits for the child to exit before restarting on the same data directory.
+It compares the tip height and hash, parameters, proposal rows, and lock rows.
+Derived `remaining_blocks` values are checked against the tip before being
+excluded from the normalized comparison. Both session logs are retained.
+
+The original four-outpoint check used a forced kill and compared proposals and
+locks. It reported `restart_verified: true`. That historical result does not
+replace a governance crash-recovery or competing-branch load test.
 
 This exposed a gap in the test seam. The daemon previously applied the
 `VTR_GOVERNANCE_TEST_ACTIVATION` override after the chain load, so replay ran
-with governance inactive and rebuilt no governance state. Production replay is
-correct because `governance_active` reads the deterministic deployment, but the
-seam did not reproduce it. The store now applies the override before replay
-through `load_into_fast_regtest_chain_with_cache_and_governance`.
+with governance inactive and rebuilt no governance state. Production replay
+uses the scheduled deployment. The store now applies the test override before
+replay in both normal and fast regtest modes.
 
 Red-check: with the override applied after the load, the same run failed with
 `governance state changed across restart: proposals_match=false
@@ -134,15 +143,17 @@ target/release/examples/governance_load \
     --voters 600 --votes-per-tx 50 --tail-secs 200
 ```
 
-The driver writes the daemon's output to `<data-dir>/daemon.log` and prints a
-JSON report. Add `--restart` to run the restart check.
+The driver appends both daemon sessions to `<data-dir>/daemon.log`, saves
+`report.json`, and prints one JSON report. Add `--restart` for the restart check,
+`--proposals 2` for two proposals with different deadlines, and
+`--voting-waves 2` to divide the voters into two cohorts.
 
 By default the driver creates a fresh temporary data directory and removes it
-when the run ends. If you pass `--data-dir`, the directory must not exist or
-must be empty; the driver never deletes existing files. It fails before
-starting the daemon when either port is already bound, so it cannot silently
-talk to another process such as a soak-fleet docker proxy. The default ports are
-22825 (RPC) and 22826 (P2P).
+after a successful run. Failed runs retain artifacts and print their location.
+If you pass `--data-dir`, the directory must not exist or must be empty; the
+driver never deletes existing files. It checks port availability before each
+spawn and checks child liveness during RPC readiness. The default ports are
+22825 (RPC) and 22826 (P2P). Startup also checks the regtest network label.
 
 ## Remaining follow-ups
 
@@ -153,6 +164,7 @@ test does not schedule activation or change the running fleet.
 
 Still open on the load path:
 
-- Multiple proposals and voting waves in one run, including overlapping locks.
+- Larger repeated multi-proposal runs. The completed two-wave case uses 32
+  outpoints and is one observation.
 - A reorg load scenario. The restart check covers replay; it does not exercise a
   competing branch.

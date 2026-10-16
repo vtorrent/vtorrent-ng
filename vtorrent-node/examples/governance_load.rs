@@ -1,8 +1,8 @@
 //! Whole-node governance load test driver.
 //!
 //! Spawns a regtest daemon with the test-only governance activation override,
-//! funds a proposer, fee payers, and voters through the faucet, submits a
-//! signed proposal and batches of signed votes through the public broadcast
+//! funds proposers, fee payers, and voters through the faucet, submits
+//! signed proposals and waves of votes through the public broadcast
 //! endpoint, and samples the daemon's RSS throughout. See
 //! `docs/governance-wholenode-load-test.md`.
 //!
@@ -14,11 +14,13 @@
 //!     --daemon target/release/vtorrent-daemon --data-dir /tmp/vtr-load-test
 //! ```
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use clap::Parser;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::{
+    collections::BTreeMap,
+    ops::Range,
     path::PathBuf,
     process::{Child, Command, Stdio},
     sync::{
@@ -31,7 +33,8 @@ use vtorrent_node::{
     block::{Transaction, TxInput, TxOutput, TxType},
     consensus::COIN,
     governance::{
-        proposal_id_of, ParamId, Proposal, SignedVote, Vote, VoteChoice, MIN_PROPOSAL_DEPOSIT,
+        proposal_id_of, ParamId, Proposal, SignedVote, Vote, VoteChoice, DEFAULT_LOCK_GRACE_BLOCKS,
+        MIN_PROPOSAL_DEPOSIT,
     },
 };
 
@@ -51,7 +54,7 @@ struct Args {
     daemon: PathBuf,
     /// Data directory for the daemon. Must not exist or must be empty; the
     /// driver never deletes existing files. Defaults to a fresh temporary
-    /// directory that is removed when the run ends.
+    /// directory removed on success and retained on failure.
     #[arg(long)]
     data_dir: Option<PathBuf>,
     #[arg(long, default_value_t = 22825)]
@@ -64,6 +67,12 @@ struct Args {
     /// Vote OP_RETURN outputs carried per relayed transaction.
     #[arg(long, default_value_t = 50)]
     votes_per_tx: usize,
+    /// Proposals with distinct voting deadlines, all voted on by the same cohort.
+    #[arg(long, default_value_t = 1)]
+    proposals: usize,
+    /// Split voters across waves; alternate ascending and descending deadline order.
+    #[arg(long, default_value_t = 1)]
+    voting_waves: usize,
     /// Seconds to wait for faucet-minted UTXOs to reach the 60-second
     /// fast-regtest minimum stake age.
     #[arg(long, default_value_t = 70)]
@@ -84,6 +93,30 @@ struct Rss {
     /// Daemon pid to sample. Updated on restart so sampling follows the process.
     pid: AtomicU32,
     stop: AtomicBool,
+    missed_samples: AtomicU64,
+}
+
+impl Rss {
+    fn sample(&self) -> Result<u64> {
+        let pid = self.pid.load(Ordering::Relaxed);
+        ensure!(pid != 0, "no running daemon to sample");
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status"))
+            .with_context(|| format!("sampling daemon PID {pid}"))?;
+        let kib: u64 = status
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("VmRSS:")?
+                    .split_whitespace()
+                    .next()?
+                    .parse()
+                    .ok()
+            })
+            .context("daemon status has no VmRSS")?;
+        ensure!(kib > 0, "daemon VmRSS is zero");
+        self.last_kib.store(kib, Ordering::Relaxed);
+        self.peak_kib.fetch_max(kib, Ordering::Relaxed);
+        Ok(kib)
+    }
 }
 
 fn spawn_sampler(rss: Arc<Rss>) -> std::thread::JoinHandle<()> {
@@ -91,18 +124,8 @@ fn spawn_sampler(rss: Arc<Rss>) -> std::thread::JoinHandle<()> {
         if rss.stop.load(Ordering::Relaxed) {
             return;
         }
-        let pid = rss.pid.load(Ordering::Relaxed);
-        if let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) {
-            if let Some(kib) = status.lines().find_map(|line| {
-                line.strip_prefix("VmRSS:")?
-                    .split_whitespace()
-                    .next()?
-                    .parse()
-                    .ok()
-            }) {
-                rss.last_kib.store(kib, Ordering::Relaxed);
-                rss.peak_kib.fetch_max(kib, Ordering::Relaxed);
-            }
+        if rss.pid.load(Ordering::Relaxed) != 0 && rss.sample().is_err() {
+            rss.missed_samples.fetch_add(1, Ordering::Relaxed);
         }
         std::thread::sleep(Duration::from_secs(2));
     })
@@ -118,6 +141,223 @@ impl Drop for Daemon {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+impl Daemon {
+    fn ensure_running(&mut self) -> Result<()> {
+        if let Some(status) = self.child.try_wait()? {
+            bail!("load-test daemon exited: {status}");
+        }
+        Ok(())
+    }
+
+    async fn shutdown(&mut self) -> Result<()> {
+        self.ensure_running()?;
+        let status = Command::new("kill")
+            .args(["-TERM", &self.pid.to_string()])
+            .status()?;
+        ensure!(status.success(), "could not signal load-test daemon");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            if let Some(status) = self.child.try_wait()? {
+                ensure!(status.success(), "daemon shutdown failed: {status}");
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        bail!("daemon did not shut down gracefully within 30 seconds")
+    }
+}
+
+fn voting_ranges(voters: usize, waves: usize) -> Result<Vec<Range<usize>>> {
+    ensure!(
+        waves > 0 && waves <= voters,
+        "voting waves must be between 1 and the voter count"
+    );
+    let base = voters / waves;
+    let remainder = voters % waves;
+    Ok((0..waves)
+        .map(|wave| {
+            let start = wave * base + wave.min(remainder);
+            start..start + base + usize::from(wave < remainder)
+        })
+        .collect())
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+struct GovernanceSnapshot {
+    height: u64,
+    hash: String,
+    proposals: Vec<Value>,
+    locks: Vec<Value>,
+    params: Value,
+}
+
+fn number(value: &Value, field: &str) -> Result<u64> {
+    value[field]
+        .as_u64()
+        .with_context(|| format!("missing or invalid {field}"))
+}
+
+fn text<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
+    value[field]
+        .as_str()
+        .with_context(|| format!("missing or invalid {field}"))
+}
+
+async fn snapshot(client: &Client, base: &str) -> Result<GovernanceSnapshot> {
+    for _ in 0..5 {
+        let before = get(client, base, "/info").await?;
+        let proposals = get(client, base, "/governance/proposals").await?;
+        let locks = get(client, base, "/governance/locks").await?;
+        let params = get(client, base, "/governance/params").await?;
+        let info = get(client, base, "/info").await?;
+        let height = number(&info, "block_height")?;
+        if number(&proposals, "tip_height")? != height
+            || number(&locks, "tip_height")? != height
+            || number(&before, "block_height")? != height
+            || text(&before, "best_block_hash")? != text(&info, "best_block_hash")?
+        {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        }
+        let mut proposals = proposals["proposals"]
+            .as_array()
+            .context("proposals array missing")?
+            .clone();
+        let mut locks = locks["locks"]
+            .as_array()
+            .context("locks array missing")?
+            .clone();
+        for lock in &mut locks {
+            ensure!(
+                number(lock, "remaining_blocks")?
+                    == number(lock, "unlock_height")?.saturating_sub(height),
+                "remaining lock duration disagrees with the snapshot height"
+            );
+            lock.as_object_mut()
+                .context("lock is not an object")?
+                .remove("remaining_blocks");
+        }
+        proposals.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+        locks.sort_by(|a, b| {
+            (a["txid"].as_str(), a["vout"].as_u64()).cmp(&(b["txid"].as_str(), b["vout"].as_u64()))
+        });
+        return Ok(GovernanceSnapshot {
+            height,
+            hash: text(&info, "best_block_hash")?.to_owned(),
+            proposals,
+            locks,
+            params,
+        });
+    }
+    bail!("could not obtain governance state at a consistent tip")
+}
+
+struct TrackedProposal {
+    id: [u8; 8],
+    proposal: Proposal,
+    height: u32,
+}
+
+struct ExpectedVotes {
+    counts: Vec<usize>,
+    longest: Vec<Option<usize>>,
+    voters: BTreeMap<String, (usize, String)>,
+}
+
+impl ExpectedVotes {
+    fn cast(&mut self, range: Range<usize>, proposal: usize, tracked: &[TrackedProposal]) {
+        self.counts[proposal] += range.len();
+        for voter in range {
+            if self.longest[voter].is_none_or(|old| {
+                tracked[old].proposal.voting_end < tracked[proposal].proposal.voting_end
+            }) {
+                self.longest[voter] = Some(proposal);
+            }
+        }
+    }
+}
+
+fn verify_state(
+    state: &GovernanceSnapshot,
+    tracked: &[TrackedProposal],
+    expected: &ExpectedVotes,
+) -> Result<()> {
+    ensure!(
+        state.proposals.len() == tracked.len(),
+        "proposal count mismatch"
+    );
+    for (i, tracked) in tracked.iter().enumerate() {
+        let id = hex::encode(tracked.id);
+        let row = state
+            .proposals
+            .iter()
+            .find(|row| row["id"] == id)
+            .context("expected proposal missing")?;
+        ensure!(
+            number(row, "yes")? == expected.counts[i] as u64 * VOTER_MINT_SATS
+                && number(row, "no")? == 0
+                && number(row, "abstain")? == 0,
+            "proposal {id} tally mismatch"
+        );
+        ensure!(
+            number(row, "voting_end")? == u64::from(tracked.proposal.voting_end)
+                && number(row, "activation_height")?
+                    == u64::from(tracked.proposal.activation_height)
+                && number(row, "new_value")? == tracked.proposal.new_value
+                && number(row, "created_height")? == u64::from(tracked.height),
+            "proposal {id} metadata mismatch"
+        );
+        ensure!(
+            text(row, "param")? == format!("{:?}", tracked.proposal.param),
+            "proposal parameter mismatch"
+        );
+        ensure!(
+            state.height < u64::from(tracked.proposal.voting_end)
+                && ["decided", "passed", "applied", "activation_failed"]
+                    .iter()
+                    .all(|field| row[*field].as_bool() == Some(false)),
+            "proposal unexpectedly left its open voting window"
+        );
+    }
+    ensure!(
+        state.locks.len() == expected.longest.iter().filter(|id| id.is_some()).count(),
+        "lock count mismatch"
+    );
+    let mut seen = std::collections::BTreeSet::new();
+    for lock in &state.locks {
+        let txid = text(lock, "txid")?;
+        ensure!(seen.insert(txid), "duplicate voting lock");
+        let (index, owner) = expected
+            .voters
+            .get(txid)
+            .context("lock for unknown voting outpoint")?;
+        let p = expected.longest[*index].context("lock for a voter that has not voted")?;
+        ensure!(
+            number(lock, "vout")? == 0
+                && text(lock, "voter")? == owner
+                && number(lock, "unlock_height")?
+                    == u64::from(tracked[p].proposal.voting_end + DEFAULT_LOCK_GRACE_BLOCKS)
+                && text(lock, "proposal_id")? == hex::encode(tracked[p].id),
+            "voting lock does not match the longest proposal"
+        );
+    }
+    Ok(())
+}
+
+fn record_phase(
+    rss: &Rss,
+    name: &str,
+    state: &GovernanceSnapshot,
+    started: Instant,
+) -> Result<Value> {
+    Ok(
+        json!({ "phase": name, "elapsed_secs": started.elapsed().as_secs(),
+        "pid": rss.pid.load(Ordering::Relaxed), "tip_height": state.height,
+        "tip_hash": state.hash, "rss_kib": rss.sample()?, "locks": state.locks.len(),
+        "tallies": state.proposals.iter().map(|p| json!({"id": p["id"], "yes_sats": p["yes"]})).collect::<Vec<_>>() }),
+    )
 }
 
 /// Deterministic key derivation: distinct 32-byte secrets per (prefix, index).
@@ -176,9 +416,19 @@ struct Mint {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    if args.voters == 0 || args.votes_per_tx == 0 {
-        bail!("--voters and --votes-per-tx must be positive");
-    }
+    ensure!(
+        (1..=100_000).contains(&args.voters),
+        "--voters must be between 1 and 100000"
+    );
+    ensure!(
+        (1..=1000).contains(&args.votes_per_tx),
+        "--votes-per-tx must be between 1 and 1000"
+    );
+    ensure!(
+        (1..=8).contains(&args.proposals),
+        "--proposals must be between 1 and 8"
+    );
+    let ranges = voting_ranges(args.voters, args.voting_waves)?;
     let base = format!("http://127.0.0.1:{}", args.rpc_port);
     let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
 
@@ -186,9 +436,10 @@ async fn main() -> Result<()> {
     // Resolve the data directory without ever deleting existing files. A
     // supplied directory must be empty; the default is a fresh temporary
     // directory held for the run and removed on drop.
-    let _temp_guard;
+    let temp_guard;
     let data_dir = match &args.data_dir {
         Some(dir) => {
+            temp_guard = None;
             if dir.exists() {
                 if std::fs::read_dir(dir)?.next().is_some() {
                     bail!(
@@ -206,7 +457,7 @@ async fn main() -> Result<()> {
                 .prefix("vtr-governance-load-")
                 .tempdir()?;
             let path = tmp.path().to_path_buf();
-            _temp_guard = Some(tmp);
+            temp_guard = Some(tmp);
             path
         }
     };
@@ -217,28 +468,36 @@ async fn main() -> Result<()> {
         last_kib: AtomicU64::new(0),
         pid: AtomicU32::new(daemon.pid),
         stop: AtomicBool::new(false),
+        missed_samples: AtomicU64::new(0),
     });
     let sampler = spawn_sampler(Arc::clone(&rss));
     let started = Instant::now();
 
-    let result = workload(&args, &data_dir, &base, &client, &rss, daemon).await;
+    let result = workload(&args, &data_dir, &base, &client, &rss, daemon, ranges).await;
 
     rss.stop.store(true, Ordering::Relaxed);
     let _ = sampler.join();
 
-    let report = json!({
-        "voters": args.voters,
-        "votes_per_tx": args.votes_per_tx,
-        "duration_secs": started.elapsed().as_secs(),
-        "rss_kib": {
-            "peak": rss.peak_kib.load(Ordering::Relaxed),
-            "final": rss.last_kib.load(Ordering::Relaxed),
-        },
-        "ok": result.is_ok(),
-    });
-    result?;
-    println!("{}", serde_json::to_string_pretty(&report)?);
-    Ok(())
+    match result {
+        Ok(mut report) => {
+            report["duration_secs"] = json!(started.elapsed().as_secs());
+            report["data_dir"] = json!(data_dir);
+            report["rss_kib"] = json!({ "observed_peak": rss.peak_kib.load(Ordering::Relaxed),
+                "last_live_sample": rss.last_kib.load(Ordering::Relaxed),
+                "missed_periodic_samples": rss.missed_samples.load(Ordering::Relaxed) });
+            let encoded = serde_json::to_string_pretty(&report)?;
+            std::fs::write(data_dir.join("report.json"), &encoded)?;
+            println!("{encoded}");
+            Ok(())
+        }
+        Err(error) => {
+            let retained = temp_guard.map(|tmp| tmp.keep()).unwrap_or(data_dir);
+            Err(error.context(format!(
+                "load test failed; artifacts retained at {}",
+                retained.display()
+            )))
+        }
+    }
 }
 
 async fn workload(
@@ -247,22 +506,31 @@ async fn workload(
     base: &str,
     client: &Client,
     rss: &Arc<Rss>,
-    daemon: Daemon,
-) -> Result<()> {
-    let pid_sample = |rss: &Arc<Rss>| rss.last_kib.load(Ordering::Relaxed);
-    wait_for_rpc(client, base).await?;
-    let startup_rss = pid_sample(rss);
-
-    // ── Wallet: import a staking key, unlock, mint, start staking ────────────
+    mut daemon: Daemon,
+    ranges: Vec<Range<usize>>,
+) -> Result<Value> {
+    let started = Instant::now();
+    let mut phases = Vec::new();
+    wait_for_rpc(client, base, &mut daemon).await?;
+    let initial = snapshot(client, base).await?;
+    ensure!(
+        initial.height == 0 && initial.proposals.is_empty() && initial.locks.is_empty(),
+        "daemon did not start with a fresh chain"
+    );
+    phases.push(record_phase(rss, "startup", &initial, started)?);
     let staking_sk = key_at(1, 0);
     let staking_address = import_and_start_staking(client, base, &staking_sk).await?;
     faucet(client, base, &staking_address, STAKE_MINT_SATS).await?;
-
-    // ── Funding: proposer, fee payers, voters ────────────────────────────────
-    let proposer_sk = key_at(2, 0);
-    let proposer_mint = faucet(client, base, &address_of(&proposer_sk), STAKE_MINT_SATS).await?;
-
-    let batches = args.voters.div_ceil(args.votes_per_tx);
+    let mut proposer_mints = Vec::new();
+    for i in 0..args.proposals {
+        proposer_mints
+            .push(faucet(client, base, &address_of(&key_at(2, i)), STAKE_MINT_SATS).await?);
+    }
+    let batches = args.proposals
+        * ranges
+            .iter()
+            .map(|range| range.len().div_ceil(args.votes_per_tx))
+            .sum::<usize>();
     let mut payer_mints = Vec::with_capacity(batches);
     for i in 0..batches {
         payer_mints.push(faucet(client, base, &address_of(&key_at(10, i)), VOTER_MINT_SATS).await?);
@@ -273,130 +541,159 @@ async fn workload(
         let mint = faucet(client, base, &address_of(&sk), VOTER_MINT_SATS).await?;
         voters.push((sk, mint));
     }
-    let funded_rss = pid_sample(rss);
-    let funded_at = Instant::now();
+    let funded = snapshot(client, base).await?;
+    phases.push(record_phase(rss, "funded", &funded, started)?);
+    // Faucet blocks advance timestamps by at least one second per block.
+    let tip = get(client, base, "/blockchain/height").await?;
+    let ready_at = number(&tip, "timestamp")?
+        .checked_add(number(&funded.params, "min_stake_age")?)
+        .and_then(|time| time.checked_add(2))
+        .context("maturity timestamp overflow")?;
+    let now = u64::from(vtorrent_core::time::now_timestamp_u32());
+    let maturity_wait = args.maturity_secs.max(ready_at.saturating_sub(now));
+    tokio::time::sleep(Duration::from_secs(maturity_wait)).await;
+    let mature = snapshot(client, base).await?;
+    phases.push(record_phase(rss, "mature", &mature, started)?);
 
-    // ── Maturity: fast-regtest minimum stake age is 60 seconds ───────────────
-    tokio::time::sleep(Duration::from_secs(args.maturity_secs)).await;
-
-    // ── Proposal ─────────────────────────────────────────────────────────────
-    let tip: u32 = get(client, base, "/info").await?["block_height"]
-        .as_u64()
-        .context("info.block_height")? as u32;
-    // Window tolerance: the proposal validates `voting_end - inclusion_height`
-    // within [2880, 10080]; aiming at tip + 4001 tolerates ~1100 blocks of
-    // staking delay in either direction.
-    let proposal = Proposal {
-        param: ParamId::PosAnnualRateBps,
-        new_value: 400,
-        voting_end: tip + 1 + 4000,
-        activation_height: tip + 1 + 4000 + 3000,
-        deposit: MIN_PROPOSAL_DEPOSIT,
+    let tip = u32::try_from(mature.height).context("tip height exceeds u32")?;
+    let mut pending = Vec::new();
+    for (i, mint) in proposer_mints.iter().enumerate() {
+        let voting_end = tip
+            .checked_add(4001 + i as u32 * 100)
+            .context("voting height overflow")?;
+        let proposal = Proposal {
+            param: ParamId::PosAnnualRateBps,
+            new_value: 400 + i as u64,
+            voting_end,
+            activation_height: voting_end
+                .checked_add(3000)
+                .context("activation height overflow")?,
+            deposit: MIN_PROPOSAL_DEPOSIT,
+        };
+        let txid = broadcast(
+            client,
+            base,
+            &proposal_transaction(&key_at(2, i), mint, &proposal),
+        )
+        .await?;
+        pending.push((proposal, txid));
+    }
+    let mut tracked = Vec::new();
+    for (proposal, txid) in pending {
+        let height = wait_for_confirmation(client, base, &txid, "proposal").await?;
+        tracked.push(TrackedProposal {
+            id: proposal_id_of(&proposal, height),
+            proposal,
+            height,
+        });
+    }
+    let mut expected = ExpectedVotes {
+        counts: vec![0; args.proposals],
+        longest: vec![None; args.voters],
+        voters: voters
+            .iter()
+            .enumerate()
+            .map(|(i, (key, mint))| (hex::encode(mint.txid), (i, address_of(key))))
+            .collect(),
     };
-    let proposal_txid = broadcast(
-        client,
-        base,
-        &proposal_transaction(&proposer_sk, &proposer_mint, &proposal),
-    )
-    .await?;
-    println!("proposal broadcast: {proposal_txid}");
-    let proposal_height = wait_for_confirmation(client, base, &proposal_txid, "proposal").await?;
-    let proposal_id = proposal_id_of(&proposal, proposal_height);
-    println!(
-        "proposal confirmed at height {proposal_height}, id {}",
-        hex::encode(proposal_id)
+    let proposals = snapshot(client, base).await?;
+    verify_state(&proposals, &tracked, &expected)?;
+    phases.push(record_phase(
+        rss,
+        "proposals_confirmed",
+        &proposals,
+        started,
+    )?);
+    let genesis = vtorrent_node::chain::Chain::new_regtest()?
+        .best_hash()
+        .context("genesis missing")?;
+    let mut payer = 0;
+    for (wave, range) in ranges.iter().enumerate() {
+        let order: Vec<_> = if wave % 2 == 0 {
+            (0..tracked.len()).collect()
+        } else {
+            (0..tracked.len()).rev().collect()
+        };
+        for p in order {
+            let mut txids = Vec::new();
+            for cohort in voters[range.clone()].chunks(args.votes_per_tx) {
+                let tx = vote_transaction(
+                    &key_at(10, payer),
+                    &payer_mints[payer],
+                    cohort,
+                    tracked[p].id,
+                    genesis,
+                );
+                txids.push(broadcast(client, base, &tx).await?);
+                payer += 1;
+            }
+            for txid in txids {
+                wait_for_confirmation(client, base, &txid, "vote").await?;
+            }
+            expected.cast(range.clone(), p, &tracked);
+            let state = snapshot(client, base).await?;
+            verify_state(&state, &tracked, &expected)?;
+            phases.push(record_phase(
+                rss,
+                &format!("wave_{}_proposal_{}", wave + 1, p + 1),
+                &state,
+                started,
+            )?);
+        }
+    }
+    ensure!(
+        payer == batches,
+        "payer allocation does not match the voting schedule"
     );
-
-    // ── Votes: one relayed transaction per batch of voters ───────────────────
-    let mut vote_txids = Vec::with_capacity(batches);
-    for (batch, payer_mint) in payer_mints.iter().enumerate() {
-        let range = batch * args.votes_per_tx..((batch + 1) * args.votes_per_tx).min(args.voters);
-        let tx = vote_transaction(
-            &key_at(10, batch),
-            payer_mint,
-            &voters[range.clone()],
-            proposal_id,
-        );
-        vote_txids.push(broadcast(client, base, &tx).await?);
-    }
-    println!("{} vote transactions broadcast", vote_txids.len());
-    let voted_at = Instant::now();
-    for txid in &vote_txids {
-        wait_for_confirmation(client, base, txid, "vote").await?;
-    }
-
-    // ── Verify tallies and locks through the authoritative RPC state ─────────
-    let proposals = get(client, base, "/governance/proposals").await?;
-    let locks = get(client, base, "/governance/locks").await?;
-    let expected_yes = (args.voters as u64) * VOTER_MINT_SATS;
-    let yes = proposals["proposals"][0]["yes"].as_u64().unwrap_or(0);
-    let lock_count = locks["locks"].as_array().map(|a| a.len()).unwrap_or(0);
-    if yes != expected_yes {
-        bail!("vote tally mismatch: expected {expected_yes}, got {yes}");
-    }
-    if lock_count != args.voters {
-        bail!(
-            "lock count mismatch: expected {}, got {lock_count}",
-            args.voters
-        );
-    }
-
-    // ── Tail: keep sampling while the staking loop accumulates journals ──────
-    let tail_deadline = Instant::now() + Duration::from_secs(args.tail_secs);
+    let tail_deadline = Instant::now()
+        .checked_add(Duration::from_secs(args.tail_secs))
+        .context("tail duration overflow")?;
     while Instant::now() < tail_deadline {
         tokio::time::sleep(Duration::from_secs(2)).await;
-        pid_sample(rss);
+        daemon.ensure_running()?;
     }
 
     // ── Restart: verify replay rebuilds the same governance state ────────────
-    let mut restart_ok = None;
+    post(client, base, "/staking/stop", json!({})).await?;
+    let before = snapshot(client, base).await?;
+    verify_state(&before, &tracked, &expected)?;
+    phases.push(record_phase(rss, "before_shutdown", &before, started)?);
+    let mut restart_ok = false;
     if args.restart {
-        let before_proposals = get(client, base, "/governance/proposals").await?;
-        let before_locks = get(client, base, "/governance/locks").await?;
-        drop(daemon);
-        let restarted = spawn_daemon(args, data_dir)?;
-        rss.pid.store(restarted.pid, Ordering::Relaxed);
-        wait_for_rpc(client, base).await?;
-        let after_proposals = get(client, base, "/governance/proposals").await?;
-        let after_locks = get(client, base, "/governance/locks").await?;
-        let proposals_match = before_proposals["proposals"] == after_proposals["proposals"];
-        let locks_match = before_locks["locks"] == after_locks["locks"];
-        if !proposals_match || !locks_match {
-            bail!(
-                "governance state changed across restart: proposals_match={proposals_match} locks_match={locks_match}"
-            );
-        }
-        restart_ok = Some(true);
-        // `restarted` drops here, killing the restarted daemon.
+        daemon.shutdown().await?;
+        rss.pid.store(0, Ordering::Relaxed);
+        daemon = spawn_daemon(args, data_dir)?;
+        rss.pid.store(daemon.pid, Ordering::Relaxed);
+        wait_for_rpc(client, base, &mut daemon).await?;
+        let after = snapshot(client, base).await?;
+        verify_state(&after, &tracked, &expected)?;
+        ensure!(
+            before == after,
+            "governance state or chain tip changed across graceful restart"
+        );
+        phases.push(record_phase(rss, "after_restart", &after, started)?);
+        restart_ok = true;
     }
-
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&json!({
-            "voters": args.voters,
-            "votes_per_tx": args.votes_per_tx,
-            "batches": batches,
-            "expected_yes_sats": expected_yes,
-            "counted_yes_sats": yes,
-            "locks": lock_count,
-            "proposal_height": proposal_height,
-            "duration_secs": Instant::now().duration_since(funded_at).as_secs(),
-            "vote_confirm_secs": (voted_at - funded_at).as_secs(),
-            "restart_verified": restart_ok,
-            "rss_kib": {
-                "startup": startup_rss,
-                "after_funding": funded_rss,
-                "peak": rss.peak_kib.load(Ordering::Relaxed),
-                "final": rss.last_kib.load(Ordering::Relaxed),
-            },
-        }))?
-    );
-    Ok(())
+    daemon.shutdown().await?;
+    rss.pid.store(0, Ordering::Relaxed);
+    Ok(
+        json!({ "ok": true, "voters": args.voters, "votes_per_tx": args.votes_per_tx,
+        "proposals": tracked.iter().map(|p| json!({ "id": hex::encode(p.id), "created_height": p.height,
+            "voting_end": p.proposal.voting_end, "unlock_height": p.proposal.voting_end + DEFAULT_LOCK_GRACE_BLOCKS })).collect::<Vec<_>>(),
+        "voting_waves": args.voting_waves, "vote_transactions": batches,
+        "votes_counted_per_proposal": expected.counts, "locks": before.locks.len(),
+        "maturity_wait_secs": maturity_wait, "restart_requested": args.restart,
+        "restart_verified": restart_ok, "shutdown_graceful": true, "phases": phases }),
+    )
 }
 
 /// Fail early if either port is already bound, so the run does not silently
 /// talk to another process (for example a soak-fleet docker proxy).
 fn ensure_ports_free(rpc_port: u16, p2p_port: u16) -> Result<()> {
+    ensure!(
+        rpc_port != 0 && p2p_port != 0 && rpc_port != p2p_port,
+        "RPC and P2P need different nonzero ports"
+    );
     for (name, port) in [("rpc", rpc_port), ("p2p", p2p_port)] {
         match std::net::TcpListener::bind(("127.0.0.1", port)) {
             Ok(listener) => drop(listener),
@@ -407,7 +704,12 @@ fn ensure_ports_free(rpc_port: u16, p2p_port: u16) -> Result<()> {
 }
 
 fn spawn_daemon(args: &Args, data_dir: &std::path::Path) -> Result<Daemon> {
-    let log = std::fs::File::create(data_dir.join("daemon.log")).context("creating daemon.log")?;
+    ensure_ports_free(args.rpc_port, args.p2p_port)?;
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(data_dir.join("daemon.log"))
+        .context("opening daemon.log")?;
     let child = Command::new(&args.daemon)
         .args([
             "--regtest",
@@ -435,11 +737,17 @@ fn spawn_daemon(args: &Args, data_dir: &std::path::Path) -> Result<Daemon> {
     Ok(Daemon { child, pid })
 }
 
-async fn wait_for_rpc(client: &Client, base: &str) -> Result<()> {
+async fn wait_for_rpc(client: &Client, base: &str, daemon: &mut Daemon) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(60);
     while Instant::now() < deadline {
+        daemon.ensure_running()?;
         if let Ok(value) = get(client, base, "/info").await {
             if value["block_height"].is_u64() {
+                daemon.ensure_running()?;
+                ensure!(
+                    text(&value, "network")? == "vtorrent-regtest",
+                    "RPC is not a regtest node"
+                );
                 return Ok(());
             }
         }
@@ -582,11 +890,8 @@ fn vote_transaction(
     payer_mint: &Mint,
     voters: &[(secp256k1::SecretKey, Mint)],
     proposal_id: [u8; 8],
+    genesis: [u8; 32],
 ) -> Transaction {
-    let genesis = vtorrent_node::chain::Chain::new_regtest()
-        .expect("deterministic regtest genesis")
-        .best_hash()
-        .expect("genesis hash");
     let script_pubkey = p2pkh_script(&address_of(payer_sk));
     let carriers = voters.len() as u64 * VOTE_CARRIER_SATS;
     let change = payer_mint.amount - carriers - FEE_SATS;
@@ -655,4 +960,108 @@ async fn wait_for_confirmation(client: &Client, base: &str, txid: &str, kind: &s
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
     bail!("{kind} transaction {txid} was not confirmed within 600s")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> (GovernanceSnapshot, Vec<TrackedProposal>, ExpectedVotes) {
+        let tracked: Vec<_> = (0..2)
+            .map(|i| TrackedProposal {
+                id: [i as u8 + 1; 8],
+                height: 1,
+                proposal: Proposal {
+                    param: ParamId::PosAnnualRateBps,
+                    new_value: 400 + i,
+                    voting_end: 4000 + i as u32 * 100,
+                    activation_height: 7000 + i as u32 * 100,
+                    deposit: MIN_PROPOSAL_DEPOSIT,
+                },
+            })
+            .collect();
+        let voters: BTreeMap<_, _> = (0..2)
+            .map(|i| (hex::encode([i as u8 + 11; 32]), (i, format!("owner_{i}"))))
+            .collect();
+        let proposals = tracked.iter().map(|p| json!({
+            "id": hex::encode(p.id), "param": "PosAnnualRateBps", "new_value": p.proposal.new_value,
+            "created_height": p.height, "voting_end": p.proposal.voting_end,
+            "activation_height": p.proposal.activation_height, "yes": 2 * VOTER_MINT_SATS,
+            "no": 0, "abstain": 0, "decided": false, "passed": false,
+            "applied": false, "activation_failed": false,
+        })).collect();
+        let locks = voters
+            .iter()
+            .map(|(id, (_, owner))| {
+                json!({ "txid": id, "vout": 0,
+            "voter": owner, "proposal_id": hex::encode(tracked[1].id),
+            "unlock_height": tracked[1].proposal.voting_end + DEFAULT_LOCK_GRACE_BLOCKS })
+            })
+            .collect();
+        (
+            GovernanceSnapshot {
+                height: 10,
+                hash: "tip10".into(),
+                proposals,
+                locks,
+                params: json!({}),
+            },
+            tracked,
+            ExpectedVotes {
+                counts: vec![2, 2],
+                longest: vec![Some(1), Some(1)],
+                voters,
+            },
+        )
+    }
+
+    #[test]
+    fn waves_partition_every_voter_once_without_empty_cohorts() {
+        assert_eq!(voting_ranges(5, 2).unwrap(), vec![0..3, 3..5]);
+        assert_eq!(voting_ranges(3, 3).unwrap(), vec![0..1, 1..2, 2..3]);
+        assert!(voting_ranges(3, 4).is_err());
+        assert!(voting_ranges(3, 0).is_err());
+    }
+
+    #[test]
+    fn oracle_matches_proposals_by_id_not_response_position() {
+        let (mut state, tracked, expected) = fixture();
+        state.proposals.reverse();
+        verify_state(&state, &tracked, &expected).unwrap();
+        state.proposals[0]["yes"] = json!(VOTER_MINT_SATS);
+        assert!(verify_state(&state, &tracked, &expected)
+            .unwrap_err()
+            .to_string()
+            .contains("tally mismatch"));
+    }
+
+    #[test]
+    fn oracle_rejects_a_shortened_lock_and_a_duplicate_outpoint() {
+        let (mut state, tracked, expected) = fixture();
+        state.locks[0]["unlock_height"] =
+            json!(tracked[0].proposal.voting_end + DEFAULT_LOCK_GRACE_BLOCKS);
+        assert!(verify_state(&state, &tracked, &expected)
+            .unwrap_err()
+            .to_string()
+            .contains("longest proposal"));
+        let (mut state, tracked, expected) = fixture();
+        state.locks[1] = state.locks[0].clone();
+        assert!(verify_state(&state, &tracked, &expected)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate voting lock"));
+    }
+
+    #[test]
+    fn expected_state_extends_locks_but_never_shortens_them() {
+        let (state, tracked, mut expected) = fixture();
+        expected.counts.fill(0);
+        expected.longest.fill(None);
+        expected.cast(0..1, 0, &tracked);
+        assert_eq!(expected.longest[0], Some(0));
+        expected.cast(0..1, 1, &tracked);
+        expected.cast(1..2, 1, &tracked);
+        expected.cast(1..2, 0, &tracked);
+        verify_state(&state, &tracked, &expected).unwrap();
+    }
 }
