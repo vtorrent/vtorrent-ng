@@ -166,5 +166,6 @@ Still open on the load path:
 
 - Larger repeated multi-proposal runs. The completed two-wave case uses 32
   outpoints and is one observation.
-- A reorg load scenario. The restart check covers replay; it does not exercise a
-  competing branch.
+- Proof-of-stake forks and interrupted governance-reorg writes. The completed
+  real-peer regtest branch-switch and restart scenario is recorded in
+  `docs/governance-reorg-load-test.md`.

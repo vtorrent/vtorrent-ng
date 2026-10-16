@@ -122,6 +122,6 @@ The default temporary directory is removed on success. Pass a fresh or empty
 automatically. The runner prints one JSON result and saves it as `report.json`.
 
 Verification ran the four example tests, strict all-targets workspace Clippy,
-formatting, and the real daemon workload. The next local load scenario is a
-competing-branch reorg with governance state present. Governance remains
-unscheduled and inactive on the current network.
+formatting, and the real daemon workload. The subsequent real-peer
+competing-branch test is recorded in `docs/governance-reorg-load-test.md`.
+Governance remains unscheduled and inactive on the current network.

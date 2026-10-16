@@ -10,6 +10,8 @@ use std::{
 use tokio::process::{Child, Command};
 use vtorrent_store::store::BlockStore;
 
+#[cfg(all(target_os = "linux", feature = "test-util"))]
+mod governance_reorg;
 mod interrupted_reorg;
 mod rpc_polling;
 mod swap_recovery;
@@ -31,6 +33,15 @@ struct Daemon {
 
 impl Daemon {
     async fn start(directory: &Path, log_name: &str, seed: Option<&str>) -> Self {
+        Self::start_with_activation(directory, log_name, seed, None).await
+    }
+
+    async fn start_with_activation(
+        directory: &Path,
+        log_name: &str,
+        seed: Option<&str>,
+        activation: Option<u32>,
+    ) -> Self {
         let started = Instant::now();
         std::fs::create_dir_all(directory).unwrap();
         let rpc_port = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -53,7 +64,11 @@ impl Daemon {
                 "--public-addr",
                 &p2p,
                 "--log-level",
-                "vtorrent_daemon=debug,vtorrent_node=warn,vtorrent_store=info",
+                if activation.is_some() {
+                    "vtorrent_daemon=debug,vtorrent_node=info,vtorrent_store=info"
+                } else {
+                    "vtorrent_daemon=debug,vtorrent_node=warn,vtorrent_store=info"
+                },
             ])
             .arg("--data-dir")
             .arg(directory)
@@ -61,11 +76,19 @@ impl Daemon {
             .env_remove("VTORRENT_STAKING_WIF")
             .env_remove("VTORRENT_RPC_API_KEY")
             .env_remove("RUST_LOG")
+            .env_remove("VTR_GOVERNANCE_TEST_ACTIVATION")
             .stdout(Stdio::from(output.try_clone().unwrap()))
             .stderr(Stdio::from(output))
             .kill_on_drop(true);
         if let Some(seed) = seed {
             command.args(["--seed", seed]);
+        }
+        if let Some(height) = activation {
+            assert!(
+                cfg!(feature = "test-util"),
+                "governance recovery tests require test-util"
+            );
+            command.env("VTR_GOVERNANCE_TEST_ACTIVATION", height.to_string());
         }
         drop(rpc_port);
         drop(p2p_port);
