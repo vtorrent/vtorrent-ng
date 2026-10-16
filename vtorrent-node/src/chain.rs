@@ -1,4 +1,5 @@
 mod chain_reorg;
+mod stake_proof;
 
 use crate::{
     block::{Block, BlockHeader, Transaction},

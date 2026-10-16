@@ -76,6 +76,9 @@ live reorganization, storage reconciliation, and restart.
 This does not validate a proof-of-stake fork or stake-proof relay. Both
 proposals remain open. No production deployment is scheduled by this test.
 
+The subsequent PoS fork and cold-cache proof-serving scenario is recorded in
+`docs/governance-pos-fork-proof-test.md`.
+
 ## Reproduce
 
 The tests require Linux for RSS sampling and the daemon's `test-util` feature

@@ -352,10 +352,9 @@ pub async fn spv_get_proof(
     axum::extract::Path(hash_hex): axum::extract::Path<String>,
 ) -> RpcResult<Json<SpvProofResponse>> {
     let hash = parse_hash32(&hash_hex, "hash")?;
-    let chain = state.spv_chain.read().await;
-    let header = chain.get_header(&hash).cloned();
-    drop(chain);
-    if header.is_none() {
+    let full_node_header = state.chain.lock().await.get_header(&hash).is_some();
+    let spv_header = state.spv_chain.read().await.get_header(&hash).is_some();
+    if !full_node_header && !spv_header {
         return Err(RpcError::NotFound(format!("header {} not found", hash_hex)));
     }
     let proof = state

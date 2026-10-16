@@ -166,6 +166,7 @@ Still open on the load path:
 
 - Larger repeated multi-proposal runs. The completed two-wave case uses 32
   outpoints and is one observation.
-- Proof-of-stake forks and interrupted governance-reorg writes. The completed
-  real-peer regtest branch-switch and restart scenario is recorded in
-  `docs/governance-reorg-load-test.md`.
+- Interrupted governance-reorg writes and historical proof availability beyond
+  the undo window. The real-peer branch tests are recorded in
+  `docs/governance-reorg-load-test.md` and
+  `docs/governance-pos-fork-proof-test.md`.

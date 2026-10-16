@@ -152,9 +152,41 @@ struct Fixture {
     old: Vec<Block>,
     winning: Vec<Block>,
     ids: [[u8; 8]; 2],
+    proofs: std::collections::BTreeMap<[u8; 32], vtorrent_spv::stake::StakeProof>,
 }
 
-fn fixture() -> Fixture {
+fn pos_block(
+    chain: &Chain,
+    branch: u8,
+    extra: Vec<Transaction>,
+) -> (Block, vtorrent_spv::stake::StakeProof) {
+    let mut engine = vtorrent_node::staking::StakingEngine::with_wif(
+        address(12),
+        vtorrent_core::keys::PrivateKey::from_bytes([12; 32], true)
+            .unwrap()
+            .to_wif(198),
+    );
+    let parent = chain.get_header_at_height(chain.best_height()).unwrap();
+    let first = parent.timestamp + MIN_STAKE_AGE as u32 + 1 + u32::from(branch) * 10;
+    let utxos: Vec<_> = chain.get_utxo_set().values().cloned().collect();
+    (first..first + 1000)
+        .find_map(|timestamp| {
+            engine.set_consensus_params(chain.next_block_params(timestamp));
+            engine.build_stake_block_with_proof(
+                chain.best_hash().unwrap(),
+                parent.stake_modifier,
+                chain.best_height() + 1,
+                timestamp,
+                chain.total_staked(),
+                utxos.clone(),
+                extra.clone(),
+            )
+        })
+        .expect("fixture stake kernel must hit")
+}
+
+fn fixture(pos: bool) -> Fixture {
+    let mut proofs = std::collections::BTreeMap::new();
     let mut common = chain();
     let mut funding = block(&common, 0, FUNDING_TIME, vec![]);
     funding.transactions[0].outputs = vec![
@@ -166,6 +198,27 @@ fn fixture() -> Fixture {
     funding.transactions[0]
         .outputs
         .extend((0..VOTERS).map(|i| output(50 + i as u8, 2 * COIN)));
+    if pos {
+        funding.transactions[0]
+            .outputs
+            .push(output(12, 1000 * COIN));
+        let mut post = common.get_utxo_set().clone();
+        let txid = funding.transactions[0].txid();
+        for (vout, output) in funding.transactions[0].outputs.iter().enumerate() {
+            post.insert(
+                (txid, vout as u32),
+                Utxo {
+                    txid,
+                    vout: vout as u32,
+                    value: output.value,
+                    script_pubkey: output.script_pubkey.clone(),
+                    height: 1,
+                    timestamp: funding.header.timestamp,
+                },
+            );
+        }
+        funding.header.utxo_root = vtorrent_node::block::compute_utxo_root_ordered(post.values());
+    }
     funding.header.merkle_root = funding.compute_merkle_root();
     common.add_block(funding.clone()).unwrap();
     let proposals: Vec<_> = (0..2)
@@ -194,7 +247,13 @@ fn fixture() -> Fixture {
             )
         })
         .collect();
-    let proposed = block(&common, 0, FUNDING_TIME + 1, txs);
+    let proposed = if pos {
+        let (b, proof) = pos_block(&common, 0, txs);
+        proofs.insert(b.hash(), proof);
+        b
+    } else {
+        block(&common, 0, FUNDING_TIME + 1, txs)
+    };
     common.add_block(proposed.clone()).unwrap();
     let ids = [
         proposal_id_of(&proposals[0], 2),
@@ -204,12 +263,18 @@ fn fixture() -> Fixture {
     let mut old = base.clone();
     for id in ids {
         let tx = vote(&common, id, 10, VOTERS);
-        let b = block(
-            &common,
-            1,
-            FUNDING_TIME + MIN_STAKE_AGE as u32 + common.best_height(),
-            vec![tx],
-        );
+        let b = if pos {
+            let (b, proof) = pos_block(&common, 1, vec![tx]);
+            proofs.insert(b.hash(), proof);
+            b
+        } else {
+            block(
+                &common,
+                1,
+                FUNDING_TIME + MIN_STAKE_AGE as u32 + common.best_height(),
+                vec![tx],
+            )
+        };
         common.add_block(b.clone()).unwrap();
         old.push(b);
     }
@@ -223,16 +288,28 @@ fn fixture() -> Fixture {
     let mut winning = base;
     for (i, id) in ids.iter().enumerate() {
         let tx = vote(&fork, *id, 11, if i == 0 { VOTERS } else { VOTERS / 2 });
-        let b = block(
-            &fork,
-            2,
-            FUNDING_TIME + MIN_STAKE_AGE as u32 + fork.best_height(),
-            vec![tx],
-        );
+        let b = if pos {
+            let (b, proof) = pos_block(&fork, 2, vec![tx]);
+            proofs.insert(b.hash(), proof);
+            b
+        } else {
+            block(
+                &fork,
+                2,
+                FUNDING_TIME + MIN_STAKE_AGE as u32 + fork.best_height(),
+                vec![tx],
+            )
+        };
         fork.add_block(b.clone()).unwrap();
         winning.push(b);
     }
-    let b = block(&fork, 2, FUNDING_TIME + MIN_STAKE_AGE as u32 + 4, vec![]);
+    let b = if pos {
+        let (b, proof) = pos_block(&fork, 2, vec![]);
+        proofs.insert(b.hash(), proof);
+        b
+    } else {
+        block(&fork, 2, FUNDING_TIME + MIN_STAKE_AGE as u32 + 4, vec![])
+    };
     fork.add_block(b.clone()).unwrap();
     winning.push(b);
     assert_eq!(
@@ -250,7 +327,12 @@ fn fixture() -> Fixture {
             if i < VOTERS / 2 { 4100 } else { 4000 } + DEFAULT_LOCK_GRACE_BLOCKS
         );
     }
-    Fixture { old, winning, ids }
+    Fixture {
+        old,
+        winning,
+        ids,
+        proofs,
+    }
 }
 
 fn persist(directory: &Path, blocks: &[Block]) -> Chain {
@@ -347,7 +429,7 @@ async fn run(crash: bool) {
     let directory = tempfile::tempdir().unwrap();
     let a_dir = directory.path().join("old");
     let b_dir = directory.path().join("winning");
-    let fixture = fixture();
+    let fixture = fixture(false);
     let old_expected = persist(&a_dir, &fixture.old);
     let mut expected = persist(&b_dir, &fixture.winning);
     let a = Daemon::start_with_activation(&a_dir, "initial.log", None, Some(2)).await;
@@ -469,4 +551,138 @@ async fn governance_reorg_survives_sigterm_restart() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn governance_reorg_survives_sigkill_restart() {
     run(true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn governance_pos_fork_relays_stake_proofs() {
+    let _scenario = RECOVERY_SCENARIO.lock().await;
+    let directory = tempfile::tempdir().unwrap();
+    let a_dir = directory.path().join("old");
+    let b_dir = directory.path().join("winning");
+    let fixture = fixture(true);
+    assert!(fixture.old.iter().skip(1).all(|b| b.header.is_pos()));
+    assert!(fixture.winning.iter().skip(1).all(|b| b.header.is_pos()));
+    let old = persist(&a_dir, &fixture.old);
+    let winning = persist(&b_dir, &fixture.winning);
+    let a = Daemon::start_with_activation(&a_dir, "pos-old.log", None, Some(2)).await;
+    assert_governance(&a, &old).await;
+    let b = Daemon::start_with_activation(&b_dir, "pos-winning.log", Some(&a.p2p), Some(2)).await;
+    a.wait_tip(&hex::encode(winning.best_hash().unwrap())).await;
+    assert_governance(&a, &winning).await;
+    assert!(a.logs().contains("Reorg: fork point at height 2"));
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let mut received = 0;
+            for block in fixture.winning.iter().skip(2) {
+                let response = a
+                    .client
+                    .get(format!(
+                        "{}/api/v1/spv/proof/{}",
+                        a.rpc,
+                        hex::encode(block.hash())
+                    ))
+                    .send()
+                    .await
+                    .unwrap();
+                if response.status().is_success() {
+                    let body: Value = response.json().await.unwrap();
+                    if !body["proof"].is_null() {
+                        let actual: vtorrent_spv::stake::StakeProof =
+                            serde_json::from_value(body["proof"].clone()).unwrap();
+                        assert_eq!(actual, fixture.proofs[&block.hash()]);
+                        received += 1;
+                    }
+                }
+            }
+            if received == 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the receiving daemon must cache all relayed fork proofs");
+    b.stop(false).await;
+    assert_eq!(a.mint(98).await["block_height"], 6);
+    a.persisted(6).await;
+    let tip = a.get("/api/v1/info").await["best_block_hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    a.stop(false).await;
+    let mut recovered_expected = replay(&fixture.winning);
+    {
+        let store = BlockStore::open(a_dir.join("chain.db")).unwrap();
+        recovered_expected
+            .add_block(store.get_block_at_height(6).unwrap().unwrap())
+            .unwrap();
+    }
+    let restarted = Daemon::start_with_activation(&a_dir, "pos-restarted.log", None, Some(2)).await;
+    restarted.wait_tip(&tip).await;
+    assert_governance(&restarted, &recovered_expected).await;
+    let target = fixture.winning.last().unwrap().hash();
+    let cold = restarted
+        .get(&format!("/api/v1/spv/proof/{}", hex::encode(target)))
+        .await;
+    assert!(
+        cold["proof"].is_null(),
+        "restart must exercise cache-miss reconstruction"
+    );
+    let fetched = fetch_proof(&restarted, target).await;
+    assert_eq!(fetched, fixture.proofs[&target]);
+    restarted.stop(false).await;
+}
+
+async fn fetch_proof(daemon: &Daemon, hash: [u8; 32]) -> vtorrent_spv::stake::StakeProof {
+    use vtorrent_p2p::{
+        message::{
+            decode_for_peer, encode_for_peer, GetProofMsg, NetMessage, ProofMsg, PROTOCOL_VERSION,
+        },
+        peer::PeerEvent,
+        peer_manager::PeerManager,
+    };
+    let mut probe = PeerManager::new_testnet(0, "127.0.0.1:0");
+    probe.connect(&daemon.p2p).await.unwrap();
+    let addr = daemon.p2p.parse().unwrap();
+    let proof = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            for event in probe.process_events().await {
+                match event {
+                    PeerEvent::HandshakeComplete { version, .. } => {
+                        assert_eq!(version.version, PROTOCOL_VERSION);
+                        probe
+                            .send_to(
+                                addr,
+                                NetMessage::new(
+                                    "getproof",
+                                    encode_for_peer(
+                                        &GetProofMsg { block_hash: hash },
+                                        PROTOCOL_VERSION,
+                                    ),
+                                ),
+                            )
+                            .await;
+                    }
+                    PeerEvent::Message { msg, .. } if msg.command_str() == "proof" => {
+                        let response: ProofMsg =
+                            decode_for_peer(&msg.payload, PROTOCOL_VERSION).unwrap();
+                        assert_eq!(response.block_hash, hash);
+                        return vtorrent_p2p::message::decode_v2(
+                            &response
+                                .proof
+                                .expect("canonical proof missing after restart"),
+                        )
+                        .unwrap();
+                    }
+                    PeerEvent::Disconnected { .. } => panic!("proof probe disconnected"),
+                    _ => {}
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("restarted node must serve a proof over P2P");
+    probe.disconnect(addr).await;
+    proof
 }

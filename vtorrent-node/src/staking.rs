@@ -723,7 +723,7 @@ fn is_spendable(utxo: &Utxo) -> bool {
 }
 
 /// Mirror a node `Transaction` into the bit-identical SPV `Transaction`.
-fn spv_transaction_mirror(tx: &Transaction) -> SpvTransaction {
+pub(crate) fn spv_transaction_mirror(tx: &Transaction) -> SpvTransaction {
     SpvTransaction {
         version: tx.version,
         tx_type: match tx.tx_type {
