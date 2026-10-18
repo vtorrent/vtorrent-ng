@@ -4,6 +4,10 @@ Cold-cache reconstruction causes measurable RPC tail latency in a finite
 multi-peer burst. This experiment measures the existing implementation.
 It does not compare an optimization or establish production capacity.
 
+The later [snapshot implementation comparison](governance-proof-snapshot-reconstruction.md)
+measures moving reconstruction work outside the chain mutex. The results
+below describe the original implementation at `f3850b1`.
+
 ## Workload and measurement
 
 The ignored release-mode test `canonical_proof_request_cost` extends the
@@ -93,6 +97,10 @@ adequately. A reconstruction-specific budget or shorter mutex ownership
 requires a separate implementation and before-and-after measurement.
 
 ## Reproduce
+
+These commands run the current checkout. To compare against the original
+`f3850b1` implementation, use the baseline builder and interleaved command in
+[the snapshot comparison](governance-proof-snapshot-reconstruction.md).
 
 Use a new report filename because the harness refuses to overwrite an
 existing report. The report includes all request and RPC samples, CPU ticks,

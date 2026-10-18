@@ -734,12 +734,13 @@ async fn governance_pos_reorg_recovers_at_every_daemon_write_boundary() {
     for boundary in 0..=5 {
         let case_dir = directory.path().join(format!("boundary-{boundary}"));
         persist(&case_dir, &fixture.old);
-        let mut receiver = Daemon::start_with_reorg_pause(
+        let mut receiver = Daemon::start_configured(
             &case_dir,
             "interrupted.log",
             None,
             Some(2),
             Some(boundary),
+            None,
         )
         .await;
         let peer = Daemon::start_with_activation(

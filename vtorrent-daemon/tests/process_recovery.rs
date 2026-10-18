@@ -42,15 +42,16 @@ impl Daemon {
         seed: Option<&str>,
         activation: Option<u32>,
     ) -> Self {
-        Self::start_with_reorg_pause(directory, log_name, seed, activation, None).await
+        Self::start_configured(directory, log_name, seed, activation, None, None).await
     }
 
-    async fn start_with_reorg_pause(
+    async fn start_configured(
         directory: &Path,
         log_name: &str,
         seed: Option<&str>,
         activation: Option<u32>,
         reorg_pause: Option<usize>,
+        executable: Option<&Path>,
     ) -> Self {
         let started = Instant::now();
         std::fs::create_dir_all(directory).unwrap();
@@ -60,7 +61,9 @@ impl Daemon {
         let p2p = p2p_port.local_addr().unwrap().to_string();
         let log = directory.join(log_name);
         let output = std::fs::File::create(&log).unwrap();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_vtorrent-daemon"));
+        let mut command = Command::new(
+            executable.unwrap_or_else(|| Path::new(env!("CARGO_BIN_EXE_vtorrent-daemon"))),
+        );
         command
             .args([
                 "--regtest",

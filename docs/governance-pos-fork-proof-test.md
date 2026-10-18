@@ -110,8 +110,11 @@ an archival proof service from this repair. Persistence or historical replay
 for older proofs remains separate work.
 
 This is a functional fork and relay test, not a new memory or latency
-measurement. A cold-cache P2P request copies the full UTXO set and builds a
-Merkle tree while holding the chain mutex. Successful reconstruction populates
+measurement. The original repair copied the full UTXO set and built a
+Merkle tree while holding the chain mutex. The subsequent
+[snapshot implementation](governance-proof-snapshot-reconstruction.md)
+moves journal replay and Merkle work outside that mutex. Successful
+reconstruction populates
 the bounded proof cache. Requests outside retained history return before
 copying the UTXO set. The existing per-peer message budget applies, but this
 repair adds no reconstruction-specific budget. A subsequent

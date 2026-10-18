@@ -1,13 +1,24 @@
-use super::{chain_reorg::UtxoChange, Chain};
-use crate::{block::Block, staking::spv_transaction_mirror};
+use super::{chain_reorg::UtxoChange, Chain, Utxo};
+use crate::{
+    block::{Block, BlockHeader},
+    staking::spv_transaction_mirror,
+};
+use std::collections::BTreeMap;
 use vtorrent_spv::{
     merkle::MerkleTree,
     stake::{SpvUtxo, StakeProof, UtxoInclusionProof},
 };
 
+pub(crate) struct StakeProofSnapshot {
+    block: Block,
+    parent: BlockHeader,
+    utxos: BTreeMap<([u8; 32], u32), Utxo>,
+    undo: Vec<Vec<UtxoChange>>,
+}
+
 impl Chain {
-    /// Reconstruct a canonical PoS proof while its pre-state remains in the undo window.
-    pub(crate) fn reconstruct_stake_proof(&self, hash: &[u8; 32]) -> Option<StakeProof> {
+    /// Capture the retained canonical pre-state for reconstruction outside the chain lock.
+    pub(crate) fn stake_proof_snapshot(&self, hash: &[u8; 32]) -> Option<StakeProofSnapshot> {
         let height = self.block_height(hash)?;
         if height == 0 || self.block_hash_at_height(height) != Some(*hash) {
             return None;
@@ -24,41 +35,74 @@ impl Chain {
             return None;
         }
         let coinstake = block.transactions.first().filter(|tx| tx.is_coinstake())?;
-        let input = coinstake.inputs.first()?;
         if coinstake.inputs.len() != 1 {
             return None;
         }
-        let parent = self.get_header(&block.header.prev_block_hash)?;
-        let mut pre = self.utxo_set.clone();
+        let parent = self.get_header(&block.header.prev_block_hash)?.clone();
         let mut expected_height = self.best_height();
-        let mut restored = false;
+        let mut undo = Vec::new();
         for journal in self.journals.iter().rev() {
             if journal.height != expected_height {
                 return None;
             }
-            for change in journal.changes.iter().rev() {
-                match change {
-                    UtxoChange::Added { key } => {
-                        pre.remove(key);
-                    }
-                    UtxoChange::Removed { key, utxo } => {
-                        pre.insert(*key, utxo.clone());
-                    }
-                }
-            }
+            undo.push(journal.changes.clone());
             if journal.height == height {
-                restored = true;
-                break;
+                return Some(StakeProofSnapshot {
+                    block,
+                    parent,
+                    utxos: self.utxo_set.clone(),
+                    undo,
+                });
             }
             expected_height = expected_height.checked_sub(1)?;
         }
-        if !restored {
-            return None;
+        None
+    }
+
+    /// Bind a relayed proof to a validated canonical block and its exact stake input.
+    pub(crate) fn stake_proof_matches(&self, hash: &[u8; 32], proof: &StakeProof) -> bool {
+        let Some(height) = self.block_height(hash) else {
+            return false;
+        };
+        if self.block_hash_at_height(height) != Some(*hash) {
+            return false;
         }
+        let Some(block) = self.get_block_owned(hash) else {
+            return false;
+        };
+        let Some(parent) = self.get_header(&block.header.prev_block_hash) else {
+            return false;
+        };
+        proof_matches_block(&block, parent, proof)
+    }
+}
+
+impl StakeProofSnapshot {
+    pub(crate) fn reconstruct(self) -> Option<StakeProof> {
+        let Self {
+            block,
+            parent,
+            mut utxos,
+            undo,
+        } = self;
+        for changes in undo {
+            for change in changes.into_iter().rev() {
+                match change {
+                    UtxoChange::Added { key } => {
+                        utxos.remove(&key);
+                    }
+                    UtxoChange::Removed { key, utxo } => {
+                        utxos.insert(key, utxo);
+                    }
+                }
+            }
+        }
+        let coinstake = block.transactions.first()?;
+        let input = coinstake.inputs.first()?;
         let key = (input.prev_txid, input.prev_vout);
-        let utxo = pre.get(&key)?;
-        let index = pre.keys().position(|k| *k == key)?;
-        let leaves: Vec<_> = pre.values().map(crate::block::hash_utxo).collect();
+        let utxo = utxos.get(&key)?;
+        let index = utxos.keys().position(|k| *k == key)?;
+        let leaves: Vec<_> = utxos.values().map(crate::block::hash_utxo).collect();
         let tree = MerkleTree::build(&leaves);
         if tree.root() != parent.utxo_root {
             return None;
@@ -83,55 +127,38 @@ impl Chain {
             },
             prev_stake_modifier: parent.stake_modifier,
         };
-        self.stake_proof_matches(hash, &proof).then_some(proof)
+        proof_matches_block(&block, &parent, &proof).then_some(proof)
     }
+}
 
-    /// Bind a relayed proof to a validated canonical block and its exact stake input.
-    pub(crate) fn stake_proof_matches(&self, hash: &[u8; 32], proof: &StakeProof) -> bool {
-        let Some(height) = self.block_height(hash) else {
-            return false;
-        };
-        if self.block_hash_at_height(height) != Some(*hash) {
-            return false;
-        }
-        let Some(block) = self.get_block_owned(hash) else {
-            return false;
-        };
-        self.proof_matches_block(&block, proof)
-    }
-
-    fn proof_matches_block(&self, block: &Block, proof: &StakeProof) -> bool {
-        let Some(parent) = self.get_header(&block.header.prev_block_hash) else {
-            return false;
-        };
-        let Some(tx) = block.transactions.first().filter(|tx| tx.is_coinstake()) else {
-            return false;
-        };
-        let Some(input) = tx.inputs.first() else {
-            return false;
-        };
-        let txid = tx.txid();
-        block.header.is_pos()
-            && tx.inputs.len() == 1
-            && proof.coinstake.txid() == txid
-            && proof.tx_merkle_proof.txid == txid
-            && proof.tx_merkle_proof.index == 0
-            && proof.tx_merkle_proof.root == block.header.merkle_root
-            && proof
-                .tx_merkle_proof
-                .verify(&block.header.merkle_root)
-                .is_ok()
-            && proof.utxo.txid == input.prev_txid
-            && proof.utxo.vout == input.prev_vout
-            && proof.prev_stake_modifier == parent.stake_modifier
-            && proof
-                .utxo_proof
-                .verify(
-                    &parent.utxo_root,
-                    &vtorrent_spv::stake::hash_utxo(&proof.utxo),
-                )
-                .is_ok()
-    }
+fn proof_matches_block(block: &Block, parent: &BlockHeader, proof: &StakeProof) -> bool {
+    let Some(tx) = block.transactions.first().filter(|tx| tx.is_coinstake()) else {
+        return false;
+    };
+    let Some(input) = tx.inputs.first() else {
+        return false;
+    };
+    let txid = tx.txid();
+    block.header.is_pos()
+        && tx.inputs.len() == 1
+        && proof.coinstake.txid() == txid
+        && proof.tx_merkle_proof.txid == txid
+        && proof.tx_merkle_proof.index == 0
+        && proof.tx_merkle_proof.root == block.header.merkle_root
+        && proof
+            .tx_merkle_proof
+            .verify(&block.header.merkle_root)
+            .is_ok()
+        && proof.utxo.txid == input.prev_txid
+        && proof.utxo.vout == input.prev_vout
+        && proof.prev_stake_modifier == parent.stake_modifier
+        && proof
+            .utxo_proof
+            .verify(
+                &parent.utxo_root,
+                &vtorrent_spv::stake::hash_utxo(&proof.utxo),
+            )
+            .is_ok()
 }
 
 #[cfg(test)]
@@ -266,13 +293,22 @@ mod tests {
         let (mut chain, block, expected, _) = fixture();
         let before = chain.utxo_set.clone();
         assert_eq!(
-            chain.reconstruct_stake_proof(&block.hash()),
+            chain
+                .stake_proof_snapshot(&block.hash())
+                .unwrap()
+                .reconstruct(),
             Some(expected.clone())
         );
         assert_eq!(chain.utxo_set, before);
         chain.blocks.remove(&block.header.prev_block_hash);
         assert!(chain.stake_proof_matches(&block.hash(), &expected));
-        assert_eq!(chain.reconstruct_stake_proof(&block.hash()), Some(expected));
+        assert_eq!(
+            chain
+                .stake_proof_snapshot(&block.hash())
+                .unwrap()
+                .reconstruct(),
+            Some(expected)
+        );
     }
 
     #[test]
@@ -330,7 +366,115 @@ mod tests {
         chain.set_max_reorg_depth(1);
         let owner = vtorrent_core::address::Address::from_hash160(&[42; 20], 70).unwrap();
         chain.mint_to_address(&owner.to_string(), 1).unwrap();
-        assert!(chain.reconstruct_stake_proof(&block.hash()).is_none());
+        assert!(chain.stake_proof_snapshot(&block.hash()).is_none());
         assert!(chain.stake_proof_matches(&block.hash(), &proof));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reorg_during_reconstruction_rejects_result_and_evicts_cached_orphan() {
+        let (chain, old, original, _) = fixture();
+        let mut fork = Chain::new_regtest().unwrap();
+        fork.add_block(chain.get_block_owned(&old.header.prev_block_hash).unwrap())
+            .unwrap();
+        let private = vtorrent_core::keys::PrivateKey::from_bytes([7; 32], true).unwrap();
+        let pk = secp256k1::PublicKey::from_secret_key(
+            &secp256k1::Secp256k1::new(),
+            &secp256k1::SecretKey::from_slice(private.as_bytes()).unwrap(),
+        );
+        let address = vtorrent_core::address::Address::from_pubkey(&pk, true, 70);
+        let mut engine = StakingEngine::with_wif(address.to_string(), private.to_wif(198));
+        let mut blocks = Vec::new();
+        let mut winning_proof = None;
+        for _ in 0..2 {
+            let parent = fork.get_header(&fork.best_hash().unwrap()).unwrap();
+            let first = (parent.timestamp + MIN_STAKE_AGE as u32 + 1).max(old.header.timestamp + 1);
+            engine.set_consensus_params(fork.params());
+            let (block, proof) = (first..first + 1000)
+                .find_map(|ts| {
+                    engine.build_stake_block_with_proof(
+                        fork.best_hash().unwrap(),
+                        parent.stake_modifier,
+                        fork.best_height() + 1,
+                        ts,
+                        fork.total_staked(),
+                        fork.get_utxo_set().values().cloned().collect(),
+                        vec![],
+                    )
+                })
+                .unwrap();
+            fork.add_block(block.clone()).unwrap();
+            blocks.push(block);
+            winning_proof = Some(proof);
+        }
+        let node = crate::node::Node::new_with_chain(
+            crate::node::NodeConfig {
+                regtest: true,
+                testnet: true,
+                listen_addr: "127.0.0.1:0".into(),
+                ..Default::default()
+            },
+            chain,
+        )
+        .unwrap();
+        node.cache_stake_proof(old.hash(), original.clone()).await;
+        let snapshot = node
+            .chain
+            .lock()
+            .await
+            .stake_proof_snapshot(&old.hash())
+            .unwrap();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (resume, paused) = std::sync::mpsc::channel();
+        let worker = tokio::task::spawn_blocking(move || {
+            started.send(()).unwrap();
+            paused.recv().unwrap();
+            snapshot.reconstruct().unwrap()
+        });
+        ready.await.unwrap();
+        {
+            let mut chain = node.chain.lock().await;
+            chain.add_block(blocks[0].clone()).unwrap();
+            assert!(matches!(
+                chain.add_block(blocks[1].clone()).unwrap(),
+                super::super::BlockAcceptance::Reorg { .. }
+            ));
+            assert_eq!(chain.best_hash(), fork.best_hash());
+        }
+        resume.send(()).unwrap();
+        let stale = worker.await.unwrap();
+        assert_eq!(stale, original);
+        assert!(
+            node.cache_canonical_stake_proof(old.hash(), stale)
+                .await
+                .is_none(),
+            "a reconstruction from the abandoned branch must not be served"
+        );
+        assert!(!node.stake_proofs.read().await.contains_key(&old.hash()));
+        assert!(node
+            .cache_canonical_stake_proof(blocks[1].hash(), winning_proof.unwrap())
+            .await
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn invalid_relay_does_not_evict_a_valid_canonical_cached_proof() {
+        let (chain, block, proof, _) = fixture();
+        let node =
+            crate::node::Node::new_with_chain(crate::node::NodeConfig::default(), chain).unwrap();
+        assert!(node
+            .cache_canonical_stake_proof(block.hash(), proof.clone())
+            .await
+            .is_some());
+        let mut bad = proof.clone();
+        bad.prev_stake_modifier ^= 1;
+        assert!(node
+            .cache_canonical_stake_proof(block.hash(), bad)
+            .await
+            .is_none());
+        assert_eq!(
+            node.stake_proofs.read().await.get(&block.hash()),
+            Some(&proof),
+            "an invalid relay must preserve the valid canonical cached proof"
+        );
     }
 }

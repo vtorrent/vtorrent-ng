@@ -1977,20 +1977,34 @@ pub(crate) async fn dispatch_message(
                     let chain = node.chain.lock().await;
                     #[cfg(feature = "test-util")]
                     let acquired = std::time::Instant::now();
-                    proof = chain.reconstruct_stake_proof(&req.block_hash);
+                    let snapshot = chain.stake_proof_snapshot(&req.block_hash);
+                    #[cfg(feature = "test-util")]
+                    let held_us = acquired.elapsed().as_micros();
                     drop(chain);
+                    if let Some(snapshot) = snapshot {
+                        proof = match tokio::task::spawn_blocking(move || snapshot.reconstruct())
+                            .await
+                        {
+                            Ok(rebuilt) => rebuilt,
+                            Err(error) => {
+                                tracing::warn!(%error, "Stake proof reconstruction worker failed");
+                                None
+                            }
+                        };
+                    }
                     #[cfg(feature = "test-util")]
                     tracing::info!(
                         "proof_reconstruction hash={} wait_us={} hold_us={} found={}",
                         hex::encode(req.block_hash),
                         acquired.duration_since(requested).as_micros(),
-                        acquired.elapsed().as_micros(),
+                        held_us,
                         proof.is_some()
                     );
-                    if let Some(rebuilt) = &proof {
-                        node.cache_stake_proof(req.block_hash, rebuilt.clone())
-                            .await;
-                    }
+                }
+                if let Some(candidate) = proof {
+                    proof = node
+                        .cache_canonical_stake_proof(req.block_hash, candidate)
+                        .await;
                 }
                 let proof = proof.and_then(|proof| bincode::serialize(&proof).ok());
                 let payload = encode_for_peer(
@@ -2019,13 +2033,8 @@ pub(crate) async fn dispatch_message(
                         .with_limit(crate::consensus::MAX_BLOCK_SIZE as u64)
                         .deserialize::<vtorrent_spv::stake::StakeProof>(&bytes);
                     if let Ok(proof) = decoded {
-                        let valid_for_known_block = {
-                            let chain = node.chain.lock().await;
-                            chain.stake_proof_matches(&resp.block_hash, &proof)
-                        };
-                        if valid_for_known_block {
-                            node.cache_stake_proof(resp.block_hash, proof).await;
-                        }
+                        node.cache_canonical_stake_proof(resp.block_hash, proof)
+                            .await;
                     }
                 }
             } else {

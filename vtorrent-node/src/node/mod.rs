@@ -449,6 +449,27 @@ impl Node {
         proofs.insert(block_hash, proof);
     }
 
+    pub(crate) async fn cache_canonical_stake_proof(
+        &self,
+        block_hash: [u8; 32],
+        proof: StakeProof,
+    ) -> Option<StakeProof> {
+        let chain = self.chain.lock().await;
+        if chain
+            .block_height(&block_hash)
+            .is_none_or(|height| chain.block_hash_at_height(height) != Some(block_hash))
+        {
+            self.stake_proofs.write().await.remove(&block_hash);
+            return None;
+        }
+        if !chain.stake_proof_matches(&block_hash, &proof) {
+            return None;
+        }
+        self.cache_stake_proof(block_hash, proof.clone()).await;
+        drop(chain);
+        Some(proof)
+    }
+
     /// Attach an event sender so the node can emit live events to subscribers.
     /// Call this before `start()` — typically done by `vtorrent-daemon` to bridge
     /// the node event channel to the RPC WebSocket broadcaster.

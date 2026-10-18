@@ -184,51 +184,66 @@ async fn canonical_proof_request_cost() {
         .collect();
     assert_eq!(targets.len(), PROOFS);
     let mut reports = Vec::new();
+    let baseline = std::env::var_os("VTR_PROOF_COST_BASELINE_DAEMON").map(PathBuf::from);
+    let variants: Vec<_> = if let Some(binary) = baseline.as_deref() {
+        vec![("baseline", Some(binary)), ("snapshot", None)]
+    } else {
+        vec![("snapshot", None)]
+    };
     for run in 0..5 {
         for peers in [1, 4, 8] {
-            let case = directory.path().join(format!("run-{run}-peers-{peers}"));
-            persist(&case, &blocks);
-            let daemon = Daemon::start_with_activation(&case, "daemon.log", None, Some(2)).await;
-            for (hash, _) in &targets {
-                assert!(daemon
-                    .get(&format!("/api/v1/spv/proof/{}", hex::encode(hash)))
-                    .await["proof"]
-                    .is_null());
+            for &(variant, executable) in &variants {
+                let case = directory
+                    .path()
+                    .join(format!("run-{run}-peers-{peers}-{variant}"));
+                persist(&case, &blocks);
+                let daemon =
+                    Daemon::start_configured(&case, "daemon.log", None, Some(2), None, executable)
+                        .await;
+                for (hash, _) in &targets {
+                    assert!(daemon
+                        .get(&format!("/api/v1/spv/proof/{}", hex::encode(hash)))
+                        .await["proof"]
+                        .is_null());
+                }
+                let cold = wave(
+                    &daemon,
+                    &targets,
+                    peers,
+                    hex::encode(expected.best_hash().unwrap()),
+                )
+                .await;
+                let warm = wave(
+                    &daemon,
+                    &targets,
+                    peers,
+                    hex::encode(expected.best_hash().unwrap()),
+                )
+                .await;
+                let log = daemon.logs();
+                let reconstruction: Vec<_> = log
+                    .lines()
+                    .filter_map(|line| {
+                        line.split_once("proof_reconstruction hash=")
+                            .map(|(_, s)| s)
+                    })
+                    .map(str::to_owned)
+                    .collect();
+                assert_eq!(reconstruction.len(), PROOFS);
+                assert!(reconstruction.iter().all(|s| s.contains("found=true")));
+                let report = json!({
+                    "variant": variant, "run": run, "peers": peers,
+                    "utxos": expected.get_utxo_set().len(),
+                    "cold": cold, "warm": warm, "reconstruction": reconstruction
+                });
+                eprintln!(
+                    "proof_request_cost variant={variant} run={run} peers={peers} cold_us={} warm_us={} cold_rpc_p95_us={} warm_rpc_p95_us={}",
+                    report["cold"]["elapsed_us"], report["warm"]["elapsed_us"],
+                    report["cold"]["rpc_info"]["p95_us"], report["warm"]["rpc_info"]["p95_us"]
+                );
+                reports.push(report);
+                daemon.stop(false).await;
             }
-            let cold = wave(
-                &daemon,
-                &targets,
-                peers,
-                hex::encode(expected.best_hash().unwrap()),
-            )
-            .await;
-            let warm = wave(
-                &daemon,
-                &targets,
-                peers,
-                hex::encode(expected.best_hash().unwrap()),
-            )
-            .await;
-            let log = daemon.logs();
-            let reconstruction: Vec<_> = log
-                .lines()
-                .filter_map(|line| {
-                    line.split_once("proof_reconstruction hash=")
-                        .map(|(_, s)| s)
-                })
-                .map(str::to_owned)
-                .collect();
-            assert_eq!(reconstruction.len(), PROOFS);
-            assert!(reconstruction.iter().all(|s| s.contains("found=true")));
-            let report = json!({ "run": run, "peers": peers, "utxos": expected.get_utxo_set().len(),
-                "cold": cold, "warm": warm, "reconstruction": reconstruction });
-            eprintln!(
-                "proof_request_cost run={run} peers={peers} cold_us={} warm_us={} cold_rpc_p95_us={} warm_rpc_p95_us={}",
-                report["cold"]["elapsed_us"], report["warm"]["elapsed_us"],
-                report["cold"]["rpc_info"]["p95_us"], report["warm"]["rpc_info"]["p95_us"]
-            );
-            reports.push(report);
-            daemon.stop(false).await;
         }
     }
     if let Some(path) = std::env::var_os("VTR_PROOF_COST_REPORT") {

@@ -20,8 +20,12 @@ def summary(values):
 def main():
     reports = json.loads(Path(sys.argv[1]).read_text())
     result = []
-    for peers in sorted({row["peers"] for row in reports}):
-        rows = [row for row in reports if row["peers"] == peers]
+    groups = sorted({(row.get("variant", "baseline"), row["peers"]) for row in reports})
+    for variant, peers in groups:
+        rows = [
+            row for row in reports
+            if row["peers"] == peers and row.get("variant", "baseline") == variant
+        ]
         timings = []
         for row in rows:
             for line in row["reconstruction"]:
@@ -31,7 +35,10 @@ def main():
                 if match is None:
                     raise ValueError(f"Invalid reconstruction record: {line!r}")
                 timings.append(tuple(map(int, match.groups())))
-        group = {"peers": peers, "runs": len(rows), "utxos": rows[0]["utxos"]}
+        group = {
+            "variant": variant, "peers": peers,
+            "runs": len(rows), "utxos": rows[0]["utxos"],
+        }
         for phase in ("cold", "warm"):
             group[phase] = {
                 "elapsed_us": summary([r[phase]["elapsed_us"] for r in rows]),
