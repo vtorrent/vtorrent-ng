@@ -14,6 +14,8 @@ pub(crate) mod handler;
 pub mod overlay;
 pub mod p2p;
 pub(crate) mod peering;
+pub(crate) mod proof_retry;
+pub(crate) mod proof_service;
 pub(crate) mod staking_loop;
 
 pub use chain::handle_block;
@@ -220,6 +222,8 @@ pub struct Node {
     pub(crate) orphan_order: VecDeque<[u8; 32]>,
     pub(crate) orphan_bytes: usize,
     pub(crate) stake_proofs: Arc<RwLock<HashMap<[u8; 32], StakeProof>>>,
+    pub(crate) proof_budget: proof_service::ProofBudget,
+    pub(crate) proof_retries: proof_retry::ProofRetries,
     /// Per-peer minimum fee rate (from feefilter messages), satoshis per 1000 bytes.
     pub(crate) peer_fee_filters: std::collections::HashMap<std::net::SocketAddr, u64>,
     /// Per-peer last-seen ping nonce (for pong matching).
@@ -327,6 +331,8 @@ impl Node {
             orphan_order: VecDeque::new(),
             orphan_bytes: 0,
             stake_proofs: Arc::new(RwLock::new(HashMap::new())),
+            proof_budget: proof_service::ProofBudget::default(),
+            proof_retries: proof_retry::ProofRetries::default(),
             peer_fee_filters: std::collections::HashMap::new(),
             peer_ping_nonces: std::collections::HashMap::new(),
             peer_msg_counts: std::collections::HashMap::new(),
@@ -399,6 +405,8 @@ impl Node {
             orphan_order: VecDeque::new(),
             orphan_bytes: 0,
             stake_proofs: Arc::new(RwLock::new(HashMap::new())),
+            proof_budget: proof_service::ProofBudget::default(),
+            proof_retries: proof_retry::ProofRetries::default(),
             peer_fee_filters: std::collections::HashMap::new(),
             peer_ping_nonces: std::collections::HashMap::new(),
             peer_msg_counts: std::collections::HashMap::new(),
@@ -617,6 +625,7 @@ impl Node {
         let mut ping_ticker = interval(Duration::from_secs(PING_INTERVAL_SECS));
         let mut pex_ticker = interval(Duration::from_secs(PEX_INTERVAL_SECS));
         let mut dht_ticker = interval(Duration::from_secs(DHT_REANNOUNCE_SECS));
+        let mut proof_retry_at = std::time::Instant::now();
 
         loop {
             tokio::select! {
@@ -632,6 +641,11 @@ impl Node {
                         if let Err(e) = self.handle_peer_event(event).await {
                             tracing::warn!("Peer event error: {}", e);
                         }
+                    }
+                    let now = std::time::Instant::now();
+                    if now >= proof_retry_at {
+                        self.retry_stake_proofs(now).await;
+                        proof_retry_at = std::time::Instant::now() + Duration::from_secs(1);
                     }
                 }
 

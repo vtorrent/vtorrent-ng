@@ -120,6 +120,8 @@ copying the UTXO set. The existing per-peer message budget applies, but this
 repair adds no reconstruction-specific budget. A subsequent
 [proof request cost experiment](governance-proof-request-cost.md) measures
 finite multi-peer bursts and chain-lock latency.
+The later [admission budget](governance-proof-reconstruction-budget.md)
+limits cold reconstruction attempts while allowing cached proof serving.
 
 This repair does not enable SPV PoS header acceptance, which remains
 fail-closed. A subsequent scenario covers SIGKILL between governance-reorg

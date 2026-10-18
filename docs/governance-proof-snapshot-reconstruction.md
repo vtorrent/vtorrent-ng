@@ -152,8 +152,10 @@ passing. The release-mode command above completed successfully.
 
 ## Remaining limits
 
-The full UTXO copy still runs under the chain mutex. This change adds no
-reconstruction-specific request budget and does not provide archival proofs
+The full UTXO copy still runs under the chain mutex. This snapshot change
+added no reconstruction-specific request budget. A subsequent
+[admission budget](governance-proof-reconstruction-budget.md) limits cold
+reconstruction attempts. Neither change provides archival proofs
 beyond retained history. The experiment covers a finite loopback burst
 with one RPC sampler and no active staking. Sustained cache churn and larger
 UTXO sets require separate measurements.

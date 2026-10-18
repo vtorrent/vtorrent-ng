@@ -17,10 +17,12 @@ pub(crate) struct StakeProofSnapshot {
 }
 
 impl Chain {
-    /// Capture the retained canonical pre-state for reconstruction outside the chain lock.
-    pub(crate) fn stake_proof_snapshot(&self, hash: &[u8; 32]) -> Option<StakeProofSnapshot> {
+    fn stake_proof_height(&self, hash: &[u8; 32]) -> Option<u32> {
         let height = self.block_height(hash)?;
-        if height == 0 || self.block_hash_at_height(height) != Some(*hash) {
+        if height == 0
+            || self.block_hash_at_height(height) != Some(*hash)
+            || !self.get_header(hash)?.is_pos()
+        {
             return None;
         }
         if !self
@@ -30,6 +32,16 @@ impl Chain {
         {
             return None;
         }
+        Some(height)
+    }
+
+    pub(crate) fn has_stake_proof_history(&self, hash: &[u8; 32]) -> bool {
+        self.stake_proof_height(hash).is_some()
+    }
+
+    /// Capture the retained canonical pre-state for reconstruction outside the chain lock.
+    pub(crate) fn stake_proof_snapshot(&self, hash: &[u8; 32]) -> Option<StakeProofSnapshot> {
+        let height = self.stake_proof_height(hash)?;
         let block = self.get_block_owned(hash)?;
         if !block.header.is_pos() {
             return None;
@@ -406,7 +418,7 @@ mod tests {
             blocks.push(block);
             winning_proof = Some(proof);
         }
-        let node = crate::node::Node::new_with_chain(
+        let mut node = crate::node::Node::new_with_chain(
             crate::node::NodeConfig {
                 regtest: true,
                 testnet: true,
@@ -417,6 +429,9 @@ mod tests {
         )
         .unwrap();
         node.cache_stake_proof(old.hash(), original.clone()).await;
+        let requested = std::time::Instant::now();
+        node.proof_retries
+            .track(old.hash(), 2, "127.0.0.1:1".parse().unwrap(), requested);
         let snapshot = node
             .chain
             .lock()
@@ -450,6 +465,12 @@ mod tests {
             "a reconstruction from the abandoned branch must not be served"
         );
         assert!(!node.stake_proofs.read().await.contains_key(&old.hash()));
+        node.retry_stake_proofs(requested + crate::node::proof_retry::RETRY_DELAY)
+            .await;
+        assert!(
+            node.proof_retries.is_empty(),
+            "abandoned targets must not be retried"
+        );
         assert!(node
             .cache_canonical_stake_proof(blocks[1].hash(), winning_proof.unwrap())
             .await
@@ -476,5 +497,235 @@ mod tests {
             Some(&proof),
             "an invalid relay must preserve the valid canonical cached proof"
         );
+    }
+
+    #[tokio::test]
+    async fn exhausted_budget_blocks_reconstruction_but_not_cached_proofs() {
+        use crate::node::proof_service::{PROOFS_GLOBAL, PROOFS_PER_IP};
+        let (chain, block, proof, _) = fixture();
+        let mut node =
+            crate::node::Node::new_with_chain(crate::node::NodeConfig::default(), chain).unwrap();
+        let peer: std::net::SocketAddr = "192.0.2.1:1000".parse().unwrap();
+        let now = std::time::Instant::now();
+        for _ in 0..PROOFS_PER_IP {
+            assert!(node.proof_budget.try_admit(peer.ip(), now));
+        }
+        assert!(
+            node.get_stake_proof(peer, block.hash()).await.is_none(),
+            "exhausted admission must not reconstruct a cold proof"
+        );
+        assert!(node.stake_proofs.read().await.is_empty());
+        node.cache_stake_proof(block.hash(), proof.clone()).await;
+        assert_eq!(
+            node.get_stake_proof(peer, block.hash()).await,
+            Some(proof.clone())
+        );
+        node.stake_proofs.write().await.clear();
+        let reconnected = "192.0.2.1:2000".parse().unwrap();
+        assert!(node
+            .get_stake_proof(reconnected, block.hash())
+            .await
+            .is_none());
+        let other: std::net::SocketAddr = "192.0.2.2:1000".parse().unwrap();
+        assert_eq!(node.get_stake_proof(other, block.hash()).await, Some(proof));
+        for _ in 1..PROOFS_GLOBAL - PROOFS_PER_IP {
+            assert!(node
+                .proof_budget
+                .try_admit(other.ip(), std::time::Instant::now()));
+        }
+        node.stake_proofs.write().await.clear();
+        assert!(node
+            .get_stake_proof("192.0.2.3:1000".parse().unwrap(), block.hash())
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn unknown_and_out_of_window_requests_do_not_consume_reconstruction_budget() {
+        use crate::node::proof_service::PROOFS_PER_IP;
+        let (mut chain, old, _, _) = fixture();
+        chain.set_max_reorg_depth(1);
+        let owner = vtorrent_core::address::Address::from_hash160(&[42; 20], 70).unwrap();
+        chain.mint_to_address(&owner.to_string(), 1).unwrap();
+        let pow = chain.best_hash().unwrap();
+        let mut node =
+            crate::node::Node::new_with_chain(crate::node::NodeConfig::default(), chain).unwrap();
+        let peer: std::net::SocketAddr = "192.0.2.1:1000".parse().unwrap();
+        assert!(node.get_stake_proof(peer, [0xab; 32]).await.is_none());
+        assert!(node.get_stake_proof(peer, old.hash()).await.is_none());
+        assert!(node.get_stake_proof(peer, pow).await.is_none());
+        for _ in 0..PROOFS_PER_IP {
+            assert!(node
+                .proof_budget
+                .try_admit(peer.ip(), std::time::Instant::now()));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unavailable_proof_is_retried_over_p2p_and_cached_after_response() {
+        use crate::node::{Node, NodeConfig};
+        use std::time::{Duration, Instant};
+        use vtorrent_p2p::{
+            message::{
+                decode_for_peer, encode_for_peer, GetProofMsg, NetMessage, ProofMsg,
+                PROTOCOL_VERSION,
+            },
+            peer::PeerEvent,
+            peer_manager::PeerManager,
+        };
+
+        async fn requested(
+            server: &mut PeerManager,
+            hash: [u8; 32],
+            phase: &str,
+        ) -> std::net::SocketAddr {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    for event in server.process_events().await {
+                        if let PeerEvent::Message { peer_addr, msg } = event {
+                            if msg.command_str() == "getproof" {
+                                let req: GetProofMsg =
+                                    decode_for_peer(&msg.payload, PROTOCOL_VERSION).unwrap();
+                                assert_eq!(req.block_hash, hash);
+                                return peer_addr;
+                            }
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("{phase}: peer did not receive the expected proof request"))
+        }
+
+        async fn consume_response(node: &mut Node) {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let mut received = false;
+                    for event in node.peer_manager.process_events().await {
+                        received |= matches!(&event, PeerEvent::Message { msg, .. } if msg.command_str() == "proof");
+                        node.handle_peer_event(event).await.unwrap();
+                    }
+                    if received { break; }
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+            }).await.expect("the node did not consume the proof response");
+        }
+
+        let (chain, block, proof, _) = fixture();
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = port.local_addr().unwrap();
+        drop(port);
+        let mut server = PeerManager::new_testnet(0, &address.to_string());
+        server.start().await.unwrap();
+        let mut node = Node::new_with_chain(
+            NodeConfig {
+                testnet: true,
+                regtest: true,
+                isolated: true,
+                use_dht: false,
+                use_overlay: false,
+                listen_addr: "127.0.0.1:0".into(),
+                ..Default::default()
+            },
+            chain,
+        )
+        .unwrap();
+        node.peer_manager
+            .connect(&address.to_string())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                server.process_events().await;
+                for event in node.peer_manager.process_events().await {
+                    node.handle_peer_event(event).await.unwrap();
+                }
+                if node.peer_versions.contains_key(&address) && !server.connected_peers().is_empty()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .unwrap();
+        node.request_stake_proof(block.hash(), 2, address, PROTOCOL_VERSION)
+            .await;
+        let now = Instant::now();
+        let client = requested(&mut server, block.hash(), "initial").await;
+        server
+            .send_to(
+                client,
+                NetMessage::new(
+                    "proof",
+                    encode_for_peer(
+                        &ProofMsg {
+                            block_hash: block.hash(),
+                            proof: None,
+                        },
+                        PROTOCOL_VERSION,
+                    ),
+                ),
+            )
+            .await;
+        consume_response(&mut node).await;
+        assert!(node.stake_proofs.read().await.is_empty());
+        node.retry_stake_proofs(now + Duration::from_secs(65)).await;
+        assert_eq!(
+            requested(&mut server, block.hash(), "retry after unavailable proof").await,
+            client
+        );
+        server
+            .send_to(
+                client,
+                NetMessage::new(
+                    "proof",
+                    encode_for_peer(
+                        &ProofMsg {
+                            block_hash: block.hash(),
+                            proof: Some(vtorrent_p2p::message::encode_v2(&proof).unwrap()),
+                        },
+                        PROTOCOL_VERSION,
+                    ),
+                ),
+            )
+            .await;
+        consume_response(&mut node).await;
+        assert_eq!(
+            node.stake_proofs.read().await.get(&block.hash()),
+            Some(&proof)
+        );
+        assert!(node.proof_retries.is_empty());
+        node.request_stake_proof(block.hash(), 2, address, PROTOCOL_VERSION)
+            .await;
+        assert!(
+            node.proof_retries.is_empty(),
+            "cached targets must not reopen retries"
+        );
+        for hash in [block.hash(), [0xcc; 32]] {
+            server
+                .send_to(
+                    client,
+                    NetMessage::new(
+                        "proof",
+                        encode_for_peer(
+                            &ProofMsg {
+                                block_hash: hash,
+                                proof: None,
+                            },
+                            PROTOCOL_VERSION,
+                        ),
+                    ),
+                )
+                .await;
+            consume_response(&mut node).await;
+            assert!(
+                node.proof_retries.is_empty(),
+                "late or unsolicited unavailability must not enqueue work"
+            );
+        }
+        server.disconnect(client).await;
+        node.peer_manager.disconnect(address).await;
     }
 }

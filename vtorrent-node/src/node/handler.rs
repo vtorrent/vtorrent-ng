@@ -294,12 +294,7 @@ pub(crate) async fn handle_block(
                                 });
                             }
                             if block_arc.header.is_pos() {
-                                let payload = encode_for_peer(
-                                    &GetProofMsg { block_hash: hash },
-                                    peer_version,
-                                );
-                                node.peer_manager
-                                    .send_to(peer_addr, NetMessage::new("getproof", payload))
+                                node.request_stake_proof(hash, height, peer_addr, peer_version)
                                     .await;
                             }
                             true
@@ -320,15 +315,13 @@ pub(crate) async fn handle_block(
                             );
                             for fork in &applied_fork_blocks {
                                 if fork.block.header.is_pos() {
-                                    let payload = encode_for_peer(
-                                        &GetProofMsg {
-                                            block_hash: fork.block.hash(),
-                                        },
+                                    node.request_stake_proof(
+                                        fork.block.hash(),
+                                        fork.height,
+                                        peer_addr,
                                         peer_version,
-                                    );
-                                    node.peer_manager
-                                        .send_to(peer_addr, NetMessage::new("getproof", payload))
-                                        .await;
+                                    )
+                                    .await;
                                 }
                             }
                             node.emit(NodeEvent::Reorg {
@@ -1970,42 +1963,7 @@ pub(crate) async fn dispatch_message(
 
         "getproof" => {
             if let Ok(req) = decode_for_peer::<GetProofMsg>(&msg.payload, peer_version) {
-                let mut proof = node.stake_proofs.read().await.get(&req.block_hash).cloned();
-                if proof.is_none() {
-                    #[cfg(feature = "test-util")]
-                    let requested = std::time::Instant::now();
-                    let chain = node.chain.lock().await;
-                    #[cfg(feature = "test-util")]
-                    let acquired = std::time::Instant::now();
-                    let snapshot = chain.stake_proof_snapshot(&req.block_hash);
-                    #[cfg(feature = "test-util")]
-                    let held_us = acquired.elapsed().as_micros();
-                    drop(chain);
-                    if let Some(snapshot) = snapshot {
-                        proof = match tokio::task::spawn_blocking(move || snapshot.reconstruct())
-                            .await
-                        {
-                            Ok(rebuilt) => rebuilt,
-                            Err(error) => {
-                                tracing::warn!(%error, "Stake proof reconstruction worker failed");
-                                None
-                            }
-                        };
-                    }
-                    #[cfg(feature = "test-util")]
-                    tracing::info!(
-                        "proof_reconstruction hash={} wait_us={} hold_us={} found={}",
-                        hex::encode(req.block_hash),
-                        acquired.duration_since(requested).as_micros(),
-                        held_us,
-                        proof.is_some()
-                    );
-                }
-                if let Some(candidate) = proof {
-                    proof = node
-                        .cache_canonical_stake_proof(req.block_hash, candidate)
-                        .await;
-                }
+                let proof = node.get_stake_proof(peer_addr, req.block_hash).await;
                 let proof = proof.and_then(|proof| bincode::serialize(&proof).ok());
                 let payload = encode_for_peer(
                     &ProofMsg {
@@ -2033,8 +1991,13 @@ pub(crate) async fn dispatch_message(
                         .with_limit(crate::consensus::MAX_BLOCK_SIZE as u64)
                         .deserialize::<vtorrent_spv::stake::StakeProof>(&bytes);
                     if let Ok(proof) = decoded {
-                        node.cache_canonical_stake_proof(resp.block_hash, proof)
-                            .await;
+                        if node
+                            .cache_canonical_stake_proof(resp.block_hash, proof)
+                            .await
+                            .is_some()
+                        {
+                            node.proof_retries.complete(&resp.block_hash);
+                        }
                     }
                 }
             } else {
