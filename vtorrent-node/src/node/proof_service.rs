@@ -53,6 +53,11 @@ impl Node {
         peer: SocketAddr,
         hash: [u8; 32],
     ) -> Option<StakeProof> {
+        #[cfg(feature = "test-util")]
+        tracing::info!(
+            "proof_request_received hash={} peer={peer}",
+            hex::encode(hash)
+        );
         let mut proof = self.stake_proofs.read().await.get(&hash).cloned();
         if proof.is_none() {
             #[cfg(feature = "test-util")]
@@ -65,6 +70,11 @@ impl Node {
             } else if self.proof_budget.try_admit(peer.ip(), Instant::now()) {
                 chain.stake_proof_snapshot(&hash)
             } else {
+                #[cfg(feature = "test-util")]
+                tracing::info!(
+                    "proof_reconstruction_denied hash={} peer={peer} reason=budget",
+                    hex::encode(hash)
+                );
                 tracing::debug!(%peer, "Stake proof reconstruction budget exhausted");
                 None
             };

@@ -74,6 +74,10 @@ real messages and the production response handler, but does not measure a
 65-second wall-clock wait or exhaust a real remote server's quota. Budget
 expiry and admission are covered by the separate budget regressions.
 
+A later [real-daemon quota recovery scenario](governance-proof-quota-recovery.md)
+exhausts the actual provider allowance, waits for automatic retry on the
+production clock, and observes cancellation beyond the next retry deadline.
+
 Queue tests cover retry deadlines, attempt exhaustion, offline expiry,
 fallback rotation, source reconnection, duplicate requests, queue capacity,
 and batch bounds. The existing reorg-during-reconstruction test now also

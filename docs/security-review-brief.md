@@ -14,10 +14,12 @@ Tauri. 19 Rust crates + a frontend; 900+ workspace tests.
 ## 2. Why now
 
 The three-node regtest fleet completed a **full 7-day soak** (2026-10-06) and
-`v2.0.0-beta.3` is released. The remaining launch gate is an **independent
-security review** of the custody and consensus surfaces. A consensus bug forks
-the chain; a wallet bug loses funds — both are catastrophic and neither is
-caught by the project's own tests.
+`v2.0.0-beta.3` is released. Independent security review gates governance and
+mainnet activation. The historical soak predates the later governance and
+proof-service repairs and does not validate the current implementation.
+Coordinated upgrades and a fresh soak remain part of launch readiness.
+Internal tests caught prior custody and consensus flaws. Reviewers should
+challenge the repairs and their remaining assumptions independently.
 
 ## 3. Scope (in priority order)
 
@@ -89,6 +91,38 @@ caught by the project's own tests.
 - `vtorrent-torrent` — tracker SSRF guards, MSE/PE (if implemented),
   incentive accounting (self-reported vs signed receipts).
 
+### 3.4b Canonical stake-proof service and resource limits
+- `vtorrent-node/src/chain/stake_proof.rs`: canonical target selection,
+  retained undo history, snapshot capture, parent commitments, and exact
+  coinstake, outpoint, and Merkle binding.
+  - Can a valid membership path for the wrong coin or transaction pass?
+  - Does reconstruction restore the exact pre-state without changing the
+    live chain? What happens outside contiguous retained history?
+- `vtorrent-node/src/node/proof_service.rs`: reconstruction on a blocking
+  worker, cache-hit behavior, and the 60-second sliding admission windows:
+  100 cold attempts per source IP and 200 process-wide.
+  - Can IP aliases, reconnects, rotating addresses, or cache churn bypass the
+    limits or grow bookkeeping without bound?
+  - Are ineligible targets rejected before expensive work? The limits count
+    attempts, not CPU milliseconds. The full UTXO copy still holds the chain
+    mutex and must remain in the availability review scope.
+- `vtorrent-node/src/node/mod.rs` and `vtorrent-node/src/node/handler.rs`: final live-chain
+  canonicality and proof checks, cache insertion ordering, bounded proof
+  decoding, and full-block/reorg proof requests.
+  - Can a reorg between capture and insertion cache or serve an abandoned
+    proof? Can an invalid relay evict a valid canonical cached proof?
+- `vtorrent-node/src/node/proof_retry.rs`: at most 100 pending recent
+  targets, four total attempts, a five-minute lifetime, 65-second spacing,
+  and at most eight retries per maintenance batch.
+  - Can unsolicited or late unavailable responses create work or extend its
+    lifetime? Can peer loss, version changes, reorgs, or cache fulfillment
+    leave stale requests or amplify traffic?
+- `vtorrent-rpc/src/handlers/mod.rs`: full-node and SPV header lookup and
+  cache-only proof responses. Check the intended RPC behavior for fork hashes
+  as well as the P2P service's canonical-only policy.
+- Full-node proof transport is distinct from SPV PoS header acceptance,
+  which remains fail-closed. Governance remains inactive and unscheduled.
+
 ### 3.5 Torrent incentive economics
 - `vtorrent-torrent/src/incentive.rs` + `vtorrent-core/src/receipt.rs` — can a
   peer inflate earnings or replay a receipt? (Signed receipts are the fix; test
@@ -105,10 +139,17 @@ caught by the project's own tests.
 - A short "residual risk" section for anything accepted.
 
 ## 6. What we provide
-- Source at `v2.0.0-beta.3` (tag) plus the consensus and governance work on
-  `main`. The engagement must pin an immutable audit commit, including the
-  template-selection repair described in
-  `docs/governance-template-selection-review.md`.
+- Proposed immutable implementation baseline:
+  **`aaa5bac6705afa1620cd036954f272fb98c06157`**
+  (`fix(node): bound proof reconstruction and retry unavailable proofs`).
+  This baseline includes the governance template-selection repairs,
+  snapshot-based proof reconstruction, admission budget, and bounded retries.
+  Use this full commit hash rather than floating `main`. If the engagement
+  moves to a later implementation, record its full hash explicitly.
+- Supplementary validation added after that baseline includes the real-time
+  quota-recovery test and its test-util request/denial logging. These additions
+  are not present in the pinned tree. Supply them as identified evidence or
+  update the delivery pin to the commit that includes them before handoff.
 - `docs/` — designs + adversarial reviews for every subsystem
   (`cold-staking-p2cs-design.md`, `op-return-utxo-exclusion-design.md`,
   `network-upgrade-design.md`, `atomic-swap-protocol.md`,
@@ -143,4 +184,14 @@ caught by the project's own tests.
 - `docs/governance-step3-self-review-2026-10-11.md` and
   `docs/governance-preactivation-validation-2026-10-12.md` (governance
   self-review and repair).
+- `docs/governance-reorg-load-test.md`,
+  `docs/governance-pos-fork-proof-test.md`, and
+  `docs/governance-interrupted-reorg-test.md` (live forks and crash recovery).
+- `docs/governance-proof-request-cost.md` and
+  `docs/governance-proof-snapshot-reconstruction.md` (request cost and lock
+  ownership measurements).
+- `docs/governance-proof-reconstruction-budget.md`,
+  `docs/governance-proof-retries.md`, and
+  `docs/governance-proof-quota-recovery.md` (resource policy, retry bounds,
+  and real-time end-to-end evidence).
 - `docs/code-review-2026-09-20-fix-status.md` (internal reviews, all closed).

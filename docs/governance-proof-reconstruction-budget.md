@@ -86,6 +86,10 @@ proofs, so this is a serving-compatibility check, not a quota-exhaustion load
 test or a new before-and-after performance comparison.
 Its raw report is `/tmp/opencode/vtr-proof-budget-20261018.json`.
 
+The later [real-daemon recovery test](governance-proof-quota-recovery.md)
+exhausts a provider's per-IP quota and verifies automatic recovery after
+the actual retry delay.
+
 ```bash
 cargo test -p vtorrent-node --lib proof -- --nocapture
 TMPDIR=/tmp/opencode cargo test --workspace --all-features --release --quiet
