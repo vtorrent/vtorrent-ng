@@ -17,4 +17,17 @@ set +e
 status=$?
 set -e
 printf '<!-- exit=%s -->\n' "$status" >> "$OUT"
+
+if [ "$status" -ne 0 ]; then
+    printf 'failed %s exit=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$status" \
+        >> "$STATE/failures.log"
+    if [ -n "${VTR_SOAK_NTFY_URL:-}" ]; then
+        curl -fsS -m 10 \
+            -H "Title: vTorrent soak observation failed" \
+            -H "Priority: high" \
+            -H "Tags: warning" \
+            -d "exit=$status; see $OUT" \
+            "$VTR_SOAK_NTFY_URL" >/dev/null || true
+    fi
+fi
 exit "$status"

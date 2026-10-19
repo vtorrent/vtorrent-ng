@@ -1870,11 +1870,12 @@ scripts/soak-status.sh
 ```
 
 Daily observations are automated by `scripts/soak-daily.sh` (user cron at
-09:10 UTC) and appended to `~/.local/state/vtr-soak/observations.md`. The cron
-exit status is in `~/.local/state/vtr-soak/cron.log`. The first automated run
-at window +5h recorded height 52,015, 3/3 tip agreement, 301 blocks staked,
-median cadence 61 s, 1,223/1,223 Prometheus samples per node, and 0 errors or
-restarts.
+16:10 local, 09:10 UTC) and appended to `~/.local/state/vtr-soak/observations.md`.
+The cron exit status is in `~/.local/state/vtr-soak/cron.log`; failures also
+append to `~/.local/state/vtr-soak/failures.log` and push to the project ntfy
+topic. The first automated run at window +5h recorded height 52,015, 3/3 tip
+agreement, 301 blocks staked, median cadence 61 s, 1,223/1,223 Prometheus
+samples per node, and 0 errors or restarts.
 
 This window validates the new code under regtest fast-stake. It does not
 activate governance, schedule a deployment, or replace the external security

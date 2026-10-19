@@ -11,30 +11,33 @@ Companion to `docs/mainnet-readiness.md` (checklist) and
 |---|---|---|
 | Network magic | `56 54 52 58` (`VTRX`) | `network.rs:43` |
 | P2P port | 22526 | `network.rs:46` |
-| RPC port | 22525 | `config.rs:22` |
-| Address prefix | 70 (`V…`) | `mainnet::PUBKEY_ADDRESS_PREFIX` |
-| WIF prefix | 198 (`7…`) | `mainnet::SECRET_KEY_PREFIX` |
+| RPC port | 22527 (daemon default 22525) | `network.rs:49`, `config.rs:22` |
+| Address prefix | 70 (`V…`) | `network.rs:37` |
+| WIF prefix | 198 (`7…`) | `network.rs:40` |
 | Genesis message | `"vTorrent 2.0 - Revived 2025 - Old holders made whole - No exchange needed"` | `genesis.rs:20` |
-| Genesis timestamp | `1_700_000_000` — **set to the real launch time** | `genesis.rs:24` |
+| Genesis timestamp | `1_700_000_000` — **frozen; do not change** | `genesis.rs:24` |
 | Target block time | 60 s | `consensus.rs:53` |
 | Annual rate | 5% | `consensus.rs:28` |
 | Min/max stake age | 6 h / 6 d | `consensus.rs:31,34` |
 | Min stake | 1 VTR | `consensus.rs:43` |
 | Max supply | 20,000,000 VTR | `consensus.rs:46` |
 | DNS seeds | seed1/2/3.vtorrent.org + `bootstrap/peers.txt` | `docs/dns-seeds.md` |
-| Reviewed build | `vtorrent/node:batch-ff6f472` (code `ff6f472`) | `docker/testnet/docker-compose.yml` |
+| Review candidate build | `vtorrent/node:batch-ff6f472` (code `ff6f472`) | `docker/testnet/docker-compose.yml` |
 
 **Genesis is deterministic** and embeds the legacy snapshot (59,375 addresses,
-11,589,746.63 VTR). Changing `GENESIS_TIMESTAMP` or the message changes the
-genesis hash — freeze both before launch and record the resulting hash.
+11,589,746.63 VTR). `GENESIS_TIMESTAMP` and the genesis message are frozen.
+Changing either value changes the genesis hash and invalidates the independent
+verifier and the snapshot commitment. Verify both values; do not redefine them
+at launch.
 
 ## 2. Pre-launch gate (all must be green)
 
 1. **External security review** complete; findings fixed with regression tests
    (`docs/security-review-brief.md`, pinned to `ff6f472`).
-2. **Reviewed build selected** (§3): the current build includes the consensus
-   batch; launch on the reviewed commit and image, not beta.3.
-3. **Fresh 7-day soak green** on the reviewed build (window
+2. **Review candidate selected** (§3): the current build includes the
+   consensus batch; launch on the candidate commit and image after review, not
+   beta.3.
+3. **Fresh 7-day soak green** on the review candidate (window
    `2026-10-19T09:06:31Z` → `2026-10-26T09:06:31Z`; `docs/soak-log.md`).
 4. **`mainnet-readiness.md`** §1–§4 all `[x]` (except items explicitly deferred).
 
@@ -43,13 +46,16 @@ genesis hash — freeze both before launch and record the resulting hash.
 The current build already includes the consensus batch (OP_RETURN exclusion,
 cold staking, governance, state rent) and the governance and proof-service
 repairs. The fleet is soaking `vtorrent/node:batch-ff6f472` (code `ff6f472`).
-Launch on that reviewed build after the fresh 7-day soak. Do not launch on
-beta.3; it predates the governance and proof-service repairs.
+Launch on that candidate build after the external review and the fresh
+7-day soak. Do not launch on beta.3; it predates the governance and
+proof-service repairs.
 
 ## 4. Launch procedure
 
-1. **Freeze genesis**: set `GENESIS_TIMESTAMP` to the launch time, rebuild, and
-   record the genesis hash + the daemon binary sha256.
+1. **Verify the frozen genesis**: confirm `GENESIS_TIMESTAMP` and the genesis
+   message match the signed parameters, rebuild, and record the genesis hash +
+   the daemon binary sha256. Do not change either value; the independent
+   verifier and the snapshot commitment depend on them.
 2. **Build & sign the release**: tag `v2.0.0`, run the desktop matrix, publish
    with checksums (`docs/release-notes-*.md`). Run
    `python3 scripts/verify-genesis.py` and record the output with the release
@@ -67,8 +73,8 @@ beta.3; it predates the governance and proof-service repairs.
 - All seeds report the **same genesis hash** and advance together.
 - The independent genesis verifier passes
   (`python3 scripts/verify-genesis.py`).
-- The deployed image and commit match the reviewed build
-  (`vtorrent/node:batch-ff6f472`, code `ff6f472`).
+- The deployed image and commit match the build that passed the external
+  review (`vtorrent/node:batch-ff6f472`, code `ff6f472`).
 - Block cadence ~60 s; no sustained divergence.
 - A legacy claim succeeds end-to-end (rehearsed on regtest).
 - RPC reachable, auth enforced, rate limiting active.
@@ -81,10 +87,12 @@ beta.3; it predates the governance and proof-service repairs.
 - **After blocks exist**: a bad launch is a **new genesis** (the chain is
   young); coordinate a restart with a corrected binary. Record the decision in
   `docs/soak-log.md`.
-- **Batch**: because it is a no-op until an OP_RETURN/P2CS output appears,
-  reverting the binary before such an output is safe. After one exists,
-  rollback requires a reorg or coordinated re-upgrade, so verify the no-op and
-  coordinate to avoid that window.
+- **Batch**: the batch replayed offline to an identical tip hash on the
+  pre-batch chain (`docs/soak-log.md`, 2026-10-08/09). Reverting the binary is
+  safe only while no OP_RETURN/P2CS output exists and the reverted binary
+  accepts every block produced since the upgrade. Verify both conditions before
+  reverting. After such an output exists, rollback requires a reorg or
+  coordinated re-upgrade.
 
 ## 7. Post-launch
 

@@ -17,22 +17,22 @@
 | Parameter | Value | Source |
 |---|---|---|
 | Address prefix | `70` (Base58Check → `V...`) | `vtorrent-core/src/network.rs:37` |
-| WIF prefix | `198` (→ `7...`) | `vtorrent-core/src/network.rs:12` |
+| WIF prefix | `198` (→ `7...`) | `vtorrent-core/src/network.rs:40` |
 | Checksum | Double-SHA256 first 4 bytes | `vtorrent-core/src/address.rs` |
 
 ## Consensus Rules
 
 | Parameter | Value | Source |
 |---|---|---|
-| Target block time | 60 seconds | `vtorrent-node/src/consensus.rs:44` |
-| Annual reward rate | 5% (5/100) | `vtorrent-node/src/consensus.rs:62` |
-| Min stake amount | 1 VTR (100,000,000 sats) | `vtorrent-node/src/consensus.rs:34` |
-| Min stake age | 6 hours (21,600 s) | `vtorrent-core/src/network.rs:62` |
-| Max stake age | 6 days (518,400 s) | `vtorrent-core/src/network.rs:65` |
-| Max supply | 20,000,000 VTR (2×10¹⁵ sats) | `vtorrent-core/src/network.rs:53` |
-| Difficulty adjustment | Every 2016 blocks | `vtorrent-node/src/consensus.rs:47` |
-| Genesis bits | `0x1e0fffff` | `vtorrent-node/src/genesis.rs:26` |
-| Genesis timestamp | `1700000000` | `vtorrent-node/src/genesis.rs:23` |
+| Target block time | 60 seconds | `vtorrent-node/src/consensus.rs:53` |
+| Annual reward rate | 5% (5/100) | `vtorrent-node/src/consensus.rs:28` |
+| Min stake amount | 1 VTR (100,000,000 sats) | `vtorrent-node/src/consensus.rs:43` |
+| Min stake age | 6 hours (21,600 s) | `vtorrent-node/src/consensus.rs:31` |
+| Max stake age | 6 days (518,400 s) | `vtorrent-node/src/consensus.rs:34` |
+| Max supply | 20,000,000 VTR (2×10¹⁵ sats) | `vtorrent-node/src/consensus.rs:46` |
+| Difficulty adjustment | Every 2016 blocks | `vtorrent-node/src/consensus.rs:61` |
+| Genesis bits | `0x1e0fffff` | `vtorrent-node/src/genesis.rs:27` |
+| Genesis timestamp | `1700000000` | `vtorrent-node/src/genesis.rs:24` |
 
 ## Genesis Block
 
