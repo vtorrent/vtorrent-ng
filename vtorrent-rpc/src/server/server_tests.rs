@@ -1394,3 +1394,18 @@ async fn test_feature_endpoints_are_routed() {
         assert_ne!(status, StatusCode::NOT_FOUND, "POST {uri} is not routed");
     }
 }
+
+#[cfg(feature = "test-util")]
+#[tokio::test]
+async fn test_test_miner_requires_api_key() {
+    let mut state = AppState::new();
+    state.rpc_api_key = Some("test-key".into());
+    let app = build_router(state);
+    let (status, _) = post_json(
+        app,
+        "/api/v1/blockchain/mine",
+        serde_json::json!({"address": "VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}

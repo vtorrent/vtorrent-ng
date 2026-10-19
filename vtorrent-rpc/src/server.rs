@@ -183,15 +183,15 @@ pub fn build_router(state: AppState) -> Router {
             get(debug_order_preimage),
         )
         .route("/api/v1/debug/mocktime", post(debug_mocktime))
-        .route("/api/v1/peers/unban", post(unban_peer))
-        // Order matters: `auth` must be the outer layer so unauthenticated
-        // requests are rejected before they can consume one of the 5 global
-        // concurrency permits (otherwise 5 keyless requests starve the
-        // legitimate wallet owner).
-        .layer(rate)
-        .layer(auth);
+        .route("/api/v1/peers/unban", post(unban_peer));
     #[cfg(feature = "test-util")]
     let protected = protected.route("/api/v1/blockchain/mine", post(mine_block));
+    // Order matters: `auth` must be the outer layer so unauthenticated
+    // requests are rejected before they can consume one of the 5 global
+    // concurrency permits (otherwise 5 keyless requests starve the
+    // legitimate wallet owner). Apply the layers after every protected route,
+    // including test-only routes, so none bypass authentication.
+    let protected = protected.layer(rate).layer(auth);
 
     let public_routes = Router::new()
         .route("/api/v1/blockchain/utxo/:txid/:vout", get(get_txout))
