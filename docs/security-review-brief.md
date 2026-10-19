@@ -139,17 +139,17 @@ challenge the repairs and their remaining assumptions independently.
 - A short "residual risk" section for anything accepted.
 
 ## 6. What we provide
-- Proposed immutable implementation baseline:
-  **`aaa5bac6705afa1620cd036954f272fb98c06157`**
-  (`fix(node): bound proof reconstruction and retry unavailable proofs`).
-  This baseline includes the governance template-selection repairs,
-  snapshot-based proof reconstruction, admission budget, and bounded retries.
+- Immutable review delivery:
+  **`65325df5e5441ff37bf0292bd41981e6125a0d93`**
+  (`test(node): verify real-time proof quota recovery and retry completion`).
+  This commit includes the governance template-selection repairs,
+  snapshot-based proof reconstruction, admission budget, bounded retries, the
+  real-time quota-recovery test, and the evidence documents listed below.
   Use this full commit hash rather than floating `main`. If the engagement
   moves to a later implementation, record its full hash explicitly.
-- Supplementary validation added after that baseline includes the real-time
-  quota-recovery test and its test-util request/denial logging. These additions
-  are not present in the pinned tree. Supply them as identified evidence or
-  update the delivery pin to the commit that includes them before handoff.
+- The review delivery is a source snapshot, not a release tag. It is not a
+  claim that the current fleet runs this code. The fleet image predates these
+  repairs and requires a coordinated upgrade and fresh soak after review.
 - `docs/` — designs + adversarial reviews for every subsystem
   (`cold-staking-p2cs-design.md`, `op-return-utxo-exclusion-design.md`,
   `network-upgrade-design.md`, `atomic-swap-protocol.md`,
