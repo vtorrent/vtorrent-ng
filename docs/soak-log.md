@@ -1829,3 +1829,74 @@ resumed. Backups `.ops-backups/batch-20261008-uuybcw/`.
   feature works (and caught two bugs).
 
 **Verdict: batch is soak-clean.** Remaining gate is the external security review.
+
+## 2026-10-19 — governance/proof-service upgrade + fresh 7-day soak start
+
+Upgraded the fleet from `vtorrent/node:batch-205cadb` to
+`vtorrent/node:batch-ff6f472` (image sha256
+`b555851657a1bb2cccf2e869429c3e194c7c42f426f8a728a9a61a8f6176a4a3`), built
+from code commit `ff6f472` with the review pin at `7e6c2e6`. The compose pin
+is updated in `docker/testnet/docker-compose.yml`.
+
+The rolling recreate kept the named chain volumes and the node1 passphrase
+bind. Startup replayed 51,713 persisted blocks to rebuild the UTXO
+commitments; the fleet was healthy again at about 09:06Z, roughly 14 minutes
+after the recreate. No chain data was reset.
+
+Initial post-upgrade state at 09:07Z:
+
+- 3/3 nodes at height **51715**, same tip hash, `syncing=false`.
+- Connections: node1=2, node2=1, node3=1.
+- Staking enabled, 4 eligible UTXOs, 50.6 VTR staking, 1 block staked this run.
+- 0 ERROR/panic lines and 0 restarts on all three nodes.
+- RSS: node1 170 MiB, node2 147 MiB, node3 147.7 MiB.
+
+The new code includes the governance template-selection and signed-vote
+repairs, snapshot-based stake-proof reconstruction outside the chain lock, the
+100-per-IP / 200-process-wide cold-reconstruction admission budget, and
+bounded proof retries. Governance remains inactive because
+`deployments::governance_deployment()` returns `None`. BTC SPV remains
+disabled on the fleet, so the real-bitcoind swap and reorg tests are not
+exercised by this soak.
+
+Soak window start: **2026-10-19T09:06:31Z** (first post-upgrade stake,
+epoch `1792400791`). Earliest sign-off: **2026-10-26T09:06:31Z**.
+
+Daily observation:
+
+```bash
+scripts/soak-observe.sh 1792400791
+scripts/soak-status.sh
+```
+
+This window validates the new code under regtest fast-stake. It does not
+activate governance, schedule a deployment, or replace the external security
+review.
+## 2026-10-19 — daily observation (window +0h)
+
+Read-only check at `2026-10-19T09:07Z` (window start `2026-10-19T09:06:31Z`).
+
+- vtr-node1: height **51716**, hash `c79e4544ddf495d9…`, syncing=false, connections=2, mempool=0, mem=169.2MiB
+- vtr-node2: height **51716**, hash `c79e4544ddf495d9…`, syncing=false, connections=1, mempool=0, mem=146.8MiB
+- vtr-node3: height **51716**, hash `c79e4544ddf495d9…`, syncing=false, connections=1, mempool=0, mem=147.1MiB
+
+All three nodes agree on height and tip hash.
+
+- Staking enabled=true, eligible UTXOs=4, blocks staked this run=2.
+
+- Block cadence within the window: no blocks in window
+unavailable.
+
+- Prometheus since window start:
+  - node1:22525: 5/5 samples, down=1, gaps>30s=0
+  - node2:22525: 5/5 samples, down=1, gaps>30s=0
+  - node3:22525: 5/5 samples, down=1, gaps>30s=0
+
+- Errors since window start:
+  - vtr-node1: errors=0, restarts=0
+  - vtr-node2: errors=0, restarts=0
+  - vtr-node3: errors=0, restarts=0
+
+- BTC SPV: height=0, synced=false.
+
+Earliest sign-off: **2026-10-26T09:06Z** (window start + 7 days). Next daily observation due 2026-10-20.
