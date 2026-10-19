@@ -140,13 +140,13 @@ challenge the repairs and their remaining assumptions independently.
 
 ## 6. What we provide
 - Immutable review delivery:
-  **`8ffd9cdb7bbe0a617bb721399d6fc8605c5eeeda`**
-  (`test(btc): verify real SPV swap settlement and reorged-out funding`).
+  **`ff6f4725f636bde7dab3b7710c09f0841e6a6df7`**
+  (`test(genesis): verify snapshot and genesis hash independently`).
   This commit includes the governance template-selection repairs,
   snapshot-based proof reconstruction, admission budget, bounded retries, the
   real-time quota-recovery test, the real-bitcoind SPV reorg tests, the full
-  HTLC swap settlement test, the reorged-out funding test, and the evidence
-  documents listed below.
+  HTLC swap settlement test, the reorged-out funding test, the independent
+  genesis verifier, and the evidence documents listed below.
   Use this full commit hash rather than floating `main`. If the engagement
   moves to a later implementation, record its full hash explicitly.
 - The review delivery is a source snapshot, not a release tag. It is not a
@@ -201,4 +201,6 @@ challenge the repairs and their remaining assumptions independently.
   reorg re-inclusion, a full HTLC swap that settles against real BTC SPV, and
   a conflicting-spend test that drops a reorged-out funding output). Separate
   maker and taker VTR nodes remain open.
+- `scripts/verify-genesis.py` (independent snapshot and genesis hash verifier;
+  CI runs it after the workspace tests).
 - `docs/code-review-2026-09-20-fix-status.md` (internal reviews, all closed).
