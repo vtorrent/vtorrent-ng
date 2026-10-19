@@ -42,6 +42,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run all workspace tests
         run: cargo test --workspace --all-features
+      - name: Verify genesis independently
+        run: python3 scripts/verify-genesis.py
 
   # ─── Rust quality gates ─────────────────────────────────────────────────────
   quality:

@@ -9,7 +9,12 @@
 - [x] **Genesis block verification**: hash `36ca792aa45ca7850f2789ff2e62ec13e91bd5f2770d6fea8df81bc2da1da8f8`
       (`utxo_root 65185f8a5c055c17bf7053c6b6c42993565bb5586689a8508017005b842f9105`)
       verified via RPC + `test_snapshot_sum_matches_documented_supply` + `test_snapshot_binary_roundtrip`.
-      See `docs/consensus-parameters.md`. Second independent verifier still needed.
+      A standalone Python verifier (`scripts/verify-genesis.py`) independently
+      parses the snapshot, validates Base58Check prefix 70, rebuilds both
+      genesis transactions, and recomputes the txids, merkle root, UTXO root,
+      and block hash. It matches the Rust values and runs in CI. A second
+      independent human or party review is still desirable.
+      See `docs/consensus-parameters.md`.
 - [x] **Consensus parameter sign-off**: all values frozen and documented in
       `docs/consensus-parameters.md` (network magic, ports, address/WIF prefixes,
       PoS rules, genesis hash, snapshot totals).

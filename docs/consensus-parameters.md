@@ -47,6 +47,10 @@
 ## Verification
 
 - Genesis hash independently verified via RPC: `GET /api/v1/blockchain/block/height/0`
+- Standalone Python verifier (`scripts/verify-genesis.py`) parses the snapshot
+  without the Rust decoder, validates Base58Check prefix 70, rebuilds both
+  genesis transactions, and recomputes the txids, merkle root, UTXO root, and
+  block hash. It matches the Rust values and runs in CI.
 - Snapshot sum/count/uniqueness verified by `test_snapshot_sum_matches_documented_supply`
 - Snapshot binary roundtrip verified by `test_snapshot_binary_roundtrip`
 - Address/WIF prefix verified end-to-end via wallet import + send on soak

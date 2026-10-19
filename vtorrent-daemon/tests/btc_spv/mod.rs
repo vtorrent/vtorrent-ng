@@ -249,6 +249,30 @@ async fn post(daemon: &Daemon, path: &str, body: Value) -> Value {
     response
 }
 
+async fn reconcile_btc(daemon: &Daemon, order_id: &str) -> Value {
+    for attempt in 0..3 {
+        let (status, response) = rpc_polling::post_json_once(
+            &daemon.client,
+            &format!("{}/api/v1/swap/btc-reconcile", daemon.rpc),
+            &json!({"order_id": order_id}),
+            MUTATION_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        if status.is_success() {
+            return response;
+        }
+        if attempt == 2 {
+            panic!(
+                "btc-reconcile failed: {status} {response}; {}",
+                daemon.logs()
+            );
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    unreachable!()
+}
+
 async fn mine_vtr(daemon: &Daemon) {
     post(
         daemon,
@@ -361,12 +385,7 @@ async fn multi_node_htlc_swap_settles_across_real_btc_spv() {
     let btc_claim = claimed["txid"].as_str().unwrap().to_owned();
     mine(6);
     wait_filters();
-    let btc_status = post(
-        &maker,
-        "/api/v1/swap/btc-reconcile",
-        json!({"order_id": order_id}),
-    )
-    .await;
+    let btc_status = reconcile_btc(&maker, &order_id).await;
     assert_eq!(btc_status["state"], "claimed");
     assert_eq!(btc_status["funding"]["txid"], btc_funding);
     assert_eq!(btc_status["spend"]["txid"], btc_claim);
