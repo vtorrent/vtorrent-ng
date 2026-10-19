@@ -34,7 +34,7 @@ challenge the repairs and their remaining assumptions independently.
 - `vtorrent-migrate` — legacy `wallet.dat` parsing (BerkeleyDB, AES-256-CBC,
   OTP chain). Prior finding: OTP secret is passphrase-recoverable offline.
 
-### 3.2 Consensus batch (new, unsoaked — forks the chain)
+### 3.2 Consensus batch (new, fresh soak in progress — forks the chain)
 - **Cold staking (P2CS)** — `vtorrent-script/src/standard.rs` (`build_p2cs`,
   classifier), `vtorrent-node/src/chain/chain_reorg.rs` (the **R1 coinstake
   re-lock rule**), `vtorrent-node/src/staking.rs` (coinstake signing),
@@ -82,6 +82,9 @@ challenge the repairs and their remaining assumptions independently.
   preimage handling, refund/claim paths, reorg handling.
 - Known accepted risk: BTC refunds are deliberately non-RBF (documented
   interlock) — review the reasoning, not just the code.
+- Evidence: the full HTLC swap now settles against real BTC SPV
+  (`docs/btc-spv-multinode-reorg-test.md`). The test uses one VTR daemon;
+  separate maker and taker VTR nodes remain open.
 
 ### 3.4 Network & RPC boundary
 - `vtorrent-rpc/src/server.rs` — API-key auth (constant-time compare),
@@ -149,9 +152,10 @@ challenge the repairs and their remaining assumptions independently.
   genesis verifier, and the evidence documents listed below.
   Use this full commit hash rather than floating `main`. If the engagement
   moves to a later implementation, record its full hash explicitly.
-- The review delivery is a source snapshot, not a release tag. It is not a
-  claim that the current fleet runs this code. The fleet image predates these
-  repairs and requires a coordinated upgrade and fresh soak after review.
+- The review delivery is a source snapshot, not a release tag. The fleet now
+  runs `vtorrent/node:batch-ff6f472` (code `ff6f472`) and is in a fresh 7-day
+  soak from 2026-10-19 to 2026-10-26. The soak is supporting evidence, not a
+  substitute for this review.
 - `docs/` — designs + adversarial reviews for every subsystem
   (`cold-staking-p2cs-design.md`, `op-return-utxo-exclusion-design.md`,
   `network-upgrade-design.md`, `atomic-swap-protocol.md`,
