@@ -172,7 +172,10 @@ from uninterrupted soak measurements.
       restart, ban-list inspection, chain-state recovery, RPC key rotation,
       seed failover/DNS changes, reorg response, and alert triage. Formal
       on-call rotation (who carries the pager) is a launch-week decision.
-- [ ] **Incident comms channel** announced (status page / Telegram / X).
+- [~] **Incident comms channel** — templates, severity policy, and launch-day
+      sequence drafted in `docs/incident-comms.md`. The status page, Telegram
+      channel, and X account still need to be created or confirmed and
+      announced.
 - [x] **Backup policy**: `docs/backup-policy.md` — daily cron snapshot of seed
       data dirs (14-day retention); genesis/snapshot binaries in repo + release
       assets, checksums appended at tag time.

@@ -1,7 +1,8 @@
 # vTorrent On-Call Runbook
 
 Operational procedures for the seed fleet and soak environment. Pair this with
-the monitoring setup in `deploy/seeds-monitoring/`.
+the monitoring setup in `deploy/seeds-monitoring/`. Public communication
+follows `docs/incident-comms.md`.
 
 ## Fleet Map
 

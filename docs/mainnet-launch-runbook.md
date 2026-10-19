@@ -107,6 +107,7 @@ proof-service repairs.
 - `docs/mainnet-readiness.md`, `docs/soak-log.md`,
   `docs/consensus-batch-activation-plan.md`, `docs/security-review-brief.md`,
   `docs/network-upgrade-design.md`, `docs/dns-seeds.md`,
-  `docs/oncall-runbook.md`, `docs/backup-policy.md`.
+  `docs/oncall-runbook.md`, `docs/incident-comms.md`,
+  `docs/backup-policy.md`.
 - `vtorrent-node/src/genesis.rs`, `vtorrent-core/src/network.rs`,
   `vtorrent-node/src/consensus.rs`.
