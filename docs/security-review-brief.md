@@ -140,11 +140,13 @@ challenge the repairs and their remaining assumptions independently.
 
 ## 6. What we provide
 - Immutable review delivery:
-  **`65325df5e5441ff37bf0292bd41981e6125a0d93`**
-  (`test(node): verify real-time proof quota recovery and retry completion`).
+  **`8ffd9cdb7bbe0a617bb721399d6fc8605c5eeeda`**
+  (`test(btc): verify real SPV swap settlement and reorged-out funding`).
   This commit includes the governance template-selection repairs,
   snapshot-based proof reconstruction, admission budget, bounded retries, the
-  real-time quota-recovery test, and the evidence documents listed below.
+  real-time quota-recovery test, the real-bitcoind SPV reorg tests, the full
+  HTLC swap settlement test, the reorged-out funding test, and the evidence
+  documents listed below.
   Use this full commit hash rather than floating `main`. If the engagement
   moves to a later implementation, record its full hash explicitly.
 - The review delivery is a source snapshot, not a release tag. It is not a
