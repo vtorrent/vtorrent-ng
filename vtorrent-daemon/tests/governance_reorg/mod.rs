@@ -742,6 +742,7 @@ async fn governance_pos_reorg_recovers_at_every_daemon_write_boundary() {
             Some(2),
             Some(boundary),
             None,
+            None,
         )
         .await;
         let peer = Daemon::start_with_activation(

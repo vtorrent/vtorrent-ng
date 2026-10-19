@@ -35,8 +35,13 @@
       tested; `POST /api/v1/blockchain/bootstrap` mines it. Genesis has no
       stakeable UTXO, so this is the only way a fresh chain begins staking.
       See `docs/superpowers/specs/2026-09-21-genesis-bootstrap-and-stakeable-script-design.md`.
-- [ ] **External security review** — **brief drafted**: `docs/security-review-brief.md` (scope, deliverables, 2-phase engagement). Of wallet encryption (Argon2id +
-      ChaCha20-Poly1305), RPC auth, and the atomic-swap HTLC flow.
+- [ ] **External security review** — **brief finalized, not yet commissioned**:
+      `docs/security-review-brief.md` (scope, deliverables, 2-phase engagement).
+      The proposed immutable delivery is
+      `65325df5e5441ff37bf0292bd41981e6125a0d93`, which includes the governance,
+      reorg, and stake-proof service repairs. The review covers wallet
+      encryption (Argon2id + ChaCha20-Poly1305), consensus and governance,
+      the stake-proof service, RPC auth, and the atomic-swap HTLC flow.
 
 ## 2. Testnet Soak
 
@@ -189,10 +194,20 @@ actions, operator approval.
       allows an explicit value). **This did not fix the growth** — see the open
       finding below. The bound is still correct on its own merits (a 1 GiB cache
       on a 150 MiB-budget node is a misconfiguration), but it is not the cause.
-- [ ] **BTC SPV header chain may be unbounded** — the SPV header store is an
-      in-memory map grown with BTC height (~870k headers ≈ ≥100 MiB on mainnet)
-      and is not obviously persisted/bounded. Quantify in the BTC-SPV soak; if
-      linear, persist/bound the header store. See `docs/btc-spv-soak-plan.md`.
+- [~] **BTC SPV header chain bounded, mainnet-scale soak pending** — the
+      in-memory header map grew with BTC height (~870k headers ≈ ≥100 MiB on
+      mainnet). `HeaderChain` now has an opt-in retention window
+      (`--btc-header-retention`, default 100,000 headers ≈ 11 MiB) that prunes
+      strictly below `best_height - retention` while keeping the retained set
+      contiguous. Genesis is always kept. Two independent daemons now agree on
+      a real regtest SPV tip, discover the same funded outputs, persist them
+      across restarts, and follow a reorg that re-includes the funding
+      transactions (`docs/btc-spv-multinode-reorg-test.md`). A full HTLC swap
+      now settles against real BTC SPV, including the maker BTC claim and taker
+      VTR claim, and a conflicting-spend test proves a reorged-out funding
+      output disappears after restart. The remaining work is a BTC-SPV soak at
+      mainnet-scale header counts and a swap with separate maker and taker VTR
+      nodes, not an unbounded store. See `docs/btc-spv-soak-plan.md`.
 - [~] **BTC SPV holds ~40 MiB and is not independently soaked** — regtest isolated soak is flat (~160 MiB, 140 headers); **mainnet scale (≥100 MiB at ~870k headers) still unvalidated**. BTC SPV (only
       enabled when `--btc-*` is passed, for atomic swaps) held **~40–47 MiB** on
       node1 and confounded the RSS measurements. It was disabled for the current

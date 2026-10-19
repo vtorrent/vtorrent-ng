@@ -197,9 +197,16 @@ async fn canonical_proof_request_cost() {
                     .path()
                     .join(format!("run-{run}-peers-{peers}-{variant}"));
                 persist(&case, &blocks);
-                let daemon =
-                    Daemon::start_configured(&case, "daemon.log", None, Some(2), None, executable)
-                        .await;
+                let daemon = Daemon::start_configured(
+                    &case,
+                    "daemon.log",
+                    None,
+                    Some(2),
+                    None,
+                    executable,
+                    None,
+                )
+                .await;
                 for (hash, _) in &targets {
                     assert!(daemon
                         .get(&format!("/api/v1/spv/proof/{}", hex::encode(hash)))

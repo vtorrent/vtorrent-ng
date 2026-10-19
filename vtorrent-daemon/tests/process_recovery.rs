@@ -11,6 +11,8 @@ use tokio::process::{Child, Command};
 use vtorrent_store::store::BlockStore;
 
 #[cfg(all(target_os = "linux", feature = "test-util"))]
+mod btc_spv;
+#[cfg(all(target_os = "linux", feature = "test-util"))]
 mod governance_reorg;
 mod interrupted_reorg;
 mod rpc_polling;
@@ -42,7 +44,28 @@ impl Daemon {
         seed: Option<&str>,
         activation: Option<u32>,
     ) -> Self {
-        Self::start_configured(directory, log_name, seed, activation, None, None).await
+        Self::start_configured(directory, log_name, seed, activation, None, None, None).await
+    }
+
+    #[cfg(feature = "test-util")]
+    async fn start_with_btc(
+        directory: &Path,
+        log_name: &str,
+        seed: Option<&str>,
+        activation: Option<u32>,
+        btc_seed: &str,
+        btc_peer: &str,
+    ) -> Self {
+        Self::start_configured(
+            directory,
+            log_name,
+            seed,
+            activation,
+            None,
+            None,
+            Some((btc_seed, btc_peer)),
+        )
+        .await
     }
 
     async fn start_configured(
@@ -52,6 +75,7 @@ impl Daemon {
         activation: Option<u32>,
         reorg_pause: Option<usize>,
         executable: Option<&Path>,
+        btc: Option<(&str, &str)>,
     ) -> Self {
         let started = Instant::now();
         std::fs::create_dir_all(directory).unwrap();
@@ -77,7 +101,9 @@ impl Daemon {
                 "--public-addr",
                 &p2p,
                 "--log-level",
-                if activation.is_some() {
+                if btc.is_some() {
+                    "vtorrent_daemon=debug,vtorrent_node=warn,vtorrent_store=info,vtorrent_btc=debug"
+                } else if activation.is_some() {
                     "vtorrent_daemon=debug,vtorrent_node=info,vtorrent_store=info"
                 } else {
                     "vtorrent_daemon=debug,vtorrent_node=warn,vtorrent_store=info"
@@ -107,6 +133,15 @@ impl Daemon {
         if let Some(boundary) = reorg_pause {
             assert!(cfg!(feature = "test-util"));
             command.env("VTR_TEST_REORG_PAUSE_AFTER", boundary.to_string());
+        }
+        if let Some((btc_seed, btc_peer)) = btc {
+            command.args([
+                "--btc-regtest",
+                "--btc-seed",
+                btc_seed,
+                "--btc-peer",
+                btc_peer,
+            ]);
         }
         drop(rpc_port);
         drop(p2p_port);

@@ -102,6 +102,15 @@ The scan now preserves queued filters arriving before a requested full block.
 
 Still open: adversarial validation with independent nodes and the SPV trust
 limits (eclipse attacks, mempool conflicts, and reorgs after verification).
+A real-bitcoind two-daemon test now covers header agreement, UTXO discovery,
+restart persistence, and a reorg that re-includes the funding transactions
+(`docs/btc-spv-multinode-reorg-test.md`). A full HTLC swap now settles
+against real BTC SPV: VTR funding, BTC funding, maker BTC claim with a fresh
+isolated contract scan, and taker VTR claim. A conflicting-spend test also
+proves that a reorged-out funding output disappears after restart. The swap
+test uses one VTR daemon, so separate maker and taker VTR nodes remain open,
+as do eclipse attacks, mempool conflicts, and a reorg after a BTC claim has
+been verified.
 Claim scans are bounded to the latest 1,008 blocks and 120 seconds; older or
 unverifiable funding is rejected, not assumed safe. These changes do not provide
 full per-chain settlement reconciliation; durable maker/VTR recovery is covered below.

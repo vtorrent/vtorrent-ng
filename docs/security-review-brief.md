@@ -194,4 +194,9 @@ challenge the repairs and their remaining assumptions independently.
   `docs/governance-proof-retries.md`, and
   `docs/governance-proof-quota-recovery.md` (resource policy, retry bounds,
   and real-time end-to-end evidence).
+- `docs/btc-spv-multinode-reorg-test.md` (two independent daemons on a real
+  regtest bitcoind: header agreement, UTXO discovery, restart persistence,
+  reorg re-inclusion, a full HTLC swap that settles against real BTC SPV, and
+  a conflicting-spend test that drops a reorged-out funding output). Separate
+  maker and taker VTR nodes remain open.
 - `docs/code-review-2026-09-20-fix-status.md` (internal reviews, all closed).

@@ -55,6 +55,14 @@ that is a ≥100 MiB standing cost before any swap state.
 ### Phase C — budget and verdict
 - Set a **BTC-SPV budget** (proposed: core budget + 64 MiB) and grade node1
   against it.
+- **Multi-node SPV agreement (2026-10-19):** two independent daemons synced
+  the same real regtest header tip, discovered the same funded outputs,
+  persisted them across restarts, and followed a reorg that re-included the
+  funding transactions. See `docs/btc-spv-multinode-reorg-test.md`. A full
+  HTLC swap now settles against real BTC SPV, including the maker BTC claim
+  and taker VTR claim, and a conflicting-spend test proves a reorged-out
+  funding output disappears after restart. Separate maker and taker VTR nodes
+  remain open.
 - **Header store bounded (2026-10-08):** `HeaderChain` now has an opt-in
   retention window (`--btc-header-retention`, default 100_000 ≈ 11 MiB vs
   ~100 MiB unbounded on mainnet), pruning strictly below `best_height -

@@ -190,6 +190,8 @@ pub fn build_router(state: AppState) -> Router {
         // legitimate wallet owner).
         .layer(rate)
         .layer(auth);
+    #[cfg(feature = "test-util")]
+    let protected = protected.route("/api/v1/blockchain/mine", post(mine_block));
 
     let public_routes = Router::new()
         .route("/api/v1/blockchain/utxo/:txid/:vout", get(get_txout))

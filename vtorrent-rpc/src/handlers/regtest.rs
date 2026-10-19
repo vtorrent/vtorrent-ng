@@ -169,3 +169,112 @@ pub async fn debug_mocktime(
     *state.mock_time.write().await = new_time;
     Ok(Json(json!({ "mock_time": new_time })))
 }
+
+/// POST /api/v1/blockchain/mine
+///
+/// Test-only regtest miner: builds a block containing the current valid
+/// mempool transactions and a coinbase mint. It exists so integration tests
+/// can confirm mempool transactions without enabling staking. Compiled only
+/// with the `test-util` feature.
+#[cfg(feature = "test-util")]
+pub async fn mine_block(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<Value>,
+) -> RpcResult<Json<Value>> {
+    if !state.regtest {
+        return Err(RpcError::Forbidden(
+            "Mining is only available in regtest mode".into(),
+        ));
+    }
+    let address = req["address"].as_str().unwrap_or("").trim();
+    if address.is_empty() {
+        return Err(RpcError::BadRequest("Address is required".into()));
+    }
+    let amount = req["amount_satoshis"]
+        .as_u64()
+        .unwrap_or(vtorrent_node::consensus::COIN);
+    if amount == 0 {
+        return Err(RpcError::BadRequest("Amount must be non-zero".into()));
+    }
+    let script = vtorrent_core::address::Address::parse(address)
+        .map_err(|e| RpcError::BadRequest(format!("Invalid address: {e}")))?
+        .p2pkh_script_pubkey();
+
+    let (block, height, included) = {
+        let mut chain = state.chain.lock().await;
+        let mut mempool = state.mempool.lock().await;
+        if chain.total_supply().saturating_add(amount) > vtorrent_node::consensus::MAX_SUPPLY {
+            return Err(RpcError::BadRequest(
+                "Mining would exceed maximum supply".into(),
+            ));
+        }
+        let height = chain.best_height() + 1;
+        let prev_hash = chain
+            .best_hash()
+            .ok_or_else(|| RpcError::Internal("Chain has no tip".into()))?;
+        let parent = chain
+            .get_header_at_height(chain.best_height())
+            .ok_or_else(|| RpcError::Internal("Parent header missing".into()))?;
+        let timestamp = (vtorrent_core::time::now_secs().min(u64::from(u32::MAX)) as u32)
+            .max(parent.timestamp.saturating_add(1));
+        let coinbase = vtorrent_node::block::Transaction {
+            version: 1,
+            tx_type: vtorrent_node::block::TxType::Coinbase,
+            inputs: vec![vtorrent_node::block::TxInput {
+                prev_txid: [0; 32],
+                prev_vout: u32::MAX,
+                script_sig: vec![height as u8],
+                sequence: u32::MAX,
+            }],
+            outputs: vec![vtorrent_node::block::TxOutput {
+                value: amount,
+                script_pubkey: script,
+            }],
+            lock_time: height,
+            claim_address: None,
+            claim_signature: None,
+        };
+        let txs = mempool.get_transactions();
+        let included: Vec<[u8; 32]> = txs.iter().map(|tx| tx.txid()).collect();
+        let mut transactions = vec![coinbase];
+        transactions.extend(txs);
+        let mut block = vtorrent_node::block::Block {
+            header: vtorrent_node::block::BlockHeader {
+                version: 1,
+                prev_block_hash: prev_hash,
+                merkle_root: [0; 32],
+                utxo_root: [0; 32],
+                timestamp,
+                bits: vtorrent_node::genesis::GENESIS_BITS,
+                nonce: height,
+                stake_modifier: vtorrent_node::consensus::compute_stake_modifier(
+                    parent.stake_modifier,
+                    &prev_hash,
+                ),
+            },
+            transactions,
+        };
+        block.header.merkle_root = block.compute_merkle_root();
+        match chain.add_block(block.clone()) {
+            Ok(vtorrent_node::chain::BlockAcceptance::MainChain { .. }) => {}
+            Ok(_) => {
+                return Err(RpcError::Internal(
+                    "Test miner produced a non-main-chain block".into(),
+                ))
+            }
+            Err(e) => return Err(RpcError::Internal(format!("Mining failed: {e}"))),
+        }
+        for txid in &included {
+            mempool.remove_transaction(txid);
+        }
+        (block, height, included)
+    };
+
+    if let Some(sender) = &state.block_submit {
+        let _ = sender.try_send(block);
+    }
+    Ok(Json(json!({
+        "height": height,
+        "included": included.iter().map(hex::encode).collect::<Vec<_>>(),
+    })))
+}
