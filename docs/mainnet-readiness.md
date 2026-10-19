@@ -43,8 +43,9 @@
 - [ ] **External security review** — **brief finalized, not yet commissioned**:
       `docs/security-review-brief.md` (scope, deliverables, 2-phase engagement).
       The proposed immutable delivery is
-      `65325df5e5441ff37bf0292bd41981e6125a0d93`, which includes the governance,
-      reorg, and stake-proof service repairs. The review covers wallet
+      `ff6f4725f636bde7dab3b7710c09f0841e6a6df7`, which includes the governance,
+      reorg, and stake-proof service repairs, the real-bitcoind SPV and swap
+      tests, and the independent genesis verifier. The review covers wallet
       encryption (Argon2id + ChaCha20-Poly1305), consensus and governance,
       the stake-proof service, RPC auth, and the atomic-swap HTLC flow.
 
@@ -81,6 +82,13 @@ from uninterrupted soak measurements.
       7-day window restarted 2026-09-03. A staking allocation fix deployed
       2026-09-04 reduced node1 from 207.7 MiB to 61.6 MiB after six kernel
       hits; the continuous-window check remains pending.)*
+- [~] **Post-upgrade 7-day soak (run 3)** — fleet upgraded from
+      `vtorrent/node:batch-205cadb` to `vtorrent/node:batch-ff6f472` (code
+      commit `ff6f472`) on 2026-10-19. Window started
+      `2026-10-19T09:06:31Z` and ends `2026-10-26T09:06:31Z`. Daily
+      observations are automated by `scripts/soak-daily.sh` and recorded in
+      `~/.local/state/vtr-soak/observations.md`. Initial state: 3/3 nodes at
+      height 51,715, staking, 0 errors/restarts. Sign-off pending.
 - [x] **Staking soak**: at least one node staked continuously and produced
       blocks at the expected ~60s average over the full 7-day window
       (`2026-09-29T13:36:22Z` → `2026-10-06T13:36:22Z`): node1 staked 1441
