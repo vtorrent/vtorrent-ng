@@ -342,7 +342,11 @@ impl HeaderChain {
         let mut hashes = Vec::new();
         loop {
             let Some(stored) = self.headers.get(&hash) else {
-                return Vec::new();
+                // The parent below the retained floor is intentionally absent.
+                // Keep the contiguous retained range instead of discarding it;
+                // callers compare the length against the requested range and
+                // fail closed when history is incomplete.
+                break;
             };
             if stored.height < start_height {
                 break;
@@ -532,6 +536,38 @@ mod tests {
             vec![h0_hash, fork_h1_hash, fork_h2_hash]
         );
     }
+    #[test]
+    fn test_hashes_from_retained_floor_returns_retained_range() {
+        use bitcoin::block::{Header, Version};
+        use bitcoin::hashes::Hash;
+        use bitcoin::{BlockHash, Network, TxMerkleNode};
+
+        let mut chain = HeaderChain::anchored(Network::Regtest);
+        for height in 1..=6 {
+            let parent = chain.get(&chain.best_hash().unwrap()).unwrap();
+            let mut header = Header {
+                version: Version::ONE,
+                prev_blockhash: BlockHash::from_byte_array(chain.best_hash().unwrap()),
+                merkle_root: TxMerkleNode::all_zeros(),
+                time: parent.header.time + 1,
+                bits: parent.header.bits,
+                nonce: 0,
+            };
+            while header.validate_pow(header.target()).is_err() {
+                header.nonce += 1;
+            }
+            chain
+                .add_header(&bitcoin::consensus::serialize(&header), height)
+                .unwrap();
+        }
+        chain.set_retention(2);
+        assert_eq!(
+            chain.hashes_from(4).len(),
+            3,
+            "retained heights 4, 5, and 6 must remain scannable"
+        );
+    }
+
     #[test]
     fn test_retention_prunes_to_contiguous_window() {
         let mut chain = HeaderChain::unanchored_for_tests();

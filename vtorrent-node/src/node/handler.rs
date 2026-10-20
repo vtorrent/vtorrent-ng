@@ -15,7 +15,7 @@ use vtorrent_p2p::{
     message::{
         decode_for_peer, encode_for_peer, BlockTxnMsg, CmpctBlockMsg, GetBlocksMsg, GetDataMsg,
         GetHeadersMsg, GetProofMsg, HeaderEntry, HeadersMsg, InvItem, InvMsg, InvType, NetMessage,
-        ProofMsg, PROTOCOL_VERSION,
+        ProofMsg, MAX_PAYLOAD_SIZE, PROTOCOL_VERSION,
     },
 };
 
@@ -647,11 +647,27 @@ fn select_blocktxn_transactions(block: &Block, indexes: &[u16]) -> Vec<Vec<u8>> 
     txs
 }
 
+/// Serialize a `blocktxn` response only when the final wire payload fits.
+///
+/// The inner transaction budget is not enough: JSON encodes each transaction
+/// byte as a decimal number, so the outer message can exceed the P2P frame
+/// limit even when the sum of inner JSON lengths is below it.
+fn blocktxn_payload(block: &Block, hash: [u8; 32], indexes: &[u16]) -> Option<Vec<u8>> {
+    let txs = select_blocktxn_transactions(block, indexes);
+    let payload = serde_json::to_vec(&BlockTxnMsg {
+        block_hash: hash,
+        transactions: txs,
+    })
+    .ok()?;
+    (payload.len() <= MAX_PAYLOAD_SIZE as usize).then_some(payload)
+}
+
 /// Handle a `getblocktxn` message — serve requested transactions from a block.
 pub(crate) async fn handle_getblocktxn(
     node: &mut Node,
     peer_addr: SocketAddr,
     msg: &NetMessage,
+    peer_version: u32,
 ) -> Result<()> {
     if let Ok(req) = serde_json::from_slice::<BlockTxnReq>(&msg.payload) {
         // Clone the block under the lock, then serialize outside it. A peer
@@ -662,15 +678,28 @@ pub(crate) async fn handle_getblocktxn(
             chain.get_block(&req.block_hash).cloned()
         };
         if let Some(block) = block {
-            let txs = select_blocktxn_transactions(&block, &req.indexes);
-            let resp = BlockTxnMsg {
-                block_hash: req.block_hash,
-                transactions: txs,
-            };
-            let payload = serde_json::to_vec(&resp).unwrap_or_default();
-            node.peer_manager
-                .send_to(peer_addr, NetMessage::new("blocktxn", payload))
-                .await;
+            if let Some(payload) = blocktxn_payload(&block, req.block_hash, &req.indexes) {
+                node.peer_manager
+                    .send_to(peer_addr, NetMessage::new("blocktxn", payload))
+                    .await;
+            } else {
+                // The response cannot fit the wire limit. Tell the requester
+                // the compact-block transaction set is unavailable so it can
+                // fall back to a full block instead of waiting for a frame
+                // that would be rejected by the receiver.
+                let nf = encode_for_peer(
+                    &InvMsg {
+                        items: vec![InvItem {
+                            inv_type: InvType::Block,
+                            hash: req.block_hash,
+                        }],
+                    },
+                    peer_version,
+                );
+                node.peer_manager
+                    .send_to(peer_addr, NetMessage::new("notfound", nf))
+                    .await;
+            }
         }
     }
     Ok(())
@@ -1167,6 +1196,35 @@ mod tests {
         assert_eq!(txs.len(), 3);
         let many = vec![0u16; MAX_BLOCKTXN_INDEXES + 100];
         assert_eq!(select_blocktxn_transactions(&block, &many).len(), 1);
+    }
+
+    #[test]
+    fn blocktxn_payload_rejects_oversized_final_message() {
+        let mut block = coinbase_block([0u8; 32], 0, 1);
+        let large = Transaction {
+            version: 1,
+            tx_type: TxType::Standard,
+            inputs: vec![TxInput {
+                prev_txid: [0x42; 32],
+                prev_vout: 0,
+                script_sig: vec![],
+                sequence: u32::MAX,
+            }],
+            outputs: (0..1_000)
+                .map(|_| TxOutput {
+                    value: 1,
+                    script_pubkey: vec![0x51; 520],
+                })
+                .collect(),
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        };
+        block.transactions.push(large);
+        assert!(
+            blocktxn_payload(&block, [0u8; 32], &[0, 1]).is_none(),
+            "an inner-budget-compliant response must still be rejected when the final wire payload exceeds MAX_PAYLOAD_SIZE"
+        );
     }
 
     fn v2_msg<T: serde::Serialize>(command: &str, body: &T) -> NetMessage {
@@ -1921,7 +1979,7 @@ pub(crate) async fn dispatch_message(
         }
 
         "getblocktxn" => {
-            handle_getblocktxn(node, peer_addr, &msg).await?;
+            handle_getblocktxn(node, peer_addr, &msg, peer_version).await?;
         }
 
         "blocktxn" => {
@@ -1975,6 +2033,23 @@ pub(crate) async fn dispatch_message(
         "notfound" => {
             if let Ok(nf) = serde_json::from_slice::<InvMsg>(&msg.payload) {
                 for item in &nf.items {
+                    // A compact-block transaction set that cannot fit the wire
+                    // limit is reported as notfound. Fall back to the full
+                    // block instead of leaving the pending reconstruction to
+                    // expire.
+                    if item.inv_type == InvType::Block
+                        && node.pending_compact_blocks.remove(&item.hash).is_some()
+                    {
+                        let request = encode_for_peer(
+                            &GetDataMsg {
+                                items: vec![item.clone()],
+                            },
+                            peer_version,
+                        );
+                        node.peer_manager
+                            .send_to(peer_addr, NetMessage::new("getdata", request))
+                            .await;
+                    }
                     tracing::debug!(
                         "notfound: peer {} does not have {:?} {}",
                         peer_addr,

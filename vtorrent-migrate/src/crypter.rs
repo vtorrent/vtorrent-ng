@@ -309,7 +309,12 @@ pub fn decrypt_private_key(
     // Without this check, a wrong passphrase produces garbage that passes
     // the scalar check and silently yields bogus WIFs.
     let pubkey = secp256k1::PublicKey::from_secret_key(&secp256k1::Secp256k1::new(), &secret);
-    if pubkey.serialize().as_slice() != public_key {
+    let expected = match public_key.len() {
+        33 => pubkey.serialize().to_vec(),
+        65 => pubkey.serialize_uncompressed().to_vec(),
+        _ => return Err(MigrateError::IncorrectPassphrase),
+    };
+    if expected.as_slice() != public_key {
         return Err(MigrateError::IncorrectPassphrase);
     }
 
@@ -330,6 +335,33 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out.to_vec(), expected);
+    }
+
+    #[test]
+    fn test_decrypt_private_key_accepts_compressed_and_uncompressed() {
+        use cbc::cipher::{BlockEncryptMut, KeyIvInit};
+        use cbc::Encryptor;
+        use secp256k1::{Secp256k1, SecretKey};
+
+        let master = DecryptedMasterKey { key: [0x51; 32] };
+        let secret = SecretKey::from_slice(&[0x42; 32]).unwrap();
+        let public = secp256k1::PublicKey::from_secret_key(&Secp256k1::new(), &secret);
+        for compressed in [true, false] {
+            let public_key = if compressed {
+                public.serialize().to_vec()
+            } else {
+                public.serialize_uncompressed().to_vec()
+            };
+            let iv = vtorrent_core::crypto::sha256d(&public_key);
+            let mut buffer = [0u8; 48];
+            buffer[..32].copy_from_slice(&secret.secret_bytes());
+            let encrypted = Encryptor::<Aes256>::new_from_slices(&master.key, &iv[..16])
+                .unwrap()
+                .encrypt_padded_mut::<cbc::cipher::block_padding::Pkcs7>(&mut buffer, 32)
+                .unwrap();
+            let decrypted = decrypt_private_key(encrypted, &public_key, &master).unwrap();
+            assert_eq!(decrypted.as_slice(), secret.secret_bytes());
+        }
     }
 
     #[test]

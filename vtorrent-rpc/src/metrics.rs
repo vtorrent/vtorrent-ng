@@ -30,6 +30,10 @@ use axum::{extract::State, response::IntoResponse};
 /// | `vtorrent_blocks_staked_total` | Counter | Total blocks staked this session |
 /// | `vtorrent_uptime_seconds` | Gauge | Seconds since node started |
 /// | `vtorrent_syncing` | Gauge | 1 if node is syncing, 0 if fully synced |
+/// | `vtorrent_best_peer_height` | Gauge | Highest block height reported by a peer |
+/// | `vtorrent_btc_best_height` | Gauge | BTC SPV best header height |
+/// | `vtorrent_btc_synced` | Gauge | 1 if the BTC SPV wallet is synced |
+/// | `vtorrent_process_rss_bytes` | Gauge | Resident set size of the daemon process |
 /// | `vtorrent_torrent_sessions` | Gauge | Number of active torrent sessions |
 /// | `vtorrent_dex_orders` | Gauge | Number of open DEX orders |
 /// | `vtorrent_ws_subscribers` | Gauge | Number of active WebSocket subscribers |
@@ -135,6 +139,55 @@ async fn collect_metrics(state: &AppState) -> String {
         "vtorrent_syncing",
         "1 if node is currently syncing, 0 if fully synced",
         syncing as u64,
+    );
+
+    // Best peer height
+    let best_peer_height = *state.best_peer_height.read().await;
+    write_gauge(
+        &mut out,
+        "vtorrent_best_peer_height",
+        "Highest block height reported by a peer",
+        best_peer_height,
+    );
+
+    // BTC SPV
+    let (btc_height, btc_synced) = {
+        let btc = state.btc_wallet.read().await;
+        match &*btc {
+            Some(wallet) => (wallet.best_height() as u64, wallet.synced() as u64),
+            None => (0, 0),
+        }
+    };
+    write_gauge(
+        &mut out,
+        "vtorrent_btc_best_height",
+        "BTC SPV best header height",
+        btc_height,
+    );
+    write_gauge(
+        &mut out,
+        "vtorrent_btc_synced",
+        "1 if the BTC SPV wallet is synced, 0 otherwise",
+        btc_synced,
+    );
+
+    // Process resident memory. Linux-only; other platforms report 0.
+    let rss_bytes = std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status
+                .lines()
+                .find(|line| line.starts_with("VmRSS:"))
+                .and_then(|line| line.split_whitespace().nth(1))
+                .and_then(|value| value.parse::<u64>().ok())
+        })
+        .map(|kib| kib.saturating_mul(1024))
+        .unwrap_or(0);
+    write_gauge(
+        &mut out,
+        "vtorrent_process_rss_bytes",
+        "Resident set size of the daemon process",
+        rss_bytes,
     );
 
     // Torrent sessions

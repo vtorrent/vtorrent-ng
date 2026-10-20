@@ -1425,3 +1425,34 @@ async fn test_test_miner_requires_api_key() {
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+async fn get_text(app: axum::Router, uri: &str) -> (StatusCode, String) {
+    let response = app
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[tokio::test]
+async fn metrics_export_alert_dependencies() {
+    let app = build_router(AppState::new());
+    let (status, body) = get_text(app, "/metrics").await;
+    assert_eq!(status, StatusCode::OK);
+    for name in [
+        "vtorrent_best_peer_height",
+        "vtorrent_btc_best_height",
+        "vtorrent_btc_synced",
+        "vtorrent_process_rss_bytes",
+    ] {
+        assert!(
+            body.lines()
+                .any(|line| line.starts_with(&format!("{name} "))),
+            "alert dependency {name} is not exported"
+        );
+    }
+}

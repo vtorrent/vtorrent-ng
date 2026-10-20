@@ -29,6 +29,7 @@ PROM="${PROM_URL:-http://127.0.0.1:9090}"
 now_epoch=$(date +%s)
 now_iso=$(date -u +%Y-%m-%dT%H:%MZ)
 window_hours=$(( (now_epoch - WINDOW_START) / 3600 ))
+since_iso=$(date -u -d "@${WINDOW_START}" +%Y-%m-%dT%H:%M:%SZ)
 
 fail=0
 declare -A HEIGHTS
@@ -57,11 +58,11 @@ for entry in "${NODES[@]}"; do
     HEIGHTS[$name]=$height
     HASHES[$name]=$hash
     mem=$(docker stats --no-stream --format '{{.MemUsage}}' "$name" 2>/dev/null | awk '{print $1}' || echo "?")
-    echo "- ${name}: height **${height}**, hash \`${hash:0:16}…\`, syncing=${syncing}, connections=${conns}, mempool=${mempool}, mem=${mem}"
+    echo "- ${name}: height **${height}**, hash \`${hash:0:16}…\`, syncing=${syncing}, connections=${conns}, mempool=${mempool}, container_mem=${mem}"
     if [[ "$mem" != "?" ]]; then
         mem_mib=$(echo "$mem" | awk '{ v=$1; if (v ~ /GiB$/) { sub(/GiB$/,"",v); print v*1024 } else if (v ~ /MiB$/) { sub(/MiB$/,"",v); print v } else if (v ~ /KiB$/) { sub(/KiB$/,"",v); print v/1024 } else { print 0 } }')
         if awk -v m="$mem_mib" 'BEGIN{exit !(m>220)}'; then
-            echo "  - **${name} RSS ${mem} exceeds the 220 MiB soak budget**"
+            echo "  - **${name} container memory ${mem} exceeds the 220 MiB soak budget**"
             fail=1
         fi
     fi
@@ -115,7 +116,7 @@ fi
 echo
 
 # ── Block cadence within the window ──────────────────────────────────────────
-cadence=$(docker logs --since "${window_hours}h" vtr-node1 2>&1 \
+cadence=$(docker logs --since "$since_iso" vtr-node1 2>&1 \
     | sed 's/\x1b\[[0-9;]*m//g' \
     | grep 'Block accepted' \
     | sed -E 's/.*height=([0-9]+).*timestamp=([0-9]+).*/\1 \2/' \
@@ -144,6 +145,10 @@ if [[ -n "$median" ]] && awk -v m="$median" 'BEGIN{exit !(m>90)}'; then
 fi
 if [[ -n "$max_interval" ]] && awk -v m="$max_interval" 'BEGIN{exit !(m>300)}'; then
     echo "- **Maximum cadence ${max_interval}s exceeds 300s**"
+    fail=1
+fi
+if [[ "$cadence" == *"no blocks in window"* ]] && [[ "$window_hours" -ge 1 ]]; then
+    echo "- **No blocks in the soak window**"
     fail=1
 fi
 echo
@@ -186,13 +191,18 @@ if [[ "${gaps_total:-0}" -gt 0 ]]; then
     echo "- **Prometheus scrape gaps: ${gaps_total}**"
     fail=1
 fi
+series_count=$(echo "$coverage" | grep -c '^  - ' || true)
+if [[ "$series_count" -ne 3 ]]; then
+    echo "- **Prometheus evidence incomplete: ${series_count}/3 node series**"
+    fail=1
+fi
 echo
 
 # ── Errors and restarts ──────────────────────────────────────────────────────
 echo "- Errors since window start:"
 for entry in "${NODES[@]}"; do
     name="${entry##*:}"
-    errs=$(docker logs --since "${window_hours}h" "$name" 2>&1 \
+    errs=$(docker logs --since "$since_iso" "$name" 2>&1 \
         | sed 's/\x1b\[[0-9;]*m//g' \
         | grep -cE ' ERROR |panic|Reorg|reorg|rollback' || true)
     restarts=$(docker inspect "$name" --format '{{.RestartCount}}' 2>/dev/null || echo "?")

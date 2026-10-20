@@ -1829,6 +1829,61 @@ fn test_bootstrap_utxo_age_exempt_at_height2() {
     assert_eq!(chain.best_height(), 2);
 }
 
+#[test]
+fn test_bootstrap_age_exemption_does_not_extend_to_height3() {
+    use secp256k1::{Message, Secp256k1, SecretKey};
+    let (recipient, wif) = test_address(46);
+    let mut chain = Chain::new().unwrap();
+    let mut claim = make_signed_bootstrap_claim(79, &recipient, 100 * crate::consensus::COIN);
+    claim.outputs[0].value /= 2;
+    claim.outputs.push(claim.outputs[0].clone());
+    let message = Message::from_digest(crate::consensus::claim_message_hash_v2(
+        claim.claim_address.as_ref().unwrap(),
+        &claim.outputs,
+    ));
+    let mut bytes = [0u8; 32];
+    bytes[31] = 79;
+    let signature =
+        Secp256k1::new().sign_ecdsa_recoverable(&message, &SecretKey::from_slice(&bytes).unwrap());
+    let (recovery, compact) = signature.serialize_compact();
+    let mut signature = vec![27 + recovery.to_i32() as u8 + 4];
+    signature.extend_from_slice(&compact);
+    claim.claim_signature = Some(signature);
+    chain.apply_bootstrap_claim(claim).unwrap();
+    let funding_time = chain
+        .get_header(&chain.best_hash().unwrap())
+        .unwrap()
+        .timestamp;
+    let mut engine = crate::staking::StakingEngine::with_wif(recipient, wif);
+    engine.bootstrap_exempt = true;
+    for height in 2..=3 {
+        let parent = chain.get_header(&chain.best_hash().unwrap()).unwrap();
+        let block = (parent.timestamp + 1..parent.timestamp + 1000)
+            .find_map(|timestamp| {
+                engine.build_stake_block(
+                    chain.best_hash().unwrap(),
+                    parent.stake_modifier,
+                    height,
+                    timestamp,
+                    chain.total_staked(),
+                    chain.get_utxo_set().values().cloned().collect(),
+                    vec![],
+                )
+            })
+            .unwrap();
+        assert!(block.header.timestamp - funding_time < crate::consensus::MIN_STAKE_AGE as u32);
+        let result = chain.add_block(block);
+        if height == 2 {
+            result.unwrap();
+        } else {
+            assert!(
+                result.is_err(),
+                "validator accepted an immature bootstrap output at height 3"
+            );
+        }
+    }
+}
+
 // ── In-memory block-body pruning (docs/block-body-pruning-design.md) ──────────
 
 /// Test `BlockBodySource` backed by a map (stands in for the store).

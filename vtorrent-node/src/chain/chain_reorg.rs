@@ -624,7 +624,8 @@ fn apply_transaction_journaled(
         // only tx is a LegacyClaim), so regtest faucet coinbases at height 1 are
         // not accidentally exempted. It can only be staked at height 2, so the
         // exemption expires naturally.
-        let is_bootstrap_utxo = staked.height == 1
+        let is_bootstrap_utxo = height == 2
+            && staked.height == 1
             && chain
                 .get_block_at_height(1)
                 .and_then(|b| b.transactions.first())

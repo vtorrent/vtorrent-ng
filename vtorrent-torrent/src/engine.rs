@@ -54,6 +54,9 @@ impl PieceAssembler {
     /// piece). Rejecting out-of-range blocks prevents a malicious peer from
     /// inflating `received` or producing a piece larger than `expected_length`.
     pub fn add_block(&mut self, begin: u32, data: Vec<u8>) -> bool {
+        if data.is_empty() {
+            return false;
+        }
         if self.blocks.len() >= MAX_BLOCKS_PER_PIECE {
             return false;
         }
@@ -1096,6 +1099,17 @@ mod tests {
         assert!(asm.is_complete());
         assert_eq!(asm.assemble().unwrap(), data);
         assert!(asm.verify(&hash));
+    }
+
+    #[test]
+    fn test_piece_assembler_rejects_empty_blocks() {
+        let mut asm = PieceAssembler::new(0, 10);
+        for _ in 0..5_000 {
+            assert!(!asm.add_block(0, Vec::new()));
+        }
+        assert!(asm.blocks.is_empty());
+        assert_eq!(asm.received, 0);
+        assert!(!asm.is_complete());
     }
 
     #[test]
