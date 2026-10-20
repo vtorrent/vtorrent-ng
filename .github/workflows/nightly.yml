@@ -1,0 +1,30 @@
+name: Nightly ignored tests
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  header-retention:
+    name: Mainnet-scale header retention
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run mainnet-scale retention test
+        run: cargo test -p vtorrent-btc --release test_mainnet_scale_retention_bounds_header_store -- --ignored --nocapture
+
+  proof-quota-recovery:
+    name: Proof quota recovery
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run real-time proof quota recovery test
+        run: cargo test -p vtorrent-daemon --release --features test-util --test process_recovery daemon_proof_quota_expires_and_automatic_retry_completes -- --ignored --nocapture
