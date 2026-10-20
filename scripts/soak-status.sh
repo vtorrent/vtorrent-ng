@@ -5,12 +5,13 @@
 set -euo pipefail
 
 NODES=("22625:vtr-node1" "22627:vtr-node2" "22629:vtr-node3")
+API_KEY="${VTORRENT_RPC_KEY:-testnet-soak-key}"
 
 for entry in "${NODES[@]}"; do
     port="${entry%%:*}"
     name="${entry##*:}"
     info=$(curl -s --max-time 3 "http://127.0.0.1:${port}/api/v1/info" || true)
-    peers=$(curl -s --max-time 3 "http://127.0.0.1:${port}/api/v1/peers" | grep -o '"count":[0-9]*' | cut -d: -f2)
+    peers=$(curl -s --max-time 3 -H "X-Api-Key: ${API_KEY}" "http://127.0.0.1:${port}/api/v1/peers" | grep -o '"count":[0-9]*' | cut -d: -f2 || true)
     if [[ -z "$info" ]]; then
         echo "${name} :${port}  DOWN"
         continue

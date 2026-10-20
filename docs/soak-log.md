@@ -1877,9 +1877,9 @@ topic. The first automated run at window +5h recorded height 52,015, 3/3 tip
 agreement, 301 blocks staked, median cadence 61 s, 1,223/1,223 Prometheus
 samples per node, and 0 errors or restarts.
 
-**Superseded for the review candidate.** The P0/P1 fixes committed after this
-window started are not in `batch-ff6f472`. Rebuild the image from `ff14e58` and
-restart the 7-day window on `batch-ff14e58` before sign-off.
+**Superseded for the review candidate.** The fleet was rebuilt to
+`vtorrent/node:batch-ff14e58` and the 7-day window restarted on 2026-10-20; see
+the entry below.
 
 This window validates the new code under regtest fast-stake. It does not
 activate governance, schedule a deployment, or replace the external security
@@ -1912,3 +1912,73 @@ unavailable.
 - BTC SPV: height=0, synced=false.
 
 Earliest sign-off: **2026-10-26T09:06Z** (window start + 7 days). Next daily observation due 2026-10-20.
+
+## 2026-10-20 — review-candidate rebuild + fresh 7-day soak start
+
+Rebuilt the fleet from `vtorrent/node:batch-ff6f472` to
+`vtorrent/node:batch-ff14e58` (image sha256
+`d97af30faa33890e2bb209275f2f54e56136c49198d2dc8830f1f056b22c72db`), built
+from code commit `ff14e58`. The rolling recreate preserved the named chain
+volumes and the node1 passphrase bind. Startup replayed 53,123 persisted
+blocks; the fleet was healthy at about 09:03Z.
+
+Initial post-upgrade state at 09:14Z:
+
+- 3/3 nodes at height **53124**, same tip hash, `syncing=false`.
+- Connections: node1=2, node2=1, node3=1.
+- Staking enabled, 4 eligible UTXOs, 506.24 VTR staking, 1 block staked this run.
+- 0 ERROR/panic lines and 0 restarts on all three nodes.
+- RSS: node1 162.8 MiB, node2 149.4 MiB, node3 153.2 MiB.
+
+The new build includes the P0/P1 fixes: stakeable coinstake validation,
+governance creation-time stake snapshots, desktop broadcast, BTC amount and fee
+caps, DEX funded-order protection, `getblocktxn` and torrent assembler bounds,
+`PaymentUri` decoding, sensitive-route auth, and normalized P2P abuse keys.
+
+Soak window start: **2026-10-20T09:12:48Z** (first post-upgrade stake, epoch
+`1792487568`). Earliest sign-off: **2026-10-27T09:12:48Z**.
+
+Daily observation:
+
+```bash
+scripts/soak-observe.sh 1792487568
+scripts/soak-status.sh
+```
+
+Daily observations are automated by `scripts/soak-daily.sh` (user cron at
+16:10 local, 09:10 UTC) and appended to `~/.local/state/vtr-soak/observations.md`.
+The cron exit status is in `~/.local/state/vtr-soak/cron.log`; failures also
+append to `~/.local/state/vtr-soak/failures.log` and push to the project ntfy
+topic.
+
+This window validates the review candidate under regtest fast-stake. It does
+not activate governance, schedule a deployment, or replace the external
+security review.
+## 2026-10-20 — daily observation (window +0h)
+
+Read-only check at `2026-10-20T09:14Z` (window start `2026-10-20T09:12:48Z`).
+
+- vtr-node1: height **53124**, hash `4dbfd6a568b1afe1…`, syncing=false, connections=2, mempool=0, mem=162.9MiB
+- vtr-node2: height **53124**, hash `4dbfd6a568b1afe1…`, syncing=false, connections=1, mempool=0, mem=148.9MiB
+- vtr-node3: height **53124**, hash `4dbfd6a568b1afe1…`, syncing=false, connections=1, mempool=0, mem=152.7MiB
+
+All three nodes agree on height and tip hash.
+
+- Staking enabled=true, eligible UTXOs=4, blocks staked this run=2.
+
+- Block cadence within the window: no blocks in window
+unavailable.
+
+- Prometheus since window start:
+  - node1:22525: 7/7 samples, down=0, gaps>30s=0
+  - node2:22525: 7/7 samples, down=0, gaps>30s=0
+  - node3:22525: 7/7 samples, down=0, gaps>30s=0
+
+- Errors since window start:
+  - vtr-node1: errors=0, restarts=0
+  - vtr-node2: errors=0, restarts=0
+  - vtr-node3: errors=0, restarts=0
+
+- BTC SPV: height=0, synced=false, initialized=false.
+
+Earliest sign-off: **2026-10-27T09:12Z** (window start + 7 days). Next daily observation due 2026-10-21.

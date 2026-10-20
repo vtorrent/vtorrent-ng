@@ -45,10 +45,9 @@ at launch.
 
 The current build already includes the consensus batch (OP_RETURN exclusion,
 cold staking, governance, state rent) and the governance and proof-service
-repairs. The core soak fleet runs `vtorrent/node:batch-ff6f472` with BTC SPV
-disabled, but that image predates the P0/P1 fixes. Rebuild the release image
-from `ff14e58` and restart the fresh 7-day soak on it. Launch on that candidate
-build after the external review and the restarted soak. Do not launch on beta.3; it predates the
+repairs. The core soak fleet runs `vtorrent/node:batch-ff14e58` with BTC SPV
+disabled. The fresh 7-day soak started 2026-10-20T09:12:48Z. Launch on that
+candidate build after the external review and the soak. Do not launch on beta.3; it predates the
 governance and proof-service repairs.
 
 Swaps are enabled at mainnet launch. The BTC SPV mainnet-scale soak and the

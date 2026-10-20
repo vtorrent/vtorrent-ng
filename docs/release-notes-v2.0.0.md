@@ -119,8 +119,8 @@ paths.
   and verifies decryption, address derivation, and wrong-passphrase rejection.
 - The real-time proof quota test drains the per-IP allowance, observes the
   initial denial, and verifies automatic recovery after the 65-second retry.
-- The fresh 7-day soak runs from 2026-10-19 to 2026-10-26 on
-  `vtorrent/node:batch-ff6f472`. Sign-off is pending.
+- The fresh 7-day soak runs from 2026-10-20 to 2026-10-27 on
+  `vtorrent/node:batch-ff14e58`. Sign-off is pending.
 
 ## Upgrade notes
 
@@ -133,9 +133,8 @@ paths.
   fleet, so the soak does not exercise the swap paths.
 - Existing chain data is preserved. Do not delete `chain.db` during the
   upgrade.
-- The release build includes the P0/P1 fixes. The core soak image
-  `batch-ff6f472` predates them and has BTC SPV disabled; rebuild the release
-  image from `ff14e58` and restart the soak on it.
+- The release build and the soak fleet both run `batch-ff14e58`. The fresh
+  soak window started 2026-10-20T09:12:48Z.
 
 ## Known limitations
 

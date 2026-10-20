@@ -161,11 +161,9 @@ challenge the repairs and their remaining assumptions independently.
   Use this full commit hash rather than floating `main`. If the engagement
   moves to a later implementation, record its full hash explicitly.
 - The review delivery is a source snapshot, not a release tag. The core soak
-  fleet runs `vtorrent/node:batch-ff6f472` (BTC SPV disabled) from 2026-10-19
-  to 2026-10-26, but that image predates the P0/P1 fixes in the review
-  candidate. Rebuild the release image from `ff14e58` and restart the soak on
-  it before sign-off. The soak is supporting evidence, not a substitute for
-  this review.
+  fleet now runs `vtorrent/node:batch-ff14e58` (code `ff14e58`, BTC SPV
+  disabled) from 2026-10-20 to 2026-10-27. The soak is supporting evidence,
+  not a substitute for this review.
 - `docs/` — designs + adversarial reviews for every subsystem
   (`cold-staking-p2cs-design.md`, `op-return-utxo-exclusion-design.md`,
   `network-upgrade-design.md`, `atomic-swap-protocol.md`,
