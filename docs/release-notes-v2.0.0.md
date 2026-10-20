@@ -139,7 +139,7 @@ paths.
   wallet birthday flag, desktop commands, desktop health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake/BTC/
   compact-block/desktop hardening from the adversarial review and must be
-  rebuilt from `2f580cc`. The fresh soak window started 2026-10-20T13:51:39Z.
+  rebuilt from `137d3f8`. The fresh soak window started 2026-10-20T13:51:39Z.
 
 ## Known limitations
 
