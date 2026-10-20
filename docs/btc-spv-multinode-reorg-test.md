@@ -104,7 +104,10 @@ VTR claim   e209d2a8add24d0d25e176f780b7095c2eedf053f013e0030fe293235db672c4
 
 The test waits for the bitcoind compact-filter index to reach the new tip
 before each SPV scan. Without that wait, the scan can time out while the
-index catches up after a burst of mined blocks.
+index catches up after a burst of mined blocks. The production `btc-claim`
+and `btc-reconcile` handlers surface a scan timeout as an error; the user can
+retry the claim, and the reconciliation loop retries on its next interval.
+The test's reconciliation helper also retries transient peer EOFs.
 
 ## Reorged-out funding
 

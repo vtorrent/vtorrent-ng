@@ -541,8 +541,12 @@ Returns SPV header chain sync status.
 
 ### GET /api/v1/spv/proof/:hash
 
-Retrieve a stored `StakeProof` for a PoS header hash (if available).
-Returns 404 if the header is not in the SPV chain or no proof is stored.
+Retrieve a cached `StakeProof` for a PoS header hash. The header may be in the
+full-node chain or the SPV header chain. Returns 404 if neither chain has the
+header. Returns 200 with `proof: null` if the header exists but no proof is
+cached. This endpoint does not reconstruct cold proofs; the P2P `getproof`
+service does, subject to the reconstruction budget. A cached proof for an SPV
+fork header is returned as stored; the P2P service is canonical-only.
 
 ### POST /api/v1/spv/headers
 
