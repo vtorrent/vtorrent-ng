@@ -90,12 +90,18 @@ pub async fn start_node(
             seeds
         };
     }
+    std::fs::create_dir_all(&config.data_dir).map_err(|e| {
+        TauriError::Io(format!(
+            "Could not create data directory {}: {e}",
+            config.data_dir.display()
+        ))
+    })?;
     let chain_db_path = config.data_dir.join("chain.db");
     let block_store = Arc::new(
         vtorrent_store::BlockStore::open(&chain_db_path)
             .map_err(|e| TauriError::NodeError(format!("Could not open chain store: {e}")))?,
     );
-    let chain = if config.regtest_fast_stake {
+    let mut chain = if config.regtest_fast_stake {
         block_store.load_into_fast_regtest_chain_with_cache(4096)
     } else if config.regtest {
         block_store.load_into_regtest_chain_with_cache(4096)
@@ -103,6 +109,16 @@ pub async fn start_node(
         block_store.load_into_chain_with_cache(4096)
     }
     .map_err(|e| TauriError::NodeError(format!("Could not load chain: {e}")))?;
+    chain.set_body_source(block_store.clone());
+    let regtest = config.regtest;
+    let regtest_fast_stake = config.regtest_fast_stake;
+    let btc_network = if config.regtest {
+        bitcoin::Network::Regtest
+    } else if config.testnet {
+        bitcoin::Network::Testnet
+    } else {
+        bitcoin::Network::Bitcoin
+    };
     let mut node =
         Node::new_with_chain(config, chain).map_err(|e| TauriError::NodeError(e.to_string()))?;
 
@@ -154,7 +170,7 @@ pub async fn start_node(
         };
         match vtorrent_btc::wallet::BtcWallet::with_persistence(
             seed,
-            bitcoin::Network::Bitcoin,
+            btc_network,
             utxo_path.clone(),
         ) {
             Ok(wallet) => {
@@ -211,6 +227,7 @@ pub async fn start_node(
         let peer_count = Arc::clone(&rpc_state.peer_count);
         let best_peer_height = Arc::clone(&rpc_state.best_peer_height);
         let store = Arc::clone(&block_store);
+        let chain = Arc::clone(&rpc_state.chain);
         tokio::spawn(async move {
             loop {
                 match node_rx.recv().await {
@@ -293,7 +310,38 @@ pub async fn start_node(
                         }
                         _ => {}
                     },
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        // Dropped events may include NewBlock/Reorg persistence.
+                        // Rebuild the store from the chain so a restart cannot
+                        // replay a stale or diverged tail.
+                        tracing::error!(
+                            "desktop event bridge lagged, {} events lost; rebuilding block store",
+                            n
+                        );
+                        let blocks = {
+                            let chain = chain.lock().await;
+                            (0..=chain.best_height())
+                                .map(|h| chain.get_block_at_height_owned(h))
+                                .collect::<Option<Vec<_>>>()
+                        };
+                        let Some(blocks) = blocks else {
+                            tracing::error!(
+                                "desktop event bridge lagged and a pruned body is unavailable; \
+                                 the block store may be behind"
+                            );
+                            continue;
+                        };
+                        let result = if regtest && regtest_fast_stake {
+                            store.rebuild_from_fast_regtest_blocks(&blocks)
+                        } else if regtest {
+                            store.rebuild_from_regtest_blocks(&blocks)
+                        } else {
+                            store.rebuild_from_blocks(&blocks)
+                        };
+                        if let Err(e) = result {
+                            tracing::error!("desktop block store rebuild after lag failed: {}", e);
+                        }
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
