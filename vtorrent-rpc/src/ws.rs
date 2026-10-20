@@ -1,11 +1,11 @@
 use crate::state::AppState;
 use axum::extract::ws::{Message, WebSocket};
 use axum::{
-    extract::{Query, State, WebSocketUpgrade},
+    extract::{State, WebSocketUpgrade},
+    http::HeaderMap,
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 /// WebSocket event subscription endpoint for vTorrent RPC.
 ///
 /// Clients connect to `ws://127.0.0.1:22525/ws` and subscribe to one or more
@@ -160,16 +160,28 @@ impl EventBroadcaster {
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
-    Query(params): Query<HashMap<String, String>>,
+    headers: HeaderMap,
 ) -> Response {
     // Browsers cannot set custom headers on a WebSocket upgrade, so the API
-    // key is supplied as a query parameter. Without this check the public
-    // event stream exposes peer addresses and staking reward addresses even
-    // when the REST API is key-protected.
+    // key is sent as a `Sec-WebSocket-Protocol` token. A query-string key is
+    // deliberately not accepted: query strings are commonly logged by proxies
+    // and tracing layers.
+    let mut selected_protocol = None;
     if let Some(expected) = state.rpc_api_key.as_deref() {
-        if params.get("api_key").map(String::as_str) != Some(expected) {
+        let expected_protocol = format!("vtr-api-key.{}", hex::encode(expected.as_bytes()));
+        let provided = headers
+            .get("sec-websocket-protocol")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| {
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .find(|protocol| *protocol == expected_protocol)
+            });
+        if provided.is_none() {
             return axum::http::StatusCode::UNAUTHORIZED.into_response();
         }
+        selected_protocol = Some(expected_protocol);
     }
     // Reject the upgrade when at capacity, before allocating a connection.
     let current = state
@@ -183,6 +195,11 @@ pub async fn ws_handler(
         )
             .into_response();
     }
+    let ws = if let Some(protocol) = selected_protocol {
+        ws.protocols([protocol])
+    } else {
+        ws
+    };
     ws.on_upgrade(move |socket| handle_ws_connection(socket, state))
 }
 

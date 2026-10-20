@@ -9,7 +9,7 @@
  * without a full page reload.
  */
 
-import { camel, getRpcApiKey, isTauri, rpcDelete, rpcGet, rpcPost, tauriInvoke, RPC_BASE } from '../api'
+import { camel, isTauri, rpcDelete, rpcGet, rpcPost, tauriInvoke, RPC_BASE, wsProtocols } from '../api'
 import { useState, useEffect, useCallback, useRef } from 'react'
 
 // ─── Type declarations ────────────────────────────────────────────────────────
@@ -252,15 +252,11 @@ export function useStakingStatus(_intervalMs = 8_000): {
       }
     }
     let closedIntentionally = false
-    const getWsUrl = () => {
-      const key = getRpcApiKey()
-      const base = `${RPC_BASE.replace(/^http/, 'ws')}/ws`
-      return key ? `${base}?api_key=${encodeURIComponent(key)}` : base
-    }
+    const getWsUrl = () => `${RPC_BASE.replace(/^http/, 'ws')}/ws`
     const connect = () => {
       if (closedIntentionally || !mountedRef.current) return
       try {
-        const ws = new WebSocket(getWsUrl())
+        const ws = new WebSocket(getWsUrl(), wsProtocols())
         wsRef.current = ws
         ws.onopen = () => {
           try {

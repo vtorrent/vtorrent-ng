@@ -11,7 +11,7 @@
  * transparently falls back to polling so the UI never stalls.
  */
 
-import { camel, getRpcApiKey, isTauri, RPC_BASE, rpcGet, tauriInvoke } from '../api'
+import { camel, isTauri, RPC_BASE, rpcGet, tauriInvoke, wsProtocols } from '../api'
 import { useState, useEffect, useCallback, useRef } from 'react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -30,9 +30,7 @@ export interface StakingStatus {
 
 function getWsUrl(): string {
   // RPC_BASE is http://host:port → ws://host:port/ws
-  const key = getRpcApiKey()
-  const base = `${RPC_BASE.replace(/^http/, 'ws')}/ws`
-  return key ? `${base}?api_key=${encodeURIComponent(key)}` : base
+  return `${RPC_BASE.replace(/^http/, 'ws')}/ws`
 }
 
 async function fetchStakingStatus(): Promise<StakingStatus> {
@@ -124,7 +122,7 @@ export function useStakingStatus(_pollIntervalMs = 8_000): {
     const connect = () => {
       if (closedIntentionally || !mountedRef.current) return
       try {
-        const ws = new WebSocket(getWsUrl())
+        const ws = new WebSocket(getWsUrl(), wsProtocols())
         wsRef.current = ws
 
         ws.onopen = () => {

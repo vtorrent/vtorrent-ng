@@ -1474,8 +1474,21 @@ async fn websocket_requires_api_key_when_configured() {
         "unauthenticated WebSocket upgrade must be rejected"
     );
 
-    let authorized =
+    let query =
         tokio_tungstenite::connect_async(format!("ws://{address}/ws?api_key=test-key")).await;
+    assert!(query.is_err(), "query-string API keys must be rejected");
+
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut request = format!("ws://{address}/ws").into_client_request().unwrap();
+    request.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        tokio_tungstenite::tungstenite::http::HeaderValue::from_str(&format!(
+            "vtr-api-key.{}",
+            hex::encode("test-key")
+        ))
+        .unwrap(),
+    );
+    let authorized = tokio_tungstenite::connect_async(request).await;
     assert!(
         authorized.is_ok(),
         "authorized WebSocket upgrade must succeed"
