@@ -9,6 +9,13 @@ use bitcoin::hashes::Hash;
 use bitcoin::pow::{CompactTarget, Target};
 use std::collections::HashMap;
 
+/// Extra headers allowed above the retention window before a prune runs.
+///
+/// Pruning walks the best chain, so doing it on every header would make a
+/// mainnet sync O(headers x retention). The slack amortizes that walk while
+/// keeping the temporary overshoot small.
+const PRUNE_SLACK: usize = 1024;
+
 /// A stored header with its height and cumulative chain work.
 #[derive(Debug, Clone)]
 pub struct StoredHeader {
@@ -33,7 +40,8 @@ pub struct HeaderChain {
     /// `best_height - retention`, so the retained set stays **contiguous** —
     /// which difficulty validation (walks back one retarget period, ~2016) and
     /// the UTXO scan (walks from the tip to a checkpoint) both require. Set the
-    /// retention above the retarget period and above the scan depth.
+    /// retention above the retarget period and above the scan depth. Pruning
+    /// runs after a small slack to amortize the best-chain walk.
     /// See `docs/btc-spv-soak-plan.md`.
     retention: usize,
 }
@@ -209,12 +217,24 @@ impl HeaderChain {
     /// Set the in-memory header retention window (0 = unbounded).
     pub fn set_retention(&mut self, retention: usize) {
         self.retention = retention;
-        self.prune();
+        self.prune_force();
     }
 
-    /// Drop headers strictly below `best_height - retention`, keeping the
-    /// retained set contiguous. Genesis (height 0) is always kept as the anchor.
+    /// Drop headers strictly below `best_height - retention` once the store
+    /// exceeds the retention window by a small slack. The slack amortizes the
+    /// best-chain walk; `set_retention` forces an immediate prune.
     fn prune(&mut self) {
+        if self.retention == 0 || self.best_height as usize <= self.retention {
+            return;
+        }
+        if self.headers.len() <= self.retention + PRUNE_SLACK {
+            return;
+        }
+        self.prune_force();
+    }
+
+    /// Force an immediate prune to the retention window.
+    fn prune_force(&mut self) {
         if self.retention == 0 || self.best_height as usize <= self.retention {
             return;
         }
@@ -515,7 +535,6 @@ mod tests {
     #[test]
     fn test_retention_prunes_to_contiguous_window() {
         let mut chain = HeaderChain::unanchored_for_tests();
-        chain.set_retention(10);
         // Build a chain of 50 headers.
         let mut prev = [0u8; 32];
         let mut hashes = Vec::new();
@@ -526,6 +545,7 @@ mod tests {
             hashes.push(hash);
             prev = hash;
         }
+        chain.set_retention(10);
         assert_eq!(chain.best_height(), 49);
         // Retained: heights 39..=49 (11) + genesis = 12.
         assert!(
@@ -562,5 +582,55 @@ mod tests {
             chain.add_header(&serialize(&header), h).unwrap();
         }
         assert_eq!(chain.len(), 30);
+    }
+
+    #[test]
+    fn test_retention_prune_is_amortized() {
+        let mut chain = HeaderChain::unanchored_for_tests();
+        chain.set_retention(10);
+        let mut prev = [0u8; 32];
+        let count = 10 + PRUNE_SLACK + 10;
+        for h in 0..count as u32 {
+            let header = make_header(prev, h);
+            prev = header.block_hash().to_byte_array();
+            chain.add_header(&serialize(&header), h).unwrap();
+        }
+        assert!(
+            chain.len() <= 10 + PRUNE_SLACK + 1,
+            "slack overshoot must stay bounded, got {}",
+            chain.len()
+        );
+        chain.set_retention(10);
+        assert!(chain.len() <= 12, "forced prune must reach the window");
+    }
+
+    #[test]
+    #[ignore = "mainnet-scale header retention; run explicitly"]
+    fn test_mainnet_scale_retention_bounds_header_store() {
+        let mut chain = HeaderChain::unanchored_for_tests();
+        chain.set_retention(100_000);
+        let mut prev = [0u8; 32];
+        let mut anchor = None;
+        for h in 0..870_000u32 {
+            let header = make_header(prev, h);
+            let hash = header.block_hash().to_byte_array();
+            chain.add_header(&serialize(&header), h).unwrap();
+            if h == 0 {
+                anchor = Some(hash);
+            }
+            prev = hash;
+        }
+        assert_eq!(chain.best_height(), 869_999);
+        assert!(
+            chain.len() <= 100_000 + PRUNE_SLACK + 1,
+            "mainnet-scale store exceeded the retention bound: {}",
+            chain.len()
+        );
+        assert!(
+            chain.get(&anchor.unwrap()).is_some(),
+            "height 0 is retained"
+        );
+        let window = chain.hashes_from(869_999 - 100_000);
+        assert!(window.len() >= 100_000, "retained window is contiguous");
     }
 }
