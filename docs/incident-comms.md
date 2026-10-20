@@ -48,6 +48,17 @@ One person may hold more than one role outside a SEV1.
 
 ## Templates
 
+### Pre-launch status entry
+
+```text
+[Scheduled] vTorrent mainnet launch
+Genesis: <genesis-hash>
+Planned start: <UTC time>
+Seeds: seed1/seed2/seed3.vtorrent.org
+We will publish an update when the seeds agree on genesis and produce blocks.
+Status: <status-page-url>
+```
+
 ### Initial acknowledgment
 
 ```text
