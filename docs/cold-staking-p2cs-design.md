@@ -62,10 +62,17 @@ in `standard.rs` and a `build_p2cs(...)` constructor.
 ## 4. Wallet / UX
 
 - **Key roles**: the wallet generates a **staking keypair** and a **spending
-  keypair**, derives the P2CS address, and can **export the staking key (WIF)**
-  for the hot node while the spending key stays cold/offline.
-- **RPC**: `createcoldstakeaddress`, `exportstakingkey`, `getcoldstakinginfo`.
-- **UI**: a "Delegate staking" flow on the Staking page — show the P2CS address,
+  keypair**, derives the raw P2CS script (plus a P2SH label address), and can
+  **export the staking key (WIF)** for the hot node while the spending key
+  stays cold/offline.
+- **Funding**: fund the **raw P2CS script** via
+  `/api/v1/wallet/fund-cold-stake` (or `fund_cold_stake`). The P2SH label
+  address is not stakeable: the chain's stakeability, R1 rule, and staking
+  engine recognize the raw P2CS scriptPubKey. Do not send to the P2SH label
+  with a generic send.
+- **RPC**: `createcoldstakeaddress`, `exportstakingkey`, `getcoldstakinginfo`,
+  `fund-cold-stake`.
+- **UI**: a "Delegate staking" flow on the Staking page — show the P2CS script,
   the exported staking key, and a warning that the staking key is hot.
 - **Watch-only**: the hot node needs only the staking key + P2CS address, so it
   can run without any spendable key (pairs with a future watch-only wallet).

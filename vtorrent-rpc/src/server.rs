@@ -98,6 +98,7 @@ pub fn build_router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/api/v1/wallet/import", post(import_wallet))
         .route("/api/v1/wallet/send", post(send_vtr))
+        .route("/api/v1/wallet/fund-cold-stake", post(fund_cold_stake))
         .route("/api/v1/wallet/unlock", post(unlock_wallet))
         .route("/api/v1/wallet/lock", post(lock_wallet))
         .route("/api/v1/wallet/balance", get(get_balance))

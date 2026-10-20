@@ -173,6 +173,15 @@ pub struct SendRequest {
     pub memo: Option<String>,
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct FundColdStakeRequest {
+    /// Hex-encoded P2CS scriptPubKey to fund.
+    pub script_pubkey: String,
+    pub amount_satoshis: u64,
+    pub passphrase: zeroize::Zeroizing<String>,
+    pub otp_code: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SendResponse {
     pub txid: String,

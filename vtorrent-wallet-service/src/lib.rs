@@ -17,6 +17,26 @@ pub fn build_payment(
         .build(utxos)
 }
 
+/// Build a payment whose recipient output is a raw scriptPubKey (for example a
+/// P2CS cold-stake script). The script is used verbatim; callers must validate
+/// it before funding.
+pub fn build_payment_to_script(
+    utxos: &[vtorrent_node::chain::Utxo],
+    script_pubkey: Vec<u8>,
+    change_address: &str,
+    amount_satoshis: u64,
+    fee_rate: u64,
+    wif: &str,
+) -> Result<vtorrent_node::block::Transaction, vtorrent_wallet::error::WalletError> {
+    TxBuilder::new()
+        .recipient_script(script_pubkey, amount_satoshis)
+        .change_address(change_address)
+        .fee_rate(fee_rate)
+        .min_absolute_fee(MIN_ABSOLUTE_FEE_SATS)
+        .sign_with_wif(wif)
+        .build(utxos)
+}
+
 /// Inputs for an incentive settlement payment.
 ///
 /// A plain struct (rather than `vtorrent_torrent::payment::PaymentDue`) so

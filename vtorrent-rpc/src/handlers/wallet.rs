@@ -460,6 +460,98 @@ pub async fn send_vtr(
     }))
 }
 
+/// POST /api/v1/wallet/fund-cold-stake
+///
+/// Funds a P2CS cold-stake script directly. The wallet-generated P2SH address
+/// is only a label; the raw P2CS script is what the chain recognizes as
+/// stakeable, so this path pays the script, not the P2SH hash.
+pub async fn fund_cold_stake(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<FundColdStakeRequest>,
+) -> RpcResult<Json<SendResponse>> {
+    if !state.is_wallet_unlocked().await {
+        return Err(RpcError::WalletLocked);
+    }
+    if req.amount_satoshis == 0 {
+        return Err(RpcError::BadRequest("Amount must be greater than 0".into()));
+    }
+    let script = hex::decode(req.script_pubkey.trim())
+        .map_err(|e| RpcError::BadRequest(format!("script_pubkey is not valid hex: {e}")))?;
+    let parsed = vtorrent_script::Script::from_bytes(script.clone())
+        .map_err(|e| RpcError::BadRequest(format!("script_pubkey is not a valid script: {e}")))?;
+    if !matches!(
+        vtorrent_script::classify_script(&parsed),
+        vtorrent_script::ScriptType::P2CS { .. }
+    ) {
+        return Err(RpcError::BadRequest(
+            "script_pubkey is not a P2CS cold-stake script".into(),
+        ));
+    }
+    let wif = verify_wallet_auth(&state, &req.passphrase, req.otp_code.as_deref()).await?;
+    let change_address = state
+        .wallet_change_address
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| RpcError::Internal("Change address not set".into()))?;
+    let utxos: Vec<vtorrent_node::chain::Utxo> = {
+        let chain = state.chain.lock().await;
+        chain.get_utxos_for_address(&change_address)
+    };
+    if utxos.is_empty() {
+        return Err(RpcError::BadRequest(format!(
+            "No UTXOs available for wallet address {}",
+            truncate_chars(&change_address, 64)
+        )));
+    }
+    let fee_rate = {
+        let mempool = state.mempool.lock().await;
+        mempool.recommended_fee_rate().max(1)
+    };
+    let tx = vtorrent_wallet_service::build_payment_to_script(
+        &utxos,
+        script,
+        &change_address,
+        req.amount_satoshis,
+        fee_rate,
+        &wif,
+    )
+    .map_err(|e| RpcError::BadRequest(format!("Cold-stake funding build failed: {e}")))?;
+    let txid = hex::encode(tx.txid());
+    let fee_satoshis: u64 = tx
+        .inputs
+        .iter()
+        .filter_map(|inp| {
+            utxos
+                .iter()
+                .find(|u| u.txid == inp.prev_txid && u.vout == inp.prev_vout)
+                .map(|u| u.value)
+        })
+        .sum::<u64>()
+        .saturating_sub(tx.outputs.iter().map(|o| o.value).sum::<u64>());
+    {
+        let chain = state.chain.lock().await;
+        let mut mempool = state.mempool.lock().await;
+        mempool
+            .admit_with_chain_fee(&chain, tx.clone())
+            .map_err(|e| {
+                RpcError::BadRequest(format!("Mempool rejected cold-stake funding {txid}: {e}"))
+            })?;
+    }
+    if let Some(ref sender) = state.tx_submit {
+        let _ = sender.try_send(tx);
+    }
+    tracing::info!(
+        "Cold-stake funding {txid} submitted ({} sats)",
+        req.amount_satoshis
+    );
+    Ok(Json(SendResponse {
+        txid,
+        amount_satoshis: req.amount_satoshis,
+        fee_satoshis,
+    }))
+}
+
 pub async fn unlock_wallet(
     State(state): State<Arc<AppState>>,
     Json(req): Json<UnlockRequest>,
@@ -1185,7 +1277,9 @@ pub struct ColdStakeReq {
 
 #[derive(serde::Serialize)]
 pub struct ColdStakeResp {
-    /// The P2CS (P2SH-wrapped) address to fund.
+    /// Label address (P2SH of the redeem script). Fund the raw
+    /// `script_pubkey` via `/api/v1/wallet/fund-cold-stake`; the chain
+    /// recognizes the raw P2CS script, not the P2SH hash.
     pub address: String,
     /// The hot staking key (WIF) — export to the staking node.
     pub staking_wif: String,

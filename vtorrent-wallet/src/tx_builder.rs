@@ -161,6 +161,7 @@ fn build_script_sig(sig: &[u8], pubkey: &[u8]) -> Vec<u8> {
 /// Fluent transaction builder.
 pub struct TxBuilder {
     recipients: Vec<(String, u64)>,
+    recipient_scripts: Vec<(Vec<u8>, u64)>,
     fee_rate: u64,
     min_absolute_fee: u64,
     wif_keys: Vec<zeroize::Zeroizing<String>>,
@@ -174,6 +175,7 @@ impl TxBuilder {
     pub fn new() -> Self {
         Self {
             recipients: Vec::new(),
+            recipient_scripts: Vec::new(),
             fee_rate: DEFAULT_FEE_RATE,
             min_absolute_fee: 0,
             wif_keys: Vec::new(),
@@ -186,6 +188,14 @@ impl TxBuilder {
     /// Add a recipient (address, amount in satoshis).
     pub fn recipient(mut self, address: &str, amount_sats: u64) -> Self {
         self.recipients.push((address.to_string(), amount_sats));
+        self
+    }
+
+    /// Add a recipient that is paid to a raw scriptPubKey (e.g. a P2CS
+    /// cold-stake script). The script is used verbatim; callers must validate
+    /// it before funding.
+    pub fn recipient_script(mut self, script: Vec<u8>, amount_sats: u64) -> Self {
+        self.recipient_scripts.push((script, amount_sats));
         self
     }
 
@@ -232,7 +242,7 @@ impl TxBuilder {
     ///
     /// Returns a fully signed `Transaction` ready to be submitted to the mempool.
     pub fn build(self, available_utxos: &[Utxo]) -> Result<Transaction> {
-        if self.recipients.is_empty() {
+        if self.recipients.is_empty() && self.recipient_scripts.is_empty() {
             return Err(WalletError::BuildError("No recipients specified".into()));
         }
         if self.wif_keys.is_empty() {
@@ -263,11 +273,16 @@ impl TxBuilder {
         };
 
         // Total amount to send.
-        let total_send: u64 = self.recipients.iter().try_fold(0u64, |acc, (_, v)| {
-            acc.checked_add(*v)
-                .ok_or_else(|| WalletError::BuildError("Total send amount overflow".into()))
-        })?;
-        let n_outputs = self.recipients.len() + 1; // +1 for change
+        let total_send: u64 = self
+            .recipients
+            .iter()
+            .map(|(_, v)| *v)
+            .chain(self.recipient_scripts.iter().map(|(_, v)| *v))
+            .try_fold(0u64, |acc, v| {
+                acc.checked_add(v)
+                    .ok_or_else(|| WalletError::BuildError("Total send amount overflow".into()))
+            })?;
+        let n_outputs = self.recipients.len() + self.recipient_scripts.len() + 1; // +1 for change
 
         // Coin selection.
         let (selected_utxos, fee) = select_coins(
@@ -314,6 +329,18 @@ impl TxBuilder {
             outputs.push(TxOutput {
                 value: *amount,
                 script_pubkey: p2pkh_script_pubkey(addr)?,
+            });
+        }
+        for (script, amount) in &self.recipient_scripts {
+            if *amount < DUST_SATOSHIS {
+                return Err(WalletError::BuildError(format!(
+                    "Recipient amount {} sat is below the dust threshold {} sat",
+                    amount, DUST_SATOSHIS
+                )));
+            }
+            outputs.push(TxOutput {
+                value: *amount,
+                script_pubkey: script.clone(),
             });
         }
         // Add change output if above dust threshold.
@@ -605,6 +632,24 @@ mod tests {
         let total_out: u64 = tx.outputs.iter().map(|o| o.value).sum();
         assert!(total_out < 10_000_000);
         assert!(total_out > 9_000_000); // fee should be < 1_000_000 for a small tx
+    }
+
+    #[test]
+    fn test_recipient_script_pays_raw_p2cs_script() {
+        let (wif, sender_addr) = random_wif();
+        let script = p2pkh_script_pubkey(&sender_addr).unwrap();
+        let utxos = vec![make_utxo(1, 0, 10_000_000, script)];
+        let p2cs = vtorrent_script::standard::build_p2cs(&[1; 20], &[2; 20], 0).unwrap();
+        let tx = TxBuilder::new()
+            .recipient_script(p2cs.as_bytes().to_vec(), 5_000_000)
+            .change_address(&sender_addr)
+            .sign_with_wif(&wif)
+            .build(&utxos)
+            .unwrap();
+        assert!(tx
+            .outputs
+            .iter()
+            .any(|o| o.value == 5_000_000 && o.script_pubkey == p2cs.as_bytes()));
     }
 
     #[test]
