@@ -36,6 +36,42 @@ groups:
         annotations:
           summary: "Staking stopped on {{ $labels.instance }}"
 
+      - alert: BlockCadenceSlow
+        expr: max_over_time(vtorrent_block_height[1h]) > 0 and deriv(vtorrent_block_height[15m]) * 120 < 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Block cadence slower than 120s on {{ $labels.instance }}"
+          description: "Fewer than one block per 120 seconds over 15 minutes."
+
+      - alert: SyncLag
+        expr: vtorrent_block_height < vtorrent_best_peer_height - 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} is behind its peers"
+          description: "Local height is more than 10 blocks below the best peer height."
+
+      - alert: ProcessRssHigh
+        expr: vtorrent_process_rss_bytes > 220 * 1024 * 1024
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} RSS above 220 MiB"
+          description: "Daemon resident memory exceeded the soak budget for 10 minutes."
+
+      - alert: BtcSpvStalled
+        expr: vtorrent_btc_synced == 0 and on(instance) max_over_time(vtorrent_btc_synced[24h]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BTC SPV stalled on {{ $labels.instance }}"
+          description: "BTC SPV was synced in the last 24h but is not synced now."
+
       - alert: HostDiskFull
         expr: (node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"}) < 0.15
         for: 10m

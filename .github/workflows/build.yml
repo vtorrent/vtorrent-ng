@@ -42,6 +42,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run all workspace tests
         run: cargo test --workspace --all-features
+      - name: Run workspace tests with default features
+        run: cargo test --workspace
       - name: Verify genesis independently
         run: python3 scripts/verify-genesis.py
 
@@ -113,16 +115,43 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run benchmark gate
-        run: bash scripts/bench-gate.sh --compare-ref HEAD^
+        run: bash scripts/bench-gate.sh --compare-ref "${{ github.event.pull_request.base.sha || github.event.before }}"
+
+  # ─── Frontend lint and tests ────────────────────────────────────────────────
+  frontend:
+    name: Frontend Lint and Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: vtorrent-ui/pnpm-lock.yaml
+      - name: Install frontend dependencies
+        working-directory: vtorrent-ui
+        run: pnpm install --frozen-lockfile
+      - name: Lint frontend
+        working-directory: vtorrent-ui
+        run: pnpm lint
+      - name: Test frontend
+        working-directory: vtorrent-ui
+        run: pnpm test
+      - name: Build frontend
+        working-directory: vtorrent-ui
+        run: pnpm build
 
   # ─── Desktop builds ─────────────────────────────────────────────────────────
   build-desktop:
     name: Build (${{ matrix.platform }})
-    needs: [test, quality]
+    needs: [test, quality, security-audit, machete, bench-gate, frontend]
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write

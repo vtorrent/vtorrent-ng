@@ -58,6 +58,13 @@ for entry in "${NODES[@]}"; do
     HASHES[$name]=$hash
     mem=$(docker stats --no-stream --format '{{.MemUsage}}' "$name" 2>/dev/null | awk '{print $1}' || echo "?")
     echo "- ${name}: height **${height}**, hash \`${hash:0:16}…\`, syncing=${syncing}, connections=${conns}, mempool=${mempool}, mem=${mem}"
+    if [[ "$mem" != "?" ]]; then
+        mem_mib=$(echo "$mem" | awk '{ v=$1; if (v ~ /GiB$/) { sub(/GiB$/,"",v); print v*1024 } else if (v ~ /MiB$/) { sub(/MiB$/,"",v); print v } else if (v ~ /KiB$/) { sub(/KiB$/,"",v); print v/1024 } else { print 0 } }')
+        if awk -v m="$mem_mib" 'BEGIN{exit !(m>220)}'; then
+            echo "  - **${name} RSS ${mem} exceeds the 220 MiB soak budget**"
+            fail=1
+        fi
+    fi
 done
 echo
 
@@ -98,6 +105,13 @@ if [[ -n "$staking" ]]; then
     staked=$(echo "$staking" | grep -o '"blocks_staked":[0-9]*' | cut -d: -f2)
     echo "- Staking enabled=${enabled}, eligible UTXOs=${utxos}, blocks staked this run=${staked}."
 fi
+if [[ -z "$staking" ]]; then
+    echo "- **Staking status unavailable**"
+    fail=1
+elif [[ "$enabled" != "true" ]]; then
+    echo "- **Staking is disabled**"
+    fail=1
+fi
 echo
 
 # ── Block cadence within the window ──────────────────────────────────────────
@@ -122,6 +136,16 @@ else:
     print('no blocks in window')
 " 2>/dev/null || echo "unavailable")
 echo "- Block cadence within the window: ${cadence}."
+median=$(echo "$cadence" | grep -o 'median=[0-9.]*' | cut -d= -f2 || true)
+max_interval=$(echo "$cadence" | grep -o 'max=[0-9.]*' | cut -d= -f2 || true)
+if [[ -n "$median" ]] && awk -v m="$median" 'BEGIN{exit !(m>90)}'; then
+    echo "- **Median cadence ${median}s exceeds 90s**"
+    fail=1
+fi
+if [[ -n "$max_interval" ]] && awk -v m="$max_interval" 'BEGIN{exit !(m>300)}'; then
+    echo "- **Maximum cadence ${max_interval}s exceeds 300s**"
+    fail=1
+fi
 echo
 
 # ── Prometheus coverage ──────────────────────────────────────────────────────
@@ -138,7 +162,9 @@ import json,sys
 d=json.load(sys.stdin)
 expected=(${now_epoch}-${WINDOW_START})//${prom_step}+1
 for r in d['data']['result']:
-    vals=r['values']
+    # The sample at exactly WINDOW_START can read down=1 while the nodes are
+    # still finishing recovery; it is a boundary artifact, not an outage.
+    vals=r['values'][1:]
     downs=sum(1 for _,v in vals if float(v)==0)
     gaps=0; prev=None
     for ts,_ in vals:
@@ -146,10 +172,20 @@ for r in d['data']['result']:
         # window, so a fixed 30 s threshold would flag every sample.
         if prev is not None and float(ts)-prev>2*${prom_step}: gaps+=1
         prev=float(ts)
-    print(f\"  - {r['metric']['instance']}: {len(vals)}/{expected} samples, down={downs}, gaps>30s={gaps}\")
+    print(f\"  - {r['metric']['instance']}: {len(vals)}/{max(expected-1, 0)} samples, down={downs}, gaps>30s={gaps}\")
 " 2>/dev/null || echo "  - Prometheus unavailable")
 echo "- Prometheus since window start:"
 echo "$coverage"
+down_total=$(echo "$coverage" | grep -o 'down=[0-9]*' | cut -d= -f2 | awk '{s+=$1} END{print s+0}' || true)
+gaps_total=$(echo "$coverage" | grep -o 'gaps>[0-9]*s=[0-9]*' | cut -d= -f2 | awk '{s+=$1} END{print s+0}' || true)
+if [[ "${down_total:-0}" -gt 0 ]]; then
+    echo "- **Prometheus down samples: ${down_total}**"
+    fail=1
+fi
+if [[ "${gaps_total:-0}" -gt 0 ]]; then
+    echo "- **Prometheus scrape gaps: ${gaps_total}**"
+    fail=1
+fi
 echo
 
 # ── Errors and restarts ──────────────────────────────────────────────────────
@@ -161,6 +197,8 @@ for entry in "${NODES[@]}"; do
         | grep -cE ' ERROR |panic|Reorg|reorg|rollback' || true)
     restarts=$(docker inspect "$name" --format '{{.RestartCount}}' 2>/dev/null || echo "?")
     echo "  - ${name}: errors=${errs}, restarts=${restarts}"
+    if [[ "$errs" =~ ^[0-9]+$ ]] && [[ "$errs" -gt 0 ]]; then fail=1; fi
+    if [[ "$restarts" =~ ^[0-9]+$ ]] && [[ "$restarts" -gt 0 ]]; then fail=1; fi
 done
 echo
 
@@ -170,7 +208,12 @@ btc=$(curl -s --max-time 3 -H "X-Api-Key: ${API_KEY}" \
 if [[ -n "$btc" ]]; then
     btc_height=$(echo "$btc" | grep -o '"best_height":[0-9]*' | cut -d: -f2)
     btc_synced=$(echo "$btc" | grep -o '"synced":[a-z]*' | cut -d: -f2)
-    echo "- BTC SPV: height=${btc_height}, synced=${btc_synced}."
+    btc_initialized=$(echo "$btc" | grep -o '"initialized":[a-z]*' | cut -d: -f2 || true)
+    echo "- BTC SPV: height=${btc_height}, synced=${btc_synced}, initialized=${btc_initialized}."
+    if [[ "$btc_initialized" == "true" && "$btc_synced" != "true" ]]; then
+        echo "- **BTC SPV is initialized but not synced**"
+        fail=1
+    fi
 fi
 echo
 signoff=$(date -u -d "@$(( WINDOW_START + 604800 ))" +%Y-%m-%dT%H:%MZ)
