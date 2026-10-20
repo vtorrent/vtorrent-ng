@@ -1,0 +1,20 @@
+[package]
+name = "vtorrent-security-review-probes"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+vtorrent-node = { path = "../../../vtorrent-node" }
+vtorrent-core = { path = "../../../vtorrent-core" }
+vtorrent-script = { path = "../../../vtorrent-script" }
+vtorrent-btc = { path = "../../../vtorrent-btc" }
+vtorrent-p2p = { path = "../../../vtorrent-p2p" }
+vtorrent-store = { path = "../../../vtorrent-store" }
+bitcoin = "0.32"
+secp256k1 = "0.29"
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tempfile = "3"
