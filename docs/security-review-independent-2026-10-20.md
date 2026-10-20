@@ -4,7 +4,8 @@ Status: INTERNAL ADVERSARIAL REVIEW, NOT THE EXTERNAL GATE.
 Reviewed revision: `26fec4b7cba01b9ee66311d47afbf1f6017142e8`
 (`feat(desktop): load and persist chain state from the block store`).
 Fix commits: `7c1e429` (P2CS authorization/burn), `1b0da9a` (BTC scan),
-`b7a50e9` (v3 notfound), `5ce91d2` (desktop persistence).
+`b7a50e9` (v3 notfound), `5ce91d2` (desktop persistence), `80ccc52`
+(raw-script cold-stake funding).
 
 This review was performed by an AI assistant that also contributed to the
 implementation. It is useful as a pre-audit and as a source of reproducible
@@ -95,9 +96,9 @@ griefing primitive.
 `sum(P2CS outputs) >= staked.value` in addition to the no-redirect rule.
 Regression: `coinstake_cannot_burn_p2cs_principal`.
 
-### C-2 — Critical (theft path FIXED in `7c1e429`; staking support still open): the
-wallet-generated cold-stake address is P2SH, but the consensus and staking
-paths only recognize the raw P2CS script
+### C-2 — Critical (theft path FIXED in `7c1e429`; staking support FIXED in
+`80ccc52` via raw-script funding): the wallet-generated cold-stake address is
+P2SH, but the consensus and staking paths only recognize the raw P2CS script
 
 **Where:** `vtorrent-wallet/src/wallet.rs:94-120`;
 `vtorrent-node/src/consensus.rs:203-216`;
@@ -122,13 +123,13 @@ script from a P2SH scriptSig, and the cold-spend check and R1 rule apply to
 P2SH-wrapped P2CS spends. Regression:
 `hot_key_cannot_spend_p2sh_wrapped_p2cs`.
 
-**Still open:** P2SH-wrapped P2CS UTXOs are not stakeable
-(`is_stakeable_with` sees only P2SH), so the wallet-generated address still
-does not stake. Either (a) make the wallet expose and fund the raw P2CS script
-(and provide a compatible address/UX), or (b) add a P2SH redeem-script
-registry/commitment so stakeability and `total_staked` can recognize the
-redeem script. Until then, do not advertise the P2SH address as a working
-cold-stake address.
+**Resolved for the intended flow:** `fund_cold_stake` (RPC
+`/api/v1/wallet/fund-cold-stake`) pays the **raw P2CS script**, which
+`is_stakeable_with`, the staking engine, and R1 all recognize. The P2SH label
+address remains non-stakeable and must not be used as a funding address; the
+docs and the `ColdStakeResp` comment now say so. The UI must call
+`fund_cold_stake` with the returned `script_pubkey`, not a generic send to the
+P2SH label.
 
 ### H-2 — High (FIXED in `1b0da9a`): BTC SPV scanning failed on mainnet with the default
 retention
@@ -273,8 +274,8 @@ query strings in logs. At minimum document the exposure.
   decoders may exist.
 - The `--btc-birthday` behavior is not implemented for history below the
   retained floor.
-- P2SH-wrapped P2CS UTXOs are protected against hot-key theft but are still not
-  stakeable; the wallet-generated address does not yet work for staking.
+- The P2SH label address is not stakeable; cold-stake funding must use the raw
+  P2CS script via `fund_cold_stake`.
 - The governance regression suite was red at the reviewed revision:
   `cold_stake_owner_votes_not_operator` failed with "voting stake did not exist
   at proposal creation" because its fixture created the UTXO and the proposal
@@ -285,8 +286,8 @@ query strings in logs. At minimum document the exposure.
 
 ## Recommended order
 
-1. Finish C-2: make P2SH-wrapped P2CS stakeable (or switch the wallet to the
-   raw P2CS script) before advertising cold staking.
+1. Ensure the UI uses `fund_cold_stake` with the raw P2CS script and never
+   advertises the P2SH label as a funding address.
 2. Fix L-1 (WebSocket query token) and audit the remaining direct JSON
    decoders.
 3. Add a desktop restart/BTC-discovery runtime test and a mainnet-scale BTC SPV
