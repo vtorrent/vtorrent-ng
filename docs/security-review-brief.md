@@ -85,6 +85,10 @@ challenge the repairs and their remaining assumptions independently.
 - Evidence: the full HTLC swap now settles against real BTC SPV
   (`docs/btc-spv-multinode-reorg-test.md`). The test uses one VTR daemon;
   separate maker and taker VTR nodes remain open.
+- `vtorrent-btc/src/headers.rs` — header retention. Pruning is amortized with a
+  1,024-header slack. The mainnet-scale test inserts 870,000 headers and keeps
+  the retained store within 100,000 plus the slack. Review the retention bound
+  and the difficulty and scan contiguity assumptions.
 
 ### 3.4 Network & RPC boundary
 - `vtorrent-rpc/src/server.rs` — API-key auth (constant-time compare),
@@ -143,18 +147,20 @@ challenge the repairs and their remaining assumptions independently.
 
 ## 6. What we provide
 - Immutable review delivery:
-  **`ff6f4725f636bde7dab3b7710c09f0841e6a6df7`**
-  (`test(genesis): verify snapshot and genesis hash independently`).
+  **`d6550f06214ea7f67346bb20fe6603f687a8e6e2`**
+  (`perf(btc): amortize header retention pruning`).
   This commit includes the governance template-selection repairs,
   snapshot-based proof reconstruction, admission budget, bounded retries, the
   real-time quota-recovery test, the real-bitcoind SPV reorg tests, the full
   HTLC swap settlement test, the reorged-out funding test, the independent
-  genesis verifier, and the evidence documents listed below.
+  genesis verifier, the amortized BTC header retention fix, and the evidence
+  documents listed below.
   Use this full commit hash rather than floating `main`. If the engagement
   moves to a later implementation, record its full hash explicitly.
-- The review delivery is a source snapshot, not a release tag. The fleet now
-  runs `vtorrent/node:batch-ff6f472` (code `ff6f472`) and is in a fresh 7-day
-  soak from 2026-10-19 to 2026-10-26. The soak is supporting evidence, not a
+- The review delivery is a source snapshot, not a release tag. The core soak
+  fleet runs `vtorrent/node:batch-ff6f472` (BTC SPV disabled) from 2026-10-19
+  to 2026-10-26. The review candidate `d6550f0` adds the header retention fix;
+  rebuild the release image from it. The soak is supporting evidence, not a
   substitute for this review.
 - `docs/` — designs + adversarial reviews for every subsystem
   (`cold-staking-p2cs-design.md`, `op-return-utxo-exclusion-design.md`,

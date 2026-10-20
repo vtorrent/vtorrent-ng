@@ -22,7 +22,7 @@ Companion to `docs/mainnet-readiness.md` (checklist) and
 | Min stake | 1 VTR | `consensus.rs:43` |
 | Max supply | 20,000,000 VTR | `consensus.rs:46` |
 | DNS seeds | seed1/2/3.vtorrent.org + `bootstrap/peers.txt` | `docs/dns-seeds.md` |
-| Review candidate build | `vtorrent/node:batch-ff6f472` (code `ff6f472`) | `docker/testnet/docker-compose.yml` |
+| Review candidate source | `d6550f0` (rebuild image as `vtorrent/node:batch-d6550f0`) | `docker/testnet/docker-compose.yml` |
 
 **Genesis is deterministic** and embeds the legacy snapshot (59,375 addresses,
 11,589,746.63 VTR). `GENESIS_TIMESTAMP` and the genesis message are frozen.
@@ -33,7 +33,7 @@ at launch.
 ## 2. Pre-launch gate (all must be green)
 
 1. **External security review** complete; findings fixed with regression tests
-   (`docs/security-review-brief.md`, pinned to `ff6f472`).
+   (`docs/security-review-brief.md`, pinned to `d6550f0`).
 2. **Review candidate selected** (§3): the current build includes the
    consensus batch; launch on the candidate commit and image after review, not
    beta.3.
@@ -45,15 +45,16 @@ at launch.
 
 The current build already includes the consensus batch (OP_RETURN exclusion,
 cold staking, governance, state rent) and the governance and proof-service
-repairs. The fleet is soaking `vtorrent/node:batch-ff6f472` (code `ff6f472`).
-Launch on that candidate build after the external review and the fresh
-7-day soak. Do not launch on beta.3; it predates the governance and
-proof-service repairs.
+repairs. The core soak fleet runs `vtorrent/node:batch-ff6f472` with BTC SPV
+disabled. The review candidate `d6550f0` adds the header retention fix; rebuild
+the release image from it. Launch on that candidate build after the external
+review and the fresh 7-day soak. Do not launch on beta.3; it predates the
+governance and proof-service repairs.
 
-The swap DEX is included in the build. If swaps are enabled at mainnet launch,
-the BTC SPV mainnet-scale soak is a launch gate. If swaps are deferred, launch
-with BTC SPV disabled and enable swaps only after that soak and the separate
-maker and taker VTR node validation.
+Swaps are enabled at mainnet launch. The BTC SPV mainnet-scale soak and the
+separate maker and taker VTR node validation are launch gates. The header
+retention bound is covered by an 870,000-header test; the active swap soak
+remains to be run.
 
 ## 4. Launch procedure
 
@@ -79,7 +80,7 @@ maker and taker VTR node validation.
 - The independent genesis verifier passes
   (`python3 scripts/verify-genesis.py`).
 - The deployed image and commit match the build that passed the external
-  review (`vtorrent/node:batch-ff6f472`, code `ff6f472`).
+  review (`vtorrent/node:batch-d6550f0`, code `d6550f0`).
 - Block cadence ~60 s; no sustained divergence.
 - A legacy claim succeeds end-to-end (rehearsed on regtest).
 - RPC reachable, auth enforced, rate limiting active.

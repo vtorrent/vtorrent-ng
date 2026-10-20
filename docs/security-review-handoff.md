@@ -7,18 +7,18 @@ and deliverables are in `docs/security-review-brief.md`.
 
 | Item | Value |
 | --- | --- |
-| Pinned commit | `ff6f4725f636bde7dab3b7710c09f0841e6a6df7` |
+| Pinned commit | `d6550f06214ea7f67346bb20fe6603f687a8e6e2` |
 | Brief | Latest `docs/security-review-brief.md` from `main`; it pins this commit |
 | Toolchain | Rust 1.90.0 (`rust-toolchain.toml`) |
 | Dependency lock | Archive the `Cargo.lock` used for the build; it is gitignored |
-| Fleet image | `vtorrent/node:batch-ff6f472` |
+| Fleet image | Core soak: `vtorrent/node:batch-ff6f472`; release build: rebuild from `d6550f0` |
 | Soak window | 2026-10-19T09:06:31Z to 2026-10-26T09:06:31Z |
 
 Verify the commit resolves before sending:
 
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
-git -C vtorrent-ng checkout ff6f4725f636bde7dab3b7710c09f0841e6a6df7
+git -C vtorrent-ng checkout d6550f06214ea7f67346bb20fe6603f687a8e6e2
 git -C vtorrent-ng rev-parse HEAD
 ```
 
@@ -96,7 +96,10 @@ TMPDIR=/tmp/opencode cargo test -p vtorrent-daemon --release --features test-uti
 
 - [ ] Commit hash resolves on `origin`.
 - [ ] Every document referenced by the brief exists at the pinned commit.
-- [ ] The full release-mode workspace suite passes at the pinned commit.
+- [ ] The full release-mode workspace suite passed at `ff6f472`; the changed
+      `vtorrent-btc` crate suite and Clippy passed at `d6550f0`, which adds only
+      the header retention fix. The reviewer should run the full suite at the
+      pinned commit.
 - [ ] The independent genesis verifier passes.
 - [ ] The evidence index and the limitations above are included.
 - [ ] Contact, timeline, and confidentiality terms are agreed.
@@ -112,7 +115,7 @@ Hello <name>,
 We are requesting an independent security review of vTorrent 2.0.0 before
 mainnet activation. The scope and deliverables are in the attached brief.
 
-Pinned source: ff6f4725f636bde7dab3b7710c09f0841e6a6df7
+Pinned source: d6550f06214ea7f67346bb20fe6603f687a8e6e2
 Repository: https://github.com/vtorrent/vtorrent-ng
 
 The review focuses on wallet custody, consensus and governance, the stake-proof

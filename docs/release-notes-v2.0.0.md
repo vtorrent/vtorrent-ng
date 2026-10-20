@@ -63,6 +63,9 @@ paths.
 - The BTC header store has an opt-in retention window
   (`--btc-header-retention`, default 100,000 headers) and keeps the retained set
   contiguous.
+- Header pruning is amortized with a 1,024-header slack. A mainnet-scale test
+  inserts 870,000 headers and keeps the retained store within 100,000 plus the
+  slack.
 - Two independent daemons agree on a real regtest SPV tip, discover the same
   funded outputs, persist them across restarts, and follow a reorg that
   re-includes the funding transactions.
@@ -83,13 +86,16 @@ paths.
 
 ## Testing
 
-- The full release-mode workspace suite passed at the review candidate
-  `ff6f472`, including the node, daemon recovery, RPC, governance, and
-  proof-service tests. Later changes are test-only or documentation.
+- The full release-mode workspace suite passed at `ff6f472`, including the
+  node, daemon recovery, RPC, governance, and proof-service tests. The
+  `vtorrent-btc` suite and Clippy passed at `d6550f0`, which adds the header
+  retention fix.
 - The RPC library suite passes 142 tests, including the test-miner auth
   regression.
 - Real-bitcoind tests cover two-daemon SPV agreement, reorg re-inclusion, the
   full HTLC swap, and reorged-out funding.
+- The ignored mainnet-scale header retention test inserts 870,000 headers and
+  verifies the retained store stays within the bound.
 - The real-time proof quota test drains the per-IP allowance, observes the
   initial denial, and verifies automatic recovery after the 65-second retry.
 - The fresh 7-day soak runs from 2026-10-19 to 2026-10-26 on
@@ -106,6 +112,9 @@ paths.
   fleet, so the soak does not exercise the swap paths.
 - Existing chain data is preserved. Do not delete `chain.db` during the
   upgrade.
+- The release build includes the amortized BTC header retention fix. The core
+  soak image `batch-ff6f472` predates it and has BTC SPV disabled; rebuild the
+  release image from `d6550f0`.
 
 ## Known limitations
 
@@ -113,9 +122,9 @@ paths.
 - SPV PoS header acceptance remains fail-closed.
 - The full swap test uses one VTR daemon. Separate maker and taker VTR nodes
   remain open.
-- BTC SPV has not been soaked at mainnet-scale header counts. The swap DEX
-  launch scope is pending: if swaps are enabled at launch, that soak is a gate;
-  otherwise enable swaps after the soak.
+- BTC SPV header retention is bounded and tested at 870,000 headers. The active
+  swap soak and separate maker and taker VTR node validation remain launch
+  gates because swaps are enabled at launch.
 - A real-bitcoind reorged-out claim test is not covered. The settlement-state
   downgrade is covered by unit tests.
 - Cold proof reconstruction is unavailable beyond the retained undo window.

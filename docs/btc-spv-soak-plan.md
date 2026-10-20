@@ -1,6 +1,6 @@
 # Bitcoin SPV Soak Plan
 
-Status: PLAN (post-soak; not part of the current core-node window)
+Status: LAUNCH GATE (swaps enabled at mainnet launch)
 Scope: `vtorrent-btc` SPV path as enabled by `--btc-regtest/--btc-peer/--btc-seed`.
 
 ## 1. Why this is separate
@@ -18,14 +18,17 @@ Measured (node1, same data): **~145 MiB with `--btc-*` → ~105 MiB without** �
 
 - **Header chain** — `vtorrent-btc/src/headers.rs`: an in-memory
   `headers: HashMap<BlockHash, StoredHeader>` (80-byte header + height + work per
-  entry), grown by the sync loop (`main.rs:824+`).
+  entry), grown by the sync loop (`main.rs:824+`). Bounded by
+  `--btc-header-retention` (default 100,000); pruning is amortized with a
+  1,024-header slack.
 - **Wallet UTXO state** — persisted to `<data-dir>/btc_utxos.json`
   (`BtcWallet::with_persistence`, `main.rs:345`).
 - **HTLC / swap monitoring** — `htlc.rs`, exercised only when a swap runs.
 
-The header map is the memory risk: it grows with BTC height and is **not**
-observed to be bounded or persisted. On mainnet (~870k headers × ~120 B+overhead)
-that is a ≥100 MiB standing cost before any swap state.
+The header map was the memory risk: it grows with BTC height. It is now bounded
+by `--btc-header-retention` (default 100,000 headers, about 11 MiB) with
+amortized pruning. The mainnet-scale test inserts 870,000 headers and keeps the
+retained store within 100,000 plus the 1,024-header slack.
 
 ## 3. What was actually measured vs assumed
 
@@ -69,19 +72,25 @@ that is a ≥100 MiB standing cost before any swap state.
   retention` while keeping the retained set contiguous (difficulty validation
   and the UTXO scan both need that). Genesis is always kept. This bounds the
   mainnet-scale risk the regtest soak could not exercise.
+- **Mainnet-scale retention test (2026-10-19):** an ignored test inserts
+  870,000 headers and keeps the retained store within 100,000 plus the
+  1,024-header slack. Pruning is amortized so the sync is not O(headers ×
+  retention). The test passed in release mode in 17.39 s.
 
 ## 5. Acceptance criteria
 
 - RSS stable under the BTC-SPV budget across the window (headers at a steady
   rate), no ERROR/panic in the SPV sync, swap completes correctly.
-- If header memory grows linearly and is not bounded/persisted, that becomes a
-  **mainnet blocker** (a new item in `docs/mainnet-readiness.md`), not a soak
-  failure.
+- The retained header store stays within `--btc-header-retention` plus the
+  slack at mainnet-scale counts. The 870,000-header test covers the bound; the
+  active swap soak covers the swap path.
+- If header memory grows beyond the bound, that is a **mainnet blocker**, not a
+  soak failure.
 
 ## 6. Risks / open questions
 
-- **Unbounded header chain** — the biggest risk; quantify in Phase B and decide
-  persist/bound.
+- **Header retention** — bounded and amortized; the mainnet-scale test covers
+  the count. The remaining risk is the active swap soak and separate VTR nodes.
 - **Regtest block generation** must be controlled (don't spam); use
   `generatetoaddress` with a fixed count and pace.
 - **Swap driving** needs the BTC-funding wallet and VTR liquidity; reuse the
@@ -91,8 +100,8 @@ that is a ≥100 MiB standing cost before any swap state.
 
 ## 7. Non-goals
 
-- Not part of the current core-node window; do not restart node1 until the
-  core-node sign-off decision is made.
+- The core-node 7-day soak is separate. Run the BTC SPV soak on a probe or after
+  the core window; do not restart node1 during the core soak.
 - Not changing swap protocol or HTLC semantics.
 
 ## 8. References
