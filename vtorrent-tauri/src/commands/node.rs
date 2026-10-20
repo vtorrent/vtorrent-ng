@@ -90,7 +90,21 @@ pub async fn start_node(
             seeds
         };
     }
-    let mut node = Node::new(config).map_err(|e| TauriError::NodeError(e.to_string()))?;
+    let chain_db_path = config.data_dir.join("chain.db");
+    let block_store = Arc::new(
+        vtorrent_store::BlockStore::open(&chain_db_path)
+            .map_err(|e| TauriError::NodeError(format!("Could not open chain store: {e}")))?,
+    );
+    let chain = if config.regtest_fast_stake {
+        block_store.load_into_fast_regtest_chain_with_cache(4096)
+    } else if config.regtest {
+        block_store.load_into_regtest_chain_with_cache(4096)
+    } else {
+        block_store.load_into_chain_with_cache(4096)
+    }
+    .map_err(|e| TauriError::NodeError(format!("Could not load chain: {e}")))?;
+    let mut node =
+        Node::new_with_chain(config, chain).map_err(|e| TauriError::NodeError(e.to_string()))?;
 
     let mut rpc_state = RpcAppState::new_with_shared(node.chain_arc(), node.mempool_arc());
     // Wire the P2P broadcast channel. Without this, desktop sends are admitted
@@ -196,10 +210,68 @@ pub async fn start_node(
         let rewards_earned = Arc::clone(&rpc_state.rewards_earned_sats);
         let peer_count = Arc::clone(&rpc_state.peer_count);
         let best_peer_height = Arc::clone(&rpc_state.best_peer_height);
+        let store = Arc::clone(&block_store);
         tokio::spawn(async move {
             loop {
                 match node_rx.recv().await {
                     Ok(event) => match &*event {
+                        vtorrent_node::events::NodeEvent::NewBlock {
+                            height,
+                            block,
+                            utxos_added,
+                            utxos_removed,
+                            claimed_addresses,
+                            ..
+                        } => {
+                            if let Err(e) = store.append_block(
+                                block,
+                                *height,
+                                utxos_added,
+                                utxos_removed,
+                                claimed_addresses,
+                            ) {
+                                tracing::error!(
+                                    "BlockStore::append_block failed at height {}: {}",
+                                    height,
+                                    e
+                                );
+                            }
+                        }
+                        vtorrent_node::events::NodeEvent::Reorg {
+                            rolled_back_blocks,
+                            applied_fork_blocks,
+                            ..
+                        } => {
+                            for rb in rolled_back_blocks {
+                                if let Err(e) = store.rollback_tip(
+                                    &rb.utxos_to_restore,
+                                    &rb.utxos_to_remove,
+                                    &rb.claimed_to_remove,
+                                ) {
+                                    tracing::error!(
+                                        "BlockStore::rollback_tip failed for block {} at height {}: {}",
+                                        hex::encode(rb.hash),
+                                        rb.height,
+                                        e
+                                    );
+                                }
+                            }
+                            for fb in applied_fork_blocks {
+                                if let Err(e) = store.append_block(
+                                    &fb.block,
+                                    fb.height,
+                                    &fb.utxos_added,
+                                    &fb.utxos_removed,
+                                    &fb.claimed_addresses,
+                                ) {
+                                    tracing::error!(
+                                        "BlockStore::append_block (reorg) failed at height {}: {}",
+                                        fb.height,
+                                        e
+                                    );
+                                }
+                            }
+                        }
                         vtorrent_node::events::NodeEvent::StakingReward { reward_sats, .. } => {
                             *blocks_staked.write().await += 1;
                             *last_stake_time.write().await = std::time::SystemTime::now()

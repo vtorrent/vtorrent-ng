@@ -26,6 +26,7 @@ vtorrent-wallet  = { path = "../vtorrent-wallet" }
 vtorrent-wallet-service = { path = "../vtorrent-wallet-service" }
 vtorrent-node    = { path = "../vtorrent-node" }
 vtorrent-rpc     = { path = "../vtorrent-rpc" }
+vtorrent-store = { path = "../vtorrent-store" }
 vtorrent-torrent = { path = "../vtorrent-torrent" }
 vtorrent-btc     = { path = "../vtorrent-btc" }
 hex = "0.4"
