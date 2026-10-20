@@ -189,14 +189,13 @@ pub async fn start_node(
         let blocks_staked = Arc::clone(&rpc_state.blocks_staked);
         let last_stake_time = Arc::clone(&rpc_state.last_stake_time);
         let rewards_earned = Arc::clone(&rpc_state.rewards_earned_sats);
+        let peer_count = Arc::clone(&rpc_state.peer_count);
+        let best_peer_height = Arc::clone(&rpc_state.best_peer_height);
         tokio::spawn(async move {
             loop {
                 match node_rx.recv().await {
-                    Ok(event) => {
-                        if let vtorrent_node::events::NodeEvent::StakingReward {
-                            reward_sats, ..
-                        } = &*event
-                        {
+                    Ok(event) => match &*event {
+                        vtorrent_node::events::NodeEvent::StakingReward { reward_sats, .. } => {
                             *blocks_staked.write().await += 1;
                             *last_stake_time.write().await = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -206,7 +205,17 @@ pub async fn start_node(
                             let current = *rewards_earned.read().await;
                             *rewards_earned.write().await = current.saturating_add(*reward_sats);
                         }
-                    }
+                        vtorrent_node::events::NodeEvent::PeerConnected { height, .. } => {
+                            *peer_count.write().await += 1;
+                            let mut best = best_peer_height.write().await;
+                            *best = (*best).max(u64::from(*height));
+                        }
+                        vtorrent_node::events::NodeEvent::PeerDisconnected { .. } => {
+                            let mut count = peer_count.write().await;
+                            *count = count.saturating_sub(1);
+                        }
+                        _ => {}
+                    },
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -245,7 +254,6 @@ pub async fn get_node_info(state: tauri::State<'_, AppState>) -> Result<NodeInfo
             let chain = rpc.chain.lock().await;
             let mempool = rpc.mempool.lock().await;
             let peer_count = *rpc.peer_count.read().await;
-            let syncing = *rpc.syncing.read().await;
             let uptime = handle.start_time.elapsed().as_secs();
             let height = chain.best_height();
             let best_hash = chain.best_hash().map(hex::encode).unwrap_or_default();
@@ -256,6 +264,7 @@ pub async fn get_node_info(state: tauri::State<'_, AppState>) -> Result<NodeInfo
             // peers. Using our own height as the denominator always yields
             // 100% — the bug this replaces.
             let best_peer_height = *rpc.best_peer_height.read().await;
+            let syncing = peer_count > 0 && (height as u64) < best_peer_height;
             let sync_pct = if syncing {
                 let target = best_peer_height.max(1) as f64;
                 ((height as f64 / target) * 100.0).min(100.0)
