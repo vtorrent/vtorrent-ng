@@ -49,6 +49,19 @@ const P2PKH_INPUT_SIZE: usize = 147;
 /// Approximate size of a P2PKH output in bytes (8 value + 25 scriptpubkey).
 const P2PKH_OUTPUT_SIZE: usize = 33;
 
+/// Serialized CompactSize length for an output script.
+fn varint_len(n: usize) -> usize {
+    if n < 0xfd {
+        1
+    } else if n <= 0xffff {
+        3
+    } else if n <= 0xffff_ffff {
+        5
+    } else {
+        9
+    }
+}
+
 /// Fixed transaction overhead in bytes (version + locktime + input/output count varints).
 const TX_OVERHEAD: usize = 10;
 
@@ -65,6 +78,25 @@ pub fn select_coins(
     fee_rate: u64,
     min_absolute_fee: u64,
     n_outputs: usize,
+) -> Result<(Vec<Utxo>, u64)> {
+    select_coins_with_output_size(
+        utxos,
+        target_sats,
+        fee_rate,
+        min_absolute_fee,
+        n_outputs * P2PKH_OUTPUT_SIZE,
+    )
+}
+
+/// Like [`select_coins`], but takes the exact serialized output bytes so a
+/// large script (for example a 60-byte P2CS output) is not charged as a
+/// 33-byte P2PKH output.
+pub fn select_coins_with_output_size(
+    utxos: &[Utxo],
+    target_sats: u64,
+    fee_rate: u64,
+    min_absolute_fee: u64,
+    output_bytes: usize,
 ) -> Result<(Vec<Utxo>, u64)> {
     // Filter out dust UTXOs.
     let mut candidates: Vec<&Utxo> = utxos.iter().filter(|u| u.value >= DUST_SATOSHIS).collect();
@@ -83,7 +115,7 @@ pub fn select_coins(
 
         // Estimate fee for the current selection.
         let n_inputs = selected.len();
-        let tx_size = TX_OVERHEAD + n_inputs * P2PKH_INPUT_SIZE + n_outputs * P2PKH_OUTPUT_SIZE;
+        let tx_size = TX_OVERHEAD + n_inputs * P2PKH_INPUT_SIZE + output_bytes;
         let fee = ((tx_size as u64).saturating_mul(fee_rate)).max(min_absolute_fee);
 
         let required = target_sats.saturating_add(fee);
@@ -282,15 +314,27 @@ impl TxBuilder {
                 acc.checked_add(v)
                     .ok_or_else(|| WalletError::BuildError("Total send amount overflow".into()))
             })?;
-        let n_outputs = self.recipients.len() + self.recipient_scripts.len() + 1; // +1 for change
+        let output_bytes = self
+            .recipients
+            .iter()
+            .map(|_| 8 + varint_len(25) + 25)
+            .chain(
+                self.recipient_scripts
+                    .iter()
+                    .map(|(script, _)| 8 + varint_len(script.len()) + script.len()),
+            )
+            .sum::<usize>()
+            + 8
+            + varint_len(25)
+            + 25; // change output
 
         // Coin selection.
-        let (selected_utxos, fee) = select_coins(
+        let (selected_utxos, fee) = select_coins_with_output_size(
             available_utxos,
             total_send,
             self.fee_rate,
             self.min_absolute_fee,
-            n_outputs,
+            output_bytes,
         )?;
 
         let total_input: u64 = selected_utxos.iter().try_fold(0u64, |acc, u| {
