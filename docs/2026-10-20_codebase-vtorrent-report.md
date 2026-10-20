@@ -316,8 +316,8 @@ RPC 148; frontend lint, 16 tests, and production build; workspace formatting
 and strict all-feature Clippy pass; the live soak observer exits 0 with the
 hardened checks. The fleet was rebuilt to `vtorrent/node:batch-669ee36` (code
 `669ee36`) and a fresh soak window started at 2026-10-20T13:51:39Z. The review
-probes under `docs/review-probes/` are historical evidence for the reviewed
-revision.
+candidate `57505ab` adds the BTC wallet birthday flag. The review probes under
+`docs/review-probes/` are historical evidence for the reviewed revision.
 
 ## Review limits and self-assessment
 

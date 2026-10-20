@@ -149,8 +149,8 @@ challenge the repairs and their remaining assumptions independently.
 
 ## 6. What we provide
 - Immutable review delivery:
-  **`669ee36eaf1cfc59858201d9e8fd1c002d8b2422`**
-  (`fix: close remaining review findings in IPC, WebSocket auth, CI baselines, and BTC scan floors`).
+  **`57505ab2ffd5446193957205dbac4714cd579cad`**
+  (`feat(btc): add wallet birthday scan start`).
   This commit includes the governance template-selection repairs,
   snapshot-based proof reconstruction, admission budget, bounded retries, the
   real-time quota-recovery test, the real-bitcoind SPV reorg tests, the full
@@ -162,14 +162,15 @@ challenge the repairs and their remaining assumptions independently.
   legacy-extraction tests, the whole-codebase review remediation (bootstrap
   maturity, BTC retention and scan floor, torrent assembler, legacy key forms,
   alert metrics, soak evidence, compact-block wire budget, frontend IPC
-  normalization, WebSocket auth, and CI benchmark baselines), and the evidence
-  documents listed below.
+  normalization, WebSocket auth, CI benchmark baselines, and the BTC wallet
+  birthday flag), and the evidence documents listed below.
   Use this full commit hash rather than floating `main`. If the engagement
   moves to a later implementation, record its full hash explicitly.
 - The review delivery is a source snapshot, not a release tag. The core soak
-  fleet now runs `vtorrent/node:batch-669ee36` (code `669ee36`, BTC SPV disabled) from
-  2026-10-20T13:51:39Z to 2026-10-27T13:51:39Z. The soak is supporting evidence, not a
-  substitute for this review.
+  fleet runs `vtorrent/node:batch-669ee36` (code `669ee36`, BTC SPV disabled)
+  from 2026-10-20T13:51:39Z to 2026-10-27T13:51:39Z. The review candidate
+  `57505ab` adds the BTC wallet birthday flag; rebuild the release image from it.
+  The soak is supporting evidence, not a substitute for this review.
 - `docs/` — designs + adversarial reviews for every subsystem
   (`cold-staking-p2cs-design.md`, `op-return-utxo-exclusion-design.md`,
   `network-upgrade-design.md`, `atomic-swap-protocol.md`,

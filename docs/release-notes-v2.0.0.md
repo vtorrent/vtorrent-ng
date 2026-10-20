@@ -105,7 +105,8 @@ paths.
 - The full release-mode workspace suite passed at `ff6f472`, including the
   node, daemon recovery, RPC, governance, and proof-service tests. The
   changed crate suites and Clippy passed at `669ee36`, which adds the review
-  remediation fixes. Rerun the full workspace suite before tagging.
+  remediation fixes. The BTC birthday flag compiles and passes Clippy. Rerun
+  the full workspace suite before tagging.
 - The RPC library suite passes 142 tests, including the test-miner auth
   regression.
 - Real-bitcoind tests cover two-daemon SPV agreement, reorg re-inclusion, the
@@ -133,8 +134,9 @@ paths.
   fleet, so the soak does not exercise the swap paths.
 - Existing chain data is preserved. Do not delete `chain.db` during the
   upgrade.
-- The release build and the soak fleet both run `batch-669ee36`. The fresh
-  soak window started 2026-10-20T13:51:39Z.
+- The core soak fleet runs `batch-669ee36`. The release build includes the BTC
+  wallet birthday flag and must be rebuilt from `57505ab`. The fresh soak window
+  started 2026-10-20T13:51:39Z.
 
 ## Known limitations
 

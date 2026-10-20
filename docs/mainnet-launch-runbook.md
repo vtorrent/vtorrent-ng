@@ -22,7 +22,7 @@ Companion to `docs/mainnet-readiness.md` (checklist) and
 | Min stake | 1 VTR | `consensus.rs:43` |
 | Max supply | 20,000,000 VTR | `consensus.rs:46` |
 | DNS seeds | seed1/2/3.vtorrent.org + `bootstrap/peers.txt` | `docs/dns-seeds.md` |
-| Review candidate source | `669ee36` (image `vtorrent/node:batch-669ee36`) | `docker/testnet/docker-compose.yml` |
+| Review candidate source | `57505ab` (rebuild image as `vtorrent/node:batch-57505ab`) | `docker/testnet/docker-compose.yml` |
 
 **Genesis is deterministic** and embeds the legacy snapshot (59,375 addresses,
 11,589,746.63 VTR). `GENESIS_TIMESTAMP` and the genesis message are frozen.
@@ -33,7 +33,7 @@ at launch.
 ## 2. Pre-launch gate (all must be green)
 
 1. **External security review** complete; findings fixed with regression tests
-   (`docs/security-review-brief.md`, pinned to `669ee36`).
+   (`docs/security-review-brief.md`, pinned to `57505ab`).
 2. **Review candidate selected** (§3): the current build includes the
    consensus batch; launch on the candidate commit and image after review, not
    beta.3.
@@ -46,8 +46,10 @@ at launch.
 The current build already includes the consensus batch (OP_RETURN exclusion,
 cold staking, governance, state rent) and the governance and proof-service
 repairs. The core soak fleet runs `vtorrent/node:batch-669ee36` with BTC SPV
-disabled. The fresh 7-day soak started 2026-10-20T13:51:39Z. Launch on that
-candidate build after the external review and the soak. Do not launch on beta.3; it predates the
+disabled. The review candidate `57505ab` adds the BTC wallet birthday flag;
+rebuild the release image from it. The fresh 7-day soak started
+2026-10-20T13:51:39Z. Launch on that candidate build after the external review
+and the soak. Do not launch on beta.3; it predates the
 governance and proof-service repairs.
 
 Swaps are enabled at mainnet launch. The BTC SPV mainnet-scale soak and the
@@ -79,7 +81,7 @@ remains to be run.
 - The independent genesis verifier passes
   (`python3 scripts/verify-genesis.py`).
 - The deployed image and commit match the build that passed the external
-  review (`vtorrent/node:batch-669ee36`, code `669ee36`).
+  review (`vtorrent/node:batch-57505ab`, code `57505ab`).
 - Block cadence ~60 s; no sustained divergence.
 - A legacy claim succeeds end-to-end (rehearsed on regtest).
 - RPC reachable, auth enforced, rate limiting active.
