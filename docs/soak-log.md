@@ -2023,10 +2023,10 @@ topic.
 
 This window validates the review-fix build under regtest fast-stake. It does
 not activate governance, schedule a deployment, or replace the external
-security review. Desktop store replay, health-field updates, and the BTC sync
-loop remain open; the missing Tauri commands were added. The `--btc-birthday`
-flag is in the source after the core soak image; BTC SPV is disabled on the
-fleet, so the flag is not exercised by this window.
+security review. Desktop store replay and the BTC sync loop remain open; the
+missing Tauri commands and health-field updates were added. The
+`--btc-birthday` flag is in the source after the core soak image; BTC SPV is
+disabled on the fleet, so the flag is not exercised by this window.
 ## 2026-10-20 — daily observation (window +0h)
 
 Read-only check at `2026-10-20T13:53Z` (window start `2026-10-20T13:51:39Z`).

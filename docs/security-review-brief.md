@@ -149,8 +149,8 @@ challenge the repairs and their remaining assumptions independently.
 
 ## 6. What we provide
 - Immutable review delivery:
-  **`ab8606857dfa27f4fa12f49eaf7ba5c51cc71fd2`**
-  (`feat(desktop): add governance, earnings, payment, and deadline commands`).
+  **`3fb4fbb9b41e012dae71119957bca76c64569bb1`**
+  (`fix(desktop): update peer count and sync health from node events`).
   This commit includes the governance template-selection repairs,
   snapshot-based proof reconstruction, admission budget, bounded retries, the
   real-time quota-recovery test, the real-bitcoind SPV reorg tests, the full
@@ -163,16 +163,17 @@ challenge the repairs and their remaining assumptions independently.
   maturity, BTC retention and scan floor, torrent assembler, legacy key forms,
   alert metrics, soak evidence, compact-block wire budget, frontend IPC
   normalization, WebSocket auth, CI benchmark baselines, the BTC wallet
-  birthday flag, and the desktop governance/earnings/payment/deadline
-  commands), and the evidence documents listed below.
+  birthday flag, the desktop governance/earnings/payment/deadline commands,
+  and desktop health-field updates), and the evidence documents listed below.
   Use this full commit hash rather than floating `main`. If the engagement
   moves to a later implementation, record its full hash explicitly.
 - The review delivery is a source snapshot, not a release tag. The core soak
   fleet runs `vtorrent/node:batch-669ee36` (code `669ee36`, BTC SPV disabled)
   from 2026-10-20T13:51:39Z to 2026-10-27T13:51:39Z. The review candidate
-  `ab86068` adds the BTC wallet birthday flag and the desktop
-  governance/earnings/payment/deadline commands; rebuild the release image from
-  it. The soak is supporting evidence, not a substitute for this review.
+  `3fb4fbb` adds the BTC wallet birthday flag, the desktop
+  governance/earnings/payment/deadline commands, and health-field updates;
+  rebuild the release image from it. The soak is supporting evidence, not a
+  substitute for this review.
 - `docs/` — designs + adversarial reviews for every subsystem
   (`cold-staking-p2cs-design.md`, `op-return-utxo-exclusion-design.md`,
   `network-upgrade-design.md`, `atomic-swap-protocol.md`,
