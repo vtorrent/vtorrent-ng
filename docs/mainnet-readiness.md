@@ -226,7 +226,8 @@ actions, operator approval.
       and a conflicting-spend test proves a reorged-out funding output
       disappears after restart. Swaps are enabled at mainnet launch, so the
       active swap soak and separate maker and taker VTR node validation are
-      launch gates. See `docs/btc-spv-soak-plan.md`.
+      launch gates. Set `--btc-birthday` to the wallet creation height to scan
+      funds older than the retained window. See `docs/btc-spv-soak-plan.md`.
 - [~] **BTC SPV holds ~40 MiB and is not independently soaked** — regtest isolated soak is flat (~160 MiB, 140 headers); **mainnet scale (≥100 MiB at ~870k headers) still unvalidated**. BTC SPV (only
       enabled when `--btc-*` is passed, for atomic swaps) held **~40–47 MiB** on
       node1 and confounded the RSS measurements. It was disabled for the current

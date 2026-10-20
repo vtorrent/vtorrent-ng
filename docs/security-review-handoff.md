@@ -90,6 +90,8 @@ TMPDIR=/tmp/opencode cargo test -p vtorrent-daemon --release --features test-uti
   downgrade is unit-tested.
 - Cold proof reconstruction is unavailable beyond the retained undo window.
   The retry queue is in memory and resets on restart.
+- BTC wallet discovery defaults to the retained header floor. `--btc-birthday`
+  sets an explicit creation height for older funds.
 - The proof admission budget bounds request counts, not CPU milliseconds.
 
 ## Pre-send checks

@@ -415,22 +415,21 @@ async fn main() -> anyhow::Result<()> {
         } else {
             bitcoin::Network::Bitcoin
         };
-        let btc_wallet = vtorrent_btc::wallet::BtcWallet::with_persistence(
+        let mut btc_wallet = vtorrent_btc::wallet::BtcWallet::with_persistence(
             seed,
             network,
             data_dir.join("btc_utxos.json"),
         )
-        .inspect(|w| {
-            // Bound the in-memory SPV header chain (mainnet ~870k headers).
-            w.set_header_retention(cli.btc_header_retention);
-        });
+        .map_err(|e| anyhow::anyhow!("Could not load persistent BTC wallet state: {}", e))?;
+        // Bound the in-memory SPV header chain (mainnet ~870k headers).
+        btc_wallet.set_header_retention(cli.btc_header_retention);
+        if let Some(birthday) = cli.btc_birthday {
+            btc_wallet.set_last_scanned_height(birthday);
+        }
         // Zeroize the local seed material; the wallet holds its own copy
         // (zeroized on drop) and the CLI string is process-lifetime anyway.
         seed.zeroize();
-        *rpc_state.btc_wallet.write().await =
-            Some(btc_wallet.map_err(|e| {
-                anyhow::anyhow!("Could not load persistent BTC wallet state: {}", e)
-            })?);
+        *rpc_state.btc_wallet.write().await = Some(btc_wallet);
         *rpc_state.btc_network.write().await = network;
         if let Some(peer) = &cli.btc_peer {
             // Store the host:port as given; it is resolved on every connection
@@ -984,8 +983,15 @@ async fn main() -> anyhow::Result<()> {
                                 }
                                 if w.last_scanned_height() < retained_floor {
                                     tracing::warn!(
-                                        "BTC wallet scan starts at retained floor {}; older history is unavailable",
+                                        "BTC wallet scan starts at retained floor {}; older history is unavailable. Set --btc-birthday to the wallet creation height to scan older funds.",
                                         retained_floor
+                                    );
+                                }
+                                if w.last_scanned_height() > w.best_height() {
+                                    tracing::warn!(
+                                        "BTC wallet birthday {} is above the current header tip {}; no funds will be scanned",
+                                        w.last_scanned_height(),
+                                        w.best_height()
                                     );
                                 }
                                 match w.scan_utxos_bip158(&mut peer, start).await {

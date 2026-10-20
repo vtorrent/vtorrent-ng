@@ -88,7 +88,9 @@ challenge the repairs and their remaining assumptions independently.
 - `vtorrent-btc/src/headers.rs` — header retention. Pruning is amortized with a
   1,024-header slack. The mainnet-scale test inserts 870,000 headers and keeps
   the retained store within 100,000 plus the slack. Review the retention bound
-  and the difficulty and scan contiguity assumptions.
+  and the difficulty and scan contiguity assumptions. Wallet scans clamp to the
+  retained floor; `--btc-birthday` sets an explicit creation height for older
+  funds.
 
 ### 3.4 Network & RPC boundary
 - `vtorrent-rpc/src/server.rs` — API-key auth (constant-time compare),

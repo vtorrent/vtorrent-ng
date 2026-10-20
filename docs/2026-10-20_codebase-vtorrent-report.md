@@ -297,7 +297,7 @@ with a permanent regression:
 | Finding | Status | Regression |
 | --- | --- | --- |
 | F01 bootstrap maturity | Fixed: exemption requires candidate height 2 | `test_bootstrap_age_exemption_does_not_extend_to_height3` |
-| F02 BTC retention boundary | Boundary fixed: retained floor remains scannable, partial ranges fail closed, and wallet scans clamp to the retained floor with a warning. Funds older than retained history still need a birthday/checkpoint design. | `test_hashes_from_retained_floor_returns_retained_range` |
+| F02 BTC retention boundary | Boundary fixed: retained floor remains scannable, partial ranges fail closed, and wallet scans clamp to the retained floor with a warning. `--btc-birthday` sets an explicit creation height for older funds. | `test_hashes_from_retained_floor_returns_retained_range` |
 | F03 empty torrent blocks | Fixed: empty payloads are rejected before mutation | `test_piece_assembler_rejects_empty_blocks` |
 | F04 uncompressed legacy keys | Fixed: pubkey comparison uses the record's compression form | `test_decrypt_private_key_accepts_compressed_and_uncompressed` |
 | F05 missing alert metrics | Fixed: best-peer height, BTC height/sync, and process RSS are exported | `metrics_export_alert_dependencies` |

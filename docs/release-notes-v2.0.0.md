@@ -144,7 +144,9 @@ paths.
   remain open.
 - BTC SPV header retention is bounded and tested at 870,000 headers. The active
   swap soak and separate maker and taker VTR node validation remain launch
-  gates because swaps are enabled at launch.
+  gates because swaps are enabled at launch. BTC wallet discovery defaults to
+  the retained floor; set `--btc-birthday` to the wallet creation height to
+  scan older funds.
 - A real-bitcoind reorged-out claim test is not covered. The settlement-state
   downgrade is covered by unit tests.
 - Cold proof reconstruction is unavailable beyond the retained undo window.

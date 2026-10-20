@@ -145,6 +145,14 @@ pub struct Cli {
     /// 100_000 keeps ~11 MiB of headers while covering both.
     #[arg(long, default_value_t = 100_000)]
     pub btc_header_retention: usize,
+
+    /// BTC block height at which the wallet was created.
+    ///
+    /// The SPV wallet scans from this height. Set it to the wallet's creation
+    /// height so funds older than the retained header window are still found.
+    /// Without it, the scan starts at the retained floor.
+    #[arg(long)]
+    pub btc_birthday: Option<u32>,
 }
 
 // ─── Startup Validation ──────────────────────────────────────────────────────

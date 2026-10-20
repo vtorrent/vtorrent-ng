@@ -77,6 +77,13 @@ retained store within 100,000 plus the 1,024-header slack.
   1,024-header slack. Pruning is amortized so the sync is not O(headers ×
   retention). The test passed in release mode in 17.39 s.
 
+## 4.1 Wallet birthday
+
+A fresh BTC wallet starts scanning at the retained header floor. Set
+`--btc-birthday <height>` to the wallet's creation height to scan older funds.
+The scan clamps to the retained floor and warns when the birthday is below it.
+Without a birthday, funds older than retained history are not discovered.
+
 ## 5. Acceptance criteria
 
 - RSS stable under the BTC-SPV budget across the window (headers at a steady
