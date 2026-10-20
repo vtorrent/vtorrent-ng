@@ -1,11 +1,11 @@
 use crate::state::AppState;
 use axum::extract::ws::{Message, WebSocket};
 use axum::{
-    extract::{State, WebSocketUpgrade},
-    http::HeaderMap,
+    extract::{Query, State, WebSocketUpgrade},
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 /// WebSocket event subscription endpoint for vTorrent RPC.
 ///
 /// Clients connect to `ws://127.0.0.1:22525/ws` and subscribe to one or more
@@ -160,28 +160,19 @@ impl EventBroadcaster {
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Response {
-    // Browsers cannot set custom headers on a WebSocket upgrade, so the API
-    // key is sent as a `Sec-WebSocket-Protocol` token. A query-string key is
-    // deliberately not accepted: query strings are commonly logged by proxies
-    // and tracing layers.
-    let mut selected_protocol = None;
-    if let Some(expected) = state.rpc_api_key.as_deref() {
-        let expected_protocol = format!("vtr-api-key.{}", hex::encode(expected.as_bytes()));
-        let provided = headers
-            .get("sec-websocket-protocol")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| {
-                value
-                    .split(',')
-                    .map(str::trim)
-                    .find(|protocol| *protocol == expected_protocol)
-            });
-        if provided.is_none() {
+    // The upgrade uses a single-use, short-lived token obtained from
+    // `POST /api/v1/ws-token` with the API key. The long-lived API key is not
+    // accepted in the URL or a header.
+    if state.rpc_api_key.is_some() {
+        let token = params.get("token").map(String::as_str).unwrap_or("");
+        let now = unix_now();
+        let mut tokens = state.ws_tokens.write().await;
+        let valid = tokens.remove(token).is_some_and(|expiry| expiry > now);
+        if !valid {
             return axum::http::StatusCode::UNAUTHORIZED.into_response();
         }
-        selected_protocol = Some(expected_protocol);
     }
     // Reject the upgrade when at capacity, before allocating a connection.
     let current = state
@@ -195,12 +186,36 @@ pub async fn ws_handler(
         )
             .into_response();
     }
-    let ws = if let Some(protocol) = selected_protocol {
-        ws.protocols([protocol])
-    } else {
-        ws
-    };
     ws.on_upgrade(move |socket| handle_ws_connection(socket, state))
+}
+
+/// Response for `POST /api/v1/ws-token`.
+#[derive(serde::Serialize)]
+pub struct WsTokenResponse {
+    pub token: String,
+    pub expires_at: u64,
+}
+
+/// Issue a single-use WebSocket token. The endpoint is protected by the API
+/// key; the token is valid for 60 seconds and is consumed by the upgrade.
+pub async fn create_ws_token(State(state): State<Arc<AppState>>) -> axum::Json<WsTokenResponse> {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let token = hex::encode(bytes);
+    let now = unix_now();
+    let expires_at = now.saturating_add(60);
+    let mut tokens = state.ws_tokens.write().await;
+    tokens.retain(|_, expiry| *expiry > now);
+    tokens.insert(token.clone(), expires_at);
+    axum::Json(WsTokenResponse { token, expires_at })
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 /// Handle a single WebSocket connection.

@@ -11,6 +11,7 @@ test-util = ["vtorrent-node/test-util"]
 
 [dependencies]
 vtorrent-core    = { path = "../vtorrent-core" }
+rand             = { workspace = true }
 vtorrent-node    = { path = "../vtorrent-node" }
 vtorrent-p2p     = { path = "../vtorrent-p2p" }
 vtorrent-wallet  = { path = "../vtorrent-wallet" }

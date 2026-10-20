@@ -615,9 +615,10 @@ API key. Both debug endpoints return 403 outside regtest after authentication.
 
 Upgrade to WebSocket for real-time events (new blocks, mempool txs, peer events).
 
-When an API key is configured, send it as a `Sec-WebSocket-Protocol` token:
-`vtr-api-key.<hex(api_key)>`. Query-string keys (`?api_key=`) are rejected so
-the key is not written to proxy or tracing logs.
+When an API key is configured, `POST /api/v1/ws-token` with the `X-API-Key`
+header to obtain a single-use token valid for 60 seconds, then connect to
+`/ws?token=<token>`. The API key itself is not accepted in the URL or a
+WebSocket header.
 
 ---
 

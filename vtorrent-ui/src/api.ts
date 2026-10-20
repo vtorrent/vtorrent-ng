@@ -81,18 +81,11 @@ export function camel(obj: any): any {
   return obj
 }
 
-/**
- * WebSocket auth subprotocol. Browsers cannot set custom headers on an
- * upgrade, so the API key is sent as a `Sec-WebSocket-Protocol` token instead
- * of a query string (which proxies and tracing layers commonly log).
- */
-export function wsProtocols(): string[] | undefined {
-  const key = getRpcApiKey()
-  if (!key) return undefined
-  const hex = Array.from(new TextEncoder().encode(key), b =>
-    b.toString(16).padStart(2, '0'),
-  ).join('')
-  return [`vtr-api-key.${hex}`]
+/** Obtain a single-use WebSocket token (60 s) using the REST API key. */
+export async function fetchWsToken(): Promise<string | null> {
+  if (!getRpcApiKey()) return null
+  const response = await rpcPost<{ token: string }>('/api/v1/ws-token', {})
+  return response.token
 }
 
 export const RPC_BASE = 'http://127.0.0.1:22525'

@@ -11,7 +11,7 @@
  * transparently falls back to polling so the UI never stalls.
  */
 
-import { camel, isTauri, RPC_BASE, rpcGet, tauriInvoke, wsProtocols } from '../api'
+import { camel, fetchWsToken, isTauri, RPC_BASE, rpcGet, tauriInvoke } from '../api'
 import { useState, useEffect, useCallback, useRef } from 'react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -119,10 +119,13 @@ export function useStakingStatus(_pollIntervalMs = 8_000): {
 
     let closedIntentionally = false
 
-    const connect = () => {
+    const connect = async () => {
       if (closedIntentionally || !mountedRef.current) return
       try {
-        const ws = new WebSocket(getWsUrl(), wsProtocols())
+        const token = await fetchWsToken()
+        if (closedIntentionally || !mountedRef.current) return
+        const url = token ? `${getWsUrl()}?token=${encodeURIComponent(token)}` : getWsUrl()
+        const ws = new WebSocket(url)
         wsRef.current = ws
 
         ws.onopen = () => {

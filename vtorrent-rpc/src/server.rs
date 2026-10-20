@@ -2,7 +2,7 @@ use crate::handlers::*;
 use crate::metrics::metrics_handler;
 use crate::ratelimit::ip_rate_limit;
 use crate::state::AppState;
-use crate::ws::ws_handler;
+use crate::ws::{create_ws_token, ws_handler};
 use axum::{
     extract::{Request, State},
     middleware::{self, Next},
@@ -99,6 +99,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/wallet/import", post(import_wallet))
         .route("/api/v1/wallet/send", post(send_vtr))
         .route("/api/v1/wallet/fund-cold-stake", post(fund_cold_stake))
+        .route("/api/v1/ws-token", post(create_ws_token))
         .route("/api/v1/wallet/unlock", post(unlock_wallet))
         .route("/api/v1/wallet/lock", post(lock_wallet))
         .route("/api/v1/wallet/balance", get(get_balance))

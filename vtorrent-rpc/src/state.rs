@@ -116,6 +116,9 @@ pub struct AppState {
     /// a script in this set, so a caller cannot redirect funds to an arbitrary
     /// cold key without first generating it through `create_cold_stake`.
     pub cold_stake_scripts: Arc<RwLock<std::collections::HashSet<Vec<u8>>>>,
+    /// Single-use, short-lived WebSocket tokens (token -> expiry Unix seconds).
+    /// Keeps the long-lived API key out of WebSocket URLs and headers.
+    pub ws_tokens: Arc<RwLock<std::collections::HashMap<String, u64>>>,
     /// Best block height reported by any connected peer (used for sync % calculation).
     pub best_peer_height: Arc<RwLock<u64>>,
     /// Channel for submitting locally-created transactions into the node's event loop.
@@ -189,6 +192,7 @@ impl AppState {
             wallet_totp_last_step: Arc::new(RwLock::new(None)),
             wallet_change_address: Arc::new(RwLock::new(None)),
             cold_stake_scripts: Arc::new(RwLock::new(std::collections::HashSet::new())),
+            ws_tokens: Arc::new(RwLock::new(std::collections::HashMap::new())),
             best_peer_height: Arc::new(RwLock::new(0)),
             tx_submit: None,
             block_submit: None,
@@ -248,6 +252,7 @@ impl AppState {
             wallet_totp_last_step: Arc::new(RwLock::new(None)),
             wallet_change_address: Arc::new(RwLock::new(None)),
             cold_stake_scripts: Arc::new(RwLock::new(std::collections::HashSet::new())),
+            ws_tokens: Arc::new(RwLock::new(std::collections::HashMap::new())),
             best_peer_height: Arc::new(RwLock::new(0)),
             tx_submit: None,
             block_submit: None,

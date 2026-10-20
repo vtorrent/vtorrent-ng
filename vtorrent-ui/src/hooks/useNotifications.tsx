@@ -6,7 +6,7 @@ import React, {
   useRef,
   useState,
 } from 'react'
-import { RPC_BASE, wsProtocols } from '../api'
+import { fetchWsToken, RPC_BASE } from '../api'
 
 // ─── Model ────────────────────────────────────────────────────────────────────
 
@@ -79,11 +79,13 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
     let ws: WebSocket | null = null
     let reconnect: ReturnType<typeof setTimeout> | null = null
 
-    const connect = () => {
+    const connect = async () => {
       if (closed) return
       try {
+        const token = await fetchWsToken()
+        if (closed) return
         const base = `${RPC_BASE.replace(/^http/, 'ws')}/ws`
-        ws = new WebSocket(base, wsProtocols())
+        ws = new WebSocket(token ? `${base}?token=${encodeURIComponent(token)}` : base)
         ws.onopen = () => {
           try {
             ws?.send(

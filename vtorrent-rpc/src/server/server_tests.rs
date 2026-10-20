@@ -1462,6 +1462,7 @@ async fn websocket_requires_api_key_when_configured() {
     let mut state = AppState::new();
     state.rpc_api_key = Some("test-key".into());
     let app = build_router(state);
+    let token_app = app.clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -1478,21 +1479,33 @@ async fn websocket_requires_api_key_when_configured() {
         tokio_tungstenite::connect_async(format!("ws://{address}/ws?api_key=test-key")).await;
     assert!(query.is_err(), "query-string API keys must be rejected");
 
-    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-    let mut request = format!("ws://{address}/ws").into_client_request().unwrap();
-    request.headers_mut().insert(
-        "Sec-WebSocket-Protocol",
-        tokio_tungstenite::tungstenite::http::HeaderValue::from_str(&format!(
-            "vtr-api-key.{}",
-            hex::encode("test-key")
-        ))
-        .unwrap(),
-    );
-    let authorized = tokio_tungstenite::connect_async(request).await;
+    let response = token_app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/ws-token")
+                .header("x-api-key", "test-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let token = body["token"].as_str().expect("token in response");
+
+    let authorized =
+        tokio_tungstenite::connect_async(format!("ws://{address}/ws?token={token}")).await;
     assert!(
         authorized.is_ok(),
         "authorized WebSocket upgrade must succeed"
     );
     drop(authorized);
+
+    let reuse = tokio_tungstenite::connect_async(format!("ws://{address}/ws?token={token}")).await;
+    assert!(reuse.is_err(), "WebSocket tokens must be single-use");
     server.abort();
 }
