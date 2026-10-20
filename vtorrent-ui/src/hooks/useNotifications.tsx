@@ -6,7 +6,7 @@ import React, {
   useRef,
   useState,
 } from 'react'
-import { RPC_BASE } from '../api'
+import { getRpcApiKey, RPC_BASE } from '../api'
 
 // ─── Model ────────────────────────────────────────────────────────────────────
 
@@ -82,7 +82,9 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
     const connect = () => {
       if (closed) return
       try {
-        ws = new WebSocket(`${RPC_BASE.replace(/^http/, 'ws')}/ws`)
+        const key = getRpcApiKey()
+        const base = `${RPC_BASE.replace(/^http/, 'ws')}/ws`
+        ws = new WebSocket(key ? `${base}?api_key=${encodeURIComponent(key)}` : base)
         ws.onopen = () => {
           try {
             ws?.send(

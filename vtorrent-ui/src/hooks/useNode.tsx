@@ -9,7 +9,7 @@
  * without a full page reload.
  */
 
-import { camel, isTauri, rpcDelete, rpcGet, rpcPost, tauriInvoke, RPC_BASE } from '../api'
+import { camel, getRpcApiKey, isTauri, rpcDelete, rpcGet, rpcPost, tauriInvoke, RPC_BASE } from '../api'
 import { useState, useEffect, useCallback, useRef } from 'react'
 
 // ─── Type declarations ────────────────────────────────────────────────────────
@@ -102,28 +102,28 @@ async function fetchNodeInfo(): Promise<NodeInfo> {
 
 async function fetchTransactions(limit = 20): Promise<TxRecord[]> {
   if (isTauri()) {
-    return tauriInvoke<TxRecord[]>('get_transactions', { limit })
+    return camel(await tauriInvoke<TxRecord[]>('get_transactions', { limit })) as TxRecord[]
   }
   return camel(await rpcGet<unknown[]>(`/api/v1/wallet/transactions?limit=${limit}`)) as TxRecord[]
 }
 
 async function fetchTorrentSessions(): Promise<TorrentSession[]> {
   if (isTauri()) {
-    return tauriInvoke<TorrentSession[]>('get_torrent_sessions')
+    return camel(await tauriInvoke<TorrentSession[]>('get_torrent_sessions')) as TorrentSession[]
   }
   return camel(await rpcGet<unknown[]>('/api/v1/torrent/sessions')) as TorrentSession[]
 }
 
 async function fetchDexOrders(): Promise<DexOrder[]> {
   if (isTauri()) {
-    return tauriInvoke<DexOrder[]>('get_dex_orders')
+    return camel(await tauriInvoke<DexOrder[]>('get_dex_orders')) as DexOrder[]
   }
   return camel(await rpcGet<unknown[]>('/api/v1/dex/orders')) as DexOrder[]
 }
 
 async function fetchStakingStatus(): Promise<StakingStatus> {
   if (isTauri()) {
-    return tauriInvoke<StakingStatus>('get_staking_status')
+    return camel(await tauriInvoke<StakingStatus>('get_staking_status')) as StakingStatus
   }
   return camel(await rpcGet<unknown>('/api/v1/staking/status')) as StakingStatus
 }
@@ -252,7 +252,11 @@ export function useStakingStatus(_intervalMs = 8_000): {
       }
     }
     let closedIntentionally = false
-    const getWsUrl = () => `${RPC_BASE.replace(/^http/, 'ws')}/ws`
+    const getWsUrl = () => {
+      const key = getRpcApiKey()
+      const base = `${RPC_BASE.replace(/^http/, 'ws')}/ws`
+      return key ? `${base}?api_key=${encodeURIComponent(key)}` : base
+    }
     const connect = () => {
       if (closedIntentionally || !mountedRef.current) return
       try {
@@ -325,7 +329,7 @@ export async function addTorrent(
   walletAddress: string,
 ): Promise<{ sessionId: string; infoHash: string; name: string }> {
   if (isTauri()) {
-    return tauriInvoke('add_torrent', { source, sourceType, walletAddress })
+    return camel(await tauriInvoke('add_torrent', { source, sourceType, walletAddress })) as { sessionId: string; infoHash: string; name: string }
   }
   return camel(
     await rpcPost<unknown>('/api/v1/torrent/add', {
@@ -406,7 +410,7 @@ export async function matchDexOrder(req: {
   otpCode?: string
 }): Promise<MatchOrderResult> {
   if (isTauri()) {
-    return tauriInvoke<MatchOrderResult>('match_dex_order', req)
+    return camel(await tauriInvoke<MatchOrderResult>('match_dex_order', req)) as MatchOrderResult
   }
   return camel(
     await rpcPost<unknown>('/api/v1/dex/match', {
@@ -424,7 +428,7 @@ export async function btcFund(req: {
   btcRefundAddress: string
 }): Promise<SwapActionResult> {
   if (isTauri()) {
-    return tauriInvoke<SwapActionResult>('btc_fund', req)
+    return camel(await tauriInvoke<SwapActionResult>('btc_fund', req)) as SwapActionResult
   }
   return camel(
     await rpcPost<unknown>('/api/v1/swap/btc-fund', {
@@ -442,7 +446,7 @@ export async function vtrClaim(req: {
   otpCode?: string
 }): Promise<SwapActionResult> {
   if (isTauri()) {
-    return tauriInvoke<SwapActionResult>('vtr_claim', req)
+    return camel(await tauriInvoke<SwapActionResult>('vtr_claim', req)) as SwapActionResult
   }
   return camel(
     await rpcPost<unknown>('/api/v1/swap/vtr-claim', {
@@ -457,7 +461,7 @@ export async function vtrClaim(req: {
 /** Claim BTC using the revealed preimage (maker). */
 export async function btcClaim(orderId: string): Promise<SwapActionResult> {
   if (isTauri()) {
-    return tauriInvoke<SwapActionResult>('btc_claim', { orderId })
+    return camel(await tauriInvoke<SwapActionResult>('btc_claim', { orderId })) as SwapActionResult
   }
   return camel(
     await rpcPost<unknown>('/api/v1/swap/btc-claim', { order_id: orderId })
@@ -467,7 +471,7 @@ export async function btcClaim(orderId: string): Promise<SwapActionResult> {
 /** Refund either side after expiry. */
 export async function swapRefund(orderId: string, leg?: 'vtr' | 'btc'): Promise<SwapActionResult> {
   if (isTauri()) {
-    return tauriInvoke<SwapActionResult>('swap_refund', { orderId, leg })
+    return camel(await tauriInvoke<SwapActionResult>('swap_refund', { orderId, leg })) as SwapActionResult
   }
   return camel(
     await rpcPost<unknown>('/api/v1/swap/refund', { order_id: orderId, leg })
@@ -556,7 +560,7 @@ export async function stopStaking(): Promise<void> {
 /** Check the claimable balance for a legacy address. */
 export async function checkLegacyClaim(legacyAddress: string): Promise<ClaimCheckResult> {
   if (isTauri()) {
-    return tauriInvoke<ClaimCheckResult>('check_legacy_claim', { legacyAddress })
+    return camel(await tauriInvoke<ClaimCheckResult>('check_legacy_claim', { legacyAddress })) as ClaimCheckResult
   }
   return camel(
     await rpcPost<unknown>('/api/v1/claim/check', { legacy_address: legacyAddress })
@@ -569,10 +573,10 @@ export async function submitLegacyClaim(
   recipientAddress: string,
 ): Promise<ClaimSubmitResult> {
   if (isTauri()) {
-    return tauriInvoke<ClaimSubmitResult>('submit_legacy_claim', {
+    return camel(await tauriInvoke<ClaimSubmitResult>('submit_legacy_claim', {
       wifPrivateKey,
       recipientAddress,
-    })
+    })) as ClaimSubmitResult
   }
   return camel(
     await rpcPost<unknown>('/api/v1/claim/submit', {
@@ -602,7 +606,7 @@ export interface EarningsSummary {
 /** Unified earnings: staking rewards + torrent incentives + swap activity. */
 export async function getEarningsSummary(window = '30d'): Promise<EarningsSummary> {
   if (isTauri()) {
-    return tauriInvoke<EarningsSummary>('get_earnings_summary', { window })
+    return camel(await tauriInvoke<EarningsSummary>('get_earnings_summary', { window })) as EarningsSummary
   }
   return camel(
     await rpcGet<unknown>(`/api/v1/earnings/summary?window=${encodeURIComponent(window)}`)
@@ -623,7 +627,7 @@ export async function createPaymentRequest(req: {
   message?: string
 }): Promise<PaymentRequest> {
   if (isTauri()) {
-    return tauriInvoke<PaymentRequest>('create_payment_request', req)
+    return camel(await tauriInvoke<PaymentRequest>('create_payment_request', req)) as PaymentRequest
   }
   return camel(
     await rpcPost<unknown>('/api/v1/wallet/payment-request', {
@@ -647,7 +651,7 @@ export interface ColdStakeKeys {
 /** Generate a P2CS cold-staking key pair (stateless; spending key not stored). */
 export async function createColdStake(locktime = 0): Promise<ColdStakeKeys> {
   if (isTauri()) {
-    return tauriInvoke<ColdStakeKeys>('create_cold_stake', { locktime })
+    return camel(await tauriInvoke<ColdStakeKeys>('create_cold_stake', { locktime })) as ColdStakeKeys
   }
   return camel(
     await rpcPost<unknown>('/api/v1/wallet/cold-stake', { locktime })
@@ -680,12 +684,12 @@ export interface GovernanceProposal {
 }
 
 export async function getGovernanceParams(): Promise<GovernanceParams> {
-  if (isTauri()) return tauriInvoke<GovernanceParams>('get_governance_params')
+  if (isTauri()) return camel(await tauriInvoke<GovernanceParams>('get_governance_params')) as GovernanceParams
   return camel(await rpcGet<unknown>('/api/v1/governance/params')) as GovernanceParams
 }
 
 export async function getGovernanceProposals(): Promise<{ tipHeight: number; proposals: GovernanceProposal[] }> {
-  if (isTauri()) return tauriInvoke('get_governance_proposals')
+  if (isTauri()) return camel(await tauriInvoke('get_governance_proposals')) as { tipHeight: number; proposals: GovernanceProposal[] }
   return camel(await rpcGet<unknown>('/api/v1/governance/proposals')) as { tipHeight: number; proposals: GovernanceProposal[] }
 }
 
@@ -700,7 +704,7 @@ export interface SwapDeadline {
 }
 
 export async function getSwapDeadlines(): Promise<SwapDeadline[]> {
-  if (isTauri()) return tauriInvoke<SwapDeadline[]>('get_swap_deadlines')
+  if (isTauri()) return camel(await tauriInvoke<SwapDeadline[]>('get_swap_deadlines')) as SwapDeadline[]
   return camel(
     await rpcGet<unknown>('/api/v1/swap/deadlines'),
   ).deadlines as SwapDeadline[]

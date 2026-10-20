@@ -49,6 +49,7 @@ tempfile = { workspace = true }
 tracing = "0.1"
 
 [dev-dependencies]
+tokio-tungstenite = "0.24"
 vtorrent-node = { path = "../vtorrent-node", features = ["test-util"] }
 tokio = { version = "1", features = ["full", "test-util"] }
 tower = { version = "0.4", features = ["util"] }

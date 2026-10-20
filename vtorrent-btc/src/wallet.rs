@@ -294,6 +294,11 @@ impl BtcWallet {
         self.headers.lock().best_height()
     }
 
+    /// Oldest BTC height still available for scanning.
+    pub fn retained_floor(&self) -> u32 {
+        self.headers.lock().retained_floor()
+    }
+
     /// Freshly scan a swap contract, without trusting the persisted wallet UTXO cache.
     pub async fn verify_swap_funding(
         &self,

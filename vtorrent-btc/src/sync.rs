@@ -598,6 +598,8 @@ impl BtcSync {
     pub async fn scan_utxos_bip158(&self, peer: &mut BtcPeer, start_height: u32) -> Result<usize> {
         use bitcoin::bip158::BlockFilter;
 
+        let retained_floor = self.headers.lock().retained_floor();
+        let start_height = start_height.max(retained_floor);
         let hashes: Vec<[u8; 32]> = self.headers.lock().hashes_from(start_height);
         if hashes.is_empty() {
             return Ok(0);

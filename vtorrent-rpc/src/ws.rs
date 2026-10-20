@@ -1,10 +1,11 @@
 use crate::state::AppState;
 use axum::extract::ws::{Message, WebSocket};
 use axum::{
-    extract::{State, WebSocketUpgrade},
+    extract::{Query, State, WebSocketUpgrade},
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 /// WebSocket event subscription endpoint for vTorrent RPC.
 ///
 /// Clients connect to `ws://127.0.0.1:22525/ws` and subscribe to one or more
@@ -156,7 +157,20 @@ impl EventBroadcaster {
 }
 
 /// WebSocket upgrade handler — upgrades an HTTP connection to a WebSocket.
-pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> Response {
+pub async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    // Browsers cannot set custom headers on a WebSocket upgrade, so the API
+    // key is supplied as a query parameter. Without this check the public
+    // event stream exposes peer addresses and staking reward addresses even
+    // when the REST API is key-protected.
+    if let Some(expected) = state.rpc_api_key.as_deref() {
+        if params.get("api_key").map(String::as_str) != Some(expected) {
+            return axum::http::StatusCode::UNAUTHORIZED.into_response();
+        }
+    }
     // Reject the upgrade when at capacity, before allocating a connection.
     let current = state
         .events

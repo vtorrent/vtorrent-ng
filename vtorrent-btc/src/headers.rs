@@ -273,6 +273,16 @@ impl HeaderChain {
         self.best_height
     }
 
+    /// Oldest height still retained after pruning. Retention zero means
+    /// unbounded history, so the floor is genesis.
+    pub fn retained_floor(&self) -> u32 {
+        if self.retention == 0 {
+            0
+        } else {
+            self.best_height.saturating_sub(self.retention as u32)
+        }
+    }
+
     pub fn best_hash(&self) -> Option<[u8; 32]> {
         self.best_hash
     }
@@ -561,6 +571,7 @@ mod tests {
                 .unwrap();
         }
         chain.set_retention(2);
+        assert_eq!(chain.retained_floor(), 4);
         assert_eq!(
             chain.hashes_from(4).len(),
             3,

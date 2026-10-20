@@ -118,8 +118,16 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Resolve benchmark baseline
+        id: baseline
+        run: |
+          ref="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -z "$ref" ] || [ "$ref" = "0000000000000000000000000000000000000000" ]; then
+            ref="HEAD^"
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
       - name: Run benchmark gate
-        run: bash scripts/bench-gate.sh --compare-ref "${{ github.event.pull_request.base.sha || github.event.before }}"
+        run: bash scripts/bench-gate.sh --compare-ref "${{ steps.baseline.outputs.ref }}"
 
   # ─── Frontend lint and tests ────────────────────────────────────────────────
   frontend:

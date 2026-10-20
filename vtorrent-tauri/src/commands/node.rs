@@ -12,7 +12,7 @@ pub struct NodeInfoResult {
     pub version: String,
     pub network: String,
     pub block_height: u64,
-    pub best_hash: String,
+    pub best_block_hash: String,
     pub connections: usize,
     pub syncing: bool,
     pub sync_percent: f64,
@@ -143,8 +143,7 @@ pub async fn start_node(
             bitcoin::Network::Bitcoin,
             utxo_path.clone(),
         ) {
-            Ok(mut wallet) => {
-                wallet.set_last_scanned_height(wallet.best_height().saturating_add(1));
+            Ok(wallet) => {
                 *rpc_state.btc_wallet.write().await = Some(wallet);
                 tracing::info!(
                     "BTC wallet loaded with UTXO persistence: {}",
@@ -234,7 +233,7 @@ pub async fn get_node_info(state: tauri::State<'_, AppState>) -> Result<NodeInfo
             version: env!("CARGO_PKG_VERSION").into(),
             network: "vtorrent-mainnet".into(),
             block_height: 0,
-            best_hash: String::new(),
+            best_block_hash: String::new(),
             connections: 0,
             syncing: false,
             sync_percent: 0.0,
@@ -267,7 +266,7 @@ pub async fn get_node_info(state: tauri::State<'_, AppState>) -> Result<NodeInfo
                 running: true,
                 version: env!("CARGO_PKG_VERSION").into(),
                 block_height: height as u64,
-                best_hash,
+                best_block_hash: best_hash,
                 connections: peer_count,
                 syncing,
                 sync_percent: sync_pct,

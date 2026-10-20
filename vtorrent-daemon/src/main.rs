@@ -976,10 +976,17 @@ async fn main() -> anyhow::Result<()> {
                             // connection) must be resumed on the next cycle,
                             // never skipped over.
                             loop {
-                                let start = w.last_scanned_height();
+                                let retained_floor = w.retained_floor();
+                                let start = w.last_scanned_height().max(retained_floor);
                                 let tip = w.best_height();
                                 if start > tip {
                                     break;
+                                }
+                                if w.last_scanned_height() < retained_floor {
+                                    tracing::warn!(
+                                        "BTC wallet scan starts at retained floor {}; older history is unavailable",
+                                        retained_floor
+                                    );
                                 }
                                 match w.scan_utxos_bip158(&mut peer, start).await {
                                     Ok(0) => break,

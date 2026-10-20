@@ -1456,3 +1456,30 @@ async fn metrics_export_alert_dependencies() {
         );
     }
 }
+
+#[tokio::test]
+async fn websocket_requires_api_key_when_configured() {
+    let mut state = AppState::new();
+    state.rpc_api_key = Some("test-key".into());
+    let app = build_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let missing = tokio_tungstenite::connect_async(format!("ws://{address}/ws")).await;
+    assert!(
+        missing.is_err(),
+        "unauthenticated WebSocket upgrade must be rejected"
+    );
+
+    let authorized =
+        tokio_tungstenite::connect_async(format!("ws://{address}/ws?api_key=test-key")).await;
+    assert!(
+        authorized.is_ok(),
+        "authorized WebSocket upgrade must succeed"
+    );
+    drop(authorized);
+    server.abort();
+}

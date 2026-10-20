@@ -41,8 +41,8 @@ if [[ "${1:-}" == "--save" ]]; then
 fi
 
 if [[ "${1:-}" == "--compare-ref" ]]; then
-    if [[ -z "${2:-}" ]]; then
-        echo "--compare-ref requires a Git revision"
+    if [[ -z "${2:-}" || "$2" =~ ^0+$ ]]; then
+        echo "--compare-ref requires a real Git revision"
         exit 2
     fi
 
