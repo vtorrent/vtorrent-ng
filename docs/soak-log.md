@@ -2024,9 +2024,12 @@ topic.
 This window validates the review-fix build under regtest fast-stake. It does
 not activate governance, schedule a deployment, or replace the external
 security review. Desktop chain persistence was added; the desktop parity items
-are code-complete, with runtime validation pending. The `--btc-birthday` flag
-is in the source after the core soak image; BTC SPV is disabled on the fleet,
-so the flag is not exercised by this window.
+are code-complete, with runtime validation pending. The adversarial review's
+cold-stake authorization/burn checks, BTC scan alignment, v3 notfound decoding,
+and desktop persistence hardening are after the core soak image. P2SH-wrapped
+P2CS staking support remains open. The `--btc-birthday` flag is in the source
+after the core soak image; BTC SPV is disabled on the fleet, so the flag is not
+exercised by this window.
 ## 2026-10-20 — daily observation (window +0h)
 
 Read-only check at `2026-10-20T13:53Z` (window start `2026-10-20T13:51:39Z`).

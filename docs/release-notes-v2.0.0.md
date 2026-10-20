@@ -137,8 +137,9 @@ paths.
   upgrade.
 - The core soak fleet runs `batch-669ee36`. The release build includes the BTC
   wallet birthday flag, desktop commands, desktop health-field updates, the
-  shared BTC sync loop, and desktop chain persistence and must be rebuilt from
-  `26fec4b`. The fresh soak window started 2026-10-20T13:51:39Z.
+  shared BTC sync loop, desktop chain persistence, and the cold-stake/BTC/
+  compact-block/desktop hardening from the adversarial review and must be
+  rebuilt from `a5347a2`. The fresh soak window started 2026-10-20T13:51:39Z.
 
 ## Known limitations
 
@@ -158,6 +159,10 @@ paths.
 - The proof admission budget bounds request counts, not CPU milliseconds.
 - Desktop chain persistence was added. Desktop restart, real peer status, BTC
   funding discovery, and two-node propagation still need a runtime test.
+- P2SH-wrapped P2CS UTXOs are protected against hot-key theft but are still
+  not stakeable; the wallet-generated cold-stake address does not yet work for
+  staking.
+- The WebSocket API key is still accepted in the query string.
 
 ## Checksums
 

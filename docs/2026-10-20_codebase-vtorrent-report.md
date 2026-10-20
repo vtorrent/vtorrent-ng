@@ -219,8 +219,9 @@ this review; earlier passing-suite claims are not used to dismiss these probes.
   actual two-node transaction propagation. The missing Tauri commands for
   governance, earnings, payment requests, and swap deadlines, the desktop
   health-field updates, the shared BTC sync loop, and desktop chain
-  store replay/persistence were added. Desktop restart, real peer status, BTC
-  funding discovery, and two-node propagation still need a runtime test.
+  store replay/persistence were added. The adversarial review then added the
+  desktop data-directory/network/lag fixes. Desktop restart, real peer status,
+  BTC funding discovery, and two-node propagation still need a runtime test.
 
 ### F09. Several frontend IPC contracts do not match serialized Rust results
 
@@ -320,10 +321,12 @@ RPC 148; frontend lint, 16 tests, and production build; workspace formatting
 and strict all-feature Clippy pass; the live soak observer exits 0 with the
 hardened checks. The fleet was rebuilt to `vtorrent/node:batch-669ee36` (code
 `669ee36`) and a fresh soak window started at 2026-10-20T13:51:39Z. The review
-candidate `26fec4b` adds the BTC wallet birthday flag, the desktop
+candidate `a5347a2` adds the BTC wallet birthday flag, the desktop
 governance/earnings/payment/deadline commands, desktop health-field updates,
-the shared BTC sync loop, and desktop chain persistence. The review probes
-under `docs/review-probes/` are historical evidence for the reviewed revision.
+the shared BTC sync loop, desktop chain persistence, and the cold-stake/BTC/
+compact-block/desktop hardening. The adversarial review is in
+`docs/security-review-independent-2026-10-20.md`; its probes are under
+`docs/review-probes/security-2026-10-20/`.
 
 ## Review limits and self-assessment
 
