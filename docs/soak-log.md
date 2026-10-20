@@ -2026,8 +2026,11 @@ not activate governance, schedule a deployment, or replace the external
 security review. Desktop chain persistence was added; the desktop parity items
 are code-complete, with runtime validation pending. The adversarial review's
 cold-stake authorization/burn checks, BTC scan alignment, v3 notfound decoding,
-and desktop persistence hardening are after the core soak image. Cold-stake
-funding now pays the raw P2CS script; the P2SH label is not stakeable. The `--btc-birthday` flag is in the source
+and desktop persistence hardening are after the core soak image. The round-2
+review removed the P2SH-hash-as-P2PKH burn address, bound cold-stake funding to
+scripts generated in the session, added desktop cold-stake commands,
+network-scoped the BTC UTXO file, and fixed the output-size fee estimate.
+Cold-stake funding pays the raw P2CS script. The `--btc-birthday` flag is in the source
 after the core soak image; BTC SPV is disabled on the fleet, so the flag is not
 exercised by this window.
 ## 2026-10-20 — daily observation (window +0h)

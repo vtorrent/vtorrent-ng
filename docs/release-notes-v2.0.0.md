@@ -139,7 +139,7 @@ paths.
   wallet birthday flag, desktop commands, desktop health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake/BTC/
   compact-block/desktop hardening from the adversarial review and must be
-  rebuilt from `6a18fc3`. The fresh soak window started 2026-10-20T13:51:39Z.
+  rebuilt from `ada05ac`. The fresh soak window started 2026-10-20T13:51:39Z.
 
 ## Known limitations
 
@@ -159,8 +159,10 @@ paths.
 - The proof admission budget bounds request counts, not CPU milliseconds.
 - Desktop chain persistence was added. Desktop restart, real peer status, BTC
   funding discovery, and two-node propagation still need a runtime test.
-- Cold-stake funding uses the raw P2CS script via `fund_cold_stake`; the P2SH
-  label address is not stakeable and must not be used as a funding address.
+- Cold-stake funding uses the raw P2CS script via `fund_cold_stake`; the
+  P2SH-hash-as-P2PKH burn address was removed from the API/UI.
+- The WebSocket subprotocol still carries the API key in a header.
+- The BTC scan still skips up to 999 retained blocks, now with a warning.
 
 ## Checksums
 
