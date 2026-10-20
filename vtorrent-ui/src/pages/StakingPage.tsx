@@ -4,7 +4,8 @@ import {
   CheckCircle, AlertCircle, Info,
 } from 'lucide-react'
 import { formatVTR, useWallet } from '../hooks/useWallet'
-import { useStakingStatus, startStaking, stopStaking, useNodeInfo, createColdStake, type ColdStakeKeys } from '../hooks/useNode'
+import { useStakingStatus, startStaking, stopStaking, useNodeInfo, createColdStake, fundColdStake, type ColdStakeKeys } from '../hooks/useNode'
+import { isTauri } from '../api'
 import { stakingStartError } from '../utils/stakingOps'
 import HealthStrip from '../components/staking/HealthStrip'
 import RewardHistory from '../components/staking/RewardHistory'
@@ -305,16 +306,40 @@ function ColdStakePanel() {
   const [keys, setKeys] = useState<ColdStakeKeys | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [amount, setAmount] = useState('')
+  const [passphrase, setPassphrase] = useState('')
+  const [funding, setFunding] = useState(false)
+  const [txid, setTxid] = useState<string | null>(null)
 
   const generate = async () => {
     setBusy(true)
     setError(null)
+    setTxid(null)
     try {
       setKeys(await createColdStake(0))
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
+    }
+  }
+
+  const fund = async () => {
+    if (!keys) return
+    const sats = Math.round(parseFloat(amount) * 100_000_000)
+    if (!Number.isFinite(sats) || sats <= 0) {
+      setError('Enter a positive VTR amount')
+      return
+    }
+    setFunding(true)
+    setError(null)
+    setTxid(null)
+    try {
+      setTxid(await fundColdStake(keys.scriptPubkey, sats, passphrase))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setFunding(false)
     }
   }
 
@@ -336,8 +361,12 @@ function ColdStakePanel() {
       {keys && (
         <div className="space-y-2 text-xs">
           <div>
-            <div className="text-gray-500">P2CS address (fund this)</div>
-            <div className="font-mono text-vtorrent-300 break-all">{keys.address}</div>
+            <div className="text-gray-500">P2CS script (fund this)</div>
+            <div className="font-mono text-vtorrent-300 break-all">{keys.scriptPubkey}</div>
+          </div>
+          <div>
+            <div className="text-gray-500">Script hash</div>
+            <div className="font-mono text-gray-400 break-all">{keys.scriptHash}</div>
           </div>
           <div>
             <div className="text-gray-500">Staking key (hot — give to the staking node)</div>
@@ -349,6 +378,31 @@ function ColdStakePanel() {
           </div>
           <p className="text-red-400">
             The spending key is not stored by this node. Save it offline now.
+          </p>
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <input
+              value={amount}
+              onChange={e => setAmount(e.target.value)}
+              placeholder="Amount (VTR)"
+              className="input-field text-xs"
+            />
+            {!isTauri() && (
+              <input
+                type="password"
+                value={passphrase}
+                onChange={e => setPassphrase(e.target.value)}
+                placeholder="Wallet passphrase"
+                className="input-field text-xs"
+              />
+            )}
+            <button onClick={fund} disabled={funding} className="btn-secondary text-xs">
+              {funding ? 'Funding…' : 'Fund cold stake'}
+            </button>
+          </div>
+          {txid && <p className="text-emerald-400 break-all">Funding txid: {txid}</p>}
+          <p className="text-gray-500">
+            The old P2SH label is not stakeable. Fund the raw script above; do not
+            send to the label with a generic send.
           </p>
         </div>
       )}

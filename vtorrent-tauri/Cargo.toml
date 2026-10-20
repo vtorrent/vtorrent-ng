@@ -24,6 +24,7 @@ vtorrent-core    = { path = "../vtorrent-core" }
 vtorrent-migrate = { path = "../vtorrent-migrate" }
 vtorrent-wallet  = { path = "../vtorrent-wallet" }
 vtorrent-wallet-service = { path = "../vtorrent-wallet-service" }
+vtorrent-script  = { path = "../vtorrent-script" }
 vtorrent-node    = { path = "../vtorrent-node" }
 vtorrent-rpc     = { path = "../vtorrent-rpc" }
 vtorrent-store = { path = "../vtorrent-store" }

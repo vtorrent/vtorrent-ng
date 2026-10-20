@@ -71,11 +71,9 @@ pub struct WalletData {
     pub last_modified: u64,
 }
 
-/// A cold-staking key pair and its P2CS script/address.
+/// A cold-staking key pair and its raw P2CS script.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColdStakeKeys {
-    /// The P2CS (P2SH-wrapped) address to fund.
-    pub address: String,
     /// The hot staking key (WIF) — export to the staking node.
     pub staking_wif: zeroize::Zeroizing<String>,
     /// The cold spending key (WIF) — keep offline.
@@ -105,12 +103,8 @@ pub fn generate_cold_stake_keys(locktime: u32, label: Option<&str>) -> Result<Co
     );
     let script = vtorrent_script::standard::build_p2cs(&staking_hash, &spending_hash, locktime)
         .map_err(|e| WalletError::KeyGeneration(format!("P2CS build failed: {e}")))?;
-    // The P2CS address is the P2SH of the redeem script (standard wrapping).
-    let script_hash = vtorrent_core::crypto::hash160(script.as_bytes());
-    let address = Address::from_hash160(&script_hash, mainnet::PUBKEY_ADDRESS_PREFIX)?.to_string();
 
     Ok(ColdStakeKeys {
-        address,
         staking_wif: staking.to_wif(mainnet::SECRET_KEY_PREFIX).into(),
         spending_wif: spending.to_wif(mainnet::SECRET_KEY_PREFIX).into(),
         script_pubkey: script.as_bytes().to_vec(),
@@ -702,6 +696,6 @@ mod tests {
         assert_ne!(*keys.staking_wif, *keys.spending_wif);
         // The pair is recorded on the wallet.
         assert_eq!(w.data.cold_stake.len(), 1);
-        assert_eq!(w.data.cold_stake[0].address, keys.address);
+        assert_eq!(w.data.cold_stake[0].script_pubkey, keys.script_pubkey);
     }
 }

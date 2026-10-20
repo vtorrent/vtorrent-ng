@@ -28,6 +28,8 @@ fn main() {
             // Transactions
             commands::get_transactions,
             commands::send_vtr,
+            commands::create_cold_stake,
+            commands::fund_cold_stake,
             // Torrent sessions
             commands::get_torrent_sessions,
             commands::add_torrent,
