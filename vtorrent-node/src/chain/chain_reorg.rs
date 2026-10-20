@@ -12,6 +12,110 @@ use vtorrent_script::{Engine, Script, ScriptEnv};
 
 use super::{compute_supply_delta, AppliedForkBlock, Chain, RolledBackBlock, Utxo};
 
+/// Return the P2CS script governing a spend: the UTXO script itself when it is
+/// a raw P2CS, or the redeem script revealed in the scriptSig when the UTXO is
+/// P2SH-wrapped P2CS.
+fn p2cs_redeem_script(utxo_script: &[u8], script_sig: &[u8]) -> Option<Vec<u8>> {
+    let script = Script::from_bytes(utxo_script.to_vec()).ok()?;
+    match vtorrent_script::classify_script(&script) {
+        vtorrent_script::ScriptType::P2CS { .. } => Some(utxo_script.to_vec()),
+        vtorrent_script::ScriptType::P2SH => {
+            let sig = Script::from_bytes(script_sig.to_vec()).ok()?;
+            let redeem = sig
+                .iter()
+                .filter_map(|item| match item {
+                    vtorrent_script::script::ScriptItem::PushData(data) => Some(data),
+                    _ => None,
+                })
+                .last()?;
+            let redeem_script = Script::from_bytes(redeem.to_vec()).ok()?;
+            matches!(
+                vtorrent_script::classify_script(&redeem_script),
+                vtorrent_script::ScriptType::P2CS { .. }
+            )
+            .then(|| redeem.to_vec())
+        }
+        _ => None,
+    }
+}
+
+/// A non-coinstake spend of a P2CS UTXO must be authorized by the cold
+/// spending key. The P2CS script's hot branch is otherwise usable by any
+/// transaction, which would let the online staking key steal delegated funds.
+///
+/// The scriptSig shape is `<sig> <pubkey> <selector>` for a raw P2CS UTXO and
+/// `<sig> <pubkey> <selector> <redeem_script>` for a P2SH-wrapped one. Checking
+/// the spending-key signature directly is independent of how the selector is
+/// encoded.
+fn p2cs_cold_spend_authorized(tx: &Transaction, input_index: usize, utxo: &Utxo) -> bool {
+    let Some(p2cs_script) =
+        p2cs_redeem_script(&utxo.script_pubkey, &tx.inputs[input_index].script_sig)
+    else {
+        return false;
+    };
+    let Ok(script) = Script::from_bytes(p2cs_script) else {
+        return false;
+    };
+    let vtorrent_script::ScriptType::P2CS {
+        spending_hash,
+        locktime,
+        ..
+    } = vtorrent_script::classify_script(&script)
+    else {
+        return false;
+    };
+    if tx.lock_time < locktime {
+        return false;
+    }
+    let Ok(script_sig) = Script::from_bytes(tx.inputs[input_index].script_sig.clone()) else {
+        return false;
+    };
+    let mut pushes: Vec<&[u8]> = script_sig
+        .iter()
+        .filter_map(|item| match item {
+            vtorrent_script::script::ScriptItem::PushData(data) => Some(data),
+            _ => None,
+        })
+        .collect();
+    let is_p2sh = Script::from_bytes(utxo.script_pubkey.clone())
+        .ok()
+        .map(|s| {
+            matches!(
+                vtorrent_script::classify_script(&s),
+                vtorrent_script::ScriptType::P2SH
+            )
+        })
+        .unwrap_or(false);
+    if is_p2sh {
+        // The last push is the redeem script, not part of the signature stack.
+        pushes.pop();
+    }
+    if pushes.len() < 3 {
+        return false;
+    }
+    let sig = pushes[pushes.len() - 3];
+    let pubkey = pushes[pushes.len() - 2];
+    if vtorrent_core::crypto::hash160(pubkey) != spending_hash {
+        return false;
+    }
+    let Some((sighash_type, der)) = sig.split_last() else {
+        return false;
+    };
+    if *sighash_type != 0x01 {
+        return false;
+    }
+    let Ok(sig) = secp256k1::ecdsa::Signature::from_der(der) else {
+        return false;
+    };
+    let Ok(pubkey) = secp256k1::PublicKey::from_slice(pubkey) else {
+        return false;
+    };
+    let msg = secp256k1::Message::from_digest(tx.sighash(input_index, &utxo.script_pubkey));
+    secp256k1::Secp256k1::verification_only()
+        .verify_ecdsa(&msg, &sig, &pubkey)
+        .is_ok()
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum UtxoChange {
     Added { key: ([u8; 32], u32) },
@@ -483,6 +587,22 @@ fn apply_transaction_journaled(
                             e
                         ))
                     })?;
+
+                    // The P2CS hot branch is valid script-wise for any
+                    // transaction. Only a coinstake may use it; every other
+                    // spend must be authorized by the cold spending key.
+                    if !tx.is_coinstake()
+                        && p2cs_redeem_script(
+                            &utxo.script_pubkey,
+                            &tx.inputs[input_index].script_sig,
+                        )
+                        .is_some()
+                        && !p2cs_cold_spend_authorized(tx, input_index, &utxo)
+                    {
+                        return Err(NodeError::InvalidTransaction(
+                            "P2CS spend must be authorized by the cold spending key".into(),
+                        ));
+                    }
                 }
 
                 if tx.is_coinstake() && input_index == 0 {
@@ -667,13 +787,37 @@ fn apply_transaction_journaled(
         // outputs. Otherwise the hot staking key could pay 1 satoshi back to
         // the P2CS script and redirect the entire stake (and the reward) to
         // itself. The empty marker output (value 0) is exempt.
-        let redirected = crate::block::p2cs_redirected_value(&staked.script_pubkey, &tx.outputs);
-        if redirected > 0 {
-            return Err(NodeError::InvalidTransaction(format!(
-                "P2CS coinstake must re-lock all value to the same cold-stake script; \
-                 {} satoshis were redirected elsewhere",
-                redirected
-            )));
+        if let Some(p2cs_script) =
+            p2cs_redeem_script(&staked.script_pubkey, &tx.inputs[0].script_sig)
+        {
+            let redirected = crate::block::p2cs_redirected_value_with_redeem(
+                &staked.script_pubkey,
+                &p2cs_script,
+                &tx.outputs,
+            );
+            if redirected > 0 {
+                return Err(NodeError::InvalidTransaction(format!(
+                    "P2CS coinstake must re-lock all value to the same cold-stake script; \
+                     {} satoshis were redirected elsewhere",
+                    redirected
+                )));
+            }
+            // R1 also forbids destroying the principal: a coinstake that
+            // returns only 1 satoshi to the P2CS script redirects nothing, but
+            // burns the delegated funds. Require at least the staked value to
+            // be re-locked.
+            let relocked = tx
+                .outputs
+                .iter()
+                .filter(|o| o.value > 0 && o.script_pubkey == staked.script_pubkey)
+                .map(|o| o.value)
+                .fold(0u64, u64::saturating_add);
+            if relocked < staked.value {
+                return Err(NodeError::InvalidTransaction(format!(
+                    "P2CS coinstake re-locks {} satoshis below the staked value {}",
+                    relocked, staked.value
+                )));
+            }
         }
     }
 

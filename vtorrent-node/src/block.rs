@@ -359,7 +359,18 @@ pub fn is_utxo_eligible(output: &crate::block::TxOutput, tx: &Transaction, heigh
 /// returns 0 (the rule does not apply). See
 /// `docs/cold-staking-p2cs-design.md`.
 pub fn p2cs_redirected_value(staked_script: &[u8], outputs: &[TxOutput]) -> u64 {
-    let Ok(script) = vtorrent_script::Script::from_bytes(staked_script.to_vec()) else {
+    p2cs_redirected_value_with_redeem(staked_script, staked_script, outputs)
+}
+
+/// Like [`p2cs_redirected_value`], but classifies `p2cs_script` (the redeem
+/// script for a P2SH-wrapped P2CS UTXO) while comparing outputs against
+/// `staked_script` (the UTXO's actual scriptPubKey).
+pub fn p2cs_redirected_value_with_redeem(
+    staked_script: &[u8],
+    p2cs_script: &[u8],
+    outputs: &[TxOutput],
+) -> u64 {
+    let Ok(script) = vtorrent_script::Script::from_bytes(p2cs_script.to_vec()) else {
         return 0;
     };
     if !matches!(

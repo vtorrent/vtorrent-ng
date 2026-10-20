@@ -26,7 +26,9 @@ fn utxo(byte: u8) -> Utxo {
         txid: [byte; 32],
         vout: 0,
         value: 100 * COIN,
-        height: 1,
+        // The fixture stake must predate the proposal (created at height 1):
+        // the origin-height rule rejects same-height stake.
+        height: 0,
         timestamp: NOW - MIN_STAKE_AGE as u32,
         script_pubkey: vtorrent_script::standard::build_p2pkh(&pk_hash(byte))
             .unwrap()
