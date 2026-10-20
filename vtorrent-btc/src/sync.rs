@@ -146,6 +146,24 @@ pub struct BtcSync {
     swap_scan: Mutex<Option<swap_observation::SwapScanTracker>>,
 }
 
+/// Align a scan start so the compact-filter checkpoint anchor is inside the
+/// retained header range. A checkpoint below the retained floor makes
+/// `hashes_from` return a short range and the scan fails closed.
+fn align_scan_start(start_height: u32, retained_floor: u32) -> u32 {
+    let start = start_height.max(retained_floor);
+    let checkpoint = start
+        .saturating_sub(1)
+        .checked_div(CHECKPOINT_INTERVAL)
+        .unwrap_or(0)
+        * CHECKPOINT_INTERVAL;
+    if checkpoint < retained_floor {
+        let boundary = retained_floor.div_ceil(CHECKPOINT_INTERVAL) * CHECKPOINT_INTERVAL;
+        start.max(boundary.saturating_add(1))
+    } else {
+        start
+    }
+}
+
 impl BtcSync {
     pub(crate) async fn verify_swap_funding(
         &self,
@@ -599,7 +617,7 @@ impl BtcSync {
         use bitcoin::bip158::BlockFilter;
 
         let retained_floor = self.headers.lock().retained_floor();
-        let start_height = start_height.max(retained_floor);
+        let start_height = align_scan_start(start_height, retained_floor);
         let hashes: Vec<[u8; 32]> = self.headers.lock().hashes_from(start_height);
         if hashes.is_empty() {
             return Ok(0);
@@ -887,5 +905,12 @@ mod tests {
             .match_any(&block_hash, std::iter::once(script.as_bytes()))
             .unwrap();
         assert!(matched, "watched script should match its own block filter");
+    }
+    #[test]
+    fn scan_start_aligns_above_retained_floor() {
+        assert_eq!(align_scan_start(0, 0), 0);
+        assert_eq!(align_scan_start(770_000, 770_000), 770_001);
+        assert_eq!(align_scan_start(770_500, 770_500), 771_001);
+        assert_eq!(align_scan_start(800_000, 770_000), 800_000);
     }
 }

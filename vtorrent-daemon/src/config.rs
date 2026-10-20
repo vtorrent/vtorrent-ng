@@ -148,9 +148,10 @@ pub struct Cli {
 
     /// BTC block height at which the wallet was created.
     ///
-    /// The SPV wallet scans from this height. Set it to the wallet's creation
-    /// height so funds older than the retained header window are still found.
-    /// Without it, the scan starts at the retained floor.
+    /// The SPV wallet scans from the later of this height and the retained
+    /// header floor. Funds older than the retained window are **not**
+    /// discoverable: raise `--btc-header-retention` or rescan from a retained
+    /// checkpoint. Without this flag, the scan starts at the retained floor.
     #[arg(long)]
     pub btc_birthday: Option<u32>,
 }
