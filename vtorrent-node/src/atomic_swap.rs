@@ -828,18 +828,38 @@ impl SwapOrderBook {
         self.orders.push(order);
     }
 
-    /// Evict expired and cancelled orders, keeping the most recently updated.
+    /// Evict expired and cancelled orders, then trim open orders only.
+    ///
+    /// Funded and in-progress swaps must survive until their claim or refund
+    /// deadline, so they are never evicted by gossip pressure.
     fn evict(&mut self) {
         let now = now_timestamp_u32();
-        // Remove cancelled orders first, then expired ones
         self.orders.retain(|o| {
             o.status != OrderStatus::Cancelled && (now < o.expiry || o.status != OrderStatus::Open)
         });
-        // If still over limit, remove oldest open orders by expiry
-        if self.orders.len() >= MAX_ORDERS {
-            self.orders.sort_by_key(|o| std::cmp::Reverse(o.expiry));
-            self.orders.truncate(MAX_ORDERS * 3 / 4);
+        if self.orders.len() < MAX_ORDERS {
+            return;
         }
+        let target = MAX_ORDERS * 3 / 4;
+        let excess = self.orders.len().saturating_sub(target);
+        if excess == 0 {
+            return;
+        }
+        let mut open: Vec<usize> = self
+            .orders
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| o.status == OrderStatus::Open)
+            .map(|(i, _)| i)
+            .collect();
+        open.sort_by_key(|&i| self.orders[i].expiry);
+        let remove: std::collections::HashSet<usize> = open.into_iter().take(excess).collect();
+        let mut index = 0;
+        self.orders.retain(|_| {
+            let keep = !remove.contains(&index);
+            index += 1;
+            keep
+        });
     }
 
     /// List all open orders.

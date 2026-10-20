@@ -4,6 +4,9 @@
 //! merkle-proof verification, UTXO tracking, transaction building/signing,
 //! and a minimal Bitcoin P2P client.
 
+/// Bitcoin's maximum money supply in satoshis (21 million BTC).
+pub const MAX_MONEY_SATS: u64 = 21_000_000 * 100_000_000;
+
 pub mod error;
 mod filters;
 pub mod headers;

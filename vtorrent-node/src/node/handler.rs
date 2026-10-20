@@ -617,6 +617,36 @@ pub(crate) async fn handle_cmpctblock(
     Ok(())
 }
 
+/// Maximum transaction indexes served from one `getblocktxn` request.
+const MAX_BLOCKTXN_INDEXES: usize = 500;
+/// Maximum serialized transaction bytes in one `blocktxn` response.
+const MAX_BLOCKTXN_BYTES: usize = 4 * 1024 * 1024;
+
+/// Select and serialize requested block transactions with a hard cap.
+///
+/// Duplicate and out-of-range indexes are ignored. The caller must not hold
+/// the chain lock while this runs.
+fn select_blocktxn_transactions(block: &Block, indexes: &[u16]) -> Vec<Vec<u8>> {
+    let mut seen = std::collections::HashSet::new();
+    let mut total = 0usize;
+    let mut txs = Vec::new();
+    for &idx in indexes.iter().take(MAX_BLOCKTXN_INDEXES) {
+        let idx = idx as usize;
+        if idx >= block.transactions.len() || !seen.insert(idx) {
+            continue;
+        }
+        let Ok(bytes) = serde_json::to_vec(&block.transactions[idx]) else {
+            continue;
+        };
+        if total.saturating_add(bytes.len()) > MAX_BLOCKTXN_BYTES {
+            break;
+        }
+        total += bytes.len();
+        txs.push(bytes);
+    }
+    txs
+}
+
 /// Handle a `getblocktxn` message — serve requested transactions from a block.
 pub(crate) async fn handle_getblocktxn(
     node: &mut Node,
@@ -624,27 +654,20 @@ pub(crate) async fn handle_getblocktxn(
     msg: &NetMessage,
 ) -> Result<()> {
     if let Ok(req) = serde_json::from_slice::<BlockTxnReq>(&msg.payload) {
-        let chain = node.chain.lock().await;
-        let mut found_txs: Option<Vec<Vec<u8>>> = None;
-        if let Some(block) = chain.get_block(&req.block_hash) {
-            let mut txs = Vec::new();
-            for &idx in &req.indexes {
-                let idx = idx as usize;
-                if idx < block.transactions.len() {
-                    if let Ok(bytes) = serde_json::to_vec(&block.transactions[idx]) {
-                        txs.push(bytes);
-                    }
-                }
-            }
-            found_txs = Some(txs);
-        }
-        if let Some(txs) = found_txs {
+        // Clone the block under the lock, then serialize outside it. A peer
+        // can request hundreds of duplicate indexes; holding the chain lock
+        // through serialization would stall block processing.
+        let block = {
+            let chain = node.chain.lock().await;
+            chain.get_block(&req.block_hash).cloned()
+        };
+        if let Some(block) = block {
+            let txs = select_blocktxn_transactions(&block, &req.indexes);
             let resp = BlockTxnMsg {
                 block_hash: req.block_hash,
                 transactions: txs,
             };
             let payload = serde_json::to_vec(&resp).unwrap_or_default();
-            drop(chain);
             node.peer_manager
                 .send_to(peer_addr, NetMessage::new("blocktxn", payload))
                 .await;
@@ -800,9 +823,10 @@ pub(crate) async fn handle_getdata(
         const GETDATA_BYTE_BUDGET: u64 = 64 * 1024 * 1024;
         const GETDATA_BUDGET_WINDOW: std::time::Duration = std::time::Duration::from_secs(3600);
         let budget_now = std::time::Instant::now();
+        let budget_key = peer_addr.ip().to_canonical();
         let (served, budget_start) = node
             .peer_served_bytes
-            .get(&peer_addr)
+            .get(&budget_key)
             .copied()
             .unwrap_or((0, budget_now));
         let (served, budget_start) =
@@ -818,7 +842,7 @@ pub(crate) async fn handle_getdata(
                 GETDATA_BYTE_BUDGET
             );
             node.peer_served_bytes
-                .insert(peer_addr, (served, budget_start));
+                .insert(budget_key, (served, budget_start));
             return Ok(());
         }
         let mut served = served;
@@ -901,13 +925,13 @@ pub(crate) async fn handle_getdata(
         }
         // Record the bytes served this request against the peer's budget.
         node.peer_served_bytes
-            .insert(peer_addr, (served, budget_start));
+            .insert(budget_key, (served, budget_start));
         // Bound the map: entries are only pruned on use, so many distinct
         // source addresses would otherwise grow it without limit. Evict by
         // *count* — the previous `retain(age < WINDOW)` kept the freshest
         // entries, which is exactly what a flood produces, so it never shrank.
         if node.peer_served_bytes.len() > 10_000 {
-            let mut entries: Vec<(std::net::SocketAddr, std::time::Instant)> = node
+            let mut entries: Vec<(std::net::IpAddr, std::time::Instant)> = node
                 .peer_served_bytes
                 .iter()
                 .map(|(addr, (_, start))| (*addr, *start))
@@ -1127,6 +1151,22 @@ mod tests {
         };
         block.header.merkle_root = block.compute_merkle_root();
         block
+    }
+
+    #[test]
+    fn blocktxn_selection_caps_and_deduplicates() {
+        let mut block = coinbase_block([0u8; 32], 0, 1);
+        let mut second = block.transactions[0].clone();
+        second.inputs[0].script_sig = vec![1];
+        let mut third = block.transactions[0].clone();
+        third.inputs[0].script_sig = vec![2];
+        block.transactions.push(second);
+        block.transactions.push(third);
+
+        let txs = select_blocktxn_transactions(&block, &[0, 0, 1, 99, 2]);
+        assert_eq!(txs.len(), 3);
+        let many = vec![0u16; MAX_BLOCKTXN_INDEXES + 100];
+        assert_eq!(select_blocktxn_transactions(&block, &many).len(), 1);
     }
 
     fn v2_msg<T: serde::Serialize>(command: &str, body: &T) -> NetMessage {
@@ -1784,9 +1824,10 @@ pub(crate) async fn dispatch_message(
                 const PEX_PER_PEER_QUOTA: u32 = 2_000;
                 const PEX_QUOTA_WINDOW: std::time::Duration = std::time::Duration::from_secs(3600);
                 let now = std::time::Instant::now();
+                let pex_key = peer_addr.ip().to_canonical();
                 let (used, window_start) = node
                     .pex_contributions
-                    .get(&peer_addr)
+                    .get(&pex_key)
                     .copied()
                     .unwrap_or((0, now));
                 let (used, window_start) = if now.duration_since(window_start) >= PEX_QUOTA_WINDOW {
@@ -1800,24 +1841,21 @@ pub(crate) async fn dispatch_message(
                         peer_addr,
                         PEX_PER_PEER_QUOTA
                     );
-                    node.pex_contributions
-                        .insert(peer_addr, (used, window_start));
+                    node.pex_contributions.insert(pex_key, (used, window_start));
                     return Ok(());
                 }
                 let allowed = (PEX_PER_PEER_QUOTA - used) as usize;
                 if addr_msg.addrs.len() > allowed {
                     addr_msg.addrs.truncate(allowed);
                 }
-                node.pex_contributions.insert(
-                    peer_addr,
-                    (used + addr_msg.addrs.len() as u32, window_start),
-                );
+                node.pex_contributions
+                    .insert(pex_key, (used + addr_msg.addrs.len() as u32, window_start));
                 // Bound the map itself: entries are only pruned on use, so a
                 // flood of distinct source addresses would grow it. Evict by
                 // count — `retain(age < WINDOW)` kept the freshest entries,
                 // which is what a flood produces, so it never shrank.
                 if node.pex_contributions.len() > 10_000 {
-                    let mut entries: Vec<(std::net::SocketAddr, std::time::Instant)> = node
+                    let mut entries: Vec<(std::net::IpAddr, std::time::Instant)> = node
                         .pex_contributions
                         .iter()
                         .map(|(addr, (_, start))| (*addr, *start))

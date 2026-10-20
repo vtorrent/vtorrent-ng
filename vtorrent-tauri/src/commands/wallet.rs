@@ -489,8 +489,19 @@ pub async fn send_vtr(
         let chain = handle.rpc_state.chain.lock().await;
         let mut mempool = handle.rpc_state.mempool.lock().await;
         mempool
-            .admit_with_chain_fee(&chain, tx)
+            .admit_with_chain_fee(&chain, tx.clone())
             .map_err(|e| TauriError::NodeError(format!("Mempool rejected tx: {}", e)))?;
+    }
+
+    // Relay the transaction to peers. The RPC path uses the same channel; the
+    // desktop path previously stopped at the local mempool.
+    if let Some(sender) = &handle.rpc_state.tx_submit {
+        if sender.try_send(tx).is_err() {
+            tracing::warn!(
+                "tx_submit channel full; transaction {} remains in the local mempool",
+                txid
+            );
+        }
     }
 
     tracing::info!(

@@ -137,14 +137,18 @@ impl UtxoSet {
 
     /// Select UTXOs to cover `amount` (plus `fee`), largest-first.
     pub fn select(&self, amount: u64, fee: u64) -> Option<Vec<Utxo>> {
+        if amount > crate::MAX_MONEY_SATS || fee > crate::MAX_MONEY_SATS {
+            return None;
+        }
+        let required = amount.checked_add(fee)?;
         let mut sorted: Vec<Utxo> = self.utxos.clone();
         sorted.sort_by_key(|utxo| std::cmp::Reverse(utxo.value));
         let mut selected = Vec::new();
         let mut sum = 0u64;
         for u in sorted {
-            sum += u.value;
+            sum = sum.saturating_add(u.value);
             selected.push(u);
-            if sum >= amount + fee {
+            if sum >= required {
                 return Some(selected);
             }
         }
@@ -233,6 +237,15 @@ mod tests {
         set.add(utxo("c", 0, 2000));
         let selected = set.select(1500, 100).unwrap();
         assert!(selected.iter().map(|u| u.value).sum::<u64>() >= 1600);
+    }
+
+    #[test]
+    fn test_select_rejects_overflowing_amount_or_fee() {
+        let mut set = UtxoSet::new();
+        set.add(utxo("a", 0, 1000));
+        assert!(set.select(u64::MAX, 1).is_none());
+        assert!(set.select(1, u64::MAX).is_none());
+        assert!(set.select(crate::MAX_MONEY_SATS + 1, 0).is_none());
     }
 
     #[test]

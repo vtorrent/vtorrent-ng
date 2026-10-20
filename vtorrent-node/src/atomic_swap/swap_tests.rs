@@ -97,6 +97,49 @@ fn test_swap_order_creation() {
 }
 
 #[test]
+fn test_eviction_preserves_funded_orders() {
+    let mut book = SwapOrderBook::new();
+    let mut funded = SwapOrder::new(
+        "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string(),
+        1_000_000,
+        "BTC".to_string(),
+        100_000,
+        DEFAULT_HTLC_LOCKTIME,
+    );
+    funded.expiry = 1; // early deadline, but not open
+    funded.status = OrderStatus::Matched;
+    book.add_order(funded);
+
+    for n in 0..MAX_ORDERS {
+        let mut order = SwapOrder::new(
+            "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string(),
+            1_000_001 + n as u64,
+            "BTC".to_string(),
+            100_000,
+            DEFAULT_HTLC_LOCKTIME,
+        );
+        order.expiry = u32::MAX - 1;
+        book.add_order(order);
+    }
+
+    // Trigger eviction with one more open order.
+    let mut trigger = SwapOrder::new(
+        "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string(),
+        2_000_000,
+        "BTC".to_string(),
+        100_000,
+        DEFAULT_HTLC_LOCKTIME,
+    );
+    trigger.expiry = u32::MAX - 1;
+    book.add_order(trigger);
+
+    assert!(
+        book.orders.iter().any(|o| o.status == OrderStatus::Matched),
+        "funded order must survive gossip eviction"
+    );
+}
+
+#[test]
 fn test_funding_reservation_records_htlc_transaction() {
     let mut book = SwapOrderBook::new();
     let order = SwapOrder::new(

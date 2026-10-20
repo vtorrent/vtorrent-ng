@@ -458,7 +458,7 @@ impl BtcWallet {
                     let available = u.total();
                     return Err(crate::error::BtcError::InsufficientFunds {
                         available,
-                        required: amount_sats + fee_sats,
+                        required: amount_sats.saturating_add(fee_sats),
                     });
                 }
             }

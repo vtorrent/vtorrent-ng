@@ -96,13 +96,15 @@ pub fn build_and_sign_multi(
         .require_network(network)
         .map_err(|e| BtcError::InvalidAddress(e.to_string()))?;
 
-    let total_in: u64 = inputs.iter().map(|u| u.value).sum();
+    let total_in: u64 = inputs
+        .iter()
+        .fold(0u64, |sum, u| sum.saturating_add(u.value));
     let change_sats = total_in
         .checked_sub(amount_sats)
         .and_then(|v| v.checked_sub(fee_sats))
         .ok_or(BtcError::InsufficientFunds {
             available: total_in,
-            required: amount_sats + fee_sats,
+            required: amount_sats.saturating_add(fee_sats),
         })?;
 
     let sequence = if rbf { RBF_SEQUENCE } else { Sequence::MAX };

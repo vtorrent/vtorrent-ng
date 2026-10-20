@@ -25,10 +25,15 @@ use tokio_util::sync::CancellationToken;
 /// BEP-10 extension bit: reserved[5] bit 0x10.
 const EXTENSION_RESERVED: [u8; 8] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00];
 
+/// Maximum accepted blocks per piece. Bounds the map overhead a peer can
+/// create by sending many tiny, non-overlapping blocks.
+const MAX_BLOCKS_PER_PIECE: usize = 4096;
+
 /// Assembles blocks into a full piece and verifies its SHA1.
 pub struct PieceAssembler {
     expected_length: u64,
     blocks: HashMap<u32, Vec<u8>>,
+    ranges: Vec<(u32, u32)>,
     received: u64,
 }
 
@@ -37,6 +42,7 @@ impl PieceAssembler {
         Self {
             expected_length,
             blocks: HashMap::new(),
+            ranges: Vec::new(),
             received: 0,
         }
     }
@@ -48,13 +54,19 @@ impl PieceAssembler {
     /// piece). Rejecting out-of-range blocks prevents a malicious peer from
     /// inflating `received` or producing a piece larger than `expected_length`.
     pub fn add_block(&mut self, begin: u32, data: Vec<u8>) -> bool {
-        if self.blocks.contains_key(&begin) {
+        if self.blocks.len() >= MAX_BLOCKS_PER_PIECE {
             return false;
         }
         let end = begin as u64 + data.len() as u64;
         if end > self.expected_length {
             return false;
         }
+        if self.ranges.iter().any(|&(start, existing_end)| {
+            (begin as u64) < existing_end as u64 && (start as u64) < end
+        }) {
+            return false;
+        }
+        self.ranges.push((begin, end as u32));
         self.received += data.len() as u64;
         self.blocks.insert(begin, data);
         true
@@ -1084,6 +1096,16 @@ mod tests {
         assert!(asm.is_complete());
         assert_eq!(asm.assemble().unwrap(), data);
         assert!(asm.verify(&hash));
+    }
+
+    #[test]
+    fn test_piece_assembler_rejects_overlapping_blocks() {
+        let mut asm = PieceAssembler::new(0, 10);
+        assert!(asm.add_block(0, vec![1; 5]));
+        assert!(!asm.add_block(3, vec![2; 5]), "overlap must be rejected");
+        assert!(asm.add_block(5, vec![3; 5]));
+        assert!(asm.is_complete());
+        assert_eq!(asm.assemble().unwrap(), vec![1, 1, 1, 1, 1, 3, 3, 3, 3, 3]);
     }
 
     #[test]

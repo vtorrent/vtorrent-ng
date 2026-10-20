@@ -93,6 +93,9 @@ pub async fn start_node(
     let mut node = Node::new(config).map_err(|e| TauriError::NodeError(e.to_string()))?;
 
     let mut rpc_state = RpcAppState::new_with_shared(node.chain_arc(), node.mempool_arc());
+    // Wire the P2P broadcast channel. Without this, desktop sends are admitted
+    // to the local mempool but never relayed to peers.
+    rpc_state.tx_submit = Some(node.tx_submit_sender());
     rpc_state.swap_recovery_dir = Some({
         let path = state
             .wallet_path
