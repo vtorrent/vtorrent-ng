@@ -201,17 +201,21 @@ or logged.
 response still contains the WIF string; zeroizing the serialized body remains a
 residual hardening item.
 
-### L-4 — Low: the WebSocket subprotocol still carries the API key
+### L-4 — Low (FIXED in `aa430e1`): the WebSocket upgrade exposed the API key
 
 **Where:** `vtorrent-rpc/src/ws.rs`; `vtorrent-ui/src/api.ts`.
 
-The key is no longer in the query string, but it is still sent in a header that
-proxies and tracing layers may log. A short-lived, single-use token would
-reduce the exposure.
+The key was no longer in the query string, but it was still sent in a header
+that proxies and tracing layers may log.
+
+**Fix applied:** `POST /api/v1/ws-token` (API-key protected) issues a
+single-use token valid for 60 seconds; the upgrade uses `?token=...` and the
+token is consumed. The API key itself is not accepted in the URL or a
+WebSocket header. The real WebSocket test covers missing, query-string,
+authorized, and token-reuse cases.
 
 ## Residual gaps
 
-- **L-4** — the WebSocket subprotocol still carries the API key in a header.
 - The `fund_cold_stake` session binding does not defend against a fully
   compromised frontend that can call both endpoints.
 - The BTC scan still skips up to 999 retained blocks (warning only).
@@ -224,6 +228,5 @@ reduce the exposure.
 
 ## Recommended order
 
-1. **L-4** — short-lived, single-use WebSocket tokens.
-2. Complete the BTC scan checkpoint retention and the desktop runtime tests.
-3. Commission the external review and rebuild the fleet on the reviewed build.
+1. Complete the BTC scan checkpoint retention and the desktop runtime tests.
+2. Commission the external review and rebuild the fleet on the reviewed build.

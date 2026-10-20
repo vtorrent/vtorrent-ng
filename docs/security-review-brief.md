@@ -149,8 +149,8 @@ challenge the repairs and their remaining assumptions independently.
 
 ## 6. What we provide
 - Immutable review delivery:
-  **`4810d9ab1ae0bf5586dfd2031cdb720d941875de`**
-  (`docs: move review candidate to the round-2 hardening build`).
+  **`aa430e167145ba9b911d828c7f8ef85916ddbb44`**
+  (`fix(rpc): issue single-use WebSocket tokens instead of exposing the API key`).
   This commit includes the governance template-selection repairs,
   snapshot-based proof reconstruction, admission budget, bounded retries, the
   real-time quota-recovery test, the real-bitcoind SPV reorg tests, the full
@@ -171,14 +171,14 @@ challenge the repairs and their remaining assumptions independently.
 - The review delivery is a source snapshot, not a release tag. The core soak
   fleet runs `vtorrent/node:batch-669ee36` (code `669ee36`, BTC SPV disabled)
   from 2026-10-20T13:51:39Z to 2026-10-27T13:51:39Z. The review candidate
-  `4810d9a` adds the BTC wallet birthday flag, the desktop
+  `aa430e1` adds the BTC wallet birthday flag, the desktop
   governance/earnings/payment/deadline commands, health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake, BTC
   scan, compact-block, and desktop hardening from the adversarial review,
   raw-script cold-stake funding, and the round-2 burn-address removal,
   session-bound funding, desktop cold-stake commands, network-scoped BTC
-  state, scan warning, and output-size fee fix; rebuild the release image from
-  it. The soak is supporting evidence, not a
+  state, scan warning, output-size fee fix, and single-use WebSocket tokens;
+  rebuild the release image from it. The soak is supporting evidence, not a
   substitute for this review.
 - `docs/` — designs + adversarial reviews for every subsystem
   (`cold-staking-p2cs-design.md`, `op-return-utxo-exclusion-design.md`,

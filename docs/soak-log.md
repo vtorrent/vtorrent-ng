@@ -2029,7 +2029,8 @@ cold-stake authorization/burn checks, BTC scan alignment, v3 notfound decoding,
 and desktop persistence hardening are after the core soak image. The round-2
 review removed the P2SH-hash-as-P2PKH burn address, bound cold-stake funding to
 scripts generated in the session, added desktop cold-stake commands,
-network-scoped the BTC UTXO file, and fixed the output-size fee estimate.
+network-scoped the BTC UTXO file, fixed the output-size fee estimate, and
+replaced the WebSocket API-key header with single-use tokens.
 Cold-stake funding pays the raw P2CS script. The `--btc-birthday` flag is in the source
 after the core soak image; BTC SPV is disabled on the fleet, so the flag is not
 exercised by this window.
