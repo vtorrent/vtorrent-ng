@@ -321,7 +321,7 @@ RPC 148; frontend lint, 16 tests, and production build; workspace formatting
 and strict all-feature Clippy pass; the live soak observer exits 0 with the
 hardened checks. The fleet was rebuilt to `vtorrent/node:batch-669ee36` (code
 `669ee36`) and a fresh soak window started at 2026-10-20T13:51:39Z. The review
-candidate `fda08ec` adds the BTC wallet birthday flag, the desktop
+candidate `2f580cc` adds the BTC wallet birthday flag, the desktop
 governance/earnings/payment/deadline commands, desktop health-field updates,
 the shared BTC sync loop, desktop chain persistence, and the cold-stake/BTC/
 compact-block/desktop hardening. The adversarial reviews are in
@@ -330,7 +330,7 @@ compact-block/desktop hardening. The adversarial reviews are in
 `docs/review-probes/security-2026-10-20/`. The round-2 fixes include the
 burn-address removal, session-bound cold-stake funding, desktop cold-stake
 commands, network-scoped BTC state, scan warnings, output-size fee estimation,
-and single-use WebSocket tokens.
+single-use WebSocket tokens, and the BTC scan checkpoint-retention fix.
 
 ## Review limits and self-assessment
 

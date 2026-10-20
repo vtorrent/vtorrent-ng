@@ -160,7 +160,7 @@ testnet UTXOs for mainnet or vice versa.
 **Fix applied:** the Tauri and daemon use `btc_utxos-<network>.json`
 (`mainnet`/`testnet`/`regtest`).
 
-### M-7 — Medium (MITIGATED in `027cc3e`): BTC scan alignment skips up to 999
+### M-7 — Medium (FIXED in `2f580cc`): BTC scan alignment skipped up to 999
 retained blocks
 
 **Where:** `vtorrent-btc/src/sync.rs` (`align_scan_start`).
@@ -172,9 +172,12 @@ A birthday or funds in that range are missed.
 
 **Impact:** silent omission of discoverable funds.
 
-**Fix applied:** the scan now logs a warning naming the skipped range. The skip
-remains a trade-off; retaining the checkpoint filter header and scanning from
-the floor is still the complete fix.
+**Fix applied:** the scan starts at the requested height. The filter-header
+authentication uses the stored filter header for the block before the start,
+or the next checkpoint in range. When neither is available it authenticates
+from the last checkpoint below the start (a wider range, no skipped scan
+blocks); if that anchor is below the retained floor it fails closed instead of
+silently skipping.
 
 ### L-2 — Low (FIXED in `036afca`): fee estimation assumed 33-byte outputs
 
@@ -218,7 +221,6 @@ authorized, and token-reuse cases.
 
 - The `fund_cold_stake` session binding does not defend against a fully
   compromised frontend that can call both endpoints.
-- The BTC scan still skips up to 999 retained blocks (warning only).
 - Independent external review of the fixed revision.
 - Mainnet-scale BTC SPV retention/scan test.
 - Desktop restart, peer-status, BTC discovery, and two-node propagation runtime
@@ -228,5 +230,5 @@ authorized, and token-reuse cases.
 
 ## Recommended order
 
-1. Complete the BTC scan checkpoint retention and the desktop runtime tests.
+1. Complete the desktop runtime tests and the mainnet-scale BTC SPV soak.
 2. Commission the external review and rebuild the fleet on the reviewed build.
