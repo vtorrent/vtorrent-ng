@@ -301,7 +301,7 @@ with a permanent regression:
 | F03 empty torrent blocks | Fixed: empty payloads are rejected before mutation | `test_piece_assembler_rejects_empty_blocks` |
 | F04 uncompressed legacy keys | Fixed: pubkey comparison uses the record's compression form | `test_decrypt_private_key_accepts_compressed_and_uncompressed` |
 | F05 missing alert metrics | Fixed: best-peer height, BTC height/sync, and process RSS are exported | `metrics_export_alert_dependencies` |
-| F06 soak false green | Fixed: requires three Prometheus series, fails on unavailable or missing evidence, checks for no blocks after the first hour, and uses the exact window start for log queries | `docs/review-probes/soak_missing_evidence.py` now exits 0 |
+| F06 soak false green | Fixed: requires three Prometheus series, fails on unavailable or missing evidence, checks for no blocks after the first hour, uses the exact window start for log queries, and applies an explicit 120-second startup grace | `docs/review-probes/soak_missing_evidence.py` now exits 0 |
 | F07 compact-block wire budget | Fixed: the final encoded payload is bounded and an oversized response falls back to `notfound`/full block | `blocktxn_payload_rejects_oversized_final_message` |
 | F09 frontend IPC contracts | Fixed for the dashboard's used fetch/action branches: Tauri results are normalized and node info exposes `bestBlockHash`. Missing Tauri commands for governance, earnings, payment requests, and swap deadlines, plus the unused place-order shape, remain part of F08. | Frontend lint, 16 tests, and production build |
 | F10 WebSocket side channel | Fixed: the upgrade requires the configured API key as a query parameter; the browser hooks append it | `websocket_requires_api_key_when_configured` |
@@ -314,8 +314,10 @@ birthday/checkpoint design.
 Post-fix verification: node 228, torrent 98, migrate 18, BTC 75 (1 ignored),
 RPC 148; frontend lint, 16 tests, and production build; workspace formatting
 and strict all-feature Clippy pass; the live soak observer exits 0 with the
-hardened checks. The review probes under `docs/review-probes/` are historical
-evidence for the reviewed revision.
+hardened checks. The fleet was rebuilt to `vtorrent/node:batch-669ee36` (code
+`669ee36`) and a fresh soak window started at 2026-10-20T13:51:39Z. The review
+probes under `docs/review-probes/` are historical evidence for the reviewed
+revision.
 
 ## Review limits and self-assessment
 

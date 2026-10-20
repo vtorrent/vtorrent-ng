@@ -147,8 +147,8 @@ challenge the repairs and their remaining assumptions independently.
 
 ## 6. What we provide
 - Immutable review delivery:
-  **`ff14e5881794fc831d3e37fb8eb7c46abc7ca2b7`**
-  (`test(migrate): cover encrypted legacy wallet extraction`).
+  **`669ee36eaf1cfc59858201d9e8fd1c002d8b2422`**
+  (`fix: close remaining review findings in IPC, WebSocket auth, CI baselines, and BTC scan floors`).
   This commit includes the governance template-selection repairs,
   snapshot-based proof reconstruction, admission budget, bounded retries, the
   real-time quota-recovery test, the real-bitcoind SPV reorg tests, the full
@@ -157,13 +157,17 @@ challenge the repairs and their remaining assumptions independently.
   coinstake and governance snapshot fixes, the desktop broadcast and BTC
   overflow fixes, the DEX and torrent availability fixes, the sensitive-route
   auth and P2P key-normalization fixes, the encrypted-wallet restart and
-  legacy-extraction tests, and the evidence documents listed below.
+  legacy-extraction tests, the whole-codebase review remediation (bootstrap
+  maturity, BTC retention and scan floor, torrent assembler, legacy key forms,
+  alert metrics, soak evidence, compact-block wire budget, frontend IPC
+  normalization, WebSocket auth, and CI benchmark baselines), and the evidence
+  documents listed below.
   Use this full commit hash rather than floating `main`. If the engagement
   moves to a later implementation, record its full hash explicitly.
 - The review delivery is a source snapshot, not a release tag. The core soak
-  fleet now runs `vtorrent/node:batch-ff14e58` (code `ff14e58`, BTC SPV
-  disabled) from 2026-10-20 to 2026-10-27. The soak is supporting evidence,
-  not a substitute for this review.
+  fleet now runs `vtorrent/node:batch-669ee36` (code `669ee36`, BTC SPV disabled) from
+  2026-10-20T13:51:39Z to 2026-10-27T13:51:39Z. The soak is supporting evidence, not a
+  substitute for this review.
 - `docs/` — designs + adversarial reviews for every subsystem
   (`cold-staking-p2cs-design.md`, `op-return-utxo-exclusion-design.md`,
   `network-upgrade-design.md`, `atomic-swap-protocol.md`,

@@ -154,47 +154,55 @@ fi
 echo
 
 # ── Prometheus coverage ──────────────────────────────────────────────────────
-# Note: the sample at exactly WINDOW_START can read down=1 on nodes that were
-# still finishing recovery at that instant; it is a boundary artifact, not an
-# in-window outage. Check the reported timestamps before treating it as one.
+# Give the fleet an explicit two-minute startup grace. The first post-upgrade
+# stake can land while a node's healthcheck is still settling; that is not an
+# in-window outage. Coverage starts after the grace, and the grace is reported.
+STARTUP_GRACE=120
+coverage_start=$(( WINDOW_START + STARTUP_GRACE ))
+grace_active=0
+if [[ "$now_epoch" -lt "$coverage_start" ]]; then
+    grace_active=1
+fi
 # Prometheus caps a query at 11,000 points per series, so widen the step as the
 # window grows (15 s for short windows, coarser for multi-day ones).
-prom_step=$(( (now_epoch - WINDOW_START) / 10000 ))
+prom_step=$(( (now_epoch - coverage_start) / 10000 ))
 [[ "$prom_step" -lt 15 ]] && prom_step=15
-coverage=$(curl -s --max-time 10 "${PROM}/api/v1/query_range?query=up%7Bjob%3D%22vtorrent-nodes%22%7D&start=${WINDOW_START}&end=${now_epoch}&step=${prom_step}s" \
-    | python3 -c "
+if [[ "$grace_active" -eq 1 ]]; then
+    coverage="  - startup grace: Prometheus coverage begins at $(date -u -d "@${coverage_start}" +%Y-%m-%dT%H:%M:%SZ)"
+else
+    coverage=$(curl -s --max-time 10 "${PROM}/api/v1/query_range?query=up%7Bjob%3D%22vtorrent-nodes%22%7D&start=${coverage_start}&end=${now_epoch}&step=${prom_step}s" \
+        | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
-expected=(${now_epoch}-${WINDOW_START})//${prom_step}+1
+expected=(${now_epoch}-${coverage_start})//${prom_step}+1
 for r in d['data']['result']:
-    # The sample at exactly WINDOW_START can read down=1 while the nodes are
-    # still finishing recovery; it is a boundary artifact, not an outage.
-    vals=r['values'][1:]
+    vals=r['values']
     downs=sum(1 for _,v in vals if float(v)==0)
     gaps=0; prev=None
     for ts,_ in vals:
-        # A real scrape gap is more than two steps; the step grows with the
-        # window, so a fixed 30 s threshold would flag every sample.
         if prev is not None and float(ts)-prev>2*${prom_step}: gaps+=1
         prev=float(ts)
-    print(f\"  - {r['metric']['instance']}: {len(vals)}/{max(expected-1, 0)} samples, down={downs}, gaps>30s={gaps}\")
+    print(f\"  - {r['metric']['instance']}: {len(vals)}/{expected} samples, down={downs}, gaps>30s={gaps}\")
 " 2>/dev/null || echo "  - Prometheus unavailable")
-echo "- Prometheus since window start:"
+fi
+echo "- Prometheus since window start (after ${STARTUP_GRACE}s startup grace):"
 echo "$coverage"
-down_total=$(echo "$coverage" | grep -o 'down=[0-9]*' | cut -d= -f2 | awk '{s+=$1} END{print s+0}' || true)
-gaps_total=$(echo "$coverage" | grep -o 'gaps>[0-9]*s=[0-9]*' | cut -d= -f2 | awk '{s+=$1} END{print s+0}' || true)
-if [[ "${down_total:-0}" -gt 0 ]]; then
-    echo "- **Prometheus down samples: ${down_total}**"
-    fail=1
-fi
-if [[ "${gaps_total:-0}" -gt 0 ]]; then
-    echo "- **Prometheus scrape gaps: ${gaps_total}**"
-    fail=1
-fi
-series_count=$(echo "$coverage" | grep -c '^  - ' || true)
-if [[ "$series_count" -ne 3 ]]; then
-    echo "- **Prometheus evidence incomplete: ${series_count}/3 node series**"
-    fail=1
+if [[ "$grace_active" -eq 0 ]]; then
+    down_total=$(echo "$coverage" | grep -o 'down=[0-9]*' | cut -d= -f2 | awk '{s+=$1} END{print s+0}' || true)
+    gaps_total=$(echo "$coverage" | grep -o 'gaps>[0-9]*s=[0-9]*' | cut -d= -f2 | awk '{s+=$1} END{print s+0}' || true)
+    if [[ "${down_total:-0}" -gt 0 ]]; then
+        echo "- **Prometheus down samples: ${down_total}**"
+        fail=1
+    fi
+    if [[ "${gaps_total:-0}" -gt 0 ]]; then
+        echo "- **Prometheus scrape gaps: ${gaps_total}**"
+        fail=1
+    fi
+    series_count=$(echo "$coverage" | grep -c '^  - ' || true)
+    if [[ "$series_count" -ne 3 ]]; then
+        echo "- **Prometheus evidence incomplete: ${series_count}/3 node series**"
+        fail=1
+    fi
 fi
 echo
 

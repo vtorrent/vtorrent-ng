@@ -104,8 +104,8 @@ paths.
 
 - The full release-mode workspace suite passed at `ff6f472`, including the
   node, daemon recovery, RPC, governance, and proof-service tests. The
-  changed crate suites and Clippy passed at `ff14e58`, which adds the P0/P1
-  fixes. Rerun the full workspace suite before tagging.
+  changed crate suites and Clippy passed at `669ee36`, which adds the review
+  remediation fixes. Rerun the full workspace suite before tagging.
 - The RPC library suite passes 142 tests, including the test-miner auth
   regression.
 - Real-bitcoind tests cover two-daemon SPV agreement, reorg re-inclusion, the
@@ -120,7 +120,7 @@ paths.
 - The real-time proof quota test drains the per-IP allowance, observes the
   initial denial, and verifies automatic recovery after the 65-second retry.
 - The fresh 7-day soak runs from 2026-10-20 to 2026-10-27 on
-  `vtorrent/node:batch-ff14e58`. Sign-off is pending.
+  `vtorrent/node:batch-669ee36`. Sign-off is pending.
 
 ## Upgrade notes
 
@@ -133,8 +133,8 @@ paths.
   fleet, so the soak does not exercise the swap paths.
 - Existing chain data is preserved. Do not delete `chain.db` during the
   upgrade.
-- The release build and the soak fleet both run `batch-ff14e58`. The fresh
-  soak window started 2026-10-20T09:12:48Z.
+- The release build and the soak fleet both run `batch-669ee36`. The fresh
+  soak window started 2026-10-20T13:51:39Z.
 
 ## Known limitations
 
@@ -150,6 +150,8 @@ paths.
 - Cold proof reconstruction is unavailable beyond the retained undo window.
   The retry queue is in memory and resets on restart.
 - The proof admission budget bounds request counts, not CPU milliseconds.
+- Desktop node-service parity, including governance/earnings/payment/deadline
+  Tauri commands, and BTC wallet birthday/checkpoint discovery remain open.
 
 ## Checksums
 

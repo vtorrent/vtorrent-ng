@@ -1982,3 +1982,73 @@ unavailable.
 - BTC SPV: height=0, synced=false, initialized=false.
 
 Earliest sign-off: **2026-10-27T09:12Z** (window start + 7 days). Next daily observation due 2026-10-21.
+
+## 2026-10-20 — review-fix rebuild + fresh 7-day soak start
+
+Rebuilt the fleet from `vtorrent/node:batch-ff14e58` to
+`vtorrent/node:batch-669ee36` (image sha256
+`e76fa83987f1f10c410938d0d6b329946b93c7a5cbfa70b6ee32fc423eb60735`), built
+from code commit `669ee36`. The rolling recreate preserved the named chain
+volumes and the node1 passphrase bind. Startup replayed 53,383 persisted
+blocks; the fleet was healthy at about 13:50Z.
+
+Initial post-upgrade state at 13:52Z:
+
+- 3/3 nodes at height **53383**, same tip hash, `syncing=false`.
+- Connections: node1=2, node2=1, node3=1.
+- Staking enabled, 4 eligible UTXOs, 506.25 VTR staking, 1 block staked this run.
+- 0 ERROR/panic lines and 0 restarts on all three nodes.
+- Container memory: node1 159.2 MiB, node2 148.5 MiB, node3 148.2 MiB.
+
+The new build includes the review remediation: bootstrap maturity, BTC
+retention boundary and scan floor, empty torrent blocks, uncompressed legacy
+keys, alert metrics, soak evidence checks, compact-block wire budget, frontend
+IPC normalization, WebSocket API-key auth, and CI benchmark baseline handling.
+
+Soak window start: **2026-10-20T13:51:39Z** (first post-upgrade stake, epoch
+`1792504299`). Earliest sign-off: **2026-10-27T13:51:39Z**.
+
+Daily observation:
+
+```bash
+scripts/soak-observe.sh 1792504299
+scripts/soak-status.sh
+```
+
+Daily observations are automated by `scripts/soak-daily.sh` (user cron at
+16:10 local, 09:10 UTC) and appended to `~/.local/state/vtr-soak/observations.md`.
+The cron exit status is in `~/.local/state/vtr-soak/cron.log`; failures also
+append to `~/.local/state/vtr-soak/failures.log` and push to the project ntfy
+topic.
+
+This window validates the review-fix build under regtest fast-stake. It does
+not activate governance, schedule a deployment, or replace the external
+security review. Desktop node-service parity and BTC birthday/checkpoint
+discovery remain open.
+## 2026-10-20 — daily observation (window +0h)
+
+Read-only check at `2026-10-20T13:53Z` (window start `2026-10-20T13:51:39Z`).
+
+- vtr-node1: height **53385**, hash `8ccea62a48c6efbd…`, syncing=false, connections=2, mempool=0, container_mem=159.1MiB
+- vtr-node2: height **53385**, hash `8ccea62a48c6efbd…`, syncing=false, connections=1, mempool=0, container_mem=148.3MiB
+- vtr-node3: height **53385**, hash `8ccea62a48c6efbd…`, syncing=false, connections=1, mempool=0, container_mem=149.1MiB
+
+All three nodes agree on height and tip hash.
+
+- Staking enabled=true, eligible UTXOs=4, blocks staked this run=3.
+
+- Block cadence within the window: n=2 min=61 median=61.0 max=61 mean=61 slow(>120s)=0.
+
+- Prometheus since window start (after 120s startup grace):
+  - node1:22525: 1/1 samples, down=0, gaps>30s=0
+  - node2:22525: 1/1 samples, down=0, gaps>30s=0
+  - node3:22525: 1/1 samples, down=0, gaps>30s=0
+
+- Errors since window start:
+  - vtr-node1: errors=0, restarts=0
+  - vtr-node2: errors=0, restarts=0
+  - vtr-node3: errors=0, restarts=0
+
+- BTC SPV: height=0, synced=false, initialized=false.
+
+Earliest sign-off: **2026-10-27T13:51Z** (window start + 7 days). Next daily observation due 2026-10-21.
