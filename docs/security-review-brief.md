@@ -149,8 +149,8 @@ challenge the repairs and their remaining assumptions independently.
 
 ## 6. What we provide
 - Immutable review delivery:
-  **`aa430e167145ba9b911d828c7f8ef85916ddbb44`**
-  (`fix(rpc): issue single-use WebSocket tokens instead of exposing the API key`).
+  **`fda08ec127944e8ee4bf8c0cc9ca22263179f1ac`**
+  (`docs: move review candidate to the WebSocket-token build`).
   This commit includes the governance template-selection repairs,
   snapshot-based proof reconstruction, admission budget, bounded retries, the
   real-time quota-recovery test, the real-bitcoind SPV reorg tests, the full
@@ -171,7 +171,7 @@ challenge the repairs and their remaining assumptions independently.
 - The review delivery is a source snapshot, not a release tag. The core soak
   fleet runs `vtorrent/node:batch-669ee36` (code `669ee36`, BTC SPV disabled)
   from 2026-10-20T13:51:39Z to 2026-10-27T13:51:39Z. The review candidate
-  `aa430e1` adds the BTC wallet birthday flag, the desktop
+  `fda08ec` adds the BTC wallet birthday flag, the desktop
   governance/earnings/payment/deadline commands, health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake, BTC
   scan, compact-block, and desktop hardening from the adversarial review,
