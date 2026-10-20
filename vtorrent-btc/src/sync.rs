@@ -146,24 +146,6 @@ pub struct BtcSync {
     swap_scan: Mutex<Option<swap_observation::SwapScanTracker>>,
 }
 
-/// Align a scan start so the compact-filter checkpoint anchor is inside the
-/// retained header range. A checkpoint below the retained floor makes
-/// `hashes_from` return a short range and the scan fails closed.
-fn align_scan_start(start_height: u32, retained_floor: u32) -> u32 {
-    let start = start_height.max(retained_floor);
-    let checkpoint = start
-        .saturating_sub(1)
-        .checked_div(CHECKPOINT_INTERVAL)
-        .unwrap_or(0)
-        * CHECKPOINT_INTERVAL;
-    if checkpoint < retained_floor {
-        let boundary = retained_floor.div_ceil(CHECKPOINT_INTERVAL) * CHECKPOINT_INTERVAL;
-        start.max(boundary.saturating_add(1))
-    } else {
-        start
-    }
-}
-
 impl BtcSync {
     pub(crate) async fn verify_swap_funding(
         &self,
@@ -529,18 +511,49 @@ impl BtcSync {
             &checkpoints.filter_headers,
         )?;
 
-        let checkpoint_height = start_height
-            .saturating_sub(1)
-            .checked_div(CHECKPOINT_INTERVAL)
-            .unwrap_or(0)
-            * CHECKPOINT_INTERVAL;
-        let (request_start, mut previous_header) = if checkpoint_height > 0 {
-            let header = candidate
-                .checkpoint(checkpoint_height)
-                .ok_or_else(|| BtcError::Sync("missing compact-filter checkpoint anchor".into()))?;
-            (checkpoint_height + 1, header)
+        let retained_floor = self.headers.lock().retained_floor();
+
+        // Prefer the filter header already stored for the block before the
+        // scan start. A fresh scan at the retained floor has no such record;
+        // the first checkpoint in the range then authenticates the chain.
+        let previous_header = if start_height == 0 {
+            Some(FilterHeader::all_zeros())
+        } else if start_height > retained_floor {
+            let prev_hash = self
+                .headers
+                .lock()
+                .hashes_from(start_height - 1)
+                .first()
+                .copied();
+            prev_hash.and_then(|hash| self.filter_headers.lock().header_for(&hash))
         } else {
-            (0, FilterHeader::all_zeros())
+            None
+        };
+        let next_checkpoint = start_height
+            .div_ceil(CHECKPOINT_INTERVAL)
+            .saturating_mul(CHECKPOINT_INTERVAL);
+        let (request_start, mut previous_header) = if let Some(previous) = previous_header {
+            (start_height, Some(previous))
+        } else if next_checkpoint <= tip_height {
+            (start_height, None)
+        } else {
+            // No stored previous header and no checkpoint in the scan range:
+            // authenticate from the last checkpoint below the start. The scan
+            // still starts at `start_height`; the wider authenticated range
+            // covers its filter headers.
+            let checkpoint_height = start_height
+                .saturating_sub(1)
+                .checked_div(CHECKPOINT_INTERVAL)
+                .unwrap_or(0)
+                * CHECKPOINT_INTERVAL;
+            if checkpoint_height > 0 {
+                let header = candidate.checkpoint(checkpoint_height).ok_or_else(|| {
+                    BtcError::Sync("missing compact-filter checkpoint anchor".into())
+                })?;
+                (checkpoint_height + 1, Some(header))
+            } else {
+                (0, Some(FilterHeader::all_zeros()))
+            }
         };
         let block_hashes = self.headers.lock().hashes_from(request_start);
         if block_hashes.len() != tip_height.saturating_sub(request_start) as usize + 1 {
@@ -571,7 +584,6 @@ impl BtcSync {
             };
             if response.filter_type != FILTER_TYPE_BASIC
                 || response.stop_hash != stop_hash
-                || response.previous_filter_header != previous_header
                 || response.filter_hashes.len() != chunk.len()
             {
                 return Err(BtcError::Sync(format!(
@@ -580,12 +592,21 @@ impl BtcSync {
                     chunk_start + chunk.len() as u32 - 1
                 )));
             }
-            previous_header = candidate.apply_range(
+            if let Some(expected) = previous_header {
+                if response.previous_filter_header != expected {
+                    return Err(BtcError::Sync(format!(
+                        "compact-filter previous header mismatch for heights {}..{}",
+                        chunk_start,
+                        chunk_start + chunk.len() as u32 - 1
+                    )));
+                }
+            }
+            previous_header = Some(candidate.apply_range(
                 chunk_start,
                 chunk,
                 &response.filter_hashes,
-                previous_header,
-            )?;
+                response.previous_filter_header,
+            )?);
         }
 
         let required = if self.network == bitcoin::Network::Regtest {
@@ -617,18 +638,7 @@ impl BtcSync {
         use bitcoin::bip158::BlockFilter;
 
         let retained_floor = self.headers.lock().retained_floor();
-        let requested_start = start_height.max(retained_floor);
-        let start_height = align_scan_start(start_height, retained_floor);
-        if start_height > requested_start {
-            tracing::warn!(
-                "BTC scan starts at {} instead of {} because the compact-filter checkpoint \
-                 was pruned; blocks {}..{} are not scanned",
-                start_height,
-                requested_start,
-                requested_start,
-                start_height.saturating_sub(1)
-            );
-        }
+        let start_height = start_height.max(retained_floor);
         let hashes: Vec<[u8; 32]> = self.headers.lock().hashes_from(start_height);
         if hashes.is_empty() {
             return Ok(0);
@@ -916,12 +926,5 @@ mod tests {
             .match_any(&block_hash, std::iter::once(script.as_bytes()))
             .unwrap();
         assert!(matched, "watched script should match its own block filter");
-    }
-    #[test]
-    fn scan_start_aligns_above_retained_floor() {
-        assert_eq!(align_scan_start(0, 0), 0);
-        assert_eq!(align_scan_start(770_000, 770_000), 770_001);
-        assert_eq!(align_scan_start(770_500, 770_500), 771_001);
-        assert_eq!(align_scan_start(800_000, 770_000), 800_000);
     }
 }

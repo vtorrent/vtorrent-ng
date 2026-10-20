@@ -69,6 +69,13 @@ impl FilterHeaderStore {
             .copied()
     }
 
+    /// Filter header stored for a block hash, if this wallet has scanned it.
+    pub(crate) fn header_for(&self, block_hash: &[u8; 32]) -> Option<FilterHeader> {
+        self.records
+            .get(block_hash)
+            .map(|record| record.filter_header)
+    }
+
     pub(crate) fn apply_range(
         &mut self,
         start_height: u32,
