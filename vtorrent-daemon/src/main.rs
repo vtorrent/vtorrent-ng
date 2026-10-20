@@ -415,10 +415,15 @@ async fn main() -> anyhow::Result<()> {
         } else {
             bitcoin::Network::Bitcoin
         };
+        let network_label = if cli.btc_regtest {
+            "regtest"
+        } else {
+            "mainnet"
+        };
         let mut btc_wallet = vtorrent_btc::wallet::BtcWallet::with_persistence(
             seed,
             network,
-            data_dir.join("btc_utxos.json"),
+            data_dir.join(format!("btc_utxos-{network_label}.json")),
         )
         .map_err(|e| anyhow::anyhow!("Could not load persistent BTC wallet state: {}", e))?;
         // Bound the in-memory SPV header chain (mainnet ~870k headers).

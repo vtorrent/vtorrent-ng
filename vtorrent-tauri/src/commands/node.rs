@@ -162,9 +162,15 @@ pub async fn start_node(
                 .map_err(|_| TauriError::WalletLocked)?;
             wp.as_ref()
                 .map(|p| {
+                    let label = match btc_network {
+                        bitcoin::Network::Bitcoin => "mainnet",
+                        bitcoin::Network::Testnet => "testnet",
+                        bitcoin::Network::Regtest => "regtest",
+                        _ => "other",
+                    };
                     p.parent()
                         .unwrap_or(std::path::Path::new("."))
-                        .join("btc_utxos.json")
+                        .join(format!("btc_utxos-{label}.json"))
                 })
                 .unwrap_or_else(|| std::env::temp_dir().join("vtorrent_btc_utxos.json"))
         };
@@ -315,9 +321,25 @@ pub async fn start_node(
                         // Rebuild the store from the chain so a restart cannot
                         // replay a stale or diverged tail.
                         tracing::error!(
-                            "desktop event bridge lagged, {} events lost; rebuilding block store",
+                            "desktop event bridge lagged, {} events lost; checking block store",
                             n
                         );
+                        let (tip, store_height, diverged) = {
+                            let chain = chain.lock().await;
+                            let tip = chain.best_height();
+                            let store_height = store.best_height().unwrap_or(0);
+                            let store_hash = store.best_hash().ok().flatten();
+                            let diverged = store_hash.is_some_and(|hash| {
+                                chain.block_hash_at_height(store_height) != Some(hash)
+                            });
+                            (tip, store_height, diverged)
+                        };
+                        if !diverged && store_height >= tip {
+                            tracing::debug!(
+                                "desktop event bridge lagged but the block store is current; no rebuild"
+                            );
+                            continue;
+                        }
                         let blocks = {
                             let chain = chain.lock().await;
                             (0..=chain.best_height())
