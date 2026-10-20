@@ -113,7 +113,9 @@ paths.
 - SPV PoS header acceptance remains fail-closed.
 - The full swap test uses one VTR daemon. Separate maker and taker VTR nodes
   remain open.
-- BTC SPV has not been soaked at mainnet-scale header counts.
+- BTC SPV has not been soaked at mainnet-scale header counts. The swap DEX
+  launch scope is pending: if swaps are enabled at launch, that soak is a gate;
+  otherwise enable swaps after the soak.
 - A real-bitcoind reorged-out claim test is not covered. The settlement-state
   downgrade is covered by unit tests.
 - Cold proof reconstruction is unavailable beyond the retained undo window.

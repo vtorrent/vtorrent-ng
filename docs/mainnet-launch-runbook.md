@@ -50,6 +50,11 @@ Launch on that candidate build after the external review and the fresh
 7-day soak. Do not launch on beta.3; it predates the governance and
 proof-service repairs.
 
+The swap DEX is included in the build. If swaps are enabled at mainnet launch,
+the BTC SPV mainnet-scale soak is a launch gate. If swaps are deferred, launch
+with BTC SPV disabled and enable swaps only after that soak and the separate
+maker and taker VTR node validation.
+
 ## 4. Launch procedure
 
 1. **Verify the frozen genesis**: confirm `GENESIS_TIMESTAMP` and the genesis

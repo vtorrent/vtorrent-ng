@@ -223,7 +223,9 @@ actions, operator approval.
       VTR claim, and a conflicting-spend test proves a reorged-out funding
       output disappears after restart. The remaining work is a BTC-SPV soak at
       mainnet-scale header counts and a swap with separate maker and taker VTR
-      nodes, not an unbounded store. See `docs/btc-spv-soak-plan.md`.
+      nodes, not an unbounded store. Launch scope: if swaps are enabled, this
+      soak is a gate; otherwise defer swaps and enable them after the soak.
+      See `docs/btc-spv-soak-plan.md`.
 - [~] **BTC SPV holds ~40 MiB and is not independently soaked** — regtest isolated soak is flat (~160 MiB, 140 headers); **mainnet scale (≥100 MiB at ~870k headers) still unvalidated**. BTC SPV (only
       enabled when `--btc-*` is passed, for atomic swaps) held **~40–47 MiB** on
       node1 and confounded the RSS measurements. It was disabled for the current
