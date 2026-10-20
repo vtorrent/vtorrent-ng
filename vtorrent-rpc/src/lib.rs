@@ -25,6 +25,7 @@
 
 pub mod btc_claim_bump;
 pub mod btc_reconciliation;
+pub mod btc_sync;
 pub mod error;
 pub mod handlers;
 pub mod metrics;

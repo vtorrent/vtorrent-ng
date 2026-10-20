@@ -184,6 +184,11 @@ pub async fn start_node(
     tokio::spawn(vtorrent_rpc::swap_reconciliation::run_reconciler(
         rpc_state.clone(),
     ));
+    // The desktop previously created a BTC wallet but never synced headers or
+    // scanned for UTXOs. Use the same shared loop as the daemon.
+    tokio::spawn(vtorrent_rpc::btc_sync::run_sync_loop(std::sync::Arc::new(
+        rpc_state.clone(),
+    )));
 
     {
         let blocks_staked = Arc::clone(&rpc_state.blocks_staked);

@@ -924,113 +924,9 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Bitcoin SPV sync — resolves DNS seeds and syncs headers in a loop.
-    let btc_wallet = Arc::clone(&rpc_state.btc_wallet);
-    let btc_network = Arc::clone(&rpc_state.btc_network);
-    let btc_peer = Arc::clone(&rpc_state.btc_peer);
-    let reservation_state = rpc_state_for_unlock.clone();
-    tokio::spawn(async move {
-        tracing::info!("Bitcoin SPV sync task started");
-        loop {
-            let has_wallet = btc_wallet.read().await.is_some();
-            if !has_wallet {
-                tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
-                continue;
-            }
-            let network = *btc_network.read().await;
-            // Resolve peers: explicit regtest peer, or mainnet DNS seeds.
-            let addrs: Vec<std::net::SocketAddr> = match btc_peer.read().await.clone() {
-                Some(host) => match resolve_addr(&host).await {
-                    Ok(addr) => vec![addr],
-                    Err(e) => {
-                        tracing::warn!("BTC peer {} unresolved: {}", host, e);
-                        tokio::time::sleep(tokio::time::Duration::from_secs(300)).await;
-                        continue;
-                    }
-                },
-                None => match vtorrent_btc::sync::resolve_seeds().await {
-                    Ok(a) => a,
-                    Err(e) => {
-                        tracing::warn!("BTC seed resolution failed: {}", e);
-                        tokio::time::sleep(tokio::time::Duration::from_secs(300)).await;
-                        continue;
-                    }
-                },
-            };
-            for addr in addrs {
-                tracing::debug!("BTC sync: connecting to {} (network {:?})", addr, network);
-                match vtorrent_btc::p2p::BtcPeer::connect_with_network(addr, network).await {
-                    Ok(mut peer) => {
-                        if let Some(w) = btc_wallet.write().await.as_mut() {
-                            match w.sync(&mut peer).await {
-                                Ok(n) => tracing::info!("BTC sync: {} headers", n),
-                                Err(e) => tracing::warn!("BTC sync error: {}", e),
-                            }
-                            // After header sync, scan for wallet UTXOs from the
-                            // last checkpoint to the tip. Use BIP-158 compact
-                            // block filters (BIP-37 is disabled by most
-                            // mainnet nodes).
-                            //
-                            // Only checkpoint the range actually covered: a
-                            // partial scan (peer filter-index lag, dropped
-                            // connection) must be resumed on the next cycle,
-                            // never skipped over.
-                            loop {
-                                let retained_floor = w.retained_floor();
-                                let start = w.last_scanned_height().max(retained_floor);
-                                let tip = w.best_height();
-                                if start > tip {
-                                    break;
-                                }
-                                if w.last_scanned_height() < retained_floor {
-                                    tracing::warn!(
-                                        "BTC wallet scan starts at retained floor {}; older history is unavailable. Set --btc-birthday to the wallet creation height to scan older funds.",
-                                        retained_floor
-                                    );
-                                }
-                                if w.last_scanned_height() > w.best_height() {
-                                    tracing::warn!(
-                                        "BTC wallet birthday {} is above the current header tip {}; no funds will be scanned",
-                                        w.last_scanned_height(),
-                                        w.best_height()
-                                    );
-                                }
-                                match w.scan_utxos_bip158(&mut peer, start).await {
-                                    Ok(0) => break,
-                                    Ok(n) => {
-                                        let done = start.saturating_add(n as u32);
-                                        w.set_last_scanned_height(done);
-                                        tracing::info!(
-                                            "BTC UTXO scan (BIP-158): {} blocks (through height {})",
-                                            n,
-                                            done.saturating_sub(1)
-                                        );
-                                        if done > tip {
-                                            break;
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!("BTC UTXO scan error: {}", e);
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => tracing::warn!("BTC peer {} failed: {}", addr, e),
-                }
-            }
-            // Release BTC input reservations whose HTLC has expired and whose
-            // funding tx is not confirmed, so a failed funding attempt does not
-            // lock the input forever across restarts.
-            let released =
-                vtorrent_rpc::btc_reconciliation::release_expired_reservations(&reservation_state)
-                    .await;
-            if released > 0 {
-                tracing::info!("Released {} expired BTC input reservation(s)", released);
-            }
-            tokio::time::sleep(tokio::time::Duration::from_secs(300)).await;
-        }
-    });
+    tokio::spawn(vtorrent_rpc::btc_sync::run_sync_loop(std::sync::Arc::new(
+        rpc_state.clone(),
+    )));
 
     let rpc_handle = tokio::spawn(async move {
         tracing::info!("RPC server starting on {}", rpc_addr);
@@ -1179,17 +1075,6 @@ fn print_banner() {
     println!("║  Decentralized • Incentivized • Exchange-Free            ║");
     println!("╚══════════════════════════════════════════════════════════╝");
     println!();
-}
-
-/// Resolve a `host:port` peer address, accepting hostnames as well as IPs.
-async fn resolve_addr(peer: &str) -> anyhow::Result<std::net::SocketAddr> {
-    if let Ok(addr) = peer.parse() {
-        return Ok(addr);
-    }
-    let mut addrs = tokio::net::lookup_host(peer)
-        .await
-        .map_err(|e| anyhow::anyhow!("resolution failed: {}", e))?;
-    addrs.next().ok_or_else(|| anyhow::anyhow!("no addresses"))
 }
 
 /// Validate the `--wallet-passphrase-file` target before startup.
