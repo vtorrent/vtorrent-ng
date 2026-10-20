@@ -149,8 +149,8 @@ challenge the repairs and their remaining assumptions independently.
 
 ## 6. What we provide
 - Immutable review delivery:
-  **`3fb4fbb9b41e012dae71119957bca76c64569bb1`**
-  (`fix(desktop): update peer count and sync health from node events`).
+  **`e047eee98c4dc4e2f74ce43bac1daaeeb77e11ea`**
+  (`feat(btc): share the SPV sync loop with the desktop node`).
   This commit includes the governance template-selection repairs,
   snapshot-based proof reconstruction, admission budget, bounded retries, the
   real-time quota-recovery test, the real-bitcoind SPV reorg tests, the full
@@ -164,16 +164,17 @@ challenge the repairs and their remaining assumptions independently.
   alert metrics, soak evidence, compact-block wire budget, frontend IPC
   normalization, WebSocket auth, CI benchmark baselines, the BTC wallet
   birthday flag, the desktop governance/earnings/payment/deadline commands,
-  and desktop health-field updates), and the evidence documents listed below.
+  desktop health-field updates, and the shared BTC sync loop), and the
+  evidence documents listed below.
   Use this full commit hash rather than floating `main`. If the engagement
   moves to a later implementation, record its full hash explicitly.
 - The review delivery is a source snapshot, not a release tag. The core soak
   fleet runs `vtorrent/node:batch-669ee36` (code `669ee36`, BTC SPV disabled)
   from 2026-10-20T13:51:39Z to 2026-10-27T13:51:39Z. The review candidate
-  `3fb4fbb` adds the BTC wallet birthday flag, the desktop
-  governance/earnings/payment/deadline commands, and health-field updates;
-  rebuild the release image from it. The soak is supporting evidence, not a
-  substitute for this review.
+  `e047eee` adds the BTC wallet birthday flag, the desktop
+  governance/earnings/payment/deadline commands, health-field updates, and the
+  shared BTC sync loop; rebuild the release image from it. The soak is
+  supporting evidence, not a substitute for this review.
 - `docs/` — designs + adversarial reviews for every subsystem
   (`cold-staking-p2cs-design.md`, `op-return-utxo-exclusion-design.md`,
   `network-upgrade-design.md`, `atomic-swap-protocol.md`,

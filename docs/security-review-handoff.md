@@ -7,18 +7,18 @@ and deliverables are in `docs/security-review-brief.md`.
 
 | Item | Value |
 | --- | --- |
-| Pinned commit | `3fb4fbb9b41e012dae71119957bca76c64569bb1` |
+| Pinned commit | `e047eee98c4dc4e2f74ce43bac1daaeeb77e11ea` |
 | Brief | Latest `docs/security-review-brief.md` from `main`; it pins this commit |
 | Toolchain | Rust 1.90.0 (`rust-toolchain.toml`) |
 | Dependency lock | Archive the `Cargo.lock` used for the build; it is gitignored |
-| Fleet image | Core soak: `vtorrent/node:batch-669ee36`; release build: rebuild from `3fb4fbb` |
+| Fleet image | Core soak: `vtorrent/node:batch-669ee36`; release build: rebuild from `e047eee` |
 | Soak window | 2026-10-19T09:06:31Z to 2026-10-26T09:06:31Z |
 
 Verify the commit resolves before sending:
 
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
-git -C vtorrent-ng checkout 3fb4fbb9b41e012dae71119957bca76c64569bb1
+git -C vtorrent-ng checkout e047eee98c4dc4e2f74ce43bac1daaeeb77e11ea
 git -C vtorrent-ng rev-parse HEAD
 ```
 
@@ -100,9 +100,9 @@ TMPDIR=/tmp/opencode cargo test -p vtorrent-daemon --release --features test-uti
 - [ ] Every document referenced by the brief exists at the pinned commit.
 - [ ] The full release-mode workspace suite passed at `ff6f472`; the changed
       crate suites and Clippy passed at `669ee36`, which adds the review
-      remediation fixes. The BTC birthday flag, desktop commands, and desktop
-      health fields compile and pass Clippy. The reviewer should run the full
-      suite at the pinned commit.
+      remediation fixes. The BTC birthday flag, desktop commands, desktop
+      health fields, and shared BTC sync loop compile and pass Clippy. The
+      reviewer should run the full suite at the pinned commit.
 - [ ] The independent genesis verifier passes.
 - [ ] The evidence index and the limitations above are included.
 - [ ] Contact, timeline, and confidentiality terms are agreed.
@@ -118,7 +118,7 @@ Hello <name>,
 We are requesting an independent security review of vTorrent 2.0.0 before
 mainnet activation. The scope and deliverables are in the attached brief.
 
-Pinned source: 3fb4fbb9b41e012dae71119957bca76c64569bb1
+Pinned source: e047eee98c4dc4e2f74ce43bac1daaeeb77e11ea
 Repository: https://github.com/vtorrent/vtorrent-ng
 
 The review focuses on wallet custody, consensus and governance, the stake-proof
