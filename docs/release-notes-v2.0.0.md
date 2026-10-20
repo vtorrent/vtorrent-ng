@@ -139,7 +139,7 @@ paths.
   wallet birthday flag, desktop commands, desktop health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake/BTC/
   compact-block/desktop hardening from the adversarial review and must be
-  rebuilt from `dce9ad1`. The fresh soak window started 2026-10-20T13:51:39Z.
+  rebuilt from `8c97869`. The fresh soak window started 2026-10-20T13:51:39Z.
 
 ## Known limitations
 
@@ -161,7 +161,6 @@ paths.
   funding discovery, and two-node propagation still need a runtime test.
 - Cold-stake funding uses the raw P2CS script via `fund_cold_stake`; the P2SH
   label address is not stakeable and must not be used as a funding address.
-- The WebSocket API key is still accepted in the query string.
 
 ## Checksums
 

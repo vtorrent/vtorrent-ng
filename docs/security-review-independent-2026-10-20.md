@@ -5,7 +5,7 @@ Reviewed revision: `26fec4b7cba01b9ee66311d47afbf1f6017142e8`
 (`feat(desktop): load and persist chain state from the block store`).
 Fix commits: `7c1e429` (P2CS authorization/burn), `1b0da9a` (BTC scan),
 `b7a50e9` (v3 notfound), `5ce91d2` (desktop persistence), `80ccc52`
-(raw-script cold-stake funding).
+(raw-script cold-stake funding), `8c97869` (WebSocket subprotocol auth).
 
 This review was performed by an AI assistant that also contributed to the
 implementation. It is useful as a pre-audit and as a source of reproducible
@@ -239,7 +239,8 @@ test session treats as its own.
 **Fix applied:** the wallet network is selected from `config.regtest` /
 `config.testnet` / mainnet.
 
-### L-1 — Low: WebSocket API key is accepted in the query string
+### L-1 — Low (FIXED in `8c97869`): WebSocket API key was accepted in the
+query string
 
 **Where:** `vtorrent-rpc/src/ws.rs:169-173`; public route at
 `vtorrent-rpc/src/server.rs:222-226`.
@@ -250,8 +251,10 @@ layers.
 
 **Impact:** credential leakage to logs or intermediaries.
 
-**Fix:** use a short-lived one-time token, a subprotocol, or a cookie; redact
-query strings in logs. At minimum document the exposure.
+**Fix applied:** the upgrade authenticates with
+`Sec-WebSocket-Protocol: vtr-api-key.<hex(api_key)>`; query-string keys are
+rejected. The frontend hooks send the subprotocol, and the real WebSocket test
+covers missing, query-string, and subprotocol upgrades.
 
 ## Positive observations
 
@@ -288,8 +291,8 @@ query strings in logs. At minimum document the exposure.
 
 1. Ensure the UI uses `fund_cold_stake` with the raw P2CS script and never
    advertises the P2SH label as a funding address.
-2. Fix L-1 (WebSocket query token) and audit the remaining direct JSON
-   decoders.
+2. Audit the remaining direct JSON decoders and add the desktop/BTC runtime
+   tests.
 3. Add a desktop restart/BTC-discovery runtime test and a mainnet-scale BTC SPV
    retention test.
 4. Re-run the probes and commission the external review on the fixed revision.
