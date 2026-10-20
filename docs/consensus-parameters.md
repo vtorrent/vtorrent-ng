@@ -17,7 +17,7 @@
 | Parameter | Value | Source |
 |---|---|---|
 | Address prefix | `70` (Base58Check → `V...`) | `vtorrent-core/src/network.rs:37` |
-| WIF prefix | `198` (→ `7...`) | `vtorrent-core/src/network.rs:40` |
+| WIF prefix | `198` (→ `W...`) | `vtorrent-core/src/network.rs:40` |
 | Checksum | Double-SHA256 first 4 bytes | `vtorrent-core/src/address.rs` |
 
 ## Consensus Rules

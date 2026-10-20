@@ -18,6 +18,7 @@ mod interrupted_reorg;
 mod rpc_polling;
 mod swap_recovery;
 mod sync_status;
+mod wallet_restart;
 
 // Each scenario replays the full genesis snapshot; keep scenarios from starving
 // one another on CI while retaining concurrent nodes within each scenario.
@@ -203,6 +204,27 @@ impl Daemon {
         )
         .await
         .unwrap_or_else(|error| panic!("GET {path} failed: {error}; {}", self.logs()))
+    }
+
+    async fn post(&self, path: &str, body: Value) -> Value {
+        let (status, response) = self.try_post(path, body).await;
+        assert!(
+            status.is_success(),
+            "POST {path}: {status} {response}; {}",
+            self.logs()
+        );
+        response
+    }
+
+    async fn try_post(&self, path: &str, body: Value) -> (reqwest::StatusCode, Value) {
+        rpc_polling::post_json_once(
+            &self.client,
+            &format!("{}{path}", self.rpc),
+            &body,
+            MUTATION_TIMEOUT,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("POST {path} failed: {error}; {}", self.logs()))
     }
 
     async fn mint(&self, tag: u8) -> Value {

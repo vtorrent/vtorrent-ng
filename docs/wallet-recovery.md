@@ -44,34 +44,29 @@ For legacy claim purposes, users need:
 
 ## Recovery Methods
 
-### Method 1: Import WIF Key
+### Method 1: Import a WIF key
 
-If you have the WIF private key exported from the legacy wallet:
+If you have the WIF private key exported from the legacy wallet, use the
+desktop app's import screen or the RPC endpoint:
 
-```bash
-vtorrent-cli wallet import --wif 7...
-```
-
-Or via RPC:
 ```json
 POST /api/v1/wallet/import
 {
   "wif": "7...",
-  "label": "recovered-wallet"
+  "passphrase": "<new wallet passphrase>",
+  "overwrite": false
 }
 ```
 
+The request requires `passphrase`. Set `overwrite` to true only when replacing
+an existing wallet. The endpoint requires the API key when one is configured.
+
 ### Method 2: Migrate wallet.dat
 
-If you have the legacy `wallet.dat` file:
-
-```bash
-# Unencrypted wallet.dat
-vtorrent-cli wallet migrate --dat /path/to/wallet.dat
-
-# Encrypted wallet.dat
-vtorrent-cli wallet migrate --dat /path/to/wallet.dat --passphrase "old-password"
-```
+Use the desktop app's Legacy Wallet Import. It reads the `wallet.dat`, decrypts
+the keys with the old passphrase, imports them into a new encrypted wallet, and
+shows the claimable snapshot balance. There is no `vtorrent-cli wallet migrate`
+command.
 
 The migration tool:
 1. Opens the BerkeleyDB database (uses `db5.3_dump` fallback for BDB v5.3+)
@@ -80,13 +75,12 @@ The migration tool:
 4. Extracts the pool/stealth key pairs
 5. **Note**: Does NOT extract actual deposit addresses (stealth addresses are one-time)
 
-### Method 3: From Seed Phrase (if available)
+### Method 3: Seed phrase (BTC SPV only)
 
-If the legacy wallet used a mnemonic seed phrase:
-
-```bash
-vtorrent-cli wallet import --seed "word1 word2 ... word24"
-```
+The BIP39 mnemonic stored in the wallet is the seed for the **Bitcoin SPV**
+wallet. It does not derive VTR addresses; VTR keys are random and must be
+backed up as a WIF or a legacy `wallet.dat`. Do not rely on the mnemonic to
+recover VTR funds.
 
 ## Encrypted Wallet Recovery
 
@@ -117,12 +111,12 @@ The genesis snapshot uses vTorrent-NG addresses (`V...`), but the old chain used
 After import, verify your recovered address:
 
 ```bash
-vtorrent-cli wallet addresses
+vtorrent-cli addresses
 ```
 
 Check the balance:
 ```bash
-vtorrent-cli wallet balance
+vtorrent-cli balance
 ```
 
 Or via RPC:

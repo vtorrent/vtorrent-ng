@@ -82,7 +82,7 @@ cd vtorrent-ui && pnpm lint
 - **Ports**: P2P `22526`, RPC `22525` (testnet uses the same defaults).
 - **Consensus**: Proof-of-Stake, 60s target block time, 5% annual reward, min stake 1 VTR,
   min stake age 6 hours (max stake age 6 days), max supply 20,000,000 VTR.
-- **Address format**: Base58Check prefix `70` (`V...`); WIF prefix `198` (`7...`).
+- **Address format**: Base58Check prefix `70` (`V...`); WIF prefix `198` (`W...`).
 - **Genesis**: deterministic, embeds a legacy UTXO snapshot (59,375 addresses,
   11,589,746.63 VTR) for old-holder claims.
 - **DNS seeds**: `seed1.vtorrent.org` (Falkenstein DE), `seed2.vtorrent.org`

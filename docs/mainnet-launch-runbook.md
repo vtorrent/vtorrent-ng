@@ -13,7 +13,7 @@ Companion to `docs/mainnet-readiness.md` (checklist) and
 | P2P port | 22526 | `network.rs:46` |
 | RPC port | 22527 (daemon default 22525) | `network.rs:49`, `config.rs:22` |
 | Address prefix | 70 (`V…`) | `network.rs:37` |
-| WIF prefix | 198 (`7…`) | `network.rs:40` |
+| WIF prefix | 198 (`W…`) | `network.rs:40` |
 | Genesis message | `"vTorrent 2.0 - Revived 2025 - Old holders made whole - No exchange needed"` | `genesis.rs:20` |
 | Genesis timestamp | `1_700_000_000` — **frozen; do not change** | `genesis.rs:24` |
 | Target block time | 60 s | `consensus.rs:53` |
