@@ -617,7 +617,18 @@ impl BtcSync {
         use bitcoin::bip158::BlockFilter;
 
         let retained_floor = self.headers.lock().retained_floor();
+        let requested_start = start_height.max(retained_floor);
         let start_height = align_scan_start(start_height, retained_floor);
+        if start_height > requested_start {
+            tracing::warn!(
+                "BTC scan starts at {} instead of {} because the compact-filter checkpoint \
+                 was pruned; blocks {}..{} are not scanned",
+                start_height,
+                requested_start,
+                requested_start,
+                start_height.saturating_sub(1)
+            );
+        }
         let hashes: Vec<[u8; 32]> = self.headers.lock().hashes_from(start_height);
         if hashes.is_empty() {
             return Ok(0);
