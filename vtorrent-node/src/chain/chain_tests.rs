@@ -682,6 +682,103 @@ fn test_pos_block_with_bad_kernel_rejected() {
 }
 
 #[test]
+fn test_coinstake_with_non_stakeable_script_rejected() {
+    use secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+    let secp = Secp256k1::new();
+    let mut key_bytes = [0u8; 32];
+    key_bytes[31] = 9;
+    let key = vtorrent_core::keys::PrivateKey::from_bytes(key_bytes, true).unwrap();
+    let secret = SecretKey::from_slice(key.as_bytes()).unwrap();
+    let pubkey = PublicKey::from_secret_key(&secp, &secret);
+
+    let mut p2pk = vtorrent_script::Script::new();
+    p2pk.push_data(&pubkey.serialize()).unwrap();
+    p2pk.push_opcode(0xac); // OP_CHECKSIG
+
+    let mut chain = Chain::new().expect("Chain init failed");
+    let funding_ts = 1_700_000_001u32;
+    let funding_block = make_coinbase_to_script(
+        chain.best_hash().unwrap(),
+        0,
+        1,
+        funding_ts,
+        p2pk.as_bytes().to_vec(),
+        100 * crate::consensus::COIN,
+    );
+    chain.add_block(funding_block).unwrap();
+    let utxo = chain
+        .get_utxo_set()
+        .values()
+        .find(|u| u.script_pubkey.as_slice() == p2pk.as_bytes())
+        .cloned()
+        .expect("P2PK funding UTXO");
+
+    let prev_stake_modifier = chain
+        .get_block_at_height(1)
+        .map(|b| b.header.stake_modifier)
+        .unwrap_or(0);
+    let timestamp = funding_ts + crate::consensus::MIN_STAKE_AGE as u32;
+    let mut coinstake = Transaction {
+        version: 1,
+        tx_type: TxType::Coinstake,
+        inputs: vec![TxInput {
+            prev_txid: utxo.txid,
+            prev_vout: utxo.vout,
+            script_sig: Vec::new(),
+            sequence: u32::MAX,
+        }],
+        outputs: vec![
+            TxOutput {
+                value: 0,
+                script_pubkey: Vec::new(),
+            },
+            TxOutput {
+                value: utxo.value,
+                script_pubkey: p2pk.as_bytes().to_vec(),
+            },
+        ],
+        lock_time: 2,
+        claim_address: None,
+        claim_signature: None,
+    };
+    // Sign the P2PK input so script verification passes; the stakeability
+    // check must still reject the block.
+    let sighash = coinstake.sighash(0, &utxo.script_pubkey);
+    let message = secp256k1::Message::from_digest(sighash);
+    let signature = secp.sign_ecdsa(&message, &secret);
+    let mut signature = signature.serialize_der().to_vec();
+    signature.push(0x01); // SIGHASH_ALL
+    let mut script_sig = vtorrent_script::Script::new();
+    script_sig.push_data(&signature).unwrap();
+    coinstake.inputs[0].script_sig = script_sig.as_bytes().to_vec();
+    let parent_hash = chain.best_hash().unwrap();
+    let mut block = Block {
+        header: BlockHeader {
+            version: 2,
+            prev_block_hash: parent_hash,
+            merkle_root: [0u8; 32],
+            utxo_root: [0u8; 32],
+            timestamp,
+            bits: crate::genesis::GENESIS_BITS,
+            nonce: 0,
+            stake_modifier: compute_stake_modifier(prev_stake_modifier, &parent_hash),
+        },
+        transactions: vec![coinstake],
+    };
+    block.header.merkle_root = block.compute_merkle_root();
+
+    let err = chain
+        .add_block(block)
+        .expect_err("P2PK coinstake must be rejected");
+    assert!(
+        err.to_string().contains("not a stakeable output"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(chain.best_height(), 1);
+}
+
+#[test]
 fn test_legacy_claim_does_not_double_count_supply() {
     // A user legacy claim (claim_address = Some) is funded by the snapshot
     // already counted in genesis, so it must not add to the supply.

@@ -1,7 +1,7 @@
 use crate::{
     block::{Block, Transaction},
     consensus::{
-        check_stake_kernel_v2, compute_pos_reward_with, validate_legacy_claim,
+        check_stake_kernel_v2, compute_pos_reward_with, is_stakeable_with, validate_legacy_claim,
         validate_transaction, MAX_BLOCK_SIZE, MAX_SUPPLY,
     },
     error::{NodeError, Result},
@@ -605,6 +605,11 @@ fn apply_transaction_journaled(
         let staked = stake_input.as_ref().ok_or_else(|| {
             NodeError::InvalidTransaction("Coinstake must spend a stake input".into())
         })?;
+        if !is_stakeable_with(&chain.params, staked) {
+            return Err(NodeError::InvalidTransaction(
+                "Coinstake input is not a stakeable output".into(),
+            ));
+        }
         let coin_age = timestamp.saturating_sub(staked.timestamp);
         if staked.value < chain.params.min_stake_amount {
             return Err(NodeError::InvalidTransaction(format!(

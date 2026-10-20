@@ -142,6 +142,7 @@ fn seed(args: &Args) -> GovernanceState {
                 proposal_id: *gov.proposals.first_key_value().unwrap().0,
                 voting_origin: (txid, vout),
                 voting_value: COIN,
+                voting_origin_height: 0,
             },
         );
     }
@@ -212,6 +213,7 @@ fn advance(gov: &mut GovernanceState, args: &Args, step: usize) -> Result<()> {
                 proposal_id: id,
                 voting_origin: point,
                 voting_value: COIN,
+                voting_origin_height: 0,
             },
         );
     }

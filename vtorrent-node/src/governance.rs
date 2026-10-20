@@ -327,6 +327,9 @@ pub struct VoteLock {
     pub proposal_id: [u8; 8],
     pub voting_origin: OutPoint,
     pub voting_value: u64,
+    /// Height at which the voting origin was created. Votes may only use stake
+    /// that existed before the proposal's creation block.
+    pub voting_origin_height: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -619,11 +622,17 @@ impl GovernanceState {
                     return Err(invalid("voting outpoint is not mature stake"));
                 }
                 let voter = signed.owner(utxo, genesis)?;
-                let (origin, stake) = self
+                let (origin, stake, origin_height) = self
                     .locked_utxos
                     .get(&signed.outpoint)
-                    .map(|l| (l.voting_origin, l.voting_value.min(utxo.value)))
-                    .unwrap_or((signed.outpoint, utxo.value));
+                    .map(|l| {
+                        (
+                            l.voting_origin,
+                            l.voting_value.min(utxo.value),
+                            l.voting_origin_height,
+                        )
+                    })
+                    .unwrap_or((signed.outpoint, utxo.value, utxo.height));
                 let rec = self
                     .proposals
                     .get_mut(&signed.vote.proposal_id)
@@ -631,6 +640,9 @@ impl GovernanceState {
                 if height <= rec.created_height || height >= rec.proposal.voting_end || rec.decided
                 {
                     return Err(invalid("governance voting window is closed"));
+                }
+                if origin_height >= rec.created_height {
+                    return Err(invalid("voting stake did not exist at proposal creation"));
                 }
                 if !rec.voted_outpoints.insert(origin) {
                     return Err(invalid("voting outpoint already counted for this proposal"));
@@ -659,6 +671,7 @@ impl GovernanceState {
                         proposal_id: signed.vote.proposal_id,
                         voting_origin: origin,
                         voting_value: stake,
+                        voting_origin_height: origin_height,
                     });
                 if unlock > lock.unlock_height {
                     lock.unlock_height = unlock;

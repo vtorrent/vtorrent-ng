@@ -266,6 +266,64 @@ fn same_block_setup() -> (Chain, Transaction, Transaction, u32) {
 }
 
 #[test]
+fn vote_with_stake_acquired_after_proposal_is_rejected() {
+    let (mut chain, _owner, id, _blocks) = fixture(true);
+
+    // Create a new stakeable UTXO after the proposal block (height 2).
+    let mut funding = block(
+        &chain,
+        chain.best_hash().unwrap(),
+        3,
+        FUNDING_TIME + MIN_STAKE_AGE as u32 + 1,
+        3,
+        vec![],
+    );
+    funding.transactions[0].outputs = vec![output(3, 1000 * COIN)];
+    funding.header.merkle_root = funding.compute_merkle_root();
+    chain.add_block(funding).unwrap();
+
+    let new_owner = chain.get_utxos_for_address(&address(3))[0].clone();
+    let vote = SignedVote::sign(
+        Vote {
+            proposal_id: id,
+            choice: VoteChoice::Yes,
+        },
+        (new_owner.txid, new_owner.vout),
+        chain.height_index[0],
+        &key(3),
+    );
+    let payer = chain.get_utxos_for_address(&address(2))[0].clone();
+    let vote_tx = spend(
+        &payer,
+        2,
+        vec![
+            TxOutput {
+                value: 1,
+                script_pubkey: vote.script().unwrap(),
+            },
+            output(2, payer.value - COIN),
+        ],
+    );
+    let voted = block(
+        &chain,
+        chain.best_hash().unwrap(),
+        4,
+        FUNDING_TIME + 2 * MIN_STAKE_AGE as u32 + 2,
+        4,
+        vec![vote_tx],
+    );
+    let err = chain
+        .add_block(voted)
+        .expect_err("stake acquired after the proposal must not vote");
+    assert!(
+        err.to_string()
+            .contains("did not exist at proposal creation"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(chain.best_height(), 3);
+}
+
+#[test]
 fn same_block_proposal_and_vote_is_rejected() {
     // Hazard: a vote requires `height > proposal.created_height`, so a block
     // containing both a proposal and its vote is invalid in either order.
