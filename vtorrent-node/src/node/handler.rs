@@ -2031,7 +2031,7 @@ pub(crate) async fn dispatch_message(
 
         // ── Not-found ─────────────────────────────────────────────────────
         "notfound" => {
-            if let Ok(nf) = serde_json::from_slice::<InvMsg>(&msg.payload) {
+            if let Ok(nf) = decode_for_peer::<InvMsg>(&msg.payload, peer_version) {
                 for item in &nf.items {
                     // A compact-block transaction set that cannot fit the wire
                     // limit is reported as notfound. Fall back to the full
