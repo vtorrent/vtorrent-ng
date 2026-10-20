@@ -147,21 +147,25 @@ challenge the repairs and their remaining assumptions independently.
 
 ## 6. What we provide
 - Immutable review delivery:
-  **`d6550f06214ea7f67346bb20fe6603f687a8e6e2`**
-  (`perf(btc): amortize header retention pruning`).
+  **`ff14e5881794fc831d3e37fb8eb7c46abc7ca2b7`**
+  (`test(migrate): cover encrypted legacy wallet extraction`).
   This commit includes the governance template-selection repairs,
   snapshot-based proof reconstruction, admission budget, bounded retries, the
   real-time quota-recovery test, the real-bitcoind SPV reorg tests, the full
   HTLC swap settlement test, the reorged-out funding test, the independent
-  genesis verifier, the amortized BTC header retention fix, and the evidence
-  documents listed below.
+  genesis verifier, the amortized BTC header retention fix, the stakeable
+  coinstake and governance snapshot fixes, the desktop broadcast and BTC
+  overflow fixes, the DEX and torrent availability fixes, the sensitive-route
+  auth and P2P key-normalization fixes, the encrypted-wallet restart and
+  legacy-extraction tests, and the evidence documents listed below.
   Use this full commit hash rather than floating `main`. If the engagement
   moves to a later implementation, record its full hash explicitly.
 - The review delivery is a source snapshot, not a release tag. The core soak
   fleet runs `vtorrent/node:batch-ff6f472` (BTC SPV disabled) from 2026-10-19
-  to 2026-10-26. The review candidate `d6550f0` adds the header retention fix;
-  rebuild the release image from it. The soak is supporting evidence, not a
-  substitute for this review.
+  to 2026-10-26, but that image predates the P0/P1 fixes in the review
+  candidate. Rebuild the release image from `ff14e58` and restart the soak on
+  it before sign-off. The soak is supporting evidence, not a substitute for
+  this review.
 - `docs/` — designs + adversarial reviews for every subsystem
   (`cold-staking-p2cs-design.md`, `op-return-utxo-exclusion-design.md`,
   `network-upgrade-design.md`, `atomic-swap-protocol.md`,

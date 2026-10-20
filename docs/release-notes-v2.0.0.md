@@ -83,19 +83,40 @@ paths.
 - The independent genesis verifier (`scripts/verify-genesis.py`) parses the
   snapshot without the Rust decoder and reproduces the transaction ids, Merkle
   root, UTXO root, and genesis hash. CI runs it after the workspace tests.
+- Coinstake validation now requires a stakeable script, closing the P2PK
+  kernel-denominator bypass.
+- Governance votes require stake that predates the proposal block, closing the
+  flash-stake window while preserving transferred vote locks.
+- Desktop sends now relay through the P2P broadcast channel instead of stopping
+  at the local mempool.
+- BTC amounts and fees are capped at `MAX_MONEY` and use checked arithmetic.
+- DEX eviction only removes open orders; funded and in-progress swaps survive
+  gossip pressure.
+- `getblocktxn` caps and deduplicates indexes and serializes outside the chain
+  lock. The torrent assembler rejects overlapping blocks and caps buffered
+  blocks per piece.
+- `PaymentUri` decoding no longer panics on multi-byte characters.
+- Sensitive BTC, torrent, and peer reads require the API key. P2P egress and PEX
+  quotas and ban scores are keyed by normalized IP, so reconnects and IPv6
+  rotation do not reset them.
 
 ## Testing
 
 - The full release-mode workspace suite passed at `ff6f472`, including the
   node, daemon recovery, RPC, governance, and proof-service tests. The
-  `vtorrent-btc` suite and Clippy passed at `d6550f0`, which adds the header
-  retention fix.
+  changed crate suites and Clippy passed at `ff14e58`, which adds the P0/P1
+  fixes. Rerun the full workspace suite before tagging.
 - The RPC library suite passes 142 tests, including the test-miner auth
   regression.
 - Real-bitcoind tests cover two-daemon SPV agreement, reorg re-inclusion, the
   full HTLC swap, and reorged-out funding.
 - The ignored mainnet-scale header retention test inserts 870,000 headers and
   verifies the retained store stays within the bound.
+- The encrypted-wallet restart test covers import, unlock, send, SIGTERM,
+  `wallet.json` mode 0600, locked restart, wrong-passphrase rejection, restored
+  address and balance, and mempool persistence.
+- The legacy extraction test builds a synthetic encrypted `mkey`/`ckey` wallet
+  and verifies decryption, address derivation, and wrong-passphrase rejection.
 - The real-time proof quota test drains the per-IP allowance, observes the
   initial denial, and verifies automatic recovery after the 65-second retry.
 - The fresh 7-day soak runs from 2026-10-19 to 2026-10-26 on
@@ -112,9 +133,9 @@ paths.
   fleet, so the soak does not exercise the swap paths.
 - Existing chain data is preserved. Do not delete `chain.db` during the
   upgrade.
-- The release build includes the amortized BTC header retention fix. The core
-  soak image `batch-ff6f472` predates it and has BTC SPV disabled; rebuild the
-  release image from `d6550f0`.
+- The release build includes the P0/P1 fixes. The core soak image
+  `batch-ff6f472` predates them and has BTC SPV disabled; rebuild the release
+  image from `ff14e58` and restart the soak on it.
 
 ## Known limitations
 

@@ -1877,6 +1877,10 @@ topic. The first automated run at window +5h recorded height 52,015, 3/3 tip
 agreement, 301 blocks staked, median cadence 61 s, 1,223/1,223 Prometheus
 samples per node, and 0 errors or restarts.
 
+**Superseded for the review candidate.** The P0/P1 fixes committed after this
+window started are not in `batch-ff6f472`. Rebuild the image from `ff14e58` and
+restart the 7-day window on `batch-ff14e58` before sign-off.
+
 This window validates the new code under regtest fast-stake. It does not
 activate governance, schedule a deployment, or replace the external security
 review.

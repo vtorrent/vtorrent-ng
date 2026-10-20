@@ -43,7 +43,7 @@
 - [ ] **External security review** — **brief finalized, not yet commissioned**:
       `docs/security-review-brief.md` (scope, deliverables, 2-phase engagement).
       The proposed immutable delivery is
-      `d6550f06214ea7f67346bb20fe6603f687a8e6e2`, which includes the governance,
+      `ff14e5881794fc831d3e37fb8eb7c46abc7ca2b7`, which includes the governance,
       reorg, and stake-proof service repairs, the real-bitcoind SPV and swap
       tests, and the independent genesis verifier. The review covers wallet
       encryption (Argon2id + ChaCha20-Poly1305), consensus and governance,
@@ -84,7 +84,9 @@ from uninterrupted soak measurements.
       hits; the continuous-window check remains pending.)*
 - [~] **Post-upgrade 7-day soak (run 3)** — fleet upgraded from
       `vtorrent/node:batch-205cadb` to `vtorrent/node:batch-ff6f472` (code
-      commit `ff6f472`) on 2026-10-19. Window started
+      commit `ff6f472`) on 2026-10-19. That image predates the P0/P1 fixes;
+      rebuild and restart the window on `batch-ff14e58` before sign-off.
+      Window started
       `2026-10-19T09:06:31Z` and ends `2026-10-26T09:06:31Z`. Daily
       observations are automated by `scripts/soak-daily.sh` and recorded in
       `~/.local/state/vtr-soak/observations.md`. Initial state: 3/3 nodes at
