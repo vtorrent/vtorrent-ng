@@ -105,9 +105,9 @@ paths.
 - The full release-mode workspace suite passed at `ff6f472`, including the
   node, daemon recovery, RPC, governance, and proof-service tests. The
   changed crate suites and Clippy passed at `669ee36`, which adds the review
-  remediation fixes. The BTC birthday flag, desktop commands, desktop health fields, and shared
-  BTC sync loop compile and pass Clippy. Rerun the full workspace suite before
-  tagging.
+  remediation fixes. The BTC birthday flag, desktop commands, desktop health fields, shared BTC
+  sync loop, and desktop chain persistence compile and pass Clippy. Rerun the
+  full workspace suite before tagging.
 - The RPC library suite passes 142 tests, including the test-miner auth
   regression.
 - Real-bitcoind tests cover two-daemon SPV agreement, reorg re-inclusion, the
@@ -136,9 +136,9 @@ paths.
 - Existing chain data is preserved. Do not delete `chain.db` during the
   upgrade.
 - The core soak fleet runs `batch-669ee36`. The release build includes the BTC
-  wallet birthday flag, desktop commands, desktop health-field updates, and the
-  shared BTC sync loop and must be rebuilt from `e047eee`. The fresh soak window
-  started 2026-10-20T13:51:39Z.
+  wallet birthday flag, desktop commands, desktop health-field updates, the
+  shared BTC sync loop, and desktop chain persistence and must be rebuilt from
+  `26fec4b`. The fresh soak window started 2026-10-20T13:51:39Z.
 
 ## Known limitations
 
@@ -156,9 +156,8 @@ paths.
 - Cold proof reconstruction is unavailable beyond the retained undo window.
   The retry queue is in memory and resets on restart.
 - The proof admission budget bounds request counts, not CPU milliseconds.
-- Desktop store replay/persistence remains open. The governance, earnings,
-  payment-request, and swap-deadline Tauri commands, desktop health-field
-  updates, and shared BTC sync loop are now present.
+- Desktop chain persistence was added. Desktop restart, real peer status, BTC
+  funding discovery, and two-node propagation still need a runtime test.
 
 ## Checksums
 
