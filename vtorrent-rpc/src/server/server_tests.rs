@@ -1395,6 +1395,22 @@ async fn test_feature_endpoints_are_routed() {
     }
 }
 
+#[tokio::test]
+async fn sensitive_read_routes_require_api_key() {
+    let mut state = AppState::new();
+    state.rpc_api_key = Some("test-key".into());
+    let app = build_router(state);
+    for uri in [
+        "/api/v1/btc/status",
+        "/api/v1/btc/address",
+        "/api/v1/torrent/sessions",
+        "/api/v1/peers",
+    ] {
+        let (status, _) = get(app.clone(), uri).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
+    }
+}
+
 #[cfg(feature = "test-util")]
 #[tokio::test]
 async fn test_test_miner_requires_api_key() {

@@ -109,3 +109,43 @@ pub async fn ip_rate_limit(
         None => Ok(next.run(request).await),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ip() -> IpAddr {
+        "203.0.113.1".parse().unwrap()
+    }
+
+    #[test]
+    fn test_window_allows_100_then_limits() {
+        let mut limiter = RateLimiter::new();
+        for _ in 0..MAX_REQUESTS {
+            assert!(!limiter.is_rate_limited(ip()));
+        }
+        assert!(limiter.is_rate_limited(ip()));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_window_resets_after_expiry() {
+        let mut limiter = RateLimiter::new();
+        for _ in 0..MAX_REQUESTS {
+            assert!(!limiter.is_rate_limited(ip()));
+        }
+        assert!(limiter.is_rate_limited(ip()));
+        tokio::time::advance(WINDOW + Duration::from_secs(1)).await;
+        assert!(!limiter.is_rate_limited(ip()));
+    }
+
+    #[test]
+    fn test_distinct_ips_have_separate_windows() {
+        let mut limiter = RateLimiter::new();
+        let other: IpAddr = "203.0.113.2".parse().unwrap();
+        for _ in 0..MAX_REQUESTS {
+            assert!(!limiter.is_rate_limited(ip()));
+        }
+        assert!(limiter.is_rate_limited(ip()));
+        assert!(!limiter.is_rate_limited(other));
+    }
+}

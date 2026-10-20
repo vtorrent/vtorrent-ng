@@ -178,6 +178,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/blockchain/bootstrap", post(bootstrap_chain))
         .route("/api/v1/spv/headers", post(add_spv_headers))
         .route("/api/v1/btc/send", post(send_btc))
+        .route("/api/v1/btc/status", get(get_btc_status))
+        .route("/api/v1/btc/address", get(get_btc_address))
+        .route("/api/v1/torrent/sessions", get(list_torrent_sessions))
+        .route("/api/v1/peers", get(get_peers))
         .route(
             "/api/v1/debug/order/:id/preimage",
             get(debug_order_preimage),
@@ -195,7 +199,6 @@ pub fn build_router(state: AppState) -> Router {
 
     let public_routes = Router::new()
         .route("/api/v1/blockchain/utxo/:txid/:vout", get(get_txout))
-        .route("/api/v1/torrent/sessions", get(list_torrent_sessions))
         .route("/api/v1/claim/check", post(check_claim))
         .route("/api/v1/faucet", post(faucet))
         .layer(middleware::from_fn_with_state(
@@ -214,11 +217,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/blockchain/tx/:txid", get(get_transaction_by_id))
         .route("/api/v1/mempool", get(get_mempool))
         .route("/api/v1/fee/estimate", get(get_fee_estimate))
-        .route("/api/v1/btc/status", get(get_btc_status))
-        .route("/api/v1/btc/address", get(get_btc_address))
         .route("/api/v1/spv/status", get(get_spv_status))
         .route("/api/v1/spv/proof/:hash", get(spv_get_proof))
-        .route("/api/v1/peers", get(get_peers))
+        // `/ws` and `/metrics` stay public for the local UI and Prometheus.
+        // Do not bind RPC to a public interface without a reverse proxy that
+        // restricts them.
         .route("/ws", get(ws_handler))
         .route("/metrics", get(metrics_handler))
         .merge(public_routes)

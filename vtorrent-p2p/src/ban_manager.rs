@@ -24,8 +24,26 @@
 /// | Stale block (>2h old) | 5 |
 /// | Unknown message type | 1 |
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::time::{Duration, Instant};
+
+/// Normalize an address to the key used for scores and bans.
+///
+/// IPv4-mapped IPv6 addresses share the IPv4 bucket. IPv6 peers share a /64
+/// bucket so rotating within the prefix does not reset the score or ban.
+fn ban_key(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(v4) => IpAddr::V4(v4),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => {
+                let mut octets = v6.octets();
+                octets[8..].fill(0);
+                IpAddr::V6(Ipv6Addr::from(octets))
+            }
+        },
+    }
+}
 
 /// Default misbehaviour score threshold before banning.
 pub const BAN_THRESHOLD: u32 = 100;
@@ -169,6 +187,7 @@ impl BanManager {
     ///
     /// Returns `true` if the peer was banned as a result of this offence.
     pub fn record_misbehaviour(&mut self, ip: IpAddr, offence: Misbehaviour) -> bool {
+        let ip = ban_key(ip);
         let penalty = offence.score();
         let new_score = {
             let entry = self.scores.entry(ip).or_insert_with(PeerScore::new);
@@ -199,6 +218,7 @@ impl BanManager {
 
     /// Manually ban an IP address with a reason.
     pub fn ban_ip(&mut self, ip: IpAddr, reason: String) {
+        let ip = ban_key(ip);
         tracing::warn!("Banning peer {}: {}", ip, reason);
         self.bans.insert(
             ip,
@@ -219,6 +239,7 @@ impl BanManager {
     /// an escalating duration (5 min → 15 min → 1 hour). Returns `true` if
     /// the peer was banned as a result.
     pub fn record_connection_failure(&mut self, ip: IpAddr) -> bool {
+        let ip = ban_key(ip);
         let count = self.consecutive_failures.entry(ip).or_insert(0);
         *count += 1;
         let current_count = *count;
@@ -261,6 +282,7 @@ impl BanManager {
 
     /// Clear consecutive failure count for an IP (called on successful connection).
     pub fn clear_consecutive_failures(&mut self, ip: IpAddr) {
+        let ip = ban_key(ip);
         self.consecutive_failures.remove(&ip);
     }
 
@@ -269,6 +291,7 @@ impl BanManager {
     /// Used for immediate bans on severe protocol violations (e.g., invalid
     /// blocks, invalid transactions) that should not wait for score threshold.
     pub fn ban_ip_with_duration(&mut self, ip: IpAddr, duration: Duration, reason: String) {
+        let ip = ban_key(ip);
         tracing::warn!(
             "Banning peer {} for {}s: {}",
             ip,
@@ -290,6 +313,7 @@ impl BanManager {
 
     /// Returns true if the given IP is currently banned.
     pub fn is_banned(&self, ip: IpAddr) -> bool {
+        let ip = ban_key(ip);
         if let Some(ban) = self.bans.get(&ip) {
             !ban.is_expired()
         } else {
@@ -299,11 +323,13 @@ impl BanManager {
 
     /// Returns the current misbehaviour score for an IP (0 if not tracked).
     pub fn score(&self, ip: IpAddr) -> u32 {
+        let ip = ban_key(ip);
         self.scores.get(&ip).map(|s| s.score).unwrap_or(0)
     }
 
     /// Remove a ban for an IP (manual unban).
     pub fn unban(&mut self, ip: IpAddr) {
+        let ip = ban_key(ip);
         self.bans.remove(&ip);
         tracing::info!("Manually unbanned peer {}", ip);
     }
@@ -574,5 +600,25 @@ mod tests {
         );
         // Eviction trims to 75% of the cap, so the map is comfortably bounded.
         assert!(mgr.bans.len() <= cap * 3 / 4 + 100);
+    }
+
+    #[test]
+    fn test_ipv6_prefix_shares_score_and_ban() {
+        let mut mgr = BanManager::new(100, Duration::from_secs(3600));
+        let a: IpAddr = "2001:db8::1".parse().unwrap();
+        let b: IpAddr = "2001:db8::2".parse().unwrap();
+        mgr.record_misbehaviour(a, Misbehaviour::InvalidTransaction);
+        assert_eq!(mgr.score(b), 10);
+        mgr.ban_ip(a, "test".to_string());
+        assert!(mgr.is_banned(b));
+    }
+
+    #[test]
+    fn test_ipv4_mapped_and_native_share_ban() {
+        let mut mgr = BanManager::default();
+        let native: IpAddr = "192.0.2.1".parse().unwrap();
+        let mapped: IpAddr = "::ffff:192.0.2.1".parse().unwrap();
+        mgr.ban_ip(native, "test".to_string());
+        assert!(mgr.is_banned(mapped));
     }
 }

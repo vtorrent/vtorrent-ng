@@ -23,7 +23,7 @@ pub use p2p::handle_peer_event;
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     sync::Arc,
 };
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -245,15 +245,13 @@ pub struct Node {
     /// A single peer could otherwise fill the 10k-entry address book and
     /// evict legitimate entries (a single-peer eclipse). Each peer may
     /// contribute at most `PEX_PER_PEER_QUOTA` addresses per window.
-    pub(crate) pex_contributions:
-        std::collections::HashMap<std::net::SocketAddr, (u32, std::time::Instant)>,
+    pub(crate) pex_contributions: std::collections::HashMap<IpAddr, (u32, std::time::Instant)>,
     /// Per-peer bytes served via `getdata`, and the window start.
     ///
     /// A small `getdata` (500 items, ~16 KB) can request up to 500 blocks
     /// (~500 MB out), so the message-count limiter alone does not bound
     /// egress. Each peer gets a byte budget per window.
-    pub(crate) peer_served_bytes:
-        std::collections::HashMap<std::net::SocketAddr, (u64, std::time::Instant)>,
+    pub(crate) peer_served_bytes: std::collections::HashMap<IpAddr, (u64, std::time::Instant)>,
     /// Receiver for locally-submitted transactions (from RPC/wallet).
     /// When a transaction is placed here, the node broadcasts it to all peers.
     tx_submit_rx: mpsc::Receiver<Transaction>,

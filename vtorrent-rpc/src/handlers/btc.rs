@@ -67,12 +67,22 @@ pub async fn send_btc(
             "Amount must be non-zero — provide a positive satoshi amount".into(),
         ));
     }
+    if req.amount_satoshis > vtorrent_btc::MAX_MONEY_SATS {
+        return Err(RpcError::BadRequest(
+            "Amount exceeds the Bitcoin maximum supply".into(),
+        ));
+    }
     if req.to_address.trim().is_empty() {
         return Err(RpcError::BadRequest(
             "Recipient address is required — provide a valid Bitcoin address".into(),
         ));
     }
     let fee = req.fee_satoshis.unwrap_or(1_000);
+    if fee > vtorrent_btc::MAX_MONEY_SATS {
+        return Err(RpcError::BadRequest(
+            "Fee exceeds the Bitcoin maximum supply".into(),
+        ));
+    }
 
     // Build and sign, removing spent UTXOs from the wallet. The selected
     // UTXOs are returned so the spend can be rolled back if broadcasting
