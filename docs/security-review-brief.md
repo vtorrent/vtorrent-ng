@@ -149,8 +149,8 @@ challenge the repairs and their remaining assumptions independently.
 
 ## 6. What we provide
 - Immutable review delivery:
-  **`80ccc520291f85d25b95a97dcc1621eaff35c4ab`**
-  (`feat(cold-stake): fund the raw P2CS script via RPC`).
+  **`dce9ad16559893d8cee8b165e07f2577e3b7914e`**
+  (`docs: move review candidate to the cold-stake funding build`).
   This commit includes the governance template-selection repairs,
   snapshot-based proof reconstruction, admission budget, bounded retries, the
   real-time quota-recovery test, the real-bitcoind SPV reorg tests, the full
@@ -171,7 +171,7 @@ challenge the repairs and their remaining assumptions independently.
 - The review delivery is a source snapshot, not a release tag. The core soak
   fleet runs `vtorrent/node:batch-669ee36` (code `669ee36`, BTC SPV disabled)
   from 2026-10-20T13:51:39Z to 2026-10-27T13:51:39Z. The review candidate
-  `80ccc52` adds the BTC wallet birthday flag, the desktop
+  `dce9ad1` adds the BTC wallet birthday flag, the desktop
   governance/earnings/payment/deadline commands, health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake, BTC
   scan, compact-block, and desktop hardening from the adversarial review, and

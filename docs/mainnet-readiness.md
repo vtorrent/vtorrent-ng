@@ -43,7 +43,7 @@
 - [ ] **External security review** — **brief finalized, not yet commissioned**:
       `docs/security-review-brief.md` (scope, deliverables, 2-phase engagement).
       The proposed immutable delivery is
-      `80ccc520291f85d25b95a97dcc1621eaff35c4ab`, which includes the governance,
+      `dce9ad16559893d8cee8b165e07f2577e3b7914e`, which includes the governance,
       reorg, and stake-proof service repairs, the real-bitcoind SPV and swap
       tests, and the independent genesis verifier. The review covers wallet
       encryption (Argon2id + ChaCha20-Poly1305), consensus and governance,
@@ -89,7 +89,7 @@ from uninterrupted soak measurements.
       `scripts/soak-daily.sh` and recorded in
       `~/.local/state/vtr-soak/observations.md`. Initial state: 3/3 nodes at
       height 53,383, staking, 0 errors/restarts. Sign-off pending. The review
-      candidate `80ccc52` adds the BTC wallet birthday flag, desktop commands,
+      candidate `dce9ad1` adds the BTC wallet birthday flag, desktop commands,
       health-field updates, the shared BTC sync loop, desktop chain
       persistence, and the cold-stake/BTC/compact-block/desktop hardening from
       the adversarial review; rebuild the release image from it.
