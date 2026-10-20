@@ -13,6 +13,7 @@ vtorrent-script = { path = "../../../vtorrent-script" }
 vtorrent-btc = { path = "../../../vtorrent-btc" }
 vtorrent-p2p = { path = "../../../vtorrent-p2p" }
 vtorrent-store = { path = "../../../vtorrent-store" }
+vtorrent-wallet = { path = "../../../vtorrent-wallet" }
 bitcoin = "0.32"
 secp256k1 = "0.29"
 serde_json = "1"

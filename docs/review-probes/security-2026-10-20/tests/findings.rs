@@ -150,3 +150,23 @@ fn desktop_store_open_requires_parent_directory() {
     let root = tempfile::tempdir().unwrap();
     assert!(vtorrent_store::BlockStore::open(root.path().join("not-created").join("chain.db")).is_err());
 }
+
+#[test]
+fn cold_stake_address_is_a_p2pkh_burn_address() {
+    let keys = vtorrent_wallet::wallet::generate_cold_stake_keys(0, None).unwrap();
+    // The old API exposed this P2SH hash as a P2PKH address. Reconstruct it to
+    // show why that was a burn address; the API/UI no longer expose it.
+    let addr = vtorrent_core::address::Address::from_hash160(
+        &vtorrent_core::crypto::hash160(&keys.script_pubkey),
+        vtorrent_core::network::legacy::PUBKEY_ADDRESS_PREFIX,
+    )
+    .unwrap();
+    let p2pkh = addr.p2pkh_script_pubkey();
+    assert_eq!(p2pkh[0], 0x76);
+    assert_eq!(p2pkh[1], 0xa9);
+    assert_eq!(p2pkh[2], 0x14);
+    assert_eq!(&p2pkh[3..23], &vtorrent_core::crypto::hash160(&keys.script_pubkey));
+    assert_eq!(p2pkh[23], 0x88);
+    assert_eq!(p2pkh[24], 0xac);
+    assert_ne!(p2pkh, keys.script_pubkey, "the advertised address is not the P2CS script");
+}
