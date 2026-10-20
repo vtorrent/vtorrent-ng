@@ -216,7 +216,9 @@ this review; earlier passing-suite claims are not used to dismiss these probes.
 - Remediation: share a headless node-service lifecycle with daemon and desktop,
   including storage, health, BTC sync, cancellation, and broadcast handles.
   Validate desktop restart, real peer status, BTC funding discovery, and
-  actual two-node transaction propagation.
+  actual two-node transaction propagation. The missing Tauri commands for
+  governance, earnings, payment requests, and swap deadlines were added; store
+  replay, health-field updates, and the BTC sync loop remain open.
 
 ### F09. Several frontend IPC contracts do not match serialized Rust results
 
@@ -316,7 +318,8 @@ RPC 148; frontend lint, 16 tests, and production build; workspace formatting
 and strict all-feature Clippy pass; the live soak observer exits 0 with the
 hardened checks. The fleet was rebuilt to `vtorrent/node:batch-669ee36` (code
 `669ee36`) and a fresh soak window started at 2026-10-20T13:51:39Z. The review
-candidate `57505ab` adds the BTC wallet birthday flag. The review probes under
+candidate `ab86068` adds the BTC wallet birthday flag and the desktop
+governance/earnings/payment/deadline commands. The review probes under
 `docs/review-probes/` are historical evidence for the reviewed revision.
 
 ## Review limits and self-assessment
