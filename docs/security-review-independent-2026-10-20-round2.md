@@ -226,7 +226,7 @@ authorized, and token-reuse cases.
 - Desktop restart, peer-status, BTC discovery, and two-node propagation runtime
   test.
 - Fleet rebuild and final soak on the reviewed build; the core soak fleet is
-  still `batch-669ee36`.
+  now `batch-137d3f8`.
 
 ## Recommended order
 

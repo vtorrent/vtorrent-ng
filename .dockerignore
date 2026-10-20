@@ -1,0 +1,9 @@
+target
+.git
+.ops-backups
+research
+checkpoint.md
+vtorrent-ui/node_modules
+vtorrent-ui/dist
+docs
+scripts

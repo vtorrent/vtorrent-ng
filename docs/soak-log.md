@@ -2062,3 +2062,35 @@ All three nodes agree on height and tip hash.
 - BTC SPV: height=0, synced=false, initialized=false.
 
 Earliest sign-off: **2026-10-27T13:51Z** (window start + 7 days). Next daily observation due 2026-10-21.
+
+## 2026-10-20 — run 6 rebuild on the BTC scan build
+
+Rebuilt the fleet from `vtorrent/node:batch-669ee36` to
+`vtorrent/node:batch-137d3f8` (image sha256
+`527eb43616bca1981101830a6370fa8da0836ca1c0a19bf5a416fa9ba7f39e32`), built
+from code commit `137d3f8`. Run 5 ended early at this rebuild. The rolling
+recreate preserved the named chain volumes and the node1 passphrase bind.
+Startup replayed 53,594 persisted blocks; the fleet was healthy at about
+17:40Z.
+
+Initial post-upgrade state at 17:41Z:
+
+- 3/3 nodes at height **53594**, same tip hash, `syncing=false`, mempool 0.
+- Connections: node1=2, node2=1, node3=1.
+- Staking resumed; node1 staked height 53595 at 17:41:48Z.
+- 0 ERROR/panic lines and 0 restarts on all three nodes.
+
+The new build includes the round-2 review fixes: burn-address removal,
+session-bound cold-stake funding, desktop cold-stake commands, network-scoped
+BTC UTXO state, single-use WebSocket tokens, output-size fee estimation, and
+the BTC scan checkpoint-retention fix.
+
+Soak window start: **2026-10-20T17:41:36Z** (first post-upgrade stake, epoch
+`1792518096`). Earliest sign-off: **2026-10-27T17:41:36Z**.
+
+Daily observation:
+
+```bash
+scripts/soak-observe.sh 1792518096
+scripts/soak-status.sh
+```

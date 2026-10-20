@@ -45,7 +45,7 @@ at launch.
 
 The current build already includes the consensus batch (OP_RETURN exclusion,
 cold staking, governance, state rent) and the governance and proof-service
-repairs. The core soak fleet runs `vtorrent/node:batch-669ee36` with BTC SPV
+repairs. The core soak fleet runs `vtorrent/node:batch-137d3f8` with BTC SPV
 disabled. The review candidate `137d3f8` adds the BTC wallet birthday flag, desktop
 commands, health-field updates, the shared BTC sync loop, desktop chain
 persistence, and the cold-stake/BTC/compact-block/desktop hardening from the

@@ -169,8 +169,8 @@ challenge the repairs and their remaining assumptions independently.
   Use this full commit hash rather than floating `main`. If the engagement
   moves to a later implementation, record its full hash explicitly.
 - The review delivery is a source snapshot, not a release tag. The core soak
-  fleet runs `vtorrent/node:batch-669ee36` (code `669ee36`, BTC SPV disabled)
-  from 2026-10-20T13:51:39Z to 2026-10-27T13:51:39Z. The review candidate
+  fleet runs `vtorrent/node:batch-137d3f8` (code `137d3f8`, BTC SPV disabled)
+  from 2026-10-20T17:41:36Z to 2026-10-27T17:41:36Z. The review candidate
   `137d3f8` adds the BTC wallet birthday flag, the desktop
   governance/earnings/payment/deadline commands, health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake, BTC

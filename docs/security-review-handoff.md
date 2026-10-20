@@ -11,7 +11,7 @@ and deliverables are in `docs/security-review-brief.md`.
 | Brief | Latest `docs/security-review-brief.md` from `main`; it pins this commit |
 | Toolchain | Rust 1.90.0 (`rust-toolchain.toml`) |
 | Dependency lock | Archive the `Cargo.lock` used for the build; it is gitignored |
-| Fleet image | Core soak: `vtorrent/node:batch-669ee36`; release build: rebuild from `137d3f8` |
+| Fleet image | Core soak: `vtorrent/node:batch-137d3f8`; release build: rebuild from `137d3f8` |
 | Soak window | 2026-10-19T09:06:31Z to 2026-10-26T09:06:31Z |
 
 Verify the commit resolves before sending:
