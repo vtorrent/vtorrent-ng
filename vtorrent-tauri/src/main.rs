@@ -58,6 +58,12 @@ fn main() {
             // Legacy claims
             commands::check_legacy_claim,
             commands::submit_legacy_claim,
+            // Desktop parity: governance, earnings, payment requests, deadlines
+            commands::get_governance_params,
+            commands::get_governance_proposals,
+            commands::get_earnings_summary,
+            commands::create_payment_request,
+            commands::get_swap_deadlines,
         ])
         .run(tauri::generate_context!())
         .expect("error while running vTorrent application");
