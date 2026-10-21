@@ -143,8 +143,8 @@ header’s control, would expose it.
 the WIF fields use `Zeroizing<String>` in both the RPC and Tauri responses. The
 body still contains the WIF by design (shown once); avoid body logging.
 
-### L-7 — Low (OPEN; manual desktop check): the desktop cold-stake path is not
-runtime-tested
+### L-7 — Low (PARTIALLY FIXED in `a939dfe`): the desktop cold-stake path is
+not fully runtime-tested
 
 **Where:** `vtorrent-ui/src/hooks/useNode.tsx` (`createColdStake`/
 `fundColdStake`); `vtorrent-tauri/src/commands/wallet.rs`.
@@ -153,9 +153,10 @@ The Tauri `create_cold_stake` command takes an optional `label`; the UI omits
 it. The command and the fund flow compile, but there is no Tauri runtime test
 for the argument mapping or the wallet-unlocked path.
 
-**Fix:** add a Tauri command test or a manual desktop check that generates,
-funds, and confirms the raw P2CS output. The frontend test stack has no
-component-testing library, so this remains a manual launch check.
+**Fix applied:** a Tauri `create_cold_stake` command test covers key generation,
+script/hash shape, and session registration. The `fund_cold_stake` command still
+needs a funded-node/manual check; the frontend test stack has no
+component-testing library.
 
 ## Residual gaps
 
@@ -164,13 +165,14 @@ component-testing library, so this remains a manual launch check.
 - BTC SPV is disabled on the soak fleet; the swaps and the BTC reorg path are
   not exercised by the current run.
 - Mainnet-scale BTC SPV retention/scan soak.
+- The `fund_cold_stake` command still needs a funded-node/manual check (L-7).
 - Desktop restart, peer-status, BTC discovery, and two-node propagation runtime
-  test (L-7).
-- Independent external review of `20e6a73`.
+  test.
+- Independent external review of `a939dfe`.
 
 ## Recommended order
 
-1. **L-7** — manual desktop generate/fund/confirm check.
+1. **L-7** — manual `fund_cold_stake` check on a funded desktop node.
 2. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
    path.
-3. Commission the external review of `20e6a73` and rebuild the fleet on it.
+3. Commission the external review of `a939dfe` and rebuild the fleet on it.
