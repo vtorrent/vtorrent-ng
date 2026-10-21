@@ -1,3 +1,4 @@
+pub mod cold_stake_registry;
 pub mod encryption;
 /// vtorrent-wallet: Wallet management, 2FA/TOTP, and key encryption for vTorrent 2.0.
 ///
