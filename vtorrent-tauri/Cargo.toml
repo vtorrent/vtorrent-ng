@@ -46,3 +46,6 @@ tokio       = { version = "1", features = ["full"] }
 tokio-util  = { workspace = true }
 thiserror   = "1"
 tracing     = "0.1"
+
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }

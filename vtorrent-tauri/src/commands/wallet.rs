@@ -905,3 +905,23 @@ pub async fn submit_legacy_claim(
         recipient_address,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tauri::Manager;
+
+    #[tokio::test]
+    async fn create_cold_stake_records_the_script() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+        let keys = create_cold_stake(state.clone(), 0, None).await.unwrap();
+        assert_eq!(keys.script_pubkey.len(), 120);
+        assert_eq!(keys.script_hash.len(), 40);
+        let script = hex::decode(&keys.script_pubkey).unwrap();
+        assert!(state.cold_stake_scripts.lock().unwrap().contains(&script));
+    }
+}
