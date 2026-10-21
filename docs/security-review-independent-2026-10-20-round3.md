@@ -166,11 +166,11 @@ component-testing library, so this remains a manual launch check.
 - Mainnet-scale BTC SPV retention/scan soak.
 - Desktop restart, peer-status, BTC discovery, and two-node propagation runtime
   test (L-7).
-- Independent external review of `47faac4`.
+- Independent external review of `20e6a73`.
 
 ## Recommended order
 
 1. **L-7** — manual desktop generate/fund/confirm check.
 2. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
    path.
-3. Commission the external review of `47faac4` and rebuild the fleet on it.
+3. Commission the external review of `20e6a73` and rebuild the fleet on it.
