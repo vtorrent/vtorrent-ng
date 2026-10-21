@@ -168,11 +168,11 @@ component-testing library.
 - The `fund_cold_stake` command still needs a funded-node/manual check (L-7).
 - Desktop restart, peer-status, BTC discovery, and two-node propagation runtime
   test.
-- Independent external review of `a939dfe`.
+- Independent external review of `61ee2b0`.
 
 ## Recommended order
 
 1. **L-7** — manual `fund_cold_stake` check on a funded desktop node.
 2. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
    path.
-3. Commission the external review of `a939dfe` and rebuild the fleet on it.
+3. Commission the external review of `61ee2b0` and rebuild the fleet on it.
