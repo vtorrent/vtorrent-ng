@@ -143,8 +143,8 @@ header’s control, would expose it.
 the WIF fields use `Zeroizing<String>` in both the RPC and Tauri responses. The
 body still contains the WIF by design (shown once); avoid body logging.
 
-### L-7 — Low (PARTIALLY FIXED in `a939dfe`): the desktop cold-stake path is
-not fully runtime-tested
+### L-7 — Low (FIXED in `6cdcfb8`; GUI interaction remains): the desktop
+cold-stake path was not fully runtime-tested
 
 **Where:** `vtorrent-ui/src/hooks/useNode.tsx` (`createColdStake`/
 `fundColdStake`); `vtorrent-tauri/src/commands/wallet.rs`.
@@ -153,10 +153,15 @@ The Tauri `create_cold_stake` command takes an optional `label`; the UI omits
 it. The command and the fund flow compile, but there is no Tauri runtime test
 for the argument mapping or the wallet-unlocked path.
 
-**Fix applied:** a Tauri `create_cold_stake` command test covers key generation,
-script/hash shape, and session registration. The `fund_cold_stake` command still
-needs a funded-node/manual check; the frontend test stack has no
-component-testing library.
+**Verification update:** the Tauri IPC test invokes `create_cold_stake` with the
+frontend's omitted optional `label` and `fund_cold_stake` with camelCase
+`scriptPubkey`/`amountSatoshis`. It verifies unregistered-script rejection,
+admission of the signed payment to the real mempool, a 1 VTR output to the
+generated raw P2CS script, submission of the same transaction ID to the
+peer-relay channel, and inclusion in a regtest block with the output confirmed
+at height 2. All four Tauri library tests and strict Tauri Clippy pass. The
+actual GUI panel/button interaction and two-node network propagation remain
+unverified.
 
 ## Residual gaps
 
@@ -165,14 +170,15 @@ component-testing library.
 - BTC SPV is disabled on the soak fleet; the swaps and the BTC reorg path are
   not exercised by the current run.
 - Mainnet-scale BTC SPV retention/scan soak.
-- The `fund_cold_stake` command still needs a funded-node/manual check (L-7).
+- The desktop GUI panel/button interaction and two-node propagation remain
+  (L-7); command/IPC/confirmation are tested.
 - Desktop restart, peer-status, BTC discovery, and two-node propagation runtime
   test.
-- Independent external review of `61ee2b0`.
+- Independent external review of `6cdcfb8`.
 
 ## Recommended order
 
-1. **L-7** — manual `fund_cold_stake` check on a funded desktop node.
+1. **L-7** — GUI panel/button and two-node propagation check.
 2. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
    path.
-3. Commission the external review of `61ee2b0` and rebuild the fleet on it.
+3. Commission the external review of `6cdcfb8` and rebuild the fleet on it.
