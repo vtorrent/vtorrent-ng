@@ -5,10 +5,52 @@ use crate::filters::FilterHeaderStore;
 use crate::headers::HeaderChain;
 use crate::keys::derive_address;
 use crate::utxo::{Utxo, UtxoSet};
+use bitcoin::hashes::Hash;
 use bitcoin::Network;
 use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// Whether `ancestor` is on the main chain ending at `tip`.
+fn is_ancestor(chain: &HeaderChain, ancestor: [u8; 32], tip: [u8; 32]) -> bool {
+    let ancestor_height = chain.get(&ancestor).map(|entry| entry.height);
+    let mut cursor = tip;
+    loop {
+        if cursor == ancestor {
+            return true;
+        }
+        let Some(entry) = chain.get(&cursor) else {
+            return false;
+        };
+        if let Some(height) = ancestor_height {
+            if entry.height <= height {
+                return false;
+            }
+        }
+        if entry.height == 0 {
+            return false;
+        }
+        cursor = entry.header.prev_blockhash.to_byte_array();
+    }
+}
+
+/// Highest height where the old chain and the current main chain agree.
+fn find_fork(chain: &HeaderChain, old_best: [u8; 32]) -> u32 {
+    let mut cursor = old_best;
+    loop {
+        let Some(entry) = chain.get(&cursor) else {
+            return chain.retained_floor();
+        };
+        let height = entry.height;
+        if chain.hashes_from(height).first().copied() == Some(cursor) {
+            return height;
+        }
+        if height == 0 {
+            return 0;
+        }
+        cursor = entry.header.prev_blockhash.to_byte_array();
+    }
+}
 
 /// A Bitcoin SPV wallet.
 pub struct BtcWallet {
@@ -386,6 +428,7 @@ impl BtcWallet {
 
     /// Run a sync pass against a peer, updating headers and the synced flag.
     pub async fn sync(&mut self, peer: &mut crate::p2p::BtcPeer) -> Result<usize> {
+        let previous_best = self.headers.lock().best_hash();
         let sync = crate::sync::BtcSync::new_with_filter_headers(
             self.headers.clone(),
             self.utxos.clone(),
@@ -394,6 +437,32 @@ impl BtcWallet {
             self.network,
         );
         let added = sync.sync_once(peer).await?;
+        if let Some(previous_best) = previous_best {
+            let reorged = {
+                let chain = self.headers.lock();
+                match chain.best_hash() {
+                    Some(new_best) if new_best != previous_best => {
+                        !is_ancestor(&chain, previous_best, new_best)
+                    }
+                    _ => false,
+                }
+            };
+            if reorged {
+                let fork = {
+                    let chain = self.headers.lock();
+                    find_fork(&chain, previous_best)
+                };
+                self.filter_headers.lock().clear();
+                *self.utxos.lock() = UtxoSet::new();
+                self.save_utxos();
+                self.last_scanned_height = fork;
+                self.synced = false;
+                tracing::warn!(
+                    "BTC header reorg detected; cleared filter/UTXO state and will rescan from height {}",
+                    fork
+                );
+            }
+        }
         if added > 0 {
             self.synced = true;
         }
@@ -581,6 +650,63 @@ impl BtcWallet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reorg_fork_point_is_common_ancestor() {
+        use bitcoin::blockdata::block::{Header, Version};
+        use bitcoin::{BlockHash, CompactTarget, TxMerkleNode};
+
+        fn make_header(prev: [u8; 32], nonce: u32) -> Header {
+            let bits = CompactTarget::from_consensus(0x207fffff);
+            let mut nonce = nonce;
+            loop {
+                let header = Header {
+                    version: Version::ONE,
+                    prev_blockhash: BlockHash::from_byte_array(prev),
+                    merkle_root: TxMerkleNode::all_zeros(),
+                    time: 1_700_000_000 + nonce,
+                    bits,
+                    nonce,
+                };
+                if header.validate_pow(bits.into()).is_ok() {
+                    return header;
+                }
+                nonce += 1;
+            }
+        }
+
+        let mut chain = HeaderChain::unanchored_for_tests();
+        let h0 = make_header([0u8; 32], 0);
+        let h0_hash = h0.block_hash().to_byte_array();
+        chain
+            .add_header(&bitcoin::consensus::encode::serialize(&h0), 0)
+            .unwrap();
+        let h1 = make_header(h0_hash, 1);
+        let h1_hash = h1.block_hash().to_byte_array();
+        chain
+            .add_header(&bitcoin::consensus::encode::serialize(&h1), 1)
+            .unwrap();
+        let h2 = make_header(h1_hash, 2);
+        let h2_hash = h2.block_hash().to_byte_array();
+        chain
+            .add_header(&bitcoin::consensus::encode::serialize(&h2), 2)
+            .unwrap();
+
+        let fork2 = make_header(h1_hash, 20);
+        let fork2_hash = fork2.block_hash().to_byte_array();
+        chain
+            .add_header(&bitcoin::consensus::encode::serialize(&fork2), 2)
+            .unwrap();
+        let fork3 = make_header(fork2_hash, 30);
+        let fork3_hash = fork3.block_hash().to_byte_array();
+        chain
+            .add_header(&bitcoin::consensus::encode::serialize(&fork3), 3)
+            .unwrap();
+
+        assert!(!is_ancestor(&chain, h2_hash, fork3_hash));
+        assert!(is_ancestor(&chain, h1_hash, fork3_hash));
+        assert_eq!(find_fork(&chain, h2_hash), 1);
+    }
 
     #[test]
     fn test_next_address_advances() {

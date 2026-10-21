@@ -143,6 +143,11 @@ pub struct Cli {
     /// Bounds SPV memory on mainnet (~870k headers ≈ 100 MiB). Must exceed the
     /// difficulty retarget period (~2016) and the UTXO-scan depth. Default
     /// 100_000 keeps ~11 MiB of headers while covering both.
+    ///
+    /// A scan that starts near the tip with no stored previous filter header
+    /// needs a checkpoint in range; if that checkpoint is below the retained
+    /// floor, the scan fails closed. Raise this value or rescan from an earlier
+    /// height.
     #[arg(long, default_value_t = 100_000)]
     pub btc_header_retention: usize,
 

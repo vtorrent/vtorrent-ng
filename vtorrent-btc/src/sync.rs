@@ -634,6 +634,13 @@ impl BtcSync {
     /// scriptPubKey matches. Only matching blocks are downloaded in full, so
     /// the full node never learns which addresses the client is watching.
     /// Returns the number of blocks scanned.
+    ///
+    /// Filter-header authentication uses the stored header for the block
+    /// before `start_height`, or the next checkpoint in range. A start near
+    /// the tip with no checkpoint in range and no stored header falls back to
+    /// the last checkpoint below the start; if that checkpoint is below the
+    /// retained floor the scan fails closed. Raise `--btc-header-retention` or
+    /// rescan from an earlier height in that case.
     pub async fn scan_utxos_bip158(&self, peer: &mut BtcPeer, start_height: u32) -> Result<usize> {
         use bitcoin::bip158::BlockFilter;
 

@@ -69,6 +69,15 @@ impl FilterHeaderStore {
             .copied()
     }
 
+    /// Drop all stored filter headers and checkpoint agreement state.
+    pub(crate) fn clear(&mut self) {
+        self.records.clear();
+        self.checkpoints.clear();
+        self.observed_tip = None;
+        self.agreeing_peers.clear();
+        self.candidates.clear();
+    }
+
     /// Filter header stored for a block hash, if this wallet has scanned it.
     pub(crate) fn header_for(&self, block_hash: &[u8; 32]) -> Option<FilterHeader> {
         self.records
