@@ -2094,3 +2094,34 @@ Daily observation:
 scripts/soak-observe.sh 1792518096
 scripts/soak-status.sh
 ```
+
+## 2026-10-21 — run 7 rebuild on the reorg-safe build
+
+Rebuilt the fleet from `vtorrent/node:batch-137d3f8` to
+`vtorrent/node:batch-e7691fb` (image sha256
+`da0383dc172bc0e92def72f9105fc510a6091b0406a8b6aaa8b6dcfb064badc3`), built
+from code commit `e7691fb`. Run 6 ended early at this rebuild. The rolling
+recreate preserved the named chain volumes and the node1 passphrase bind.
+Startup replayed 54,123 persisted blocks; the fleet was healthy at about
+02:47Z.
+
+Initial post-upgrade state at 02:47Z:
+
+- 3/3 nodes at height **54123**, same tip hash, `syncing=false`, mempool 0.
+- Connections: node1=2, node2=1, node3=1.
+- Staking resumed; the tip advanced about one block per minute.
+- 0 ERROR/panic lines and 0 restarts on all three nodes.
+
+The new build includes the round-3 review fixes: reorg-safe BTC wallet state,
+the durable cold-stake script registry, zeroized WIF responses, and the
+WebSocket token cap.
+
+Soak window start: **2026-10-21T02:47:54Z** (first post-upgrade stake, epoch
+`1792550874`). Earliest sign-off: **2026-10-28T02:47:54Z**.
+
+Daily observation:
+
+```bash
+scripts/soak-observe.sh 1792550874
+scripts/soak-status.sh
+```

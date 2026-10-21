@@ -82,17 +82,16 @@ from uninterrupted soak measurements.
       7-day window restarted 2026-09-03. A staking allocation fix deployed
       2026-09-04 reduced node1 from 207.7 MiB to 61.6 MiB after six kernel
       hits; the continuous-window check remains pending.)*
-- [~] **Post-upgrade 7-day soak (run 6)** — fleet rebuilt to
-      `vtorrent/node:batch-e7691fb` (code commit `bc54b11`) on 2026-10-20.
-      Window started `2026-10-20T17:41:36Z` and ends
-      `2026-10-27T17:41:36Z`. Run 5 ended early at this rebuild. Daily
+- [~] **Post-upgrade 7-day soak (run 7)** — fleet rebuilt to
+      `vtorrent/node:batch-e7691fb` (code commit `e7691fb`) on 2026-10-21.
+      Window started `2026-10-21T02:47:54Z` and ends
+      `2026-10-28T02:47:54Z`. Run 6 ended early at this rebuild. Daily
       observations are automated by `scripts/soak-daily.sh` and recorded in
       `~/.local/state/vtr-soak/observations.md`. Initial state: 3/3 nodes at
-      height 53,594, same tip, staking, 0 errors/restarts, `syncing=false`.
+      height 54,123, same tip, staking, 0 errors/restarts, `syncing=false`.
       Sign-off pending. The fleet runs the review candidate `bc54b11`, which
-      includes the cold-stake burn-address removal, session-bound funding,
-      desktop cold-stake commands, network-scoped BTC state, single-use
-      WebSocket tokens, and the BTC scan checkpoint-retention fix.
+      includes the reorg-safe BTC wallet state, durable cold-stake script
+      registry, zeroized WIF responses, and the WebSocket token cap.
 - [x] **Staking soak**: at least one node staked continuously and produced
       blocks at the expected ~60s average over the full 7-day window
       (`2026-09-29T13:36:22Z` → `2026-10-06T13:36:22Z`): node1 staked 1441

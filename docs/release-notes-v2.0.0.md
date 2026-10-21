@@ -121,7 +121,7 @@ paths.
   and verifies decryption, address derivation, and wrong-passphrase rejection.
 - The real-time proof quota test drains the per-IP allowance, observes the
   initial denial, and verifies automatic recovery after the 65-second retry.
-- The fresh 7-day soak runs from 2026-10-20T17:41:36Z to 2026-10-27T17:41:36Z
+- The fresh 7-day soak runs from 2026-10-21T02:47:54Z to 2026-10-28T02:47:54Z
   on `vtorrent/node:batch-e7691fb`. Sign-off is pending.
 
 ## Upgrade notes
@@ -139,7 +139,7 @@ paths.
   wallet birthday flag, desktop commands, desktop health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake/BTC/
   compact-block/desktop hardening from the adversarial review and must be
-  rebuilt from `e7691fb`. The fresh soak window started 2026-10-20T17:41:36Z.
+  rebuilt from `e7691fb`. The fresh soak window started 2026-10-21T02:47:54Z.
 
 ## Known limitations
 

@@ -83,7 +83,7 @@ remains to be run.
 - The independent genesis verifier passes
   (`python3 scripts/verify-genesis.py`).
 - The deployed image and commit match the build that passed the external
-  review (`vtorrent/node:batch-e7691fb`, code `bc54b11`).
+  review (`vtorrent/node:batch-e7691fb`, code `e7691fb`).
 - Block cadence ~60 s; no sustained divergence.
 - A legacy claim succeeds end-to-end (rehearsed on regtest).
 - RPC reachable, auth enforced, rate limiting active.
