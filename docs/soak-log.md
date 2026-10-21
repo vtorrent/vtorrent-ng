@@ -2116,6 +2116,11 @@ The new build includes the round-3 review fixes: reorg-safe BTC wallet state,
 the durable cold-stake script registry, zeroized WIF responses, and the
 WebSocket token cap.
 
+The source after this build resets the BTC scan cursor to 0 on a reorg (the
+UTXO set is cleared, so the rescan must cover outputs below the fork). The
+fleet's BTC SPV is disabled, so run 7 does not exercise this correction; rebuild
+the release image from the new HEAD.
+
 Soak window start: **2026-10-21T02:47:54Z** (first post-upgrade stake, epoch
 `1792550874`). Earliest sign-off: **2026-10-28T02:47:54Z**.
 

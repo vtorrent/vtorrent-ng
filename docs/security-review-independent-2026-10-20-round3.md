@@ -77,8 +77,8 @@ cover this path.
 **Fix applied:** `BtcWallet::sync` now compares the pre-sync best hash with the
 post-sync chain. If the old tip is no longer on the main chain, it finds the
 common ancestor, clears the filter store, resets the UTXO set (and its persisted
-file), sets `last_scanned_height` to the fork point, and rescans. A fork below
-the retained floor resets to the floor. Regression:
+file), and resets `last_scanned_height` to 0 so the rescan covers outputs below
+the fork. The fork height is logged. Regression:
 `reorg_fork_point_is_common_ancestor`.
 
 ### M-9 — Medium (FIXED in `2e3fe1e`): cold-stake funding was bound to an
@@ -166,11 +166,11 @@ component-testing library, so this remains a manual launch check.
 - Mainnet-scale BTC SPV retention/scan soak.
 - Desktop restart, peer-status, BTC discovery, and two-node propagation runtime
   test (L-7).
-- Independent external review of `bc54b11`.
+- Independent external review of `47faac4`.
 
 ## Recommended order
 
 1. **L-7** — manual desktop generate/fund/confirm check.
 2. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
    path.
-3. Commission the external review of `bc54b11` and rebuild the fleet on it.
+3. Commission the external review of `47faac4` and rebuild the fleet on it.
