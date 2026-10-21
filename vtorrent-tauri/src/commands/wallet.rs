@@ -912,6 +912,178 @@ mod tests {
     use tauri::Manager;
 
     #[tokio::test]
+    async fn fund_cold_stake_builds_a_p2cs_output() {
+        use crate::state::NodeHandle;
+        use std::sync::Arc;
+        use vtorrent_node::block::{Block, BlockHeader, Transaction, TxInput, TxOutput, TxType};
+        use vtorrent_node::chain::Chain;
+        use vtorrent_node::consensus::{compute_stake_modifier, COIN};
+        use vtorrent_node::genesis::GENESIS_BITS;
+        use vtorrent_node::mempool::Mempool;
+        use vtorrent_rpc::state::AppState as RpcAppState;
+
+        let app = tauri::test::mock_builder()
+            .invoke_handler(tauri::generate_handler![create_cold_stake, fund_cold_stake])
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let invoke = |cmd: &str, body: serde_json::Value| {
+            tauri::test::get_ipc_response(
+                &webview,
+                tauri::webview::InvokeRequest {
+                    cmd: cmd.into(),
+                    callback: tauri::ipc::CallbackFn(0),
+                    error: tauri::ipc::CallbackFn(1),
+                    url: if cfg!(any(windows, target_os = "android")) {
+                        "http://tauri.localhost"
+                    } else {
+                        "tauri://localhost"
+                    }
+                    .parse()
+                    .unwrap(),
+                    body: tauri::ipc::InvokeBody::Json(body),
+                    headers: Default::default(),
+                    invoke_key: tauri::test::INVOKE_KEY.into(),
+                },
+            )
+        };
+
+        let wallet = Wallet::create("pw").unwrap();
+        let address = wallet.default_address().unwrap().to_string();
+        *state.wallet.lock().unwrap() = Some(wallet);
+
+        let mut chain = Chain::new_regtest().unwrap();
+        let genesis = chain.best_hash().unwrap();
+        let script = vtorrent_wallet::tx_builder::p2pkh_script_pubkey(&address).unwrap();
+        let mut funding = Block {
+            header: BlockHeader {
+                version: 1,
+                prev_block_hash: genesis,
+                merkle_root: [0; 32],
+                utxo_root: [0; 32],
+                timestamp: 1_700_000_001,
+                bits: GENESIS_BITS,
+                nonce: 1,
+                stake_modifier: compute_stake_modifier(0, &genesis),
+            },
+            transactions: vec![Transaction {
+                version: 1,
+                tx_type: TxType::Coinbase,
+                inputs: vec![TxInput {
+                    prev_txid: [0; 32],
+                    prev_vout: u32::MAX,
+                    script_sig: vec![1],
+                    sequence: u32::MAX,
+                }],
+                outputs: vec![TxOutput {
+                    value: 10 * COIN,
+                    script_pubkey: script,
+                }],
+                lock_time: 1,
+                claim_address: None,
+                claim_signature: None,
+            }],
+        };
+        funding.header.merkle_root = funding.compute_merkle_root();
+        chain.add_block(funding.clone()).unwrap();
+
+        let chain = Arc::new(tokio::sync::Mutex::new(chain));
+        let mempool = Arc::new(tokio::sync::Mutex::new(Mempool::new(10_000)));
+        let mut rpc = RpcAppState::new_with_shared(chain, mempool);
+        let (sender, mut submitted) = tokio::sync::mpsc::channel(1);
+        rpc.tx_submit = Some(sender);
+        *state.node.lock().await = Some(NodeHandle {
+            rpc_state: rpc,
+            network: "vtorrent-regtest".to_string(),
+            start_time: std::time::Instant::now(),
+        });
+
+        let foreign = vtorrent_wallet::wallet::generate_cold_stake_keys(0, None).unwrap();
+        let error = fund_cold_stake(state.clone(), hex::encode(foreign.script_pubkey), COIN)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, TauriError::InvalidInput(_)));
+        assert!(submitted.try_recv().is_err());
+
+        let keys = invoke("create_cold_stake", serde_json::json!({ "locktime": 0 }))
+            .expect("create command accepts omitted optional label")
+            .deserialize::<serde_json::Value>()
+            .unwrap();
+        let script_hex = keys["script_pubkey"].as_str().unwrap();
+        let txid = invoke(
+            "fund_cold_stake",
+            serde_json::json!({ "scriptPubkey": script_hex, "amountSatoshis": COIN }),
+        )
+        .expect("fund command accepts frontend camelCase arguments")
+        .deserialize::<String>()
+        .unwrap();
+
+        let node = state.node.lock().await;
+        let handle = node.as_ref().unwrap();
+        let mempool = handle.rpc_state.mempool.lock().await;
+        let txid_bytes: [u8; 32] = hex::decode(&txid).unwrap().try_into().unwrap();
+        let tx = mempool.get_transaction(&txid_bytes).unwrap().clone();
+        let relayed = submitted
+            .try_recv()
+            .expect("funding submitted for peer relay");
+        assert_eq!(relayed.txid(), txid_bytes);
+        let script = hex::decode(script_hex).unwrap();
+        assert!(tx
+            .outputs
+            .iter()
+            .any(|out| out.value == COIN && out.script_pubkey == script));
+        drop(mempool);
+
+        let mut chain = handle.rpc_state.chain.lock().await;
+        let previous = chain.best_hash().unwrap();
+        let modifier = chain.get_block(&previous).unwrap().header.stake_modifier;
+        let mut confirmation = Block {
+            header: BlockHeader {
+                version: 1,
+                prev_block_hash: previous,
+                merkle_root: [0; 32],
+                utxo_root: [0; 32],
+                timestamp: 1_700_000_002,
+                bits: GENESIS_BITS,
+                nonce: 2,
+                stake_modifier: compute_stake_modifier(modifier, &previous),
+            },
+            transactions: vec![
+                Transaction {
+                    version: 1,
+                    tx_type: TxType::Coinbase,
+                    inputs: vec![TxInput {
+                        prev_txid: [0; 32],
+                        prev_vout: u32::MAX,
+                        script_sig: vec![1],
+                        sequence: u32::MAX,
+                    }],
+                    outputs: vec![TxOutput {
+                        value: 50 * COIN,
+                        script_pubkey: script.clone(),
+                    }],
+                    lock_time: 2,
+                    claim_address: None,
+                    claim_signature: None,
+                },
+                tx,
+            ],
+        };
+        confirmation.header.merkle_root = confirmation.compute_merkle_root();
+        chain.add_block(confirmation).unwrap();
+        let confirmed = chain
+            .get_utxo(&txid_bytes, 0)
+            .expect("confirmed funding output");
+        assert_eq!(confirmed.height, 2);
+        assert_eq!(confirmed.value, COIN);
+        assert_eq!(confirmed.script_pubkey, script);
+    }
+
+    #[tokio::test]
     async fn create_cold_stake_records_the_script() {
         let app = tauri::test::mock_builder()
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
