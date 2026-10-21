@@ -43,7 +43,7 @@
 - [ ] **External security review** — **brief finalized, not yet commissioned**:
       `docs/security-review-brief.md` (scope, deliverables, 2-phase engagement).
       The proposed immutable delivery is
-      `e7691fbc20178cc50a4272d936c49848434982da`, which includes the governance,
+      `bc54b114aaf3710a02dc8ac9ff736925b0f59431`, which includes the governance,
       reorg, and stake-proof service repairs, the real-bitcoind SPV and swap
       tests, and the independent genesis verifier. The review covers wallet
       encryption (Argon2id + ChaCha20-Poly1305), consensus and governance,
@@ -83,13 +83,13 @@ from uninterrupted soak measurements.
       2026-09-04 reduced node1 from 207.7 MiB to 61.6 MiB after six kernel
       hits; the continuous-window check remains pending.)*
 - [~] **Post-upgrade 7-day soak (run 6)** — fleet rebuilt to
-      `vtorrent/node:batch-e7691fb` (code commit `e7691fb`) on 2026-10-20.
+      `vtorrent/node:batch-e7691fb` (code commit `bc54b11`) on 2026-10-20.
       Window started `2026-10-20T17:41:36Z` and ends
       `2026-10-27T17:41:36Z`. Run 5 ended early at this rebuild. Daily
       observations are automated by `scripts/soak-daily.sh` and recorded in
       `~/.local/state/vtr-soak/observations.md`. Initial state: 3/3 nodes at
       height 53,594, same tip, staking, 0 errors/restarts, `syncing=false`.
-      Sign-off pending. The fleet runs the review candidate `e7691fb`, which
+      Sign-off pending. The fleet runs the review candidate `bc54b11`, which
       includes the cold-stake burn-address removal, session-bound funding,
       desktop cold-stake commands, network-scoped BTC state, single-use
       WebSocket tokens, and the BTC scan checkpoint-retention fix.

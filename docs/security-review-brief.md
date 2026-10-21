@@ -149,8 +149,8 @@ challenge the repairs and their remaining assumptions independently.
 
 ## 6. What we provide
 - Immutable review delivery:
-  **`e7691fbc20178cc50a4272d936c49848434982da`**
-  (`docs: add third-round security review`).
+  **`bc54b114aaf3710a02dc8ac9ff736925b0f59431`**
+  (`docs: move review candidate to the reorg-safe build`).
   This commit includes the governance template-selection repairs,
   snapshot-based proof reconstruction, admission budget, bounded retries, the
   real-time quota-recovery test, the real-bitcoind SPV reorg tests, the full
@@ -169,9 +169,9 @@ challenge the repairs and their remaining assumptions independently.
   Use this full commit hash rather than floating `main`. If the engagement
   moves to a later implementation, record its full hash explicitly.
 - The review delivery is a source snapshot, not a release tag. The core soak
-  fleet runs `vtorrent/node:batch-e7691fb` (code `e7691fb`, BTC SPV disabled)
+  fleet runs `vtorrent/node:batch-e7691fb` (code `bc54b11`, BTC SPV disabled)
   from 2026-10-20T17:41:36Z to 2026-10-27T17:41:36Z. The review candidate
-  `e7691fb` adds the BTC wallet birthday flag, the desktop
+  `bc54b11` adds the BTC wallet birthday flag, the desktop
   governance/earnings/payment/deadline commands, health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake, BTC
   scan, compact-block, and desktop hardening from the adversarial review,

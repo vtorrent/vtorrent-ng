@@ -7,18 +7,18 @@ and deliverables are in `docs/security-review-brief.md`.
 
 | Item | Value |
 | --- | --- |
-| Pinned commit | `e7691fbc20178cc50a4272d936c49848434982da` |
+| Pinned commit | `bc54b114aaf3710a02dc8ac9ff736925b0f59431` |
 | Brief | Latest `docs/security-review-brief.md` from `main`; it pins this commit |
 | Toolchain | Rust 1.90.0 (`rust-toolchain.toml`) |
 | Dependency lock | Archive the `Cargo.lock` used for the build; it is gitignored |
-| Fleet image | Core soak: `vtorrent/node:batch-e7691fb`; release build: rebuild from `e7691fb` |
+| Fleet image | Core soak: `vtorrent/node:batch-e7691fb`; release build: rebuild from `bc54b11` |
 | Soak window | 2026-10-19T09:06:31Z to 2026-10-26T09:06:31Z |
 
 Verify the commit resolves before sending:
 
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
-git -C vtorrent-ng checkout e7691fbc20178cc50a4272d936c49848434982da
+git -C vtorrent-ng checkout bc54b114aaf3710a02dc8ac9ff736925b0f59431
 git -C vtorrent-ng rev-parse HEAD
 ```
 
@@ -119,7 +119,7 @@ Hello <name>,
 We are requesting an independent security review of vTorrent 2.0.0 before
 mainnet activation. The scope and deliverables are in the attached brief.
 
-Pinned source: e7691fbc20178cc50a4272d936c49848434982da
+Pinned source: bc54b114aaf3710a02dc8ac9ff736925b0f59431
 Repository: https://github.com/vtorrent/vtorrent-ng
 
 The review focuses on wallet custody, consensus and governance, the stake-proof

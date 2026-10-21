@@ -2066,9 +2066,9 @@ Earliest sign-off: **2026-10-27T13:51Z** (window start + 7 days). Next daily obs
 ## 2026-10-20 — run 6 rebuild on the BTC scan build
 
 Rebuilt the fleet from `vtorrent/node:batch-669ee36` to
-`vtorrent/node:batch-e7691fb` (image sha256
+`vtorrent/node:batch-137d3f8` (image sha256
 `527eb43616bca1981101830a6370fa8da0836ca1c0a19bf5a416fa9ba7f39e32`), built
-from code commit `e7691fb`. Run 5 ended early at this rebuild. The rolling
+from code commit `137d3f8`. Run 5 ended early at this rebuild. The rolling
 recreate preserved the named chain volumes and the node1 passphrase bind.
 Startup replayed 53,594 persisted blocks; the fleet was healthy at about
 17:40Z.
