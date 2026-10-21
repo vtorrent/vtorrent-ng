@@ -122,7 +122,7 @@ paths.
 - The real-time proof quota test drains the per-IP allowance, observes the
   initial denial, and verifies automatic recovery after the 65-second retry.
 - The fresh 7-day soak runs from 2026-10-20T17:41:36Z to 2026-10-27T17:41:36Z
-  on `vtorrent/node:batch-137d3f8`. Sign-off is pending.
+  on `vtorrent/node:batch-e7691fb`. Sign-off is pending.
 
 ## Upgrade notes
 
@@ -135,11 +135,11 @@ paths.
   fleet, so the soak does not exercise the swap paths.
 - Existing chain data is preserved. Do not delete `chain.db` during the
   upgrade.
-- The core soak fleet runs `batch-137d3f8`. The release build includes the BTC
+- The core soak fleet runs `batch-e7691fb`. The release build includes the BTC
   wallet birthday flag, desktop commands, desktop health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake/BTC/
   compact-block/desktop hardening from the adversarial review and must be
-  rebuilt from `137d3f8`. The fresh soak window started 2026-10-20T17:41:36Z.
+  rebuilt from `e7691fb`. The fresh soak window started 2026-10-20T17:41:36Z.
 
 ## Known limitations
 

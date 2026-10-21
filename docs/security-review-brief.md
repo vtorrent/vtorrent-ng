@@ -149,8 +149,8 @@ challenge the repairs and their remaining assumptions independently.
 
 ## 6. What we provide
 - Immutable review delivery:
-  **`137d3f8b50bc5de4206161d12bc09bad01fbf546`**
-  (`docs: move review candidate to the BTC scan build`).
+  **`e7691fbc20178cc50a4272d936c49848434982da`**
+  (`docs: add third-round security review`).
   This commit includes the governance template-selection repairs,
   snapshot-based proof reconstruction, admission budget, bounded retries, the
   real-time quota-recovery test, the real-bitcoind SPV reorg tests, the full
@@ -169,16 +169,18 @@ challenge the repairs and their remaining assumptions independently.
   Use this full commit hash rather than floating `main`. If the engagement
   moves to a later implementation, record its full hash explicitly.
 - The review delivery is a source snapshot, not a release tag. The core soak
-  fleet runs `vtorrent/node:batch-137d3f8` (code `137d3f8`, BTC SPV disabled)
+  fleet runs `vtorrent/node:batch-e7691fb` (code `e7691fb`, BTC SPV disabled)
   from 2026-10-20T17:41:36Z to 2026-10-27T17:41:36Z. The review candidate
-  `137d3f8` adds the BTC wallet birthday flag, the desktop
+  `e7691fb` adds the BTC wallet birthday flag, the desktop
   governance/earnings/payment/deadline commands, health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake, BTC
   scan, compact-block, and desktop hardening from the adversarial review,
   raw-script cold-stake funding, and the round-2 burn-address removal,
   session-bound funding, desktop cold-stake commands, network-scoped BTC
-  state, output-size fee fix, single-use WebSocket tokens, and the BTC scan
-  checkpoint-retention fix; rebuild the release image from it. The soak is supporting evidence, not a
+  state, output-size fee fix, single-use WebSocket tokens, the BTC scan
+  checkpoint-retention fix, reorg-safe BTC wallet state, the durable cold-stake
+  script registry, and the WebSocket token cap; rebuild the release image from
+  it. The soak is supporting evidence, not a
   substitute for this review.
 - `docs/` — designs + adversarial reviews for every subsystem
   (`cold-staking-p2cs-design.md`, `op-return-utxo-exclusion-design.md`,

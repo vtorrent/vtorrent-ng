@@ -319,9 +319,9 @@ birthday/checkpoint design.
 Post-fix verification: node 228, torrent 98, migrate 18, BTC 75 (1 ignored),
 RPC 148; frontend lint, 16 tests, and production build; workspace formatting
 and strict all-feature Clippy pass; the live soak observer exits 0 with the
-hardened checks. The fleet was rebuilt to `vtorrent/node:batch-137d3f8` (code
+hardened checks. The fleet was rebuilt to `vtorrent/node:batch-e7691fb` (code
 `669ee36`) and a fresh soak window started at 2026-10-20T13:51:39Z. The review
-candidate `137d3f8` adds the BTC wallet birthday flag, the desktop
+candidate `e7691fb` adds the BTC wallet birthday flag, the desktop
 governance/earnings/payment/deadline commands, desktop health-field updates,
 the shared BTC sync loop, desktop chain persistence, and the cold-stake/BTC/
 compact-block/desktop hardening. The adversarial reviews are in

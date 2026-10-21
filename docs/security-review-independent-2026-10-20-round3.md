@@ -48,7 +48,8 @@ fresh `BtcSync` and do not cover the persistent wallet store.
 
 ## Findings
 
-### M-8 — Medium: the persistent BTC wallet does not reset state on a reorg
+### M-8 — Medium (FIXED in `7f096c0`): the persistent BTC wallet did not reset
+state on a reorg
 
 **Where:** `vtorrent-btc/src/wallet.rs:388-402` (`sync` uses the persistent
 `filter_headers` and `utxos`); `vtorrent-btc/src/filters.rs`
@@ -73,13 +74,15 @@ Consequences:
 restart. The swap tests use a fresh `BtcSync` per observation, so they do not
 cover this path.
 
-**Fix:** in `BtcWallet::sync`, compare the pre-sync best hash with the post-sync
-chain. If the old tip is no longer in the chain, find the common ancestor,
-clear the filter store, reset the UTXO set, set `last_scanned_height` to the
-fork point, and rescan. If the fork point is below the retained floor, reset to
-the floor and surface a clear “rescan with higher retention” error.
+**Fix applied:** `BtcWallet::sync` now compares the pre-sync best hash with the
+post-sync chain. If the old tip is no longer on the main chain, it finds the
+common ancestor, clears the filter store, resets the UTXO set (and its persisted
+file), sets `last_scanned_height` to the fork point, and rescans. A fork below
+the retained floor resets to the floor. Regression:
+`reorg_fork_point_is_common_ancestor`.
 
-### M-9 — Medium: cold-stake funding is bound to an in-memory session
+### M-9 — Medium (FIXED in `2e3fe1e`): cold-stake funding was bound to an
+in-memory session
 
 **Where:** `vtorrent-rpc/src/state.rs` (`cold_stake_scripts`);
 `vtorrent-tauri/src/state.rs` (`cold_stake_scripts`);
@@ -93,11 +96,14 @@ The UI generates and funds in one session, so the desktop path works.
 **Impact:** availability/UX, not fund loss. It also means the binding is not a
 durable authorization record.
 
-**Fix:** persist only the script hash (not the spending key) in the encrypted
-wallet or a dedicated 0600 file, and require `fund_cold_stake` to match it.
-Alternatively, document the one-session requirement in the RPC reference.
+**Fix applied:** `vtorrent-wallet::cold_stake_registry` persists only the
+script hash next to the encrypted wallet (atomic, 0600 on Unix). Both the RPC
+and Tauri `fund_cold_stake` accept a script registered durably or in the
+current session. The spending key is still never persisted. Regression:
+`registry_round_trips`.
 
-### M-10 — Medium/Low: the scan fallback can fail closed near the tip
+### M-10 — Medium/Low (FIXED in `7f096c0`): the scan fallback can fail closed
+near the tip
 
 **Where:** `vtorrent-btc/src/sync.rs` (`authenticate_filter_headers`).
 
@@ -109,21 +115,23 @@ below the start. If that checkpoint is below the retained floor,
 **Impact:** a fresh scan with a birthday near the tip and a small retention can
 fail; the user must raise retention or rescan from an earlier height.
 
-**Fix:** document the requirement, or retain the checkpoint filter header and
-the block headers from the floor so the fallback can authenticate the retained
-range.
+**Fix applied:** the requirement is documented on `scan_utxos_bip158` and in
+the `--btc-header-retention` help: a start near the tip with no stored previous
+header needs a checkpoint in range; if it is below the retained floor, raise
+retention or rescan from an earlier height.
 
-### L-5 — Low: WebSocket token map growth
+### L-5 — Low (FIXED in `b3028df`): WebSocket token map growth
 
 **Where:** `vtorrent-rpc/src/ws.rs` (`create_ws_token`).
 
 Tokens are pruned on each issue and expire after 60 seconds, but the map has no
 hard cap. An API-key-authenticated caller can create many tokens in a minute.
 
-**Fix:** cap the map (for example 1,024 entries) and reject or evict oldest
-entries.
+**Fix applied:** the map is capped at 1,024 entries; the oldest expiry is
+evicted before inserting. Regression: `token_map_is_capped`.
 
-### L-6 — Low: the cold spending WIF is still in the JSON response body
+### L-6 — Low (FIXED in `2e3fe1e`): the cold spending WIF was in the JSON
+response body
 
 **Where:** `vtorrent-rpc/src/handlers/wallet.rs` (`ColdStakeResp`).
 
@@ -131,10 +139,12 @@ entries.
 spending WIF. A tracing layer that logs bodies, or a browser cache outside the
 header’s control, would expose it.
 
-**Fix:** avoid body logging on this route, zeroize the response buffer after
-serialization, and keep the “shown once” warning.
+**Fix applied:** `Cache-Control: no-store` and `Pragma: no-cache` are set, and
+the WIF fields use `Zeroizing<String>` in both the RPC and Tauri responses. The
+body still contains the WIF by design (shown once); avoid body logging.
 
-### L-7 — Low: the desktop cold-stake path is not runtime-tested
+### L-7 — Low (OPEN; manual desktop check): the desktop cold-stake path is not
+runtime-tested
 
 **Where:** `vtorrent-ui/src/hooks/useNode.tsx` (`createColdStake`/
 `fundColdStake`); `vtorrent-tauri/src/commands/wallet.rs`.
@@ -144,24 +154,23 @@ it. The command and the fund flow compile, but there is no Tauri runtime test
 for the argument mapping or the wallet-unlocked path.
 
 **Fix:** add a Tauri command test or a manual desktop check that generates,
-funds, and confirms the raw P2CS output.
+funds, and confirms the raw P2CS output. The frontend test stack has no
+component-testing library, so this remains a manual launch check.
 
 ## Residual gaps
 
-- The `fund_cold_stake` session binding does not defend against a fully
-  compromised frontend that can call both endpoints.
+- The `fund_cold_stake` registry does not defend against a fully compromised
+  frontend that can call both endpoints.
 - BTC SPV is disabled on the soak fleet; the swaps and the BTC reorg path are
   not exercised by the current run.
 - Mainnet-scale BTC SPV retention/scan soak.
 - Desktop restart, peer-status, BTC discovery, and two-node propagation runtime
-  test.
-- Independent external review of `137d3f8`.
+  test (L-7).
+- Independent external review of `e7691fb`.
 
 ## Recommended order
 
-1. **M-8** — reorg-safe BTC wallet state (clear/rewind filter store, UTXOs, and
-   scan cursor).
-2. **M-9/M-10** — durable cold-stake script binding and the scan fallback
-   documentation/retention.
-3. **L-5/L-6/L-7** — token map cap, WIF response hygiene, desktop runtime test.
-4. Commission the external review and run the mainnet-scale BTC SPV soak.
+1. **L-7** — manual desktop generate/fund/confirm check.
+2. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
+   path.
+3. Commission the external review of `e7691fb` and rebuild the fleet on it.
