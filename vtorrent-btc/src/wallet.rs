@@ -455,10 +455,13 @@ impl BtcWallet {
                 self.filter_headers.lock().clear();
                 *self.utxos.lock() = UtxoSet::new();
                 self.save_utxos();
-                self.last_scanned_height = fork;
+                // The UTXO set was cleared, so the rescan must start at the
+                // wallet's birthday/zero, not at the fork point; otherwise
+                // outputs below the fork are lost.
+                self.last_scanned_height = 0;
                 self.synced = false;
                 tracing::warn!(
-                    "BTC header reorg detected; cleared filter/UTXO state and will rescan from height {}",
+                    "BTC header reorg detected at fork height {}; cleared filter/UTXO state and will rescan from height 0",
                     fork
                 );
             }
