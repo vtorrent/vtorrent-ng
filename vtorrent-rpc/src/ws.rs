@@ -189,6 +189,9 @@ pub async fn ws_handler(
     ws.on_upgrade(move |socket| handle_ws_connection(socket, state))
 }
 
+/// Maximum outstanding WebSocket tokens.
+const MAX_WS_TOKENS: usize = 1024;
+
 /// Response for `POST /api/v1/ws-token`.
 #[derive(serde::Serialize)]
 pub struct WsTokenResponse {
@@ -207,6 +210,15 @@ pub async fn create_ws_token(State(state): State<Arc<AppState>>) -> axum::Json<W
     let expires_at = now.saturating_add(60);
     let mut tokens = state.ws_tokens.write().await;
     tokens.retain(|_, expiry| *expiry > now);
+    if tokens.len() >= MAX_WS_TOKENS {
+        if let Some(oldest) = tokens
+            .iter()
+            .min_by_key(|(_, expiry)| **expiry)
+            .map(|(token, _)| token.clone())
+        {
+            tokens.remove(&oldest);
+        }
+    }
     tokens.insert(token.clone(), expires_at);
     axum::Json(WsTokenResponse { token, expires_at })
 }
@@ -462,5 +474,14 @@ mod tests {
             .connections
             .load(std::sync::atomic::Ordering::SeqCst);
         assert!(current >= MAX_WS_CONNECTIONS, "handler must reject here");
+    }
+
+    #[tokio::test]
+    async fn token_map_is_capped() {
+        let state = Arc::new(AppState::new());
+        for _ in 0..(MAX_WS_TOKENS + 1) {
+            let _ = create_ws_token(State(state.clone())).await;
+        }
+        assert!(state.ws_tokens.read().await.len() <= MAX_WS_TOKENS);
     }
 }
