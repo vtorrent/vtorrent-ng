@@ -52,9 +52,12 @@ retained store within 100,000 plus the 1,024-header slack.
 `--btc-regtest --btc-peer 127.0.0.1:18448`, retention 100,000) is running
 without touching the core soak fleet. Initial sync: 471 headers / 472 blocks,
 RSS 105,488 kB. After generating 100 regtest BTC blocks, the next 300 s sync
-added 100 headers / 100 blocks; RSS was 106,276 kB (+788 kB). The sampler
-`/tmp/vtr-btc-probe/rss-watch.sh` logs RSS and BTC height every 60 s to
-`/tmp/vtr-btc-probe/rss.tsv` for 24 h. This is a probe, not the fleet soak.
+added 100 headers / 100 blocks; RSS was 106,276 kB (+788 kB). A second
+100-block batch at 08:44Z synced at 08:49:47Z and scanned through height 671;
+RSS was 106,328 kB. Across the first ~4 h the sampler recorded 106,160–106,328
+kB with no ERROR/panic. The sampler `/tmp/vtr-btc-probe/rss-watch.sh` logs RSS
+and BTC height every 60 s to `/tmp/vtr-btc-probe/rss.tsv` for 24 h. This is a
+probe, not the fleet soak.
 
 ### Phase B — active soak (drive the header chain and a swap)
 1. Generate regtest BTC blocks against the local bitcoind
