@@ -59,6 +59,15 @@ kB with no ERROR/panic. The sampler `/tmp/vtr-btc-probe/rss-watch.sh` logs RSS
 and BTC height every 60 s to `/tmp/vtr-btc-probe/rss.tsv` for 24 h. This is a
 probe, not the fleet soak.
 
+**Active swap probe (2026-10-22T08:57Z):** the real BTC SPV multi-node HTLC swap
+test passed again at `6402d87` in 23.50 s (VTR funding
+`0ea663df954c474da00a0a7b1a6e135a70ba79198858b81c88c65a223727af7d`, BTC funding
+`36f52d3e601ca64267a199ccb151f3511be45cb0bf9b35de19ccf0a7cf7e892c`, BTC claim
+`679b8632ac4d991fb8b216dee04dcf25f58f1fd0ae18ce93ee170d3deb55fadc`, VTR claim
+`ac7ccdb43660dc978e40c261abb8750ac7dfe99034fc5eb7d7ddad1c2df137c7`). The probe
+followed the test's 13 new BTC blocks at 08:59:47Z and scanned through height
+684; RSS stayed 106,328 kB.
+
 ### Phase B — active soak (drive the header chain and a swap)
 1. Generate regtest BTC blocks against the local bitcoind
    (`vtr-btc-regtest`) at a controlled rate; watch header count vs RSS. This is
