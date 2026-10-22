@@ -190,22 +190,37 @@ cargo test -p vtorrent-daemon --features test-util --test process_recovery \
 
 The targeted test passes; strict daemon Clippy and workspace formatting pass.
 
+**Real BTC SPV swap update:** the ignored release test
+`multi_node_htlc_swap_settles_across_real_btc_spv` passed against the real
+`vtr-btc-regtest` bitcoind container and two VTR daemons. It settled a full
+HTLC swap: VTR funding `d922bab48bb528b3e5ea57977ccc3fb5c1b44babb252641914a0bd2bc850a817`,
+BTC funding `b448b78e3040ac24142eff43ed693b2d51c479a94bc46aeefd709fd9b1cb5d4c`,
+BTC claim `578b16a969d3a77482d57b40c6a6b23d4ae3c232c1e14c048745571e96ae3586`,
+and VTR claim `0d71f48be47ec1097b20861f31d97cf0b646e302124a16a5ea599938bc1097c3`.
+This is regtest BTC SPV with real bitcoind, not a mainnet-scale
+header/filter retention soak.
+
+```bash
+cargo test -p vtorrent-daemon --features test-util --test process_recovery \
+  --release multi_node_htlc_swap -- --ignored --nocapture
+```
+
 ## Residual gaps
 
 - The `fund_cold_stake` registry does not defend against a fully compromised
   frontend that can call both endpoints.
-- BTC SPV is disabled on the soak fleet; the swaps and the BTC reorg path are
-  not exercised by the current run.
+- BTC SPV is disabled on the soak fleet; the real BTC SPV swap test is a
+  separate regtest run, not a mainnet-scale soak.
 - Mainnet-scale BTC SPV retention/scan soak.
 - A live desktop/browser session remains (L-7); component interactions,
   command/IPC execution, two-daemon P2P propagation, and regtest confirmation
   are tested separately.
 - Desktop restart, peer-status, and BTC discovery runtime tests.
-- Independent external review of `75d7848`.
+- Independent external review of `WORKTREE`.
 
 ## Recommended order
 
 1. **L-7** — live desktop/browser session check.
 2. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
    path.
-3. Commission the external review of `75d7848` and rebuild the fleet on it.
+3. Commission the external review of `WORKTREE` and rebuild the fleet on it.
