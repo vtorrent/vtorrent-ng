@@ -216,11 +216,11 @@ cargo test -p vtorrent-daemon --features test-util --test process_recovery \
   command/IPC execution, two-daemon P2P propagation, and regtest confirmation
   are tested separately.
 - Desktop restart, peer-status, and BTC discovery runtime tests.
-- Independent external review of `WORKTREE`.
+- Independent external review of `bab2456`.
 
 ## Recommended order
 
 1. **L-7** — live desktop/browser session check.
 2. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
    path.
-3. Commission the external review of `WORKTREE` and rebuild the fleet on it.
+3. Commission the external review of `bab2456` and rebuild the fleet on it.

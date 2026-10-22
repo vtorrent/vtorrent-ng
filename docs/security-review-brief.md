@@ -149,8 +149,8 @@ challenge the repairs and their remaining assumptions independently.
 
 ## 6. What we provide
 - Immutable review delivery:
-  **`916b906725aba18b3dcb3ca5d610e8e2252b895c`**
-  (`docs: record the real BTC SPV multi-node swap result`).
+  **`bab2456ac8df1d66d47dd7e64765cb7da2ebf70b`**
+  (`docs: move review candidate to the BTC SPV evidence build`).
   This commit includes the governance template-selection repairs,
   snapshot-based proof reconstruction, admission budget, bounded retries, the
   real-time quota-recovery test, the real-bitcoind SPV reorg tests, the full
@@ -171,7 +171,7 @@ challenge the repairs and their remaining assumptions independently.
 - The review delivery is a source snapshot, not a release tag. The core soak
   fleet runs `vtorrent/node:batch-e7691fb` (code `e7691fb`, BTC SPV disabled)
   from 2026-10-21T02:47:54Z to 2026-10-28T02:47:54Z. The review candidate
-  `916b906` adds the BTC wallet birthday flag, the desktop
+  `bab2456` adds the BTC wallet birthday flag, the desktop
   governance/earnings/payment/deadline commands, health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake, BTC
   scan, compact-block, and desktop hardening from the adversarial review,
