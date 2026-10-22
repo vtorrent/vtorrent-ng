@@ -541,6 +541,11 @@ pub async fn create_cold_stake(
     let keys = vtorrent_wallet::wallet::generate_cold_stake_keys(locktime, label.as_deref())
         .map_err(TauriError::from)?;
     let script_hash = hex::encode(vtorrent_core::crypto::hash160(&keys.script_pubkey));
+    if let Some(wallet_path) = state.wallet_path.lock().unwrap().clone() {
+        vtorrent_wallet::cold_stake_registry::add(&wallet_path, &script_hash).map_err(|e| {
+            TauriError::Io(format!("Could not persist cold-stake script hash: {e}"))
+        })?;
+    }
     state
         .cold_stake_scripts
         .lock()
@@ -1002,6 +1007,12 @@ mod tests {
             start_time: std::time::Instant::now(),
         });
 
+        let registry_dir =
+            std::env::temp_dir().join(format!("vtr-tauri-cold-stake-{}", std::process::id()));
+        std::fs::create_dir_all(&registry_dir).unwrap();
+        let wallet_path = registry_dir.join("wallet.vtr");
+        *state.wallet_path.lock().unwrap() = Some(wallet_path.clone());
+
         let foreign = vtorrent_wallet::wallet::generate_cold_stake_keys(0, None).unwrap();
         let error = fund_cold_stake(state.clone(), hex::encode(foreign.script_pubkey), COIN)
             .await
@@ -1013,6 +1024,12 @@ mod tests {
             .expect("create command accepts omitted optional label")
             .deserialize::<serde_json::Value>()
             .unwrap();
+        let script_hash = keys["script_hash"].as_str().unwrap();
+        assert!(vtorrent_wallet::cold_stake_registry::contains(
+            &wallet_path,
+            script_hash
+        ));
+        state.cold_stake_scripts.lock().unwrap().clear();
         let script_hex = keys["script_pubkey"].as_str().unwrap();
         let txid = invoke(
             "fund_cold_stake",
@@ -1081,6 +1098,7 @@ mod tests {
         assert_eq!(confirmed.height, 2);
         assert_eq!(confirmed.value, COIN);
         assert_eq!(confirmed.script_pubkey, script);
+        let _ = std::fs::remove_dir_all(&registry_dir);
     }
 
     #[tokio::test]
