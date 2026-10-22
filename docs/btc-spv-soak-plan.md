@@ -75,7 +75,8 @@ retained store within 100,000 plus the 1,024-header slack.
 - **Mainnet-scale retention test (2026-10-19):** an ignored test inserts
   870,000 headers and keeps the retained store within 100,000 plus the
   1,024-header slack. Pruning is amortized so the sync is not O(headers ×
-  retention). The test passed in release mode in 17.39 s.
+  retention). The test passed in release mode in 17.39 s; re-run at `6402d87`
+  on 2026-10-22 passed in 19.49 s.
 
 ## 4.1 Wallet birthday
 
