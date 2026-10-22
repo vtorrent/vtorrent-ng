@@ -85,6 +85,8 @@ pub fn build_router(state: AppState) -> Router {
         .allow_origin([
             "http://localhost".parse().unwrap(),
             "http://127.0.0.1".parse().unwrap(),
+            "http://localhost:3000".parse().unwrap(),
+            "http://127.0.0.1:3000".parse().unwrap(),
             "tauri://localhost".parse().unwrap(),
             "http://tauri.localhost".parse().unwrap(),
         ])

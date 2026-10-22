@@ -62,6 +62,34 @@ async fn delete(app: axum::Router, uri: &str) -> (StatusCode, serde_json::Value)
 }
 
 #[tokio::test]
+async fn test_cors_allows_vite_dev_origin() {
+    for origin in ["http://127.0.0.1:3000", "http://localhost:3000"] {
+        let app = build_router(AppState::new());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/api/v1/wallet/cold-stake")
+                    .header("origin", origin)
+                    .header("access-control-request-method", "POST")
+                    .header("access-control-request-headers", "content-type,x-api-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|value| value.to_str().ok()),
+            Some(origin)
+        );
+    }
+}
+
+#[tokio::test]
 async fn test_get_node_info() {
     let app = build_router(AppState::new());
     let (status, body) = get(app, "/api/v1/info").await;
