@@ -321,8 +321,9 @@ RPC 148; frontend lint, 20 tests, production build, and the Playwright smoke
 test; 4 Tauri library tests; workspace formatting and strict all-feature Clippy
 pass; the live soak observer exits 0 with the hardened checks. The fleet was
 rebuilt to `vtorrent/node:batch-e7691fb` (code `e7691fb`) and a fresh soak
-window started at 2026-10-21T02:47:54Z. The review candidate `36e45ff`
-(`bab2456` plus the Playwright E2E setup) adds the BTC wallet birthday flag,
+window started at 2026-10-21T02:47:54Z. The review candidate `6402d87`
+(`bab2456` plus the Playwright E2E setup and Vite dev-origin CORS allowance)
+adds the BTC wallet birthday flag,
 the desktop governance/earnings/payment/deadline commands, desktop health-field
 updates, the shared BTC sync loop, desktop chain persistence, and the
 cold-stake/BTC/compact-block/desktop hardening. The adversarial reviews are in

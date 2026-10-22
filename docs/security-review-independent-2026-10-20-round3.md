@@ -143,8 +143,8 @@ header’s control, would expose it.
 the WIF fields use `Zeroizing<String>` in both the RPC and Tauri responses. The
 body still contains the WIF by design (shown once); avoid body logging.
 
-### L-7 — Low (IPC fixed in `6cdcfb8`; component coverage added): the desktop
-cold-stake path was not fully runtime-tested
+### L-7 — Low (FIXED in `6402d87`): the desktop cold-stake path was not fully
+runtime-tested
 
 **Where:** `vtorrent-ui/src/hooks/useNode.tsx` (`createColdStake`/
 `fundColdStake`); `vtorrent-tauri/src/commands/wallet.rs`.
@@ -169,8 +169,18 @@ amount rejection without a backend call, and retry after a funding failure.
 The successful cases assert the displayed raw script is passed to the backend
 helper with the expected satoshi amount and show the returned transaction ID.
 All 20 frontend tests, lint, and the production build pass. Backend helpers are
-mocked in these component tests; a live desktop/browser session remains
-unverified.
+mocked in these component tests; the live browser journey is covered separately
+below, while a live Tauri desktop session remains unverified.
+
+**Live browser coverage update:** the Playwright E2E starts a regtest daemon
+with the test-only miner, imports and unlocks a throwaway wallet, funds it
+through the faucet, creates a mock browser wallet, generates a P2CS pair in the
+real Staking page, funds 1 VTR through the UI, mines a block, and verifies the
+confirmed transaction contains the exact P2CS script and 1 VTR output. The RPC
+CORS allowlist now includes the Vite dev origins (`http://127.0.0.1:3000`,
+`http://localhost:3000`); sensitive endpoints still require the API key. The
+test is opt-in (`VTORRENT_E2E_LIVE=1`) and requires
+`cargo build -p vtorrent-daemon --features test-util`.
 
 **Two-node coverage update (working tree):**
 `cold_stake_funding_propagates_and_confirms_on_two_daemons` starts two isolated
@@ -212,16 +222,16 @@ cargo test -p vtorrent-daemon --features test-util --test process_recovery \
 - BTC SPV is disabled on the soak fleet; the real BTC SPV swap test is a
   separate regtest run, not a mainnet-scale soak.
 - Mainnet-scale BTC SPV retention/scan soak.
-- A live cold-stake desktop/browser journey remains (L-7); the Playwright smoke
-  test, component interactions, command/IPC execution, two-daemon P2P
-  propagation, and regtest confirmation are tested separately.
+- A live Tauri desktop journey remains; the browser journey is covered by the
+  Playwright E2E, and the component/IPC/two-daemon/regtest checks are separate.
 - Desktop restart, peer-status, and BTC discovery runtime tests.
-- Independent external review of `36e45ff` (`bab2456` plus the Playwright E2E
-  setup; runtime source unchanged).
+- Independent external review of `6402d87` (`bab2456` plus the Playwright E2E
+  setup, the live cold-stake browser test, and the Vite dev-origin CORS
+  allowance).
 
 ## Recommended order
 
-1. **L-7** — live desktop/browser session check.
-2. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
+1. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
    path.
-3. Commission the external review of `36e45ff` and rebuild the fleet on it.
+2. Commission the external review of `6402d87` and rebuild the fleet on it.
+3. Run the live Tauri desktop journey and the remaining desktop runtime checks.

@@ -139,8 +139,9 @@ paths.
   wallet birthday flag, desktop commands, desktop health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake/BTC/
   compact-block/desktop hardening from the adversarial review and must be
-  rebuilt from `36e45ff` (`bab2456` plus the Playwright E2E setup; runtime
-  source unchanged). The fresh soak window started 2026-10-21T02:47:54Z.
+  rebuilt from `6402d87` (`bab2456` plus the Playwright E2E setup, the live
+  cold-stake browser test, and the Vite dev-origin CORS allowance). The fresh
+  soak window started 2026-10-21T02:47:54Z.
 
 ## Known limitations
 

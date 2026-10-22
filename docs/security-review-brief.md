@@ -149,10 +149,10 @@ challenge the repairs and their remaining assumptions independently.
 
 ## 6. What we provide
 - Immutable review delivery:
-  **`36e45ff26fcf8ad4b06c040ced1bce2d3e2cd9b4`**
-  (`test(ui): add Playwright browser E2E setup`). This is `bab2456` plus the
-  Playwright browser E2E setup and its gitignore entries; the runtime source is
-  unchanged.
+  **`6402d873267a81c7aed489c6f8e2117f84cb4e86`**
+  (`test(ui): cover the live cold-stake browser journey`). This is `bab2456`
+  plus the Playwright browser E2E setup, the live cold-stake browser test, and
+  the Vite dev-origin CORS allowance.
   This commit includes the governance template-selection repairs,
   snapshot-based proof reconstruction, admission budget, bounded retries, the
   real-time quota-recovery test, the real-bitcoind SPV reorg tests, the full
@@ -173,7 +173,7 @@ challenge the repairs and their remaining assumptions independently.
 - The review delivery is a source snapshot, not a release tag. The core soak
   fleet runs `vtorrent/node:batch-e7691fb` (code `e7691fb`, BTC SPV disabled)
   from 2026-10-21T02:47:54Z to 2026-10-28T02:47:54Z. The review candidate
-  `36e45ff` adds the BTC wallet birthday flag, the desktop
+  `6402d87` adds the BTC wallet birthday flag, the desktop
   governance/earnings/payment/deadline commands, health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake, BTC
   scan, compact-block, and desktop hardening from the adversarial review,
@@ -181,9 +181,10 @@ challenge the repairs and their remaining assumptions independently.
   session-bound funding, desktop cold-stake commands, network-scoped BTC
   state, output-size fee fix, single-use WebSocket tokens, the BTC scan
   checkpoint-retention fix, reorg-safe BTC wallet state, the durable cold-stake
-  script registry, the WebSocket token cap, and the Playwright browser E2E
-  setup; rebuild the release image from it. The soak is supporting evidence,
-  not a substitute for this review.
+  script registry, the WebSocket token cap, the Playwright browser E2E setup,
+  the live cold-stake browser test, and the Vite dev-origin CORS allowance;
+  rebuild the release image from it. The soak is supporting evidence, not a
+  substitute for this review.
 - `docs/` — designs + adversarial reviews for every subsystem
   (`cold-staking-p2cs-design.md`, `op-return-utxo-exclusion-design.md`,
   `network-upgrade-design.md`, `atomic-swap-protocol.md`,
