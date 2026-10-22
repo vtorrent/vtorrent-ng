@@ -139,9 +139,10 @@ paths.
   wallet birthday flag, desktop commands, desktop health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake/BTC/
   compact-block/desktop hardening from the adversarial review and must be
-  rebuilt from `6402d87` (`bab2456` plus the Playwright E2E setup, the live
-  cold-stake browser test, and the Vite dev-origin CORS allowance). The fresh
-  soak window started 2026-10-21T02:47:54Z.
+  rebuilt from `3b2a5d3` (`bab2456` plus the Playwright E2E setup, the live
+  cold-stake browser test, the Vite dev-origin CORS allowance, the Tauri path
+  capability fix, and the live desktop journey evidence). The fresh soak window
+  started 2026-10-21T02:47:54Z.
 
 ## Known limitations
 
@@ -161,7 +162,7 @@ paths.
 - The proof admission budget bounds request counts, not CPU milliseconds.
 - Desktop chain persistence was added. Desktop restart, real peer status, and
   BTC funding discovery still need a runtime test; two-node cold-stake
-  propagation is covered by the daemon test.
+  propagation and the live Tauri cold-stake journey are covered.
 - Cold-stake funding uses the raw P2CS script via `fund_cold_stake`; the
   P2SH-hash-as-P2PKH burn address was removed from the API/UI.
 

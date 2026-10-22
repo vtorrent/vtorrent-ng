@@ -143,7 +143,7 @@ header’s control, would expose it.
 the WIF fields use `Zeroizing<String>` in both the RPC and Tauri responses. The
 body still contains the WIF by design (shown once); avoid body logging.
 
-### L-7 — Low (FIXED in `6402d87`): the desktop cold-stake path was not fully
+### L-7 — Low (FIXED in `3b2a5d3`): the desktop cold-stake path was not fully
 runtime-tested
 
 **Where:** `vtorrent-ui/src/hooks/useNode.tsx` (`createColdStake`/
@@ -159,7 +159,7 @@ frontend's omitted optional `label` and `fund_cold_stake` with camelCase
 admission of the signed payment to the real mempool, a 1 VTR output to the
 generated raw P2CS script, submission of the same transaction ID to the
 peer-relay channel, and inclusion in a regtest block with the output confirmed
-at height 2. All four Tauri library tests and strict Tauri Clippy pass.
+at height 2. All five Tauri library tests and strict Tauri Clippy pass.
 
 **Component coverage update:** four tests in
 `vtorrent-ui/src/pages/StakingPage.test.tsx` render the real page in jsdom and
@@ -170,8 +170,8 @@ The successful cases assert the displayed raw script is passed to the backend
 helper with the expected satoshi amount and show the returned transaction ID.
 All 20 frontend tests, lint, and the production build pass. The full workspace
 suite (`cargo test --workspace --all-features`) also passes at `6402d87`.
-Backend helpers are mocked in these component tests; the live browser journey is
-covered separately below, while a live Tauri desktop session remains unverified.
+Backend helpers are mocked in these component tests; the live browser and Tauri
+journeys are covered separately below.
 
 **Live browser coverage update:** the Playwright E2E starts a regtest daemon
 with the test-only miner, imports and unlocks a throwaway wallet, funds it
@@ -182,6 +182,21 @@ CORS allowlist now includes the Vite dev origins (`http://127.0.0.1:3000`,
 `http://localhost:3000`); sensitive endpoints still require the API key. The
 test is opt-in (`VTORRENT_E2E_LIVE=1`) and requires
 `cargo build -p vtorrent-daemon --features test-util`.
+
+**Live Tauri desktop coverage update:** the actual Tauri app was launched under
+`tauri-driver` with an isolated HOME and the Vite dev server. The first run
+failed to create a wallet because the capability set was empty and
+`@tauri-apps/api/path` was denied. `vtorrent-tauri/capabilities/default.json`
+now grants `core:path:default` (least privilege), and a unit test asserts the
+permission. A full run with `core:path:default` opened the wallet on testnet
+(regtest), started the node, funded 100 VTR from a peer daemon, generated a P2CS
+script in the real Staking page, funded 1 VTR through the UI, relayed the
+transaction to the peer, mined block 2, and confirmed the P2CS output on the
+Tauri node. Funding txid
+`b7a4644f57f44a938ac490d2c932b98b451fcc2f1b29bc0113e3ecca029688a0`, block
+`582db1225481ca797b7e9da5fb5ec0e218fceede4dcbc4313cb2a789b212fa95`, script
+`6376a914e23afa1f9082341bb21043e28555f02c52c392bc88ac670400000000b17576a9143b5abb209554608490e909cb47205c794203b7b188ac68`.
+`get_transactions` showed the send at height 2; the Tauri suite is now 5 tests.
 
 **Two-node coverage update (working tree):**
 `cold_stake_funding_propagates_and_confirms_on_two_daemons` starts two isolated
@@ -223,16 +238,15 @@ cargo test -p vtorrent-daemon --features test-util --test process_recovery \
 - BTC SPV is disabled on the soak fleet; the real BTC SPV swap test is a
   separate regtest run, not a mainnet-scale soak.
 - Mainnet-scale BTC SPV retention/scan soak.
-- A live Tauri desktop journey remains; the browser journey is covered by the
-  Playwright E2E, and the component/IPC/two-daemon/regtest checks are separate.
-- Desktop restart, peer-status, and BTC discovery runtime tests.
-- Independent external review of `6402d87` (`bab2456` plus the Playwright E2E
-  setup, the live cold-stake browser test, and the Vite dev-origin CORS
-  allowance).
+- Desktop restart, peer-status, and BTC discovery runtime tests; the live Tauri
+  cold-stake journey and browser E2E are covered.
+- Independent external review of `3b2a5d3` (`6402d87` plus the Tauri path
+  capability fix and the live desktop journey evidence).
 
 ## Recommended order
 
 1. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
    path.
-2. Commission the external review of `6402d87` and rebuild the fleet on it.
-3. Run the live Tauri desktop journey and the remaining desktop runtime checks.
+2. Commission the external review of `3b2a5d3` and rebuild the fleet on it.
+3. Run the remaining desktop runtime checks (restart, peer status, BTC
+   discovery).

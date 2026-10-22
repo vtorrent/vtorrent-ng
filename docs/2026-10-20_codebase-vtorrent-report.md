@@ -221,7 +221,8 @@ this review; earlier passing-suite claims are not used to dismiss these probes.
   health-field updates, the shared BTC sync loop, and desktop chain
   store replay/persistence were added. The adversarial review then added the
   desktop data-directory/network/lag fixes. Desktop restart, real peer status,
-  BTC funding discovery, and two-node propagation still need a runtime test.
+  and BTC funding discovery still need a runtime test; two-node propagation and
+  the live Tauri cold-stake journey are covered.
 
 ### F09. Several frontend IPC contracts do not match serialized Rust results
 
@@ -318,14 +319,15 @@ birthday/checkpoint design.
 
 Post-fix verification: node 228, torrent 98, migrate 18, BTC 75 (1 ignored),
 RPC 149; frontend lint, 20 tests, production build, the Playwright smoke test,
-and the live cold-stake browser E2E; 4 Tauri library tests; the full workspace
+the live cold-stake browser E2E, and the live Tauri desktop journey; 5 Tauri
+library tests; the full workspace
 suite (`cargo test --workspace --all-features`), workspace formatting, and
 strict all-feature Clippy pass; the live soak observer exits 0 with the hardened
 checks. The fleet was
 rebuilt to `vtorrent/node:batch-e7691fb` (code `e7691fb`) and a fresh soak
-window started at 2026-10-21T02:47:54Z. The review candidate `6402d87`
-(`bab2456` plus the Playwright E2E setup and Vite dev-origin CORS allowance)
-adds the BTC wallet birthday flag,
+window started at 2026-10-21T02:47:54Z. The review candidate `3b2a5d3`
+(`bab2456` plus the Playwright E2E setup, the Vite dev-origin CORS allowance,
+and the Tauri path capability fix) adds the BTC wallet birthday flag,
 the desktop governance/earnings/payment/deadline commands, desktop health-field
 updates, the shared BTC sync loop, desktop chain persistence, and the
 cold-stake/BTC/compact-block/desktop hardening. The adversarial reviews are in
