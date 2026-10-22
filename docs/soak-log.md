@@ -2130,3 +2130,10 @@ Daily observation:
 scripts/soak-observe.sh 1792550874
 scripts/soak-status.sh
 ```
+
+2026-10-22T09:30Z check: 3/3 nodes at height **55928**, same tip, connections
+2/1/1, memory 178.9/157.7/162.2 MiB, staking, 0 errors/restarts. The daily
+observation recorded 7,281/7,281 Prometheus samples per node with 0 gaps,
+1,794 blocks staked this run, median cadence 61 s, and no slow blocks. BTC SPV
+remains disabled on the fleet; the separate probe is at 684 BTC headers with
+RSS about 106.2 MiB and no errors.
