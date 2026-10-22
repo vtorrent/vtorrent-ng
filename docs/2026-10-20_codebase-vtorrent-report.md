@@ -317,9 +317,11 @@ commands above. F02's older-than-retention wallet discovery still needs a
 birthday/checkpoint design.
 
 Post-fix verification: node 228, torrent 98, migrate 18, BTC 75 (1 ignored),
-RPC 148; frontend lint, 20 tests, production build, and the Playwright smoke
-test; 4 Tauri library tests; workspace formatting and strict all-feature Clippy
-pass; the live soak observer exits 0 with the hardened checks. The fleet was
+RPC 149; frontend lint, 20 tests, production build, the Playwright smoke test,
+and the live cold-stake browser E2E; 4 Tauri library tests; the full workspace
+suite (`cargo test --workspace --all-features`), workspace formatting, and
+strict all-feature Clippy pass; the live soak observer exits 0 with the hardened
+checks. The fleet was
 rebuilt to `vtorrent/node:batch-e7691fb` (code `e7691fb`) and a fresh soak
 window started at 2026-10-21T02:47:54Z. The review candidate `6402d87`
 (`bab2456` plus the Playwright E2E setup and Vite dev-origin CORS allowance)

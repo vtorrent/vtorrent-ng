@@ -168,9 +168,10 @@ passphrase, desktop-mode funding without a browser passphrase, non-positive
 amount rejection without a backend call, and retry after a funding failure.
 The successful cases assert the displayed raw script is passed to the backend
 helper with the expected satoshi amount and show the returned transaction ID.
-All 20 frontend tests, lint, and the production build pass. Backend helpers are
-mocked in these component tests; the live browser journey is covered separately
-below, while a live Tauri desktop session remains unverified.
+All 20 frontend tests, lint, and the production build pass. The full workspace
+suite (`cargo test --workspace --all-features`) also passes at `6402d87`.
+Backend helpers are mocked in these component tests; the live browser journey is
+covered separately below, while a live Tauri desktop session remains unverified.
 
 **Live browser coverage update:** the Playwright E2E starts a regtest daemon
 with the test-only miner, imports and unlocks a throwaway wallet, funds it
