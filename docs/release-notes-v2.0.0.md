@@ -139,11 +139,13 @@ paths.
   wallet birthday flag, desktop commands, desktop health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake/BTC/
   compact-block/desktop hardening from the adversarial review and must be
-  rebuilt from `5b815c2` (`bab2456` plus the Playwright E2E setup, the live
+  rebuilt from `803aada` (`bab2456` plus the Playwright E2E setup, the live
   cold-stake browser test, the Vite dev-origin CORS allowance, the Tauri path
   capability fix, the durable cold-stake registry persistence fix, the desktop
-  restart/persistence parity fixes, and the live desktop journey, restart, and
-  BTC discovery evidence). The fresh soak window started 2026-10-21T02:47:54Z.
+  restart/persistence parity fixes, the wallet-path confinement, import
+  overwrite guard, version bump, and IPC error surfacing, and the live desktop
+  journey, restart, and BTC discovery evidence). The fresh soak window started
+  2026-10-21T02:47:54Z.
 
 ## Known limitations
 
@@ -167,6 +169,8 @@ paths.
   covered. Mainnet-scale BTC SPV soak remains.
 - Desktop BTC SPV on testnet/regtest uses `VTORRENT_BTC_PEER` (for example
   `127.0.0.1:18448`); mainnet uses DNS seeds.
+- Desktop wallet paths are confined to the app data directory; legacy import
+  refuses to overwrite an existing wallet. The desktop version is beta.3.
 - Cold-stake funding uses the raw P2CS script via `fund_cold_stake`; the
   P2SH-hash-as-P2PKH burn address was removed from the API/UI.
 

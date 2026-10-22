@@ -143,7 +143,7 @@ header’s control, would expose it.
 the WIF fields use `Zeroizing<String>` in both the RPC and Tauri responses. The
 body still contains the WIF by design (shown once); avoid body logging.
 
-### L-7 — Low (FIXED in `5b815c2`): the desktop cold-stake path was not fully
+### L-7 — Low (FIXED in `803aada`): the desktop cold-stake path was not fully
 runtime-tested
 
 **Where:** `vtorrent-ui/src/hooks/useNode.tsx` (`createColdStake`/
@@ -168,7 +168,7 @@ passphrase, desktop-mode funding without a browser passphrase, non-positive
 amount rejection without a backend call, and retry after a funding failure.
 The successful cases assert the displayed raw script is passed to the backend
 helper with the expected satoshi amount and show the returned transaction ID.
-All 20 frontend tests, lint, and the production build pass. The full workspace
+All 22 frontend tests, lint, and the production build pass. The full workspace
 suite (`cargo test --workspace --all-features`) also passes at `6402d87`.
 Backend helpers are mocked in these component tests; the live browser and Tauri
 journeys are covered separately below.
@@ -224,6 +224,17 @@ network `vtorrent-regtest`; mempool restored after restart (`mempool_size 1`);
 staking auto-resumed (`enabled=true`); BTC SPV synced to regtest height 684
 with a `bcrt1...` address using `VTORRENT_BTC_PEER=127.0.0.1:18448`.
 
+**Wallet-path and IPC-error hardening update:** `803aada` confines
+frontend-supplied wallet paths to the app data directory, rejects `..`
+components, and applies the check to `create_wallet`, `open_wallet`, and
+`import_legacy_wallet`. Legacy import now refuses to overwrite an existing
+wallet. The Tauri crate and UI version are beta.3, and the UI renders the
+backend error message via `formatInvokeError` instead of a generic fallback.
+Live checks: an outside path returned "Wallet path must be inside the app data
+directory"; creating over the existing wallet returned "A wallet already exists
+at this path"; the create page displayed that message; `get_node_info.version`
+is `2.0.0-beta.3`.
+
 **Two-node coverage update (working tree):**
 `cold_stake_funding_propagates_and_confirms_on_two_daemons` starts two isolated
 daemon processes with separate data directories. The sender generates and
@@ -264,14 +275,15 @@ cargo test -p vtorrent-daemon --features test-util --test process_recovery \
 - BTC SPV is disabled on the soak fleet; the real BTC SPV swap test is a
   separate regtest run, not a mainnet-scale soak.
 - Mainnet-scale BTC SPV retention/scan soak.
-- Tauri wallet-path hardening (frontend-supplied path is not constrained to the
-  app data dir) and the legacy-import overwrite guard.
-- Independent external review of `5b815c2` (`dfeace6` plus the desktop
-  restart/persistence parity fixes and the BTC discovery evidence).
+- Minor Tauri API parity items: `start_node` still ignores the legacy
+  `stakingAddress`/`dataDir` arguments, and `start_staking` does not return the
+  RPC `owned`/warning fields.
+- Independent external review of `803aada` (`5b815c2` plus the wallet-path
+  confinement, import overwrite guard, version bump, and IPC error surfacing).
 
 ## Recommended order
 
 1. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
    path.
-2. Commission the external review of `5b815c2` and rebuild the fleet on it.
-3. Harden the Tauri wallet path and legacy-import overwrite path.
+2. Commission the external review of `803aada` and rebuild the fleet on it.
+3. Review the remaining minor Tauri API parity items.

@@ -149,13 +149,14 @@ challenge the repairs and their remaining assumptions independently.
 
 ## 6. What we provide
 - Immutable review delivery:
-  **`5b815c2efb651b9a49e74760c41e8611296110dd`**
-  (`fix(desktop): close restart and persistence parity gaps`). This is
+  **`803aada17d5d09417ffec5f9bb9db968b9874bd9`**
+  (`fix(desktop): harden wallet paths and surface IPC errors`). This is
   `bab2456` plus the Playwright browser E2E setup, the live cold-stake browser
   test, the Vite dev-origin CORS allowance, the Tauri path capability fix, the
   durable cold-stake registry persistence fix, the desktop restart/persistence
-  parity fixes, and the live desktop journey, restart, and BTC discovery
-  evidence.
+  parity fixes, the wallet-path confinement, import overwrite guard, version
+  bump, and IPC error surfacing, and the live desktop journey, restart, and BTC
+  discovery evidence.
   This commit includes the governance template-selection repairs,
   snapshot-based proof reconstruction, admission budget, bounded retries, the
   real-time quota-recovery test, the real-bitcoind SPV reorg tests, the full
@@ -176,7 +177,7 @@ challenge the repairs and their remaining assumptions independently.
 - The review delivery is a source snapshot, not a release tag. The core soak
   fleet runs `vtorrent/node:batch-e7691fb` (code `e7691fb`, BTC SPV disabled)
   from 2026-10-21T02:47:54Z to 2026-10-28T02:47:54Z. The review candidate
-  `5b815c2` adds the BTC wallet birthday flag, the desktop
+  `803aada` adds the BTC wallet birthday flag, the desktop
   governance/earnings/payment/deadline commands, health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake, BTC
   scan, compact-block, and desktop hardening from the adversarial review,
@@ -187,8 +188,10 @@ challenge the repairs and their remaining assumptions independently.
   script registry, the WebSocket token cap, the Playwright browser E2E setup,
   the live cold-stake browser test, the Vite dev-origin CORS allowance, the
   Tauri path capability fix, the durable cold-stake registry persistence fix,
-  the desktop restart/persistence parity fixes, and the live desktop journey,
-  restart, and BTC discovery evidence; rebuild the release image from it. The soak is supporting evidence, not a substitute for this review.
+  the desktop restart/persistence parity fixes, the wallet-path confinement,
+  import overwrite guard, version bump, and IPC error surfacing, and the live
+  desktop journey, restart, and BTC discovery evidence; rebuild the release
+  image from it. The soak is supporting evidence, not a substitute for this review.
 - `docs/` — designs + adversarial reviews for every subsystem
   (`cold-staking-p2cs-design.md`, `op-return-utxo-exclusion-design.md`,
   `network-upgrade-design.md`, `atomic-swap-protocol.md`,
