@@ -33,6 +33,9 @@ pub struct AppState {
     pub wallet: Mutex<Option<Wallet>>,
     /// Path to the wallet file on disk.
     pub wallet_path: Mutex<Option<std::path::PathBuf>>,
+    /// The application data directory. Wallet paths supplied over IPC must
+    /// resolve inside this directory.
+    pub app_data_dir: Mutex<Option<std::path::PathBuf>>,
     /// The embedded node handle — `None` until `start_node` is called.
     /// Uses `tokio::sync::Mutex` so it can be held across `.await` points
     /// in async Tauri commands.
@@ -89,9 +92,15 @@ impl AppState {
         Self {
             wallet: Mutex::new(None),
             wallet_path: Mutex::new(None),
+            app_data_dir: Mutex::new(None),
             node: TokioMutex::new(None),
             cold_stake_scripts: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// Record the application data directory used to confine wallet paths.
+    pub fn set_app_data_dir(&self, dir: std::path::PathBuf) {
+        *self.app_data_dir.lock().unwrap() = Some(dir);
     }
 }
 

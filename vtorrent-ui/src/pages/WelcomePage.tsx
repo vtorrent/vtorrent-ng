@@ -2,6 +2,7 @@ import { useNavigate } from 'react-router-dom'
 import { useState } from 'react'
 import { Download, PlusCircle, Shield, ArrowRight, Lock } from 'lucide-react'
 import { useWallet } from '../hooks/useWallet'
+import { formatInvokeError } from '../api'
 import { useNodeInfo } from '../hooks/useNode'
 import { useNetwork, parseSeeds } from '../hooks/useNetwork'
 import AppIcon from '../components/AppIcon'
@@ -26,7 +27,7 @@ export default function WelcomePage() {
       await unlock(passphrase, otpCode || undefined, { network, seeds: parseSeeds(seeds) })
       navigate('/dashboard')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Incorrect passphrase or OTP code')
+      setError(formatInvokeError(err, 'Incorrect passphrase or OTP code'))
     } finally {
       setLoading(false)
     }
@@ -123,7 +124,7 @@ export default function WelcomePage() {
 
           {/* Feature highlights */}
           <div className="absolute bottom-5 left-6 text-xs text-gray-600 font-mono select-none">
-            v2.0.0-beta.2
+            v2.0.0-beta.3
           </div>
           <div className="absolute bottom-5 left-1/2 -translate-x-1/2 grid grid-cols-3 gap-2 text-center">
             {[

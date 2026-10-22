@@ -6,6 +6,12 @@ use vtorrent_tauri_lib::{commands, state::AppState};
 fn main() {
     let app = tauri::Builder::default()
         .manage(AppState::new())
+        .setup(|app| {
+            use tauri::Manager;
+            let dir = app.path().app_data_dir()?;
+            app.state::<AppState>().set_app_data_dir(dir);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             // Wallet lifecycle
             commands::create_wallet,

@@ -27,6 +27,32 @@ fn ensure_wallet_parent(path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+fn ensure_wallet_path_allowed(state: &AppState, path: &std::path::Path) -> Result<()> {
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(TauriError::InvalidInput(
+            "Wallet path must not contain '..'".into(),
+        ));
+    }
+    let root =
+        state.app_data_dir.lock().unwrap().clone().ok_or_else(|| {
+            TauriError::InvalidInput("Wallet directory is not initialized".into())
+        })?;
+    let root = root.canonicalize().unwrap_or(root);
+    let parent = path.parent().unwrap_or(path);
+    let parent = parent
+        .canonicalize()
+        .unwrap_or_else(|_| parent.to_path_buf());
+    if !parent.starts_with(&root) {
+        return Err(TauriError::InvalidInput(
+            "Wallet path must be inside the app data directory".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Serialize)]
 pub struct ImportResult {
     pub keys_found: usize,
@@ -178,6 +204,7 @@ pub fn create_wallet(
         ));
     }
     ensure_wallet_parent(&path)?;
+    ensure_wallet_path_allowed(state.inner(), &path)?;
     let wallet = Wallet::create(&passphrase).map_err(TauriError::from)?;
 
     wallet.save(&path).map_err(TauriError::from)?;
@@ -208,6 +235,7 @@ pub async fn open_wallet(
     let passphrase = zeroize::Zeroizing::new(passphrase);
     let otp_code = otp_code.map(zeroize::Zeroizing::new);
     let path = std::path::PathBuf::from(&wallet_path);
+    ensure_wallet_path_allowed(state.inner(), &path)?;
 
     let wallet = Wallet::load(
         &path,
@@ -306,6 +334,12 @@ pub fn import_legacy_wallet(
 
     let path = std::path::PathBuf::from(&new_wallet_path);
     ensure_wallet_parent(&path)?;
+    ensure_wallet_path_allowed(state.inner(), &path)?;
+    if path.exists() {
+        return Err(TauriError::InvalidInput(
+            "A wallet already exists at this path; open it instead".into(),
+        ));
+    }
     let mut new_wallet = Wallet::create(&new_wallet_passphrase).map_err(TauriError::from)?;
 
     let mut addresses = Vec::new();
@@ -1133,6 +1167,7 @@ mod tests {
             std::env::temp_dir().join(format!("vtr-tauri-create-wallet-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("wallet.vtr");
+        state.set_app_data_dir(dir.clone());
         let path_string = path.to_string_lossy().to_string();
         create_wallet(state.clone(), "password".into(), path_string.clone()).unwrap();
         let error = create_wallet(state.clone(), "password".into(), path_string).unwrap_err();

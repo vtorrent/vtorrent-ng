@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { camel } from './api'
+import { camel, formatInvokeError } from './api'
 
 describe('camel', () => {
   it('normalizes Tauri snake_case node info to camelCase', () => {
     const raw = {
-      version: '2.0.0-beta.2',
+      version: '2.0.0-beta.3',
       network: 'vtorrent-regtest',
       block_height: 42,
       best_block_hash: 'ab',
@@ -20,5 +20,17 @@ describe('camel', () => {
     expect(info.syncPercent).toBe(100.0)
     expect(info.mempoolSize).toBe(0)
     expect(info.uptimeSecs).toBe(99)
+  })
+})
+
+
+describe('formatInvokeError', () => {
+  it('uses the Tauri error message', () => {
+    expect(formatInvokeError({ type: 'InvalidInput', message: 'A wallet already exists' }, 'fallback'))
+      .toBe('A wallet already exists')
+  })
+
+  it('falls back for unknown values', () => {
+    expect(formatInvokeError(null, 'fallback')).toBe('fallback')
   })
 })

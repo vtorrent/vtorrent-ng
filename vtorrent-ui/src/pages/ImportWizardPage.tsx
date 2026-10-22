@@ -5,6 +5,7 @@ import {
   Key, Shield, Coins, FileText
 } from 'lucide-react'
 import { useWallet, formatVTR, type ImportResult } from '../hooks/useWallet'
+import { formatInvokeError } from '../api'
 
 type Step = 'upload' | 'passphrase' | 'importing' | 'result'
 
@@ -54,7 +55,7 @@ export default function ImportWizardPage() {
       setResult(importResult)
       setStep('result')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Import failed')
+      setError(formatInvokeError(err, 'Import failed'))
       setStep('passphrase')
     }
   }

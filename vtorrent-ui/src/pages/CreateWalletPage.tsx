@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, ArrowRight, PlusCircle, Shield, Eye, EyeOff } from 'lucide-react'
 import { useWallet } from '../hooks/useWallet'
+import { formatInvokeError } from '../api'
 import { useNetwork, parseSeeds } from '../hooks/useNetwork'
 import NetworkPicker from '../components/NetworkPicker'
 
@@ -40,7 +41,7 @@ export default function CreateWalletPage() {
       await createWallet(passphrase, { network, seeds: parseSeeds(seeds) })
       navigate('/dashboard')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create wallet')
+      setError(formatInvokeError(err, 'Failed to create wallet'))
     } finally {
       setLoading(false)
     }
