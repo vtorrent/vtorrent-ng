@@ -143,7 +143,7 @@ header’s control, would expose it.
 the WIF fields use `Zeroizing<String>` in both the RPC and Tauri responses. The
 body still contains the WIF by design (shown once); avoid body logging.
 
-### L-7 — Low (FIXED in `3b2a5d3`): the desktop cold-stake path was not fully
+### L-7 — Low (FIXED in `dfeace6`): the desktop cold-stake path was not fully
 runtime-tested
 
 **Where:** `vtorrent-ui/src/hooks/useNode.tsx` (`createColdStake`/
@@ -198,6 +198,18 @@ Tauri node. Funding txid
 `6376a914e23afa1f9082341bb21043e28555f02c52c392bc88ac670400000000b17576a9143b5abb209554608490e909cb47205c794203b7b188ac68`.
 `get_transactions` showed the send at height 2; the Tauri suite is now 5 tests.
 
+**Desktop restart and durable registry update:** a restart test found that
+`create_cold_stake` recorded the script only in memory; the durable registry
+file was not written, so the script would be rejected after restart. `dfeace6`
+persists the script hash with `cold_stake_registry::add`; the Tauri test clears
+the in-memory set and funds through the durable registry. In the live app, the
+script generated before restart was accepted after reopening the wallet and
+chain at height 3, relayed to the peer, mined at height 4, and confirmed.
+Funding txid
+`6ffbdf5a699c2ee2b071e2f81974f4b5b294bc5e4a32a96153f7fe3583dd23a6`, block
+`53bf985b8ea7d812699de38a3e57cec2ab5febf1989ef0947205f3721e93c975`, script
+`6376a914d7c0c7db0717b076a8211fd700064d7129830a6888ac670400000000b17576a914ab3ecafe45c36986fcf2bb33e03fc00a0ac7578a88ac68`.
+
 **Two-node coverage update (working tree):**
 `cold_stake_funding_propagates_and_confirms_on_two_daemons` starts two isolated
 daemon processes with separate data directories. The sender generates and
@@ -240,13 +252,13 @@ cargo test -p vtorrent-daemon --features test-util --test process_recovery \
 - Mainnet-scale BTC SPV retention/scan soak.
 - Desktop restart, peer-status, and BTC discovery runtime tests; the live Tauri
   cold-stake journey and browser E2E are covered.
-- Independent external review of `3b2a5d3` (`6402d87` plus the Tauri path
-  capability fix and the live desktop journey evidence).
+- Independent external review of `dfeace6` (`3b2a5d3` plus the durable
+  cold-stake registry persistence fix and the desktop restart evidence).
 
 ## Recommended order
 
 1. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
    path.
-2. Commission the external review of `3b2a5d3` and rebuild the fleet on it.
+2. Commission the external review of `dfeace6` and rebuild the fleet on it.
 3. Run the remaining desktop runtime checks (restart, peer status, BTC
    discovery).

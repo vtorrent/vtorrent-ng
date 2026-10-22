@@ -149,11 +149,12 @@ challenge the repairs and their remaining assumptions independently.
 
 ## 6. What we provide
 - Immutable review delivery:
-  **`3b2a5d3f11daad009e82748e08164a02597063a5`**
-  (`fix(desktop): grant core path access for wallet creation`). This is
+  **`dfeace6024ac2b3f5183fc0b0770f351df851a38`**
+  (`fix(desktop): persist cold-stake scripts across restarts`). This is
   `bab2456` plus the Playwright browser E2E setup, the live cold-stake browser
-  test, the Vite dev-origin CORS allowance, the Tauri path capability fix, and
-  the live desktop journey evidence.
+  test, the Vite dev-origin CORS allowance, the Tauri path capability fix, the
+  durable cold-stake registry persistence fix, and the live desktop journey and
+  restart evidence.
   This commit includes the governance template-selection repairs,
   snapshot-based proof reconstruction, admission budget, bounded retries, the
   real-time quota-recovery test, the real-bitcoind SPV reorg tests, the full
@@ -174,7 +175,7 @@ challenge the repairs and their remaining assumptions independently.
 - The review delivery is a source snapshot, not a release tag. The core soak
   fleet runs `vtorrent/node:batch-e7691fb` (code `e7691fb`, BTC SPV disabled)
   from 2026-10-21T02:47:54Z to 2026-10-28T02:47:54Z. The review candidate
-  `3b2a5d3` adds the BTC wallet birthday flag, the desktop
+  `dfeace6` adds the BTC wallet birthday flag, the desktop
   governance/earnings/payment/deadline commands, health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake, BTC
   scan, compact-block, and desktop hardening from the adversarial review,
@@ -184,9 +185,9 @@ challenge the repairs and their remaining assumptions independently.
   checkpoint-retention fix, reorg-safe BTC wallet state, the durable cold-stake
   script registry, the WebSocket token cap, the Playwright browser E2E setup,
   the live cold-stake browser test, the Vite dev-origin CORS allowance, the
-  Tauri path capability fix, and the live desktop journey evidence; rebuild the
-  release image from it. The soak is supporting evidence, not a substitute for
-  this review.
+  Tauri path capability fix, the durable cold-stake registry persistence fix,
+  and the live desktop journey and restart evidence; rebuild the release image
+  from it. The soak is supporting evidence, not a substitute for this review.
 - `docs/` — designs + adversarial reviews for every subsystem
   (`cold-staking-p2cs-design.md`, `op-return-utxo-exclusion-design.md`,
   `network-upgrade-design.md`, `atomic-swap-protocol.md`,

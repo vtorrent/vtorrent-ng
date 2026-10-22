@@ -43,10 +43,11 @@
 - [ ] **External security review** — **brief finalized, not yet commissioned**:
       `docs/security-review-brief.md` (scope, deliverables, 2-phase engagement).
       The proposed immutable delivery is
-      `3b2a5d3f11daad009e82748e08164a02597063a5` (`bab2456` plus the Playwright
+      `dfeace6024ac2b3f5183fc0b0770f351df851a38` (`bab2456` plus the Playwright
       E2E setup, the live cold-stake browser test, the Vite dev-origin CORS
-      allowance, the Tauri path capability fix, and the live desktop journey
-      evidence), which includes the governance,
+      allowance, the Tauri path capability fix, the durable cold-stake registry
+      persistence fix, and the live desktop journey and restart evidence),
+      which includes the governance,
       reorg, and stake-proof service repairs, the real-bitcoind SPV and swap
       tests, and the independent genesis verifier. The review covers wallet
       encryption (Argon2id + ChaCha20-Poly1305), consensus and governance,
@@ -94,10 +95,10 @@ from uninterrupted soak measurements.
       height 54,123, same tip, staking, 0 errors/restarts, `syncing=false`.
       Sign-off pending. The fleet runs `e7691fb`, which includes the reorg-safe
       BTC wallet state, durable cold-stake script registry, zeroized WIF
-      responses, and the WebSocket token cap; the review candidate `3b2a5d3`
+      responses, and the WebSocket token cap; the review candidate `dfeace6`
       adds the Playwright browser E2E setup, the Vite dev-origin CORS
-      allowance, the Tauri path capability fix, and the live desktop journey
-      evidence.
+      allowance, the Tauri path capability fix, the durable cold-stake registry
+      persistence fix, and the live desktop journey and restart evidence.
 - [x] **Staking soak**: at least one node staked continuously and produced
       blocks at the expected ~60s average over the full 7-day window
       (`2026-09-29T13:36:22Z` → `2026-10-06T13:36:22Z`): node1 staked 1441

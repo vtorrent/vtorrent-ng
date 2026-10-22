@@ -319,15 +319,16 @@ birthday/checkpoint design.
 
 Post-fix verification: node 228, torrent 98, migrate 18, BTC 75 (1 ignored),
 RPC 149; frontend lint, 20 tests, production build, the Playwright smoke test,
-the live cold-stake browser E2E, and the live Tauri desktop journey; 5 Tauri
-library tests; the full workspace
-suite (`cargo test --workspace --all-features`), workspace formatting, and
+the live cold-stake browser E2E, and the live Tauri desktop journey (including
+restart and durable registry persistence); 5 Tauri library tests; the full
+workspace suite (`cargo test --workspace --all-features`), workspace formatting, and
 strict all-feature Clippy pass; the live soak observer exits 0 with the hardened
 checks. The fleet was
 rebuilt to `vtorrent/node:batch-e7691fb` (code `e7691fb`) and a fresh soak
-window started at 2026-10-21T02:47:54Z. The review candidate `3b2a5d3`
+window started at 2026-10-21T02:47:54Z. The review candidate `dfeace6`
 (`bab2456` plus the Playwright E2E setup, the Vite dev-origin CORS allowance,
-and the Tauri path capability fix) adds the BTC wallet birthday flag,
+the Tauri path capability fix, and the durable cold-stake registry persistence
+fix) adds the BTC wallet birthday flag,
 the desktop governance/earnings/payment/deadline commands, desktop health-field
 updates, the shared BTC sync loop, desktop chain persistence, and the
 cold-stake/BTC/compact-block/desktop hardening. The adversarial reviews are in
