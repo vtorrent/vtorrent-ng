@@ -12,6 +12,8 @@ use vtorrent_store::store::BlockStore;
 
 #[cfg(all(target_os = "linux", feature = "test-util"))]
 mod btc_spv;
+#[cfg(feature = "test-util")]
+mod cold_stake;
 #[cfg(all(target_os = "linux", feature = "test-util"))]
 mod governance_reorg;
 mod interrupted_reorg;

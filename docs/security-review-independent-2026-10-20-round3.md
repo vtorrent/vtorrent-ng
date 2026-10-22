@@ -169,8 +169,26 @@ amount rejection without a backend call, and retry after a funding failure.
 The successful cases assert the displayed raw script is passed to the backend
 helper with the expected satoshi amount and show the returned transaction ID.
 All 20 frontend tests, lint, and the production build pass. Backend helpers are
-mocked in these component tests; a live desktop/browser session and two-node
-network propagation remain unverified.
+mocked in these component tests; a live desktop/browser session remains
+unverified.
+
+**Two-node coverage update (working tree):**
+`cold_stake_funding_propagates_and_confirms_on_two_daemons` starts two isolated
+daemon processes with separate data directories. The sender generates and
+funds a raw P2CS script through RPC. The receiver obtains the transaction over
+P2P without an RPC transaction submission and confirms it using the test-only
+regtest miner. The sender then follows the receiver's block. After both
+processes shut down, both stores replay to the same tip and contain the exact
+1 VTR P2CS output at height 2. This covers real P2P transaction/block relay and
+persistent confirmation, not production PoS block construction or one
+end-to-end GUI-to-network session.
+
+```bash
+cargo test -p vtorrent-daemon --features test-util --test process_recovery \
+  cold_stake_funding_propagates_and_confirms_on_two_daemons -- --nocapture
+```
+
+The targeted test passes; strict daemon Clippy and workspace formatting pass.
 
 ## Residual gaps
 
@@ -179,16 +197,15 @@ network propagation remain unverified.
 - BTC SPV is disabled on the soak fleet; the swaps and the BTC reorg path are
   not exercised by the current run.
 - Mainnet-scale BTC SPV retention/scan soak.
-- A live desktop/browser session and two-node propagation remain (L-7);
-  component interactions, command/IPC execution, and regtest confirmation are
-  tested separately.
-- Desktop restart, peer-status, BTC discovery, and two-node propagation runtime
-  test.
+- A live desktop/browser session remains (L-7); component interactions,
+  command/IPC execution, two-daemon P2P propagation, and regtest confirmation
+  are tested separately.
+- Desktop restart, peer-status, and BTC discovery runtime tests.
 - Independent external review of `a1880cb`.
 
 ## Recommended order
 
-1. **L-7** — live desktop/browser and two-node propagation check.
+1. **L-7** — live desktop/browser session check.
 2. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
    path.
 3. Commission the external review of `a1880cb` and rebuild the fleet on it.
