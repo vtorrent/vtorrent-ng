@@ -1,1 +1,1 @@
-{}
+{"default":{"identifier":"default","description":"Default capability for the main vTorrent window","local":true,"windows":["main"],"permissions":["core:path:default"]}}
