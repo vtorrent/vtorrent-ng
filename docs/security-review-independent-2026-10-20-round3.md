@@ -143,15 +143,15 @@ header’s control, would expose it.
 the WIF fields use `Zeroizing<String>` in both the RPC and Tauri responses. The
 body still contains the WIF by design (shown once); avoid body logging.
 
-### L-7 — Low (FIXED in `6cdcfb8`; GUI interaction remains): the desktop
+### L-7 — Low (IPC fixed in `6cdcfb8`; component coverage added): the desktop
 cold-stake path was not fully runtime-tested
 
 **Where:** `vtorrent-ui/src/hooks/useNode.tsx` (`createColdStake`/
 `fundColdStake`); `vtorrent-tauri/src/commands/wallet.rs`.
 
 The Tauri `create_cold_stake` command takes an optional `label`; the UI omits
-it. The command and the fund flow compile, but there is no Tauri runtime test
-for the argument mapping or the wallet-unlocked path.
+it. At the reviewed revision there was no Tauri runtime test for the argument
+mapping or the wallet-unlocked path.
 
 **Verification update:** the Tauri IPC test invokes `create_cold_stake` with the
 frontend's omitted optional `label` and `fund_cold_stake` with camelCase
@@ -159,9 +159,18 @@ frontend's omitted optional `label` and `fund_cold_stake` with camelCase
 admission of the signed payment to the real mempool, a 1 VTR output to the
 generated raw P2CS script, submission of the same transaction ID to the
 peer-relay channel, and inclusion in a regtest block with the output confirmed
-at height 2. All four Tauri library tests and strict Tauri Clippy pass. The
-actual GUI panel/button interaction and two-node network propagation remain
-unverified.
+at height 2. All four Tauri library tests and strict Tauri Clippy pass.
+
+**Component coverage update:** four tests in
+`vtorrent-ui/src/pages/StakingPage.test.tsx` render the real page in jsdom and
+exercise its Generate/Fund controls. They verify browser funding with a
+passphrase, desktop-mode funding without a browser passphrase, non-positive
+amount rejection without a backend call, and retry after a funding failure.
+The successful cases assert the displayed raw script is passed to the backend
+helper with the expected satoshi amount and show the returned transaction ID.
+All 20 frontend tests, lint, and the production build pass. Backend helpers are
+mocked in these component tests; a live desktop/browser session and two-node
+network propagation remain unverified.
 
 ## Residual gaps
 
@@ -170,15 +179,16 @@ unverified.
 - BTC SPV is disabled on the soak fleet; the swaps and the BTC reorg path are
   not exercised by the current run.
 - Mainnet-scale BTC SPV retention/scan soak.
-- The desktop GUI panel/button interaction and two-node propagation remain
-  (L-7); command/IPC/confirmation are tested.
+- A live desktop/browser session and two-node propagation remain (L-7);
+  component interactions, command/IPC execution, and regtest confirmation are
+  tested separately.
 - Desktop restart, peer-status, BTC discovery, and two-node propagation runtime
   test.
 - Independent external review of `a1880cb`.
 
 ## Recommended order
 
-1. **L-7** — GUI panel/button and two-node propagation check.
+1. **L-7** — live desktop/browser and two-node propagation check.
 2. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
    path.
 3. Commission the external review of `a1880cb` and rebuild the fleet on it.
