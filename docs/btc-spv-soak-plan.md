@@ -57,7 +57,10 @@ added 100 headers / 100 blocks; RSS was 106,276 kB (+788 kB). A second
 RSS was 106,328 kB. Across the first ~4 h the sampler recorded 106,160–106,328
 kB with no ERROR/panic. The sampler `/tmp/vtr-btc-probe/rss-watch.sh` logs RSS
 and BTC height every 60 s to `/tmp/vtr-btc-probe/rss.tsv` for 24 h. This is a
-probe, not the fleet soak.
+probe, not the fleet soak. At 2026-10-22T23:27Z the probe was at 684 headers
+with RSS 106,348 kB. The sampler's PID selector was corrected to match the
+probe's data dir after it briefly sampled the core-soak node1 process; the
+empty RSS samples from 23:24–23:27 are the sampler bug, not the probe.
 
 **Active swap probe (2026-10-22T08:57Z):** the real BTC SPV multi-node HTLC swap
 test passed again at `6402d87` in 23.50 s (VTR funding
