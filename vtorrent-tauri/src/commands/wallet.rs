@@ -172,6 +172,11 @@ pub fn create_wallet(
     }
 
     let path = std::path::PathBuf::from(&wallet_path);
+    if path.exists() {
+        return Err(TauriError::InvalidInput(
+            "A wallet already exists at this path; open it instead".into(),
+        ));
+    }
     ensure_wallet_parent(&path)?;
     let wallet = Wallet::create(&passphrase).map_err(TauriError::from)?;
 
@@ -225,6 +230,7 @@ pub async fn open_wallet(
                 *state.wallet.lock().unwrap() = None;
                 return Err(error);
             }
+            vtorrent_rpc::handlers::wallet::resume_staking_if_requested(&handle.rpc_state).await;
         }
     }
 
@@ -519,8 +525,8 @@ pub async fn send_vtr(
 pub struct ColdStakeKeys {
     pub script_pubkey: String,
     pub script_hash: String,
-    pub staking_wif: String,
-    pub spending_wif: String,
+    pub staking_wif: zeroize::Zeroizing<String>,
+    pub spending_wif: zeroize::Zeroizing<String>,
     pub locktime: u32,
 }
 
@@ -554,8 +560,8 @@ pub async fn create_cold_stake(
     Ok(ColdStakeKeys {
         script_pubkey: hex::encode(&keys.script_pubkey),
         script_hash,
-        staking_wif: keys.staking_wif.to_string(),
-        spending_wif: keys.spending_wif.to_string(),
+        staking_wif: keys.staking_wif,
+        spending_wif: keys.spending_wif,
         locktime: keys.locktime,
     })
 }
@@ -1005,6 +1011,7 @@ mod tests {
             rpc_state: rpc,
             network: "vtorrent-regtest".to_string(),
             start_time: std::time::Instant::now(),
+            mempool_path: None,
         });
 
         let registry_dir =
@@ -1113,5 +1120,23 @@ mod tests {
         assert_eq!(keys.script_hash.len(), 40);
         let script = hex::decode(&keys.script_pubkey).unwrap();
         assert!(state.cold_stake_scripts.lock().unwrap().contains(&script));
+    }
+
+    #[test]
+    fn create_wallet_refuses_to_overwrite_an_existing_wallet() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+        let dir =
+            std::env::temp_dir().join(format!("vtr-tauri-create-wallet-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wallet.vtr");
+        let path_string = path.to_string_lossy().to_string();
+        create_wallet(state.clone(), "password".into(), path_string.clone()).unwrap();
+        let error = create_wallet(state.clone(), "password".into(), path_string).unwrap_err();
+        assert!(matches!(error, TauriError::InvalidInput(_)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -6,7 +6,7 @@ use crate::error::{RpcError, RpcResult};
 use crate::models::*;
 use crate::state::AppState;
 
-async fn persist_staking_intent(state: &AppState, address: Option<&str>) -> RpcResult<()> {
+pub async fn persist_staking_intent(state: &AppState, address: Option<&str>) -> RpcResult<()> {
     let Some(path) = &state.staking_state_path else {
         return Ok(());
     };

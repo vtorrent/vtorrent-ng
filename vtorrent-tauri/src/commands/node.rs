@@ -96,6 +96,7 @@ pub async fn start_node(
             config.data_dir.display()
         ))
     })?;
+    let data_dir = config.data_dir.clone();
     let chain_db_path = config.data_dir.join("chain.db");
     let block_store = Arc::new(
         vtorrent_store::BlockStore::open(&chain_db_path)
@@ -122,7 +123,38 @@ pub async fn start_node(
     let mut node =
         Node::new_with_chain(config, chain).map_err(|e| TauriError::NodeError(e.to_string()))?;
 
+    let mempool_path = data_dir.join("mempool.json");
+    {
+        let saved = vtorrent_node::mempool::Mempool::load_saved(&mempool_path);
+        if !saved.is_empty() {
+            let chain = node.chain_arc();
+            let mempool = node.mempool_arc();
+            let chain = chain.lock().await;
+            let mut mempool = mempool.lock().await;
+            let mut admitted = 0usize;
+            for (tx, _old_fee) in saved {
+                if mempool.admit_with_chain_fee(&chain, tx).is_ok() {
+                    admitted += 1;
+                }
+            }
+            drop(chain);
+            drop(mempool);
+            if admitted > 0 {
+                tracing::info!("Restored {} mempool transactions from disk", admitted);
+            }
+        }
+    }
+
     let mut rpc_state = RpcAppState::new_with_shared(node.chain_arc(), node.mempool_arc());
+    rpc_state.network = network_name.to_string();
+    rpc_state.regtest = regtest;
+    rpc_state.staking_state_path = Some(data_dir.join("staking.json"));
+    *rpc_state.btc_network.write().await = btc_network;
+    if let Ok(peer) = std::env::var("VTORRENT_BTC_PEER") {
+        if !peer.trim().is_empty() {
+            *rpc_state.btc_peer.write().await = Some(peer);
+        }
+    }
     // Wire the P2P broadcast channel. Without this, desktop sends are admitted
     // to the local mempool but never relayed to peers.
     rpc_state.tx_submit = Some(node.tx_submit_sender());
@@ -210,11 +242,15 @@ pub async fn start_node(
 
     rpc_state.staking_control = Some(node.staking_control());
     rpc_state.ban_manager = Some(node.ban_manager_handle());
+    if has_wallet {
+        vtorrent_rpc::handlers::wallet::resume_staking_if_requested(&rpc_state).await;
+    }
 
     let handle = NodeHandle {
         rpc_state: rpc_state.clone(),
         network: network_name.to_string(),
         start_time: std::time::Instant::now(),
+        mempool_path: Some(mempool_path.clone()),
     };
     *state.node.lock().await = Some(handle);
     tokio::spawn(vtorrent_rpc::swap_reconciliation::run_reconciler(
@@ -225,6 +261,17 @@ pub async fn start_node(
     tokio::spawn(vtorrent_rpc::btc_sync::run_sync_loop(std::sync::Arc::new(
         rpc_state.clone(),
     )));
+    let mempool_for_saver = Arc::clone(&rpc_state.mempool);
+    let mempool_path_for_saver = mempool_path.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            let mempool = mempool_for_saver.lock().await;
+            if let Err(error) = mempool.save_to(&mempool_path_for_saver) {
+                tracing::warn!("mempool save failed: {}", error);
+            }
+        }
+    });
 
     {
         let blocks_staked = Arc::clone(&rpc_state.blocks_staked);

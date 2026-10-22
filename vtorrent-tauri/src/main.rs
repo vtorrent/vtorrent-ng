@@ -4,7 +4,7 @@
 use vtorrent_tauri_lib::{commands, state::AppState};
 
 fn main() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
             // Wallet lifecycle
@@ -67,6 +67,24 @@ fn main() {
             commands::create_payment_request,
             commands::get_swap_deadlines,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running vTorrent application");
+        .build(tauri::generate_context!())
+        .expect("error while building vTorrent application");
+
+    app.run(|app_handle, event| {
+        if let tauri::RunEvent::ExitRequested { .. } = event {
+            use tauri::Manager;
+            let state = app_handle.state::<AppState>();
+            tauri::async_runtime::block_on(async {
+                let guard = state.node.lock().await;
+                if let Some(handle) = guard.as_ref() {
+                    if let Some(path) = &handle.mempool_path {
+                        let mempool = handle.rpc_state.mempool.lock().await;
+                        if let Err(error) = mempool.save_to(path) {
+                            tracing::warn!("mempool save on exit failed: {}", error);
+                        }
+                    }
+                }
+            });
+        }
+    });
 }

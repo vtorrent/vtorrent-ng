@@ -22,6 +22,8 @@ pub struct NodeHandle {
     pub network: String,
     /// When the node was started (for uptime calculation).
     pub start_time: std::time::Instant,
+    /// Where the mempool is persisted, if persistence is enabled.
+    pub mempool_path: Option<std::path::PathBuf>,
 }
 
 /// Global application state managed by Tauri.
