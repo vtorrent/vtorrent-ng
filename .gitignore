@@ -8,6 +8,8 @@ Cargo.lock
 vtorrent-ui/node_modules/
 vtorrent-ui/dist/
 vtorrent-ui/.vite/
+vtorrent-ui/test-results/
+vtorrent-ui/playwright-report/
 
 # Tauri build output
 vtorrent-tauri/target/
