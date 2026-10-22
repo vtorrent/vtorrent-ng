@@ -143,7 +143,7 @@ header’s control, would expose it.
 the WIF fields use `Zeroizing<String>` in both the RPC and Tauri responses. The
 body still contains the WIF by design (shown once); avoid body logging.
 
-### L-7 — Low (FIXED in `dfeace6`): the desktop cold-stake path was not fully
+### L-7 — Low (FIXED in `5b815c2`): the desktop cold-stake path was not fully
 runtime-tested
 
 **Where:** `vtorrent-ui/src/hooks/useNode.tsx` (`createColdStake`/
@@ -159,7 +159,7 @@ frontend's omitted optional `label` and `fund_cold_stake` with camelCase
 admission of the signed payment to the real mempool, a 1 VTR output to the
 generated raw P2CS script, submission of the same transaction ID to the
 peer-relay channel, and inclusion in a regtest block with the output confirmed
-at height 2. All five Tauri library tests and strict Tauri Clippy pass.
+at height 2. All six Tauri library tests and strict Tauri Clippy pass.
 
 **Component coverage update:** four tests in
 `vtorrent-ui/src/pages/StakingPage.test.tsx` render the real page in jsdom and
@@ -196,7 +196,7 @@ Tauri node. Funding txid
 `b7a4644f57f44a938ac490d2c932b98b451fcc2f1b29bc0113e3ecca029688a0`, block
 `582db1225481ca797b7e9da5fb5ec0e218fceede4dcbc4313cb2a789b212fa95`, script
 `6376a914e23afa1f9082341bb21043e28555f02c52c392bc88ac670400000000b17576a9143b5abb209554608490e909cb47205c794203b7b188ac68`.
-`get_transactions` showed the send at height 2; the Tauri suite is now 5 tests.
+`get_transactions` showed the send at height 2; the Tauri suite is now 6 tests.
 
 **Desktop restart and durable registry update:** a restart test found that
 `create_cold_stake` recorded the script only in memory; the durable registry
@@ -209,6 +209,20 @@ Funding txid
 `6ffbdf5a699c2ee2b071e2f81974f4b5b294bc5e4a32a96153f7fe3583dd23a6`, block
 `53bf985b8ea7d812699de38a3e57cec2ab5febf1989ef0947205f3721e93c975`, script
 `6376a914d7c0c7db0717b076a8211fd700064d7129830a6888ac670400000000b17576a914ab3ecafe45c36986fcf2bb33e03fc00a0ac7578a88ac68`.
+
+**Desktop parity audit update:** the same audit found and fixed six related
+desktop gaps in `5b815c2`: the node reported `vtorrent-mainnet` on testnet
+(`rpc_state.network` was never set); the BTC sync loop used mainnet
+(`rpc_state.btc_network` was never set); the mempool was not persisted; the
+staking intent was not persisted or auto-resumed; `create_wallet` overwrote an
+existing wallet; and the Tauri cold-stake WIFs were plain `String`s. The node
+now sets the network/regtest/BTC fields, reads `VTORRENT_BTC_PEER` for
+testnet/regtest, loads `mempool.json` and saves it every 60 s and on exit,
+persists `staking.json` and resumes it after unlock, refuses to overwrite an
+existing wallet, and returns `Zeroizing<String>` WIFs. Live verification:
+network `vtorrent-regtest`; mempool restored after restart (`mempool_size 1`);
+staking auto-resumed (`enabled=true`); BTC SPV synced to regtest height 684
+with a `bcrt1...` address using `VTORRENT_BTC_PEER=127.0.0.1:18448`.
 
 **Two-node coverage update (working tree):**
 `cold_stake_funding_propagates_and_confirms_on_two_daemons` starts two isolated
@@ -250,15 +264,14 @@ cargo test -p vtorrent-daemon --features test-util --test process_recovery \
 - BTC SPV is disabled on the soak fleet; the real BTC SPV swap test is a
   separate regtest run, not a mainnet-scale soak.
 - Mainnet-scale BTC SPV retention/scan soak.
-- Desktop restart, peer-status, and BTC discovery runtime tests; the live Tauri
-  cold-stake journey and browser E2E are covered.
-- Independent external review of `dfeace6` (`3b2a5d3` plus the durable
-  cold-stake registry persistence fix and the desktop restart evidence).
+- Tauri wallet-path hardening (frontend-supplied path is not constrained to the
+  app data dir) and the legacy-import overwrite guard.
+- Independent external review of `5b815c2` (`dfeace6` plus the desktop
+  restart/persistence parity fixes and the BTC discovery evidence).
 
 ## Recommended order
 
 1. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
    path.
-2. Commission the external review of `dfeace6` and rebuild the fleet on it.
-3. Run the remaining desktop runtime checks (restart, peer status, BTC
-   discovery).
+2. Commission the external review of `5b815c2` and rebuild the fleet on it.
+3. Harden the Tauri wallet path and legacy-import overwrite path.

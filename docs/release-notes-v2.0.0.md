@@ -139,11 +139,11 @@ paths.
   wallet birthday flag, desktop commands, desktop health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake/BTC/
   compact-block/desktop hardening from the adversarial review and must be
-  rebuilt from `dfeace6` (`bab2456` plus the Playwright E2E setup, the live
+  rebuilt from `5b815c2` (`bab2456` plus the Playwright E2E setup, the live
   cold-stake browser test, the Vite dev-origin CORS allowance, the Tauri path
-  capability fix, the durable cold-stake registry persistence fix, and the live
-  desktop journey and restart evidence). The fresh soak window started
-  2026-10-21T02:47:54Z.
+  capability fix, the durable cold-stake registry persistence fix, the desktop
+  restart/persistence parity fixes, and the live desktop journey, restart, and
+  BTC discovery evidence). The fresh soak window started 2026-10-21T02:47:54Z.
 
 ## Known limitations
 
@@ -161,10 +161,12 @@ paths.
 - Cold proof reconstruction is unavailable beyond the retained undo window.
   The retry queue is in memory and resets on restart.
 - The proof admission budget bounds request counts, not CPU milliseconds.
-- Desktop chain persistence was added. Desktop restart is covered; real peer
-  status and BTC funding discovery still need a runtime test. Two-node
-  cold-stake propagation and the live Tauri cold-stake journey (including
-  durable registry persistence) are covered.
+- Desktop chain persistence was added. Desktop restart, peer status, and BTC
+  SPV sync/address discovery are covered; the live Tauri cold-stake journey
+  (including durable registry persistence) and two-node propagation are
+  covered. Mainnet-scale BTC SPV soak remains.
+- Desktop BTC SPV on testnet/regtest uses `VTORRENT_BTC_PEER` (for example
+  `127.0.0.1:18448`); mainnet uses DNS seeds.
 - Cold-stake funding uses the raw P2CS script via `fund_cold_stake`; the
   P2SH-hash-as-P2PKH burn address was removed from the API/UI.
 

@@ -22,7 +22,7 @@ Companion to `docs/mainnet-readiness.md` (checklist) and
 | Min stake | 1 VTR | `consensus.rs:43` |
 | Max supply | 20,000,000 VTR | `consensus.rs:46` |
 | DNS seeds | seed1/2/3.vtorrent.org + `bootstrap/peers.txt` | `docs/dns-seeds.md` |
-| Review candidate source | `dfeace6` (`bab2456` plus Playwright E2E setup, Vite dev-origin CORS allowance, Tauri path capability fix, and durable cold-stake registry fix) | `docs/security-review-brief.md` |
+| Review candidate source | `5b815c2` (`bab2456` plus Playwright E2E setup, Vite dev-origin CORS allowance, Tauri path capability fix, durable cold-stake registry fix, and desktop restart/persistence parity fixes) | `docs/security-review-brief.md` |
 
 **Genesis is deterministic** and embeds the legacy snapshot (59,375 addresses,
 11,589,746.63 VTR). `GENESIS_TIMESTAMP` and the genesis message are frozen.
@@ -33,7 +33,7 @@ at launch.
 ## 2. Pre-launch gate (all must be green)
 
 1. **External security review** complete; findings fixed with regression tests
-   (`docs/security-review-brief.md`, pinned to `dfeace6`).
+   (`docs/security-review-brief.md`, pinned to `5b815c2`).
 2. **Review candidate selected** (§3): the current build includes the
    consensus batch; launch on the candidate commit and image after review, not
    beta.3.
@@ -46,10 +46,11 @@ at launch.
 The current build already includes the consensus batch (OP_RETURN exclusion,
 cold staking, governance, state rent) and the governance and proof-service
 repairs. The core soak fleet runs `vtorrent/node:batch-e7691fb` with BTC SPV
-disabled. The review candidate `dfeace6` is `bab2456` plus the Playwright browser
+disabled. The review candidate `5b815c2` is `bab2456` plus the Playwright browser
 E2E setup, the Vite dev-origin CORS allowance, the Tauri path capability fix,
-the durable cold-stake registry persistence fix, and the live desktop journey
-and restart evidence. It adds the BTC wallet birthday flag,
+the durable cold-stake registry persistence fix, the desktop
+restart/persistence parity fixes, and the live desktop journey, restart, and
+BTC discovery evidence. It adds the BTC wallet birthday flag,
 desktop commands, health-field updates, the shared BTC sync loop, desktop chain
 persistence, and the cold-stake/BTC/compact-block/desktop hardening from the
 adversarial review; rebuild the release image from it. The fresh 7-day soak
@@ -86,7 +87,7 @@ remains to be run.
 - The independent genesis verifier passes
   (`python3 scripts/verify-genesis.py`).
 - The deployed image and commit match the build that passed the external
-  review (release image rebuilt from `dfeace6`).
+  review (release image rebuilt from `5b815c2`).
 - Block cadence ~60 s; no sustained divergence.
 - A legacy claim succeeds end-to-end (rehearsed on regtest).
 - RPC reachable, auth enforced, rate limiting active.
