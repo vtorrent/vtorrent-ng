@@ -349,7 +349,12 @@ function ColdStakePanel() {
         <h2 className="font-semibold text-white text-sm flex items-center gap-2">
           <Snowflake size={14} className="text-sky-400" /> Cold staking (delegate)
         </h2>
-        <button onClick={generate} disabled={busy} className="btn-secondary text-xs">
+        <button
+          data-testid="cold-stake-generate"
+          onClick={generate}
+          disabled={busy}
+          className="btn-secondary text-xs"
+        >
           {busy ? 'Generating…' : 'Generate key pair'}
         </button>
       </div>
@@ -362,25 +367,26 @@ function ColdStakePanel() {
         <div className="space-y-2 text-xs">
           <div>
             <div className="text-gray-500">P2CS script (fund this)</div>
-            <div className="font-mono text-vtorrent-300 break-all">{keys.scriptPubkey}</div>
+            <div data-testid="cold-stake-script" className="font-mono text-vtorrent-300 break-all">{keys.scriptPubkey}</div>
           </div>
           <div>
             <div className="text-gray-500">Script hash</div>
-            <div className="font-mono text-gray-400 break-all">{keys.scriptHash}</div>
+            <div data-testid="cold-stake-script-hash" className="font-mono text-gray-400 break-all">{keys.scriptHash}</div>
           </div>
           <div>
             <div className="text-gray-500">Staking key (hot — give to the staking node)</div>
-            <div className="font-mono text-amber-300 break-all">{keys.stakingWif}</div>
+            <div data-testid="cold-stake-staking-wif" className="font-mono text-amber-300 break-all">{keys.stakingWif}</div>
           </div>
           <div>
             <div className="text-gray-500">Spending key (cold — keep offline, shown once)</div>
-            <div className="font-mono text-red-300 break-all">{keys.spendingWif}</div>
+            <div data-testid="cold-stake-spending-wif" className="font-mono text-red-300 break-all">{keys.spendingWif}</div>
           </div>
           <p className="text-red-400">
             The spending key is not stored by this node. Save it offline now.
           </p>
           <div className="flex flex-wrap items-center gap-2 pt-1">
             <input
+              data-testid="cold-stake-amount"
               value={amount}
               onChange={e => setAmount(e.target.value)}
               placeholder="Amount (VTR)"
@@ -388,6 +394,7 @@ function ColdStakePanel() {
             />
             {!isTauri() && (
               <input
+                data-testid="cold-stake-passphrase"
                 type="password"
                 value={passphrase}
                 onChange={e => setPassphrase(e.target.value)}
@@ -395,11 +402,16 @@ function ColdStakePanel() {
                 className="input-field text-xs"
               />
             )}
-            <button onClick={fund} disabled={funding} className="btn-secondary text-xs">
+            <button
+              data-testid="cold-stake-fund"
+              onClick={fund}
+              disabled={funding}
+              className="btn-secondary text-xs"
+            >
               {funding ? 'Funding…' : 'Fund cold stake'}
             </button>
           </div>
-          {txid && <p className="text-emerald-400 break-all">Funding txid: {txid}</p>}
+          {txid && <p data-testid="cold-stake-txid" className="text-emerald-400 break-all">Funding txid: {txid}</p>}
           <p className="text-gray-500">
             The old P2SH label is not stakeable. Fund the raw script above; do not
             send to the label with a generic send.
