@@ -22,7 +22,7 @@ Companion to `docs/mainnet-readiness.md` (checklist) and
 | Min stake | 1 VTR | `consensus.rs:43` |
 | Max supply | 20,000,000 VTR | `consensus.rs:46` |
 | DNS seeds | seed1/2/3.vtorrent.org + `bootstrap/peers.txt` | `docs/dns-seeds.md` |
-| Review candidate source | `bab2456` (rebuild image as `vtorrent/node:batch-e7691fb`) | `docker/testnet/docker-compose.yml` |
+| Review candidate source | `36e45ff` (`bab2456` plus Playwright E2E setup; runtime source unchanged) | `docs/security-review-brief.md` |
 
 **Genesis is deterministic** and embeds the legacy snapshot (59,375 addresses,
 11,589,746.63 VTR). `GENESIS_TIMESTAMP` and the genesis message are frozen.
@@ -33,12 +33,12 @@ at launch.
 ## 2. Pre-launch gate (all must be green)
 
 1. **External security review** complete; findings fixed with regression tests
-   (`docs/security-review-brief.md`, pinned to `bab2456`).
+   (`docs/security-review-brief.md`, pinned to `36e45ff`).
 2. **Review candidate selected** (§3): the current build includes the
    consensus batch; launch on the candidate commit and image after review, not
    beta.3.
 3. **Fresh 7-day soak green** on the review candidate (window
-   `2026-10-19T09:06:31Z` → `2026-10-26T09:06:31Z`; `docs/soak-log.md`).
+   `2026-10-21T02:47:54Z` → `2026-10-28T02:47:54Z`; `docs/soak-log.md`).
 4. **`mainnet-readiness.md`** §1–§4 all `[x]` (except items explicitly deferred).
 
 ## 3. Consensus-batch decision
@@ -46,13 +46,14 @@ at launch.
 The current build already includes the consensus batch (OP_RETURN exclusion,
 cold staking, governance, state rent) and the governance and proof-service
 repairs. The core soak fleet runs `vtorrent/node:batch-e7691fb` with BTC SPV
-disabled. The review candidate `bab2456` adds the BTC wallet birthday flag, desktop
-commands, health-field updates, the shared BTC sync loop, desktop chain
+disabled. The review candidate `36e45ff` is `bab2456` plus the Playwright browser
+E2E setup; the runtime source is unchanged. It adds the BTC wallet birthday flag,
+desktop commands, health-field updates, the shared BTC sync loop, desktop chain
 persistence, and the cold-stake/BTC/compact-block/desktop hardening from the
-adversarial review; rebuild the release image from it. The fresh 7-day soak started
-2026-10-20T13:51:39Z. Launch on that candidate build after the external review
-and the soak. Do not launch on beta.3; it predates the
-governance and proof-service repairs.
+adversarial review; rebuild the release image from it. The fresh 7-day soak
+started 2026-10-21T02:47:54Z. Launch on that candidate build after the external
+review and the soak. Do not launch on beta.3; it predates the governance and
+proof-service repairs.
 
 Swaps are enabled at mainnet launch. The BTC SPV mainnet-scale soak and the
 separate maker and taker VTR node validation are launch gates. The header
@@ -83,7 +84,7 @@ remains to be run.
 - The independent genesis verifier passes
   (`python3 scripts/verify-genesis.py`).
 - The deployed image and commit match the build that passed the external
-  review (`vtorrent/node:batch-e7691fb`, code `e7691fb`).
+  review (release image rebuilt from `36e45ff`).
 - Block cadence ~60 s; no sustained divergence.
 - A legacy claim succeeds end-to-end (rehearsed on regtest).
 - RPC reachable, auth enforced, rate limiting active.

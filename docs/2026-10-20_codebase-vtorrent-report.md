@@ -317,14 +317,15 @@ commands above. F02's older-than-retention wallet discovery still needs a
 birthday/checkpoint design.
 
 Post-fix verification: node 228, torrent 98, migrate 18, BTC 75 (1 ignored),
-RPC 148; frontend lint, 16 tests, and production build; workspace formatting
-and strict all-feature Clippy pass; the live soak observer exits 0 with the
-hardened checks. The fleet was rebuilt to `vtorrent/node:batch-e7691fb` (code
-`669ee36`) and a fresh soak window started at 2026-10-20T13:51:39Z. The review
-candidate `bab2456` adds the BTC wallet birthday flag, the desktop
-governance/earnings/payment/deadline commands, desktop health-field updates,
-the shared BTC sync loop, desktop chain persistence, and the cold-stake/BTC/
-compact-block/desktop hardening. The adversarial reviews are in
+RPC 148; frontend lint, 20 tests, production build, and the Playwright smoke
+test; 4 Tauri library tests; workspace formatting and strict all-feature Clippy
+pass; the live soak observer exits 0 with the hardened checks. The fleet was
+rebuilt to `vtorrent/node:batch-e7691fb` (code `e7691fb`) and a fresh soak
+window started at 2026-10-21T02:47:54Z. The review candidate `36e45ff`
+(`bab2456` plus the Playwright E2E setup) adds the BTC wallet birthday flag,
+the desktop governance/earnings/payment/deadline commands, desktop health-field
+updates, the shared BTC sync loop, desktop chain persistence, and the
+cold-stake/BTC/compact-block/desktop hardening. The adversarial reviews are in
 `docs/security-review-independent-2026-10-20.md` and
 `docs/security-review-independent-2026-10-20-round2.md`; their probes are under
 `docs/review-probes/security-2026-10-20/`. The round-2 fixes include the

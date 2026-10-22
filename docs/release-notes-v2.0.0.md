@@ -139,17 +139,18 @@ paths.
   wallet birthday flag, desktop commands, desktop health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake/BTC/
   compact-block/desktop hardening from the adversarial review and must be
-  rebuilt from `bab2456`. The fresh soak window started 2026-10-21T02:47:54Z.
+  rebuilt from `36e45ff` (`bab2456` plus the Playwright E2E setup; runtime
+  source unchanged). The fresh soak window started 2026-10-21T02:47:54Z.
 
 ## Known limitations
 
 - Governance activation is unscheduled and requires the external review.
 - SPV PoS header acceptance remains fail-closed.
-- The full swap test uses one VTR daemon. Separate maker and taker VTR nodes
-  remain open.
-- BTC SPV header retention is bounded and tested at 870,000 headers. The active
-  swap soak and separate maker and taker VTR node validation remain launch
-  gates because swaps are enabled at launch. BTC wallet discovery defaults to
+- The real BTC SPV multi-node swap test passes on regtest. Separate maker and
+  taker VTR nodes remain open.
+- BTC SPV header retention is bounded and tested at 870,000 headers. The
+  mainnet-scale BTC SPV soak and separate maker and taker VTR node validation
+  remain launch gates because swaps are enabled at launch. BTC wallet discovery defaults to
   the retained floor; set `--btc-birthday` to the wallet creation height to
   scan older funds.
 - A real-bitcoind reorged-out claim test is not covered. The settlement-state
@@ -157,8 +158,9 @@ paths.
 - Cold proof reconstruction is unavailable beyond the retained undo window.
   The retry queue is in memory and resets on restart.
 - The proof admission budget bounds request counts, not CPU milliseconds.
-- Desktop chain persistence was added. Desktop restart, real peer status, BTC
-  funding discovery, and two-node propagation still need a runtime test.
+- Desktop chain persistence was added. Desktop restart, real peer status, and
+  BTC funding discovery still need a runtime test; two-node cold-stake
+  propagation is covered by the daemon test.
 - Cold-stake funding uses the raw P2CS script via `fund_cold_stake`; the
   P2SH-hash-as-P2PKH burn address was removed from the API/UI.
 

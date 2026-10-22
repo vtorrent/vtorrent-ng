@@ -212,15 +212,16 @@ cargo test -p vtorrent-daemon --features test-util --test process_recovery \
 - BTC SPV is disabled on the soak fleet; the real BTC SPV swap test is a
   separate regtest run, not a mainnet-scale soak.
 - Mainnet-scale BTC SPV retention/scan soak.
-- A live desktop/browser session remains (L-7); component interactions,
-  command/IPC execution, two-daemon P2P propagation, and regtest confirmation
-  are tested separately.
+- A live cold-stake desktop/browser journey remains (L-7); the Playwright smoke
+  test, component interactions, command/IPC execution, two-daemon P2P
+  propagation, and regtest confirmation are tested separately.
 - Desktop restart, peer-status, and BTC discovery runtime tests.
-- Independent external review of `bab2456`.
+- Independent external review of `36e45ff` (`bab2456` plus the Playwright E2E
+  setup; runtime source unchanged).
 
 ## Recommended order
 
 1. **L-7** — live desktop/browser session check.
 2. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
    path.
-3. Commission the external review of `bab2456` and rebuild the fleet on it.
+3. Commission the external review of `36e45ff` and rebuild the fleet on it.
