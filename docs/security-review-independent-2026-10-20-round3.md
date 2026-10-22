@@ -201,11 +201,11 @@ The targeted test passes; strict daemon Clippy and workspace formatting pass.
   command/IPC execution, two-daemon P2P propagation, and regtest confirmation
   are tested separately.
 - Desktop restart, peer-status, and BTC discovery runtime tests.
-- Independent external review of `a1880cb`.
+- Independent external review of `481eb39`.
 
 ## Recommended order
 
 1. **L-7** — live desktop/browser session check.
 2. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
    path.
-3. Commission the external review of `a1880cb` and rebuild the fleet on it.
+3. Commission the external review of `481eb39` and rebuild the fleet on it.
