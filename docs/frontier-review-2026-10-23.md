@@ -29,6 +29,13 @@ be claimed (the claim branch has no upper time bound); and the wallet retains
 the passphrase for subsequent saves, so the claim that passphrases are erased
 immediately after derivation is not true.
 
+## Verification
+
+- Full workspace suite (`cargo test --workspace --all-features`) passes at
+  `1562679`.
+- Targeted suites: 13 Tauri tests, 22 frontend tests, and the wallet, BTC,
+  node, and RPC crate suites; strict Clippy and formatting pass.
+
 ## Raw review
 
 Reviewed checkout `83e55e5bea26b1b37306f36cfdd07aa2b8f0f3b6`, including both review documents and the recent desktop changes. No files were modified. This was a source review; I did not run builds or tests because those write files.

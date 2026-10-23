@@ -169,7 +169,7 @@ amount rejection without a backend call, and retry after a funding failure.
 The successful cases assert the displayed raw script is passed to the backend
 helper with the expected satoshi amount and show the returned transaction ID.
 All 22 frontend tests, lint, and the production build pass. The full workspace
-suite (`cargo test --workspace --all-features`) also passes at `77744bf`.
+suite (`cargo test --workspace --all-features`) also passes at `1562679`.
 Backend helpers are mocked in these component tests; the live browser and Tauri
 journeys are covered separately below.
 
