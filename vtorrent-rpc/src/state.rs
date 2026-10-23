@@ -47,6 +47,10 @@ pub struct AppState {
     pub torrent_sessions: Arc<RwLock<SessionManager>>,
     /// Directory where downloaded torrent data is written.
     pub download_dir: Arc<RwLock<std::path::PathBuf>>,
+    /// Shared torrent upload/download rate limiter.
+    pub torrent_limits: Arc<vtorrent_torrent::limits::TorrentRateLimiter>,
+    /// Stop seeding once uploaded/downloaded reaches this ratio (0 = disabled).
+    pub seed_ratio_target: Arc<RwLock<f64>>,
     /// Cancellation tokens for active torrent engine tasks, keyed by session id.
     pub torrent_cancels:
         Arc<RwLock<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>>,
@@ -171,6 +175,8 @@ impl AppState {
             swaps: Arc::new(RwLock::new(std::collections::HashMap::new())),
             torrent_sessions: Arc::new(RwLock::new(SessionManager::new())),
             download_dir: Arc::new(RwLock::new(std::path::PathBuf::from("downloads"))),
+            torrent_limits: Arc::new(vtorrent_torrent::limits::TorrentRateLimiter::new(0, 0)),
+            seed_ratio_target: Arc::new(RwLock::new(0.0)),
             torrent_cancels: Arc::new(RwLock::new(std::collections::HashMap::new())),
             spv_chain: Arc::new(RwLock::new(SpvChain::new())),
             stake_proofs: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -232,6 +238,8 @@ impl AppState {
             swaps: Arc::new(RwLock::new(std::collections::HashMap::new())),
             torrent_sessions: Arc::new(RwLock::new(SessionManager::new())),
             download_dir: Arc::new(RwLock::new(std::path::PathBuf::from("downloads"))),
+            torrent_limits: Arc::new(vtorrent_torrent::limits::TorrentRateLimiter::new(0, 0)),
+            seed_ratio_target: Arc::new(RwLock::new(0.0)),
             torrent_cancels: Arc::new(RwLock::new(std::collections::HashMap::new())),
             spv_chain: Arc::new(RwLock::new(SpvChain::new())),
             stake_proofs: Arc::new(RwLock::new(std::collections::HashMap::new())),

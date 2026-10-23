@@ -21,6 +21,74 @@ pub struct TorrentResult {
     pub peer_count: usize,
     pub vtr_earned_satoshis: u64,
     pub vtr_paid_satoshis: u64,
+    pub vtr_pending_earned_satoshis: u64,
+    pub vtr_pending_owed_satoshis: u64,
+    pub vtr_settled_earned_satoshis: u64,
+    pub vtr_settled_paid_satoshis: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TorrentSettingsResult {
+    pub download_dir: String,
+    pub download_limit_bytes_per_sec: u64,
+    pub upload_limit_bytes_per_sec: u64,
+    pub seed_ratio_target: f64,
+}
+
+#[tauri::command]
+pub async fn get_torrent_settings(
+    state: tauri::State<'_, AppState>,
+) -> Result<TorrentSettingsResult> {
+    let guard = state.node.lock().await;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    let download_dir = handle
+        .rpc_state
+        .download_dir
+        .read()
+        .await
+        .to_string_lossy()
+        .to_string();
+    let download_limit_bytes_per_sec = handle.rpc_state.torrent_limits.download_rate();
+    let upload_limit_bytes_per_sec = handle.rpc_state.torrent_limits.upload_rate();
+    let seed_ratio_target = *handle.rpc_state.seed_ratio_target.read().await;
+    Ok(TorrentSettingsResult {
+        download_dir,
+        download_limit_bytes_per_sec,
+        upload_limit_bytes_per_sec,
+        seed_ratio_target,
+    })
+}
+
+#[tauri::command]
+pub async fn set_torrent_settings(
+    state: tauri::State<'_, AppState>,
+    download_dir: String,
+    download_limit_bytes_per_sec: u64,
+    upload_limit_bytes_per_sec: u64,
+    seed_ratio_target: f64,
+) -> Result<TorrentSettingsResult> {
+    let download_dir = download_dir.trim();
+    if download_dir.is_empty() {
+        return Err(TauriError::InvalidInput(
+            "Download directory is required".into(),
+        ));
+    }
+    std::fs::create_dir_all(download_dir).map_err(|e| TauriError::Io(e.to_string()))?;
+    let guard = state.node.lock().await;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    *handle.rpc_state.download_dir.write().await = std::path::PathBuf::from(download_dir);
+    handle
+        .rpc_state
+        .torrent_limits
+        .set_rates(download_limit_bytes_per_sec, upload_limit_bytes_per_sec);
+    *handle.rpc_state.seed_ratio_target.write().await = seed_ratio_target.clamp(0.0, 100.0);
+    drop(guard);
+    get_torrent_settings(state).await
 }
 
 #[derive(Debug, Serialize)]
@@ -52,12 +120,12 @@ pub async fn get_torrent_sessions(state: tauri::State<'_, AppState>) -> Result<V
             download_speed: s.download_speed,
             upload_speed: s.upload_speed,
             peer_count: s.peers.len(),
-            vtr_earned_satoshis: s
-                .incentive_accounts
-                .values()
-                .map(|a| a.total_earned_satoshis)
-                .sum(),
-            vtr_paid_satoshis: 0,
+            vtr_earned_satoshis: s.incentive_summary().total_earned_satoshis,
+            vtr_paid_satoshis: s.incentive_summary().total_paid_satoshis,
+            vtr_pending_earned_satoshis: s.incentive_summary().pending_earned_satoshis,
+            vtr_pending_owed_satoshis: s.incentive_summary().pending_owed_satoshis,
+            vtr_settled_earned_satoshis: s.incentive_summary().total_earned_satoshis,
+            vtr_settled_paid_satoshis: s.incentive_summary().total_paid_satoshis,
         })
         .collect())
 }
@@ -113,9 +181,19 @@ pub async fn add_torrent(
         .insert(session_id.clone(), cancel.clone());
     let sessions = Arc::clone(&handle.rpc_state.torrent_sessions);
     let download_dir = handle.rpc_state.download_dir.read().await.clone();
+    let limits = Arc::clone(&handle.rpc_state.torrent_limits);
+    let seed_ratio_target = Arc::clone(&handle.rpc_state.seed_ratio_target);
     let sid = session_id.clone();
     tokio::spawn(async move {
-        vtorrent_torrent::engine::run_engine(sid, sessions, download_dir, cancel).await;
+        vtorrent_torrent::engine::run_engine(
+            sid,
+            sessions,
+            download_dir,
+            limits,
+            seed_ratio_target,
+            cancel,
+        )
+        .await;
     });
 
     Ok(AddTorrentResult {

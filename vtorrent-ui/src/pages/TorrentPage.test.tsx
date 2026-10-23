@@ -20,6 +20,10 @@ vi.mock('../hooks/useNode', () => ({
       peerCount: 1,
       vtrEarnedSatoshis: 0,
       vtrPaidSatoshis: 0,
+      vtrPendingEarnedSatoshis: 0,
+      vtrPendingOwedSatoshis: 0,
+      vtrSettledEarnedSatoshis: 0,
+      vtrSettledPaidSatoshis: 0,
     }],
     loading: false,
     error: null,
@@ -27,6 +31,19 @@ vi.mock('../hooks/useNode', () => ({
   }),
   addTorrent: vi.fn(),
   removeTorrent: vi.fn(),
+  useTorrentSettings: () => ({
+    data: {
+      downloadDir: '/tmp/downloads',
+      downloadLimitBytesPerSec: 0,
+      uploadLimitBytesPerSec: 0,
+      seedRatioTarget: 0,
+    },
+    loading: false,
+    error: null,
+    refresh: vi.fn(),
+  }),
+  getTorrentSettings: vi.fn(),
+  setTorrentSettings: vi.fn(),
 }))
 
 vi.mock('../hooks/useWallet', () => ({

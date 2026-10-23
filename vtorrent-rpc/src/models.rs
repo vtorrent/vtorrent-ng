@@ -287,6 +287,26 @@ pub struct TorrentSessionResponse {
     pub peer_count: usize,
     pub vtr_earned_satoshis: u64,
     pub vtr_paid_satoshis: u64,
+    pub vtr_pending_earned_satoshis: u64,
+    pub vtr_pending_owed_satoshis: u64,
+    pub vtr_settled_earned_satoshis: u64,
+    pub vtr_settled_paid_satoshis: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TorrentSettingsResponse {
+    pub download_dir: String,
+    pub download_limit_bytes_per_sec: u64,
+    pub upload_limit_bytes_per_sec: u64,
+    pub seed_ratio_target: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TorrentSettingsRequest {
+    pub download_dir: String,
+    pub download_limit_bytes_per_sec: u64,
+    pub upload_limit_bytes_per_sec: u64,
+    pub seed_ratio_target: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

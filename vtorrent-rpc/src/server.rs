@@ -186,6 +186,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/btc/status", get(get_btc_status))
         .route("/api/v1/btc/address", get(get_btc_address))
         .route("/api/v1/torrent/sessions", get(list_torrent_sessions))
+        .route(
+            "/api/v1/torrent/settings",
+            get(get_torrent_settings).post(set_torrent_settings),
+        )
         .route("/api/v1/peers", get(get_peers))
         .route(
             "/api/v1/debug/order/:id/preimage",

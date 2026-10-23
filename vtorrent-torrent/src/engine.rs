@@ -285,6 +285,8 @@ pub async fn run_engine(
     session_id: String,
     sessions: Arc<RwLock<SessionManager>>,
     download_dir: PathBuf,
+    limits: Arc<crate::limits::TorrentRateLimiter>,
+    seed_ratio_target: Arc<RwLock<f64>>,
     cancel: CancellationToken,
 ) {
     // Snapshot the metainfo and tracker list.
@@ -398,6 +400,8 @@ pub async fn run_engine(
     let shared_download_dir = Arc::new(download_dir);
     let shared_cancel = cancel.clone();
     let shared_session_id = Arc::new(session_id);
+    let shared_limits = Arc::clone(&limits);
+    let shared_seed_ratio = Arc::clone(&seed_ratio_target);
     let mut peer_tasks = Vec::new();
     for peer in peers {
         if peer_tasks.len() >= MAX_PEERS {
@@ -413,6 +417,8 @@ pub async fn run_engine(
         let cancel = shared_cancel.clone();
         let sessions = Arc::clone(&sessions);
         let session_id = Arc::clone(&shared_session_id);
+        let limits = Arc::clone(&shared_limits);
+        let seed_ratio_target = Arc::clone(&shared_seed_ratio);
         peer_tasks.push(tokio::spawn(async move {
             run_peer_task(
                 addr,
@@ -423,6 +429,8 @@ pub async fn run_engine(
                     download_dir: (*download_dir).clone(),
                     sessions,
                     session_id: (*session_id).clone(),
+                    limits,
+                    seed_ratio_target,
                     cancel,
                 },
             )
@@ -478,6 +486,8 @@ struct PeerTaskContext {
     download_dir: PathBuf,
     sessions: Arc<RwLock<SessionManager>>,
     session_id: String,
+    limits: Arc<crate::limits::TorrentRateLimiter>,
+    seed_ratio_target: Arc<RwLock<f64>>,
     cancel: CancellationToken,
 }
 
@@ -491,6 +501,8 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
         download_dir,
         sessions,
         session_id,
+        limits,
+        seed_ratio_target,
         cancel,
     } = ctx;
 
@@ -703,6 +715,25 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                 }
 
                 // Serve the requested block if we hold the piece.
+                let ratio_reached = {
+                    let target = *seed_ratio_target.read().await;
+                    if target > 0.0 {
+                        let guard = sessions.read().await;
+                        guard
+                            .get_session(&session_id)
+                            .map(|s| {
+                                s.bytes_downloaded > 0
+                                    && (s.bytes_uploaded as f64)
+                                        >= (s.bytes_downloaded as f64) * target
+                            })
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    }
+                };
+                if ratio_reached {
+                    continue;
+                }
                 let have_piece = scheduler
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -733,6 +764,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                                 });
                                 s.record_upload(&peer_key, block.len() as u64);
                             }
+                            limits.consume_upload(block.len() as u64).await;
                         }
                     }
                 }
@@ -812,6 +844,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                                         // to ensure determinism and avoid double-count.
                                         s.bytes_downloaded = verified_bytes;
                                     }
+                                    limits.consume_download(piece_data.len() as u64).await;
                                 }
                             }
                         }

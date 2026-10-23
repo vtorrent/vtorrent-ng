@@ -4,6 +4,7 @@ import {
   Coins, TrendingUp, HardDrive, Users, RefreshCw, AlertCircle
 } from 'lucide-react'
 import { formatVTR } from '../hooks/useWallet'
+import TorrentSettingsPanel from '../components/TorrentSettingsPanel'
 import { useTorrentSessions, addTorrent, removeTorrent, type TorrentSession } from '../hooks/useNode'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -39,10 +40,14 @@ export default function TorrentPage() {
   const [adding, setAdding] = useState(false)
   const [addError, setAddError] = useState<string | null>(null)
 
-  const totalEarned   = sessions.reduce((s, t) => s + t.vtrEarnedSatoshis, 0)
+  const totalEarned   = sessions.reduce((s, t) => s + t.vtrSettledEarnedSatoshis, 0)
   const totalUpload   = sessions.reduce((s, t) => s + t.uploadSpeed, 0)
   const activeSeeders = sessions.filter(t => t.state === 'Seeding').length
   const totalPeers    = sessions.reduce((s, t) => s + t.peerCount, 0)
+  const totalPendingEarned = sessions.reduce((s, t) => s + t.vtrPendingEarnedSatoshis, 0)
+  const totalPendingOwed = sessions.reduce((s, t) => s + t.vtrPendingOwedSatoshis, 0)
+  const totalSettledEarned = sessions.reduce((s, t) => s + t.vtrSettledEarnedSatoshis, 0)
+  const totalSettledPaid = sessions.reduce((s, t) => s + t.vtrSettledPaidSatoshis, 0)
   const torrents = sessions
 
   const handleAdd = async () => {
@@ -128,6 +133,8 @@ export default function TorrentPage() {
         </div>
       </div>
 
+      <TorrentSettingsPanel />
+
       {/* Add torrent form */}
       {showAdd && (
         <div className="card border-vtorrent-700/40">
@@ -180,6 +187,13 @@ export default function TorrentPage() {
             </p>
           </div>
         </div>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <RewardStat label="Pending earned" value={formatVTR(totalPendingEarned)} tone="amber" />
+        <RewardStat label="Pending owed" value={formatVTR(totalPendingOwed)} tone="red" />
+        <RewardStat label="Settled earned" value={formatVTR(totalSettledEarned)} tone="emerald" />
+        <RewardStat label="Settled paid" value={formatVTR(totalSettledPaid)} tone="gray" />
       </div>
 
       {/* Torrent list */}
@@ -258,10 +272,21 @@ export default function TorrentPage() {
                       )}
                     </div>
                     <div className="flex items-center gap-3">
-                      {torrent.vtrEarnedSatoshis > 0 && (
+                      {torrent.vtrPendingEarnedSatoshis > 0 && (
+                        <span className="flex items-center gap-1 text-xs text-amber-400 font-mono">
+                          <Coins size={11} />
+                          pending +{formatVTR(torrent.vtrPendingEarnedSatoshis)}
+                        </span>
+                      )}
+                      {torrent.vtrSettledEarnedSatoshis > 0 && (
                         <span className="flex items-center gap-1 text-xs text-vtorrent-400 font-mono">
                           <Coins size={11} />
-                          +{formatVTR(torrent.vtrEarnedSatoshis)}
+                          settled +{formatVTR(torrent.vtrSettledEarnedSatoshis)}
+                        </span>
+                      )}
+                      {torrent.vtrSettledPaidSatoshis > 0 && (
+                        <span className="flex items-center gap-1 text-xs text-red-400 font-mono">
+                          paid -{formatVTR(torrent.vtrSettledPaidSatoshis)}
                         </span>
                       )}
                       <div className="flex items-center gap-1">
@@ -295,6 +320,31 @@ export default function TorrentPage() {
           </>
         )}
       </div>
+    </div>
+  )
+}
+
+
+function RewardStat({
+  label,
+  value,
+  tone,
+}: {
+  label: string
+  value: string
+  tone: 'amber' | 'red' | 'emerald' | 'gray'
+}) {
+  const color = tone === 'amber'
+    ? 'text-amber-300'
+    : tone === 'red'
+      ? 'text-red-300'
+      : tone === 'emerald'
+        ? 'text-emerald-300'
+        : 'text-gray-300'
+  return (
+    <div className="card">
+      <p className="text-xs text-gray-500">{label}</p>
+      <p className={`font-mono text-sm mt-1 ${color}`}>{value}</p>
     </div>
   )
 }

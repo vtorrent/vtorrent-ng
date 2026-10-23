@@ -119,6 +119,10 @@ pub struct IncentiveSummary {
     pub total_earned_satoshis: u64,
     /// Total VTR paid this session (in satoshis).
     pub total_paid_satoshis: u64,
+    /// Estimated VTR earned since the last settlement (in satoshis).
+    pub pending_earned_satoshis: u64,
+    /// Estimated VTR owed since the last settlement (in satoshis).
+    pub pending_owed_satoshis: u64,
     /// Total bytes uploaded this session.
     pub total_bytes_uploaded: u64,
     /// Total bytes downloaded this session.
@@ -223,6 +227,8 @@ pub fn aggregate_summary(accounts: &[PeerBandwidthAccount]) -> IncentiveSummary 
     let mut summary = IncentiveSummary {
         total_earned_satoshis: 0,
         total_paid_satoshis: 0,
+        pending_earned_satoshis: 0,
+        pending_owed_satoshis: 0,
         total_bytes_uploaded: 0,
         total_bytes_downloaded: 0,
         incentive_peer_count: 0,
@@ -234,6 +240,12 @@ pub fn aggregate_summary(accounts: &[PeerBandwidthAccount]) -> IncentiveSummary 
         summary.total_paid_satoshis = summary
             .total_paid_satoshis
             .saturating_add(account.total_paid_satoshis);
+        summary.pending_earned_satoshis = summary
+            .pending_earned_satoshis
+            .saturating_add(account.calculate_earned());
+        summary.pending_owed_satoshis = summary
+            .pending_owed_satoshis
+            .saturating_add(account.calculate_owed());
         summary.total_bytes_uploaded = summary
             .total_bytes_uploaded
             .saturating_add(account.bytes_uploaded);
@@ -336,6 +348,8 @@ mod tests {
         let summary = IncentiveSummary {
             total_earned_satoshis: 150_000_000,
             total_paid_satoshis: 50_000_000,
+            pending_earned_satoshis: 0,
+            pending_owed_satoshis: 0,
             total_bytes_uploaded: 2 * 1024 * 1024 * 1024,
             total_bytes_downloaded: 512 * 1024 * 1024,
             incentive_peer_count: 5,

@@ -84,6 +84,17 @@ export interface TorrentSession {
   peerCount: number
   vtrEarnedSatoshis: number
   vtrPaidSatoshis: number
+  vtrPendingEarnedSatoshis: number
+  vtrPendingOwedSatoshis: number
+  vtrSettledEarnedSatoshis: number
+  vtrSettledPaidSatoshis: number
+}
+
+export interface TorrentSettings {
+  downloadDir: string
+  downloadLimitBytesPerSec: number
+  uploadLimitBytesPerSec: number
+  seedRatioTarget: number
 }
 
 export interface DexOrder {
@@ -189,6 +200,35 @@ async function fetchActivity(limit = 100): Promise<ActivityItem[]> {
     return camel(await tauriInvoke<ActivityItem[]>('get_activity', { limit })) as ActivityItem[]
   }
   return camel(await rpcGet<unknown[]>(`/api/v1/wallet/activity?limit=${limit}`)) as ActivityItem[]
+}
+
+export async function getTorrentSettings(): Promise<TorrentSettings> {
+  if (isTauri()) {
+    return camel(await tauriInvoke<TorrentSettings>('get_torrent_settings')) as TorrentSettings
+  }
+  return camel(await rpcGet<unknown>('/api/v1/torrent/settings')) as TorrentSettings
+}
+
+export async function setTorrentSettings(settings: TorrentSettings): Promise<TorrentSettings> {
+  if (isTauri()) {
+    return camel(await tauriInvoke<TorrentSettings>('set_torrent_settings', {
+      downloadDir: settings.downloadDir,
+      downloadLimitBytesPerSec: settings.downloadLimitBytesPerSec,
+      uploadLimitBytesPerSec: settings.uploadLimitBytesPerSec,
+      seedRatioTarget: settings.seedRatioTarget,
+    })) as TorrentSettings
+  }
+  return camel(await rpcPost<unknown>('/api/v1/torrent/settings', {
+    download_dir: settings.downloadDir,
+    download_limit_bytes_per_sec: settings.downloadLimitBytesPerSec,
+    upload_limit_bytes_per_sec: settings.uploadLimitBytesPerSec,
+    seed_ratio_target: settings.seedRatioTarget,
+  })) as TorrentSettings
+}
+
+export function useTorrentSettings(intervalMs = 30_000) {
+  const fetcher = useCallback(() => getTorrentSettings(), [])
+  return usePoll<TorrentSettings | null>(fetcher, null, intervalMs)
 }
 
 async function fetchTorrentSessions(): Promise<TorrentSession[]> {

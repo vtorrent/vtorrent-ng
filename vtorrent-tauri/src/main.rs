@@ -48,6 +48,8 @@ fn main() {
             commands::fund_cold_stake,
             // Torrent sessions
             commands::get_torrent_sessions,
+            commands::get_torrent_settings,
+            commands::set_torrent_settings,
             commands::add_torrent,
             commands::remove_torrent,
             // DEX order book

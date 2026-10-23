@@ -32,11 +32,52 @@ pub async fn list_torrent_sessions(
                 peer_count: s.peers.len(),
                 vtr_earned_satoshis: summary.total_earned_satoshis,
                 vtr_paid_satoshis: summary.total_paid_satoshis,
+                vtr_pending_earned_satoshis: summary.pending_earned_satoshis,
+                vtr_pending_owed_satoshis: summary.pending_owed_satoshis,
+                vtr_settled_earned_satoshis: summary.total_earned_satoshis,
+                vtr_settled_paid_satoshis: summary.total_paid_satoshis,
             }
         })
         .collect();
 
     Ok(Json(result))
+}
+
+pub async fn get_torrent_settings(
+    State(state): State<Arc<AppState>>,
+) -> RpcResult<Json<TorrentSettingsResponse>> {
+    Ok(Json(TorrentSettingsResponse {
+        download_dir: state
+            .download_dir
+            .read()
+            .await
+            .to_string_lossy()
+            .to_string(),
+        download_limit_bytes_per_sec: state.torrent_limits.download_rate(),
+        upload_limit_bytes_per_sec: state.torrent_limits.upload_rate(),
+        seed_ratio_target: *state.seed_ratio_target.read().await,
+    }))
+}
+
+pub async fn set_torrent_settings(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<TorrentSettingsRequest>,
+) -> RpcResult<Json<TorrentSettingsResponse>> {
+    let download_dir = req.download_dir.trim();
+    if download_dir.is_empty() {
+        return Err(RpcError::BadRequest(
+            "Download directory is required".into(),
+        ));
+    }
+    std::fs::create_dir_all(download_dir)
+        .map_err(|e| RpcError::Internal(format!("Could not create download directory: {e}")))?;
+    *state.download_dir.write().await = std::path::PathBuf::from(download_dir);
+    state.torrent_limits.set_rates(
+        req.download_limit_bytes_per_sec,
+        req.upload_limit_bytes_per_sec,
+    );
+    *state.seed_ratio_target.write().await = req.seed_ratio_target.clamp(0.0, 100.0);
+    get_torrent_settings(State(state)).await
 }
 
 pub async fn add_torrent(
@@ -82,9 +123,19 @@ pub async fn add_torrent(
         .insert(session_id.clone(), cancel.clone());
     let sessions = Arc::clone(&state.torrent_sessions);
     let download_dir = state.download_dir.read().await.clone();
+    let limits = Arc::clone(&state.torrent_limits);
+    let seed_ratio_target = Arc::clone(&state.seed_ratio_target);
     let sid = session_id.clone();
     tokio::spawn(async move {
-        vtorrent_torrent::engine::run_engine(sid, sessions, download_dir, cancel).await;
+        vtorrent_torrent::engine::run_engine(
+            sid,
+            sessions,
+            download_dir,
+            limits,
+            seed_ratio_target,
+            cancel,
+        )
+        .await;
     });
 
     Ok(Json(AddTorrentResponse {
