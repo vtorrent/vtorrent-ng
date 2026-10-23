@@ -62,6 +62,16 @@ fn ensure_wallet_path_allowed(state: &AppState, path: &std::path::Path) -> Resul
             "Wallet path must be inside the app data directory".into(),
         ));
     }
+    if path.exists() {
+        let target = path
+            .canonicalize()
+            .map_err(|error| TauriError::Io(error.to_string()))?;
+        if !target.starts_with(&root) {
+            return Err(TauriError::InvalidInput(
+                "Wallet path must be inside the app data directory".into(),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -203,6 +213,7 @@ pub fn create_wallet(
     wallet_path: String,
 ) -> Result<WalletInfo> {
     ensure_node_stopped(state.inner())?;
+    state.cold_stake_scripts.lock().unwrap().clear();
     let passphrase = zeroize::Zeroizing::new(passphrase);
     if passphrase.len() < 8 {
         return Err(TauriError::InvalidInput(
@@ -216,8 +227,8 @@ pub fn create_wallet(
             "A wallet already exists at this path; open it instead".into(),
         ));
     }
-    ensure_wallet_parent(&path)?;
     ensure_wallet_path_allowed(state.inner(), &path)?;
+    ensure_wallet_parent(&path)?;
     let wallet = Wallet::create(&passphrase).map_err(TauriError::from)?;
 
     wallet.save(&path).map_err(TauriError::from)?;
@@ -246,6 +257,7 @@ pub async fn open_wallet(
     otp_code: Option<String>,
 ) -> Result<WalletInfo> {
     ensure_node_stopped(state.inner())?;
+    state.cold_stake_scripts.lock().unwrap().clear();
     let passphrase = zeroize::Zeroizing::new(passphrase);
     let otp_code = otp_code.map(zeroize::Zeroizing::new);
     let path = std::path::PathBuf::from(&wallet_path);
@@ -288,6 +300,7 @@ pub async fn open_wallet(
 #[tauri::command]
 pub async fn lock_wallet(state: State<'_, AppState>) -> Result<()> {
     *state.wallet.lock().unwrap() = None;
+    state.cold_stake_scripts.lock().unwrap().clear();
     if let Some(handle) = state.node.lock().await.as_ref() {
         handle.rpc_state.lock_wallet().await;
     }
@@ -326,6 +339,7 @@ pub fn import_legacy_wallet(
     new_wallet_path: String,
 ) -> Result<ImportResult> {
     ensure_node_stopped(state.inner())?;
+    state.cold_stake_scripts.lock().unwrap().clear();
     let wallet_dat_base64 = zeroize::Zeroizing::new(wallet_dat_base64);
     let passphrase = passphrase.map(zeroize::Zeroizing::new);
     let new_wallet_passphrase = zeroize::Zeroizing::new(new_wallet_passphrase);
@@ -348,8 +362,8 @@ pub fn import_legacy_wallet(
     }
 
     let path = std::path::PathBuf::from(&new_wallet_path);
-    ensure_wallet_parent(&path)?;
     ensure_wallet_path_allowed(state.inner(), &path)?;
+    ensure_wallet_parent(&path)?;
     if path.exists() {
         return Err(TauriError::InvalidInput(
             "A wallet already exists at this path; open it instead".into(),
@@ -503,10 +517,12 @@ pub async fn send_vtr(
     let (wif, from_address) = {
         let guard = state.wallet.lock().unwrap();
         let wallet = guard.as_ref().ok_or(TauriError::WalletNotInitialized)?;
-        let wif = wallet
-            .get_default_wif()
-            .ok_or(TauriError::WalletNotInitialized)?
-            .to_string();
+        let wif = zeroize::Zeroizing::new(
+            wallet
+                .get_default_wif()
+                .ok_or(TauriError::WalletNotInitialized)?
+                .to_string(),
+        );
         let from = wallet
             .default_address()
             .ok_or(TauriError::WalletNotInitialized)?
@@ -534,7 +550,7 @@ pub async fn send_vtr(
         &from_address,
         amount_satoshis,
         fee_rate,
-        &wif,
+        wif.as_str(),
     )
     .map_err(|e| TauriError::NodeError(format!("Transaction build failed: {}", e)))?;
 
@@ -587,6 +603,9 @@ pub async fn create_cold_stake(
     locktime: u32,
     label: Option<String>,
 ) -> Result<ColdStakeKeys> {
+    if state.wallet.lock().unwrap().is_none() {
+        return Err(TauriError::WalletNotInitialized);
+    }
     const MAX_LOCKTIME: u32 = 2_100_000_000;
     if locktime != 0 && locktime > MAX_LOCKTIME {
         return Err(TauriError::InvalidInput(format!(
@@ -661,10 +680,12 @@ pub async fn fund_cold_stake(
     let (wif, from_address) = {
         let guard = state.wallet.lock().unwrap();
         let wallet = guard.as_ref().ok_or(TauriError::WalletNotInitialized)?;
-        let wif = wallet
-            .get_default_wif()
-            .ok_or(TauriError::WalletNotInitialized)?
-            .to_string();
+        let wif = zeroize::Zeroizing::new(
+            wallet
+                .get_default_wif()
+                .ok_or(TauriError::WalletNotInitialized)?
+                .to_string(),
+        );
         let from = wallet
             .default_address()
             .ok_or(TauriError::WalletNotInitialized)?
@@ -690,7 +711,7 @@ pub async fn fund_cold_stake(
         &from_address,
         amount_satoshis,
         fee_rate,
-        &wif,
+        wif.as_str(),
     )
     .map_err(|e| TauriError::NodeError(format!("Cold-stake funding build failed: {e}")))?;
     let txid = hex::encode(tx.txid());
@@ -759,6 +780,32 @@ pub async fn get_btc_address(state: State<'_, AppState>) -> Result<String> {
     }
 }
 
+async fn broadcast_btc_tx(
+    rpc: &vtorrent_rpc::state::AppState,
+    raw: &[u8],
+) -> std::result::Result<(), String> {
+    let network = *rpc.btc_network.read().await;
+    let peer = rpc.btc_peer.read().await.clone();
+    if let Some(host) = peer {
+        let addr = tokio::net::lookup_host(&host)
+            .await
+            .ok()
+            .and_then(|mut it| it.next())
+            .ok_or_else(|| format!("BTC peer {} unresolved", host))?;
+        vtorrent_btc::sync::broadcast_tx_to(raw, network, &[addr])
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("BTC broadcast to {} failed: {}", host, e))
+    } else if network == bitcoin::Network::Bitcoin {
+        vtorrent_btc::sync::broadcast_tx(raw)
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("BTC broadcast failed: {}", e))
+    } else {
+        Err("BTC peer required for non-mainnet broadcast".to_string())
+    }
+}
+
 #[tauri::command]
 pub async fn send_btc(
     state: State<'_, AppState>,
@@ -796,30 +843,11 @@ pub async fn send_btc(
             .map_err(|e| TauriError::NodeError(e.to_string()))?
     };
 
-    let broadcast_result = {
-        let network = *handle.rpc_state.btc_network.read().await;
-        let peer = handle.rpc_state.btc_peer.read().await.clone();
-        if let Some(host) = peer {
-            let addr = tokio::net::lookup_host(&host)
-                .await
-                .ok()
-                .and_then(|mut it| it.next())
-                .ok_or_else(|| {
-                    crate::error::TauriError::InvalidInput(format!("BTC peer {} unresolved", host))
-                })?;
-            vtorrent_btc::sync::broadcast_tx_to(&raw, network, &[addr]).await
-        } else {
-            vtorrent_btc::sync::broadcast_tx(&raw).await
-        }
-    };
-    if let Err(e) = broadcast_result {
+    if let Err(e) = broadcast_btc_tx(&handle.rpc_state, &raw).await {
         if let Some(wallet) = handle.rpc_state.btc_wallet.write().await.as_mut() {
             wallet.restore_utxos(&spent_utxos);
         }
-        return Err(TauriError::NodeError(format!(
-            "BTC broadcast failed: {}",
-            e
-        )));
+        return Err(TauriError::NodeError(e));
     }
 
     tracing::info!("BTC tx broadcast: {}", txid_hex);
@@ -859,6 +887,7 @@ pub async fn submit_legacy_claim(
     use vtorrent_node::genesis::get_legacy_balance;
     use vtorrent_wallet::tx_builder::{p2pkh_script_pubkey, pubkey_to_vtorrent_address};
 
+    let wif_private_key = zeroize::Zeroizing::new(wif_private_key);
     if wif_private_key.is_empty() {
         return Err(TauriError::InvalidInput(
             "WIF private key is required".into(),
@@ -870,7 +899,7 @@ pub async fn submit_legacy_claim(
         ));
     }
 
-    let key = PrivateKey::from_wif(&wif_private_key)
+    let key = PrivateKey::from_wif(wif_private_key.as_str())
         .map_err(|e| TauriError::InvalidInput(format!("Invalid WIF key: {}", e)))?;
     let secp = secp256k1::Secp256k1::new();
     let secret_key = secp256k1::SecretKey::from_slice(key.as_bytes())
@@ -1164,11 +1193,100 @@ mod tests {
             .unwrap();
         app.manage(AppState::new());
         let state = app.state::<AppState>();
+        *state.wallet.lock().unwrap() = Some(Wallet::create("pw").unwrap());
         let keys = create_cold_stake(state.clone(), 0, None).await.unwrap();
         assert_eq!(keys.script_pubkey.len(), 120);
         assert_eq!(keys.script_hash.len(), 40);
         let script = hex::decode(&keys.script_pubkey).unwrap();
         assert!(state.cold_stake_scripts.lock().unwrap().contains(&script));
+    }
+
+    #[tokio::test]
+    async fn broadcast_btc_tx_requires_a_peer_for_non_mainnet() {
+        let rpc = vtorrent_rpc::state::AppState::new();
+        *rpc.btc_network.write().await = bitcoin::Network::Regtest;
+        let error = broadcast_btc_tx(&rpc, &[]).await.unwrap_err();
+        assert!(error.contains("peer required"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn create_cold_stake_requires_an_active_wallet() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+        let error = create_cold_stake(state.clone(), 0, None).await.unwrap_err();
+        assert!(matches!(error, TauriError::WalletNotInitialized));
+    }
+
+    #[tokio::test]
+    async fn lock_wallet_clears_session_cold_stake_scripts() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+        state.cold_stake_scripts.lock().unwrap().insert(vec![0x51]);
+        lock_wallet(state.clone()).await.unwrap();
+        assert!(state.cold_stake_scripts.lock().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_wallet_rejects_a_symlink_outside_app_data() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+        let root =
+            std::env::temp_dir().join(format!("vtr-tauri-symlink-root-{}", std::process::id()));
+        let outside = std::env::temp_dir().join(format!(
+            "vtr-tauri-symlink-outside-{}.vtr",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&outside, b"not a wallet").unwrap();
+        let link = root.join("wallet.vtr");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        state.set_app_data_dir(root.clone());
+        let error = open_wallet(
+            state.clone(),
+            link.to_string_lossy().to_string(),
+            "password".into(),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, TauriError::InvalidInput(_)));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    #[test]
+    fn create_wallet_validates_before_creating_parents() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+        let root =
+            std::env::temp_dir().join(format!("vtr-tauri-confine-root-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        state.set_app_data_dir(root.clone());
+        let outside =
+            std::env::temp_dir().join(format!("vtr-tauri-confine-outside-{}", std::process::id()));
+        let path = outside.join("nested").join("wallet.vtr");
+        let error = create_wallet(
+            state.clone(),
+            "password".into(),
+            path.to_string_lossy().to_string(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, TauriError::InvalidInput(_)));
+        assert!(!outside.exists(), "rejected path must not create parents");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

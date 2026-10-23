@@ -554,9 +554,7 @@ mod tests {
         let first_path = btc_utxo_path(Some(path), bitcoin::Network::Regtest, &first);
         let second_path = btc_utxo_path(Some(path), bitcoin::Network::Regtest, &second);
         assert_ne!(first_path, second_path);
-        assert!(first_path
-            .to_string_lossy()
-            .contains("btc_utxos-regtest-"));
+        assert!(first_path.to_string_lossy().contains("btc_utxos-regtest-"));
         assert_eq!(
             first_path.parent(),
             Some(std::path::Path::new("/tmp")),
