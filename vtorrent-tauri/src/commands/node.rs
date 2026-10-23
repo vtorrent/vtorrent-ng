@@ -45,6 +45,30 @@ fn resolve_network(network: Option<&str>) -> &'static str {
     }
 }
 
+fn btc_utxo_path(
+    wallet_path: Option<&std::path::Path>,
+    network: bitcoin::Network,
+    seed: &[u8; 64],
+) -> std::path::PathBuf {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"vtorrent-btc-wallet-id-v1");
+    hasher.update(seed);
+    let wallet_id = hex::encode(&hasher.finalize()[..8]);
+    let label = match network {
+        bitcoin::Network::Bitcoin => "mainnet",
+        bitcoin::Network::Testnet => "testnet",
+        bitcoin::Network::Regtest => "regtest",
+        _ => "other",
+    };
+    wallet_path
+        .and_then(|path| path.parent())
+        .map(|parent| parent.join(format!("btc_utxos-{label}-{wallet_id}.json")))
+        .unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("vtorrent_btc_utxos-{wallet_id}.json"))
+        })
+}
+
 #[tauri::command]
 pub async fn start_node(
     state: tauri::State<'_, AppState>,
@@ -192,19 +216,7 @@ pub async fn start_node(
                 .wallet_path
                 .lock()
                 .map_err(|_| TauriError::WalletLocked)?;
-            wp.as_ref()
-                .map(|p| {
-                    let label = match btc_network {
-                        bitcoin::Network::Bitcoin => "mainnet",
-                        bitcoin::Network::Testnet => "testnet",
-                        bitcoin::Network::Regtest => "regtest",
-                        _ => "other",
-                    };
-                    p.parent()
-                        .unwrap_or(std::path::Path::new("."))
-                        .join(format!("btc_utxos-{label}.json"))
-                })
-                .unwrap_or_else(|| std::env::temp_dir().join("vtorrent_btc_utxos.json"))
+            btc_utxo_path(wp.as_deref(), btc_network, &seed)
         };
         match vtorrent_btc::wallet::BtcWallet::with_persistence(
             seed,
@@ -533,6 +545,24 @@ pub async fn get_transactions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn btc_utxo_path_is_scoped_by_wallet_seed() {
+        let first = [1u8; 64];
+        let second = [2u8; 64];
+        let path = std::path::Path::new("/tmp/wallet.vtr");
+        let first_path = btc_utxo_path(Some(path), bitcoin::Network::Regtest, &first);
+        let second_path = btc_utxo_path(Some(path), bitcoin::Network::Regtest, &second);
+        assert_ne!(first_path, second_path);
+        assert!(first_path
+            .to_string_lossy()
+            .contains("btc_utxos-regtest-"));
+        assert_eq!(
+            first_path.parent(),
+            Some(std::path::Path::new("/tmp")),
+            "the scoped file must stay next to the wallet"
+        );
+    }
 
     #[test]
     fn test_resolve_network() {

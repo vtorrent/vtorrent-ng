@@ -27,6 +27,18 @@ fn ensure_wallet_parent(path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+fn ensure_node_stopped(state: &AppState) -> Result<()> {
+    match state.node.try_lock() {
+        Ok(guard) if guard.is_some() => Err(TauriError::NodeError(
+            "Stop the node before switching wallets".into(),
+        )),
+        Ok(_) => Ok(()),
+        Err(_) => Err(TauriError::NodeError(
+            "Node is busy; stop it before switching wallets".into(),
+        )),
+    }
+}
+
 fn ensure_wallet_path_allowed(state: &AppState, path: &std::path::Path) -> Result<()> {
     if path
         .components()
@@ -190,6 +202,7 @@ pub fn create_wallet(
     passphrase: String,
     wallet_path: String,
 ) -> Result<WalletInfo> {
+    ensure_node_stopped(state.inner())?;
     let passphrase = zeroize::Zeroizing::new(passphrase);
     if passphrase.len() < 8 {
         return Err(TauriError::InvalidInput(
@@ -232,6 +245,7 @@ pub async fn open_wallet(
     passphrase: String,
     otp_code: Option<String>,
 ) -> Result<WalletInfo> {
+    ensure_node_stopped(state.inner())?;
     let passphrase = zeroize::Zeroizing::new(passphrase);
     let otp_code = otp_code.map(zeroize::Zeroizing::new);
     let path = std::path::PathBuf::from(&wallet_path);
@@ -311,6 +325,7 @@ pub fn import_legacy_wallet(
     new_wallet_passphrase: String,
     new_wallet_path: String,
 ) -> Result<ImportResult> {
+    ensure_node_stopped(state.inner())?;
     let wallet_dat_base64 = zeroize::Zeroizing::new(wallet_dat_base64);
     let passphrase = passphrase.map(zeroize::Zeroizing::new);
     let new_wallet_passphrase = zeroize::Zeroizing::new(new_wallet_passphrase);
@@ -1154,6 +1169,35 @@ mod tests {
         assert_eq!(keys.script_hash.len(), 40);
         let script = hex::decode(&keys.script_pubkey).unwrap();
         assert!(state.cold_stake_scripts.lock().unwrap().contains(&script));
+    }
+
+    #[test]
+    fn create_wallet_refuses_while_the_node_is_running() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+        let dir =
+            std::env::temp_dir().join(format!("vtr-tauri-node-running-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        state.set_app_data_dir(dir.clone());
+        tauri::async_runtime::block_on(async {
+            *state.node.lock().await = Some(crate::state::NodeHandle {
+                rpc_state: vtorrent_rpc::state::AppState::new(),
+                network: "vtorrent-regtest".to_string(),
+                start_time: std::time::Instant::now(),
+                mempool_path: None,
+            });
+        });
+        let error = create_wallet(
+            state.clone(),
+            "password".into(),
+            dir.join("wallet.vtr").to_string_lossy().to_string(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, TauriError::NodeError(_)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
