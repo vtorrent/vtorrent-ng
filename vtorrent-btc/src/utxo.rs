@@ -50,6 +50,8 @@ pub struct UtxoSet {
     swap_contracts: std::collections::BTreeMap<String, SwapContract>,
     #[serde(default)]
     next_index: u32,
+    #[serde(default)]
+    last_scanned_height: u32,
 }
 
 impl UtxoSet {
@@ -63,6 +65,14 @@ impl UtxoSet {
 
     pub fn set_next_index(&mut self, index: u32) {
         self.next_index = index;
+    }
+
+    pub fn last_scanned_height(&self) -> u32 {
+        self.last_scanned_height
+    }
+
+    pub fn set_last_scanned_height(&mut self, height: u32) {
+        self.last_scanned_height = height;
     }
 
     pub fn add(&mut self, utxo: Utxo) {
@@ -301,6 +311,19 @@ mod tests {
         // A rescan can now re-add it.
         set.add(utxo("a", 0, 5000));
         assert_eq!(set.list().len(), 1);
+    }
+
+    #[test]
+    fn test_scan_cursor_round_trips() {
+        let dir = std::env::temp_dir().join(format!("vtorrent_utxo_cursor_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("utxos.json");
+        let mut set = UtxoSet::new();
+        set.set_last_scanned_height(123);
+        set.save(&path).unwrap();
+        let loaded = UtxoSet::load(&path).unwrap();
+        assert_eq!(loaded.last_scanned_height(), 123);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

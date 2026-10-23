@@ -115,6 +115,7 @@ impl BtcWallet {
     ) -> std::io::Result<Self> {
         let utxos = UtxoSet::load(&utxo_path)?;
         let next_index = utxos.next_index();
+        let last_scanned_height = utxos.last_scanned_height();
         Ok(Self {
             seed,
             network,
@@ -124,7 +125,7 @@ impl BtcWallet {
             utxo_path: Some(utxo_path),
             next_index,
             synced: false,
-            last_scanned_height: 0,
+            last_scanned_height,
             rbf_enabled: true,
         })
     }
@@ -453,7 +454,11 @@ impl BtcWallet {
                     find_fork(&chain, previous_best)
                 };
                 self.filter_headers.lock().clear();
-                self.utxos.lock().clear_chain_utxos();
+                {
+                    let mut utxos = self.utxos.lock();
+                    utxos.clear_chain_utxos();
+                    utxos.set_last_scanned_height(0);
+                }
                 self.save_utxos();
                 // The UTXO set was cleared, so the rescan must start at the
                 // wallet's birthday/zero, not at the fork point; otherwise
@@ -487,7 +492,11 @@ impl BtcWallet {
             self.watch_addresses(self.next_index)?,
             self.network,
         );
-        sync.scan_utxos_bip158(peer, start_height).await
+        let scanned = sync.scan_utxos_bip158(peer, start_height).await?;
+        if scanned > 0 {
+            self.save_utxos();
+        }
+        Ok(scanned)
     }
 
     /// The next block height to scan.
@@ -495,9 +504,11 @@ impl BtcWallet {
         self.last_scanned_height
     }
 
-    /// Set the next block height to scan.
+    /// Set the next block height to scan and persist it with the UTXO set.
     pub fn set_last_scanned_height(&mut self, height: u32) {
         self.last_scanned_height = height;
+        self.utxos.lock().set_last_scanned_height(height);
+        self.save_utxos();
     }
 
     /// Whether new transactions signal RBF.
