@@ -283,14 +283,14 @@ cargo test -p vtorrent-daemon --features test-util --test process_recovery \
   separate regtest run, not a mainnet-scale soak.
 - Mainnet-scale BTC SPV retention/scan soak.
 - Frontier-model review follow-ups are fixed in `39da204` (SPV principal
-  preservation), `f803cf9` (BTC reservation release), and `2287026`
+  preservation), `f803cf9`/`afe5974` (BTC reservation release and serialization), and `2287026`
   (passphrase-retention docs); the external review should verify them.
-- Independent external review of `f803cf9` (`1562679` plus the SPV/BTC
-  follow-up fixes).
+- Independent external review of `afe5974` (`f803cf9` plus the reserved-UTXO
+  serialization fix).
 
 ## Recommended order
 
 1. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
    path.
-2. Commission the external review of `f803cf9` and rebuild the fleet on it.
+2. Commission the external review of `afe5974` and rebuild the fleet on it.
 3. Re-run the desktop build verification on the reviewed candidate.

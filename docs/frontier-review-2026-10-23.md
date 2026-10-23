@@ -27,7 +27,7 @@
 - **SPV P2CS principal preservation** — `39da204`. The verifier now requires at
   least the staked value to re-lock to the P2CS script, and the test re-signs
   redirect and burn coinstakes so the R1 checks are actually exercised.
-- **BTC reservation release** — `f803cf9`. Expiry alone no longer releases a
+- **BTC reservation release** — `f803cf9`, with the reserved-UTXO serialization fix in `afe5974`. Expiry alone no longer releases a
   reservation: the reconciler requires a confirmed spend of the reserved input,
   which makes the signed funding transaction impossible to confirm. The
   claim-after-expiry test documents why the claim branch's missing upper time

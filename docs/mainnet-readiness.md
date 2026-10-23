@@ -43,7 +43,7 @@
 - [ ] **External security review** — **brief finalized, not yet commissioned**:
       `docs/security-review-brief.md` (scope, deliverables, 2-phase engagement).
       The proposed immutable delivery is
-      `f803cf959c512a899d1b413c945a09116a5a4224` (`bab2456` plus the Playwright
+      `afe5974c1d71507e31fe720368f8b7019808bf54` (`bab2456` plus the Playwright
       E2E setup, the live cold-stake browser test, the Vite dev-origin CORS
       allowance, the Tauri path capability fix, the durable cold-stake registry
       persistence fix, the desktop restart/persistence parity fixes, the
@@ -97,13 +97,13 @@ from uninterrupted soak measurements.
       height 54,123, same tip, staking, 0 errors/restarts, `syncing=false`.
       Sign-off pending. The fleet runs `e7691fb`, which includes the reorg-safe
       BTC wallet state, durable cold-stake script registry, zeroized WIF
-      responses, and the WebSocket token cap; the review candidate `f803cf9`
+      responses, and the WebSocket token cap; the review candidate `afe5974`
       adds the Playwright browser E2E setup, the Vite dev-origin CORS
       allowance, the Tauri path capability fix, the durable cold-stake registry
       persistence fix, the desktop restart/persistence parity fixes, the
       wallet-path confinement, import overwrite guard, version bump, IPC error
       surfacing, and staking ownership warnings, and the live desktop journey,
-      restart, and BTC discovery evidence. The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `f803cf9`, and `2287026`; the external review should verify them.
+      restart, and BTC discovery evidence. The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; the external review should verify them.
 - [x] **Staking soak**: at least one node staked continuously and produced
       blocks at the expected ~60s average over the full 7-day window
       (`2026-09-29T13:36:22Z` → `2026-10-06T13:36:22Z`): node1 staked 1441
