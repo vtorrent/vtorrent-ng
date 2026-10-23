@@ -508,6 +508,72 @@ pub struct ActivityResult {
     pub fee_satoshis: u64,
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionOutputResult {
+    pub value_satoshis: u64,
+    pub script_pubkey: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionLookupResult {
+    pub txid: String,
+    pub block_height: Option<u32>,
+    pub block_hash: Option<String>,
+    pub outputs: Vec<TransactionOutputResult>,
+}
+
+#[tauri::command]
+pub async fn get_transaction(
+    state: tauri::State<'_, AppState>,
+    txid: String,
+) -> Result<TransactionLookupResult> {
+    let bytes = hex::decode(&txid)
+        .map_err(|_| TauriError::InvalidInput("Invalid transaction ID".into()))?;
+    let txid_bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| TauriError::InvalidInput("Invalid transaction ID".into()))?;
+    let guard = state.node.lock().await;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    let chain = handle.rpc_state.chain.lock().await;
+    if let Some((tx, block_hash, height)) = chain.get_transaction(&txid_bytes) {
+        return Ok(TransactionLookupResult {
+            txid,
+            block_height: Some(height),
+            block_hash: Some(hex::encode(block_hash)),
+            outputs: tx
+                .outputs
+                .iter()
+                .map(|output| TransactionOutputResult {
+                    value_satoshis: output.value,
+                    script_pubkey: hex::encode(&output.script_pubkey),
+                })
+                .collect(),
+        });
+    }
+    drop(chain);
+    let mempool = handle.rpc_state.mempool.lock().await;
+    let tx = mempool
+        .get_transaction(&txid_bytes)
+        .ok_or_else(|| TauriError::NodeError("Transaction not found".into()))?;
+    Ok(TransactionLookupResult {
+        txid,
+        block_height: None,
+        block_hash: None,
+        outputs: tx
+            .outputs
+            .iter()
+            .map(|output| TransactionOutputResult {
+                value_satoshis: output.value,
+                script_pubkey: hex::encode(&output.script_pubkey),
+            })
+            .collect(),
+    })
+}
+
 #[tauri::command]
 pub async fn get_activity(
     state: tauri::State<'_, AppState>,

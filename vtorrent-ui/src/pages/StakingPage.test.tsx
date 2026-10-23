@@ -18,10 +18,11 @@ vi.mock('../hooks/useNode', () => ({
   stopStaking: vi.fn(),
   createColdStake: backend.create,
   fundColdStake: backend.fund,
+  getTransaction: vi.fn(),
 }))
 
 vi.mock('../hooks/useWallet', () => ({
-  useWallet: () => ({ keys: [] }),
+  useWallet: () => ({ keys: [], totalBalance: 0 }),
   formatVTR: (satoshis: number) => `${satoshis / 100_000_000} VTR`,
 }))
 
@@ -35,12 +36,18 @@ const keys: ColdStakeKeys = {
   scriptHash: 'cd'.repeat(20),
   stakingWif: 'test-hot-key',
   spendingWif: 'test-cold-key',
+  stakingAddress: 'VStakingAddress',
+  spendingAddress: 'VSpendingAddress',
   locktime: 0,
 }
 
 async function generate() {
   fireEvent.click(screen.getByRole('button', { name: 'Generate key pair' }))
   await screen.findByText(keys.scriptPubkey)
+}
+
+function saveSpendingKey() {
+  fireEvent.click(screen.getByTestId('cold-stake-saved-spending'))
 }
 
 describe('cold-stake panel', () => {
@@ -55,6 +62,7 @@ describe('cold-stake panel', () => {
   it('generates keys and funds the displayed raw script in browser mode', async () => {
     render(<StakingPage />)
     await generate()
+    saveSpendingKey()
     expect(backend.create).toHaveBeenCalledWith(0)
     expect(screen.getByText(keys.scriptHash)).toBeInTheDocument()
     expect(screen.queryByText('P2CS address (fund this)')).not.toBeInTheDocument()
@@ -71,6 +79,7 @@ describe('cold-stake panel', () => {
     backend.desktop.mockReturnValue(true)
     render(<StakingPage />)
     await generate()
+    saveSpendingKey()
     expect(screen.queryByPlaceholderText('Wallet passphrase')).not.toBeInTheDocument()
     fireEvent.change(screen.getByPlaceholderText('Amount (VTR)'), { target: { value: '1' } })
     fireEvent.click(screen.getByRole('button', { name: 'Fund cold stake' }))
@@ -81,6 +90,7 @@ describe('cold-stake panel', () => {
   it('rejects a non-positive amount before calling the backend', async () => {
     render(<StakingPage />)
     await generate()
+    saveSpendingKey()
     fireEvent.change(screen.getByPlaceholderText('Amount (VTR)'), { target: { value: '0' } })
     fireEvent.click(screen.getByRole('button', { name: 'Fund cold stake' }))
     expect(await screen.findByText('Enter a positive VTR amount')).toBeInTheDocument()
@@ -91,6 +101,7 @@ describe('cold-stake panel', () => {
     backend.fund.mockRejectedValueOnce(new Error('Wallet locked'))
     render(<StakingPage />)
     await generate()
+    saveSpendingKey()
     fireEvent.change(screen.getByPlaceholderText('Amount (VTR)'), { target: { value: '1' } })
     fireEvent.click(screen.getByRole('button', { name: 'Fund cold stake' }))
     expect(await screen.findByText('Wallet locked')).toBeInTheDocument()

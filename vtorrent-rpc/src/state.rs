@@ -74,6 +74,8 @@ pub struct AppState {
     pub staking_enabled: Arc<RwLock<bool>>,
     /// Staking address.
     pub staking_address: Arc<RwLock<Option<String>>>,
+    /// Whether the active staking key was imported for cold-stake delegation.
+    pub staking_key_imported: Arc<RwLock<bool>>,
     /// Total blocks staked this session.
     pub blocks_staked: Arc<RwLock<u64>>,
     /// Unix timestamp of the most recent staked block (0 = never staked).
@@ -182,6 +184,7 @@ impl AppState {
             wallet_unlock_expiry: Arc::new(RwLock::new(None)),
             staking_enabled: Arc::new(RwLock::new(false)),
             staking_address: Arc::new(RwLock::new(None)),
+            staking_key_imported: Arc::new(RwLock::new(false)),
             blocks_staked: Arc::new(RwLock::new(0)),
             last_stake_time: Arc::new(RwLock::new(0)),
             rewards_earned_sats: Arc::new(RwLock::new(0)),
@@ -242,6 +245,7 @@ impl AppState {
             wallet_unlock_expiry: Arc::new(RwLock::new(None)),
             staking_enabled: Arc::new(RwLock::new(false)),
             staking_address: Arc::new(RwLock::new(None)),
+            staking_key_imported: Arc::new(RwLock::new(false)),
             blocks_staked: Arc::new(RwLock::new(0)),
             last_stake_time: Arc::new(RwLock::new(0)),
             rewards_earned_sats: Arc::new(RwLock::new(0)),

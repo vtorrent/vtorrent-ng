@@ -34,6 +34,7 @@ fn main() {
             // Transactions
             commands::get_transactions,
             commands::get_activity,
+            commands::get_transaction,
             commands::send_vtr,
             commands::quote_vtr,
             commands::create_backup,

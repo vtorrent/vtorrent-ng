@@ -78,6 +78,10 @@ pub struct ColdStakeKeys {
     pub staking_wif: zeroize::Zeroizing<String>,
     /// The cold spending key (WIF) — keep offline.
     pub spending_wif: zeroize::Zeroizing<String>,
+    /// Address derived from the staking key.
+    pub staking_address: String,
+    /// Address derived from the spending key.
+    pub spending_address: String,
     /// The P2CS redeem script (scriptPubKey).
     pub script_pubkey: Vec<u8>,
     /// The spend-path locktime.
@@ -92,21 +96,30 @@ pub struct ColdStakeKeys {
 pub fn generate_cold_stake_keys(locktime: u32, label: Option<&str>) -> Result<ColdStakeKeys> {
     let staking = generate_private_key()?;
     let spending = generate_private_key()?;
-    let staking_hash = vtorrent_core::crypto::hash160(
-        &staking.public_key().map_err(WalletError::Core)?.serialize(),
-    );
-    let spending_hash = vtorrent_core::crypto::hash160(
-        &spending
-            .public_key()
-            .map_err(WalletError::Core)?
-            .serialize(),
-    );
+    let staking_pubkey = staking.public_key().map_err(WalletError::Core)?;
+    let spending_pubkey = spending.public_key().map_err(WalletError::Core)?;
+    let staking_hash = vtorrent_core::crypto::hash160(&staking_pubkey.serialize());
+    let spending_hash = vtorrent_core::crypto::hash160(&spending_pubkey.serialize());
+    let staking_address = vtorrent_core::address::Address::from_pubkey(
+        &staking_pubkey,
+        true,
+        mainnet::PUBKEY_ADDRESS_PREFIX,
+    )
+    .to_string();
+    let spending_address = vtorrent_core::address::Address::from_pubkey(
+        &spending_pubkey,
+        true,
+        mainnet::PUBKEY_ADDRESS_PREFIX,
+    )
+    .to_string();
     let script = vtorrent_script::standard::build_p2cs(&staking_hash, &spending_hash, locktime)
         .map_err(|e| WalletError::KeyGeneration(format!("P2CS build failed: {e}")))?;
 
     Ok(ColdStakeKeys {
         staking_wif: staking.to_wif(mainnet::SECRET_KEY_PREFIX).into(),
         spending_wif: spending.to_wif(mainnet::SECRET_KEY_PREFIX).into(),
+        staking_address,
+        spending_address,
         script_pubkey: script.as_bytes().to_vec(),
         locktime,
         label: label.map(|s| s.to_string()),

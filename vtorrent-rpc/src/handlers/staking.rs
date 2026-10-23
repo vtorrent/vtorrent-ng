@@ -60,6 +60,19 @@ pub async fn get_staking_status(
     let last_stake_time_raw = *state.last_stake_time.read().await;
     let wallet_unlocked = state.is_wallet_unlocked().await;
     let wallet_address = state.wallet_change_address.read().await.clone();
+    let imported = *state.staking_key_imported.read().await;
+    let owned = staking_address
+        .as_deref()
+        .is_some_and(|address| wallet_address.as_deref() == Some(address))
+        || imported;
+    let warning = if enabled && !owned {
+        Some(
+            "Staking address is not owned by the hot wallet — kernels it cannot sign will be rejected by the chain"
+                .to_string(),
+        )
+    } else {
+        None
+    };
     let chain = state.chain.lock().await;
 
     // Summarize the staking address, or the hot wallet address before staking
@@ -79,6 +92,8 @@ pub async fn get_staking_status(
     Ok(Json(StakingStatusResponse {
         enabled,
         staking_address,
+        owned,
+        warning,
         eligible_utxos: snapshot.eligible_utxos,
         total_staking_satoshis: snapshot.total_satoshis,
         eligible_staking_satoshis: snapshot.eligible_satoshis,
@@ -126,7 +141,11 @@ pub async fn start_staking(
     // Sign the coinstake with the unlocked hot-wallet key. If the requested
     // staking address is not owned by the hot wallet, coinstake signatures
     // will be rejected by the chain.
-    let wif = state.wallet_wif.read().await.clone();
+    let imported = req.staking_wif.is_some();
+    let wif = match req.staking_wif.clone() {
+        Some(wif) => Some(zeroize::Zeroizing::new(wif)),
+        None => state.wallet_wif.read().await.clone(),
+    };
 
     // Standalone/test mode wires no engine: record the intent; a dead
     // engine with a live channel errors instead of lying.
@@ -141,13 +160,14 @@ pub async fn start_staking(
 
     *state.staking_enabled.write().await = true;
     *state.staking_address.write().await = Some(req.address.clone());
+    *state.staking_key_imported.write().await = imported;
     persist_staking_intent(&state, Some(&req.address)).await?;
 
     Ok(Json(json!({
         "success": true,
         "message": format!("Staking started for address {}", req.address),
-        "owned": owned,
-        "warning": if owned { None } else { Some("Staking address is not owned by the hot wallet — kernels it cannot sign will be rejected by the chain") },
+        "owned": owned || imported,
+        "warning": if owned || imported { None } else { Some("Staking address is not owned by the hot wallet — kernels it cannot sign will be rejected by the chain") },
     })))
 }
 
@@ -157,6 +177,7 @@ pub async fn stop_staking(State(state): State<Arc<AppState>>) -> RpcResult<Json<
     }
     *state.staking_enabled.write().await = false;
     *state.staking_address.write().await = None;
+    *state.staking_key_imported.write().await = false;
     persist_staking_intent(&state, None).await?;
     Ok(Json(
         json!({ "success": true, "message": "Staking stopped" }),

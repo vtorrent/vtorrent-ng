@@ -4,7 +4,7 @@ import {
   CheckCircle, AlertCircle, Info,
 } from 'lucide-react'
 import { formatVTR, useWallet } from '../hooks/useWallet'
-import { useStakingStatus, startStaking, stopStaking, useNodeInfo, createColdStake, fundColdStake, type ColdStakeKeys } from '../hooks/useNode'
+import { useStakingStatus, startStaking, stopStaking, useNodeInfo, createColdStake, fundColdStake, getTransaction, type ColdStakeKeys } from '../hooks/useNode'
 import { isTauri } from '../api'
 import { stakingStartError } from '../utils/stakingOps'
 import HealthStrip from '../components/staking/HealthStrip'
@@ -322,6 +322,7 @@ function DetailRow({ label, value, hint }: DetailRowProps) {
 // ─── Cold staking (P2CS) ───────────────────────────────────────────────────────
 
 function ColdStakePanel() {
+  const [role, setRole] = useState<'owner' | 'delegate'>('owner')
   const [keys, setKeys] = useState<ColdStakeKeys | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -329,11 +330,23 @@ function ColdStakePanel() {
   const [passphrase, setPassphrase] = useState('')
   const [funding, setFunding] = useState(false)
   const [txid, setTxid] = useState<string | null>(null)
+  const [fundedSats, setFundedSats] = useState(0)
+  const [savedSpending, setSavedSpending] = useState(false)
+  const [copied, setCopied] = useState<string | null>(null)
+  const [verifying, setVerifying] = useState(false)
+  const [verifyMsg, setVerifyMsg] = useState<string | null>(null)
+  const [delegatePackage, setDelegatePackage] = useState('')
+  const [delegateBusy, setDelegateBusy] = useState(false)
+  const [delegateMsg, setDelegateMsg] = useState<string | null>(null)
+  const [delegateError, setDelegateError] = useState<string | null>(null)
 
   const generate = async () => {
     setBusy(true)
     setError(null)
     setTxid(null)
+    setVerifyMsg(null)
+    setSavedSpending(false)
+    setFundedSats(0)
     try {
       setKeys(await createColdStake(0))
     } catch (e) {
@@ -350,11 +363,18 @@ function ColdStakePanel() {
       setError('Enter a positive VTR amount')
       return
     }
+    if (!savedSpending) {
+      setError('Save the spending key offline before funding the contract')
+      return
+    }
     setFunding(true)
     setError(null)
     setTxid(null)
+    setVerifyMsg(null)
     try {
-      setTxid(await fundColdStake(keys.scriptPubkey, sats, passphrase))
+      const nextTxid = await fundColdStake(keys.scriptPubkey, sats, passphrase)
+      setTxid(nextTxid)
+      setFundedSats(sats)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -362,78 +382,267 @@ function ColdStakePanel() {
     }
   }
 
+  const verify = async () => {
+    if (!keys || !txid) return
+    setVerifying(true)
+    setVerifyMsg(null)
+    try {
+      const tx = await getTransaction(txid)
+      const output = tx.outputs.find(
+        item => item.scriptPubkey === keys.scriptPubkey && item.valueSatoshis === fundedSats
+      )
+      if (!output) {
+        setVerifyMsg('The transaction does not contain the expected P2CS output yet.')
+      } else if (tx.blockHeight === null) {
+        setVerifyMsg('Funding is in the mempool. Verify again after confirmation.')
+      } else {
+        setVerifyMsg(
+          `Verified: ${formatVTR(output.valueSatoshis)} locked to the P2CS script at block ${tx.blockHeight}.`
+        )
+      }
+    } catch (e) {
+      setVerifyMsg(e instanceof Error ? e.message : String(e))
+    } finally {
+      setVerifying(false)
+    }
+  }
+
+  const copy = async (text: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(label)
+      window.setTimeout(() => setCopied(null), 1500)
+    } catch {
+      setError('Clipboard is unavailable. Select and copy the text manually.')
+    }
+  }
+
+  const stakingPackage = keys
+    ? JSON.stringify({
+        version: 1,
+        kind: 'vtorrent-cold-stake-staking',
+        staking_address: keys.stakingAddress,
+        script_pubkey: keys.scriptPubkey,
+        staking_wif: keys.stakingWif,
+        locktime: keys.locktime,
+      }, null, 2)
+    : ''
+  const spendingPackage = keys
+    ? JSON.stringify({
+        version: 1,
+        kind: 'vtorrent-cold-stake-spending',
+        spending_address: keys.spendingAddress,
+        script_pubkey: keys.scriptPubkey,
+        spending_wif: keys.spendingWif,
+        locktime: keys.locktime,
+      }, null, 2)
+    : ''
+
+  const startDelegate = async () => {
+    setDelegateBusy(true)
+    setDelegateError(null)
+    setDelegateMsg(null)
+    try {
+      const parsed = JSON.parse(delegatePackage) as {
+        kind?: string
+        staking_address?: string
+        staking_wif?: string
+      }
+      if (
+        parsed.kind !== 'vtorrent-cold-stake-staking'
+        || !parsed.staking_address
+        || !parsed.staking_wif
+      ) {
+        throw new Error('Paste a valid vTorrent cold-stake staking package')
+      }
+      await startStaking(parsed.staking_address, parsed.staking_wif)
+      setDelegateMsg('Staking started with the imported staking key.')
+    } catch (e) {
+      setDelegateError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setDelegateBusy(false)
+    }
+  }
+
   return (
     <div className="card">
       <div className="flex items-center justify-between mb-2">
         <h2 className="font-semibold text-white text-sm flex items-center gap-2">
-          <Snowflake size={14} className="text-sky-400" /> Cold staking (delegate)
+          <Snowflake size={14} className="text-sky-400" /> Cold staking
         </h2>
+        {role === 'owner' && (
+          <button
+            data-testid="cold-stake-generate"
+            onClick={generate}
+            disabled={busy}
+            className="btn-secondary text-xs"
+          >
+            {busy ? 'Generating…' : 'Generate key pair'}
+          </button>
+        )}
+      </div>
+
+      <div className="flex gap-1 bg-navy-800/60 rounded-lg p-1 mb-3">
         <button
-          data-testid="cold-stake-generate"
-          onClick={generate}
-          disabled={busy}
-          className="btn-secondary text-xs"
+          onClick={() => setRole('owner')}
+          className={`flex-1 py-1.5 rounded-md text-xs font-medium transition-all ${
+            role === 'owner' ? 'bg-vtorrent-500/15 text-vtorrent-300' : 'text-gray-500 hover:text-gray-300'
+          }`}
         >
-          {busy ? 'Generating…' : 'Generate key pair'}
+          Fund a contract
+        </button>
+        <button
+          onClick={() => setRole('delegate')}
+          className={`flex-1 py-1.5 rounded-md text-xs font-medium transition-all ${
+            role === 'delegate' ? 'bg-vtorrent-500/15 text-vtorrent-300' : 'text-gray-500 hover:text-gray-300'
+          }`}
+        >
+          Run a staking node
         </button>
       </div>
-      <p className="text-xs text-gray-500 mb-3">
-        Stake from a node that holds only the <strong>staking key</strong>. The
-        <strong> spending key</strong> stays offline and is the only key that can move funds.
-      </p>
-      {error && <p className="text-xs text-red-400">{error}</p>}
-      {keys && (
-        <div className="space-y-2 text-xs">
-          <div>
-            <div className="text-gray-500">P2CS script (fund this)</div>
-            <div data-testid="cold-stake-script" className="font-mono text-vtorrent-300 break-all">{keys.scriptPubkey}</div>
-          </div>
-          <div>
-            <div className="text-gray-500">Script hash</div>
-            <div data-testid="cold-stake-script-hash" className="font-mono text-gray-400 break-all">{keys.scriptHash}</div>
-          </div>
-          <div>
-            <div className="text-gray-500">Staking key (hot — give to the staking node)</div>
-            <div data-testid="cold-stake-staking-wif" className="font-mono text-amber-300 break-all">{keys.stakingWif}</div>
-          </div>
-          <div>
-            <div className="text-gray-500">Spending key (cold — keep offline, shown once)</div>
-            <div data-testid="cold-stake-spending-wif" className="font-mono text-red-300 break-all">{keys.spendingWif}</div>
-          </div>
-          <p className="text-red-400">
-            The spending key is not stored by this node. Save it offline now.
+
+      {role === 'owner' ? (
+        <>
+          <p className="text-xs text-gray-500 mb-3">
+            Stake from a node that holds only the <strong>staking key</strong>. The
+            <strong> spending key</strong> stays offline and is the only key that can move funds.
           </p>
-          <div className="flex flex-wrap items-center gap-2 pt-1">
-            <input
-              data-testid="cold-stake-amount"
-              value={amount}
-              onChange={e => setAmount(e.target.value)}
-              placeholder="Amount (VTR)"
-              className="input-field text-xs"
-            />
-            {!isTauri() && (
-              <input
-                data-testid="cold-stake-passphrase"
-                type="password"
-                value={passphrase}
-                onChange={e => setPassphrase(e.target.value)}
-                placeholder="Wallet passphrase"
-                className="input-field text-xs"
-              />
-            )}
-            <button
-              data-testid="cold-stake-fund"
-              onClick={fund}
-              disabled={funding}
-              className="btn-secondary text-xs"
-            >
-              {funding ? 'Funding…' : 'Fund cold stake'}
-            </button>
-          </div>
-          {txid && <p data-testid="cold-stake-txid" className="text-emerald-400 break-all">Funding txid: {txid}</p>}
+          {error && <p className="text-xs text-red-400">{error}</p>}
+          {keys && (
+            <div className="space-y-3 text-xs">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <div className="text-gray-500">Staking address (hot)</div>
+                  <div className="font-mono text-amber-300 break-all">{keys.stakingAddress}</div>
+                </div>
+                <div>
+                  <div className="text-gray-500">Spending address (cold)</div>
+                  <div className="font-mono text-red-300 break-all">{keys.spendingAddress}</div>
+                </div>
+              </div>
+              <div>
+                <div className="text-gray-500">P2CS script (fund this)</div>
+                <div data-testid="cold-stake-script" className="font-mono text-vtorrent-300 break-all">{keys.scriptPubkey}</div>
+              </div>
+              <div>
+                <div className="text-gray-500">Script hash</div>
+                <div data-testid="cold-stake-script-hash" className="font-mono text-gray-400 break-all">{keys.scriptHash}</div>
+              </div>
+              <div>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-gray-500">Staking key package (hot — give to the staking node)</div>
+                  <button
+                    data-testid="cold-stake-copy-staking"
+                    onClick={() => copy(stakingPackage, 'staking')}
+                    className="text-vtorrent-400 hover:text-vtorrent-300"
+                  >
+                    {copied === 'staking' ? 'Copied' : 'Copy package'}
+                  </button>
+                </div>
+                <div data-testid="cold-stake-staking-wif" className="font-mono text-amber-300 break-all">{keys.stakingWif}</div>
+              </div>
+              <div>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-gray-500">Spending key (cold — keep offline, shown once)</div>
+                  <button
+                    data-testid="cold-stake-copy-spending"
+                    onClick={() => copy(spendingPackage, 'spending')}
+                    className="text-red-400 hover:text-red-300"
+                  >
+                    {copied === 'spending' ? 'Copied' : 'Copy key'}
+                  </button>
+                </div>
+                <div data-testid="cold-stake-spending-wif" className="font-mono text-red-300 break-all">{keys.spendingWif}</div>
+              </div>
+              <p className="text-red-400">
+                The spending key is not stored by this node. Save it offline now.
+              </p>
+              <label className="flex items-start gap-2 text-gray-400">
+                <input
+                  data-testid="cold-stake-saved-spending"
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={savedSpending}
+                  onChange={event => setSavedSpending(event.target.checked)}
+                />
+                I saved the spending key offline and understand it is shown only once.
+              </label>
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <input
+                  data-testid="cold-stake-amount"
+                  value={amount}
+                  onChange={e => setAmount(e.target.value)}
+                  placeholder="Amount (VTR)"
+                  className="input-field text-xs"
+                />
+                {!isTauri() && (
+                  <input
+                    data-testid="cold-stake-passphrase"
+                    type="password"
+                    value={passphrase}
+                    onChange={e => setPassphrase(e.target.value)}
+                    placeholder="Wallet passphrase"
+                    className="input-field text-xs"
+                  />
+                )}
+                <button
+                  data-testid="cold-stake-fund"
+                  onClick={fund}
+                  disabled={funding || !savedSpending}
+                  className="btn-secondary text-xs"
+                >
+                  {funding ? 'Funding…' : 'Fund cold stake'}
+                </button>
+              </div>
+              {txid && (
+                <div className="space-y-2">
+                  <p data-testid="cold-stake-txid" className="text-emerald-400 break-all">Funding txid: {txid}</p>
+                  <button
+                    data-testid="cold-stake-verify"
+                    onClick={verify}
+                    disabled={verifying}
+                    className="btn-secondary text-xs"
+                  >
+                    {verifying ? 'Verifying…' : 'Verify contract'}
+                  </button>
+                  {verifyMsg && (
+                    <p data-testid="cold-stake-verify-msg" className="text-gray-400">{verifyMsg}</p>
+                  )}
+                </div>
+              )}
+              <p className="text-gray-500">
+                The old P2SH label is not stakeable. Fund the raw script above; do not
+                send to the label with a generic send.
+              </p>
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="space-y-3 text-xs">
           <p className="text-gray-500">
-            The old P2SH label is not stakeable. Fund the raw script above; do not
-            send to the label with a generic send.
+            Paste the staking package from the contract owner. The node uses the
+            staking key to sign coinstakes. Never paste the spending key here.
+          </p>
+          <textarea
+            data-testid="cold-stake-delegate-package"
+            value={delegatePackage}
+            onChange={event => setDelegatePackage(event.target.value)}
+            placeholder='{"kind":"vtorrent-cold-stake-staking", ...}'
+            className="input-field font-mono text-xs h-28 resize-none"
+          />
+          {delegateError && <p className="text-red-400">{delegateError}</p>}
+          {delegateMsg && <p data-testid="cold-stake-delegate-msg" className="text-emerald-400">{delegateMsg}</p>}
+          <button
+            data-testid="cold-stake-delegate-start"
+            onClick={startDelegate}
+            disabled={delegateBusy || !delegatePackage.trim()}
+            className="btn-secondary text-xs"
+          >
+            {delegateBusy ? 'Starting…' : 'Start staking with this key'}
+          </button>
+          <p className="text-gray-500">
+            The staking key is hot. Keep the spending key offline; it is the only key
+            that can move the delegated funds.
           </p>
         </div>
       )}

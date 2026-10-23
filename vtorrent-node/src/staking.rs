@@ -95,7 +95,7 @@ pub fn staking_snapshot(chain: &crate::chain::Chain, address: &str, now: u32) ->
         max_stake_age: params.max_stake_age,
         ..StakingSnapshot::default()
     };
-    for utxo in chain.get_utxos_for_address(address) {
+    for utxo in chain.get_utxos_for_staking_address(address) {
         snapshot.total_utxos += 1;
         snapshot.total_satoshis = snapshot.total_satoshis.saturating_add(utxo.value);
         let age = now.saturating_sub(utxo.timestamp) as u64;

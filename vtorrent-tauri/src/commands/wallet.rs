@@ -704,6 +704,8 @@ pub struct ColdStakeKeys {
     pub script_hash: String,
     pub staking_wif: zeroize::Zeroizing<String>,
     pub spending_wif: zeroize::Zeroizing<String>,
+    pub staking_address: String,
+    pub spending_address: String,
     pub locktime: u32,
 }
 
@@ -742,6 +744,8 @@ pub async fn create_cold_stake(
         script_hash,
         staking_wif: keys.staking_wif,
         spending_wif: keys.spending_wif,
+        staking_address: keys.staking_address,
+        spending_address: keys.spending_address,
         locktime: keys.locktime,
     })
 }

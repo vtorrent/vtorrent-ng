@@ -1198,6 +1198,7 @@ async fn test_start_staking_warns_on_foreign_address() {
     state.staking_control = Some(tx);
     let req = StakingStartRequest {
         address: "Vother2222222222222222222222222".into(),
+        staking_wif: None,
         passphrase: zeroize::Zeroizing::new(String::new()),
         otp_code: None,
     };
@@ -1227,6 +1228,7 @@ async fn test_start_staking_errors_on_dead_engine() {
     state.staking_control = Some(tx);
     let req = StakingStartRequest {
         address: "Vours11111111111111111111111111".into(),
+        staking_wif: None,
         passphrase: zeroize::Zeroizing::new(String::new()),
         otp_code: None,
     };
@@ -1249,6 +1251,7 @@ async fn test_start_staking_accepts_own_address() {
     state.staking_control = Some(tx);
     let req = StakingStartRequest {
         address: "Vours11111111111111111111111111".into(),
+        staking_wif: None,
         passphrase: zeroize::Zeroizing::new(String::new()),
         otp_code: None,
     };

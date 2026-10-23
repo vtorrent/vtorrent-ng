@@ -906,6 +906,34 @@ impl Chain {
             .collect()
     }
 
+    /// Get UTXOs that a staking key for `address` can stake: its P2PKH outputs
+    /// plus P2CS outputs whose staking hash matches the address.
+    pub fn get_utxos_for_staking_address(&self, address: &str) -> Vec<Utxo> {
+        let script = self.address_to_p2pkh_script(address);
+        let staking_hash = script.get(3..23);
+        self.utxo_set
+            .values()
+            .filter(|utxo| {
+                if utxo.script_pubkey == script {
+                    return true;
+                }
+                let Some(staking_hash) = staking_hash else {
+                    return false;
+                };
+                let Ok(script) = vtorrent_script::Script::from_bytes(utxo.script_pubkey.clone())
+                else {
+                    return false;
+                };
+                matches!(
+                    vtorrent_script::classify_script(&script),
+                    vtorrent_script::ScriptType::P2CS { staking_hash: hash, .. }
+                        if hash == staking_hash
+                )
+            })
+            .cloned()
+            .collect()
+    }
+
     /// Convert a vTorrent address to a P2PKH scriptPubKey for UTXO matching.
     pub fn address_to_p2pkh_script(&self, address: &str) -> Vec<u8> {
         vtorrent_core::address::Address::parse(address)

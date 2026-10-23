@@ -209,6 +209,8 @@ pub struct UnlockResponse {
 pub struct StakingStatusResponse {
     pub enabled: bool,
     pub staking_address: Option<String>,
+    pub owned: bool,
+    pub warning: Option<String>,
     pub eligible_utxos: usize,
     pub total_staking_satoshis: u64,
     pub eligible_staking_satoshis: u64,
@@ -263,6 +265,7 @@ pub struct StakingRewardsQuery {
 #[derive(Serialize, Deserialize)]
 pub struct StakingStartRequest {
     pub address: String,
+    pub staking_wif: Option<String>,
     pub passphrase: zeroize::Zeroizing<String>,
     pub otp_code: Option<String>,
 }

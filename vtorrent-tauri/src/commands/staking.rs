@@ -32,6 +32,7 @@ pub struct StakingStatusResult {
 pub async fn start_staking(
     state: State<'_, AppState>,
     address: String,
+    staking_wif: Option<String>,
 ) -> Result<StakingStatusResult> {
     if address.is_empty() {
         return Err(TauriError::NodeError("Staking address is required".into()));
@@ -44,7 +45,11 @@ pub async fn start_staking(
     if !handle.rpc_state.is_wallet_unlocked().await {
         return Err(TauriError::WalletLocked);
     }
-    let wif = handle.rpc_state.wallet_wif.read().await.clone();
+    let imported = staking_wif.is_some();
+    let wif = match staking_wif {
+        Some(wif) => Some(zeroize::Zeroizing::new(wif)),
+        None => handle.rpc_state.wallet_wif.read().await.clone(),
+    };
 
     if let Some(tx) = &handle.rpc_state.staking_control {
         // Only report staking as enabled if the command actually reached the
@@ -62,6 +67,7 @@ pub async fn start_staking(
     }
     *handle.rpc_state.staking_enabled.write().await = true;
     *handle.rpc_state.staking_address.write().await = Some(address.clone());
+    *handle.rpc_state.staking_key_imported.write().await = imported;
     vtorrent_rpc::handlers::staking::persist_staking_intent(&handle.rpc_state, Some(&address))
         .await?;
 
@@ -69,7 +75,7 @@ pub async fn start_staking(
 
     let blocks_staked = *handle.rpc_state.blocks_staked.read().await;
     let wallet_address = handle.rpc_state.wallet_change_address.read().await.clone();
-    let owned = wallet_address.as_deref() == Some(address.as_str());
+    let owned = wallet_address.as_deref() == Some(address.as_str()) || imported;
     let warning = if owned {
         None
     } else {
@@ -128,6 +134,7 @@ pub async fn stop_staking(state: State<'_, AppState>) -> Result<StakingStatusRes
     }
     *handle.rpc_state.staking_enabled.write().await = false;
     *handle.rpc_state.staking_address.write().await = None;
+    *handle.rpc_state.staking_key_imported.write().await = false;
     vtorrent_rpc::handlers::staking::persist_staking_intent(&handle.rpc_state, None).await?;
 
     tracing::info!("Staking stopped");
@@ -173,9 +180,11 @@ pub async fn get_staking_status(state: State<'_, AppState>) -> Result<StakingSta
     let staking_address = handle.rpc_state.staking_address.read().await.clone();
     let blocks_staked = *handle.rpc_state.blocks_staked.read().await;
     let wallet_address = handle.rpc_state.wallet_change_address.read().await.clone();
+    let imported = *handle.rpc_state.staking_key_imported.read().await;
     let owned = staking_address
         .as_deref()
-        .is_some_and(|address| wallet_address.as_deref() == Some(address));
+        .is_some_and(|address| wallet_address.as_deref() == Some(address))
+        || imported;
     let warning = if enabled && !owned {
         Some(
             "Staking address is not owned by the hot wallet — kernels it cannot sign will be rejected by the chain"

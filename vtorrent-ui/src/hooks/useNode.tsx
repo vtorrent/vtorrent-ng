@@ -37,6 +37,18 @@ export interface TxRecord {
   display: string
 }
 
+export interface TransactionOutput {
+  valueSatoshis: number
+  scriptPubkey: string
+}
+
+export interface TransactionLookup {
+  txid: string
+  blockHeight: number | null
+  blockHash: string | null
+  outputs: TransactionOutput[]
+}
+
 export interface ActivityItem {
   txid: string
   status: 'confirmed' | 'pending'
@@ -128,6 +140,13 @@ async function fetchTransactions(limit = 20): Promise<TxRecord[]> {
     return camel(await tauriInvoke<TxRecord[]>('get_transactions', { limit })) as TxRecord[]
   }
   return camel(await rpcGet<unknown[]>(`/api/v1/wallet/transactions?limit=${limit}`)) as TxRecord[]
+}
+
+export async function getTransaction(txid: string): Promise<TransactionLookup> {
+  if (isTauri()) {
+    return camel(await tauriInvoke<TransactionLookup>('get_transaction', { txid })) as TransactionLookup
+  }
+  return camel(await rpcGet<unknown>(`/api/v1/blockchain/tx/${encodeURIComponent(txid)}`)) as TransactionLookup
 }
 
 async function fetchActivity(limit = 100): Promise<ActivityItem[]> {
@@ -575,10 +594,14 @@ export async function getSwapStatus(orderId: string): Promise<SwapChainStatus> {
 
 /** Start staking on the given address. */
 export async function startStaking(
-  address: string
+  address: string,
+  stakingWif?: string
 ): Promise<{ owned?: boolean; warning?: string | null } | void> {
   if (isTauri()) {
-    return camel(await tauriInvoke<unknown>('start_staking', { address })) as {
+    return camel(await tauriInvoke<unknown>('start_staking', {
+      address,
+      stakingWif: stakingWif ?? null,
+    })) as {
       owned?: boolean
       warning?: string | null
     }
@@ -586,6 +609,7 @@ export async function startStaking(
   return rpcPost<{ owned?: boolean; warning?: string | null }>('/api/v1/staking/start', {
     address,
     passphrase: '',
+    staking_wif: stakingWif ?? null,
   })
 }
 
@@ -687,6 +711,8 @@ export interface ColdStakeKeys {
   scriptHash: string
   stakingWif: string
   spendingWif: string
+  stakingAddress: string
+  spendingAddress: string
   locktime: number
 }
 
