@@ -45,7 +45,7 @@ pub struct UtxoSet {
     #[serde(default)]
     reserved: std::collections::BTreeSet<(String, u32)>,
     #[serde(default)]
-    reserved_utxos: std::collections::BTreeMap<(String, u32), Utxo>,
+    reserved_utxos: Vec<Utxo>,
     #[serde(default)]
     spent_reserved: std::collections::BTreeSet<(String, u32)>,
     #[serde(default)]
@@ -116,18 +116,22 @@ impl UtxoSet {
     pub fn reserve_utxo(&mut self, utxo: Utxo) {
         self.reserve(&utxo.txid, utxo.vout);
         self.reserved_utxos
-            .insert((utxo.txid.clone(), utxo.vout), utxo);
+            .retain(|existing| !(existing.txid == utxo.txid && existing.vout == utxo.vout));
+        self.reserved_utxos.push(utxo);
     }
 
     pub fn reserved_utxo(&self, txid: &str, vout: u32) -> Option<&Utxo> {
-        self.reserved_utxos.get(&(txid.to_owned(), vout))
+        self.reserved_utxos
+            .iter()
+            .find(|utxo| utxo.txid == txid && utxo.vout == vout)
     }
 
     /// Mark a reserved outpoint as spent by a confirmed transaction.
     pub fn note_spend(&mut self, txid: &str, vout: u32) -> bool {
         let key = (txid.to_owned(), vout);
         if self.reserved.remove(&key) {
-            self.reserved_utxos.remove(&key);
+            self.reserved_utxos
+                .retain(|utxo| !(utxo.txid == txid && utxo.vout == vout));
             self.spent_reserved.insert(key);
             true
         } else {
@@ -151,7 +155,8 @@ impl UtxoSet {
     /// Returns true if a reservation was actually removed.
     pub fn release(&mut self, txid: &str, vout: u32) -> bool {
         let key = (txid.to_owned(), vout);
-        self.reserved_utxos.remove(&key);
+        self.reserved_utxos
+            .retain(|utxo| !(utxo.txid == txid && utxo.vout == vout));
         self.reserved.remove(&key)
     }
 
