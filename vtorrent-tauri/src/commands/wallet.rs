@@ -27,7 +27,7 @@ fn ensure_wallet_parent(path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-fn ensure_node_stopped(state: &AppState) -> Result<()> {
+pub(crate) fn ensure_node_stopped(state: &AppState) -> Result<()> {
     match state.node.try_lock() {
         Ok(guard) if guard.is_some() => Err(TauriError::NodeError(
             "Stop the node before switching wallets".into(),

@@ -45,7 +45,23 @@ fn resolve_network(network: Option<&str>) -> &'static str {
     }
 }
 
-fn btc_utxo_path(
+pub(crate) fn wallet_btc_seed(wallet: &vtorrent_wallet::wallet::Wallet) -> Option<[u8; 64]> {
+    use sha2::{Digest, Sha512};
+    wallet
+        .mnemonic()
+        .and_then(|m| vtorrent_wallet::hd::Mnemonic::from_phrase(m).ok())
+        .and_then(|m| m.to_seed().ok())
+        .map(|s| *s)
+        .or_else(|| {
+            let wif = wallet.get_default_wif()?;
+            let mut hasher = Sha512::new();
+            hasher.update(b"vtorrent-ng-btc-seed-v1");
+            hasher.update(wif.as_bytes());
+            Some(hasher.finalize().into())
+        })
+}
+
+pub(crate) fn btc_utxo_path(
     wallet_path: Option<&std::path::Path>,
     network: bitcoin::Network,
     seed: &[u8; 64],
@@ -193,22 +209,8 @@ pub async fn start_node(
     });
 
     let btc_seed = {
-        use sha2::{Digest, Sha512};
         let wallet_guard = state.wallet.lock().map_err(|_| TauriError::WalletLocked)?;
-        wallet_guard.as_ref().and_then(|wallet| {
-            wallet
-                .mnemonic()
-                .and_then(|m| vtorrent_wallet::hd::Mnemonic::from_phrase(m).ok())
-                .and_then(|m| m.to_seed().ok())
-                .map(|s| *s)
-                .or_else(|| {
-                    let wif = wallet.get_default_wif()?;
-                    let mut hasher = Sha512::new();
-                    hasher.update(b"vtorrent-ng-btc-seed-v1");
-                    hasher.update(wif.as_bytes());
-                    Some(hasher.finalize().into())
-                })
-        })
+        wallet_guard.as_ref().and_then(wallet_btc_seed)
     };
     if let Some(seed) = btc_seed {
         let utxo_path = {

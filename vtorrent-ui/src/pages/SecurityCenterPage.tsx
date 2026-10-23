@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Shield, Smartphone, Key, CheckCircle, AlertTriangle, Copy } from 'lucide-react'
 import { useWallet } from '../hooks/useWallet'
+import BackupRestorePanel from '../components/BackupRestorePanel'
 import QRCode from 'qrcode.react'
 
 type TwoFAStep = 'idle' | 'setup' | 'verify' | 'done'
@@ -172,6 +173,7 @@ export default function SecurityCenterPage() {
               <div>
                 <label className="label">Verification Code</label>
                 <input
+                  data-testid="totp-verify"
                   type="text"
                   className="input-field font-mono tracking-widest text-center text-lg"
                   placeholder="000000"
@@ -247,6 +249,8 @@ export default function SecurityCenterPage() {
           </div>
         )}
       </div>
+
+      <BackupRestorePanel />
 
       {/* Encryption info */}
       <div className="card">

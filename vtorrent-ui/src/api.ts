@@ -30,6 +30,17 @@ export async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>
   return invoke<T>(cmd, args)
 }
 
+/** Read a user-selected file as base64 without overflowing the call stack. */
+export async function fileToBase64(file: File): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  let binary = ''
+  const chunk = 0x8000
+  for (let offset = 0; offset < bytes.length; offset += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunk))
+  }
+  return btoa(binary)
+}
+
 /** Render a Tauri command rejection without hiding the backend message. */
 export function formatInvokeError(error: unknown, fallback: string): string {
   if (typeof error === 'string' && error.trim()) return error

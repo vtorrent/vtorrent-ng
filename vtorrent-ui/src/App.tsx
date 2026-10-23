@@ -5,6 +5,7 @@ import Toasts from './components/Toasts'
 import WelcomePage from './pages/WelcomePage'
 import ImportWizardPage from './pages/ImportWizardPage'
 import CreateWalletPage from './pages/CreateWalletPage'
+import RestoreBackupPage from './pages/RestoreBackupPage'
 import DashboardPage from './pages/DashboardPage'
 import SecurityCenterPage from './pages/SecurityCenterPage'
 import TorrentPage from './pages/TorrentPage'
@@ -26,6 +27,7 @@ function AppRoutes() {
       <Route path="/" element={<WelcomePage />} />
       <Route path="/create" element={<CreateWalletPage />} />
       <Route path="/import" element={<ImportWizardPage />} />
+      <Route path="/restore" element={<RestoreBackupPage />} />
 
       {/* Protected routes (wallet must be unlocked) */}
       <Route element={<Layout />}>

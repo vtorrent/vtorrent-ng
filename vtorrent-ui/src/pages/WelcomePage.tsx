@@ -105,6 +105,23 @@ export default function WelcomePage() {
             </div>
           </button>
 
+          {/* Restore from backup */}
+          <button
+            onClick={() => navigate('/restore')}
+            className="w-full card hover:border-vtorrent-700/60 transition-all duration-200 text-left group"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-10 h-10 rounded-lg bg-vtorrent-500/10 border border-vtorrent-500/20 flex items-center justify-center flex-shrink-0">
+                <Shield size={18} className="text-vtorrent-400" />
+              </div>
+              <div className="flex-1">
+                <p className="font-semibold text-white text-sm">Restore from Backup</p>
+                <p className="text-gray-500 text-xs mt-0.5">Recover a wallet and its recovery state</p>
+              </div>
+              <ArrowRight size={16} className="text-gray-600 group-hover:text-vtorrent-400 transition-colors" />
+            </div>
+          </button>
+
           {/* Create new wallet */}
           <button
             onClick={() => navigate('/create')}

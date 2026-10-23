@@ -35,6 +35,9 @@ fn main() {
             commands::get_transactions,
             commands::send_vtr,
             commands::quote_vtr,
+            commands::create_backup,
+            commands::verify_backup,
+            commands::restore_backup,
             commands::create_cold_stake,
             commands::fund_cold_stake,
             // Torrent sessions

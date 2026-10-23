@@ -30,6 +30,21 @@ export interface WalletKey {
   createdAt: number
 }
 
+export interface BackupInfo {
+  path: string
+  size: number
+  fileCount: number
+  createdAt: number
+}
+
+export interface BackupPreview {
+  walletAddress: string
+  has2FA: boolean
+  fileCount: number
+  createdAt: number
+  files: string[]
+}
+
 export interface VtrQuote {
   fromAddress: string
   toAddress: string
@@ -61,6 +76,14 @@ interface WalletContextType extends WalletState {
   generateAddress: (label?: string) => Promise<string>
   quoteVtr: (toAddress: string, amountSatoshis: number) => Promise<VtrQuote>
   sendVtr: (toAddress: string, amountSatoshis: number) => Promise<string>
+  createBackup: (passphrase: string, otpCode?: string) => Promise<BackupInfo>
+  verifyBackup: (backupBase64: string, passphrase: string, otpCode?: string) => Promise<BackupPreview>
+  restoreBackup: (
+    backupBase64: string,
+    passphrase: string,
+    otpCode: string | undefined,
+    confirmOverwrite: boolean
+  ) => Promise<BackupPreview>
   totalBalance: number
   legacyImportCount: number
 }
@@ -192,6 +215,22 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
       ).join('')
       return fakeTxid as T
     }
+    case 'create_backup':
+      return {
+        path: '/tmp/vtorrent-backup.vtrbackup',
+        size: 4096,
+        fileCount: 3,
+        createdAt: Math.floor(Date.now() / 1000),
+      } as T
+    case 'verify_backup':
+    case 'restore_backup':
+      return {
+        walletAddress: mockAddress(),
+        has2FA: false,
+        fileCount: 3,
+        createdAt: Math.floor(Date.now() / 1000),
+        files: ['wallet.vtr', 'wallet.cold_stake.json', 'wallet.swaps/order.json'],
+      } as T
     case 'start_node':
     case 'stop_node':
       // Mock: no-op in browser dev mode
@@ -405,6 +444,39 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     return txid
   }, [])
 
+  const createBackup = useCallback(async (passphrase: string, otpCode?: string): Promise<BackupInfo> => {
+    return invoke<BackupInfo>('create_backup', {
+      passphrase,
+      otpCode: otpCode ?? null,
+    })
+  }, [])
+
+  const verifyBackup = useCallback(async (
+    backupBase64: string,
+    passphrase: string,
+    otpCode?: string
+  ): Promise<BackupPreview> => {
+    return invoke<BackupPreview>('verify_backup', {
+      backupBase64,
+      passphrase,
+      otpCode: otpCode ?? null,
+    })
+  }, [])
+
+  const restoreBackup = useCallback(async (
+    backupBase64: string,
+    passphrase: string,
+    otpCode: string | undefined,
+    confirmOverwrite: boolean
+  ): Promise<BackupPreview> => {
+    return invoke<BackupPreview>('restore_backup', {
+      backupBase64,
+      passphrase,
+      otpCode: otpCode ?? null,
+      confirmOverwrite,
+    })
+  }, [])
+
   const totalBalance = state.keys.reduce((sum, k) => sum + k.balance, 0)
   const legacyImportCount = state.keys.filter(k => k.isLegacyImport).length
 
@@ -421,6 +493,9 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       generateAddress,
       quoteVtr,
       sendVtr,
+      createBackup,
+      verifyBackup,
+      restoreBackup,
       totalBalance,
       legacyImportCount,
     }}>
