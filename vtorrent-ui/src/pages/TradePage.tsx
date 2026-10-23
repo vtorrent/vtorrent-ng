@@ -4,6 +4,7 @@ import {
   Zap, Info, RefreshCw, AlertCircle, ArrowRightLeft
 } from 'lucide-react'
 import { formatVTR } from '../hooks/useWallet'
+import SwapWorkspace from '../components/SwapWorkspace'
 import {
   useDexOrders, cancelDexOrder, matchDexOrder, btcFund, vtrClaim, btcClaim, swapRefund,
   getSwapStatus, reconcileBtcSwap, type BtcChainStatus, type SwapChainStatus, type DexOrder,
@@ -364,16 +365,18 @@ export default function TradePage() {
 
       {/* Swap lifecycle */}
       {tab === 'swap' && (
-        <div className="max-w-md card">
-          <h3 className="font-semibold text-white text-sm mb-4 flex items-center gap-2">
-            <ArrowRightLeft size={16} className="text-vtorrent-400" />
-            Swap Lifecycle
-          </h3>
-          <p className="text-xs text-gray-500 mb-4">
-            Match (fund VTR), fund BTC, let the maker claim BTC, then claim VTR. Expiry only enables a refund; it does not prove one occurred.
-          </p>
+        <div className="space-y-6">
+          <SwapWorkspace orders={orders} onRefresh={refresh} />
+          <details className="max-w-md card">
+            <summary className="cursor-pointer font-semibold text-white text-sm flex items-center gap-2">
+              <ArrowRightLeft size={16} className="text-vtorrent-400" />
+              Advanced swap controls
+            </summary>
+            <p className="text-xs text-gray-500 mt-3 mb-4">
+              Match (fund VTR), fund BTC, let the maker claim BTC, then claim VTR. Expiry only enables a refund; it does not prove one occurred.
+            </p>
 
-          <div className="space-y-4">
+            <div className="space-y-4">
             <div>
               <label className="label">Order ID</label>
               <input
@@ -567,7 +570,8 @@ export default function TradePage() {
               </button>
             </div>
           </div>
-        </div>
+        </details>
+      </div>
       )}
     </div>
   )
