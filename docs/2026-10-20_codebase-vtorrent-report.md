@@ -318,22 +318,22 @@ commands above. F02's older-than-retention wallet discovery still needs a
 birthday/checkpoint design.
 
 Post-fix verification: node 228, torrent 98, migrate 18, BTC 75 (1 ignored),
-RPC 149; frontend lint, 33 tests, production build, the Playwright smoke test,
+RPC 149; frontend lint, 35 tests, production build, the Playwright smoke test,
 the live cold-stake browser E2E, and the live Tauri desktop journey (including
 restart, durable registry persistence, mempool/staking persistence, BTC
 discovery, wallet-path confinement, IPC error surfacing, and staking ownership
-warnings); 17 Tauri library tests; the full workspace suite (`cargo test --workspace --all-features`) at `aa12b3c`,
+warnings); 17 Tauri library tests; the full workspace suite (`cargo test --workspace --all-features`) at `82d9383`,
 workspace formatting, and strict all-feature Clippy pass; the live soak observer exits 0 with the hardened
 checks. The fleet was
 rebuilt to `vtorrent/node:batch-e7691fb` (code `e7691fb`) and a fresh soak
-window started at 2026-10-21T02:47:54Z. The review candidate `aa12b3c`
+window started at 2026-10-21T02:47:54Z. The review candidate `82d9383`
 (`bab2456` plus the Playwright E2E setup, the Vite dev-origin CORS allowance,
 the Tauri path capability fix, the durable cold-stake registry persistence
 fix, the desktop restart/persistence parity fixes, the wallet-path/IPC
 hardening, and the staking ownership warnings) adds the BTC wallet birthday flag,
 the desktop governance/earnings/payment/deadline commands, desktop health-field
 updates, the shared BTC sync loop, desktop chain persistence, and the
-cold-stake/BTC/compact-block/desktop hardening. The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; verified 2FA enrollment, the torrent control availability, the reviewed send quote, verified encrypted backup and restore, the guided swap workspace, and the staking readiness assistant are in `aa12b3c`. The external review should verify them. The adversarial reviews are in
+cold-stake/BTC/compact-block/desktop hardening. The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; verified 2FA enrollment, the torrent control availability, the reviewed send quote, verified encrypted backup and restore, the guided swap workspace, the staking readiness assistant, and the activity and recovery center are in `82d9383`. The external review should verify them. The adversarial reviews are in
 `docs/security-review-independent-2026-10-20.md` and
 `docs/security-review-independent-2026-10-20-round2.md`; their probes are under
 `docs/review-probes/security-2026-10-20/`. The round-2 fixes include the
