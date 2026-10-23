@@ -303,6 +303,13 @@ pub async fn release_expired_reservations(state: &AppState) -> usize {
             .filter(|c| is_release_candidate(c, now))
             .collect()
     };
+    let peers = match resolve_btc_peers(state, network).await {
+        Ok(peers) => peers,
+        Err(error) => {
+            tracing::warn!("BTC reservation release peer resolution failed: {}", error);
+            return 0;
+        }
+    };
     let mut released = 0;
     for contract in candidates {
         let htlc = BtcHtlc {
@@ -323,7 +330,7 @@ pub async fn release_expired_reservations(state: &AppState) -> usize {
                 continue;
             }
         };
-        let scan = match scan_contract(state, &htlc, funding_txid).await {
+        let scan = match scan_contract(state, &htlc, funding_txid, &peers).await {
             Ok(scan) => scan,
             Err(error) => {
                 tracing::debug!(
@@ -339,6 +346,32 @@ pub async fn release_expired_reservations(state: &AppState) -> usize {
             tracing::info!(
                 order_id = %contract.order_id,
                 "BTC funding is confirmed; keeping reservation for refund"
+            );
+            continue;
+        }
+        // Expiry alone is not enough: the claim branch has no upper time bound,
+        // so a late funding tx could still be claimed. Require a confirmed
+        // spend of the reserved input, which makes the signed funding tx
+        // impossible to confirm.
+        let (Some(input_txid), Some(input_vout)) =
+            (contract.input_txid.as_deref(), contract.input_vout)
+        else {
+            continue;
+        };
+        let spent = {
+            let btc = state.btc_wallet.read().await;
+            let Some(wallet) = btc.as_ref() else {
+                break;
+            };
+            wallet
+                .scan_reserved_input_spent(input_txid, input_vout, &peers)
+                .await
+                .unwrap_or(false)
+        };
+        if !spent {
+            tracing::info!(
+                order_id = %contract.order_id,
+                "BTC reserved input is not observed spent; keeping reservation"
             );
             continue;
         }
@@ -367,27 +400,33 @@ pub async fn release_expired_reservations(state: &AppState) -> usize {
     released
 }
 
-/// Run a BTC settlement scan for a contract, resolving peers the same way the
-/// RPC reconcile path does.
+async fn resolve_btc_peers(
+    state: &AppState,
+    network: bitcoin::Network,
+) -> RpcResult<Vec<std::net::SocketAddr>> {
+    if let Some(host) = state.btc_peer.read().await.clone() {
+        Ok(tokio::net::lookup_host(host)
+            .await
+            .map_err(|e| RpcError::BadRequest(format!("BTC peer resolution failed: {e}")))?
+            .collect())
+    } else if network == bitcoin::Network::Bitcoin {
+        vtorrent_btc::sync::resolve_seeds()
+            .await
+            .map_err(|e| RpcError::BadRequest(e.to_string()))
+    } else {
+        Err(RpcError::BadRequest(
+            "Configure a BTC peer for this network".into(),
+        ))
+    }
+}
+
+/// Run a BTC settlement scan for a contract using already-resolved peers.
 async fn scan_contract(
     state: &AppState,
     htlc: &BtcHtlc,
     funding_txid: [u8; 32],
+    peers: &[std::net::SocketAddr],
 ) -> RpcResult<SwapScan> {
-    let peers = if let Some(host) = state.btc_peer.read().await.clone() {
-        tokio::net::lookup_host(host)
-            .await
-            .map_err(|e| RpcError::BadRequest(format!("BTC peer resolution failed: {e}")))?
-            .collect::<Vec<_>>()
-    } else if htlc.network == bitcoin::Network::Bitcoin {
-        vtorrent_btc::sync::resolve_seeds()
-            .await
-            .map_err(|e| RpcError::BadRequest(e.to_string()))?
-    } else {
-        return Err(RpcError::BadRequest(
-            "Configure a BTC peer for this network".into(),
-        ));
-    };
     let btc = state.btc_wallet.read().await;
     let wallet = btc
         .as_ref()
@@ -396,7 +435,7 @@ async fn scan_contract(
         .observe_swap(
             htlc,
             funding_txid,
-            &peers,
+            peers,
             crate::handlers::now_secs_mock(state).await,
             &[],
         )

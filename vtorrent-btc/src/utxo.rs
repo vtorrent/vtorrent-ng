@@ -45,6 +45,10 @@ pub struct UtxoSet {
     #[serde(default)]
     reserved: std::collections::BTreeSet<(String, u32)>,
     #[serde(default)]
+    reserved_utxos: std::collections::BTreeMap<(String, u32), Utxo>,
+    #[serde(default)]
+    spent_reserved: std::collections::BTreeSet<(String, u32)>,
+    #[serde(default)]
     pending_swap_transactions: std::collections::BTreeMap<String, Vec<u8>>,
     #[serde(default)]
     swap_contracts: std::collections::BTreeMap<String, SwapContract>,
@@ -107,6 +111,38 @@ impl UtxoSet {
         self.reserved.insert((txid.to_owned(), vout));
     }
 
+    /// Reserve a known UTXO and retain its details so a later scan can detect
+    /// whether the outpoint was spent.
+    pub fn reserve_utxo(&mut self, utxo: Utxo) {
+        self.reserve(&utxo.txid, utxo.vout);
+        self.reserved_utxos
+            .insert((utxo.txid.clone(), utxo.vout), utxo);
+    }
+
+    pub fn reserved_utxo(&self, txid: &str, vout: u32) -> Option<&Utxo> {
+        self.reserved_utxos.get(&(txid.to_owned(), vout))
+    }
+
+    /// Mark a reserved outpoint as spent by a confirmed transaction.
+    pub fn note_spend(&mut self, txid: &str, vout: u32) -> bool {
+        let key = (txid.to_owned(), vout);
+        if self.reserved.remove(&key) {
+            self.reserved_utxos.remove(&key);
+            self.spent_reserved.insert(key);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn was_reserved_spent(&self, txid: &str, vout: u32) -> bool {
+        self.spent_reserved.contains(&(txid.to_owned(), vout))
+    }
+
+    pub fn clear_spent_reserved(&mut self, txid: &str, vout: u32) {
+        self.spent_reserved.remove(&(txid.to_owned(), vout));
+    }
+
     /// Release a reservation so the input can be selected again.
     ///
     /// Only safe once the funding transaction is known not to be live (see
@@ -114,7 +150,9 @@ impl UtxoSet {
     /// funding tx could still confirm would let a second swap spend it.
     /// Returns true if a reservation was actually removed.
     pub fn release(&mut self, txid: &str, vout: u32) -> bool {
-        self.reserved.remove(&(txid.to_owned(), vout))
+        let key = (txid.to_owned(), vout);
+        self.reserved_utxos.remove(&key);
+        self.reserved.remove(&key)
     }
 
     /// All persisted swap contracts, for reconciliation.
@@ -324,6 +362,20 @@ mod tests {
         let loaded = UtxoSet::load(&path).unwrap();
         assert_eq!(loaded.last_scanned_height(), 123);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_note_spend_marks_a_reserved_outpoint() {
+        let mut set = UtxoSet::new();
+        set.add(utxo("a", 0, 5000));
+        set.reserve_utxo(utxo("a", 0, 5000));
+        assert!(set.reserved_utxo("a", 0).is_some());
+        assert!(set.note_spend("a", 0));
+        assert!(set.reserved_utxo("a", 0).is_none());
+        assert!(set.was_reserved_spent("a", 0));
+        assert!(!set.note_spend("a", 0));
+        set.clear_spent_reserved("a", 0);
+        assert!(!set.was_reserved_spent("a", 0));
     }
 
     #[test]

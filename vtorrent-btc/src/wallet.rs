@@ -242,7 +242,7 @@ impl BtcWallet {
             ));
         }
         let previous = set.clone();
-        set.reserve(&input.txid, input.vout);
+        set.reserve_utxo(input.clone());
         set.record_swap_transaction(transaction.compute_txid().to_string(), raw.to_vec());
         set.record_swap_contract(crate::utxo::SwapContract {
             order_id,
@@ -281,6 +281,39 @@ impl BtcWallet {
         self.utxos.lock().swap_contracts()
     }
 
+    pub fn reserved_utxo(&self, txid: &str, vout: u32) -> Option<Utxo> {
+        self.utxos.lock().reserved_utxo(txid, vout).cloned()
+    }
+
+    pub fn reserved_input_spent(&self, txid: &str, vout: u32) -> bool {
+        self.utxos.lock().was_reserved_spent(txid, vout)
+    }
+
+    /// Scan from the reserved input's confirmation height and report whether a
+    /// confirmed transaction spent it. A spent reserved input proves the signed
+    /// funding transaction can no longer confirm.
+    pub async fn scan_reserved_input_spent(
+        &self,
+        txid: &str,
+        vout: u32,
+        peers: &[std::net::SocketAddr],
+    ) -> Result<bool> {
+        let Some(utxo) = self.reserved_utxo(txid, vout) else {
+            return Ok(false);
+        };
+        for addr in peers {
+            match crate::p2p::BtcPeer::connect_with_network(*addr, self.network).await {
+                Ok(mut peer) => {
+                    if self.scan_utxos_bip158(&mut peer, utxo.height).await.is_ok() {
+                        return Ok(self.reserved_input_spent(txid, vout));
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+        Ok(false)
+    }
+
     /// Release the input reservation for `order_id` and drop its contract.
     ///
     /// The caller must have established that the funding transaction is not
@@ -300,8 +333,10 @@ impl BtcWallet {
             return Ok(false);
         };
         let previous = set.clone();
+        let spent = set.was_reserved_spent(&txid, vout);
         let released = set.release(&txid, vout);
         set.remove_swap_contract(order_id);
+        set.clear_spent_reserved(&txid, vout);
         if let Some(path) = &self.utxo_path {
             if let Err(error) = set.save(path) {
                 *set = previous;
@@ -310,7 +345,7 @@ impl BtcWallet {
                 )));
             }
         }
-        Ok(released)
+        Ok(released || spent)
     }
 
     pub fn record_swap_refund(&self, order_id: &str, raw: &[u8]) -> Result<()> {

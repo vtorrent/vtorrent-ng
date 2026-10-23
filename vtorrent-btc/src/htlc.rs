@@ -535,6 +535,21 @@ mod tests {
     }
 
     #[test]
+    fn test_claim_remains_valid_after_expiry() {
+        // The claim branch has no CLTV/CSV upper bound. Expiry enables the
+        // refund but does not disable the claim, so reservation release must
+        // not treat expiry alone as proof the funding tx is dead.
+        let htlc = make_htlc();
+        let preimage = [42u8; 32];
+        let claim = htlc.build_claim_tx([1u8; 32], &preimage, 1000).unwrap();
+        let refund = htlc
+            .build_refund_tx_at([1u8; 32], 1000, htlc.expiry + 1)
+            .unwrap();
+        assert_eq!(claim.lock_time, LockTime::ZERO);
+        assert_eq!(refund.lock_time, LockTime::from_consensus(htlc.expiry));
+    }
+
+    #[test]
     fn test_refund_tx_does_not_signal_rbf() {
         // The refund needs CLTV, so it uses ENABLE_LOCKTIME_NO_RBF. It must
         // NOT be replaceable: otherwise the taker could be griefed, and more

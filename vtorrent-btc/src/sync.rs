@@ -438,7 +438,9 @@ impl BtcSync {
         for input in &tx.input {
             let prev_txid = input.previous_output.txid.to_string();
             let prev_vout = input.previous_output.vout;
-            self.utxos.lock().remove(&prev_txid, prev_vout);
+            let mut utxos = self.utxos.lock();
+            utxos.note_spend(&prev_txid, prev_vout);
+            utxos.remove(&prev_txid, prev_vout);
         }
 
         for (vout, out) in tx.output.iter().enumerate() {
