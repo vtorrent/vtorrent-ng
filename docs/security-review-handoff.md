@@ -7,25 +7,26 @@ and deliverables are in `docs/security-review-brief.md`.
 
 | Item | Value |
 | --- | --- |
-| Pinned commit | `77744bf5eb0f23f9baedb9b749b6204a62ed4f1f` |
+| Pinned commit | `f272e640d293196b4a0853f8bdb2885e5ab202ca` |
 | Brief | Latest `docs/security-review-brief.md` from `main`; it pins this commit |
 | Toolchain | Rust 1.90.0 (`rust-toolchain.toml`) |
 | Dependency lock | Archive the `Cargo.lock` used for the build; it is gitignored |
-| Fleet image | Core soak: `vtorrent/node:batch-e7691fb`; release build: rebuild from `77744bf` |
+| Fleet image | Core soak: `vtorrent/node:batch-e7691fb`; release build: rebuild from `f272e64` |
 | Soak window | 2026-10-21T02:47:54Z to 2026-10-28T02:47:54Z |
 
-`77744bf` is `bab2456` plus the Playwright browser E2E setup, the live
+`f272e64` is `bab2456` plus the Playwright browser E2E setup, the live
 cold-stake browser test, the Vite dev-origin CORS allowance, the Tauri path
 capability fix, the durable cold-stake registry persistence fix, the desktop
 restart/persistence parity fixes, the wallet-path confinement, import
 overwrite guard, version bump, IPC error surfacing, and staking ownership
 warnings, and the live desktop journey, restart, and BTC discovery evidence.
+The frontier-model review's two High findings and the P2CS mempool Medium are fixed in `61f4be4`, `cb765ce`, and `f272e64`; the remaining findings are tracked in `docs/frontier-review-2026-10-23.md`.
 
 Verify the commit resolves before sending:
 
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
-git -C vtorrent-ng checkout 77744bf5eb0f23f9baedb9b749b6204a62ed4f1f
+git -C vtorrent-ng checkout f272e640d293196b4a0853f8bdb2885e5ab202ca
 git -C vtorrent-ng rev-parse HEAD
 ```
 
@@ -126,7 +127,7 @@ Hello <name>,
 We are requesting an independent security review of vTorrent 2.0.0 before
 mainnet activation. The scope and deliverables are in the attached brief.
 
-Pinned source: 77744bf5eb0f23f9baedb9b749b6204a62ed4f1f
+Pinned source: f272e640d293196b4a0853f8bdb2885e5ab202ca
 Repository: https://github.com/vtorrent/vtorrent-ng
 
 The review focuses on wallet custody, consensus and governance, the stake-proof

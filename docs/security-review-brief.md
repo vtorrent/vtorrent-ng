@@ -149,7 +149,7 @@ challenge the repairs and their remaining assumptions independently.
 
 ## 6. What we provide
 - Immutable review delivery:
-  **`77744bf5eb0f23f9baedb9b749b6204a62ed4f1f`**
+  **`f272e640d293196b4a0853f8bdb2885e5ab202ca`**
   (`fix(desktop): return staking ownership warnings and drop dead args`). This
   is `bab2456` plus the Playwright browser E2E setup, the live cold-stake
   browser test, the Vite dev-origin CORS allowance, the Tauri path capability
@@ -157,6 +157,7 @@ challenge the repairs and their remaining assumptions independently.
   restart/persistence parity fixes, the wallet-path confinement, import
   overwrite guard, version bump, IPC error surfacing, and staking ownership
   warnings, and the live desktop journey, restart, and BTC discovery evidence.
+  The frontier-model review's two High findings and the P2CS mempool Medium are fixed in `61f4be4`, `cb765ce`, and `f272e64`; the remaining findings are tracked in `docs/frontier-review-2026-10-23.md`.
   This commit includes the governance template-selection repairs,
   snapshot-based proof reconstruction, admission budget, bounded retries, the
   real-time quota-recovery test, the real-bitcoind SPV reorg tests, the full
@@ -177,7 +178,7 @@ challenge the repairs and their remaining assumptions independently.
 - The review delivery is a source snapshot, not a release tag. The core soak
   fleet runs `vtorrent/node:batch-e7691fb` (code `e7691fb`, BTC SPV disabled)
   from 2026-10-21T02:47:54Z to 2026-10-28T02:47:54Z. The review candidate
-  `77744bf` adds the BTC wallet birthday flag, the desktop
+  `f272e64` adds the BTC wallet birthday flag, the desktop
   governance/earnings/payment/deadline commands, health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake, BTC
   scan, compact-block, and desktop hardening from the adversarial review,

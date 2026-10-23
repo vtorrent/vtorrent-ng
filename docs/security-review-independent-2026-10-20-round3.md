@@ -282,12 +282,17 @@ cargo test -p vtorrent-daemon --features test-util --test process_recovery \
 - BTC SPV is disabled on the soak fleet; the real BTC SPV swap test is a
   separate regtest run, not a mainnet-scale soak.
 - Mainnet-scale BTC SPV retention/scan soak.
-- Independent external review of `77744bf` (`803aada` plus the staking
-  ownership warnings and dead-argument cleanup).
+- Frontier-model review open findings 4–10: wallet-path final-file validation,
+  cold-stake registry durability, BTC scan persistence, BTC broadcast rollback
+  and network scoping, cold-stake authorization across wallet changes, the
+  WebSocket connection-cap race, and WIF zeroization. See
+  `docs/frontier-review-2026-10-23.md`.
+- Independent external review of `f272e64` (`77744bf` plus the BTC reorg
+  metadata, wallet-switch/BTC-scoping, and P2CS mempool fixes).
 
 ## Recommended order
 
 1. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
    path.
-2. Commission the external review of `77744bf` and rebuild the fleet on it.
+2. Commission the external review of `f272e64` and rebuild the fleet on it.
 3. Re-run the desktop build verification on the reviewed candidate.
