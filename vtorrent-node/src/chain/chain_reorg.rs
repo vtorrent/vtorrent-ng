@@ -47,7 +47,11 @@ pub(crate) fn p2cs_redeem_script(utxo_script: &[u8], script_sig: &[u8]) -> Optio
 /// `<sig> <pubkey> <selector> <redeem_script>` for a P2SH-wrapped one. Checking
 /// the spending-key signature directly is independent of how the selector is
 /// encoded.
-pub(crate) fn p2cs_cold_spend_authorized(tx: &Transaction, input_index: usize, utxo: &Utxo) -> bool {
+pub(crate) fn p2cs_cold_spend_authorized(
+    tx: &Transaction,
+    input_index: usize,
+    utxo: &Utxo,
+) -> bool {
     let Some(p2cs_script) =
         p2cs_redeem_script(&utxo.script_pubkey, &tx.inputs[input_index].script_sig)
     else {

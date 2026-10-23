@@ -358,10 +358,7 @@ fn hot_key_p2cs_spend_is_rejected_by_mempool() {
     let error = mempool
         .admit_with_chain_fee(&chain, theft)
         .expect_err("hot-key P2CS spend must not enter the mempool");
-    assert!(matches!(
-        error,
-        crate::error::NodeError::PolicyRejected(_)
-    ));
+    assert!(matches!(error, crate::error::NodeError::PolicyRejected(_)));
 }
 
 #[test]
