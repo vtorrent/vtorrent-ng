@@ -62,6 +62,13 @@ with RSS 106,348 kB. The sampler's PID selector was corrected to match the
 probe's data dir after it briefly sampled the core-soak node1 process; the
 empty RSS samples from 23:24–23:27 are the sampler bug, not the probe.
 
+**24h result (2026-10-23T04:54Z):** 1,000 valid RSS samples over the window;
+RSS ranged from 105,836 to 106,348 kB with a mean of 106,241 kB. BTC height
+moved from 571 to 684 and stayed there after the active swap probe. No ERROR or
+panic appeared in the probe log. The probe and sampler were stopped after the
+window. This is a probe result; the fleet BTC SPV soak remains part of the final
+release validation.
+
 **Active swap probe (2026-10-22T08:57Z):** the real BTC SPV multi-node HTLC swap
 test passed again at `6402d87` in 23.50 s (VTR funding
 `0ea663df954c474da00a0a7b1a6e135a70ba79198858b81c88c65a223727af7d`, BTC funding

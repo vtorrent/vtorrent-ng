@@ -39,7 +39,7 @@
 ## Verification
 
 - Full workspace suite (`cargo test --workspace --all-features`) passes at
-  `afe5974`.
+  `ea92f22`.
 - Targeted suites: 13 Tauri tests, 22 frontend tests, and the wallet, BTC,
   node, and RPC crate suites; strict Clippy and formatting pass.
 

@@ -322,18 +322,18 @@ RPC 149; frontend lint, 22 tests, production build, the Playwright smoke test,
 the live cold-stake browser E2E, and the live Tauri desktop journey (including
 restart, durable registry persistence, mempool/staking persistence, BTC
 discovery, wallet-path confinement, IPC error surfacing, and staking ownership
-warnings); 6 Tauri library tests; the full workspace suite (`cargo test --workspace --all-features`) at `afe5974`,
+warnings); 6 Tauri library tests; the full workspace suite (`cargo test --workspace --all-features`) at `ea92f22`,
 workspace formatting, and strict all-feature Clippy pass; the live soak observer exits 0 with the hardened
 checks. The fleet was
 rebuilt to `vtorrent/node:batch-e7691fb` (code `e7691fb`) and a fresh soak
-window started at 2026-10-21T02:47:54Z. The review candidate `afe5974`
+window started at 2026-10-21T02:47:54Z. The review candidate `ea92f22`
 (`bab2456` plus the Playwright E2E setup, the Vite dev-origin CORS allowance,
 the Tauri path capability fix, the durable cold-stake registry persistence
 fix, the desktop restart/persistence parity fixes, the wallet-path/IPC
 hardening, and the staking ownership warnings) adds the BTC wallet birthday flag,
 the desktop governance/earnings/payment/deadline commands, desktop health-field
 updates, the shared BTC sync loop, desktop chain persistence, and the
-cold-stake/BTC/compact-block/desktop hardening. The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; the external review should verify them. The adversarial reviews are in
+cold-stake/BTC/compact-block/desktop hardening. The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; verified 2FA enrollment and the torrent control availability are in `ea92f22`. The external review should verify them. The adversarial reviews are in
 `docs/security-review-independent-2026-10-20.md` and
 `docs/security-review-independent-2026-10-20-round2.md`; their probes are under
 `docs/review-probes/security-2026-10-20/`. The round-2 fixes include the

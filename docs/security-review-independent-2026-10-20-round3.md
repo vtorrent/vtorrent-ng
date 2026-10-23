@@ -169,7 +169,7 @@ amount rejection without a backend call, and retry after a funding failure.
 The successful cases assert the displayed raw script is passed to the backend
 helper with the expected satoshi amount and show the returned transaction ID.
 All 22 frontend tests, lint, and the production build pass. The full workspace
-suite (`cargo test --workspace --all-features`) also passes at `afe5974`.
+suite (`cargo test --workspace --all-features`) also passes at `ea92f22`.
 Backend helpers are mocked in these component tests; the live browser and Tauri
 journeys are covered separately below.
 
@@ -283,14 +283,16 @@ cargo test -p vtorrent-daemon --features test-util --test process_recovery \
   separate regtest run, not a mainnet-scale soak.
 - Mainnet-scale BTC SPV retention/scan soak.
 - Frontier-model review follow-ups are fixed in `39da204` (SPV principal
-  preservation), `f803cf9`/`afe5974` (BTC reservation release and serialization), and `2287026`
-  (passphrase-retention docs); the external review should verify them.
-- Independent external review of `afe5974` (`f803cf9` plus the reserved-UTXO
-  serialization fix).
+  preservation), `f803cf9`/`afe5974` (BTC reservation release and serialization),
+  and `2287026` (passphrase-retention docs); verified 2FA enrollment and the
+  torrent control availability are in `ea92f22`. The external review should
+  verify them.
+- Independent external review of `ea92f22` (`afe5974` plus the 2FA and torrent
+  UI fixes).
 
 ## Recommended order
 
 1. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
    path.
-2. Commission the external review of `afe5974` and rebuild the fleet on it.
+2. Commission the external review of `ea92f22` and rebuild the fleet on it.
 3. Re-run the desktop build verification on the reviewed candidate.
