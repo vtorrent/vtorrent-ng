@@ -156,6 +156,26 @@ impl EventBroadcaster {
     }
 }
 
+struct ConnectionGuard(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+fn reserve_connection_slot(
+    connections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) -> Option<ConnectionGuard> {
+    let previous = connections.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    if previous >= MAX_WS_CONNECTIONS {
+        connections.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        None
+    } else {
+        Some(ConnectionGuard(connections))
+    }
+}
+
 /// WebSocket upgrade handler — upgrades an HTTP connection to a WebSocket.
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
@@ -174,19 +194,17 @@ pub async fn ws_handler(
             return axum::http::StatusCode::UNAUTHORIZED.into_response();
         }
     }
-    // Reject the upgrade when at capacity, before allocating a connection.
-    let current = state
-        .events
-        .connections
-        .load(std::sync::atomic::Ordering::SeqCst);
-    if current >= MAX_WS_CONNECTIONS {
+    // Reserve the slot atomically before upgrading. Checking and incrementing
+    // separately lets concurrent upgrades all observe a free slot.
+    let Some(guard) = reserve_connection_slot(std::sync::Arc::clone(&state.events.connections))
+    else {
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             "WebSocket connection limit reached",
         )
             .into_response();
-    }
-    ws.on_upgrade(move |socket| handle_ws_connection(socket, state))
+    };
+    ws.on_upgrade(move |socket| handle_ws_connection(socket, state, guard))
 }
 
 /// Maximum outstanding WebSocket tokens.
@@ -231,21 +249,11 @@ fn unix_now() -> u64 {
 }
 
 /// Handle a single WebSocket connection.
-async fn handle_ws_connection(mut socket: WebSocket, state: Arc<AppState>) {
-    // Count this connection for the lifetime of the handler. The guard
-    // decrements on drop, so an early return or panic cannot leak a slot.
-    struct ConnectionGuard(std::sync::Arc<std::sync::atomic::AtomicUsize>);
-    impl Drop for ConnectionGuard {
-        fn drop(&mut self) {
-            self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-    state
-        .events
-        .connections
-        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let _guard = ConnectionGuard(Arc::clone(&state.events.connections));
-
+async fn handle_ws_connection(
+    mut socket: WebSocket,
+    state: Arc<AppState>,
+    _guard: ConnectionGuard,
+) {
     let mut receiver = state.events.subscribe();
     let mut subscribed: Vec<String> = Vec::new();
 
@@ -460,6 +468,31 @@ mod tests {
                 .load(std::sync::atomic::Ordering::SeqCst),
             0
         );
+    }
+
+    #[test]
+    fn test_connection_slots_are_reserved_atomically() {
+        let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let guards: Vec<_> = (0..MAX_WS_CONNECTIONS)
+            .map(|_| {
+                reserve_connection_slot(std::sync::Arc::clone(&connections))
+                    .expect("slot below the cap")
+            })
+            .collect();
+        assert_eq!(
+            connections.load(std::sync::atomic::Ordering::SeqCst),
+            MAX_WS_CONNECTIONS
+        );
+        assert!(
+            reserve_connection_slot(std::sync::Arc::clone(&connections)).is_none(),
+            "the cap must reject the next reservation"
+        );
+        assert_eq!(
+            connections.load(std::sync::atomic::Ordering::SeqCst),
+            MAX_WS_CONNECTIONS
+        );
+        drop(guards);
+        assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     #[test]

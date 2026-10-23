@@ -63,10 +63,27 @@ pub(crate) async fn broadcast_btc(state: &AppState, raw: &[u8]) -> RpcResult<[u8
         vtorrent_btc::sync::broadcast_tx_to(raw, network, &[addr])
             .await
             .map_err(|e| RpcError::Internal(format!("BTC broadcast to {} failed: {}", host, e)))
-    } else {
+    } else if network == bitcoin::Network::Bitcoin {
         vtorrent_btc::sync::broadcast_tx(raw).await.map_err(|e| {
             RpcError::Internal(format!("BTC broadcast (no peer configured) failed: {}", e))
         })
+    } else {
+        Err(RpcError::Internal(
+            "BTC peer required for non-mainnet broadcast".into(),
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn broadcast_btc_requires_a_peer_for_non_mainnet() {
+        let state = AppState::new();
+        *state.btc_network.write().await = bitcoin::Network::Regtest;
+        let error = broadcast_btc(&state, &[]).await.unwrap_err();
+        assert!(matches!(error, RpcError::Internal(message) if message.contains("peer required")));
     }
 }
 
