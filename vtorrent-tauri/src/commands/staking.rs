@@ -14,6 +14,8 @@ pub struct StakingStatusResult {
     pub expected_reward_per_day: u64,
     pub last_stake_time: Option<u64>,
     pub blocks_staked: u64,
+    pub owned: bool,
+    pub warning: Option<String>,
 }
 
 #[tauri::command]
@@ -56,6 +58,16 @@ pub async fn start_staking(
     tracing::info!("Staking started for address: {}", address);
 
     let blocks_staked = *handle.rpc_state.blocks_staked.read().await;
+    let wallet_address = handle.rpc_state.wallet_change_address.read().await.clone();
+    let owned = wallet_address.as_deref() == Some(address.as_str());
+    let warning = if owned {
+        None
+    } else {
+        Some(
+            "Staking address is not owned by the hot wallet — kernels it cannot sign will be rejected by the chain"
+                .to_string(),
+        )
+    };
     let chain = handle.rpc_state.chain.lock().await;
     let staking_utxos = chain.get_utxos_for_address(&address);
     let total_staking: u64 = staking_utxos.iter().map(|u| u.value).sum();
@@ -73,6 +85,8 @@ pub async fn start_staking(
         expected_reward_per_day,
         last_stake_time: None,
         blocks_staked,
+        owned,
+        warning,
     })
 }
 
@@ -101,6 +115,8 @@ pub async fn stop_staking(state: State<'_, AppState>) -> Result<StakingStatusRes
         expected_reward_per_day: 0,
         last_stake_time: None,
         blocks_staked,
+        owned: false,
+        warning: None,
     })
 }
 
@@ -114,6 +130,18 @@ pub async fn get_staking_status(state: State<'_, AppState>) -> Result<StakingSta
     let enabled = *handle.rpc_state.staking_enabled.read().await;
     let staking_address = handle.rpc_state.staking_address.read().await.clone();
     let blocks_staked = *handle.rpc_state.blocks_staked.read().await;
+    let wallet_address = handle.rpc_state.wallet_change_address.read().await.clone();
+    let owned = staking_address
+        .as_deref()
+        .is_some_and(|address| wallet_address.as_deref() == Some(address));
+    let warning = if enabled && !owned {
+        Some(
+            "Staking address is not owned by the hot wallet — kernels it cannot sign will be rejected by the chain"
+                .to_string(),
+        )
+    } else {
+        None
+    };
 
     let (eligible_utxos, total_staking_satoshis, expected_reward_per_day) = if enabled {
         if let Some(ref addr) = staking_address {
@@ -142,6 +170,8 @@ pub async fn get_staking_status(state: State<'_, AppState>) -> Result<StakingSta
         expected_reward_per_day,
         last_stake_time: None,
         blocks_staked,
+        owned,
+        warning,
     })
 }
 

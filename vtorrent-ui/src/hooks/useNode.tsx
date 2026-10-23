@@ -74,6 +74,8 @@ export interface StakingStatus {
   expectedRewardPerDay: number
   lastStakeTime: number | null
   blocksStaked: number
+  owned?: boolean
+  warning?: string | null
 }
 
 export interface ClaimCheckResult {
@@ -539,11 +541,19 @@ export async function getSwapStatus(orderId: string): Promise<SwapChainStatus> {
 // ─── Staking actions ──────────────────────────────────────────────────────────
 
 /** Start staking on the given address. */
-export async function startStaking(address: string): Promise<void> {
+export async function startStaking(
+  address: string
+): Promise<{ owned?: boolean; warning?: string | null } | void> {
   if (isTauri()) {
-    return tauriInvoke('start_staking', { address })
+    return camel(await tauriInvoke<unknown>('start_staking', { address })) as {
+      owned?: boolean
+      warning?: string | null
+    }
   }
-  await rpcPost('/api/v1/staking/start', { address, passphrase: '' })
+  return rpcPost<{ owned?: boolean; warning?: string | null }>('/api/v1/staking/start', {
+    address,
+    passphrase: '',
+  })
 }
 
 /** Stop staking. */

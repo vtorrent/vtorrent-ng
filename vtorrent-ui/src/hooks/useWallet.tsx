@@ -247,8 +247,6 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     // Errors are non-fatal — the UI still works without a running node.
     try {
       await invoke('start_node', {
-        stakingAddress: info.default_address ?? null,
-        dataDir: null,
         network: net?.network ?? 'mainnet',
         seeds: net?.seeds ?? [],
       })

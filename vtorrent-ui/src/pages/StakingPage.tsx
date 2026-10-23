@@ -62,9 +62,9 @@ export default function StakingPage() {
     setActionStatus('loading')
     setActionMsg('')
     try {
-      await startStaking(effectiveAddress)
+      const result = await startStaking(effectiveAddress)
       setActionStatus('success')
-      setActionMsg(`Staking started on ${effectiveAddress.slice(0, 12)}…`)
+      setActionMsg(result?.warning ?? `Staking started on ${effectiveAddress.slice(0, 12)}…`)
       refresh()
     } catch (e) {
       setActionStatus('error')
