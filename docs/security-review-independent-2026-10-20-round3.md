@@ -168,8 +168,8 @@ passphrase, desktop-mode funding without a browser passphrase, non-positive
 amount rejection without a backend call, and retry after a funding failure.
 The successful cases assert the displayed raw script is passed to the backend
 helper with the expected satoshi amount and show the returned transaction ID.
-All 27 frontend tests, lint, and the production build pass. The full workspace
-suite (`cargo test --workspace --all-features`) also passes at `3c580c1`.
+All 30 frontend tests, lint, and the production build pass. The full workspace
+suite (`cargo test --workspace --all-features`) also passes at `bd35c33`.
 Backend helpers are mocked in these component tests; the live browser and Tauri
 journeys are covered separately below.
 
@@ -286,13 +286,14 @@ cargo test -p vtorrent-daemon --features test-util --test process_recovery \
   preservation), `f803cf9`/`afe5974` (BTC reservation release and serialization),
   and `2287026` (passphrase-retention docs); verified 2FA enrollment, the
   torrent control availability, the reviewed send quote, and verified encrypted
-  backup and restore are in `3c580c1`. The external review should verify them.
-- Independent external review of `3c580c1` (`86aae3a` plus verified encrypted
-  backup and restore).
+  backup and restore, and the guided swap workspace are in `bd35c33`. The
+  external review should verify them.
+- Independent external review of `bd35c33` (`3c580c1` plus the guided swap
+  workspace).
 
 ## Recommended order
 
 1. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
    path.
-2. Commission the external review of `3c580c1` and rebuild the fleet on it.
+2. Commission the external review of `bd35c33` and rebuild the fleet on it.
 3. Re-run the desktop build verification on the reviewed candidate.

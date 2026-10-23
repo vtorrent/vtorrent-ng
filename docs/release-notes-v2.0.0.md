@@ -139,13 +139,13 @@ paths.
   wallet birthday flag, desktop commands, desktop health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake/BTC/
   compact-block/desktop hardening from the adversarial review and must be
-  rebuilt from `3c580c1` (`bab2456` plus the Playwright E2E setup, the live
+  rebuilt from `bd35c33` (`bab2456` plus the Playwright E2E setup, the live
   cold-stake browser test, the Vite dev-origin CORS allowance, the Tauri path
   capability fix, the durable cold-stake registry persistence fix, the desktop
   restart/persistence parity fixes, the wallet-path confinement, import
   overwrite guard, version bump, IPC error surfacing, and staking ownership
   warnings, and the live desktop journey, restart, and BTC discovery evidence).
-  The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; verified 2FA enrollment, the torrent control availability, the reviewed send quote, and verified encrypted backup and restore are in `3c580c1`. The external review should verify them. The fresh soak window started 2026-10-21T02:47:54Z.
+  The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; verified 2FA enrollment, the torrent control availability, the reviewed send quote, verified encrypted backup and restore, and the guided swap workspace are in `bd35c33`. The external review should verify them. The fresh soak window started 2026-10-21T02:47:54Z.
 
 ## Known limitations
 

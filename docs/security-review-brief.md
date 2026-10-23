@@ -149,15 +149,15 @@ challenge the repairs and their remaining assumptions independently.
 
 ## 6. What we provide
 - Immutable review delivery:
-  **`3c580c1e8349b3c6ca5c5404a4aa722f17d0bbf8`**
-  (`feat(wallet): add verified encrypted backup and restore`). This
+  **`bd35c331cdf49febf8506c9d634b0e419c9e9988`**
+  (`feat(ui): add a guided swap workspace`). This
   is `bab2456` plus the Playwright browser E2E setup, the live cold-stake
   browser test, the Vite dev-origin CORS allowance, the Tauri path capability
   fix, the durable cold-stake registry persistence fix, the desktop
   restart/persistence parity fixes, the wallet-path confinement, import
   overwrite guard, version bump, IPC error surfacing, and staking ownership
   warnings, and the live desktop journey, restart, and BTC discovery evidence.
-  The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; verified 2FA enrollment, the torrent control availability, the reviewed send quote, and verified encrypted backup and restore are in `3c580c1`. The external review should verify them.
+  The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; verified 2FA enrollment, the torrent control availability, the reviewed send quote, verified encrypted backup and restore, and the guided swap workspace are in `bd35c33`. The external review should verify them.
   This commit includes the governance template-selection repairs,
   snapshot-based proof reconstruction, admission budget, bounded retries, the
   real-time quota-recovery test, the real-bitcoind SPV reorg tests, the full
@@ -178,7 +178,7 @@ challenge the repairs and their remaining assumptions independently.
 - The review delivery is a source snapshot, not a release tag. The core soak
   fleet runs `vtorrent/node:batch-e7691fb` (code `e7691fb`, BTC SPV disabled)
   from 2026-10-21T02:47:54Z to 2026-10-28T02:47:54Z. The review candidate
-  `3c580c1` adds the BTC wallet birthday flag, the desktop
+  `bd35c33` adds the BTC wallet birthday flag, the desktop
   governance/earnings/payment/deadline commands, health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake, BTC
   scan, compact-block, and desktop hardening from the adversarial review,
