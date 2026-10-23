@@ -282,16 +282,15 @@ cargo test -p vtorrent-daemon --features test-util --test process_recovery \
 - BTC SPV is disabled on the soak fleet; the real BTC SPV swap test is a
   separate regtest run, not a mainnet-scale soak.
 - Mainnet-scale BTC SPV retention/scan soak.
-- Frontier-model review unresolved concerns: the dormant SPV P2CS verifier
-  lacks the full principal-preservation check, BTC reservation release assumes
-  an expired HTLC cannot be claimed, and the wallet retains the passphrase for
-  subsequent saves. See `docs/frontier-review-2026-10-23.md`.
-- Independent external review of `1562679` (`f272e64` plus the remaining
-  frontier fixes).
+- Frontier-model review follow-ups are fixed in `39da204` (SPV principal
+  preservation), `f803cf9` (BTC reservation release), and `2287026`
+  (passphrase-retention docs); the external review should verify them.
+- Independent external review of `f803cf9` (`1562679` plus the SPV/BTC
+  follow-up fixes).
 
 ## Recommended order
 
 1. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
    path.
-2. Commission the external review of `1562679` and rebuild the fleet on it.
+2. Commission the external review of `f803cf9` and rebuild the fleet on it.
 3. Re-run the desktop build verification on the reviewed candidate.

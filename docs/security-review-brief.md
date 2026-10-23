@@ -149,7 +149,7 @@ challenge the repairs and their remaining assumptions independently.
 
 ## 6. What we provide
 - Immutable review delivery:
-  **`156267975acd8b5efe6acf41febdb2e409fa4792`**
+  **`f803cf959c512a899d1b413c945a09116a5a4224`**
   (`fix(desktop): return staking ownership warnings and drop dead args`). This
   is `bab2456` plus the Playwright browser E2E setup, the live cold-stake
   browser test, the Vite dev-origin CORS allowance, the Tauri path capability
@@ -157,7 +157,7 @@ challenge the repairs and their remaining assumptions independently.
   restart/persistence parity fixes, the wallet-path confinement, import
   overwrite guard, version bump, IPC error surfacing, and staking ownership
   warnings, and the live desktop journey, restart, and BTC discovery evidence.
-  The frontier-model review's ten findings are fixed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, and `326ce27`; the unresolved concerns (dormant SPV P2CS verifier, BTC HTLC expiry claim assumption, retained wallet passphrase) remain tracked in `docs/frontier-review-2026-10-23.md`.
+  The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `f803cf9`, and `2287026`; the external review should verify them.
   This commit includes the governance template-selection repairs,
   snapshot-based proof reconstruction, admission budget, bounded retries, the
   real-time quota-recovery test, the real-bitcoind SPV reorg tests, the full
@@ -178,7 +178,7 @@ challenge the repairs and their remaining assumptions independently.
 - The review delivery is a source snapshot, not a release tag. The core soak
   fleet runs `vtorrent/node:batch-e7691fb` (code `e7691fb`, BTC SPV disabled)
   from 2026-10-21T02:47:54Z to 2026-10-28T02:47:54Z. The review candidate
-  `1562679` adds the BTC wallet birthday flag, the desktop
+  `f803cf9` adds the BTC wallet birthday flag, the desktop
   governance/earnings/payment/deadline commands, health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake, BTC
   scan, compact-block, and desktop hardening from the adversarial review,

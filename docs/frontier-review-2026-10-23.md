@@ -22,12 +22,19 @@
 | 9 | Low | WebSocket connection capacity is checked without reserving a slot | **FIXED** in `07a6881`; the slot is reserved atomically before upgrade and released by a guard |
 | 10 | Low | Some desktop signing paths leave ordinary WIF strings unzeroized | **FIXED** in `326ce27`; send, cold-stake funding, and legacy-claim WIFs are wrapped in `Zeroizing` |
 
-Open concerns that need separate validation: the dormant SPV P2CS verifier
-lacks the full node's principal-preservation check (PoS header acceptance is
-currently fail-closed); BTC reservation release assumes an expired HTLC cannot
-be claimed (the claim branch has no upper time bound); and the wallet retains
-the passphrase for subsequent saves, so the claim that passphrases are erased
-immediately after derivation is not true.
+## Follow-up fixes
+
+- **SPV P2CS principal preservation** — `39da204`. The verifier now requires at
+  least the staked value to re-lock to the P2CS script, and the test re-signs
+  redirect and burn coinstakes so the R1 checks are actually exercised.
+- **BTC reservation release** — `f803cf9`. Expiry alone no longer releases a
+  reservation: the reconciler requires a confirmed spend of the reserved input,
+  which makes the signed funding transaction impossible to confirm. The
+  claim-after-expiry test documents why the claim branch's missing upper time
+  bound matters.
+- **Passphrase retention** — `2287026`. The documentation now states that the
+  passphrase is held in a zeroizing buffer while the wallet is unlocked and
+  zeroized on lock/drop; it is not erased immediately after key derivation.
 
 ## Verification
 
