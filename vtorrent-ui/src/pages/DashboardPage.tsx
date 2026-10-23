@@ -4,7 +4,8 @@ import {
   Copy, Plus, RefreshCw, TrendingUp, Coins, ArrowUpRight,
   ArrowDownLeft, Clock, Wifi, WifiOff, Send, X, CheckCircle, AlertCircle,
 } from 'lucide-react'
-import { useWallet, formatVTR } from '../hooks/useWallet'
+import { useWallet, formatVTR, type VtrQuote } from '../hooks/useWallet'
+import { formatInvokeError } from '../api'
 import { useTransactions, useNodeInfo, createPaymentRequest, type TxRecord } from '../hooks/useNode'
 import QRCode from 'qrcode.react'
 
@@ -36,9 +37,11 @@ function shortTxid(txid: string): string {
 
 /** Parse a VTR amount string like "1.5" into satoshis (u64). */
 function parseVtrAmount(value: string): number {
-  const n = parseFloat(value)
-  if (isNaN(n) || n <= 0) return 0
-  return Math.round(n * 100_000_000)
+  const trimmed = value.trim()
+  if (!/^\d+(?:\.\d{0,8})?$/.test(trimmed)) return 0
+  const [whole, fraction = ''] = trimmed.split('.')
+  const satoshis = Number(whole) * 100_000_000 + Number(fraction.padEnd(8, '0'))
+  return Number.isSafeInteger(satoshis) ? satoshis : 0
 }
 
 // ─── Send VTR Modal ───────────────────────────────────────────────────────────
@@ -51,18 +54,36 @@ interface SendModalProps {
 }
 
 function SendModal({ onClose, onSent }: SendModalProps) {
-  const { sendVtr } = useWallet()
+  const { sendVtr, quoteVtr } = useWallet()
   const [toAddress, setToAddress] = useState('')
   const [amount, setAmount] = useState('')
   const [status, setStatus] = useState<SendStatus>('idle')
   const [txid, setTxid] = useState('')
   const [errorMsg, setErrorMsg] = useState('')
+  const [quote, setQuote] = useState<VtrQuote | null>(null)
+  const [quoting, setQuoting] = useState(false)
 
   const amountSats = parseVtrAmount(amount)
   const isValid = toAddress.trim().length > 10 && amountSats > 0
 
-  const handleSend = async () => {
+  const handleReview = async () => {
     if (!isValid) return
+    setQuoting(true)
+    setErrorMsg('')
+    try {
+      const result = await quoteVtr(toAddress.trim(), amountSats)
+      setQuote(result)
+      setStatus('idle')
+    } catch (err) {
+      setErrorMsg(formatInvokeError(err, 'Could not build the transaction quote'))
+      setStatus('error')
+    } finally {
+      setQuoting(false)
+    }
+  }
+
+  const handleSend = async () => {
+    if (!isValid || !quote) return
     setStatus('sending')
     setErrorMsg('')
     try {
@@ -70,11 +91,16 @@ function SendModal({ onClose, onSent }: SendModalProps) {
       setTxid(result)
       setStatus('success')
       onSent()
-    } catch (err: unknown) {
-      setErrorMsg(err instanceof Error ? err.message : String(err))
+    } catch (err) {
+      setErrorMsg(formatInvokeError(err, 'Transaction failed'))
       setStatus('error')
     }
   }
+
+  const shortAddress = (value: string) =>
+    value.length > 20 ? `${value.slice(0, 10)}…${value.slice(-8)}` : value
+  const networkLabel = quote?.network === 'vtorrent-mainnet' ? 'Mainnet' : 'Testnet / Regtest'
+
 
   return (
     /* Backdrop */
@@ -87,7 +113,7 @@ function SendModal({ onClose, onSent }: SendModalProps) {
         <div className="flex items-center justify-between px-5 py-4 border-b border-navy-800">
           <div className="flex items-center gap-2">
             <Send size={16} className="text-vtorrent-400" />
-            <h2 className="text-sm font-semibold text-white">Send VTR</h2>
+            <h2 className="text-sm font-semibold text-white">{quote ? 'Review transaction' : 'Send VTR'}</h2>
           </div>
           <button
             onClick={onClose}
@@ -104,16 +130,99 @@ function SendModal({ onClose, onSent }: SendModalProps) {
               <CheckCircle size={40} className="text-emerald-400 mx-auto" />
               <p className="text-sm font-medium text-white">Transaction Sent</p>
               <p className="text-xs text-gray-500 font-mono break-all">{txid}</p>
-              <button
-                onClick={onClose}
-                className="btn-primary w-full mt-2"
-              >
+              <button onClick={onClose} className="btn-primary w-full mt-2">
                 Done
               </button>
             </div>
+          ) : quote ? (
+            <>
+              <div className="space-y-2 text-sm">
+                <div className="flex justify-between gap-4">
+                  <span className="text-gray-500">From</span>
+                  <span className="font-mono text-gray-300 text-right">{shortAddress(quote.fromAddress)}</span>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <span className="text-gray-500">To</span>
+                  <span className="font-mono text-gray-300 text-right">{shortAddress(quote.toAddress)}</span>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <span className="text-gray-500">Amount</span>
+                  <span className="font-mono text-gray-200 text-right">
+                    {formatVTR(quote.amountSatoshis)}
+                    <span className="block text-xs text-gray-600">{quote.amountSatoshis.toLocaleString()} sats</span>
+                  </span>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <span className="text-gray-500">Network fee</span>
+                  <span className="font-mono text-gray-200 text-right">
+                    {formatVTR(quote.feeSatoshis)}
+                    <span className="block text-xs text-gray-600">
+                      {quote.feeSatoshis.toLocaleString()} sats · {quote.feeRate} sat/vB
+                    </span>
+                  </span>
+                </div>
+                <div className="flex justify-between gap-4 border-t border-navy-800 pt-2">
+                  <span className="text-gray-400 font-medium">Total debit</span>
+                  <span className="font-mono text-vtorrent-300 font-medium text-right">
+                    {formatVTR(quote.totalDebitSatoshis)}
+                  </span>
+                </div>
+                {quote.changeSatoshis > 0 && (
+                  <div className="flex justify-between gap-4">
+                    <span className="text-gray-500">Change</span>
+                    <span className="font-mono text-gray-400 text-right">{formatVTR(quote.changeSatoshis)}</span>
+                  </div>
+                )}
+                <div className="flex justify-between gap-4">
+                  <span className="text-gray-500">Inputs</span>
+                  <span className="text-gray-400">{quote.inputCount}</span>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <span className="text-gray-500">Network</span>
+                  <span className="text-gray-400">{networkLabel}</span>
+                </div>
+              </div>
+
+              {status === 'error' && errorMsg && (
+                <div className="flex items-start gap-2 bg-red-900/20 border border-red-800/30 rounded-lg px-3 py-2.5">
+                  <AlertCircle size={14} className="text-red-400 flex-shrink-0 mt-0.5" />
+                  <p className="text-xs text-red-300">{errorMsg}</p>
+                </div>
+              )}
+
+              <p className="text-xs text-gray-600">
+                The final fee can change if the chain changes before broadcast.
+              </p>
+
+              <div className="flex gap-3 pt-1">
+                <button
+                  onClick={() => { setQuote(null); setStatus('idle') }}
+                  className="flex-1 btn-secondary"
+                  disabled={status === 'sending'}
+                >
+                  Back
+                </button>
+                <button
+                  onClick={handleSend}
+                  disabled={status === 'sending'}
+                  className="flex-1 btn-primary flex items-center justify-center gap-2"
+                >
+                  {status === 'sending' ? (
+                    <>
+                      <RefreshCw size={13} className="animate-spin" />
+                      Sending…
+                    </>
+                  ) : (
+                    <>
+                      <Send size={13} />
+                      Confirm & Send
+                    </>
+                  )}
+                </button>
+              </div>
+            </>
           ) : (
             <>
-              {/* Recipient address */}
               <div>
                 <label className="block text-xs text-gray-500 mb-1.5">Recipient Address</label>
                 <input
@@ -122,23 +231,21 @@ function SendModal({ onClose, onSent }: SendModalProps) {
                   onChange={e => setToAddress(e.target.value)}
                   placeholder="V…"
                   className="w-full bg-navy-800 border border-navy-700 rounded-lg px-3 py-2.5 text-sm text-white font-mono placeholder-gray-700 focus:outline-none focus:border-vtorrent-600 transition-colors"
-                  disabled={status === 'sending'}
+                  disabled={quoting}
                 />
               </div>
 
-              {/* Amount */}
               <div>
                 <label className="block text-xs text-gray-500 mb-1.5">Amount (VTR)</label>
                 <div className="relative">
                   <input
-                    type="number"
+                    type="text"
+                    inputMode="decimal"
                     value={amount}
                     onChange={e => setAmount(e.target.value)}
-                    placeholder="0.000000"
-                    step="0.000001"
-                    min="0"
+                    placeholder="0.00000000"
                     className="w-full bg-navy-800 border border-navy-700 rounded-lg px-3 py-2.5 text-sm text-white font-mono placeholder-gray-700 focus:outline-none focus:border-vtorrent-600 transition-colors pr-14"
-                    disabled={status === 'sending'}
+                    disabled={quoting}
                   />
                   <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-600 font-medium">
                     VTR
@@ -151,7 +258,6 @@ function SendModal({ onClose, onSent }: SendModalProps) {
                 )}
               </div>
 
-              {/* Error */}
               {status === 'error' && errorMsg && (
                 <div className="flex items-start gap-2 bg-red-900/20 border border-red-800/30 rounded-lg px-3 py-2.5">
                   <AlertCircle size={14} className="text-red-400 flex-shrink-0 mt-0.5" />
@@ -159,34 +265,24 @@ function SendModal({ onClose, onSent }: SendModalProps) {
                 </div>
               )}
 
-              {/* Fee notice */}
-              <p className="text-xs text-gray-600">
-                Network fee: ~0.000010 VTR (10 sat/byte)
-              </p>
-
-              {/* Actions */}
               <div className="flex gap-3 pt-1">
-                <button
-                  onClick={onClose}
-                  className="flex-1 btn-secondary"
-                  disabled={status === 'sending'}
-                >
+                <button onClick={onClose} className="flex-1 btn-secondary" disabled={quoting}>
                   Cancel
                 </button>
                 <button
-                  onClick={handleSend}
-                  disabled={!isValid || status === 'sending'}
+                  onClick={handleReview}
+                  disabled={!isValid || quoting}
                   className="flex-1 btn-primary flex items-center justify-center gap-2"
                 >
-                  {status === 'sending' ? (
+                  {quoting ? (
                     <>
                       <RefreshCw size={13} className="animate-spin" />
-                      Sending…
+                      Building quote…
                     </>
                   ) : (
                     <>
                       <Send size={13} />
-                      Send
+                      Review
                     </>
                   )}
                 </button>
@@ -235,10 +331,7 @@ export default function DashboardPage() {
       {showSendModal && (
         <SendModal
           onClose={() => setShowSendModal(false)}
-          onSent={() => {
-            setShowSendModal(false)
-            refreshTxs()
-          }}
+          onSent={refreshTxs}
         />
       )}
 

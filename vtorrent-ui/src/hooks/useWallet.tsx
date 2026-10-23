@@ -30,6 +30,18 @@ export interface WalletKey {
   createdAt: number
 }
 
+export interface VtrQuote {
+  fromAddress: string
+  toAddress: string
+  amountSatoshis: number
+  feeSatoshis: number
+  totalDebitSatoshis: number
+  changeSatoshis: number
+  inputCount: number
+  feeRate: number
+  network: string
+}
+
 export interface WalletState {
   isUnlocked: boolean
   has2FA: boolean
@@ -47,6 +59,7 @@ interface WalletContextType extends WalletState {
   verify2FA: (code: string) => Promise<boolean>
   disable2FA: (otpCode: string) => Promise<void>
   generateAddress: (label?: string) => Promise<string>
+  quoteVtr: (toAddress: string, amountSatoshis: number) => Promise<VtrQuote>
   sendVtr: (toAddress: string, amountSatoshis: number) => Promise<string>
   totalBalance: number
   legacyImportCount: number
@@ -157,6 +170,21 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
       return true as T
     case 'disable_2fa':
       return undefined as T
+    case 'quote_vtr': {
+      const amount = Number(args?.amountSatoshis ?? 0)
+      const fee = 1_000
+      return {
+        fromAddress: mockAddress(),
+        toAddress: String(args?.toAddress ?? ''),
+        amountSatoshis: amount,
+        feeSatoshis: fee,
+        totalDebitSatoshis: amount + fee,
+        changeSatoshis: 0,
+        inputCount: 1,
+        feeRate: 10,
+        network: 'vtorrent-mainnet',
+      } as T
+    }
     case 'send_vtr': {
       // Mock: return a fake txid
       const fakeTxid = Array.from({ length: 64 }, () =>
@@ -365,6 +393,10 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     return info.address
   }, [])
 
+  const quoteVtr = useCallback(async (toAddress: string, amountSatoshis: number): Promise<VtrQuote> => {
+    return invoke<VtrQuote>('quote_vtr', { toAddress, amountSatoshis })
+  }, [])
+
   const sendVtr = useCallback(async (toAddress: string, amountSatoshis: number): Promise<string> => {
     const txid = await invoke<string>('send_vtr', {
       toAddress,
@@ -387,6 +419,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       verify2FA,
       disable2FA,
       generateAddress,
+      quoteVtr,
       sendVtr,
       totalBalance,
       legacyImportCount,

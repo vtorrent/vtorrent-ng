@@ -509,6 +509,109 @@ pub fn disable_2fa(state: State<AppState>, code: String) -> Result<()> {
 
 // ─── Send VTR ────────────────────────────────────────────────────────────────
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VtrQuote {
+    pub from_address: String,
+    pub to_address: String,
+    pub amount_satoshis: u64,
+    pub fee_satoshis: u64,
+    pub total_debit_satoshis: u64,
+    pub change_satoshis: u64,
+    pub input_count: usize,
+    pub fee_rate: u64,
+    pub network: String,
+}
+
+/// Build the transaction a send would broadcast and return its exact fee,
+/// change, and total debit without admitting it to the mempool.
+#[tauri::command]
+pub async fn quote_vtr(
+    state: tauri::State<'_, AppState>,
+    to_address: String,
+    amount_satoshis: u64,
+) -> Result<VtrQuote> {
+    if to_address.trim().is_empty() {
+        return Err(TauriError::InvalidInput(
+            "Recipient address is required".into(),
+        ));
+    }
+    if amount_satoshis == 0 {
+        return Err(TauriError::InvalidInput("Amount must be non-zero".into()));
+    }
+    let (wif, from_address) = {
+        let guard = state.wallet.lock().unwrap();
+        let wallet = guard.as_ref().ok_or(TauriError::WalletNotInitialized)?;
+        let wif = zeroize::Zeroizing::new(
+            wallet
+                .get_default_wif()
+                .ok_or(TauriError::WalletNotInitialized)?
+                .to_string(),
+        );
+        let from = wallet
+            .default_address()
+            .ok_or(TauriError::WalletNotInitialized)?
+            .to_string();
+        (wif, from)
+    };
+
+    let guard = state.node.lock().await;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    let utxos = {
+        let chain = handle.rpc_state.chain.lock().await;
+        chain.get_utxos_for_address(&from_address)
+    };
+    let fee_rate = {
+        let mempool = handle.rpc_state.mempool.lock().await;
+        mempool.recommended_fee_rate().max(1)
+    };
+    let tx = vtorrent_wallet_service::build_payment(
+        &utxos,
+        &to_address,
+        &from_address,
+        amount_satoshis,
+        fee_rate,
+        wif.as_str(),
+    )
+    .map_err(|e| TauriError::NodeError(format!("Transaction build failed: {}", e)))?;
+
+    let input_total: u64 = tx
+        .inputs
+        .iter()
+        .filter_map(|input| {
+            utxos
+                .iter()
+                .find(|utxo| utxo.txid == input.prev_txid && utxo.vout == input.prev_vout)
+                .map(|utxo| utxo.value)
+        })
+        .sum();
+    let output_total: u64 = tx.outputs.iter().map(|output| output.value).sum();
+    let fee_satoshis = input_total.saturating_sub(output_total);
+    let change_script = vtorrent_wallet::tx_builder::p2pkh_script_pubkey(&from_address)
+        .map_err(|e| TauriError::NodeError(e.to_string()))?;
+    let change_satoshis = tx
+        .outputs
+        .iter()
+        .rev()
+        .find(|output| output.script_pubkey == change_script)
+        .map(|output| output.value)
+        .unwrap_or(0);
+
+    Ok(VtrQuote {
+        from_address,
+        to_address,
+        amount_satoshis,
+        fee_satoshis,
+        total_debit_satoshis: amount_satoshis.saturating_add(fee_satoshis),
+        change_satoshis,
+        input_count: tx.inputs.len(),
+        fee_rate,
+        network: handle.network.clone(),
+    })
+}
+
 #[tauri::command]
 pub async fn send_vtr(
     state: tauri::State<'_, AppState>,
@@ -1216,6 +1319,96 @@ mod tests {
         *rpc.btc_network.write().await = bitcoin::Network::Regtest;
         let error = broadcast_btc_tx(&rpc, &[]).await.unwrap_err();
         assert!(error.contains("peer required"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn quote_vtr_reports_fee_and_change_without_broadcasting() {
+        use crate::state::NodeHandle;
+        use std::sync::Arc;
+        use vtorrent_node::block::{Block, BlockHeader, Transaction, TxInput, TxOutput, TxType};
+        use vtorrent_node::chain::Chain;
+        use vtorrent_node::consensus::{compute_stake_modifier, COIN};
+        use vtorrent_node::genesis::GENESIS_BITS;
+        use vtorrent_node::mempool::Mempool;
+        use vtorrent_rpc::state::AppState as RpcAppState;
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+
+        let wallet = Wallet::create("pw").unwrap();
+        let address = wallet.default_address().unwrap().to_string();
+        *state.wallet.lock().unwrap() = Some(wallet);
+
+        let mut chain = Chain::new_regtest().unwrap();
+        let genesis = chain.best_hash().unwrap();
+        let script = vtorrent_wallet::tx_builder::p2pkh_script_pubkey(&address).unwrap();
+        let mut funding = Block {
+            header: BlockHeader {
+                version: 1,
+                prev_block_hash: genesis,
+                merkle_root: [0; 32],
+                utxo_root: [0; 32],
+                timestamp: 1_700_000_001,
+                bits: GENESIS_BITS,
+                nonce: 1,
+                stake_modifier: compute_stake_modifier(0, &genesis),
+            },
+            transactions: vec![Transaction {
+                version: 1,
+                tx_type: TxType::Coinbase,
+                inputs: vec![TxInput {
+                    prev_txid: [0; 32],
+                    prev_vout: u32::MAX,
+                    script_sig: vec![1],
+                    sequence: u32::MAX,
+                }],
+                outputs: vec![TxOutput {
+                    value: 10 * COIN,
+                    script_pubkey: script,
+                }],
+                lock_time: 1,
+                claim_address: None,
+                claim_signature: None,
+            }],
+        };
+        funding.header.merkle_root = funding.compute_merkle_root();
+        chain.add_block(funding).unwrap();
+
+        let chain = Arc::new(tokio::sync::Mutex::new(chain));
+        let mempool = Arc::new(tokio::sync::Mutex::new(Mempool::new(10_000)));
+        let mut rpc = RpcAppState::new_with_shared(chain, mempool);
+        let (sender, mut submitted) = tokio::sync::mpsc::channel(1);
+        rpc.tx_submit = Some(sender);
+        *state.node.lock().await = Some(NodeHandle {
+            rpc_state: rpc,
+            network: "vtorrent-regtest".to_string(),
+            start_time: std::time::Instant::now(),
+            mempool_path: None,
+        });
+
+        let recipient = Wallet::create("other")
+            .unwrap()
+            .default_address()
+            .unwrap()
+            .to_string();
+        let quote = quote_vtr(state.clone(), recipient.clone(), COIN)
+            .await
+            .unwrap();
+        assert_eq!(quote.from_address, address);
+        assert_eq!(quote.to_address, recipient);
+        assert_eq!(quote.amount_satoshis, COIN);
+        assert!(quote.fee_satoshis > 0);
+        assert_eq!(quote.total_debit_satoshis, COIN + quote.fee_satoshis);
+        assert!(quote.change_satoshis > 0);
+        assert_eq!(quote.input_count, 1);
+        assert_eq!(quote.network, "vtorrent-regtest");
+        assert!(
+            submitted.try_recv().is_err(),
+            "a quote must not admit or broadcast the transaction"
+        );
     }
 
     #[test]
