@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod atomic_swap;
 pub mod block;
 pub mod chain;

@@ -37,6 +37,17 @@ export interface TxRecord {
   display: string
 }
 
+export interface ActivityItem {
+  txid: string
+  status: 'confirmed' | 'pending'
+  txType: string
+  amountSatoshis: number
+  timestamp: number
+  blockHeight: number
+  confirmations: number
+  feeSatoshis: number
+}
+
 export interface TorrentSession {
   id: string
   name: string
@@ -119,6 +130,13 @@ async function fetchTransactions(limit = 20): Promise<TxRecord[]> {
   return camel(await rpcGet<unknown[]>(`/api/v1/wallet/transactions?limit=${limit}`)) as TxRecord[]
 }
 
+async function fetchActivity(limit = 100): Promise<ActivityItem[]> {
+  if (isTauri()) {
+    return camel(await tauriInvoke<ActivityItem[]>('get_activity', { limit })) as ActivityItem[]
+  }
+  return camel(await rpcGet<unknown[]>(`/api/v1/wallet/activity?limit=${limit}`)) as ActivityItem[]
+}
+
 async function fetchTorrentSessions(): Promise<TorrentSession[]> {
   if (isTauri()) {
     return camel(await tauriInvoke<TorrentSession[]>('get_torrent_sessions')) as TorrentSession[]
@@ -193,6 +211,11 @@ export function useNodeInfo(intervalMs = 10_000) {
 export function useTransactions(limit = 20, intervalMs = 15_000) {
   const fetcher = useCallback(() => fetchTransactions(limit), [limit])
   return usePoll<TxRecord[]>(fetcher, [], intervalMs)
+}
+
+export function useActivity(limit = 100, intervalMs = 15_000) {
+  const fetcher = useCallback(() => fetchActivity(limit), [limit])
+  return usePoll<ActivityItem[]>(fetcher, [], intervalMs)
 }
 
 /** Poll torrent sessions every 5 s. */

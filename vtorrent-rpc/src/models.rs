@@ -228,6 +228,18 @@ pub struct StakingStatusResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActivityResponse {
+    pub txid: String,
+    pub status: String,
+    pub tx_type: String,
+    pub amount_satoshis: u64,
+    pub timestamp: u32,
+    pub block_height: u32,
+    pub confirmations: u32,
+    pub fee_satoshis: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StakingRewardItem {
     pub height: u64,
     pub timestamp: u32,

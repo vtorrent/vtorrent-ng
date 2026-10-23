@@ -108,6 +108,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/wallet/addresses", get(get_addresses))
         .route("/api/v1/wallet/utxos", get(get_wallet_utxos))
         .route("/api/v1/wallet/transactions", get(get_transactions))
+        .route("/api/v1/wallet/activity", get(get_activity))
         .route("/api/v1/staking/start", post(start_staking))
         .route("/api/v1/staking/stop", post(stop_staking))
         .route("/api/v1/staking/status", get(get_staking_status))

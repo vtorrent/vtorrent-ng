@@ -7,6 +7,7 @@ import ImportWizardPage from './pages/ImportWizardPage'
 import CreateWalletPage from './pages/CreateWalletPage'
 import RestoreBackupPage from './pages/RestoreBackupPage'
 import DashboardPage from './pages/DashboardPage'
+import ActivityPage from './pages/ActivityPage'
 import SecurityCenterPage from './pages/SecurityCenterPage'
 import TorrentPage from './pages/TorrentPage'
 import TradePage from './pages/TradePage'
@@ -34,6 +35,10 @@ function AppRoutes() {
         <Route
           path="/dashboard"
           element={isUnlocked ? <DashboardPage /> : <Navigate to="/" replace />}
+        />
+        <Route
+          path="/activity"
+          element={isUnlocked ? <ActivityPage /> : <Navigate to="/" replace />}
         />
         <Route
           path="/security"

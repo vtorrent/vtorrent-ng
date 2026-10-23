@@ -462,13 +462,21 @@ export default function DashboardPage() {
         <div className="card">
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-semibold text-white text-sm">Recent Transactions</h2>
-            <button
-              onClick={refreshTxs}
-              className="text-gray-600 hover:text-vtorrent-400 transition-colors"
-              title="Refresh"
-            >
-              <RefreshCw size={12} />
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => navigate('/activity')}
+                className="text-xs text-vtorrent-400 hover:text-vtorrent-300 transition-colors"
+              >
+                View all
+              </button>
+              <button
+                onClick={refreshTxs}
+                className="text-gray-600 hover:text-vtorrent-400 transition-colors"
+                title="Refresh"
+              >
+                <RefreshCw size={12} />
+              </button>
+            </div>
           </div>
 
           {txLoading && txs.length === 0 ? (

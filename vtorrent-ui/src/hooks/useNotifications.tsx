@@ -21,6 +21,7 @@ export interface Notification {
   body: string
   createdAt: number
   read: boolean
+  href?: string
 }
 
 interface NotificationsContextType {
@@ -108,6 +109,7 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
                 severity: 'success',
                 title: 'Transaction confirmed',
                 body: `Block ${data.block_height ?? '?'}`,
+                href: data.txid ? `/activity?txid=${data.txid}` : '/activity',
               })
             } else if (type === 'staking_reward') {
               push({
@@ -115,6 +117,7 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
                 severity: 'success',
                 title: 'Staking reward',
                 body: `Block ${data.block_height ?? '?'}`,
+                href: '/staking',
               })
             } else if (type === 'reorg') {
               push({
@@ -122,6 +125,7 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
                 severity: 'warning',
                 title: 'Chain reorganization',
                 body: `Depth ${data.depth ?? '?'}`,
+                href: '/activity',
               })
             } else if (type === 'peer_disconnected') {
               push({

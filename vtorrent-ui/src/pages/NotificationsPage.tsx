@@ -1,4 +1,5 @@
 import { Bell, CheckCircle, AlertTriangle, Info, XCircle, Trash2 } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { useNotifications, type NotifySeverity } from '../hooks/useNotifications'
 
 const ICONS: Record<NotifySeverity, typeof Info> = {
@@ -58,7 +59,14 @@ export default function NotificationsPage() {
                   <div className="text-sm font-medium">{n.title}</div>
                   {n.body && <div className="text-xs text-slate-400">{n.body}</div>}
                 </div>
-                <div className="text-xs text-slate-500 shrink-0">{ago(n.createdAt)}</div>
+                <div className="flex flex-col items-end gap-1 shrink-0">
+                  <div className="text-xs text-slate-500">{ago(n.createdAt)}</div>
+                  {n.href && (
+                    <Link to={n.href} className="text-xs text-vtorrent-400 hover:text-vtorrent-300">
+                      Open
+                    </Link>
+                  )}
+                </div>
               </div>
             )
           })}

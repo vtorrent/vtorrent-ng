@@ -33,6 +33,7 @@ fn main() {
             commands::probe_seed_peers,
             // Transactions
             commands::get_transactions,
+            commands::get_activity,
             commands::send_vtr,
             commands::quote_vtr,
             commands::create_backup,

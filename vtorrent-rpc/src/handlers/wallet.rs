@@ -737,6 +737,48 @@ pub async fn get_transactions(
     Ok(Json(result))
 }
 
+pub async fn get_activity(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> RpcResult<Json<Vec<ActivityResponse>>> {
+    let limit = params
+        .get("limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(100)
+        .clamp(1, 500);
+    let addresses: Vec<String> = state
+        .wallet_change_address
+        .read()
+        .await
+        .clone()
+        .into_iter()
+        .collect();
+    let chain = state.chain.lock().await;
+    let mempool = state.mempool.lock().await;
+    let entries = vtorrent_node::activity::wallet_activity(
+        &chain,
+        &mempool,
+        &addresses,
+        limit,
+        now_secs() as u32,
+    );
+    Ok(Json(
+        entries
+            .into_iter()
+            .map(|entry| ActivityResponse {
+                txid: entry.txid,
+                status: entry.status,
+                tx_type: entry.tx_type,
+                amount_satoshis: entry.amount_satoshis,
+                timestamp: entry.timestamp,
+                block_height: entry.block_height,
+                confirmations: entry.confirmations,
+                fee_satoshis: entry.fee_satoshis,
+            })
+            .collect(),
+    ))
+}
+
 // ─── GET /api/v1/blockchain/utxo/:txid/:vout ─────────────────────────────────
 
 #[derive(serde::Deserialize)]

@@ -907,7 +907,7 @@ impl Chain {
     }
 
     /// Convert a vTorrent address to a P2PKH scriptPubKey for UTXO matching.
-    fn address_to_p2pkh_script(&self, address: &str) -> Vec<u8> {
+    pub fn address_to_p2pkh_script(&self, address: &str) -> Vec<u8> {
         vtorrent_core::address::Address::parse(address)
             .map(|addr| addr.p2pkh_script_pubkey())
             .unwrap_or_default()

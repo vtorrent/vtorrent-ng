@@ -495,6 +495,62 @@ pub async fn get_node_info(state: tauri::State<'_, AppState>) -> Result<NodeInfo
     }
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityResult {
+    pub txid: String,
+    pub status: String,
+    pub tx_type: String,
+    pub amount_satoshis: u64,
+    pub timestamp: u32,
+    pub block_height: u32,
+    pub confirmations: u32,
+    pub fee_satoshis: u64,
+}
+
+#[tauri::command]
+pub async fn get_activity(
+    state: tauri::State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<ActivityResult>> {
+    let addresses: Vec<String> = state
+        .wallet
+        .lock()
+        .map_err(|_| TauriError::WalletLocked)?
+        .as_ref()
+        .ok_or(TauriError::WalletNotInitialized)?
+        .list_addresses()
+        .into_iter()
+        .map(|(address, _, _, _)| address)
+        .collect();
+    let guard = state.node.lock().await;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    let chain = handle.rpc_state.chain.lock().await;
+    let mempool = handle.rpc_state.mempool.lock().await;
+    let entries = vtorrent_node::activity::wallet_activity(
+        &chain,
+        &mempool,
+        &addresses,
+        limit.unwrap_or(100).clamp(1, 500),
+        vtorrent_core::time::now_secs() as u32,
+    );
+    Ok(entries
+        .into_iter()
+        .map(|entry| ActivityResult {
+            txid: entry.txid,
+            status: entry.status,
+            tx_type: entry.tx_type,
+            amount_satoshis: entry.amount_satoshis,
+            timestamp: entry.timestamp,
+            block_height: entry.block_height,
+            confirmations: entry.confirmations,
+            fee_satoshis: entry.fee_satoshis,
+        })
+        .collect())
+}
+
 #[tauri::command]
 pub async fn get_transactions(
     state: tauri::State<'_, AppState>,
