@@ -43,7 +43,7 @@
 - [ ] **External security review** — **brief finalized, not yet commissioned**:
       `docs/security-review-brief.md` (scope, deliverables, 2-phase engagement).
       The proposed immutable delivery is
-      `86aae3a8fdc505f58742c54a1c9f99a97eca5efc` (`bab2456` plus the Playwright
+      `3c580c1e8349b3c6ca5c5404a4aa722f17d0bbf8` (`bab2456` plus the Playwright
       E2E setup, the live cold-stake browser test, the Vite dev-origin CORS
       allowance, the Tauri path capability fix, the durable cold-stake registry
       persistence fix, the desktop restart/persistence parity fixes, the
@@ -97,13 +97,13 @@ from uninterrupted soak measurements.
       height 54,123, same tip, staking, 0 errors/restarts, `syncing=false`.
       Sign-off pending. The fleet runs `e7691fb`, which includes the reorg-safe
       BTC wallet state, durable cold-stake script registry, zeroized WIF
-      responses, and the WebSocket token cap; the review candidate `86aae3a`
+      responses, and the WebSocket token cap; the review candidate `3c580c1`
       adds the Playwright browser E2E setup, the Vite dev-origin CORS
       allowance, the Tauri path capability fix, the durable cold-stake registry
       persistence fix, the desktop restart/persistence parity fixes, the
       wallet-path confinement, import overwrite guard, version bump, IPC error
       surfacing, and staking ownership warnings, and the live desktop journey,
-      restart, and BTC discovery evidence. The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; verified 2FA enrollment, the torrent control availability, and the reviewed send quote are in `86aae3a`. The external review should verify them.
+      restart, and BTC discovery evidence. The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; verified 2FA enrollment, the torrent control availability, the reviewed send quote, and verified encrypted backup and restore are in `3c580c1`. The external review should verify them.
 - [x] **Staking soak**: at least one node staked continuously and produced
       blocks at the expected ~60s average over the full 7-day window
       (`2026-09-29T13:36:22Z` → `2026-10-06T13:36:22Z`): node1 staked 1441

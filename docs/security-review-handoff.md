@@ -7,26 +7,26 @@ and deliverables are in `docs/security-review-brief.md`.
 
 | Item | Value |
 | --- | --- |
-| Pinned commit | `86aae3a8fdc505f58742c54a1c9f99a97eca5efc` |
+| Pinned commit | `3c580c1e8349b3c6ca5c5404a4aa722f17d0bbf8` |
 | Brief | Latest `docs/security-review-brief.md` from `main`; it pins this commit |
 | Toolchain | Rust 1.90.0 (`rust-toolchain.toml`) |
 | Dependency lock | Archive the `Cargo.lock` used for the build; it is gitignored |
-| Fleet image | Core soak: `vtorrent/node:batch-e7691fb`; release build: rebuild from `86aae3a` |
+| Fleet image | Core soak: `vtorrent/node:batch-e7691fb`; release build: rebuild from `3c580c1` |
 | Soak window | 2026-10-21T02:47:54Z to 2026-10-28T02:47:54Z |
 
-`86aae3a` is `bab2456` plus the Playwright browser E2E setup, the live
+`3c580c1` is `bab2456` plus the Playwright browser E2E setup, the live
 cold-stake browser test, the Vite dev-origin CORS allowance, the Tauri path
 capability fix, the durable cold-stake registry persistence fix, the desktop
 restart/persistence parity fixes, the wallet-path confinement, import
 overwrite guard, version bump, IPC error surfacing, and staking ownership
 warnings, and the live desktop journey, restart, and BTC discovery evidence.
-The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; verified 2FA enrollment, the torrent control availability, and the reviewed send quote are in `86aae3a`. The external review should verify them.
+The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; verified 2FA enrollment, the torrent control availability, the reviewed send quote, and verified encrypted backup and restore are in `3c580c1`. The external review should verify them.
 
 Verify the commit resolves before sending:
 
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
-git -C vtorrent-ng checkout 86aae3a8fdc505f58742c54a1c9f99a97eca5efc
+git -C vtorrent-ng checkout 3c580c1e8349b3c6ca5c5404a4aa722f17d0bbf8
 git -C vtorrent-ng rev-parse HEAD
 ```
 
@@ -127,7 +127,7 @@ Hello <name>,
 We are requesting an independent security review of vTorrent 2.0.0 before
 mainnet activation. The scope and deliverables are in the attached brief.
 
-Pinned source: 86aae3a8fdc505f58742c54a1c9f99a97eca5efc
+Pinned source: 3c580c1e8349b3c6ca5c5404a4aa722f17d0bbf8
 Repository: https://github.com/vtorrent/vtorrent-ng
 
 The review focuses on wallet custody, consensus and governance, the stake-proof
