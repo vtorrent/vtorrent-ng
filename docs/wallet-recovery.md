@@ -127,7 +127,9 @@ GET /api/v1/wallet/balance
 ## Security Notes
 
 - **Private keys are stored locally** in `~/.vtorrent/wallet.key` (encrypted with Argon2id + AES-256-GCM)
-- **Passphrase is zeroized** from memory immediately after key derivation
+- **Passphrase handling:** the passphrase is held in a zeroizing buffer while the
+  wallet is unlocked (it is needed for re-encryption on save) and is zeroized on
+  lock/drop. It is not erased immediately after key derivation.
 - **Never share** your WIF keys or wallet.dat file
 - **Backup** the new wallet after recovery: `vtorrent-cli wallet backup`
 - **Legacy wallet.dat** should be securely deleted after successful recovery

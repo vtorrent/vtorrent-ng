@@ -72,7 +72,8 @@ cd vtorrent-ui && pnpm lint
   custom UDP overlay (not libp2p) for peer discovery and NAT traversal.
 - **Serialization**: `serde` + `serde_json` for RPC, `bincode` for binary wire formats.
 - **Security**: private keys are handled exclusively in the Rust backend; the JS frontend
-  never receives key material. Passphrases are zeroized immediately after key derivation.
+  never receives key material. Passphrases are held in a zeroizing buffer while the
+  wallet is unlocked (needed for re-encryption on save) and zeroized on lock/drop.
 - **No comments unless necessary** — follow existing code style; the codebase is lightly
   commented with `///` doc comments on public items only.
 
