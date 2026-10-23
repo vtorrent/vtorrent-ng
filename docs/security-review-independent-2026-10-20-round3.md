@@ -159,7 +159,7 @@ frontend's omitted optional `label` and `fund_cold_stake` with camelCase
 admission of the signed payment to the real mempool, a 1 VTR output to the
 generated raw P2CS script, submission of the same transaction ID to the
 peer-relay channel, and inclusion in a regtest block with the output confirmed
-at height 2. All six Tauri library tests and strict Tauri Clippy pass.
+at height 2. All 15 Tauri library tests and strict Tauri Clippy pass.
 
 **Component coverage update:** four tests in
 `vtorrent-ui/src/pages/StakingPage.test.tsx` render the real page in jsdom and
@@ -168,8 +168,8 @@ passphrase, desktop-mode funding without a browser passphrase, non-positive
 amount rejection without a backend call, and retry after a funding failure.
 The successful cases assert the displayed raw script is passed to the backend
 helper with the expected satoshi amount and show the returned transaction ID.
-All 22 frontend tests, lint, and the production build pass. The full workspace
-suite (`cargo test --workspace --all-features`) also passes at `ea92f22`.
+All 25 frontend tests, lint, and the production build pass. The full workspace
+suite (`cargo test --workspace --all-features`) also passes at `86aae3a`.
 Backend helpers are mocked in these component tests; the live browser and Tauri
 journeys are covered separately below.
 
@@ -196,7 +196,7 @@ Tauri node. Funding txid
 `b7a4644f57f44a938ac490d2c932b98b451fcc2f1b29bc0113e3ecca029688a0`, block
 `582db1225481ca797b7e9da5fb5ec0e218fceede4dcbc4313cb2a789b212fa95`, script
 `6376a914e23afa1f9082341bb21043e28555f02c52c392bc88ac670400000000b17576a9143b5abb209554608490e909cb47205c794203b7b188ac68`.
-`get_transactions` showed the send at height 2; the Tauri suite is now 6 tests.
+`get_transactions` showed the send at height 2; the Tauri suite is now 15 tests.
 
 **Desktop restart and durable registry update:** a restart test found that
 `create_cold_stake` recorded the script only in memory; the durable registry
@@ -284,15 +284,15 @@ cargo test -p vtorrent-daemon --features test-util --test process_recovery \
 - Mainnet-scale BTC SPV retention/scan soak.
 - Frontier-model review follow-ups are fixed in `39da204` (SPV principal
   preservation), `f803cf9`/`afe5974` (BTC reservation release and serialization),
-  and `2287026` (passphrase-retention docs); verified 2FA enrollment and the
-  torrent control availability are in `ea92f22`. The external review should
-  verify them.
-- Independent external review of `ea92f22` (`afe5974` plus the 2FA and torrent
-  UI fixes).
+  and `2287026` (passphrase-retention docs); verified 2FA enrollment, the
+  torrent control availability, and the reviewed send quote are in `86aae3a`.
+  The external review should verify them.
+- Independent external review of `86aae3a` (`ea92f22` plus the reviewed send
+  quote).
 
 ## Recommended order
 
 1. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
    path.
-2. Commission the external review of `ea92f22` and rebuild the fleet on it.
+2. Commission the external review of `86aae3a` and rebuild the fleet on it.
 3. Re-run the desktop build verification on the reviewed candidate.

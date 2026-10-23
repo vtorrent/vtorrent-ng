@@ -149,7 +149,7 @@ challenge the repairs and their remaining assumptions independently.
 
 ## 6. What we provide
 - Immutable review delivery:
-  **`ea92f227fe2da4aef38054d467871611f5de7d3c`**
+  **`86aae3a8fdc505f58742c54a1c9f99a97eca5efc`**
   (`fix(desktop): return staking ownership warnings and drop dead args`). This
   is `bab2456` plus the Playwright browser E2E setup, the live cold-stake
   browser test, the Vite dev-origin CORS allowance, the Tauri path capability
@@ -157,7 +157,7 @@ challenge the repairs and their remaining assumptions independently.
   restart/persistence parity fixes, the wallet-path confinement, import
   overwrite guard, version bump, IPC error surfacing, and staking ownership
   warnings, and the live desktop journey, restart, and BTC discovery evidence.
-  The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; verified 2FA enrollment and the torrent control availability are in `ea92f22`. The external review should verify them.
+  The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; verified 2FA enrollment, the torrent control availability, and the reviewed send quote are in `86aae3a`. The external review should verify them.
   This commit includes the governance template-selection repairs,
   snapshot-based proof reconstruction, admission budget, bounded retries, the
   real-time quota-recovery test, the real-bitcoind SPV reorg tests, the full
@@ -178,7 +178,7 @@ challenge the repairs and their remaining assumptions independently.
 - The review delivery is a source snapshot, not a release tag. The core soak
   fleet runs `vtorrent/node:batch-e7691fb` (code `e7691fb`, BTC SPV disabled)
   from 2026-10-21T02:47:54Z to 2026-10-28T02:47:54Z. The review candidate
-  `ea92f22` adds the BTC wallet birthday flag, the desktop
+  `86aae3a` adds the BTC wallet birthday flag, the desktop
   governance/earnings/payment/deadline commands, health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake, BTC
   scan, compact-block, and desktop hardening from the adversarial review,
