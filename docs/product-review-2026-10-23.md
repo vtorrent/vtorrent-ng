@@ -25,7 +25,8 @@ the swap panel still requires order IDs, addresses, and a preimage.
 | P1 | `Layout.tsx:40` treats a responsive node as online, while `Layout.tsx:147` labels any non-syncing node fully synced. | Distinguish local node running, peer connectivity, sync progress, and readiness to transact. Show the reason when readiness cannot be established. |
 
 Status: verified 2FA enrollment is fixed in `3fefa6b`. The torrent pause/resume
-control is marked unavailable in `ea92f22`. The payment review remains open.
+control is marked unavailable in `ea92f22`. The payment review is fixed in
+`86aae3a`.
 
 ## Prioritized feature roadmap
 
@@ -65,6 +66,7 @@ easy to complete.
 - Use local diagnostics and opt-in usability sessions. Never collect wallet
   contents, passphrases, keys, or transaction details as product telemetry.
 
-Verified 2FA enrollment is implemented in `3fefa6b`, and the torrent pause/resume
-control is marked unavailable in `ea92f22`. The next substantial new feature is
-the backup-and-restore workflow, followed by the guided swap workspace.
+Verified 2FA enrollment is implemented in `3fefa6b`, the torrent pause/resume
+control is marked unavailable in `ea92f22`, and the reviewed send quote is
+implemented in `86aae3a`. The next substantial new feature is the
+backup-and-restore workflow, followed by the guided swap workspace.
