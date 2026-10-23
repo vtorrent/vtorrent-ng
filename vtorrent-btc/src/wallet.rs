@@ -453,7 +453,7 @@ impl BtcWallet {
                     find_fork(&chain, previous_best)
                 };
                 self.filter_headers.lock().clear();
-                *self.utxos.lock() = UtxoSet::new();
+                self.utxos.lock().clear_chain_utxos();
                 self.save_utxos();
                 // The UTXO set was cleared, so the rescan must start at the
                 // wallet's birthday/zero, not at the fork point; otherwise

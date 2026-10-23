@@ -82,6 +82,16 @@ impl UtxoSet {
         self.utxos.retain(|u| !(u.txid == txid && u.vout == vout));
     }
 
+    /// Clear chain-derived UTXOs while preserving recovery metadata.
+    ///
+    /// A reorg invalidates confirmed outputs, but reservations, signed swap
+    /// transactions, contracts, and the address index are wallet state, not
+    /// chain state. Keeping them prevents a rescan from making a reserved
+    /// input selectable again and preserves recovery after restart.
+    pub fn clear_chain_utxos(&mut self) {
+        self.utxos.clear();
+    }
+
     pub fn reserve(&mut self, txid: &str, vout: u32) {
         self.remove(txid, vout);
         self.reserved.insert((txid.to_owned(), vout));
@@ -291,6 +301,35 @@ mod tests {
         // A rescan can now re-add it.
         set.add(utxo("a", 0, 5000));
         assert_eq!(set.list().len(), 1);
+    }
+
+    #[test]
+    fn test_clear_chain_utxos_preserves_recovery_metadata() {
+        let mut set = UtxoSet::new();
+        set.add(utxo("a", 0, 5000));
+        set.reserve("b", 0);
+        set.set_next_index(7);
+        set.record_swap_transaction("tx1".into(), vec![1, 2, 3]);
+        set.record_swap_contract(SwapContract {
+            order_id: "order1".into(),
+            funding_txid: "tx1".into(),
+            hash_lock: [0u8; 32],
+            recipient: "bc1q".into(),
+            refund_address: "bc1q".into(),
+            expiry: 100,
+            amount: 1000,
+            refund_raw: None,
+            input_txid: Some("b".into()),
+            input_vout: Some(0),
+        });
+
+        set.clear_chain_utxos();
+
+        assert!(set.list().is_empty());
+        assert_eq!(set.next_index(), 7);
+        assert!(set.release("b", 0), "reservation must survive a reorg");
+        assert!(set.pending_swap_transactions().contains_key("tx1"));
+        assert!(set.swap_contract("order1").is_some());
     }
 
     #[test]
