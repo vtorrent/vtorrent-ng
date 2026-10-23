@@ -26,7 +26,7 @@ the swap panel still requires order IDs, addresses, and a preimage.
 
 Status: verified 2FA enrollment is fixed in `3fefa6b`. The torrent pause/resume
 control is marked unavailable in `ea92f22`. The payment review is fixed in
-`86aae3a`.
+`86aae3a`. Verified encrypted backup and restore is implemented in `3c580c1`.
 
 ## Prioritized feature roadmap
 
@@ -67,6 +67,7 @@ easy to complete.
   contents, passphrases, keys, or transaction details as product telemetry.
 
 Verified 2FA enrollment is implemented in `3fefa6b`, the torrent pause/resume
-control is marked unavailable in `ea92f22`, and the reviewed send quote is
-implemented in `86aae3a`. The next substantial new feature is the
-backup-and-restore workflow, followed by the guided swap workspace.
+control is marked unavailable in `ea92f22`, the reviewed send quote is
+implemented in `86aae3a`, and verified encrypted backup and restore is
+implemented in `3c580c1`. The next substantial new feature is the guided swap
+workspace.
