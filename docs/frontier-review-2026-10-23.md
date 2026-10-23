@@ -14,13 +14,13 @@
 | 1 | High | BTC reorg recovery deletes wallet recovery metadata | **FIXED** in `61f4be4`; regression test preserves reservations, contracts, pending transactions, and address index |
 | 2 | High | Desktop wallet switching leaves the previous BTC wallet active | **FIXED** in `cb765ce`; wallet switches are rejected while the node runs, and the BTC UTXO file is scoped by wallet seed |
 | 3 | Medium | Mempool admission omits the P2CS cold-spend authorization rule | **FIXED** in `f272e64`; hot-key P2CS spends are rejected, cold-key spends are admitted |
-| 4 | Medium | Wallet-path confinement does not validate the final file | OPEN |
-| 5 | Medium | Cold-stake registry writes are not concurrency-safe or crash-durable | OPEN |
-| 6 | Medium | BTC discovery updates are not persisted by the normal scan path | OPEN |
-| 7 | Medium | Desktop BTC DNS failures bypass UTXO rollback; fallback broadcast ignores network | OPEN |
-| 8 | Medium | Cold-stake funding authorization survives desktop wallet changes | OPEN |
-| 9 | Low | WebSocket connection capacity is checked without reserving a slot | OPEN |
-| 10 | Low | Some desktop signing paths leave ordinary WIF strings unzeroized | OPEN |
+| 4 | Medium | Wallet-path confinement does not validate the final file | **FIXED** in `326ce27`; final targets are canonicalized, validation runs before directory creation, and symlink-escape tests cover open/create |
+| 5 | Medium | Cold-stake registry writes are not concurrency-safe or crash-durable | **FIXED** in `6f82b63`; updates are serialized, corrupt files are not overwritten, temp files are exclusive, and the file and directory are fsynced |
+| 6 | Medium | BTC discovery updates are not persisted by the normal scan path | **FIXED** in `3975693`; successful scans save the UTXO set and the scan cursor is persisted with it |
+| 7 | Medium | Desktop BTC DNS failures bypass UTXO rollback; fallback broadcast ignores network | **FIXED** in `326ce27` and `07a6881`; broadcast errors flow through UTXO rollback and non-mainnet broadcasts require a configured peer |
+| 8 | Medium | Cold-stake funding authorization survives desktop wallet changes | **FIXED** in `326ce27`; session scripts are cleared on wallet transitions, creation requires an active wallet, and tests cover both |
+| 9 | Low | WebSocket connection capacity is checked without reserving a slot | **FIXED** in `07a6881`; the slot is reserved atomically before upgrade and released by a guard |
+| 10 | Low | Some desktop signing paths leave ordinary WIF strings unzeroized | **FIXED** in `326ce27`; send, cold-stake funding, and legacy-claim WIFs are wrapped in `Zeroizing` |
 
 Open concerns that need separate validation: the dormant SPV P2CS verifier
 lacks the full node's principal-preservation check (PoS header acceptance is

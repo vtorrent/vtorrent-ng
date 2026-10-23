@@ -139,13 +139,13 @@ paths.
   wallet birthday flag, desktop commands, desktop health-field updates, the
   shared BTC sync loop, desktop chain persistence, and the cold-stake/BTC/
   compact-block/desktop hardening from the adversarial review and must be
-  rebuilt from `f272e64` (`bab2456` plus the Playwright E2E setup, the live
+  rebuilt from `1562679` (`bab2456` plus the Playwright E2E setup, the live
   cold-stake browser test, the Vite dev-origin CORS allowance, the Tauri path
   capability fix, the durable cold-stake registry persistence fix, the desktop
   restart/persistence parity fixes, the wallet-path confinement, import
   overwrite guard, version bump, IPC error surfacing, and staking ownership
   warnings, and the live desktop journey, restart, and BTC discovery evidence).
-  The frontier-model review's two High findings and the P2CS mempool Medium are fixed in `61f4be4`, `cb765ce`, and `f272e64`; the remaining findings are tracked in `docs/frontier-review-2026-10-23.md`. The fresh soak window started 2026-10-21T02:47:54Z.
+  The frontier-model review's ten findings are fixed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, and `326ce27`; the unresolved concerns (dormant SPV P2CS verifier, BTC HTLC expiry claim assumption, retained wallet passphrase) remain tracked in `docs/frontier-review-2026-10-23.md`. The fresh soak window started 2026-10-21T02:47:54Z.
 
 ## Known limitations
 
@@ -173,6 +173,10 @@ paths.
   refuses to overwrite an existing wallet. The desktop version is beta.3.
 - Desktop staking returns the RPC ownership warning and the Staking page
   displays it when the selected address is not owned by the hot wallet.
+- Frontier-model review unresolved concerns remain: the dormant SPV P2CS
+  verifier lacks the full principal-preservation check, BTC reservation release
+  assumes an expired HTLC cannot be claimed, and the wallet retains the
+  passphrase for subsequent saves. See `docs/frontier-review-2026-10-23.md`.
 - Cold-stake funding uses the raw P2CS script via `fund_cold_stake`; the
   P2SH-hash-as-P2PKH burn address was removed from the API/UI.
 
