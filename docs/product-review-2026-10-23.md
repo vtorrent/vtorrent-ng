@@ -30,7 +30,7 @@ control is marked unavailable in `ea92f22`. The payment review is fixed in
 The guided swap workspace is implemented in `bd35c33`. The staking readiness
 assistant is implemented in `aa12b3c`. The activity and recovery center is
 implemented in `82d9383`. The cold-stake delegation wizard is implemented in
-`3a61254`.
+`3a61254`. Node settings and diagnostics are implemented in `d6c82f4`.
 
 ## Prioritized feature roadmap
 
@@ -76,5 +76,6 @@ implemented in `86aae3a`, and verified encrypted backup and restore is
 implemented in `3c580c1`, and the guided swap workspace is implemented in
 `bd35c33`, the staking readiness assistant is implemented in `aa12b3c`, and the
 activity and recovery center is implemented in `82d9383`, and the cold-stake
-delegation wizard is implemented in `3a61254`. The next substantial new feature
-is node settings and diagnostics.
+delegation wizard is implemented in `3a61254`, and node settings and diagnostics
+are implemented in `d6c82f4`. The next substantial new feature is torrent controls
+and reward accounting, followed by navigation and accessibility.
