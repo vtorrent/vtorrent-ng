@@ -37,6 +37,16 @@ export interface TxRecord {
   display: string
 }
 
+export interface AppInfo {
+  version: string
+  network: string
+  appDataDir: string | null
+  nodeDataDir: string | null
+  btcNetwork: string
+  btcPeer: string | null
+  walletAddress: string | null
+}
+
 export interface TransactionOutput {
   valueSatoshis: number
   scriptPubkey: string
@@ -140,6 +150,31 @@ async function fetchTransactions(limit = 20): Promise<TxRecord[]> {
     return camel(await tauriInvoke<TxRecord[]>('get_transactions', { limit })) as TxRecord[]
   }
   return camel(await rpcGet<unknown[]>(`/api/v1/wallet/transactions?limit=${limit}`)) as TxRecord[]
+}
+
+export async function getAppInfo(): Promise<AppInfo> {
+  if (!isTauri()) throw new Error('Settings are available in the desktop app')
+  return camel(await tauriInvoke<AppInfo>('get_app_info')) as AppInfo
+}
+
+export async function setBtcPeer(peer: string | null): Promise<void> {
+  if (!isTauri()) throw new Error('Settings are available in the desktop app')
+  await tauriInvoke('set_btc_peer', { peer })
+}
+
+export async function getDiagnostics(): Promise<string> {
+  if (!isTauri()) throw new Error('Diagnostics are available in the desktop app')
+  return tauriInvoke<string>('get_diagnostics')
+}
+
+export async function restartApp(): Promise<void> {
+  if (!isTauri()) throw new Error('Restart is available in the desktop app')
+  await tauriInvoke('restart_app')
+}
+
+export function useAppInfo(intervalMs = 15_000) {
+  const fetcher = useCallback(() => getAppInfo(), [])
+  return usePoll<AppInfo | null>(fetcher, null, intervalMs)
 }
 
 export async function getTransaction(txid: string): Promise<TransactionLookup> {

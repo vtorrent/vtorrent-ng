@@ -8,6 +8,7 @@ import CreateWalletPage from './pages/CreateWalletPage'
 import RestoreBackupPage from './pages/RestoreBackupPage'
 import DashboardPage from './pages/DashboardPage'
 import ActivityPage from './pages/ActivityPage'
+import SettingsPage from './pages/SettingsPage'
 import SecurityCenterPage from './pages/SecurityCenterPage'
 import TorrentPage from './pages/TorrentPage'
 import TradePage from './pages/TradePage'
@@ -39,6 +40,10 @@ function AppRoutes() {
         <Route
           path="/activity"
           element={isUnlocked ? <ActivityPage /> : <Navigate to="/" replace />}
+        />
+        <Route
+          path="/settings"
+          element={isUnlocked ? <SettingsPage /> : <Navigate to="/" replace />}
         />
         <Route
           path="/security"

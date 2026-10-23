@@ -1,7 +1,7 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Shield, Download, ArrowLeftRight,
-  Lock, Wifi, WifiOff, RefreshCw, Cpu, Zap, Gift, Bitcoin, Palette, Coins, Bell, Landmark, History,
+  Lock, Wifi, WifiOff, RefreshCw, Cpu, Zap, Gift, Bitcoin, Palette, Coins, Bell, Landmark, History, Settings,
 } from 'lucide-react'
 import { useWallet, formatVTR } from '../hooks/useWallet'
 import { useNodeInfo } from '../hooks/useNode'
@@ -21,6 +21,7 @@ const navItems = [
   { to: '/claim',     icon: Gift,            label: 'Claim VTR' },
   { to: '/btc',       icon: Bitcoin,         label: 'Bitcoin'  },
   { to: '/security',  icon: Shield,          label: 'Security'  },
+  { to: '/settings',  icon: Settings,        label: 'Settings'  },
 ]
 
 export default function Layout() {
