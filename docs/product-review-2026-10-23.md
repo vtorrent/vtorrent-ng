@@ -28,7 +28,8 @@ Status: verified 2FA enrollment is fixed in `3fefa6b`. The torrent pause/resume
 control is marked unavailable in `ea92f22`. The payment review is fixed in
 `86aae3a`. Verified encrypted backup and restore is implemented in `3c580c1`.
 The guided swap workspace is implemented in `bd35c33`. The staking readiness
-assistant is implemented in `aa12b3c`.
+assistant is implemented in `aa12b3c`. The activity and recovery center is
+implemented in `82d9383`.
 
 ## Prioritized feature roadmap
 
@@ -72,5 +73,7 @@ Verified 2FA enrollment is implemented in `3fefa6b`, the torrent pause/resume
 control is marked unavailable in `ea92f22`, the reviewed send quote is
 implemented in `86aae3a`, and verified encrypted backup and restore is
 implemented in `3c580c1`, and the guided swap workspace is implemented in
-`bd35c33`, and the staking readiness assistant is implemented in `aa12b3c`. The
-next substantial new feature is the activity and recovery center.
+`bd35c33`, the staking readiness assistant is implemented in `aa12b3c`, and the
+activity and recovery center is implemented in `82d9383`. The next substantial
+new feature is the cold-stake delegation wizard, followed by node settings and
+diagnostics.
