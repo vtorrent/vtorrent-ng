@@ -143,7 +143,7 @@ header’s control, would expose it.
 the WIF fields use `Zeroizing<String>` in both the RPC and Tauri responses. The
 body still contains the WIF by design (shown once); avoid body logging.
 
-### L-7 — Low (FIXED in `803aada`): the desktop cold-stake path was not fully
+### L-7 — Low (FIXED in `77744bf`): the desktop cold-stake path was not fully
 runtime-tested
 
 **Where:** `vtorrent-ui/src/hooks/useNode.tsx` (`createColdStake`/
@@ -235,6 +235,13 @@ directory"; creating over the existing wallet returned "A wallet already exists
 at this path"; the create page displayed that message; `get_node_info.version`
 is `2.0.0-beta.3`.
 
+**Minor API parity update:** `77744bf` returns `owned` and `warning` from the
+Tauri `start_staking`/`get_staking_status` commands, matching the RPC, and the
+Staking page displays the warning when the selected address is not owned by the
+hot wallet. The unused `stakingAddress`/`dataDir` arguments were removed from
+the frontend `start_node` call. The Tauri suite remains 6 tests; the frontend
+suite is 22 tests.
+
 **Two-node coverage update (working tree):**
 `cold_stake_funding_propagates_and_confirms_on_two_daemons` starts two isolated
 daemon processes with separate data directories. The sender generates and
@@ -275,15 +282,12 @@ cargo test -p vtorrent-daemon --features test-util --test process_recovery \
 - BTC SPV is disabled on the soak fleet; the real BTC SPV swap test is a
   separate regtest run, not a mainnet-scale soak.
 - Mainnet-scale BTC SPV retention/scan soak.
-- Minor Tauri API parity items: `start_node` still ignores the legacy
-  `stakingAddress`/`dataDir` arguments, and `start_staking` does not return the
-  RPC `owned`/warning fields.
-- Independent external review of `803aada` (`5b815c2` plus the wallet-path
-  confinement, import overwrite guard, version bump, and IPC error surfacing).
+- Independent external review of `77744bf` (`803aada` plus the staking
+  ownership warnings and dead-argument cleanup).
 
 ## Recommended order
 
 1. Run the mainnet-scale BTC SPV retention/scan soak and exercise the reorg
    path.
-2. Commission the external review of `803aada` and rebuild the fleet on it.
-3. Review the remaining minor Tauri API parity items.
+2. Commission the external review of `77744bf` and rebuild the fleet on it.
+3. Re-run the desktop build verification on the reviewed candidate.

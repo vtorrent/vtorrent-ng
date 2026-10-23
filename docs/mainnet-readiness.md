@@ -43,13 +43,13 @@
 - [ ] **External security review** — **brief finalized, not yet commissioned**:
       `docs/security-review-brief.md` (scope, deliverables, 2-phase engagement).
       The proposed immutable delivery is
-      `803aada17d5d09417ffec5f9bb9db968b9874bd9` (`bab2456` plus the Playwright
+      `77744bf5eb0f23f9baedb9b749b6204a62ed4f1f` (`bab2456` plus the Playwright
       E2E setup, the live cold-stake browser test, the Vite dev-origin CORS
       allowance, the Tauri path capability fix, the durable cold-stake registry
       persistence fix, the desktop restart/persistence parity fixes, the
-      wallet-path confinement, import overwrite guard, version bump, and IPC
-      error surfacing, and the live desktop journey, restart, and BTC discovery
-      evidence), which includes the governance,
+      wallet-path confinement, import overwrite guard, version bump, IPC error
+      surfacing, and staking ownership warnings, and the live desktop journey,
+      restart, and BTC discovery evidence), which includes the governance,
       reorg, and stake-proof service repairs, the real-bitcoind SPV and swap
       tests, and the independent genesis verifier. The review covers wallet
       encryption (Argon2id + ChaCha20-Poly1305), consensus and governance,
@@ -97,13 +97,13 @@ from uninterrupted soak measurements.
       height 54,123, same tip, staking, 0 errors/restarts, `syncing=false`.
       Sign-off pending. The fleet runs `e7691fb`, which includes the reorg-safe
       BTC wallet state, durable cold-stake script registry, zeroized WIF
-      responses, and the WebSocket token cap; the review candidate `803aada`
+      responses, and the WebSocket token cap; the review candidate `77744bf`
       adds the Playwright browser E2E setup, the Vite dev-origin CORS
       allowance, the Tauri path capability fix, the durable cold-stake registry
       persistence fix, the desktop restart/persistence parity fixes, the
-      wallet-path confinement, import overwrite guard, version bump, and IPC
-      error surfacing, and the live desktop journey, restart, and BTC discovery
-      evidence.
+      wallet-path confinement, import overwrite guard, version bump, IPC error
+      surfacing, and staking ownership warnings, and the live desktop journey,
+      restart, and BTC discovery evidence.
 - [x] **Staking soak**: at least one node staked continuously and produced
       blocks at the expected ~60s average over the full 7-day window
       (`2026-09-29T13:36:22Z` → `2026-10-06T13:36:22Z`): node1 staked 1441
