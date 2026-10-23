@@ -1,4 +1,4 @@
-mod chain_reorg;
+pub(crate) mod chain_reorg;
 mod stake_proof;
 
 use crate::{

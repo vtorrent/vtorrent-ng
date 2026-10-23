@@ -570,6 +570,32 @@ impl Mempool {
                 .unwrap_or(0),
         );
         chain.verify_tx_scripts(&tx, height, timestamp)?;
+        // Block validation requires the cold spending key for ordinary P2CS
+        // spends. The script's hot branch is valid for any transaction, so a
+        // delegate could otherwise reserve the owner's outpoint with a
+        // hot-signed spend that can never confirm.
+        if !tx.is_coinstake() {
+            for (input_index, input) in tx.inputs.iter().enumerate() {
+                let Some(utxo) = chain.get_utxo(&input.prev_txid, input.prev_vout) else {
+                    continue;
+                };
+                if crate::chain::chain_reorg::p2cs_redeem_script(
+                    &utxo.script_pubkey,
+                    &input.script_sig,
+                )
+                .is_some()
+                    && !crate::chain::chain_reorg::p2cs_cold_spend_authorized(
+                        &tx,
+                        input_index,
+                        utxo,
+                    )
+                {
+                    return Err(NodeError::PolicyRejected(
+                        "P2CS spend must be authorized by the cold spending key".into(),
+                    ));
+                }
+            }
+        }
         match self.add_transaction_with_fee(tx, fee) {
             Ok(()) => {
                 tracing::info!(

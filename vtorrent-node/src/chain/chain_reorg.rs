@@ -15,7 +15,7 @@ use super::{compute_supply_delta, AppliedForkBlock, Chain, RolledBackBlock, Utxo
 /// Return the P2CS script governing a spend: the UTXO script itself when it is
 /// a raw P2CS, or the redeem script revealed in the scriptSig when the UTXO is
 /// P2SH-wrapped P2CS.
-fn p2cs_redeem_script(utxo_script: &[u8], script_sig: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn p2cs_redeem_script(utxo_script: &[u8], script_sig: &[u8]) -> Option<Vec<u8>> {
     let script = Script::from_bytes(utxo_script.to_vec()).ok()?;
     match vtorrent_script::classify_script(&script) {
         vtorrent_script::ScriptType::P2CS { .. } => Some(utxo_script.to_vec()),
@@ -47,7 +47,7 @@ fn p2cs_redeem_script(utxo_script: &[u8], script_sig: &[u8]) -> Option<Vec<u8>> 
 /// `<sig> <pubkey> <selector> <redeem_script>` for a P2SH-wrapped one. Checking
 /// the spending-key signature directly is independent of how the selector is
 /// encoded.
-fn p2cs_cold_spend_authorized(tx: &Transaction, input_index: usize, utxo: &Utxo) -> bool {
+pub(crate) fn p2cs_cold_spend_authorized(tx: &Transaction, input_index: usize, utxo: &Utxo) -> bool {
     let Some(p2cs_script) =
         p2cs_redeem_script(&utxo.script_pubkey, &tx.inputs[input_index].script_sig)
     else {

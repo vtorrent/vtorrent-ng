@@ -350,6 +350,33 @@ fn hot_key_cannot_spend_p2cs_as_a_standard_transaction() {
 }
 
 #[test]
+fn hot_key_p2cs_spend_is_rejected_by_mempool() {
+    let (chain, engine, utxos, staking_sk, _spending_sk, script) = funded_p2cs();
+    let candidate = stake_candidate(&chain, &engine, &utxos);
+    let theft = theft_tx(&chain, &candidate, &utxos, &script, &staking_sk, 0x51);
+    let mut mempool = crate::mempool::Mempool::new(100);
+    let error = mempool
+        .admit_with_chain_fee(&chain, theft)
+        .expect_err("hot-key P2CS spend must not enter the mempool");
+    assert!(matches!(
+        error,
+        crate::error::NodeError::PolicyRejected(_)
+    ));
+}
+
+#[test]
+fn cold_key_p2cs_spend_is_admitted_by_mempool() {
+    let (chain, engine, utxos, _staking_sk, spending_sk, script) = funded_p2cs();
+    let candidate = stake_candidate(&chain, &engine, &utxos);
+    let spend = theft_tx(&chain, &candidate, &utxos, &script, &spending_sk, 0x00);
+    let mut mempool = crate::mempool::Mempool::new(100);
+    let fee = mempool
+        .admit_with_chain_fee(&chain, spend)
+        .expect("cold-key P2CS spend must enter the mempool");
+    assert!(fee > 0);
+}
+
+#[test]
 fn cold_key_can_spend_p2cs_as_a_standard_transaction() {
     let (mut chain, engine, utxos, _staking_sk, spending_sk, script) = funded_p2cs();
     let mut candidate = stake_candidate(&chain, &engine, &utxos);
