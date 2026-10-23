@@ -322,8 +322,8 @@ RPC 149; frontend lint, 22 tests, production build, the Playwright smoke test,
 the live cold-stake browser E2E, and the live Tauri desktop journey (including
 restart, durable registry persistence, mempool/staking persistence, BTC
 discovery, wallet-path confinement, IPC error surfacing, and staking ownership
-warnings); 6 Tauri library tests; the full workspace suite (`cargo test --workspace --all-features`), workspace formatting, and
-strict all-feature Clippy pass; the live soak observer exits 0 with the hardened
+warnings); 6 Tauri library tests; the full workspace suite (`cargo test --workspace --all-features`) at `77744bf`,
+workspace formatting, and strict all-feature Clippy pass; the live soak observer exits 0 with the hardened
 checks. The fleet was
 rebuilt to `vtorrent/node:batch-e7691fb` (code `e7691fb`) and a fresh soak
 window started at 2026-10-21T02:47:54Z. The review candidate `77744bf`
