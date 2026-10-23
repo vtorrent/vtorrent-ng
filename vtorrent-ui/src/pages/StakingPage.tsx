@@ -8,6 +8,7 @@ import { useStakingStatus, startStaking, stopStaking, useNodeInfo, createColdSta
 import { isTauri } from '../api'
 import { stakingStartError } from '../utils/stakingOps'
 import HealthStrip from '../components/staking/HealthStrip'
+import ReadinessCard from '../components/staking/ReadinessCard'
 import RewardHistory from '../components/staking/RewardHistory'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -28,12 +29,19 @@ function formatReward(satoshisPerDay: number): string {
   return `${formatVTR(satoshisPerDay)} / day`
 }
 
+function formatDuration(seconds: number): string {
+  if (seconds <= 0) return '—'
+  if (seconds < 3600) return `${Math.ceil(seconds / 60)}m`
+  if (seconds < 86400) return `${Math.ceil(seconds / 3600)}h`
+  return `${Math.ceil(seconds / 86400)}d`
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 type ActionStatus = 'idle' | 'loading' | 'success' | 'error'
 
 export default function StakingPage() {
-  const { keys } = useWallet()
+  const { keys, totalBalance } = useWallet()
   const { data: status, loading, error, refresh } = useStakingStatus(8_000)
   const { data: node, loading: nodeLoading, error: nodeError } = useNodeInfo(10_000)
 
@@ -48,6 +56,8 @@ export default function StakingPage() {
   const expectedReward = status?.expectedRewardPerDay ?? 0
   const lastStakeTime = status?.lastStakeTime ?? null
   const blocksStaked = status?.blocksStaked ?? 0
+  const minStakeAge = status?.minStakeAgeSeconds ?? 6 * 60 * 60
+  const maxStakeAge = status?.maxStakeAgeSeconds ?? 6 * 24 * 60 * 60
 
   // Default to first key if none selected
   const addressOptions = keys.map(k => k.address)
@@ -108,6 +118,14 @@ export default function StakingPage() {
 
       <HealthStrip info={{ data: node, loading: nodeLoading, error: nodeError }} />
 
+      <ReadinessCard
+        status={status}
+        node={node}
+        totalBalance={totalBalance}
+        effectiveAddress={effectiveAddress}
+        isEnabled={isEnabled}
+      />
+
       {/* Status banner */}
       {error && (
         <div className="flex items-center gap-2 px-4 py-3 rounded-lg bg-red-900/20 border border-red-800/30 text-red-400 text-sm">
@@ -131,7 +149,7 @@ export default function StakingPage() {
           accent="vtorrent"
         />
         <StatCard
-          label="Expected Reward"
+          label="Estimated Reward"
           value={formatReward(expectedReward)}
           icon={<TrendingUp size={16} className="text-amber-400" />}
           accent="amber"
@@ -164,9 +182,9 @@ export default function StakingPage() {
           />
           <DetailRow label="Last Stake" value={lastStakedAgo(lastStakeTime)} />
           <DetailRow
-            label="Maturity Requirement"
-            value="100 confirmations"
-            hint="UTXOs must be 100 blocks old to be eligible."
+            label="Maturity Window"
+            value={`${formatDuration(minStakeAge)} to ${formatDuration(maxStakeAge)}`}
+            hint={`UTXOs must be at least ${formatDuration(minStakeAge)} old and no older than ${formatDuration(maxStakeAge)}.`}
           />
         </div>
       </div>
@@ -240,9 +258,10 @@ export default function StakingPage() {
       <div className="flex items-start gap-2 px-4 py-3 rounded-lg bg-navy-900/30 border border-vtorrent-900/20 text-gray-500 text-xs">
         <Info size={12} className="mt-0.5 shrink-0" />
         <span>
-          vTorrent uses Proof-of-Stake consensus. Staking requires a minimum balance of
-          1,000 VTR in a single UTXO that is at least 100 blocks old. Rewards are
-          proportional to your staking weight relative to the total network stake.
+          vTorrent uses Proof-of-Stake consensus. Staking requires at least 1 VTR in a
+          single UTXO that is at least {formatDuration(minStakeAge)} old and no older
+          than {formatDuration(maxStakeAge)}. Rewards are estimates proportional to
+          your staking weight relative to the total network stake.
         </span>
       </div>
     </div>

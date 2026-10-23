@@ -11,10 +11,20 @@ pub struct StakingStatusResult {
     pub staking_address: Option<String>,
     pub eligible_utxos: usize,
     pub total_staking_satoshis: u64,
+    pub eligible_staking_satoshis: u64,
+    pub immature_utxos: usize,
+    pub immature_staking_satoshis: u64,
+    pub expired_utxos: usize,
+    pub expired_staking_satoshis: u64,
+    pub next_maturity_at: Option<u32>,
+    pub next_maturity_in_seconds: Option<u64>,
+    pub min_stake_age_seconds: u64,
+    pub max_stake_age_seconds: u64,
     pub expected_reward_per_day: u64,
     pub last_stake_time: Option<u64>,
     pub blocks_staked: u64,
     pub owned: bool,
+    pub wallet_unlocked: bool,
     pub warning: Option<String>,
 }
 
@@ -69,23 +79,39 @@ pub async fn start_staking(
         )
     };
     let chain = handle.rpc_state.chain.lock().await;
-    let staking_utxos = chain.get_utxos_for_address(&address);
-    let total_staking: u64 = staking_utxos.iter().map(|u| u.value).sum();
-    let eligible_count = staking_utxos.len();
-    let expected_reward_per_day = if total_staking > 0 {
-        ((total_staking as f64 * vtorrent_node::consensus::POS_ANNUAL_RATE) / 365.0) as u64
+    let now = vtorrent_core::time::now_secs() as u32;
+    let snapshot = vtorrent_node::staking::staking_snapshot(&chain, &address, now);
+    let expected_reward_per_day = if snapshot.eligible_satoshis > 0 {
+        ((snapshot.eligible_satoshis as f64 * vtorrent_node::consensus::POS_ANNUAL_RATE) / 365.0)
+            as u64
     } else {
         0
+    };
+    let last_stake_time = {
+        let value = *handle.rpc_state.last_stake_time.read().await;
+        (value != 0).then_some(value as u64)
     };
     Ok(StakingStatusResult {
         enabled: true,
         staking_address: Some(address),
-        eligible_utxos: eligible_count,
-        total_staking_satoshis: total_staking,
+        eligible_utxos: snapshot.eligible_utxos,
+        total_staking_satoshis: snapshot.total_satoshis,
+        eligible_staking_satoshis: snapshot.eligible_satoshis,
+        immature_utxos: snapshot.immature_utxos,
+        immature_staking_satoshis: snapshot.immature_satoshis,
+        expired_utxos: snapshot.expired_utxos,
+        expired_staking_satoshis: snapshot.expired_satoshis,
+        next_maturity_at: snapshot.next_maturity_at,
+        next_maturity_in_seconds: snapshot
+            .next_maturity_at
+            .map(|at| at.saturating_sub(now) as u64),
+        min_stake_age_seconds: snapshot.min_stake_age,
+        max_stake_age_seconds: snapshot.max_stake_age,
         expected_reward_per_day,
-        last_stake_time: None,
+        last_stake_time,
         blocks_staked,
         owned,
+        wallet_unlocked: true,
         warning,
     })
 }
@@ -107,15 +133,31 @@ pub async fn stop_staking(state: State<'_, AppState>) -> Result<StakingStatusRes
     tracing::info!("Staking stopped");
 
     let blocks_staked = *handle.rpc_state.blocks_staked.read().await;
+    let wallet_unlocked = handle.rpc_state.is_wallet_unlocked().await;
+    let (min_stake_age, max_stake_age) = {
+        let chain = handle.rpc_state.chain.lock().await;
+        let params = chain.params();
+        (params.min_stake_age, params.max_stake_age)
+    };
     Ok(StakingStatusResult {
         enabled: false,
         staking_address: None,
         eligible_utxos: 0,
         total_staking_satoshis: 0,
+        eligible_staking_satoshis: 0,
+        immature_utxos: 0,
+        immature_staking_satoshis: 0,
+        expired_utxos: 0,
+        expired_staking_satoshis: 0,
+        next_maturity_at: None,
+        next_maturity_in_seconds: None,
+        min_stake_age_seconds: min_stake_age,
+        max_stake_age_seconds: max_stake_age,
         expected_reward_per_day: 0,
         last_stake_time: None,
         blocks_staked,
         owned: false,
+        wallet_unlocked,
         warning: None,
     })
 }
@@ -143,34 +185,47 @@ pub async fn get_staking_status(state: State<'_, AppState>) -> Result<StakingSta
         None
     };
 
-    let (eligible_utxos, total_staking_satoshis, expected_reward_per_day) = if enabled {
-        if let Some(ref addr) = staking_address {
-            let chain = handle.rpc_state.chain.lock().await;
-            let staking_utxos = chain.get_utxos_for_address(addr);
-            let total: u64 = staking_utxos.iter().map(|u| u.value).sum();
-            let count = staking_utxos.len();
-            let daily = if total > 0 {
-                ((total as f64 * vtorrent_node::consensus::POS_ANNUAL_RATE) / 365.0) as u64
-            } else {
-                0
-            };
-            (count, total, daily)
-        } else {
-            (0, 0, 0)
-        }
+    let wallet_unlocked = handle.rpc_state.is_wallet_unlocked().await;
+    let snapshot_address = staking_address.as_deref().or(wallet_address.as_deref());
+    let now = vtorrent_core::time::now_secs() as u32;
+    let snapshot = if let Some(address) = snapshot_address {
+        let chain = handle.rpc_state.chain.lock().await;
+        vtorrent_node::staking::staking_snapshot(&chain, address, now)
     } else {
-        (0, 0, 0)
+        vtorrent_node::staking::StakingSnapshot::default()
+    };
+    let expected_reward_per_day = if enabled && snapshot.eligible_satoshis > 0 {
+        ((snapshot.eligible_satoshis as f64 * vtorrent_node::consensus::POS_ANNUAL_RATE) / 365.0)
+            as u64
+    } else {
+        0
+    };
+    let last_stake_time = {
+        let value = *handle.rpc_state.last_stake_time.read().await;
+        (value != 0).then_some(value as u64)
     };
 
     Ok(StakingStatusResult {
         enabled,
         staking_address,
-        eligible_utxos,
-        total_staking_satoshis,
+        eligible_utxos: snapshot.eligible_utxos,
+        total_staking_satoshis: snapshot.total_satoshis,
+        eligible_staking_satoshis: snapshot.eligible_satoshis,
+        immature_utxos: snapshot.immature_utxos,
+        immature_staking_satoshis: snapshot.immature_satoshis,
+        expired_utxos: snapshot.expired_utxos,
+        expired_staking_satoshis: snapshot.expired_satoshis,
+        next_maturity_at: snapshot.next_maturity_at,
+        next_maturity_in_seconds: snapshot
+            .next_maturity_at
+            .map(|at| at.saturating_sub(now) as u64),
+        min_stake_age_seconds: snapshot.min_stake_age,
+        max_stake_age_seconds: snapshot.max_stake_age,
         expected_reward_per_day,
-        last_stake_time: None,
+        last_stake_time,
         blocks_staked,
         owned,
+        wallet_unlocked,
         warning,
     })
 }

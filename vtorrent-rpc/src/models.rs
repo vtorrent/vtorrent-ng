@@ -211,10 +211,20 @@ pub struct StakingStatusResponse {
     pub staking_address: Option<String>,
     pub eligible_utxos: usize,
     pub total_staking_satoshis: u64,
+    pub eligible_staking_satoshis: u64,
+    pub immature_utxos: usize,
+    pub immature_staking_satoshis: u64,
+    pub expired_utxos: usize,
+    pub expired_staking_satoshis: u64,
+    pub next_maturity_at: Option<u32>,
+    pub next_maturity_in_seconds: Option<u64>,
+    pub min_stake_age_seconds: u64,
+    pub max_stake_age_seconds: u64,
     /// Expected staking reward per day, in satoshis (divide by COIN for VTR).
     pub expected_reward_per_day: f64,
     pub last_stake_time: Option<u32>,
     pub blocks_staked: u64,
+    pub wallet_unlocked: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

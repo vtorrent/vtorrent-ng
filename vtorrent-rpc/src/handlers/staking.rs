@@ -58,18 +58,20 @@ pub async fn get_staking_status(
     let staking_address = state.staking_address.read().await.clone();
     let blocks_staked = *state.blocks_staked.read().await;
     let last_stake_time_raw = *state.last_stake_time.read().await;
+    let wallet_unlocked = state.is_wallet_unlocked().await;
+    let wallet_address = state.wallet_change_address.read().await.clone();
     let chain = state.chain.lock().await;
 
-    // Sum only the staking address's UTXOs, not the entire network UTXO set.
-    let staking_utxos: Vec<vtorrent_node::chain::Utxo> = staking_address
-        .as_ref()
-        .map(|addr| chain.get_utxos_for_address(addr))
+    // Summarize the staking address, or the hot wallet address before staking
+    // starts, so the readiness UI can show maturity before activation.
+    let snapshot_address = staking_address.as_deref().or(wallet_address.as_deref());
+    let now = vtorrent_core::time::now_secs() as u32;
+    let snapshot = snapshot_address
+        .map(|address| vtorrent_node::staking::staking_snapshot(&chain, address, now))
         .unwrap_or_default();
-    let total_staking: u64 = staking_utxos.iter().map(|u| u.value).sum();
-    let eligible_utxos = staking_utxos.len();
 
-    let expected_per_day = if enabled {
-        total_staking as f64 * 0.05 / 365.0
+    let expected_per_day = if enabled && snapshot.eligible_satoshis > 0 {
+        snapshot.eligible_satoshis as f64 * vtorrent_node::consensus::POS_ANNUAL_RATE / 365.0
     } else {
         0.0
     };
@@ -77,8 +79,19 @@ pub async fn get_staking_status(
     Ok(Json(StakingStatusResponse {
         enabled,
         staking_address,
-        eligible_utxos,
-        total_staking_satoshis: total_staking,
+        eligible_utxos: snapshot.eligible_utxos,
+        total_staking_satoshis: snapshot.total_satoshis,
+        eligible_staking_satoshis: snapshot.eligible_satoshis,
+        immature_utxos: snapshot.immature_utxos,
+        immature_staking_satoshis: snapshot.immature_satoshis,
+        expired_utxos: snapshot.expired_utxos,
+        expired_staking_satoshis: snapshot.expired_satoshis,
+        next_maturity_at: snapshot.next_maturity_at,
+        next_maturity_in_seconds: snapshot
+            .next_maturity_at
+            .map(|at| at.saturating_sub(now) as u64),
+        min_stake_age_seconds: snapshot.min_stake_age,
+        max_stake_age_seconds: snapshot.max_stake_age,
         expected_reward_per_day: expected_per_day,
         last_stake_time: if last_stake_time_raw == 0 {
             None
@@ -86,6 +99,7 @@ pub async fn get_staking_status(
             Some(last_stake_time_raw)
         },
         blocks_staked,
+        wallet_unlocked,
     }))
 }
 

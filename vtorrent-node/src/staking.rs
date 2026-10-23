@@ -52,6 +52,79 @@ struct CommitScratch {
     tree: MerkleScratch,
 }
 
+/// Maturity classification for a staking UTXO.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UtxoMaturity {
+    Immature,
+    Eligible,
+    Expired,
+}
+
+/// Classify a coin age against the consensus maturity window.
+pub fn classify_utxo_age(age_seconds: u64, min_stake_age: u64, max_stake_age: u64) -> UtxoMaturity {
+    if age_seconds < min_stake_age {
+        UtxoMaturity::Immature
+    } else if age_seconds > max_stake_age {
+        UtxoMaturity::Expired
+    } else {
+        UtxoMaturity::Eligible
+    }
+}
+
+/// Read-only maturity snapshot for the staking readiness UI.
+#[derive(Debug, Clone, Default)]
+pub struct StakingSnapshot {
+    pub total_utxos: usize,
+    pub total_satoshis: u64,
+    pub eligible_utxos: usize,
+    pub eligible_satoshis: u64,
+    pub immature_utxos: usize,
+    pub immature_satoshis: u64,
+    pub expired_utxos: usize,
+    pub expired_satoshis: u64,
+    pub next_maturity_at: Option<u32>,
+    pub min_stake_age: u64,
+    pub max_stake_age: u64,
+}
+
+/// Summarize the staking address's UTXOs by maturity.
+pub fn staking_snapshot(chain: &crate::chain::Chain, address: &str, now: u32) -> StakingSnapshot {
+    let params = chain.params();
+    let mut snapshot = StakingSnapshot {
+        min_stake_age: params.min_stake_age,
+        max_stake_age: params.max_stake_age,
+        ..StakingSnapshot::default()
+    };
+    for utxo in chain.get_utxos_for_address(address) {
+        snapshot.total_utxos += 1;
+        snapshot.total_satoshis = snapshot.total_satoshis.saturating_add(utxo.value);
+        let age = now.saturating_sub(utxo.timestamp) as u64;
+        match classify_utxo_age(age, params.min_stake_age, params.max_stake_age) {
+            UtxoMaturity::Eligible => {
+                snapshot.eligible_utxos += 1;
+                snapshot.eligible_satoshis = snapshot.eligible_satoshis.saturating_add(utxo.value);
+            }
+            UtxoMaturity::Immature => {
+                snapshot.immature_utxos += 1;
+                snapshot.immature_satoshis = snapshot.immature_satoshis.saturating_add(utxo.value);
+                let mature_at = utxo
+                    .timestamp
+                    .saturating_add(params.min_stake_age.min(u32::MAX as u64) as u32);
+                snapshot.next_maturity_at = Some(
+                    snapshot
+                        .next_maturity_at
+                        .map_or(mature_at, |current| current.min(mature_at)),
+                );
+            }
+            UtxoMaturity::Expired => {
+                snapshot.expired_utxos += 1;
+                snapshot.expired_satoshis = snapshot.expired_satoshis.saturating_add(utxo.value);
+            }
+        }
+    }
+    snapshot
+}
+
 pub struct StakingEngine {
     /// The address whose UTXOs are used for staking.
     pub address: String,
@@ -1138,5 +1211,18 @@ mod conflict_tests {
                 vec![],
             )
             .is_none());
+    }
+}
+
+#[cfg(test)]
+mod maturity_tests {
+    use super::{classify_utxo_age, UtxoMaturity};
+
+    #[test]
+    fn classify_utxo_age_boundaries() {
+        assert_eq!(classify_utxo_age(59, 60, 100), UtxoMaturity::Immature);
+        assert_eq!(classify_utxo_age(60, 60, 100), UtxoMaturity::Eligible);
+        assert_eq!(classify_utxo_age(100, 60, 100), UtxoMaturity::Eligible);
+        assert_eq!(classify_utxo_age(101, 60, 100), UtxoMaturity::Expired);
     }
 }

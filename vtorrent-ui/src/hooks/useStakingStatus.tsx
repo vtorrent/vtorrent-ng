@@ -21,9 +21,21 @@ export interface StakingStatus {
   stakingAddress: string | null
   eligibleUtxos: number
   totalStakingSatoshis: number
+  eligibleStakingSatoshis: number
+  immatureUtxos: number
+  immatureStakingSatoshis: number
+  expiredUtxos: number
+  expiredStakingSatoshis: number
+  nextMaturityAt: number | null
+  nextMaturityInSeconds: number | null
+  minStakeAgeSeconds: number
+  maxStakeAgeSeconds: number
   expectedRewardPerDay: number
   lastStakeTime: number | null
   blocksStaked: number
+  owned?: boolean
+  walletUnlocked?: boolean
+  warning?: string | null
 }
 
 // ─── RPC helpers ──────────────────────────────────────────────────────────────
