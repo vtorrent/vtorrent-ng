@@ -270,6 +270,21 @@ fn verify_p2cs_signature(
             redirected
         )));
     }
+    // R1 also forbids destroying the principal: a coinstake that returns only
+    // a marker to the P2CS script redirects nothing, but burns the delegated
+    // funds. Require at least the staked value to be re-locked.
+    let relocked: u64 = coinstake
+        .outputs
+        .iter()
+        .filter(|o| o.value > 0 && o.script_pubkey == utxo.script_pubkey)
+        .map(|o| o.value)
+        .fold(0u64, u64::saturating_add);
+    if relocked < utxo.value {
+        return Err(SpvError::HeaderValidation(format!(
+            "P2CS coinstake re-locks {} satoshis below the staked value {}",
+            relocked, utxo.value
+        )));
+    }
     Ok(())
 }
 
@@ -1128,38 +1143,29 @@ mod pos_tests {
             claim_address: None,
             claim_signature: None,
         };
-        let sighash = coinstake.sighash(0, &utxo.script_pubkey);
-        let mut sig = secp
-            .sign_ecdsa(&Message::from_digest(sighash), &staking_sk)
-            .serialize_der()
-            .to_vec();
-        sig.push(0x01);
-        let pk = staking_pk.serialize();
-        let mut ss = Vec::new();
-        ss.push(sig.len() as u8);
-        ss.extend_from_slice(&sig);
-        ss.push(pk.len() as u8);
-        ss.extend_from_slice(&pk);
-        ss.push(0x51); // OP_TRUE
-        coinstake.inputs[0].script_sig = ss;
+        let sign = |tx: &mut Transaction, sk: &SecretKey, pk: &secp256k1::PublicKey| {
+            let sighash = tx.sighash(0, &utxo.script_pubkey);
+            let mut sig = secp
+                .sign_ecdsa(&Message::from_digest(sighash), sk)
+                .serialize_der()
+                .to_vec();
+            sig.push(0x01);
+            let pk = pk.serialize();
+            let mut ss = Vec::new();
+            ss.push(sig.len() as u8);
+            ss.extend_from_slice(&sig);
+            ss.push(pk.len() as u8);
+            ss.extend_from_slice(&pk);
+            ss.push(0x51); // OP_TRUE
+            tx.inputs[0].script_sig = ss;
+        };
 
+        sign(&mut coinstake, &staking_sk, &staking_pk);
         verify_p2cs_signature(&coinstake, &utxo).expect("valid P2CS coinstake");
 
         // Wrong key (spending key) must fail.
         let mut bad = coinstake.clone();
-        let mut sig2 = secp
-            .sign_ecdsa(&Message::from_digest(sighash), &spending_sk)
-            .serialize_der()
-            .to_vec();
-        sig2.push(0x01);
-        let pk2 = spending_pk.serialize();
-        let mut ss2 = Vec::new();
-        ss2.push(sig2.len() as u8);
-        ss2.extend_from_slice(&sig2);
-        ss2.push(pk2.len() as u8);
-        ss2.extend_from_slice(&pk2);
-        ss2.push(0x51);
-        bad.inputs[0].script_sig = ss2;
+        sign(&mut bad, &spending_sk, &spending_pk);
         assert!(
             verify_p2cs_signature(&bad, &utxo).is_err(),
             "spending key must not sign a coinstake"
@@ -1175,9 +1181,20 @@ mod pos_tests {
                 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0x88, 0xac,
             ],
         });
+        sign(&mut redirect, &staking_sk, &staking_pk);
         assert!(
             verify_p2cs_signature(&redirect, &utxo).is_err(),
             "redirecting value must be rejected"
+        );
+
+        // R1: a coinstake that re-locks only a marker burns the principal and
+        // must be rejected even with a valid staking-key signature.
+        let mut burn = coinstake.clone();
+        burn.outputs[0].value = 1;
+        sign(&mut burn, &staking_sk, &staking_pk);
+        assert!(
+            verify_p2cs_signature(&burn, &utxo).is_err(),
+            "burning the P2CS principal must be rejected"
         );
     }
 }
