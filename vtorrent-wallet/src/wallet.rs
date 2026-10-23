@@ -142,6 +142,10 @@ pub struct Wallet {
     data: WalletData,
     /// Passphrase used to encrypt this wallet (held in memory while unlocked).
     passphrase: zeroize::Zeroizing<String>,
+    /// A generated TOTP secret awaiting confirmation. It is intentionally not
+    /// part of `WalletData`, so setup cannot enable 2FA before the user proves
+    /// possession of the authenticator secret.
+    pending_otp: Option<crate::otp::OtpConfig>,
 }
 
 impl Drop for Wallet {
@@ -170,6 +174,7 @@ impl Wallet {
                 last_modified: now,
             },
             passphrase: passphrase.to_string().into(),
+            pending_otp: None,
         };
         // Generate the first receiving address
         wallet.generate_key(Some("Primary Address"))?;
@@ -197,6 +202,7 @@ impl Wallet {
         Ok(Self {
             data,
             passphrase: passphrase.to_string().into(),
+            pending_otp: None,
         })
     }
 
@@ -427,19 +433,54 @@ impl Wallet {
 
     // ─── 2FA / OTP ────────────────────────────────────────────────────────────
 
-    /// Enable TOTP 2FA on the wallet.
-    /// Returns the OtpConfig for the Tauri command layer to extract URI and secret.
+    /// Begin TOTP 2FA enrollment.
+    ///
+    /// The generated secret is held as pending state and is not written to the
+    /// wallet file. Call [`Self::confirm_pending_2fa`] with a valid code to
+    /// activate it. Returns the pending config so the caller can display the
+    /// URI and secret.
     pub fn enable_2fa(&mut self) -> Result<OtpConfig> {
+        if self.has_2fa() {
+            return Err(WalletError::OtpAlreadyEnabled);
+        }
         let secret = TotpSecret::generate();
         let config = OtpConfig::new(&secret);
-        self.data.otp_config = Some(config.clone());
-        self.data.last_modified = unix_now();
+        self.pending_otp = Some(config.clone());
         Ok(config)
+    }
+
+    /// Whether a TOTP enrollment is waiting for confirmation.
+    pub fn has_pending_2fa(&self) -> bool {
+        self.pending_otp.is_some()
+    }
+
+    /// Confirm a pending TOTP enrollment with a code from the authenticator.
+    ///
+    /// Returns `Ok(true)` and activates 2FA when the code matches. An invalid
+    /// code returns `Ok(false)` and leaves the pending secret in place so the
+    /// user can retry. The caller must persist the wallet after `Ok(true)`.
+    pub fn confirm_pending_2fa(&mut self, code: &str) -> Result<bool> {
+        let Some(pending) = self.pending_otp.as_ref() else {
+            return Err(WalletError::OtpNotEnabled);
+        };
+        match pending.verify_code(code) {
+            Ok(()) => {}
+            Err(WalletError::OtpInvalidCode) => return Ok(false),
+            Err(error) => return Err(error),
+        }
+        let mut config = pending.clone();
+        config.enabled = true;
+        config.enabled_at = unix_now();
+        self.data.otp_config = Some(config);
+        self.pending_otp = None;
+        self.data.last_modified = unix_now();
+        Ok(true)
     }
 
     /// Disable TOTP 2FA on the wallet.
     pub fn disable_2fa(&mut self) -> Result<()> {
         self.data.otp_config = None;
+        self.pending_otp = None;
         self.data.last_modified = unix_now();
         Ok(())
     }
@@ -532,6 +573,7 @@ impl Wallet {
         Ok(Self {
             data,
             passphrase: passphrase.to_string().into(),
+            pending_otp: None,
         })
     }
 }
@@ -592,6 +634,15 @@ mod tests {
     }
 
     #[test]
+    fn enrollment_does_not_enable_2fa_before_confirmation() {
+        let mut wallet = Wallet::create("test-pass").unwrap();
+        wallet.enable_2fa().unwrap();
+        assert!(!wallet.has_2fa());
+        let json = wallet.to_json_file("test-pass").unwrap();
+        assert!(Wallet::from_json_file(&json, "test-pass", None).is_ok());
+    }
+
+    #[test]
     fn test_wallet_2fa_enable_and_verify() {
         let mut wallet = Wallet::create("test-pass").expect("Create failed");
         let config = wallet.enable_2fa().expect("Enable 2FA failed");
@@ -600,11 +651,16 @@ mod tests {
         let base32 = config.secret_base32();
         assert!(uri.starts_with("otpauth://totp/"));
         assert!(!base32.is_empty());
-        assert!(wallet.has_2fa());
+        assert!(!wallet.has_2fa(), "enrollment must stay pending");
+        assert!(wallet.has_pending_2fa());
 
-        // Generate the current code and verify it
+        // Generate the current code and confirm enrollment.
         let secret = TotpSecret::from_base32(&base32).expect("Base32 decode failed");
         let code = secret.current_code().expect("Code generation failed");
+        assert!(wallet.confirm_pending_2fa(&code).expect("Confirm failed"));
+        assert!(wallet.has_2fa());
+        assert!(!wallet.has_pending_2fa());
+
         let valid = wallet.verify_2fa(&code).expect("Verify failed");
         assert!(valid, "Valid code should be accepted");
     }
@@ -614,6 +670,9 @@ mod tests {
         let mut wallet = Wallet::create("test-pass").expect("Create failed");
         let config = wallet.enable_2fa().expect("Enable 2FA failed");
         let base32 = config.secret_base32();
+        let secret = TotpSecret::from_base32(&base32).expect("Base32 decode failed");
+        let code = secret.current_code().expect("Code generation failed");
+        assert!(wallet.confirm_pending_2fa(&code).expect("Confirm failed"));
 
         let passphrase = "test-pass";
         let json = wallet.to_json_file(passphrase).expect("Save failed");

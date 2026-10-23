@@ -44,6 +44,7 @@ interface WalletContextType extends WalletState {
   createWallet: (passphrase: string, net?: { network?: string, seeds?: string[] }) => Promise<void>
   importLegacyWallet: (walletDatBase64: string, legacyPassphrase: string | undefined, newPassphrase: string) => Promise<ImportResult>
   enable2FA: () => Promise<{ uri: string; secret: string }>
+  verify2FA: (code: string) => Promise<boolean>
   disable2FA: (otpCode: string) => Promise<void>
   generateAddress: (label?: string) => Promise<string>
   sendVtr: (toAddress: string, amountSatoshis: number) => Promise<string>
@@ -333,8 +334,13 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   const enable2FA = useCallback(async () => {
     const result = await invoke<TauriEnable2FAResult>('enable_2fa')
-    setState(prev => ({ ...prev, has2FA: true }))
     return { uri: result.uri, secret: result.secret }
+  }, [])
+
+  const verify2FA = useCallback(async (code: string) => {
+    const valid = await invoke<boolean>('verify_2fa', { code })
+    if (valid) setState(prev => ({ ...prev, has2FA: true }))
+    return valid
   }, [])
 
   const disable2FA = useCallback(async (otpCode: string) => {
@@ -378,6 +384,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       createWallet,
       importLegacyWallet,
       enable2FA,
+      verify2FA,
       disable2FA,
       generateAddress,
       sendVtr,

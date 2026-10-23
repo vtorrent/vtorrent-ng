@@ -466,7 +466,6 @@ pub fn enable_2fa(state: State<AppState>) -> Result<Enable2FAResult> {
     let wallet = guard.as_mut().ok_or(TauriError::WalletNotInitialized)?;
 
     let config = wallet.enable_2fa().map_err(TauriError::from)?;
-    persist_wallet(&state, wallet)?;
 
     Ok(Enable2FAResult {
         uri: config.to_uri("vTorrent-Wallet"),
@@ -477,8 +476,18 @@ pub fn enable_2fa(state: State<AppState>) -> Result<Enable2FAResult> {
 
 #[tauri::command]
 pub fn verify_2fa(state: State<AppState>, code: String) -> Result<bool> {
-    let guard = state.wallet.lock().unwrap();
-    let wallet = guard.as_ref().ok_or(TauriError::WalletNotInitialized)?;
+    let mut guard = state.wallet.lock().unwrap();
+    let wallet = guard.as_mut().ok_or(TauriError::WalletNotInitialized)?;
+
+    if wallet.has_pending_2fa() {
+        let valid = wallet
+            .confirm_pending_2fa(&code)
+            .map_err(TauriError::from)?;
+        if valid {
+            persist_wallet(&state, wallet)?;
+        }
+        return Ok(valid);
+    }
 
     let valid = wallet.verify_2fa(&code).map_err(TauriError::from)?;
     Ok(valid)
@@ -1207,6 +1216,37 @@ mod tests {
         *rpc.btc_network.write().await = bitcoin::Network::Regtest;
         let error = broadcast_btc_tx(&rpc, &[]).await.unwrap_err();
         assert!(error.contains("peer required"), "{error}");
+    }
+
+    #[test]
+    fn staged_2fa_enrollment_persists_only_after_confirmation() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+        let dir = std::env::temp_dir().join(format!("vtr-tauri-2fa-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wallet.vtr");
+        *state.wallet.lock().unwrap() = Some(Wallet::create("password").unwrap());
+        *state.wallet_path.lock().unwrap() = Some(path.clone());
+
+        let result = enable_2fa(state.clone()).unwrap();
+        assert!(!state.wallet.lock().unwrap().as_ref().unwrap().has_2fa());
+        assert!(
+            !path.exists(),
+            "setup must not persist an active 2FA config"
+        );
+
+        let secret = vtorrent_wallet::otp::TotpSecret::from_base32(&result.secret).unwrap();
+        let code = secret.current_code().unwrap();
+        assert!(verify_2fa(state.clone(), code.clone()).unwrap());
+        assert!(state.wallet.lock().unwrap().as_ref().unwrap().has_2fa());
+        assert!(path.exists(), "confirmation must persist the active config");
+
+        let loaded = Wallet::load(&path, "password", Some(&code)).unwrap();
+        assert!(loaded.has_2fa());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

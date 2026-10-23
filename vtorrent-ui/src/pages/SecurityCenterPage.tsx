@@ -6,7 +6,7 @@ import QRCode from 'qrcode.react'
 type TwoFAStep = 'idle' | 'setup' | 'verify' | 'done'
 
 export default function SecurityCenterPage() {
-  const { has2FA, enable2FA, disable2FA } = useWallet()
+  const { has2FA, enable2FA, verify2FA, disable2FA } = useWallet()
 
   const [twoFAStep, setTwoFAStep] = useState<TwoFAStep>('idle')
   const [totpUri, setTotpUri] = useState('')
@@ -38,8 +38,12 @@ export default function SecurityCenterPage() {
     setLoading(true)
     setError('')
     try {
-      // In real app, verify the code against the TOTP secret before confirming
       if (verifyCode.length !== 6) throw new Error('Enter a 6-digit code')
+      const valid = await verify2FA(verifyCode)
+      if (!valid) {
+        setError('Invalid code. Check your authenticator app and try again.')
+        return
+      }
       setTwoFAStep('done')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Verification failed')

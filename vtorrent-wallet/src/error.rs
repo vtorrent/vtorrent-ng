@@ -29,6 +29,9 @@ pub enum WalletError {
     #[error("2FA is not enabled on this wallet")]
     OtpNotEnabled,
 
+    #[error("2FA is already enabled; disable it before enrolling again")]
+    OtpAlreadyEnabled,
+
     #[error("Wallet is locked — unlock with passphrase first")]
     WalletLocked,
 
