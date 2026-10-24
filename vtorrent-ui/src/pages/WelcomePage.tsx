@@ -18,6 +18,56 @@ export default function WelcomePage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [showUnlock, setShowUnlock] = useState(false)
+  const [goal, setGoal] = useState<string | null>(null)
+
+  const goals = [
+    {
+      id: 'recover',
+      label: 'Recover old VTR',
+      hint: 'Import a legacy wallet.dat or restore an encrypted backup.',
+      actions: [
+        { label: 'Import legacy wallet', to: '/import' },
+        { label: 'Restore backup', to: '/restore' },
+      ],
+    },
+    {
+      id: 'payments',
+      label: 'Send or receive VTR',
+      hint: 'Create a new wallet or open an existing one.',
+      actions: [
+        { label: 'Create wallet', to: '/create' },
+        { label: 'Open wallet', unlock: true },
+      ],
+    },
+    {
+      id: 'stake',
+      label: 'Stake VTR',
+      hint: 'Create or open a wallet, then start staking from the Staking page.',
+      actions: [
+        { label: 'Create wallet', to: '/create' },
+        { label: 'Open wallet', unlock: true },
+      ],
+    },
+    {
+      id: 'trade',
+      label: 'Trade for BTC',
+      hint: 'Create or open a wallet, then open P2P Trade.',
+      actions: [
+        { label: 'Create wallet', to: '/create' },
+        { label: 'Open wallet', unlock: true },
+      ],
+    },
+    {
+      id: 'seed',
+      label: 'Seed torrents',
+      hint: 'Create or open a wallet, then add a torrent.',
+      actions: [
+        { label: 'Create wallet', to: '/create' },
+        { label: 'Open wallet', unlock: true },
+      ],
+    },
+  ]
+  const selectedGoal = goals.find(item => item.id === goal)
 
   const handleUnlock = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -70,6 +120,47 @@ export default function WelcomePage() {
       {!showUnlock ? (
         /* Action cards */
         <div className="w-full max-w-sm space-y-3">
+          <div>
+            <p className="text-xs text-gray-500 mb-2">What do you want to do first?</p>
+            <div className="flex flex-wrap gap-2">
+              {goals.map(item => (
+                <button
+                  key={item.id}
+                  type="button"
+                  aria-pressed={goal === item.id}
+                  onClick={() => setGoal(item.id)}
+                  className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-vtorrent-400 ${
+                    goal === item.id
+                      ? 'bg-vtorrent-500/15 text-vtorrent-300 border-vtorrent-500/40'
+                      : 'bg-navy-900/40 text-gray-400 border-navy-700/60 hover:text-gray-200'
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            {selectedGoal && (
+              <div className="mt-3 rounded-xl border border-vtorrent-900/40 bg-navy-900/50 p-3">
+                <p className="text-xs text-gray-400">{selectedGoal.hint}</p>
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {selectedGoal.actions.map(action => (
+                    <button
+                      key={action.label}
+                      type="button"
+                      onClick={() => {
+                        if ('unlock' in action && action.unlock) setShowUnlock(true)
+                        else if ('to' in action && action.to) navigate(action.to)
+                      }}
+                      className="btn-secondary text-xs"
+                    >
+                      {action.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
           <NetworkPicker network={network} onChange={setNetwork} seeds={seeds} onSeedsChange={setSeeds} />
           {/* Open existing wallet */}
           <button

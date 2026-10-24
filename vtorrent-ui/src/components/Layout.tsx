@@ -10,18 +10,38 @@ import { useTheme } from '../hooks/useTheme'
 import AppIcon from './AppIcon'
 import clsx from 'clsx'
 
-const navItems = [
-  { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/activity',  icon: History,         label: 'Activity'  },
-  { to: '/torrents',  icon: Download,        label: 'Torrents'  },
-  { to: '/trade',     icon: ArrowLeftRight,  label: 'P2P Trade' },
-  { to: '/staking',   icon: Zap,             label: 'Staking'   },
-  { to: '/earnings',  icon: Coins,           label: 'Earnings'  },
-  { to: '/governance', icon: Landmark,       label: 'Governance' },
-  { to: '/claim',     icon: Gift,            label: 'Claim VTR' },
-  { to: '/btc',       icon: Bitcoin,         label: 'Bitcoin'  },
-  { to: '/security',  icon: Shield,          label: 'Security'  },
-  { to: '/settings',  icon: Settings,        label: 'Settings'  },
+const navGroups = [
+  {
+    label: 'Wallet',
+    items: [
+      { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+      { to: '/activity',  icon: History,         label: 'Activity'  },
+      { to: '/btc',       icon: Bitcoin,         label: 'Bitcoin'   },
+      { to: '/claim',     icon: Gift,            label: 'Claim VTR' },
+    ],
+  },
+  {
+    label: 'Earn',
+    items: [
+      { to: '/staking',   icon: Zap,             label: 'Staking'   },
+      { to: '/torrents',  icon: Download,        label: 'Torrents'  },
+      { to: '/earnings',  icon: Coins,           label: 'Earnings'  },
+    ],
+  },
+  {
+    label: 'Trade',
+    items: [
+      { to: '/trade',     icon: ArrowLeftRight,  label: 'P2P Trade' },
+      { to: '/governance', icon: Landmark,       label: 'Governance' },
+    ],
+  },
+  {
+    label: 'System',
+    items: [
+      { to: '/security',  icon: Shield,          label: 'Security'  },
+      { to: '/settings',  icon: Settings,        label: 'Settings'  },
+    ],
+  },
 ]
 
 export default function Layout() {
@@ -49,12 +69,12 @@ export default function Layout() {
   return (
     <div className="flex h-screen overflow-hidden gradient-bg">
       {/* Sidebar */}
-      <aside className="w-56 flex-shrink-0 bg-navy-900/80 border-r border-vtorrent-900/30 flex flex-col">
+      <aside className="w-16 lg:w-56 flex-shrink-0 bg-navy-900/80 border-r border-vtorrent-900/30 flex flex-col">
         {/* Logo */}
-        <div className="px-5 py-5 border-b border-vtorrent-900/30">
-          <div className="flex items-center gap-2.5">
+        <div className="px-2 lg:px-5 py-5 border-b border-vtorrent-900/30">
+          <div className="flex items-center justify-center lg:justify-start gap-2.5">
             <AppIcon size={32} />
-            <div>
+            <div className="hidden lg:block">
               <p className="text-white font-semibold text-sm leading-none">vTorrent</p>
               <p className="text-vtorrent-500 text-xs mt-0.5">v2.0.0-beta.3</p>
             </div>
@@ -62,36 +82,48 @@ export default function Layout() {
         </div>
 
         {/* Balance summary */}
-        <div className="px-4 py-4 border-b border-vtorrent-900/30">
+        <div className="hidden lg:block px-4 py-4 border-b border-vtorrent-900/30">
           <p className="text-xs text-gray-500 mb-1">Total Balance</p>
           <p className="text-vtorrent-300 font-mono font-medium text-sm">{formatVTR(totalBalance)}</p>
           <p className="text-xs text-gray-500 mt-1">{keys.length} address{keys.length !== 1 ? 'es' : ''}</p>
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 px-3 py-3 space-y-1 overflow-y-auto">
-          {navItems.map(({ to, icon: Icon, label }) => (
-            <NavLink
-              key={to}
-              to={to}
-              className={({ isActive }) => clsx(
-                'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150',
-                isActive
-                  ? 'bg-vtorrent-500/15 text-vtorrent-300 border border-vtorrent-500/20'
-                  : 'text-gray-400 hover:text-gray-200 hover:bg-navy-800/60'
-              )}
-            >
-              <Icon size={16} />
-              {label}
-            </NavLink>
+        <nav aria-label="Primary" className="flex-1 px-2 lg:px-3 py-3 space-y-4 overflow-y-auto">
+          {navGroups.map(group => (
+            <div key={group.label}>
+              <p className="hidden lg:block px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-600">
+                {group.label}
+              </p>
+              <div className="space-y-1">
+                {group.items.map(({ to, icon: Icon, label }) => (
+                  <NavLink
+                    key={to}
+                    to={to}
+                    title={label}
+                    aria-label={label}
+                    className={({ isActive }) => clsx(
+                      'flex items-center justify-center lg:justify-start gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150',
+                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-vtorrent-400 focus-visible:ring-offset-2 focus-visible:ring-offset-navy-900',
+                      isActive
+                        ? 'bg-vtorrent-500/15 text-vtorrent-300 border border-vtorrent-500/20'
+                        : 'text-gray-400 hover:text-gray-200 hover:bg-navy-800/60'
+                    )}
+                  >
+                    <Icon size={16} />
+                    <span className="hidden lg:inline">{label}</span>
+                  </NavLink>
+                ))}
+              </div>
+            </div>
           ))}
         </nav>
 
         {/* Node Status Panel */}
-        <div className="px-4 py-4 border-t border-vtorrent-900/30 space-y-3">
+        <div className="px-2 lg:px-4 py-4 border-t border-vtorrent-900/30 space-y-3">
 
           {/* Online / Offline indicator */}
-          <div className="flex items-center justify-between">
+          <div className="hidden lg:flex items-center justify-between">
             <div className="flex items-center gap-2">
               {nodeLoading && !nodeInfo ? (
                 <RefreshCw size={11} className="text-gray-600 animate-spin" />
@@ -114,14 +146,14 @@ export default function Layout() {
             )}
           </div>
           {nodeInfo && nodeInfo.network !== 'vtorrent-mainnet' && (
-            <span className="inline-flex w-fit items-center text-[10px] font-bold tracking-widest text-amber-400 border border-amber-500/40 bg-amber-500/10 rounded px-1.5 py-0.5">
+            <span className="hidden lg:inline-flex w-fit items-center text-[10px] font-bold tracking-widest text-amber-400 border border-amber-500/40 bg-amber-500/10 rounded px-1.5 py-0.5">
               TESTNET
             </span>
           )}
 
           {/* Block height */}
           {isOnline && (
-            <div className="space-y-1.5">
+            <div className="hidden lg:block space-y-1.5">
               <div className="flex items-center justify-between">
                 <span className="text-xs text-gray-600">Block</span>
                 <span className="text-xs text-gray-400 font-mono">
@@ -170,19 +202,32 @@ export default function Layout() {
 
           {/* 2FA status */}
           {has2FA && (
-            <div className="badge-green text-xs">
+            <div className="hidden lg:flex badge-green text-xs">
               <Shield size={10} />
               2FA Active
             </div>
           )}
 
+          <div className="lg:hidden flex justify-center">
+            <span
+              className={clsx(
+                'w-2 h-2 rounded-full',
+                isOnline ? 'bg-emerald-400' : 'bg-gray-600'
+              )}
+              title={isOnline ? 'Node online' : 'Node offline'}
+              aria-label={isOnline ? 'Node online' : 'Node offline'}
+            />
+          </div>
+
           {/* Notifications */}
           <button
             onClick={() => navigate('/notifications')}
-            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-gray-200 hover:bg-navy-800/60 transition-all duration-150"
+            aria-label="Notifications"
+            title="Notifications"
+            className="w-full flex items-center justify-center lg:justify-start gap-2 px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-gray-200 hover:bg-navy-800/60 transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-vtorrent-400 focus-visible:ring-offset-2 focus-visible:ring-offset-navy-900"
           >
             <Bell size={14} />
-            Notifications
+            <span className="hidden lg:inline">Notifications</span>
             {unread > 0 && (
               <span className="ml-auto badge-green text-xs px-1.5 py-0.5">{unread}</span>
             )}
@@ -191,26 +236,29 @@ export default function Layout() {
           {/* Theme toggle */}
           <button
             onClick={toggleTheme}
-            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-gray-200 hover:bg-navy-800/60 transition-all duration-150"
+            className="w-full flex items-center justify-center lg:justify-start gap-2 px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-gray-200 hover:bg-navy-800/60 transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-vtorrent-400 focus-visible:ring-offset-2 focus-visible:ring-offset-navy-900"
             title={theme === 'legacy' ? 'Switch to modern theme' : 'Switch to legacy theme'}
+            aria-label={theme === 'legacy' ? 'Switch to modern theme' : 'Switch to legacy theme'}
           >
             <Palette size={14} />
-            {theme === 'legacy' ? 'Modern Theme' : 'Legacy Theme'}
+            <span className="hidden lg:inline">{theme === 'legacy' ? 'Modern Theme' : 'Legacy Theme'}</span>
           </button>
 
           {/* Lock button */}
           <button
             onClick={handleLock}
-            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-red-400 hover:bg-red-900/10 transition-all duration-150"
+            aria-label="Lock Wallet"
+            title="Lock Wallet"
+            className="w-full flex items-center justify-center lg:justify-start gap-2 px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-red-400 hover:bg-red-900/10 transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-vtorrent-400 focus-visible:ring-offset-2 focus-visible:ring-offset-navy-900"
           >
             <Lock size={14} />
-            Lock Wallet
+            <span className="hidden lg:inline">Lock Wallet</span>
           </button>
         </div>
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-y-auto">
+      <main className="flex-1 min-w-0 overflow-y-auto">
         <Outlet />
       </main>
     </div>
