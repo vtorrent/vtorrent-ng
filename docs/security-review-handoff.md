@@ -8,7 +8,8 @@ and deliverables are in `docs/security-review-brief.md`.
 | Item | Value |
 | --- | --- |
 | Pinned commit | `70ea7b9dfb3c65dcfb30cb03ec8c168c5d3cbffd` |
-| Brief | Latest `docs/security-review-brief.md` from `main`; it pins this commit |
+| Post-review fix | `1901bb9` (mainnet two-peer BTC filter-header agreement; review the delta) |
+| Brief | Latest `docs/security-review-brief.md` from `main`; it pins the candidate |
 | Toolchain | Rust 1.90.0 (`rust-toolchain.toml`) |
 | Dependency lock | Archive the `Cargo.lock` used for the build; it is gitignored |
 | Fleet image | Core soak: `vtorrent/node:batch-e7691fb`; release build: rebuild from `70ea7b9` |
@@ -20,7 +21,7 @@ capability fix, the durable cold-stake registry persistence fix, the desktop
 restart/persistence parity fixes, the wallet-path confinement, import
 overwrite guard, version bump, IPC error surfacing, and staking ownership
 warnings, and the live desktop journey, restart, and BTC discovery evidence.
-The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; verified 2FA enrollment, the torrent control availability, the reviewed send quote, verified encrypted backup and restore, the guided swap workspace, the staking readiness assistant, the activity and recovery center, the cold-stake delegation wizard, node settings and diagnostics, torrent controls and reward accounting, and navigation grouping and accessibility improvements, the external review remediation, the activity journal, and the icon-label audit are in `70ea7b9`. The external review should verify them.
+The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; verified 2FA enrollment, the torrent control availability, the reviewed send quote, verified encrypted backup and restore, the guided swap workspace, the staking readiness assistant, the activity and recovery center, the cold-stake delegation wizard, node settings and diagnostics, torrent controls and reward accounting, and navigation grouping and accessibility improvements, the external review remediation, the activity journal, and the icon-label audit are in `70ea7b9`. The external review should verify them. `1901bb9` is a post-review mainnet BTC SPV fix: it authenticates filter headers across two compact-filter peers and separates authentication from the filter download. Review the delta with the candidate.
 
 Verify the commit resolves before sending:
 

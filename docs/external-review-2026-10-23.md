@@ -42,6 +42,25 @@ wallet and backup remain encrypted with the wallet passphrase, and the UI now
 states that 2FA protects app unlock, not the backup. If 2FA-bound encryption is
 required, that remains an open design change.
 
+## Post-review delta (2026-10-24)
+
+A live mainnet BTC SPV probe found a defect outside the original 15 findings:
+a fresh mainnet filter-header chain requires agreement from two
+compact-filter peers, but the sync loop connected one. The scan failed with
+`compact-filter headers require agreement from 2 peers (have 1)`.
+
+`1901bb9` fixes this by collecting up to two compact-filter peers (configured
+peer plus DNS seeds, 5 s connect timeout), authenticating filter headers across
+them, and separating authentication from the filter download so the multi-peer
+scan does not re-authenticate with one peer. After the fix the probe synced
+972,892 headers and scanned 100,001 BIP-158 blocks in 14m52s at
+181,952–182,452 kB RSS with no errors. The full workspace suite at `1901bb9`
+passed: 48 test groups, 1,100 passed, 0 failed, 7 ignored. See
+`docs/btc-spv-soak-plan.md`.
+
+The completed review candidate remains `70ea7b9`; an independent reviewer
+should include the `1901bb9` delta or review `1901bb9` directly.
+
 ## High findings
 
 ### 1. 2FA does not protect the encrypted wallet or backup at rest

@@ -2137,3 +2137,21 @@ observation recorded 7,281/7,281 Prometheus samples per node with 0 gaps,
 1,794 blocks staked this run, median cadence 61 s, and no slow blocks. BTC SPV
 remains disabled on the fleet; the separate probe is at 684 BTC headers with
 RSS about 106.2 MiB and no errors.
+
+## 2026-10-24 — mainnet BTC SPV probe
+
+A separate mainnet SPV probe (`/tmp/vtr-btc-mainnet`, configured peer
+`89.58.60.208:8333`, retention 100,000) exercised the real mainnet header and
+BIP-158 paths without touching the core fleet.
+
+The first fresh run synced 972,886 headers but the UTXO scan failed:
+`compact-filter headers require agreement from 2 peers (have 1)`. The sync loop
+only connected one compact-filter peer. `1901bb9` adds multi-peer
+authentication and separates it from the filter download.
+
+After the fix, the probe synced 972,892 headers (retained floor 872,892) and
+scanned 100,001 BIP-158 blocks in 14m52s. RSS was 181,952 kB after header sync
+and 182,452 kB after the scan; no ERROR/panic. Two compact-filter peers were
+connected. The full workspace suite at `1901bb9` passed: 48 test groups,
+1,100 passed, 0 failed, 7 ignored. The probe remains running for a 24 h window.
+This is probe evidence, not the fleet BTC-SPV soak.

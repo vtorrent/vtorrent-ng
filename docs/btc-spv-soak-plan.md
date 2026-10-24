@@ -78,6 +78,22 @@ test passed again at `6402d87` in 23.50 s (VTR funding
 followed the test's 13 new BTC blocks at 08:59:47Z and scanned through height
 684; RSS stayed 106,328 kB.
 
+**Mainnet probe (2026-10-24):** a separate mainnet probe (data dir
+`/tmp/vtr-btc-mainnet`, RPC `127.0.0.1:22545`, P2P `22546`, configured peer
+`89.58.60.208:8333`, `--btc-header-retention 100000`) found a mainnet-only
+defect: a fresh filter-header chain requires agreement from two
+compact-filter peers, but the sync loop connected one, so the scan failed with
+`compact-filter headers require agreement from 2 peers (have 1)`. `1901bb9`
+fixes this by authenticating filter headers across up to two compact-filter
+peers (configured peer plus DNS seeds, 5 s connect timeout) and by splitting
+authentication from the filter download so the multi-peer scan does not
+re-authenticate with one peer. After the fix, the probe synced 972,892 headers
+(retained floor 872,892) and scanned 100,001 BIP-158 blocks in 14m52s with RSS
+181,952–182,452 kB and no ERROR/panic. Two peers were connected. The probe
+remains running for a 24 h window; this is a probe, not the fleet soak.
+Because the scan starts at the retained floor, funds older than 872,892 need
+`--btc-birthday`.
+
 ### Phase B — active soak (drive the header chain and a swap)
 1. Generate regtest BTC blocks against the local bitcoind
    (`vtr-btc-regtest`) at a controlled rate; watch header count vs RSS. This is

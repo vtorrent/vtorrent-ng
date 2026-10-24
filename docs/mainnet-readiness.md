@@ -239,11 +239,19 @@ actions, operator approval.
       (`docs/btc-spv-multinode-reorg-test.md`). A full HTLC swap now settles
       against real BTC SPV, including the maker BTC claim and taker VTR claim,
       and a conflicting-spend test proves a reorged-out funding output
-      disappears after restart. Swaps are enabled at mainnet launch, so the
-      active swap soak and separate maker and taker VTR node validation are
-      launch gates. Set `--btc-birthday` to the wallet creation height to scan
-      funds older than the retained window. See `docs/btc-spv-soak-plan.md`.
-- [~] **BTC SPV holds ~40 MiB and is not independently soaked** — regtest isolated soak is flat (~160 MiB, 140 headers); **mainnet scale (≥100 MiB at ~870k headers) still unvalidated**. BTC SPV (only
+      disappears after restart. A mainnet-scale probe on 2026-10-24 synced
+      972,892 headers with `--btc-header-retention 100000` and scanned 100,001
+      BIP-158 blocks in ~15 min at 181,952–182,452 kB RSS; `1901bb9` fixes the
+      two-peer compact-filter agreement needed for a fresh mainnet filter
+      chain. Swaps are enabled at mainnet launch, so the active swap soak and
+      separate maker and taker VTR node validation are launch gates. Set
+      `--btc-birthday` to the wallet creation height to scan funds older than
+      the retained window. See `docs/btc-spv-soak-plan.md`.
+- [~] **BTC SPV holds ~40 MiB and is not independently soaked** — regtest
+      isolated soak is flat (~160 MiB, 140 headers); the 2026-10-24 mainnet
+      probe synced 972,892 headers and scanned 100,001 BIP-158 blocks at
+      181,952–182,452 kB RSS, so the mainnet-scale header/scan path is
+      validated. Active swap soak and fleet BTC SPV remain. BTC SPV (only
       enabled when `--btc-*` is passed, for atomic swaps) held **~40–47 MiB** on
       node1 and confounded the RSS measurements. It was disabled for the current
       window to isolate core-node memory. Restore before swap testing and soak
