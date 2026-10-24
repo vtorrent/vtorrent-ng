@@ -14,7 +14,7 @@ import {
 import { formatVTR } from '../hooks/useWallet'
 import { useActivity, type ActivityItem } from '../hooks/useNode'
 
-type StatusFilter = 'all' | 'pending' | 'confirmed'
+type StatusFilter = 'all' | 'broadcast' | 'pending' | 'confirmed' | 'reorged' | 'failed'
 
 function txKind(txType: string): 'receive' | 'send' | 'stake' | 'other' {
   const value = txType.toLowerCase()
@@ -40,9 +40,15 @@ function KindIcon({ kind }: { kind: ReturnType<typeof txKind> }) {
 }
 
 function StatusBadge({ status }: { status: ActivityItem['status'] }) {
-  return status === 'confirmed'
-    ? <span className="badge-green">Confirmed</span>
-    : <span className="badge-yellow">Pending</span>
+  if (status === 'confirmed') return <span className="badge-green">Confirmed</span>
+  if (status === 'pending') return <span className="badge-yellow">Pending</span>
+  if (status === 'broadcast') {
+    return <span className="text-xs px-2 py-0.5 rounded-full bg-blue-900/40 text-blue-300">Broadcast</span>
+  }
+  if (status === 'reorged') {
+    return <span className="text-xs px-2 py-0.5 rounded-full bg-amber-900/40 text-amber-300">Reorged</span>
+  }
+  return <span className="text-xs px-2 py-0.5 rounded-full bg-red-900/40 text-red-300">Failed</span>
 }
 
 export default function ActivityPage() {
@@ -109,7 +115,7 @@ export default function ActivityPage() {
           />
         </div>
         <div className="flex gap-1 bg-navy-900/60 rounded-xl p-1">
-          {(['all', 'pending', 'confirmed'] as const).map(status => (
+          {(['all', 'broadcast', 'pending', 'confirmed', 'reorged', 'failed'] as const).map(status => (
             <button
               key={status}
               onClick={() => setStatusFilter(status)}
@@ -264,6 +270,12 @@ export default function ActivityPage() {
                 </span>
               </div>
             </div>
+
+            {selected.error && (
+              <p className="text-xs text-red-300 bg-red-900/15 border border-red-800/30 rounded-lg px-3 py-2">
+                {selected.error}
+              </p>
+            )}
 
             {selected.status === 'pending' && (
               <p className="text-xs text-amber-300 bg-amber-900/15 border border-amber-800/30 rounded-lg px-3 py-2">

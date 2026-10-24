@@ -61,13 +61,14 @@ export interface TransactionLookup {
 
 export interface ActivityItem {
   txid: string
-  status: 'confirmed' | 'pending'
+  status: 'confirmed' | 'pending' | 'broadcast' | 'reorged' | 'failed'
   txType: string
   amountSatoshis: number
   timestamp: number
   blockHeight: number
   confirmations: number
   feeSatoshis: number
+  error?: string | null
 }
 
 export interface TorrentSession {

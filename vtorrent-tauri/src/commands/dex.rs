@@ -375,6 +375,7 @@ pub async fn vtr_claim(
     )
     .await
     .map_err(TauriError::from)?;
+    crate::activity_journal::record_broadcast(state.inner(), &result.txid, "swap", 0);
     Ok(SwapActionResult {
         order_id: result.order_id,
         txid: result.txid,
@@ -429,6 +430,7 @@ pub async fn swap_refund(
     )
     .await
     .map_err(TauriError::from)?;
+    crate::activity_journal::record_broadcast(state.inner(), &result.txid, "refund", 0);
     Ok(SwapActionResult {
         order_id: result.order_id,
         txid: result.txid,

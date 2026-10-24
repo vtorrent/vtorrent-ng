@@ -708,7 +708,11 @@ pub async fn send_vtr(
             fee_rate,
             wif.as_str(),
         )
-        .map_err(|e| TauriError::NodeError(format!("Transaction build failed: {}", e)))?
+        .map_err(|e| {
+            let message = format!("Transaction build failed: {}", e);
+            crate::activity_journal::record_failed(state.inner(), &message);
+            TauriError::NodeError(message)
+        })?
     };
 
     let recipient_script = vtorrent_wallet::tx_builder::p2pkh_script_pubkey(&to_address)
@@ -730,7 +734,11 @@ pub async fn send_vtr(
         let mut mempool = handle.rpc_state.mempool.lock().await;
         mempool
             .admit_with_chain_fee(&chain, tx.clone())
-            .map_err(|e| TauriError::NodeError(format!("Mempool rejected tx: {}", e)))?;
+            .map_err(|e| {
+                let message = format!("Mempool rejected tx: {}", e);
+                crate::activity_journal::record_failed(state.inner(), &message);
+                TauriError::NodeError(message)
+            })?;
     }
 
     // Relay the transaction to peers. The RPC path uses the same channel; the
@@ -744,6 +752,7 @@ pub async fn send_vtr(
         }
     }
 
+    crate::activity_journal::record_broadcast(state.inner(), &txid, "send", amount_satoshis);
     tracing::info!(
         "Sent {} satoshis to {} (txid: {})",
         amount_satoshis,
@@ -893,14 +902,22 @@ pub async fn fund_cold_stake(
         fee_rate,
         wif.as_str(),
     )
-    .map_err(|e| TauriError::NodeError(format!("Cold-stake funding build failed: {e}")))?;
+    .map_err(|e| {
+        let message = format!("Cold-stake funding build failed: {e}");
+        crate::activity_journal::record_failed(state.inner(), &message);
+        TauriError::NodeError(message)
+    })?;
     let txid = hex::encode(tx.txid());
     {
         let chain = handle.rpc_state.chain.lock().await;
         let mut mempool = handle.rpc_state.mempool.lock().await;
         mempool
             .admit_with_chain_fee(&chain, tx.clone())
-            .map_err(|e| TauriError::NodeError(format!("Mempool rejected tx: {e}")))?;
+            .map_err(|e| {
+                let message = format!("Mempool rejected tx: {e}");
+                crate::activity_journal::record_failed(state.inner(), &message);
+                TauriError::NodeError(message)
+            })?;
     }
     if let Some(sender) = &handle.rpc_state.tx_submit {
         if sender.try_send(tx).is_err() {
@@ -910,6 +927,7 @@ pub async fn fund_cold_stake(
             );
         }
     }
+    crate::activity_journal::record_broadcast(state.inner(), &txid, "send", amount_satoshis);
     tracing::info!(
         "Funded cold-stake script with {} satoshis (txid: {})",
         amount_satoshis,

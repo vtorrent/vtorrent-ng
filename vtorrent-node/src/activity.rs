@@ -15,6 +15,7 @@ pub struct ActivityEntry {
     pub block_height: u32,
     pub confirmations: u32,
     pub fee_satoshis: u64,
+    pub error: Option<String>,
 }
 
 /// Merge confirmed history with pending mempool transactions.
@@ -51,6 +52,7 @@ pub fn wallet_activity(
                 block_height: height,
                 confirmations: best.saturating_sub(height).saturating_add(1),
                 fee_satoshis: fee,
+                error: None,
             },
         )
         .collect();
@@ -91,6 +93,7 @@ pub fn wallet_activity(
             block_height: 0,
             confirmations: 0,
             fee_satoshis: pending_fee(chain, &tx),
+            error: None,
         });
     }
 

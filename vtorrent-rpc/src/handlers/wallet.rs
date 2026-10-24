@@ -782,6 +782,7 @@ pub async fn get_activity(
                 block_height: entry.block_height,
                 confirmations: entry.confirmations,
                 fee_satoshis: entry.fee_satoshis,
+                error: entry.error,
             })
             .collect(),
     ))

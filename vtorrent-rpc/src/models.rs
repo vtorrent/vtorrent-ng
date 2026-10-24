@@ -239,6 +239,7 @@ pub struct ActivityResponse {
     pub block_height: u32,
     pub confirmations: u32,
     pub fee_satoshis: u64,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

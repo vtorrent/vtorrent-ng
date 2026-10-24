@@ -506,6 +506,7 @@ pub struct ActivityResult {
     pub block_height: u32,
     pub confirmations: u32,
     pub fee_satoshis: u64,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -595,13 +596,20 @@ pub async fn get_activity(
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
     let chain = handle.rpc_state.chain.lock().await;
     let mempool = handle.rpc_state.mempool.lock().await;
-    let entries = vtorrent_node::activity::wallet_activity(
-        &chain,
-        &mempool,
-        &addresses,
-        limit.unwrap_or(100).clamp(1, 500),
-        vtorrent_core::time::now_secs() as u32,
-    );
+    let now = vtorrent_core::time::now_secs() as u32;
+    let limit = limit.unwrap_or(100).clamp(1, 500);
+    let mut entries =
+        vtorrent_node::activity::wallet_activity(&chain, &mempool, &addresses, limit, now);
+    drop(chain);
+    drop(mempool);
+    drop(guard);
+    crate::activity_journal::merge(state.inner(), &mut entries, now);
+    entries.sort_by(|a, b| {
+        b.timestamp
+            .cmp(&a.timestamp)
+            .then_with(|| b.status.cmp(&a.status))
+    });
+    entries.truncate(limit);
     Ok(entries
         .into_iter()
         .map(|entry| ActivityResult {
@@ -613,6 +621,7 @@ pub async fn get_activity(
             block_height: entry.block_height,
             confirmations: entry.confirmations,
             fee_satoshis: entry.fee_satoshis,
+            error: entry.error,
         })
         .collect())
 }
