@@ -28,15 +28,14 @@
 | 12 | Low | BTC peer setting is saved without validation | Fixed in `a7c4848` |
 | 13 | Low | Seed-ratio target is global, but the UI describes it per session | Fixed in `a7c4848` |
 | 14 | Low | Activity notification links can point outside the loaded window | Fixed in `a7c4848` |
-| 15 | Low | Focus outline and icon labels are inconsistent | Partially fixed in `a7c4848`; remaining icon-button audit |
+| 15 | Low | Focus outline and icon labels are inconsistent | Fixed in `70ea7b9` |
 
 ## Remediation (2026-10-23)
 
 `a7c4848` fixes the two High findings, the Medium findings 3, 4, 6, and 7, and
 Low findings 8–14. `1526456` adds the persistent activity journal for
-broadcast, confirmed, reorged, and failed states. Finding 15 is partially fixed:
-the global focus outline and primary refresh controls have labels, but a full
-icon-button audit remains.
+broadcast, confirmed, reorged, and failed states. `70ea7b9` completes the
+icon-only control audit with accessible labels.
 
 The 2FA finding is resolved as a threat-model and documentation issue: the
 wallet and backup remain encrypted with the wallet passphrase, and the UI now
