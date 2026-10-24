@@ -18,7 +18,7 @@
 | 2 | High | The reviewed send quote is not bound to the broadcast transaction | Fixed in `a7c4848` |
 | 3 | Medium | Cold-stake delegate key is session-only; auto-resume uses the hot key | Fixed in `a7c4848` |
 | 4 | Medium | Activity pending rows always report a zero fee and can duplicate confirmed rows | Fixed in `a7c4848` |
-| 5 | Medium | Activity center does not implement reorged or failed states | Scoped to pending/confirmed; reorged/failed tracking is a follow-up |
+| 5 | Medium | Activity center does not implement reorged or failed states | Fixed in `1526456` |
 | 6 | Medium | Torrent rate-limiter sleeps are not cancellation-aware | Fixed in `a7c4848` |
 | 7 | Medium | Cold-stake spending-key safety is only a UI checkbox | Fixed in `a7c4848` |
 | 8 | Low | RPC imported staking WIF is not zeroized | Fixed in `a7c4848` |
@@ -33,10 +33,10 @@
 ## Remediation (2026-10-23)
 
 `a7c4848` fixes the two High findings, the Medium findings 3, 4, 6, and 7, and
-Low findings 8–14. Finding 5 is now explicitly scoped to pending/confirmed
-activity; reorged/failed tracking remains a follow-up. Finding 15 is partially
-fixed: the global focus outline and primary refresh controls have labels, but a
-full icon-button audit remains.
+Low findings 8–14. `1526456` adds the persistent activity journal for
+broadcast, confirmed, reorged, and failed states. Finding 15 is partially fixed:
+the global focus outline and primary refresh controls have labels, but a full
+icon-button audit remains.
 
 The 2FA finding is resolved as a threat-model and documentation issue: the
 wallet and backup remain encrypted with the wallet passphrase, and the UI now
