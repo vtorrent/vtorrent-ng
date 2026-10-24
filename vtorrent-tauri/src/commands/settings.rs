@@ -82,6 +82,20 @@ pub async fn get_app_info(state: State<'_, AppState>) -> Result<AppInfo> {
     Ok(app_info(state.inner()).await)
 }
 
+fn validate_btc_peer(peer: &str) -> Result<()> {
+    let Some((host, port)) = peer.rsplit_once(':') else {
+        return Err(TauriError::InvalidInput(
+            "BTC peer must be host:port".into(),
+        ));
+    };
+    if host.is_empty() || port.parse::<u16>().is_err() {
+        return Err(TauriError::InvalidInput(
+            "BTC peer must be host:port".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn set_btc_peer(state: State<'_, AppState>, peer: Option<String>) -> Result<()> {
     let guard = state.node.lock().await;
@@ -91,6 +105,9 @@ pub async fn set_btc_peer(state: State<'_, AppState>, peer: Option<String>) -> R
     let peer = peer
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    if let Some(peer) = &peer {
+        validate_btc_peer(peer)?;
+    }
     *handle.rpc_state.btc_peer.write().await = peer;
     Ok(())
 }
@@ -144,4 +161,18 @@ pub async fn get_diagnostics(state: State<'_, AppState>) -> Result<String> {
 #[tauri::command]
 pub fn restart_app(app: tauri::AppHandle) {
     app.restart();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_btc_peer;
+
+    #[test]
+    fn btc_peer_requires_host_and_port() {
+        assert!(validate_btc_peer("127.0.0.1:18448").is_ok());
+        assert!(validate_btc_peer("[::1]:18448").is_ok());
+        assert!(validate_btc_peer("127.0.0.1").is_err());
+        assert!(validate_btc_peer(":18448").is_err());
+        assert!(validate_btc_peer("host:not-a-port").is_err());
+    }
 }

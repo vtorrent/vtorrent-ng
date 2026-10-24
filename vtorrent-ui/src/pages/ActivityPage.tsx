@@ -58,6 +58,7 @@ export default function ActivityPage() {
   const selected = selectedTxid
     ? activity.find(item => item.txid === selectedTxid) ?? null
     : null
+  const missingSelected = Boolean(selectedTxid && !selected)
   const needle = query.trim().toLowerCase()
   const filtered = activity.filter(item => {
     if (statusFilter !== 'all' && item.status !== statusFilter) return false
@@ -91,6 +92,7 @@ export default function ActivityPage() {
           disabled={loading}
           className="p-2 rounded-lg text-gray-400 hover:text-gray-200 hover:bg-navy-800/60 transition-all"
           title="Refresh activity"
+          aria-label="Refresh activity"
         >
           <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
         </button>
@@ -126,6 +128,21 @@ export default function ActivityPage() {
       {error && (
         <div className="text-xs text-red-400 card">
           Could not load activity: {error}
+        </div>
+      )}
+
+      {missingSelected && (
+        <div className="card flex items-center justify-between gap-3 text-xs text-gray-400">
+          <span>
+            Transaction <span className="font-mono">{selectedTxid}</span> is not in the
+            recent activity window.
+          </span>
+          <button
+            onClick={() => setSelectedTxid(null)}
+            className="text-vtorrent-400 hover:text-vtorrent-300"
+          >
+            Dismiss
+          </button>
         </div>
       )}
 

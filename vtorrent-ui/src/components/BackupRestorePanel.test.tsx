@@ -49,5 +49,6 @@ describe('backup panel', () => {
     await waitFor(() => expect(wallet.create).toHaveBeenCalledWith('password', undefined))
     expect(await screen.findByText('/tmp/vtorrent-backup.vtrbackup')).toBeInTheDocument()
     expect(screen.getByText(/3 files/)).toBeInTheDocument()
+    expect(screen.getByText(/2FA protects app unlock, not the backup/)).toBeInTheDocument()
   })
 })

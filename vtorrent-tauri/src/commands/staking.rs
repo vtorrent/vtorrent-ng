@@ -68,8 +68,12 @@ pub async fn start_staking(
     *handle.rpc_state.staking_enabled.write().await = true;
     *handle.rpc_state.staking_address.write().await = Some(address.clone());
     *handle.rpc_state.staking_key_imported.write().await = imported;
-    vtorrent_rpc::handlers::staking::persist_staking_intent(&handle.rpc_state, Some(&address))
-        .await?;
+    vtorrent_rpc::handlers::staking::persist_staking_intent(
+        &handle.rpc_state,
+        Some(&address),
+        imported,
+    )
+    .await?;
 
     tracing::info!("Staking started for address: {}", address);
 
@@ -135,7 +139,7 @@ pub async fn stop_staking(state: State<'_, AppState>) -> Result<StakingStatusRes
     *handle.rpc_state.staking_enabled.write().await = false;
     *handle.rpc_state.staking_address.write().await = None;
     *handle.rpc_state.staking_key_imported.write().await = false;
-    vtorrent_rpc::handlers::staking::persist_staking_intent(&handle.rpc_state, None).await?;
+    vtorrent_rpc::handlers::staking::persist_staking_intent(&handle.rpc_state, None, false).await?;
 
     tracing::info!("Staking stopped");
 

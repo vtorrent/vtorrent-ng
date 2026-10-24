@@ -670,7 +670,15 @@ pub async fn resume_staking_if_requested(state: &AppState) {
                         .and_then(|a| a.as_str())
                         .map(|s| s.to_string())
                 });
-            if enabled {
+            let cold_stake = serde_json::from_str::<serde_json::Value>(&blob)
+                .ok()
+                .and_then(|v| v.get("cold_stake").and_then(|c| c.as_bool()))
+                .unwrap_or(false);
+            if enabled && cold_stake {
+                tracing::warn!(
+                    "Cold-stake intent requires re-importing the staking key after restart; not auto-resuming with the hot wallet key"
+                );
+            } else if enabled {
                 if let Some(address) = addr {
                     tracing::info!("Auto-resuming staking for {} after unlock", address);
                     if let Some(tx) = &state.staking_control {

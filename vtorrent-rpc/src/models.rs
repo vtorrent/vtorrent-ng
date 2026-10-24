@@ -265,7 +265,7 @@ pub struct StakingRewardsQuery {
 #[derive(Serialize, Deserialize)]
 pub struct StakingStartRequest {
     pub address: String,
-    pub staking_wif: Option<String>,
+    pub staking_wif: Option<zeroize::Zeroizing<String>>,
     pub passphrase: zeroize::Zeroizing<String>,
     pub otp_code: Option<String>,
 }

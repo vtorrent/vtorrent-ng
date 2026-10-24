@@ -57,6 +57,7 @@ describe('send review', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     wallet.quote.mockResolvedValue({
+      quoteId: 'quote-1',
       fromAddress: 'VTestAddress1234567890',
       toAddress: 'VRecipient1234567890',
       amountSatoshis: 150_000_000,
@@ -99,7 +100,8 @@ describe('send review', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm & Send' }))
     await waitFor(() => expect(wallet.send).toHaveBeenCalledWith(
       'VRecipient1234567890',
-      150_000_000
+      150_000_000,
+      'quote-1'
     ))
     expect(await screen.findByText('Transaction Sent')).toBeInTheDocument()
     expect(screen.getByText('a'.repeat(64))).toBeInTheDocument()

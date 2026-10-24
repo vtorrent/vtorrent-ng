@@ -62,6 +62,15 @@ describe('activity page', () => {
     expect(screen.getByText(/This transaction is in the mempool/)).toBeInTheDocument()
   })
 
+  it('explains when a linked transaction is outside the window', () => {
+    render(
+      <MemoryRouter initialEntries={['/activity?txid=missing-tx']}>
+        <ActivityPage />
+      </MemoryRouter>
+    )
+    expect(screen.getByText(/not in the recent activity window/)).toBeInTheDocument()
+  })
+
   it('filters by search text', () => {
     render(
       <MemoryRouter initialEntries={['/activity']}>

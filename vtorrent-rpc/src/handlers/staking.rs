@@ -6,7 +6,11 @@ use crate::error::{RpcError, RpcResult};
 use crate::models::*;
 use crate::state::AppState;
 
-pub async fn persist_staking_intent(state: &AppState, address: Option<&str>) -> RpcResult<()> {
+pub async fn persist_staking_intent(
+    state: &AppState,
+    address: Option<&str>,
+    cold_stake: bool,
+) -> RpcResult<()> {
     let Some(path) = &state.staking_state_path else {
         return Ok(());
     };
@@ -16,7 +20,11 @@ pub async fn persist_staking_intent(state: &AppState, address: Option<&str>) -> 
     // disk; run on the blocking pool instead.
     tokio::task::spawn_blocking(move || match address {
         Some(addr) => {
-            let blob = serde_json::json!({ "enabled": true, "address": addr });
+            let blob = serde_json::json!({
+                "enabled": true,
+                "address": addr,
+                "cold_stake": cold_stake,
+            });
             let bytes = serde_json::to_vec_pretty(&blob).map_err(|e| {
                 RpcError::Internal(format!("Staking intent serialize failed: {}", e))
             })?;
@@ -143,7 +151,7 @@ pub async fn start_staking(
     // will be rejected by the chain.
     let imported = req.staking_wif.is_some();
     let wif = match req.staking_wif.clone() {
-        Some(wif) => Some(zeroize::Zeroizing::new(wif)),
+        Some(wif) => Some(wif),
         None => state.wallet_wif.read().await.clone(),
     };
 
@@ -161,7 +169,7 @@ pub async fn start_staking(
     *state.staking_enabled.write().await = true;
     *state.staking_address.write().await = Some(req.address.clone());
     *state.staking_key_imported.write().await = imported;
-    persist_staking_intent(&state, Some(&req.address)).await?;
+    persist_staking_intent(&state, Some(&req.address), imported).await?;
 
     Ok(Json(json!({
         "success": true,
@@ -178,7 +186,7 @@ pub async fn stop_staking(State(state): State<Arc<AppState>>) -> RpcResult<Json<
     *state.staking_enabled.write().await = false;
     *state.staking_address.write().await = None;
     *state.staking_key_imported.write().await = false;
-    persist_staking_intent(&state, None).await?;
+    persist_staking_intent(&state, None, false).await?;
     Ok(Json(
         json!({ "success": true, "message": "Staking stopped" }),
     ))

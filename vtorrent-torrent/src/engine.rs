@@ -764,7 +764,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                                 });
                                 s.record_upload(&peer_key, block.len() as u64);
                             }
-                            limits.consume_upload(block.len() as u64).await;
+                            limits.consume_upload(block.len() as u64, &cancel).await;
                         }
                     }
                 }
@@ -844,7 +844,9 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                                         // to ensure determinism and avoid double-count.
                                         s.bytes_downloaded = verified_bytes;
                                     }
-                                    limits.consume_download(piece_data.len() as u64).await;
+                                    limits
+                                        .consume_download(piece_data.len() as u64, &cancel)
+                                        .await;
                                 }
                             }
                         }

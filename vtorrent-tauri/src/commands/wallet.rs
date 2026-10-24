@@ -214,6 +214,7 @@ pub fn create_wallet(
 ) -> Result<WalletInfo> {
     ensure_node_stopped(state.inner())?;
     state.cold_stake_scripts.lock().unwrap().clear();
+    state.prepared_sends.lock().unwrap().clear();
     let passphrase = zeroize::Zeroizing::new(passphrase);
     if passphrase.len() < 8 {
         return Err(TauriError::InvalidInput(
@@ -301,6 +302,7 @@ pub async fn open_wallet(
 pub async fn lock_wallet(state: State<'_, AppState>) -> Result<()> {
     *state.wallet.lock().unwrap() = None;
     state.cold_stake_scripts.lock().unwrap().clear();
+    state.prepared_sends.lock().unwrap().clear();
     if let Some(handle) = state.node.lock().await.as_ref() {
         handle.rpc_state.lock_wallet().await;
     }
@@ -340,6 +342,7 @@ pub fn import_legacy_wallet(
 ) -> Result<ImportResult> {
     ensure_node_stopped(state.inner())?;
     state.cold_stake_scripts.lock().unwrap().clear();
+    state.prepared_sends.lock().unwrap().clear();
     let wallet_dat_base64 = zeroize::Zeroizing::new(wallet_dat_base64);
     let passphrase = passphrase.map(zeroize::Zeroizing::new);
     let new_wallet_passphrase = zeroize::Zeroizing::new(new_wallet_passphrase);
@@ -480,11 +483,17 @@ pub fn verify_2fa(state: State<AppState>, code: String) -> Result<bool> {
     let wallet = guard.as_mut().ok_or(TauriError::WalletNotInitialized)?;
 
     if wallet.has_pending_2fa() {
+        let pending = wallet.pending_2fa_config();
         let valid = wallet
             .confirm_pending_2fa(&code)
             .map_err(TauriError::from)?;
         if valid {
-            persist_wallet(&state, wallet)?;
+            if let Err(error) = persist_wallet(&state, wallet) {
+                if let Some(pending) = pending {
+                    wallet.restore_pending_2fa(pending);
+                }
+                return Err(error);
+            }
         }
         return Ok(valid);
     }
@@ -512,6 +521,7 @@ pub fn disable_2fa(state: State<AppState>, code: String) -> Result<()> {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VtrQuote {
+    pub quote_id: String,
     pub from_address: String,
     pub to_address: String,
     pub amount_satoshis: u64,
@@ -599,14 +609,34 @@ pub async fn quote_vtr(
         .map(|output| output.value)
         .unwrap_or(0);
 
+    let input_count = tx.inputs.len();
+    let quote_id = format!(
+        "{:016x}{:016x}",
+        rand::random::<u64>(),
+        rand::random::<u64>()
+    );
+    {
+        let mut prepared = state.prepared_sends.lock().unwrap();
+        prepared
+            .retain(|_, entry| entry.created_at.elapsed() < std::time::Duration::from_secs(300));
+        prepared.insert(
+            quote_id.clone(),
+            crate::state::PreparedSend {
+                tx,
+                created_at: std::time::Instant::now(),
+            },
+        );
+    }
+
     Ok(VtrQuote {
+        quote_id,
         from_address,
         to_address,
         amount_satoshis,
         fee_satoshis,
         total_debit_satoshis: amount_satoshis.saturating_add(fee_satoshis),
         change_satoshis,
-        input_count: tx.inputs.len(),
+        input_count,
         fee_rate,
         network: handle.network.clone(),
     })
@@ -617,6 +647,7 @@ pub async fn send_vtr(
     state: tauri::State<'_, AppState>,
     to_address: String,
     amount_satoshis: u64,
+    quote_id: Option<String>,
 ) -> Result<String> {
     if to_address.trim().is_empty() {
         return Err(TauriError::InvalidInput(
@@ -656,15 +687,41 @@ pub async fn send_vtr(
         let mempool = handle.rpc_state.mempool.lock().await;
         mempool.recommended_fee_rate().max(1)
     };
-    let tx = vtorrent_wallet_service::build_payment(
-        &utxos,
-        &to_address,
-        &from_address,
-        amount_satoshis,
-        fee_rate,
-        wif.as_str(),
-    )
-    .map_err(|e| TauriError::NodeError(format!("Transaction build failed: {}", e)))?;
+    let tx = if let Some(quote_id) = quote_id {
+        let mut prepared = state.prepared_sends.lock().unwrap();
+        prepared
+            .retain(|_, entry| entry.created_at.elapsed() < std::time::Duration::from_secs(300));
+        prepared
+            .remove(&quote_id)
+            .ok_or_else(|| {
+                TauriError::InvalidInput(
+                    "Send quote expired or not found; review the transaction again".into(),
+                )
+            })?
+            .tx
+    } else {
+        vtorrent_wallet_service::build_payment(
+            &utxos,
+            &to_address,
+            &from_address,
+            amount_satoshis,
+            fee_rate,
+            wif.as_str(),
+        )
+        .map_err(|e| TauriError::NodeError(format!("Transaction build failed: {}", e)))?
+    };
+
+    let recipient_script = vtorrent_wallet::tx_builder::p2pkh_script_pubkey(&to_address)
+        .map_err(|e| TauriError::NodeError(e.to_string()))?;
+    if !tx
+        .outputs
+        .iter()
+        .any(|output| output.script_pubkey == recipient_script && output.value == amount_satoshis)
+    {
+        return Err(TauriError::InvalidInput(
+            "Send quote does not match the requested recipient or amount".into(),
+        ));
+    }
 
     let txid = hex::encode(tx.txid());
 
@@ -717,16 +774,16 @@ pub async fn create_cold_stake(
     locktime: u32,
     label: Option<String>,
 ) -> Result<ColdStakeKeys> {
-    if state.wallet.lock().unwrap().is_none() {
-        return Err(TauriError::WalletNotInitialized);
-    }
     const MAX_LOCKTIME: u32 = 2_100_000_000;
     if locktime != 0 && locktime > MAX_LOCKTIME {
         return Err(TauriError::InvalidInput(format!(
             "locktime {locktime} exceeds maximum {MAX_LOCKTIME}"
         )));
     }
-    let keys = vtorrent_wallet::wallet::generate_cold_stake_keys(locktime, label.as_deref())
+    let mut guard = state.wallet.lock().unwrap();
+    let wallet = guard.as_mut().ok_or(TauriError::WalletNotInitialized)?;
+    let keys = wallet
+        .generate_cold_stake_keys(locktime, label.as_deref())
         .map_err(TauriError::from)?;
     let script_hash = hex::encode(vtorrent_core::crypto::hash160(&keys.script_pubkey));
     if let Some(wallet_path) = state.wallet_path.lock().unwrap().clone() {
@@ -734,6 +791,7 @@ pub async fn create_cold_stake(
             TauriError::Io(format!("Could not persist cold-stake script hash: {e}"))
         })?;
     }
+    persist_wallet(&state, wallet)?;
     state
         .cold_stake_scripts
         .lock()
@@ -788,7 +846,13 @@ pub async fn fund_cold_stake(
             vtorrent_wallet::cold_stake_registry::contains(wallet_path, &script_hash)
         });
     let in_memory = state.cold_stake_scripts.lock().unwrap().contains(&script);
-    if !durable && !in_memory {
+    let in_wallet = state
+        .wallet
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|wallet| wallet.has_cold_stake_script(&script));
+    if !durable && !in_memory && !in_wallet {
         return Err(TauriError::InvalidInput(
             "Cold-stake script was not generated by this wallet".into(),
         ));
@@ -1309,12 +1373,23 @@ mod tests {
             .unwrap();
         app.manage(AppState::new());
         let state = app.state::<AppState>();
+        let dir = std::env::temp_dir().join(format!("vtr-tauri-cold-stake-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        *state.wallet_path.lock().unwrap() = Some(dir.join("wallet.vtr"));
         *state.wallet.lock().unwrap() = Some(Wallet::create("pw").unwrap());
         let keys = create_cold_stake(state.clone(), 0, None).await.unwrap();
         assert_eq!(keys.script_pubkey.len(), 120);
         assert_eq!(keys.script_hash.len(), 40);
         let script = hex::decode(&keys.script_pubkey).unwrap();
         assert!(state.cold_stake_scripts.lock().unwrap().contains(&script));
+        assert!(state
+            .wallet
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .has_cold_stake_script(&script));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -1412,6 +1487,26 @@ mod tests {
         assert!(
             submitted.try_recv().is_err(),
             "a quote must not admit or broadcast the transaction"
+        );
+        assert!(!quote.quote_id.is_empty());
+
+        let missing = send_vtr(
+            state.clone(),
+            recipient.clone(),
+            COIN,
+            Some("missing-quote".into()),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(missing, TauriError::InvalidInput(_)));
+
+        let txid = send_vtr(state.clone(), recipient.clone(), COIN, Some(quote.quote_id))
+            .await
+            .unwrap();
+        assert_eq!(txid.len(), 64);
+        assert!(
+            submitted.try_recv().is_ok(),
+            "the reviewed transaction must be relayed"
         );
     }
 

@@ -87,7 +87,7 @@ function SendModal({ onClose, onSent }: SendModalProps) {
     setStatus('sending')
     setErrorMsg('')
     try {
-      const result = await sendVtr(toAddress.trim(), amountSats)
+      const result = await sendVtr(toAddress.trim(), amountSats, quote.quoteId)
       setTxid(result)
       setStatus('success')
       onSent()
@@ -473,6 +473,7 @@ export default function DashboardPage() {
                 onClick={refreshTxs}
                 className="text-gray-600 hover:text-vtorrent-400 transition-colors"
                 title="Refresh"
+                aria-label="Refresh transactions"
               >
                 <RefreshCw size={12} />
               </button>

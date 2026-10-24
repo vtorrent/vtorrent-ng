@@ -157,6 +157,11 @@ challenge the repairs and their remaining assumptions independently.
   restart/persistence parity fixes, the wallet-path confinement, import
   overwrite guard, version bump, IPC error surfacing, and staking ownership
   warnings, and the live desktop journey, restart, and BTC discovery evidence.
+  **Backup/2FA threat model:** 2FA gates app unlock. It is not an encryption
+  factor for the wallet file or backup. Both are encrypted with the wallet
+  passphrase; an attacker with the passphrase can decrypt them without the OTP.
+  Use a strong passphrase and keep backups offline.
+
   The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; verified 2FA enrollment, the torrent control availability, the reviewed send quote, verified encrypted backup and restore, the guided swap workspace, the staking readiness assistant, the activity and recovery center, the cold-stake delegation wizard, node settings and diagnostics, torrent controls and reward accounting, and navigation grouping and accessibility improvements are in `30896d6`. The external review should verify them.
   This commit includes the governance template-selection repairs,
   snapshot-based proof reconstruction, admission budget, bounded retries, the

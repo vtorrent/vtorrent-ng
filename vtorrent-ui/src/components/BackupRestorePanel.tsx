@@ -50,6 +50,10 @@ export default function BackupRestorePanel() {
             Includes the encrypted wallet, cold-stake registry, swap recovery records,
             and wallet-scoped BTC state. Keep the backup off this device.
           </p>
+          <p className="text-xs text-amber-300/90 mt-2">
+            2FA protects app unlock, not the backup. The backup is encrypted with the
+            wallet passphrase; use a strong passphrase and keep the backup offline.
+          </p>
         </div>
 
         <div>

@@ -4,11 +4,17 @@
 /// The node runs as a background tokio task; the RPC AppState is shared
 /// between the node task and the Tauri command handlers so that all data
 /// (chain, mempool, DEX, torrents, staking) is always consistent.
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use tokio::sync::Mutex as TokioMutex;
 use vtorrent_rpc::state::AppState as RpcAppState;
 use vtorrent_wallet::wallet::Wallet;
+
+/// A signed transaction prepared for a reviewed send quote.
+pub struct PreparedSend {
+    pub tx: vtorrent_node::block::Transaction,
+    pub created_at: std::time::Instant,
+}
 
 /// Shared handle to the running node's RPC state.
 ///
@@ -44,6 +50,8 @@ pub struct AppState {
     /// a script in this set, so a caller cannot redirect funds to an arbitrary
     /// cold key without first generating it through `create_cold_stake`.
     pub cold_stake_scripts: Mutex<HashSet<Vec<u8>>>,
+    /// Signed transactions awaiting a reviewed send confirmation.
+    pub prepared_sends: Mutex<HashMap<String, PreparedSend>>,
 }
 
 impl AppState {
@@ -95,6 +103,7 @@ impl AppState {
             app_data_dir: Mutex::new(None),
             node: TokioMutex::new(None),
             cold_stake_scripts: Mutex::new(HashSet::new()),
+            prepared_sends: Mutex::new(HashMap::new()),
         }
     }
 

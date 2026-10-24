@@ -467,6 +467,17 @@ impl Wallet {
         self.pending_otp.is_some()
     }
 
+    /// Clone the pending TOTP config so a failed persistence can be rolled back.
+    pub fn pending_2fa_config(&self) -> Option<OtpConfig> {
+        self.pending_otp.clone()
+    }
+
+    /// Restore a pending enrollment after a failed activation persist.
+    pub fn restore_pending_2fa(&mut self, pending: OtpConfig) {
+        self.data.otp_config = None;
+        self.pending_otp = Some(pending);
+    }
+
     /// Confirm a pending TOTP enrollment with a code from the authenticator.
     ///
     /// Returns `Ok(true)` and activates 2FA when the code matches. An invalid
@@ -496,6 +507,14 @@ impl Wallet {
         self.pending_otp = None;
         self.data.last_modified = unix_now();
         Ok(())
+    }
+
+    /// Whether this wallet generated the given P2CS script.
+    pub fn has_cold_stake_script(&self, script_pubkey: &[u8]) -> bool {
+        self.data
+            .cold_stake
+            .iter()
+            .any(|keys| keys.script_pubkey == script_pubkey)
     }
 
     /// Check whether 2FA is enabled.

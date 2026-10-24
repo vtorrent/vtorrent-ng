@@ -104,6 +104,7 @@ export default function SettingsPage() {
           disabled={appLoading}
           className="p-2 rounded-lg text-gray-400 hover:text-gray-200 hover:bg-navy-800/60 transition-all"
           title="Refresh settings"
+          aria-label="Refresh settings"
         >
           <RefreshCw size={16} className={appLoading ? 'animate-spin' : ''} />
         </button>

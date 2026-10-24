@@ -111,6 +111,7 @@ export default function StakingPage() {
           disabled={loading}
           className="p-2 rounded-lg text-gray-400 hover:text-gray-200 hover:bg-navy-800/60 transition-all"
           title="Refresh"
+          aria-label="Refresh staking status"
         >
           <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
         </button>
@@ -641,8 +642,9 @@ function ColdStakePanel() {
             {delegateBusy ? 'Starting…' : 'Start staking with this key'}
           </button>
           <p className="text-gray-500">
-            The staking key is hot. Keep the spending key offline; it is the only key
-            that can move the delegated funds.
+            The staking key is hot and session-only. Re-import the package after
+            restarting the app. Keep the spending key offline; it is the only key that
+            can move the delegated funds.
           </p>
         </div>
       )}

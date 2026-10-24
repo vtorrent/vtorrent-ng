@@ -55,6 +55,7 @@ export default function TorrentSettingsPanel() {
           disabled={loading}
           className="p-1.5 rounded-lg text-gray-500 hover:text-gray-300 hover:bg-navy-800"
           title="Refresh torrent settings"
+          aria-label="Refresh torrent settings"
         >
           <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
         </button>
@@ -95,7 +96,7 @@ export default function TorrentSettingsPanel() {
           />
         </div>
         <div>
-          <label className="label">Seed ratio target</label>
+          <label className="label">Seed ratio target (global)</label>
           <input
             data-testid="torrent-seed-ratio"
             className="input-field font-mono text-xs"
@@ -119,8 +120,8 @@ export default function TorrentSettingsPanel() {
       </div>
 
       <p className="text-xs text-gray-600">
-        0 means unlimited. The seed ratio target stops uploads once the session
-        reaches that upload/download ratio.
+        0 means unlimited. The global seed ratio target stops uploads once a
+        session reaches that upload/download ratio.
       </p>
 
       {error && <p className="text-xs text-red-400">{error}</p>}

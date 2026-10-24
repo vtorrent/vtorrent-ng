@@ -55,7 +55,12 @@ pub fn wallet_activity(
         )
         .collect();
 
+    let confirmed_txids: HashSet<String> = entries.iter().map(|entry| entry.txid.clone()).collect();
     for tx in mempool.get_transactions() {
+        let txid = hex::encode(tx.txid());
+        if confirmed_txids.contains(&txid) {
+            continue;
+        }
         let received: u64 = tx
             .outputs
             .iter()
@@ -78,14 +83,14 @@ pub fn wallet_activity(
             ("receive", received - sent)
         };
         entries.push(ActivityEntry {
-            txid: hex::encode(tx.txid()),
+            txid,
             status: "pending".to_string(),
             tx_type: tx_type.to_string(),
             amount_satoshis: amount,
             timestamp: now,
             block_height: 0,
             confirmations: 0,
-            fee_satoshis: 0,
+            fee_satoshis: pending_fee(chain, &tx),
         });
     }
 
@@ -98,10 +103,53 @@ pub fn wallet_activity(
     entries
 }
 
+fn pending_fee(chain: &Chain, tx: &crate::block::Transaction) -> u64 {
+    let mut input_total = 0u64;
+    for input in &tx.inputs {
+        let Some(utxo) = chain.get_utxo(&input.prev_txid, input.prev_vout) else {
+            return 0;
+        };
+        input_total = input_total.saturating_add(utxo.value);
+    }
+    let output_total: u64 = tx.outputs.iter().map(|output| output.value).sum();
+    input_total.saturating_sub(output_total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::consensus::COIN;
+
+    #[test]
+    fn pending_fee_uses_chain_inputs_and_outputs() {
+        use crate::block::{Transaction, TxInput, TxOutput, TxType};
+        let address = "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT";
+        let mut chain = Chain::new_regtest().unwrap();
+        chain.mint_to_address(address, 10 * COIN).unwrap();
+        let utxo = chain
+            .get_utxos_for_address(address)
+            .into_iter()
+            .next()
+            .unwrap();
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::Standard,
+            inputs: vec![TxInput {
+                prev_txid: utxo.txid,
+                prev_vout: utxo.vout,
+                script_sig: vec![1],
+                sequence: u32::MAX,
+            }],
+            outputs: vec![TxOutput {
+                value: 9 * COIN,
+                script_pubkey: vec![0x51],
+            }],
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        };
+        assert_eq!(pending_fee(&chain, &tx), COIN);
+    }
 
     #[test]
     fn confirmed_activity_includes_minted_outputs() {

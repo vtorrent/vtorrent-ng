@@ -46,6 +46,7 @@ export interface BackupPreview {
 }
 
 export interface VtrQuote {
+  quoteId: string
   fromAddress: string
   toAddress: string
   amountSatoshis: number
@@ -75,7 +76,7 @@ interface WalletContextType extends WalletState {
   disable2FA: (otpCode: string) => Promise<void>
   generateAddress: (label?: string) => Promise<string>
   quoteVtr: (toAddress: string, amountSatoshis: number) => Promise<VtrQuote>
-  sendVtr: (toAddress: string, amountSatoshis: number) => Promise<string>
+  sendVtr: (toAddress: string, amountSatoshis: number, quoteId?: string) => Promise<string>
   createBackup: (passphrase: string, otpCode?: string) => Promise<BackupInfo>
   verifyBackup: (backupBase64: string, passphrase: string, otpCode?: string) => Promise<BackupPreview>
   restoreBackup: (
@@ -436,10 +437,15 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     return invoke<VtrQuote>('quote_vtr', { toAddress, amountSatoshis })
   }, [])
 
-  const sendVtr = useCallback(async (toAddress: string, amountSatoshis: number): Promise<string> => {
+  const sendVtr = useCallback(async (
+    toAddress: string,
+    amountSatoshis: number,
+    quoteId?: string
+  ): Promise<string> => {
     const txid = await invoke<string>('send_vtr', {
       toAddress,
       amountSatoshis,
+      quoteId: quoteId ?? null,
     })
     return txid
   }, [])

@@ -103,7 +103,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
         std::fs::create_dir_all(parent).map_err(|e| TauriError::Io(e.to_string()))?;
     }
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -244,9 +244,10 @@ fn decode_and_verify(
     let wallet_bytes = wallet_bytes
         .ok_or_else(|| TauriError::InvalidInput("Backup does not contain a wallet".into()))?;
     let temp_path = std::env::temp_dir().join(format!(
-        "vtr-backup-wallet-{}-{}.vtr",
+        "vtr-backup-wallet-{}-{}-{:08x}.vtr",
         std::process::id(),
-        unix_now()
+        unix_now(),
+        rand::random::<u32>()
     ));
     write_private(&temp_path, &wallet_bytes)?;
     let wallet = Wallet::load(&temp_path, passphrase, otp_code).map_err(|error| {
@@ -310,7 +311,10 @@ pub fn create_backup(
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join("backups");
-    let backup_path = backup_dir.join(format!("vtorrent-backup-{created_at}.vtrbackup"));
+    let backup_path = backup_dir.join(format!(
+        "vtorrent-backup-{created_at}-{:08x}.vtrbackup",
+        rand::random::<u32>()
+    ));
     write_private(&backup_path, &json)?;
 
     Ok(BackupInfo {
@@ -395,7 +399,11 @@ pub fn restore_backup(
 
     if target_wallet.exists() {
         let rollback_dir = app_data_dir.join("backups");
-        let rollback = rollback_dir.join(format!("pre-restore-{}.vtr", unix_now()));
+        let rollback = rollback_dir.join(format!(
+            "pre-restore-{}-{:08x}.vtr",
+            unix_now(),
+            rand::random::<u32>()
+        ));
         std::fs::create_dir_all(&rollback_dir).map_err(|e| TauriError::Io(e.to_string()))?;
         std::fs::copy(&target_wallet, &rollback).map_err(|e| TauriError::Io(e.to_string()))?;
         #[cfg(unix)]

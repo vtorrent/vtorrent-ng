@@ -88,6 +88,7 @@ export default function TorrentPage() {
             onClick={refresh}
             className="p-2 rounded-lg hover:bg-navy-800 text-gray-500 hover:text-gray-300 transition-colors"
             title="Refresh"
+            aria-label="Refresh torrents"
           >
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
           </button>

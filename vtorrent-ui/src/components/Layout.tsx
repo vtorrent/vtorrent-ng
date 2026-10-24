@@ -178,6 +178,11 @@ export default function Layout() {
                     />
                   </div>
                 </div>
+              ) : peerCount === 0 ? (
+                <div className="flex items-center gap-1.5">
+                  <div className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                  <span className="text-xs text-amber-400">Waiting for peers</span>
+                </div>
               ) : (
                 <div className="flex items-center gap-1.5">
                   <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse-slow" />
