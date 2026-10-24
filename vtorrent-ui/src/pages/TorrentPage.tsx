@@ -306,6 +306,7 @@ export default function TorrentPage() {
                         </button>
                         <button
                           onClick={() => handleRemove(torrent.id)}
+                          aria-label={`Remove ${torrent.name}`}
                           className="p-1.5 rounded-lg hover:bg-red-900/20 text-gray-500 hover:text-red-400 transition-colors"
                         >
                           <Trash2 size={13} />

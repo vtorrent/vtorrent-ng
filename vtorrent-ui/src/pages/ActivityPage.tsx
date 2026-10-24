@@ -232,6 +232,7 @@ export default function ActivityPage() {
                     onClick={copyTxid}
                     className="p-1.5 rounded-lg text-gray-500 hover:text-vtorrent-300 hover:bg-navy-800"
                     title="Copy transaction ID"
+                    aria-label="Copy transaction ID"
                   >
                     {copied ? <CheckCircle size={14} className="text-emerald-400" /> : <Copy size={14} />}
                   </button>

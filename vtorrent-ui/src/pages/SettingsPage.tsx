@@ -273,6 +273,7 @@ function PathRow({
             onClick={onCopy}
             className="p-1 rounded text-gray-600 hover:text-vtorrent-300"
             title={`Copy ${label}`}
+            aria-label={`Copy ${label}`}
           >
             {copied ? <CheckCircle size={12} className="text-emerald-400" /> : <Copy size={12} />}
           </button>

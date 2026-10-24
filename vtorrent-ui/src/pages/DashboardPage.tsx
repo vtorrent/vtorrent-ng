@@ -117,6 +117,7 @@ function SendModal({ onClose, onSent }: SendModalProps) {
           </div>
           <button
             onClick={onClose}
+            aria-label="Close send dialog"
             className="text-gray-600 hover:text-gray-400 transition-colors"
           >
             <X size={16} />
@@ -434,6 +435,7 @@ export default function DashboardPage() {
                   </div>
                   <button
                     onClick={() => copyAddress(key.address)}
+                    aria-label={`Copy address ${key.address}`}
                     className="text-gray-600 hover:text-vtorrent-400 transition-colors flex-shrink-0"
                   >
                     {copied === key.address

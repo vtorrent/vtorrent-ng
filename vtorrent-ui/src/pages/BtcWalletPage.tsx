@@ -49,6 +49,7 @@ export default function BtcWalletPage() {
           <button
             onClick={generate}
             disabled={loading}
+            aria-label="Refresh Bitcoin address"
             className="p-2 bg-vtorrent-600 rounded hover:bg-vtorrent-500 disabled:opacity-50"
           >
             <RefreshCw size={16} />
