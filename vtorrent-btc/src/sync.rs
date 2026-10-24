@@ -629,6 +629,38 @@ impl BtcSync {
         Ok(())
     }
 
+    async fn authenticate_filter_headers_multi(
+        &self,
+        peers: &mut [BtcPeer],
+        start_height: u32,
+    ) -> Result<()> {
+        let mut last_error = None;
+        for peer in peers.iter_mut() {
+            match self.authenticate_filter_headers(peer, start_height).await {
+                Ok(()) => return Ok(()),
+                Err(error) => last_error = Some(error),
+            }
+        }
+        Err(last_error
+            .unwrap_or_else(|| BtcError::Sync("no compact-filter peers available".into())))
+    }
+
+    /// Scan with multiple peers so a fresh mainnet filter-header chain can
+    /// satisfy the two-peer agreement requirement. The actual filter download
+    /// uses the first peer after authentication.
+    pub async fn scan_utxos_bip158_multi(
+        &self,
+        peers: &mut [BtcPeer],
+        start_height: u32,
+    ) -> Result<usize> {
+        self.authenticate_filter_headers_multi(peers, start_height)
+            .await?;
+        let Some(peer) = peers.first_mut() else {
+            return Err(BtcError::Sync("no BTC peers available".into()));
+        };
+        self.scan_utxos_bip158_inner(peer, start_height).await
+    }
+
     /// Scan blocks from `start_height` to the tip using BIP-158 compact block
     /// filters (the modern, privacy-preserving alternative to BIP-37).
     ///
@@ -644,6 +676,15 @@ impl BtcSync {
     /// retained floor the scan fails closed. Raise `--btc-header-retention` or
     /// rescan from an earlier height in that case.
     pub async fn scan_utxos_bip158(&self, peer: &mut BtcPeer, start_height: u32) -> Result<usize> {
+        self.authenticate_filter_headers(peer, start_height).await?;
+        self.scan_utxos_bip158_inner(peer, start_height).await
+    }
+
+    async fn scan_utxos_bip158_inner(
+        &self,
+        peer: &mut BtcPeer,
+        start_height: u32,
+    ) -> Result<usize> {
         use bitcoin::bip158::BlockFilter;
 
         let retained_floor = self.headers.lock().retained_floor();
@@ -668,8 +709,6 @@ impl BtcSync {
         if watched.is_empty() {
             return Ok(0);
         }
-
-        self.authenticate_filter_headers(peer, start_height).await?;
 
         // BIP-158 basic filter type is 0x00.
         const FILTER_TYPE_BASIC: u8 = 0x00;

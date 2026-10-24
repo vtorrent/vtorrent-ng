@@ -534,6 +534,25 @@ impl BtcWallet {
         Ok(scanned)
     }
 
+    pub async fn scan_utxos_bip158_multi(
+        &self,
+        peers: &mut [crate::p2p::BtcPeer],
+        start_height: u32,
+    ) -> Result<usize> {
+        let sync = crate::sync::BtcSync::new_with_filter_headers(
+            self.headers.clone(),
+            self.utxos.clone(),
+            self.filter_headers.clone(),
+            self.watch_addresses(self.next_index)?,
+            self.network,
+        );
+        let scanned = sync.scan_utxos_bip158_multi(peers, start_height).await?;
+        if scanned > 0 {
+            self.save_utxos();
+        }
+        Ok(scanned)
+    }
+
     /// The next block height to scan.
     pub fn last_scanned_height(&self) -> u32 {
         self.last_scanned_height
