@@ -1,6 +1,6 @@
 //! Top-level Bitcoin wallet facade.
 
-use crate::error::Result;
+use crate::error::{BtcError, Result};
 use crate::filters::FilterHeaderStore;
 use crate::headers::HeaderChain;
 use crate::keys::derive_address;
@@ -510,6 +510,22 @@ impl BtcWallet {
             self.synced = true;
         }
         Ok(added)
+    }
+
+    /// Sync headers with a responsive peer, removing connections that fail.
+    pub async fn sync_with_peers(&mut self, peers: &mut Vec<crate::p2p::BtcPeer>) -> Result<usize> {
+        let mut last_error = BtcError::Sync("no BTC peers available".into());
+        while !peers.is_empty() {
+            match self.sync(&mut peers[0]).await {
+                Ok(added) => return Ok(added),
+                Err(error) => {
+                    let peer = peers.remove(0);
+                    tracing::warn!("BTC header peer {} failed: {}", peer.addr(), error);
+                    last_error = error;
+                }
+            }
+        }
+        Err(last_error)
     }
 
     /// Scan blocks using BIP-158 compact block filters (the modern,

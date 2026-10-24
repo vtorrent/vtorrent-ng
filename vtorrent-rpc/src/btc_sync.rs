@@ -3,6 +3,55 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use crate::state::AppState;
+use vtorrent_btc::{p2p::BtcPeer, sync::network_group};
+
+fn prioritize_peers(
+    configured: Option<SocketAddr>,
+    mut discovered: Vec<SocketAddr>,
+) -> Vec<SocketAddr> {
+    discovered.sort_by_key(|addr| (addr.is_ipv6(), *addr));
+    discovered.dedup();
+    if let Some(configured) = configured {
+        discovered.retain(|addr| *addr != configured);
+        discovered.insert(0, configured);
+    }
+    discovered
+}
+
+async fn connect_filter_peers(
+    candidates: &mut impl Iterator<Item = SocketAddr>,
+    peers: &mut Vec<BtcPeer>,
+    network: bitcoin::Network,
+) {
+    let target = if network == bitcoin::Network::Regtest {
+        1
+    } else {
+        3
+    };
+    while peers.len() < target {
+        let Some(addr) = candidates.next() else { break };
+        if peers
+            .iter()
+            .any(|peer| network_group(peer.addr().ip()) == network_group(addr.ip()))
+        {
+            continue;
+        }
+        match tokio::time::timeout(
+            Duration::from_secs(5),
+            BtcPeer::connect_with_network(addr, network),
+        )
+        .await
+        {
+            Ok(Ok(peer)) if peer.supports_compact_filters() => {
+                tracing::info!("BTC compact-filter peer connected: {}", addr);
+                peers.push(peer);
+            }
+            Ok(Ok(_)) => tracing::debug!("BTC peer {} does not advertise compact filters", addr),
+            Ok(Err(error)) => tracing::warn!("BTC peer {} failed: {}", addr, error),
+            Err(_) => tracing::warn!("BTC peer {} connect timed out", addr),
+        }
+    }
+}
 
 async fn resolve_addr(peer: &str) -> std::io::Result<SocketAddr> {
     if let Ok(addr) = peer.parse() {
@@ -24,67 +73,68 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
             continue;
         }
         let network = *state.btc_network.read().await;
-        let mut addrs: Vec<SocketAddr> = match state.btc_peer.read().await.clone() {
+        let configured = match state.btc_peer.read().await.clone() {
             Some(host) => match resolve_addr(&host).await {
-                Ok(addr) => vec![addr],
+                Ok(addr) => Some(addr),
                 Err(e) => {
                     tracing::warn!("BTC peer {} unresolved: {}", host, e);
-                    tokio::time::sleep(Duration::from_secs(300)).await;
-                    continue;
+                    None
                 }
             },
-            None => match vtorrent_btc::sync::resolve_seeds().await {
-                Ok(addrs) => addrs,
-                Err(e) => {
-                    tracing::warn!("BTC seed resolution failed: {}", e);
-                    tokio::time::sleep(Duration::from_secs(300)).await;
-                    continue;
-                }
-            },
+            None => None,
         };
-        if network == bitcoin::Network::Bitcoin {
-            if let Ok(mut seeds) = vtorrent_btc::sync::resolve_seeds().await {
-                addrs.append(&mut seeds);
+        let discovered = if network == bitcoin::Network::Bitcoin {
+            match vtorrent_btc::sync::resolve_seeds().await {
+                Ok(seeds) => seeds,
+                Err(error) => {
+                    tracing::warn!("BTC seed resolution failed: {}", error);
+                    Vec::new()
+                }
             }
-        }
-        addrs.sort_by_key(|addr| (addr.is_ipv6(), *addr));
-        addrs.dedup();
+        } else {
+            Vec::new()
+        };
+        let mut candidates = prioritize_peers(configured, discovered)
+            .into_iter()
+            .take(64);
 
         let mut peers = Vec::new();
-        for (attempt, addr) in addrs.into_iter().enumerate() {
-            if peers.len() >= 2 || attempt >= 64 {
-                break;
-            }
-            match tokio::time::timeout(
-                Duration::from_secs(5),
-                vtorrent_btc::p2p::BtcPeer::connect_with_network(addr, network),
-            )
-            .await
-            {
-                Ok(Ok(peer)) if peer.supports_compact_filters() => peers.push(peer),
-                Ok(Ok(_)) => tracing::warn!("BTC peer {} does not advertise compact filters", addr),
-                Ok(Err(e)) => tracing::warn!("BTC peer {} failed: {}", addr, e),
-                Err(_) => tracing::warn!("BTC peer {} connect timed out", addr),
-            }
-        }
+        connect_filter_peers(&mut candidates, &mut peers, network).await;
         if peers.is_empty() {
             tracing::warn!("No usable BTC peers; retrying in 300s");
             tokio::time::sleep(Duration::from_secs(300)).await;
             continue;
         }
-        if peers.len() < 2 && network != bitcoin::Network::Regtest {
-            tracing::warn!(
-                "BTC filter-header authentication needs two peers; only {} connected",
-                peers.len()
-            );
-        }
-
         if let Some(wallet) = state.btc_wallet.write().await.as_mut() {
-            match wallet.sync(&mut peers[0]).await {
-                Ok(n) => tracing::info!("BTC sync: {} headers", n),
-                Err(e) => tracing::warn!("BTC sync error: {}", e),
+            let synced = loop {
+                match wallet.sync_with_peers(&mut peers).await {
+                    Ok(n) => {
+                        tracing::info!("BTC sync: {} headers", n);
+                        connect_filter_peers(&mut candidates, &mut peers, network).await;
+                        break true;
+                    }
+                    Err(error) => {
+                        tracing::warn!("BTC sync error: {}", error);
+                        connect_filter_peers(&mut candidates, &mut peers, network).await;
+                        if peers.is_empty() {
+                            break false;
+                        }
+                    }
+                }
+            };
+            let required = if network == bitcoin::Network::Regtest {
+                1
+            } else {
+                2
+            };
+            if peers.len() < required {
+                tracing::warn!(
+                    "BTC scan requires {} independent peers; only {} connected",
+                    required,
+                    peers.len()
+                );
             }
-            loop {
+            while synced && peers.len() >= required {
                 let retained_floor = wallet.retained_floor();
                 let start = wallet.last_scanned_height().max(retained_floor);
                 let tip = wallet.best_height();
@@ -130,5 +180,34 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
             tracing::info!("Released {} expired BTC input reservation(s)", released);
         }
         tokio::time::sleep(Duration::from_secs(300)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn configured_peer_precedes_dns_candidates_and_attempt_limit() {
+        let configured = "198.51.100.250:8333".parse().unwrap();
+        let mut seeds: Vec<SocketAddr> = (1..=65)
+            .map(|last| SocketAddr::from(([10, 0, 0, last], 8333)))
+            .collect();
+        seeds.extend([configured, configured]);
+        let ordered = prioritize_peers(Some(configured), seeds);
+        assert_eq!(ordered[0], configured);
+        assert_eq!(
+            ordered.iter().filter(|addr| **addr == configured).count(),
+            1
+        );
+        assert!(ordered.into_iter().take(64).any(|addr| addr == configured));
+    }
+
+    #[test]
+    fn dns_candidates_prefer_ipv4_and_remove_duplicates() {
+        let v4 = "203.0.113.1:8333".parse().unwrap();
+        let v6 = "[2001:db8::1]:8333".parse().unwrap();
+        assert_eq!(prioritize_peers(None, vec![v6, v4, v4]), vec![v4, v6]);
+        assert_eq!(prioritize_peers(Some(v6), vec![v6, v4]), vec![v6, v4]);
     }
 }

@@ -1,4 +1,5 @@
 use crate::error::{BtcError, Result};
+use crate::sync::{network_group, NetworkGroup};
 use bitcoin::bip158::{FilterHash, FilterHeader};
 use bitcoin::hashes::Hash;
 use sha2::{Digest, Sha256};
@@ -20,8 +21,8 @@ pub(crate) struct FilterHeaderStore {
     records: HashMap<[u8; 32], FilterRecord>,
     checkpoints: Vec<FilterHeader>,
     observed_tip: Option<[u8; 32]>,
-    agreeing_peers: HashSet<SocketAddr>,
-    candidates: HashMap<([u8; 32], [u8; 32]), HashSet<SocketAddr>>,
+    agreeing_groups: HashSet<NetworkGroup>,
+    candidates: HashMap<([u8; 32], [u8; 32]), HashSet<NetworkGroup>>,
 }
 
 impl FilterHeaderStore {
@@ -55,7 +56,7 @@ impl FilterHeaderStore {
         }
         if self.observed_tip != Some(stop_hash) {
             self.observed_tip = Some(stop_hash);
-            self.agreeing_peers.clear();
+            self.agreeing_groups.clear();
         }
         Ok(())
     }
@@ -74,7 +75,7 @@ impl FilterHeaderStore {
         self.records.clear();
         self.checkpoints.clear();
         self.observed_tip = None;
-        self.agreeing_peers.clear();
+        self.agreeing_groups.clear();
         self.candidates.clear();
     }
 
@@ -161,10 +162,10 @@ impl FilterHeaderStore {
             .observed_tip
             .ok_or_else(|| BtcError::Sync("compact-filter candidate has no tip".into()))?;
         let fingerprint = candidate.fingerprint();
-        let peers = self.candidates.entry((tip, fingerprint)).or_default();
-        peers.insert(peer);
-        let agreement = peers.len();
-        let agreed_peers = peers.clone();
+        let groups = self.candidates.entry((tip, fingerprint)).or_default();
+        groups.insert(network_group(peer.ip()));
+        let agreement = groups.len();
+        let agreed_groups = groups.clone();
         if agreement < required {
             return Ok(agreement);
         }
@@ -198,7 +199,7 @@ impl FilterHeaderStore {
         }
         self.records.extend(candidate.records);
         self.observed_tip = Some(tip);
-        self.agreeing_peers = agreed_peers;
+        self.agreeing_groups = agreed_groups;
         Ok(agreement)
     }
 
@@ -301,7 +302,7 @@ mod tests {
         matching.reconcile_checkpoints([8u8; 32], 0, &[]).unwrap();
         assert_eq!(
             store
-                .observe_candidate("127.0.0.2:8333".parse().unwrap(), matching, 2)
+                .observe_candidate("128.0.0.2:8333".parse().unwrap(), matching, 2)
                 .unwrap(),
             2
         );
@@ -337,10 +338,42 @@ mod tests {
         );
         assert_eq!(
             store
-                .observe_candidate("127.0.0.3:8333".parse().unwrap(), candidate(b"honest"), 2,)
+                .observe_candidate("128.0.0.3:8333".parse().unwrap(), candidate(b"honest"), 2,)
                 .unwrap(),
             2
         );
         assert!(store.verify_filter(&[7u8; 32], b"honest").is_ok());
+    }
+
+    #[test]
+    fn same_network_group_cannot_authorize_filters() {
+        for peers in [
+            ["203.0.113.1:8333", "203.0.114.2:8334"],
+            ["[2001:db8::1]:8333", "[2001:db8:1::2]:8334"],
+            ["203.0.113.1:8333", "[::ffff:203.0.113.1]:8334"],
+        ] {
+            let mut store = FilterHeaderStore::default();
+            for peer in peers {
+                let mut candidate = FilterHeaderStore::default();
+                candidate.reconcile_checkpoints([8; 32], 0, &[]).unwrap();
+                candidate
+                    .apply_range(
+                        0,
+                        &[[7; 32]],
+                        &[FilterHash::hash(b"hidden transactions")],
+                        FilterHeader::all_zeros(),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    store
+                        .observe_candidate(peer.parse().unwrap(), candidate, 2)
+                        .unwrap(),
+                    1
+                );
+            }
+            assert!(store
+                .verify_filter(&[7; 32], b"hidden transactions")
+                .is_err());
+        }
     }
 }

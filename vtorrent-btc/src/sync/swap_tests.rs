@@ -149,6 +149,9 @@ async fn serve(listener: TcpListener, blocks: Vec<Block>, case: &'static str) {
                 NetworkMessage::Verack
             }
             NetworkMessage::GetHeaders(req) => {
+                if case == "header_disconnect" {
+                    break;
+                }
                 let common = req
                     .locator_hashes
                     .iter()
@@ -156,11 +159,16 @@ async fn serve(listener: TcpListener, blocks: Vec<Block>, case: &'static str) {
                     .unwrap_or(0);
                 NetworkMessage::Headers(blocks[common + 1..].iter().map(|b| b.header).collect())
             }
-            NetworkMessage::GetCFCheckpt(req) => NetworkMessage::CFCheckpt(CFCheckpt {
-                filter_type: 0,
-                stop_hash: req.stop_hash,
-                filter_headers: vec![],
-            }),
+            NetworkMessage::GetCFCheckpt(req) => {
+                if case == "checkpoint_disconnect" {
+                    break;
+                }
+                NetworkMessage::CFCheckpt(CFCheckpt {
+                    filter_type: 0,
+                    stop_hash: req.stop_hash,
+                    filter_headers: vec![],
+                })
+            }
             NetworkMessage::GetCFHeaders(req) => {
                 assert_eq!(req.start_height, 0);
                 NetworkMessage::CFHeaders(CFHeaders {
@@ -178,6 +186,9 @@ async fn serve(listener: TcpListener, blocks: Vec<Block>, case: &'static str) {
                     break;
                 }
                 for height in req.start_height as usize..blocks.len() {
+                    if case == "partial_disconnect" && height > 0 {
+                        return;
+                    }
                     let mut filter = filters[height].content.clone();
                     if case == "filter" {
                         filter.push(0);
@@ -216,6 +227,84 @@ async fn serve(listener: TcpListener, blocks: Vec<Block>, case: &'static str) {
         };
         if send(&mut stream, response).await.is_err() {
             break;
+        }
+    }
+}
+
+#[tokio::test]
+async fn header_sync_removes_failed_peer_and_uses_healthy_peer() {
+    let (blocks, _) = chain(&contract(), "valid");
+    let mut peers = Vec::new();
+    let mut servers = Vec::new();
+    for case in ["header_disconnect", "valid"] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        servers.push(tokio::spawn(serve(listener, blocks.clone(), case)));
+        peers.push(
+            BtcPeer::connect_with_network(addr, bitcoin::Network::Regtest)
+                .await
+                .unwrap(),
+        );
+    }
+    let healthy = peers[1].addr();
+    let mut wallet = crate::wallet::BtcWallet::with_network([1; 64], bitcoin::Network::Regtest);
+    let added = wallet.sync_with_peers(&mut peers).await.unwrap();
+    assert_eq!(added, 6);
+    assert_eq!(wallet.best_height(), 6);
+    assert_eq!(peers.len(), 1);
+    assert_eq!(peers[0].addr(), healthy);
+    drop(peers);
+    for server in servers {
+        server.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn multi_peer_scan_fails_over_authentication_and_filter_downloads() {
+    for failure in ["checkpoint_disconnect", "disconnect", "partial_disconnect"] {
+        let htlc = contract();
+        let (blocks, txid) = chain(&htlc, "valid");
+        let headers = Arc::new(Mutex::new(HeaderChain::anchored(bitcoin::Network::Regtest)));
+        for (height, block) in blocks.iter().enumerate().skip(1) {
+            headers
+                .lock()
+                .add_header(&serialize(&block.header), height as u32)
+                .unwrap();
+        }
+        let utxos = Arc::new(Mutex::new(UtxoSet::new()));
+        let sync = BtcSync::new(
+            headers,
+            utxos.clone(),
+            vec![htlc.address().unwrap()],
+            htlc.network,
+        );
+        let mut peers = Vec::new();
+        let mut servers = Vec::new();
+        for case in [failure, "valid"] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            servers.push(tokio::spawn(serve(listener, blocks.clone(), case)));
+            peers.push(
+                BtcPeer::connect_with_network(addr, htlc.network)
+                    .await
+                    .unwrap(),
+            );
+        }
+        let scanned = sync.scan_utxos_bip158_multi(&mut peers, 0).await.unwrap();
+        assert_eq!(scanned, 7, "failure: {failure}");
+        {
+            let utxos = utxos.lock();
+            let outputs = utxos.list();
+            assert_eq!(outputs.len(), 1, "failure: {failure}");
+            assert_eq!(
+                outputs[0].txid,
+                bitcoin::Txid::from_byte_array(txid).to_string()
+            );
+            assert_eq!(outputs[0].value, htlc.amount);
+        }
+        drop(peers);
+        for server in servers {
+            server.await.unwrap();
         }
     }
 }
@@ -345,14 +434,14 @@ fn network_groups_bucket_by_prefix() {
         network_group(IpAddr::V4(Ipv4Addr::new(203, 0, 1, 1))),
         network_group(IpAddr::V4(Ipv4Addr::new(203, 1, 1, 1)))
     );
-    // IPv6 buckets by /32 (first segment).
+    // IPv6 buckets by /32.
     assert_eq!(
         network_group(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1))),
         network_group(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2)))
     );
     assert_ne!(
         network_group(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1))),
-        network_group(IpAddr::V6(Ipv6Addr::new(0x2002, 0xdb8, 0, 0, 0, 0, 0, 1)))
+        network_group(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb9, 0, 0, 0, 0, 0, 1)))
     );
     // v4 and v6 never share a group.
     assert_ne!(

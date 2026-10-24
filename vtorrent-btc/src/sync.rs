@@ -107,21 +107,28 @@ pub async fn broadcast_tx_to(
     Err(last_err.unwrap_or_else(|| BtcError::P2p("no reachable peers".into())))
 }
 
+/// An IP prefix used to keep compact-filter peers in separate network groups.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NetworkGroup(u8, u32);
+
 /// The network group an address belongs to, for peer-diversity checks.
 ///
 /// Two addresses in the same group are likely controlled by the same operator
 /// (same hosting provider or allocation), so counting them as independent peers
 /// would let a sybil satisfy the agreement requirement. Bitcoin Core buckets
 /// IPv4 by /16 and IPv6 by /32 for the same reason.
-pub(crate) fn network_group(ip: std::net::IpAddr) -> (u8, u16) {
+pub fn network_group(ip: std::net::IpAddr) -> NetworkGroup {
     match ip {
         std::net::IpAddr::V4(v4) => {
             let o = v4.octets();
-            (4, u16::from_be_bytes([o[0], o[1]]))
+            NetworkGroup(4, u32::from(u16::from_be_bytes([o[0], o[1]])))
         }
         std::net::IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return network_group(std::net::IpAddr::V4(v4));
+            }
             let s = v6.segments();
-            (6, s[0])
+            NetworkGroup(6, (u32::from(s[0]) << 16) | u32::from(s[1]))
         }
     }
 }
@@ -464,7 +471,7 @@ impl BtcSync {
         &self,
         peer: &mut BtcPeer,
         start_height: u32,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         use bitcoin::bip158::FilterHeader;
 
         if !peer.supports_compact_filters() {
@@ -611,54 +618,92 @@ impl BtcSync {
             )?);
         }
 
-        let required = if self.network == bitcoin::Network::Regtest {
-            1
-        } else {
-            2
-        };
-        let agreement =
-            self.filter_headers
-                .lock()
-                .observe_candidate(peer.addr(), candidate, required)?;
-        if agreement < required {
-            return Err(BtcError::Sync(format!(
-                "compact-filter headers require agreement from {} peers (have {})",
-                required, agreement
-            )));
-        }
-        Ok(())
+        self.filter_headers.lock().observe_candidate(
+            peer.addr(),
+            candidate,
+            if self.network == bitcoin::Network::Regtest {
+                1
+            } else {
+                2
+            },
+        )
     }
 
     async fn authenticate_filter_headers_multi(
         &self,
         peers: &mut [BtcPeer],
         start_height: u32,
-    ) -> Result<()> {
+    ) -> Result<Vec<usize>> {
         let mut last_error = None;
-        for peer in peers.iter_mut() {
+        let mut responsive = Vec::new();
+        let mut agreement = 0;
+        for (index, peer) in peers.iter_mut().enumerate() {
             match self.authenticate_filter_headers(peer, start_height).await {
-                Ok(()) => return Ok(()),
-                Err(error) => last_error = Some(error),
+                Ok(count) => {
+                    responsive.push(index);
+                    agreement = agreement.max(count);
+                }
+                Err(error) => {
+                    tracing::warn!("BTC filter-header peer {} failed: {}", peer.addr(), error);
+                    last_error = Some(error);
+                }
             }
+        }
+        let required = if self.network == bitcoin::Network::Regtest {
+            1
+        } else {
+            2
+        };
+        if agreement >= required {
+            return Ok(responsive);
+        }
+        if !responsive.is_empty() {
+            return Err(BtcError::Sync(format!(
+                "compact-filter headers require agreement from {} network groups (have {})",
+                required, agreement
+            )));
         }
         Err(last_error
             .unwrap_or_else(|| BtcError::Sync("no compact-filter peers available".into())))
     }
 
     /// Scan with multiple peers so a fresh mainnet filter-header chain can
-    /// satisfy the two-peer agreement requirement. The actual filter download
-    /// uses the first peer after authentication.
+    /// satisfy the independent-peer agreement requirement. Failed downloads
+    /// resume at the first unprocessed block using another responsive peer.
     pub async fn scan_utxos_bip158_multi(
         &self,
         peers: &mut [BtcPeer],
         start_height: u32,
     ) -> Result<usize> {
-        self.authenticate_filter_headers_multi(peers, start_height)
+        let start_height = start_height.max(self.headers.lock().retained_floor());
+        let expected = self.headers.lock().hashes_from(start_height).len();
+        if expected == 0 {
+            return Ok(0);
+        }
+        let responsive = self
+            .authenticate_filter_headers_multi(peers, start_height)
             .await?;
-        let Some(peer) = peers.first_mut() else {
-            return Err(BtcError::Sync("no BTC peers available".into()));
-        };
-        self.scan_utxos_bip158_inner(peer, start_height).await
+        let mut scanned = 0;
+        let mut last_error = None;
+        for index in responsive {
+            let peer = &mut peers[index];
+            let resume = start_height.saturating_add(scanned as u32);
+            match self
+                .scan_utxos_bip158_inner(peer, resume, &mut scanned)
+                .await
+            {
+                Ok(()) if scanned == expected => return Ok(scanned),
+                Ok(()) => {}
+                Err(error) => {
+                    tracing::warn!("BTC filter-download peer {} failed: {}", peer.addr(), error);
+                    last_error = Some(error);
+                }
+            }
+        }
+        if scanned > 0 || last_error.is_none() {
+            return Ok(scanned);
+        }
+        Err(last_error.unwrap())
     }
 
     /// Scan blocks from `start_height` to the tip using BIP-158 compact block
@@ -676,22 +721,38 @@ impl BtcSync {
     /// retained floor the scan fails closed. Raise `--btc-header-retention` or
     /// rescan from an earlier height in that case.
     pub async fn scan_utxos_bip158(&self, peer: &mut BtcPeer, start_height: u32) -> Result<usize> {
-        self.authenticate_filter_headers(peer, start_height).await?;
-        self.scan_utxos_bip158_inner(peer, start_height).await
+        let start_height = start_height.max(self.headers.lock().retained_floor());
+        let agreement = self.authenticate_filter_headers(peer, start_height).await?;
+        let required = if self.network == bitcoin::Network::Regtest {
+            1
+        } else {
+            2
+        };
+        if agreement < required {
+            return Err(BtcError::Sync(format!(
+                "compact-filter headers require agreement from {} network groups (have {})",
+                required, agreement
+            )));
+        }
+        let mut scanned = 0;
+        self.scan_utxos_bip158_inner(peer, start_height, &mut scanned)
+            .await?;
+        Ok(scanned)
     }
 
     async fn scan_utxos_bip158_inner(
         &self,
         peer: &mut BtcPeer,
         start_height: u32,
-    ) -> Result<usize> {
+        scanned: &mut usize,
+    ) -> Result<()> {
         use bitcoin::bip158::BlockFilter;
 
         let retained_floor = self.headers.lock().retained_floor();
         let start_height = start_height.max(retained_floor);
         let hashes: Vec<[u8; 32]> = self.headers.lock().hashes_from(start_height);
         if hashes.is_empty() {
-            return Ok(0);
+            return Ok(());
         }
 
         // The watched scriptPubKeys (BIP-158 matches against the full script).
@@ -707,13 +768,12 @@ impl BtcSync {
             })
             .collect();
         if watched.is_empty() {
-            return Ok(0);
+            return Ok(());
         }
 
         // BIP-158 basic filter type is 0x00.
         const FILTER_TYPE_BASIC: u8 = 0x00;
 
-        let mut scanned = 0usize;
         let mut queued_filters = std::collections::VecDeque::new();
         for (chunk_index, chunk) in hashes.chunks(CFILTERS_RANGE_LIMIT).enumerate() {
             let chunk_start = start_height + (chunk_index * CFILTERS_RANGE_LIMIT) as u32;
@@ -737,7 +797,7 @@ impl BtcSync {
                     match tokio::time::timeout(std::time::Duration::from_secs(10), peer.recv())
                         .await
                     {
-                        Err(_) => return Ok(scanned),
+                        Err(_) => return Ok(()),
                         Ok(Err(e)) => return Err(e),
                         Ok(Ok(NetworkMessage::CFilter(cf))) => break cf,
                         Ok(Ok(NetworkMessage::Ping(nonce))) => {
@@ -782,7 +842,10 @@ impl BtcSync {
                     )]))
                     .await?;
                     let block = loop {
-                        match peer.recv().await? {
+                        match tokio::time::timeout(std::time::Duration::from_secs(10), peer.recv())
+                            .await
+                            .map_err(|_| BtcError::Sync("BTC block download timeout".into()))??
+                        {
                             NetworkMessage::Block(b) => break b,
                             NetworkMessage::CFilter(filter) => {
                                 if queued_filters.len() >= CFILTERS_RANGE_LIMIT {
@@ -829,10 +892,10 @@ impl BtcSync {
                         }
                     }
                 }
-                scanned += 1;
+                *scanned += 1;
             }
         }
-        Ok(scanned)
+        Ok(())
     }
 }
 
