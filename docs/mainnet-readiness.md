@@ -241,9 +241,13 @@ actions, operator approval.
       and a conflicting-spend test proves a reorged-out funding output
       disappears after restart. A mainnet-scale probe on 2026-10-24 synced
       972,892 headers with `--btc-header-retention 100000` and scanned 100,001
-      BIP-158 blocks in ~15 min at 181,952–182,452 kB RSS; `1901bb9` fixes the
+      BIP-158 blocks in ~15 min at 181,952–182,452 kB RSS; `1901bb9` fixed the
       two-peer compact-filter agreement needed for a fresh mainnet filter
-      chain. Swaps are enabled at mainnet launch, so the active swap soak and
+      chain, and `513efde` added network-group diversity, configured-peer
+      priority, and failover. A fresh `513efde` probe synced 972,921 headers and
+      scanned 100,001 blocks at 182,072 kB RSS; its 24 h window ends
+      2026-10-25T13:14:05Z. Swaps are enabled at mainnet launch, so the active
+      swap soak and
       separate maker and taker VTR node validation are launch gates. Set
       `--btc-birthday` to the wallet creation height to scan funds older than
       the retained window. See `docs/btc-spv-soak-plan.md`.

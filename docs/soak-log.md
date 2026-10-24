@@ -2155,3 +2155,18 @@ and 182,452 kB after the scan; no ERROR/panic. Two compact-filter peers were
 connected. The full workspace suite at `1901bb9` passed: 48 test groups,
 1,100 passed, 0 failed, 7 ignored. The probe remains running for a 24 h window.
 This is probe evidence, not the fleet BTC-SPV soak.
+
+## 2026-10-24 — fresh BTC SPV probe on 513efde
+
+The `1901bb9` probe was stopped at 13:14:05Z and replaced with a fresh probe on
+`513efde` (binary SHA-256
+`1fc553a457006e394ba3b6ae4f90406d6b531eef6c4d643ccd4e5f1d6d3941a8`). The new
+build enforces independent network groups for filter-header agreement, tries
+the configured peer first, and fails over on header or filter-download errors.
+
+The configured peer connected first, then two peers from distinct network
+groups. Header sync reached 972,921 by 13:20:56Z; the initial scan completed
+100,001 BIP-158 blocks by 13:25:29Z. RSS peaked at 182,072 kB and held at
+182,068 kB. Two transient agreement failures (13:46Z, 14:30Z) recovered on the
+next cycle, with no panic. The 24 h window ends at 2026-10-25T13:14:05Z.
+Earlier `1901bb9` logs remain under `/tmp/vtr-btc-mainnet`.

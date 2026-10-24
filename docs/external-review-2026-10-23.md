@@ -58,8 +58,13 @@ scan does not re-authenticate with one peer. After the fix the probe synced
 passed: 48 test groups, 1,100 passed, 0 failed, 7 ignored. See
 `docs/btc-spv-soak-plan.md`.
 
-The completed review candidate remains `70ea7b9`; an independent reviewer
-should include the `1901bb9` delta or review `1901bb9` directly.
+`513efde` adds the follow-up hardening: filter-header agreement counts
+network groups instead of socket addresses (including IPv4-mapped IPv6), the
+configured peer is attempted first, and failed header or filter-download peers
+are replaced or bypassed. The fresh probe on `513efde` synced 972,921 headers
+and scanned 100,001 blocks at 182,072 kB RSS. The completed review candidate
+remains `70ea7b9`; an independent reviewer should include the `1901bb9` and
+`513efde` deltas or review `513efde` directly.
 
 ## High findings
 

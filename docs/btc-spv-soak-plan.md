@@ -94,6 +94,18 @@ remains running for a 24 h window; this is a probe, not the fleet soak.
 Because the scan starts at the retained floor, funds older than 872,892 need
 `--btc-birthday`.
 
+**Fresh probe on `513efde` (2026-10-24):** the `1901bb9` probe was stopped
+and restarted on `513efde` (binary SHA-256
+`1fc553a457006e394ba3b6ae4f90406d6b531eef6c4d643ccd4e5f1d6d3941a8`) at
+13:14:05Z. The configured peer connected first, followed by two peers from
+distinct network groups. The probe synced 972,921 headers by 13:20:56Z and
+scanned 100,001 BIP-158 blocks by 13:25:29Z. RSS rose from 27,876 kB at launch
+to a 182,072 kB maximum and held at 182,068 kB for the next 90 minutes. Two
+peer-agreement failures at 13:46Z and 14:30Z each recovered on the next
+five-minute cycle; there were no panics. The 24 h observation window ends at
+**2026-10-25T13:14:05Z**. Prior `1901bb9` artifacts remain in
+`/tmp/vtr-btc-mainnet`.
+
 ### Phase B — active soak (drive the header chain and a swap)
 1. Generate regtest BTC blocks against the local bitcoind
    (`vtr-btc-regtest`) at a controlled rate; watch header count vs RSS. This is
