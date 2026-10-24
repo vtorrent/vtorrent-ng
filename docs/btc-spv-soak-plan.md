@@ -102,9 +102,10 @@ distinct network groups. The probe synced 972,921 headers by 13:20:56Z and
 scanned 100,001 BIP-158 blocks by 13:25:29Z. RSS rose from 27,876 kB at launch
 to a 182,072 kB maximum and held at 182,068 kB for the next 90 minutes. Two
 peer-agreement failures at 13:46Z and 14:30Z each recovered on the next
-five-minute cycle; there were no panics. The 24 h observation window ends at
-**2026-10-25T13:14:05Z**. Prior `1901bb9` artifacts remain in
-`/tmp/vtr-btc-mainnet`.
+five-minute cycle; there were no panics. The full workspace suite at `513efde`
+passed 48 test groups, 1,105 tests, 0 failures, and 7 ignored tests. The 24 h
+observation window ends at **2026-10-25T13:14:05Z**. Prior `1901bb9` artifacts
+remain in `/tmp/vtr-btc-mainnet`.
 
 ### Phase B — active soak (drive the header chain and a swap)
 1. Generate regtest BTC blocks against the local bitcoind
