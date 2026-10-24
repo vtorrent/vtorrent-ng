@@ -43,7 +43,7 @@
 - [ ] **External security review** — **brief finalized, not yet commissioned**:
       `docs/security-review-brief.md` (scope, deliverables, 2-phase engagement).
       The proposed immutable delivery is
-      `d6c82f4ff769f44da2de8eeacf9aa877b3c0c885` (`bab2456` plus the Playwright
+      `1ff179b9fdc19be7f58c1bdc3d8e636975f1a40a` (`bab2456` plus the Playwright
       E2E setup, the live cold-stake browser test, the Vite dev-origin CORS
       allowance, the Tauri path capability fix, the durable cold-stake registry
       persistence fix, the desktop restart/persistence parity fixes, the
@@ -97,13 +97,13 @@ from uninterrupted soak measurements.
       height 54,123, same tip, staking, 0 errors/restarts, `syncing=false`.
       Sign-off pending. The fleet runs `e7691fb`, which includes the reorg-safe
       BTC wallet state, durable cold-stake script registry, zeroized WIF
-      responses, and the WebSocket token cap; the review candidate `d6c82f4`
+      responses, and the WebSocket token cap; the review candidate `1ff179b`
       adds the Playwright browser E2E setup, the Vite dev-origin CORS
       allowance, the Tauri path capability fix, the durable cold-stake registry
       persistence fix, the desktop restart/persistence parity fixes, the
       wallet-path confinement, import overwrite guard, version bump, IPC error
       surfacing, and staking ownership warnings, and the live desktop journey,
-      restart, and BTC discovery evidence. The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; verified 2FA enrollment, the torrent control availability, the reviewed send quote, verified encrypted backup and restore, the guided swap workspace, the staking readiness assistant, the activity and recovery center, the cold-stake delegation wizard, and node settings and diagnostics are in `d6c82f4`. The external review should verify them.
+      restart, and BTC discovery evidence. The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; verified 2FA enrollment, the torrent control availability, the reviewed send quote, verified encrypted backup and restore, the guided swap workspace, the staking readiness assistant, the activity and recovery center, the cold-stake delegation wizard, node settings and diagnostics, and torrent controls and reward accounting are in `1ff179b`. The external review should verify them.
 - [x] **Staking soak**: at least one node staked continuously and produced
       blocks at the expected ~60s average over the full 7-day window
       (`2026-09-29T13:36:22Z` → `2026-10-06T13:36:22Z`): node1 staked 1441

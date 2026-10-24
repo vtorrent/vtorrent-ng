@@ -22,7 +22,7 @@ Companion to `docs/mainnet-readiness.md` (checklist) and
 | Min stake | 1 VTR | `consensus.rs:43` |
 | Max supply | 20,000,000 VTR | `consensus.rs:46` |
 | DNS seeds | seed1/2/3.vtorrent.org + `bootstrap/peers.txt` | `docs/dns-seeds.md` |
-| Review candidate source | `d6c82f4` (`bab2456` plus Playwright E2E setup, Vite dev-origin CORS allowance, Tauri path capability fix, durable cold-stake registry fix, desktop restart/persistence parity fixes, wallet-path/IPC hardening, and staking ownership warnings) | `docs/security-review-brief.md` |
+| Review candidate source | `1ff179b` (`bab2456` plus Playwright E2E setup, Vite dev-origin CORS allowance, Tauri path capability fix, durable cold-stake registry fix, desktop restart/persistence parity fixes, wallet-path/IPC hardening, and staking ownership warnings) | `docs/security-review-brief.md` |
 
 **Genesis is deterministic** and embeds the legacy snapshot (59,375 addresses,
 11,589,746.63 VTR). `GENESIS_TIMESTAMP` and the genesis message are frozen.
@@ -33,7 +33,7 @@ at launch.
 ## 2. Pre-launch gate (all must be green)
 
 1. **External security review** complete; findings fixed with regression tests
-   (`docs/security-review-brief.md`, pinned to `d6c82f4`).
+   (`docs/security-review-brief.md`, pinned to `1ff179b`).
 2. **Review candidate selected** (§3): the current build includes the
    consensus batch; launch on the candidate commit and image after review, not
    beta.3.
@@ -46,7 +46,7 @@ at launch.
 The current build already includes the consensus batch (OP_RETURN exclusion,
 cold staking, governance, state rent) and the governance and proof-service
 repairs. The core soak fleet runs `vtorrent/node:batch-e7691fb` with BTC SPV
-disabled. The review candidate `d6c82f4` is `bab2456` plus the Playwright browser
+disabled. The review candidate `1ff179b` is `bab2456` plus the Playwright browser
 E2E setup, the Vite dev-origin CORS allowance, the Tauri path capability fix,
 the durable cold-stake registry persistence fix, the desktop
 restart/persistence parity fixes, the wallet-path confinement, import
@@ -55,7 +55,7 @@ warnings, and the live desktop journey, restart, and BTC discovery evidence. It
 adds the BTC wallet birthday flag,
 desktop commands, health-field updates, the shared BTC sync loop, desktop chain
 persistence, and the cold-stake/BTC/compact-block/desktop hardening from the
-adversarial review; rebuild the release image from it. The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; verified 2FA enrollment, the torrent control availability, the reviewed send quote, verified encrypted backup and restore, the guided swap workspace, the staking readiness assistant, the activity and recovery center, the cold-stake delegation wizard, and node settings and diagnostics are in `d6c82f4`. The external review should verify them. The fresh 7-day soak
+adversarial review; rebuild the release image from it. The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; verified 2FA enrollment, the torrent control availability, the reviewed send quote, verified encrypted backup and restore, the guided swap workspace, the staking readiness assistant, the activity and recovery center, the cold-stake delegation wizard, node settings and diagnostics, and torrent controls and reward accounting are in `1ff179b`. The external review should verify them. The fresh 7-day soak
 started 2026-10-21T02:47:54Z. Launch on that candidate build after the external
 review and the soak. Do not launch on beta.3; it predates the governance and
 proof-service repairs.
@@ -89,7 +89,7 @@ remains to be run.
 - The independent genesis verifier passes
   (`python3 scripts/verify-genesis.py`).
 - The deployed image and commit match the build that passed the external
-  review (release image rebuilt from `d6c82f4`).
+  review (release image rebuilt from `1ff179b`).
 - Block cadence ~60 s; no sustained divergence.
 - A legacy claim succeeds end-to-end (rehearsed on regtest).
 - RPC reachable, auth enforced, rate limiting active.
