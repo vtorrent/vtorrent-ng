@@ -31,7 +31,8 @@ The guided swap workspace is implemented in `bd35c33`. The staking readiness
 assistant is implemented in `aa12b3c`. The activity and recovery center is
 implemented in `82d9383`. The cold-stake delegation wizard is implemented in
 `3a61254`. Node settings and diagnostics are implemented in `d6c82f4`. Torrent controls and
-reward accounting are implemented in `1ff179b`.
+reward accounting are implemented in `1ff179b`. Navigation grouping and
+accessibility improvements are implemented in `30896d6`.
 
 ## Prioritized feature roadmap
 
@@ -79,5 +80,7 @@ implemented in `3c580c1`, and the guided swap workspace is implemented in
 activity and recovery center is implemented in `82d9383`, and the cold-stake
 delegation wizard is implemented in `3a61254`, and node settings and diagnostics
 are implemented in `d6c82f4`, and torrent controls and reward accounting are
-implemented in `1ff179b`. The next substantial new feature is navigation and
-accessibility improvements.
+implemented in `1ff179b`, and navigation grouping and accessibility improvements
+are implemented in `30896d6`. The product review roadmap is complete; the next
+steps are the external human review and the fleet rebuild. Hardware-wallet
+support and offline signing remain later work.
