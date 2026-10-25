@@ -1,5 +1,7 @@
 use crate::ratelimit::SharedRateLimiter;
 use crate::ws::EventBroadcaster;
+use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -81,6 +83,10 @@ pub struct AppState {
     /// sync and broadcast use this peer instead of DNS seeds. Stored as a
     /// hostname so container restarts with new IPs are re-resolved per cycle.
     pub btc_peer: Arc<RwLock<Option<String>>>,
+    /// Working compact-filter peers learned from successful connections.
+    pub btc_peer_cache: Arc<RwLock<Vec<SocketAddr>>>,
+    /// Optional path used to persist `btc_peer_cache` across restarts.
+    pub btc_peer_cache_path: Option<PathBuf>,
     /// Runtime health counters for the BTC SPV sync loop.
     pub btc_health: Arc<BtcSyncHealth>,
     /// Node start time (Unix timestamp).
@@ -201,6 +207,8 @@ impl AppState {
             btc_swap_scan_lock: Arc::new(Mutex::new(())),
             btc_network: Arc::new(RwLock::new(bitcoin::Network::Bitcoin)),
             btc_peer: Arc::new(RwLock::new(None)),
+            btc_peer_cache: Arc::new(RwLock::new(Vec::new())),
+            btc_peer_cache_path: None,
             btc_health: Arc::new(BtcSyncHealth::default()),
             start_time: now,
             peer_count: Arc::new(RwLock::new(0)),
@@ -265,6 +273,8 @@ impl AppState {
             btc_swap_scan_lock: Arc::new(Mutex::new(())),
             btc_network: Arc::new(RwLock::new(bitcoin::Network::Bitcoin)),
             btc_peer: Arc::new(RwLock::new(None)),
+            btc_peer_cache: Arc::new(RwLock::new(Vec::new())),
+            btc_peer_cache_path: None,
             btc_health: Arc::new(BtcSyncHealth::default()),
             start_time: now,
             peer_count: Arc::new(RwLock::new(0)),

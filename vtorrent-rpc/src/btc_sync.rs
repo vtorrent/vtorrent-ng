@@ -3,24 +3,32 @@
 use std::{
     collections::HashSet,
     net::SocketAddr,
+    path::Path,
     sync::{atomic::Ordering, Arc},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use crate::state::{AppState, BtcSyncHealth};
+use tokio::sync::RwLock;
 use vtorrent_btc::{p2p::BtcPeer, sync::network_group, wallet::BtcWallet};
 
 fn prioritize_peers(
     configured: Option<SocketAddr>,
+    cached: Vec<SocketAddr>,
     mut discovered: Vec<SocketAddr>,
 ) -> Vec<SocketAddr> {
     discovered.sort_by_key(|addr| (addr.is_ipv6(), *addr));
     discovered.dedup();
+    let mut ordered = Vec::new();
     if let Some(configured) = configured {
-        discovered.retain(|addr| *addr != configured);
-        discovered.insert(0, configured);
+        ordered.push(configured);
     }
-    discovered
+    for addr in cached.into_iter().chain(discovered) {
+        if !ordered.contains(&addr) {
+            ordered.push(addr);
+        }
+    }
+    ordered
 }
 
 async fn connect_filter_peers(
@@ -87,6 +95,81 @@ fn unix_now() -> u64 {
         .as_secs()
 }
 
+async fn load_peer_cache(path: Option<&Path>) -> Vec<SocketAddr> {
+    let Some(path) = path else {
+        return Vec::new();
+    };
+    let text = match tokio::fs::read_to_string(path).await {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
+            tracing::warn!("BTC peer cache {} unreadable: {}", path.display(), error);
+            return Vec::new();
+        }
+    };
+    match serde_json::from_str::<Vec<String>>(&text) {
+        Ok(peers) => {
+            let peers: Vec<SocketAddr> = peers
+                .into_iter()
+                .filter_map(|peer| peer.parse().ok())
+                .collect();
+            if !peers.is_empty() {
+                tracing::info!(
+                    "Loaded {} cached BTC peer(s) from {}",
+                    peers.len(),
+                    path.display()
+                );
+            }
+            peers
+        }
+        Err(error) => {
+            tracing::warn!("BTC peer cache {} invalid: {}", path.display(), error);
+            Vec::new()
+        }
+    }
+}
+
+async fn persist_peer_cache(path: &Path, peers: &[SocketAddr]) -> std::io::Result<()> {
+    let text = serde_json::to_string_pretty(
+        &peers
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<String>>(),
+    )
+    .map_err(std::io::Error::other)?;
+    let temporary = path.with_extension("tmp");
+    tokio::fs::write(&temporary, text).await?;
+    tokio::fs::rename(&temporary, path).await
+}
+
+async fn remember_connected_peers(
+    cache: &RwLock<Vec<SocketAddr>>,
+    path: Option<&Path>,
+    peers: &[BtcPeer],
+) {
+    if peers.is_empty() {
+        return;
+    }
+    let mut cache = cache.write().await;
+    let previous = cache.clone();
+    for peer in peers.iter().rev() {
+        let addr = peer.addr();
+        if let Some(index) = cache.iter().position(|item| *item == addr) {
+            cache.remove(index);
+        }
+        cache.insert(0, addr);
+    }
+    cache.truncate(50);
+    if *cache == previous {
+        return;
+    }
+    if let Some(path) = path {
+        if let Err(error) = persist_peer_cache(path, &cache).await {
+            tracing::warn!("BTC peer cache {} write failed: {}", path.display(), error);
+        }
+    }
+}
+
 async fn resolve_addr(peer: &str) -> std::io::Result<SocketAddr> {
     if let Ok(addr) = peer.parse() {
         return Ok(addr);
@@ -108,6 +191,14 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
         }
         let network = *state.btc_network.read().await;
         let health = state.btc_health.clone();
+        let peer_cache = state.btc_peer_cache.clone();
+        let peer_cache_path = state.btc_peer_cache_path.clone();
+        if peer_cache.read().await.is_empty() {
+            let loaded = load_peer_cache(peer_cache_path.as_deref()).await;
+            if !loaded.is_empty() {
+                *peer_cache.write().await = loaded;
+            }
+        }
         let configured = match state.btc_peer.read().await.clone() {
             Some(host) => match resolve_addr(&host).await {
                 Ok(addr) => Some(addr),
@@ -129,13 +220,15 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
         } else {
             Vec::new()
         };
-        let mut candidates = prioritize_peers(configured, discovered);
+        let cached = peer_cache.read().await.clone();
+        let mut candidates = prioritize_peers(configured, cached, discovered);
         candidates.truncate(64);
         let mut cursor = 0;
 
         let mut peers = Vec::new();
         connect_filter_peers(&candidates, &mut cursor, &mut peers, network).await;
         update_peer_group_metric(&health, &peers);
+        remember_connected_peers(&peer_cache, peer_cache_path.as_deref(), &peers).await;
         if peers.is_empty() {
             tracing::warn!("No usable BTC peers; retrying in 300s");
             tokio::time::sleep(Duration::from_secs(300)).await;
@@ -149,6 +242,8 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                         tracing::info!("BTC sync: {} headers", n);
                         connect_filter_peers(&candidates, &mut cursor, &mut peers, network).await;
                         update_peer_group_metric(&health, &peers);
+                        remember_connected_peers(&peer_cache, peer_cache_path.as_deref(), &peers)
+                            .await;
                         update_wallet_metrics(&health, wallet);
                         break true;
                     }
@@ -156,6 +251,8 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                         tracing::warn!("BTC sync error: {}", error);
                         connect_filter_peers(&candidates, &mut cursor, &mut peers, network).await;
                         update_peer_group_metric(&health, &peers);
+                        remember_connected_peers(&peer_cache, peer_cache_path.as_deref(), &peers)
+                            .await;
                         if peers.is_empty() {
                             break false;
                         }
@@ -245,6 +342,8 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                         peers.clear();
                         connect_filter_peers(&candidates, &mut cursor, &mut peers, network).await;
                         update_peer_group_metric(&health, &peers);
+                        remember_connected_peers(&peer_cache, peer_cache_path.as_deref(), &peers)
+                            .await;
                         if peers.len() < required {
                             break;
                         }
@@ -272,7 +371,7 @@ mod tests {
             .map(|last| SocketAddr::from(([10, 0, 0, last], 8333)))
             .collect();
         seeds.extend([configured, configured]);
-        let ordered = prioritize_peers(Some(configured), seeds);
+        let ordered = prioritize_peers(Some(configured), Vec::new(), seeds);
         assert_eq!(ordered[0], configured);
         assert_eq!(
             ordered.iter().filter(|addr| **addr == configured).count(),
@@ -282,10 +381,46 @@ mod tests {
     }
 
     #[test]
+    fn cached_peers_precede_dns_candidates() {
+        let configured = "198.51.100.250:8333".parse().unwrap();
+        let cached_v6 = "[2001:db8::1]:8333".parse().unwrap();
+        let cached_v4 = "203.0.113.1:8333".parse().unwrap();
+        let seed = "198.51.100.1:8333".parse().unwrap();
+        let ordered = prioritize_peers(
+            Some(configured),
+            vec![cached_v6, cached_v4],
+            vec![cached_v4, seed],
+        );
+        assert_eq!(ordered, vec![configured, cached_v6, cached_v4, seed]);
+    }
+
+    #[tokio::test]
+    async fn peer_cache_round_trips() {
+        let path = std::env::temp_dir().join(format!(
+            "vtr-btc-peers-{}-{}.json",
+            std::process::id(),
+            unix_now()
+        ));
+        let peers: Vec<SocketAddr> = vec![
+            "203.0.113.1:8333".parse().unwrap(),
+            "[2001:db8::1]:8333".parse().unwrap(),
+        ];
+        persist_peer_cache(&path, &peers).await.unwrap();
+        assert_eq!(load_peer_cache(Some(&path)).await, peers);
+        tokio::fs::remove_file(path).await.unwrap();
+    }
+
+    #[test]
     fn dns_candidates_prefer_ipv4_and_remove_duplicates() {
         let v4 = "203.0.113.1:8333".parse().unwrap();
         let v6 = "[2001:db8::1]:8333".parse().unwrap();
-        assert_eq!(prioritize_peers(None, vec![v6, v4, v4]), vec![v4, v6]);
-        assert_eq!(prioritize_peers(Some(v6), vec![v6, v4]), vec![v6, v4]);
+        assert_eq!(
+            prioritize_peers(None, Vec::new(), vec![v6, v4, v4]),
+            vec![v4, v6]
+        );
+        assert_eq!(
+            prioritize_peers(Some(v6), Vec::new(), vec![v6, v4]),
+            vec![v6, v4]
+        );
     }
 }

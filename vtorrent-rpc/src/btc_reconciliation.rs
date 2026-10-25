@@ -410,9 +410,23 @@ async fn resolve_btc_peers(
             .map_err(|e| RpcError::BadRequest(format!("BTC peer resolution failed: {e}")))?
             .collect())
     } else if network == bitcoin::Network::Bitcoin {
-        vtorrent_btc::sync::resolve_seeds()
-            .await
-            .map_err(|e| RpcError::BadRequest(e.to_string()))
+        let mut peers = state.btc_peer_cache.read().await.clone();
+        match vtorrent_btc::sync::resolve_seeds().await {
+            Ok(seeds) => {
+                for seed in seeds {
+                    if !peers.contains(&seed) {
+                        peers.push(seed);
+                    }
+                }
+            }
+            Err(error) => {
+                if peers.is_empty() {
+                    return Err(RpcError::BadRequest(error.to_string()));
+                }
+                tracing::warn!("BTC seed resolution failed; using cached peers: {}", error);
+            }
+        }
+        Ok(peers)
     } else {
         Err(RpcError::BadRequest(
             "Configure a BTC peer for this network".into(),

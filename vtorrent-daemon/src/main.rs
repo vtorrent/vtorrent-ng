@@ -420,6 +420,8 @@ async fn main() -> anyhow::Result<()> {
         } else {
             "mainnet"
         };
+        rpc_state.btc_peer_cache_path =
+            Some(data_dir.join(format!("btc_peers-{network_label}.json")));
         let mut btc_wallet = vtorrent_btc::wallet::BtcWallet::with_persistence(
             seed,
             network,
