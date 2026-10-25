@@ -19,17 +19,19 @@ fn prioritize_peers(
 }
 
 async fn connect_filter_peers(
-    candidates: &mut impl Iterator<Item = SocketAddr>,
+    candidates: &[SocketAddr],
+    cursor: &mut usize,
     peers: &mut Vec<BtcPeer>,
     network: bitcoin::Network,
 ) {
     let target = if network == bitcoin::Network::Regtest {
         1
     } else {
-        3
+        5
     };
-    while peers.len() < target {
-        let Some(addr) = candidates.next() else { break };
+    while peers.len() < target && *cursor < candidates.len() {
+        let addr = candidates[*cursor];
+        *cursor += 1;
         if peers
             .iter()
             .any(|peer| network_group(peer.addr().ip()) == network_group(addr.ip()))
@@ -94,12 +96,12 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
         } else {
             Vec::new()
         };
-        let mut candidates = prioritize_peers(configured, discovered)
-            .into_iter()
-            .take(64);
+        let mut candidates = prioritize_peers(configured, discovered);
+        candidates.truncate(64);
+        let mut cursor = 0;
 
         let mut peers = Vec::new();
-        connect_filter_peers(&mut candidates, &mut peers, network).await;
+        connect_filter_peers(&candidates, &mut cursor, &mut peers, network).await;
         if peers.is_empty() {
             tracing::warn!("No usable BTC peers; retrying in 300s");
             tokio::time::sleep(Duration::from_secs(300)).await;
@@ -110,12 +112,12 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                 match wallet.sync_with_peers(&mut peers).await {
                     Ok(n) => {
                         tracing::info!("BTC sync: {} headers", n);
-                        connect_filter_peers(&mut candidates, &mut peers, network).await;
+                        connect_filter_peers(&candidates, &mut cursor, &mut peers, network).await;
                         break true;
                     }
                     Err(error) => {
                         tracing::warn!("BTC sync error: {}", error);
-                        connect_filter_peers(&mut candidates, &mut peers, network).await;
+                        connect_filter_peers(&candidates, &mut cursor, &mut peers, network).await;
                         if peers.is_empty() {
                             break false;
                         }
@@ -134,6 +136,7 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                     peers.len()
                 );
             }
+            let mut scan_retries = 0;
             while synced && peers.len() >= required {
                 let retained_floor = wallet.retained_floor();
                 let start = wallet.last_scanned_height().max(retained_floor);
@@ -170,7 +173,16 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                     }
                     Err(e) => {
                         tracing::warn!("BTC UTXO scan error: {}", e);
-                        break;
+                        if scan_retries >= 2 {
+                            break;
+                        }
+                        scan_retries += 1;
+                        peers.clear();
+                        connect_filter_peers(&candidates, &mut cursor, &mut peers, network).await;
+                        if peers.len() < required {
+                            break;
+                        }
+                        continue;
                     }
                 }
             }
