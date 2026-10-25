@@ -33,10 +33,19 @@ use axum::{extract::State, response::IntoResponse};
 /// | `vtorrent_best_peer_height` | Gauge | Highest block height reported by a peer |
 /// | `vtorrent_btc_best_height` | Gauge | BTC SPV best header height |
 /// | `vtorrent_btc_synced` | Gauge | 1 if the BTC SPV wallet is synced |
+/// | `vtorrent_btc_last_scanned_height` | Gauge | Last BIP-158 block height scanned |
+/// | `vtorrent_btc_scan_lag_blocks` | Gauge | Header tip minus last scanned height |
+/// | `vtorrent_btc_peer_groups` | Gauge | Compact-filter peers in distinct network groups |
+/// | `vtorrent_btc_scan_in_progress` | Gauge | 1 while a BIP-158 scan is running |
+/// | `vtorrent_btc_scan_duration_milliseconds` | Gauge | Duration of the last scan attempt |
+/// | `vtorrent_btc_last_scan_timestamp_seconds` | Gauge | Unix time of the last successful scan |
+/// | `vtorrent_btc_auth_failures_total` | Gauge | Scan attempts rejected for weak peer agreement |
+/// | `vtorrent_btc_scan_errors_total` | Gauge | Failed BIP-158 scan attempts this process |
 /// | `vtorrent_process_rss_bytes` | Gauge | Resident set size of the daemon process |
 /// | `vtorrent_torrent_sessions` | Gauge | Number of active torrent sessions |
 /// | `vtorrent_dex_orders` | Gauge | Number of open DEX orders |
 /// | `vtorrent_ws_subscribers` | Gauge | Number of active WebSocket subscribers |
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 /// Prometheus text format content type.
@@ -151,11 +160,15 @@ async fn collect_metrics(state: &AppState) -> String {
     );
 
     // BTC SPV
-    let (btc_height, btc_synced) = {
+    let (btc_height, btc_synced, btc_last_scanned) = {
         let btc = state.btc_wallet.read().await;
         match &*btc {
-            Some(wallet) => (wallet.best_height() as u64, wallet.synced() as u64),
-            None => (0, 0),
+            Some(wallet) => (
+                wallet.best_height() as u64,
+                wallet.synced() as u64,
+                wallet.last_scanned_height() as u64,
+            ),
+            None => (0, 0, 0),
         }
     };
     write_gauge(
@@ -169,6 +182,60 @@ async fn collect_metrics(state: &AppState) -> String {
         "vtorrent_btc_synced",
         "1 if the BTC SPV wallet is synced, 0 otherwise",
         btc_synced,
+    );
+    write_gauge(
+        &mut out,
+        "vtorrent_btc_last_scanned_height",
+        "Last BIP-158 block height scanned",
+        btc_last_scanned,
+    );
+    write_gauge(
+        &mut out,
+        "vtorrent_btc_scan_lag_blocks",
+        "BTC header tip minus last scanned height",
+        btc_height.saturating_sub(btc_last_scanned),
+    );
+
+    let health = &state.btc_health;
+    write_gauge(
+        &mut out,
+        "vtorrent_btc_peer_groups",
+        "Compact-filter peers in distinct network groups",
+        health.peer_groups.load(Ordering::Relaxed),
+    );
+    write_gauge(
+        &mut out,
+        "vtorrent_btc_scan_in_progress",
+        "1 while a BIP-158 scan is running",
+        health.scan_in_progress.load(Ordering::Relaxed) as u64,
+    );
+    write_gauge(
+        &mut out,
+        "vtorrent_btc_scan_duration_milliseconds",
+        "Duration of the last BTC SPV scan attempt in milliseconds",
+        health.scan_duration_ms.load(Ordering::Relaxed),
+    );
+    write_gauge(
+        &mut out,
+        "vtorrent_btc_last_scan_timestamp_seconds",
+        "Unix time of the last successful BTC SPV scan",
+        health.last_success_unix.load(Ordering::Relaxed),
+    );
+    write_gauge_with_label(
+        &mut out,
+        "vtorrent_btc_auth_failures_total",
+        "BTC SPV scans rejected for weak peer agreement this process",
+        "process_start_time",
+        state.start_time,
+        health.auth_failures.load(Ordering::Relaxed),
+    );
+    write_gauge_with_label(
+        &mut out,
+        "vtorrent_btc_scan_errors_total",
+        "Failed BTC SPV scan attempts this process",
+        "process_start_time",
+        state.start_time,
+        health.scan_errors.load(Ordering::Relaxed),
     );
 
     // Process resident memory. Linux-only; other platforms report 0.
@@ -299,6 +366,14 @@ mod tests {
         assert!(metrics.contains("vtorrent_blocks_staked_total"));
         assert!(metrics.contains("vtorrent_uptime_seconds"));
         assert!(metrics.contains("vtorrent_syncing"));
+        assert!(metrics.contains("vtorrent_btc_last_scanned_height"));
+        assert!(metrics.contains("vtorrent_btc_scan_lag_blocks"));
+        assert!(metrics.contains("vtorrent_btc_peer_groups"));
+        assert!(metrics.contains("vtorrent_btc_scan_in_progress"));
+        assert!(metrics.contains("vtorrent_btc_scan_duration_milliseconds"));
+        assert!(metrics.contains("vtorrent_btc_last_scan_timestamp_seconds"));
+        assert!(metrics.contains("vtorrent_btc_auth_failures_total"));
+        assert!(metrics.contains("vtorrent_btc_scan_errors_total"));
         assert!(metrics.contains("vtorrent_torrent_sessions"));
         assert!(metrics.contains("vtorrent_dex_orders"));
         assert!(metrics.contains("vtorrent_ws_subscribers"));
@@ -326,6 +401,33 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_btc_health_metrics_reflect_counters() {
+        let state = AppState::new();
+        state.btc_health.peer_groups.store(3, Ordering::Relaxed);
+        state
+            .btc_health
+            .scan_in_progress
+            .store(true, Ordering::Relaxed);
+        state
+            .btc_health
+            .scan_duration_ms
+            .store(1500, Ordering::Relaxed);
+        state
+            .btc_health
+            .last_success_unix
+            .store(1_700_000_000, Ordering::Relaxed);
+        state.btc_health.auth_failures.store(2, Ordering::Relaxed);
+        state.btc_health.scan_errors.store(4, Ordering::Relaxed);
+        let metrics = collect_metrics(&state).await;
+        assert!(metrics.contains("vtorrent_btc_peer_groups 3"));
+        assert!(metrics.contains("vtorrent_btc_scan_in_progress 1"));
+        assert!(metrics.contains("vtorrent_btc_scan_duration_milliseconds 1500"));
+        assert!(metrics.contains("vtorrent_btc_last_scan_timestamp_seconds 1700000000"));
+        assert!(metrics.contains("vtorrent_btc_auth_failures_total{process_start_time="));
+        assert!(metrics.contains("vtorrent_btc_scan_errors_total{process_start_time="));
     }
 
     #[tokio::test]

@@ -1,5 +1,6 @@
 use crate::ratelimit::SharedRateLimiter;
 use crate::ws::EventBroadcaster;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use vtorrent_btc::wallet::BtcWallet;
@@ -25,6 +26,17 @@ pub struct PeerInfo {
     pub services: u64,
     /// Peer's best known block height.
     pub best_height: u32,
+}
+
+/// Runtime health counters for the Bitcoin SPV sync loop.
+#[derive(Default)]
+pub struct BtcSyncHealth {
+    pub peer_groups: AtomicU64,
+    pub scan_in_progress: AtomicBool,
+    pub scan_duration_ms: AtomicU64,
+    pub last_success_unix: AtomicU64,
+    pub auth_failures: AtomicU64,
+    pub scan_errors: AtomicU64,
 }
 
 /// Shared application state for the RPC API server.
@@ -66,6 +78,8 @@ pub struct AppState {
     /// sync and broadcast use this peer instead of DNS seeds. Stored as a
     /// hostname so container restarts with new IPs are re-resolved per cycle.
     pub btc_peer: Arc<RwLock<Option<String>>>,
+    /// Runtime health counters for the BTC SPV sync loop.
+    pub btc_health: Arc<BtcSyncHealth>,
     /// Node start time (Unix timestamp).
     pub start_time: u64,
     /// Number of connected P2P peers.
@@ -184,6 +198,7 @@ impl AppState {
             btc_swap_scan_lock: Arc::new(Mutex::new(())),
             btc_network: Arc::new(RwLock::new(bitcoin::Network::Bitcoin)),
             btc_peer: Arc::new(RwLock::new(None)),
+            btc_health: Arc::new(BtcSyncHealth::default()),
             start_time: now,
             peer_count: Arc::new(RwLock::new(0)),
             syncing: Arc::new(RwLock::new(false)),
@@ -247,6 +262,7 @@ impl AppState {
             btc_swap_scan_lock: Arc::new(Mutex::new(())),
             btc_network: Arc::new(RwLock::new(bitcoin::Network::Bitcoin)),
             btc_peer: Arc::new(RwLock::new(None)),
+            btc_health: Arc::new(BtcSyncHealth::default()),
             start_time: now,
             peer_count: Arc::new(RwLock::new(0)),
             syncing: Arc::new(RwLock::new(false)),

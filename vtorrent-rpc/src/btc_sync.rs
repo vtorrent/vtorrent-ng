@@ -1,8 +1,13 @@
 //! Shared Bitcoin SPV sync loop for the daemon and the desktop node.
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet,
+    net::SocketAddr,
+    sync::{atomic::Ordering, Arc},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
-use crate::state::AppState;
+use crate::state::{AppState, BtcSyncHealth};
 use vtorrent_btc::{p2p::BtcPeer, sync::network_group};
 
 fn prioritize_peers(
@@ -55,6 +60,23 @@ async fn connect_filter_peers(
     }
 }
 
+fn update_peer_group_metric(health: &BtcSyncHealth, peers: &[BtcPeer]) {
+    let groups: HashSet<_> = peers
+        .iter()
+        .map(|peer| network_group(peer.addr().ip()))
+        .collect();
+    health
+        .peer_groups
+        .store(groups.len() as u64, Ordering::Relaxed);
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 async fn resolve_addr(peer: &str) -> std::io::Result<SocketAddr> {
     if let Ok(addr) = peer.parse() {
         return Ok(addr);
@@ -75,6 +97,7 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
             continue;
         }
         let network = *state.btc_network.read().await;
+        let health = state.btc_health.clone();
         let configured = match state.btc_peer.read().await.clone() {
             Some(host) => match resolve_addr(&host).await {
                 Ok(addr) => Some(addr),
@@ -102,6 +125,7 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
 
         let mut peers = Vec::new();
         connect_filter_peers(&candidates, &mut cursor, &mut peers, network).await;
+        update_peer_group_metric(&health, &peers);
         if peers.is_empty() {
             tracing::warn!("No usable BTC peers; retrying in 300s");
             tokio::time::sleep(Duration::from_secs(300)).await;
@@ -113,11 +137,13 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                     Ok(n) => {
                         tracing::info!("BTC sync: {} headers", n);
                         connect_filter_peers(&candidates, &mut cursor, &mut peers, network).await;
+                        update_peer_group_metric(&health, &peers);
                         break true;
                     }
                     Err(error) => {
                         tracing::warn!("BTC sync error: {}", error);
                         connect_filter_peers(&candidates, &mut cursor, &mut peers, network).await;
+                        update_peer_group_metric(&health, &peers);
                         if peers.is_empty() {
                             break false;
                         }
@@ -142,6 +168,9 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                 let start = wallet.last_scanned_height().max(retained_floor);
                 let tip = wallet.best_height();
                 if start > tip {
+                    health
+                        .last_success_unix
+                        .store(unix_now(), Ordering::Relaxed);
                     break;
                 }
                 if wallet.last_scanned_height() < retained_floor {
@@ -157,9 +186,24 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                         wallet.best_height()
                     );
                 }
-                match wallet.scan_utxos_bip158_multi(&mut peers, start).await {
-                    Ok(0) => break,
+                health.scan_in_progress.store(true, Ordering::Relaxed);
+                let started = Instant::now();
+                let result = wallet.scan_utxos_bip158_multi(&mut peers, start).await;
+                health
+                    .scan_duration_ms
+                    .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
+                health.scan_in_progress.store(false, Ordering::Relaxed);
+                match result {
+                    Ok(0) => {
+                        health
+                            .last_success_unix
+                            .store(unix_now(), Ordering::Relaxed);
+                        break;
+                    }
                     Ok(n) => {
+                        health
+                            .last_success_unix
+                            .store(unix_now(), Ordering::Relaxed);
                         let done = start.saturating_add(n as u32);
                         wallet.set_last_scanned_height(done);
                         tracing::info!(
@@ -172,6 +216,10 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                         }
                     }
                     Err(e) => {
+                        health.scan_errors.fetch_add(1, Ordering::Relaxed);
+                        if e.to_string().contains("agreement from") {
+                            health.auth_failures.fetch_add(1, Ordering::Relaxed);
+                        }
                         tracing::warn!("BTC UTXO scan error: {}", e);
                         if scan_retries >= 2 {
                             break;
@@ -179,6 +227,7 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                         scan_retries += 1;
                         peers.clear();
                         connect_filter_peers(&candidates, &mut cursor, &mut peers, network).await;
+                        update_peer_group_metric(&health, &peers);
                         if peers.len() < required {
                             break;
                         }
