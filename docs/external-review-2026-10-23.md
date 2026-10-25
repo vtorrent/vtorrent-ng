@@ -68,9 +68,10 @@ and scanned 100,001 blocks at 182,072 kB RSS. The full workspace suite at
 972,999 headers and scanned 100,001 blocks at 236,456 kB RSS, with the full
 workspace suite passing 1,105 tests. `7ec3b2f` adds atomic BTC SPV health
 metrics and a stale-scan alert, with `/metrics` verified during a live scan.
+`2c381fa` persists compact-filter peers and tries them before DNS seeds.
 The completed review candidate remains `70ea7b9`; an independent reviewer
-should include the `1901bb9`, `513efde`, `c465d1b`, and `7ec3b2f` deltas or
-review `7ec3b2f` directly.
+should include the `1901bb9`, `513efde`, `c465d1b`, `7ec3b2f`, and `2c381fa`
+deltas or review `2c381fa` directly.
 
 ## High findings
 

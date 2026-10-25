@@ -2205,3 +2205,8 @@ blocks by 15:32:51Z. During the scan, `/metrics` returned `scan_in_progress 1`,
 it returned `last_scanned_height 973090`, `scan_lag_blocks 0`,
 `scan_duration_milliseconds 374114`, and zero errors. RSS was 220,816 kB. The
 24 h window ends at 2026-10-26T15:20:41Z.
+
+`2c381fa` adds a persistent compact-filter peer cache. An isolated two-restart
+test wrote five peers to `btc_peers-mainnet.json`; the restart loaded all five
+and reconnected in under four seconds. The main 24 h soak stays on `7ec3b2f`;
+the cache build is part of the launch build.

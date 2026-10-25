@@ -23,7 +23,7 @@ Companion to `docs/mainnet-readiness.md` (checklist) and
 | Max supply | 20,000,000 VTR | `consensus.rs:46` |
 | DNS seeds | seed1/2/3.vtorrent.org + `bootstrap/peers.txt` | `docs/dns-seeds.md` |
 | Review candidate source | `70ea7b9` (`bab2456` plus Playwright E2E setup, Vite dev-origin CORS allowance, Tauri path capability fix, durable cold-stake registry fix, desktop restart/persistence parity fixes, wallet-path/IPC hardening, and staking ownership warnings) | `docs/security-review-brief.md` |
-| Post-review mainnet fixes | `1901bb9`, `513efde`, `c465d1b` (BTC SPV peer agreement and failover; five-peer headroom and in-cycle retry); `7ec3b2f` (BTC SPV health metrics and stale-scan alert) | `docs/btc-spv-soak-plan.md` |
+| Post-review mainnet fixes | `1901bb9`, `513efde`, `c465d1b` (BTC SPV peer agreement and failover; five-peer headroom and in-cycle retry); `7ec3b2f` (BTC SPV health metrics and stale-scan alert); `2c381fa` (persistent compact-filter peer cache) | `docs/btc-spv-soak-plan.md` |
 
 **Genesis is deterministic** and embeds the legacy snapshot (59,375 addresses,
 11,589,746.63 VTR). `GENESIS_TIMESTAMP` and the genesis message are frozen.
@@ -34,7 +34,7 @@ at launch.
 ## 2. Pre-launch gate (all must be green)
 
 1. **External security review** complete; findings fixed with regression tests
-   (`docs/security-review-brief.md`, pinned to `70ea7b9`; include the `1901bb9`, `513efde`, `c465d1b`, and `7ec3b2f` mainnet fix deltas).
+   (`docs/security-review-brief.md`, pinned to `70ea7b9`; include the `1901bb9`, `513efde`, `c465d1b`, `7ec3b2f`, and `2c381fa` mainnet fix deltas).
 2. **Review candidate selected** (§3): the current build includes the
    consensus batch; launch on the candidate commit and image after review, not
    beta.3.

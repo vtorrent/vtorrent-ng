@@ -142,6 +142,13 @@ endpoint no longer waits for the wallet lock. It synced 973,089 headers by
 374114`, and zero auth or scan errors. RSS was 220,816 kB after the scan. The
 24 h window ends at **2026-10-26T15:20:41Z**.
 
+**Peer cache build `2c381fa` (2026-10-25):** persists successfully connected
+compact-filter peers in `btc_peers-<network>.json`, keeps up to 50, and tries
+them before DNS seeds. In an isolated two-restart test, the first run wrote
+five peers; the restart logged `Loaded 5 cached BTC peer(s)` and reconnected
+all five in under four seconds. The main 24 h soak remains on `7ec3b2f`; the
+cache build is committed at `2c381fa` and is part of the launch build.
+
 ### Phase B — active soak (drive the header chain and a swap)
 1. Generate regtest BTC blocks against the local bitcoind
    (`vtr-btc-regtest`) at a controlled rate; watch header count vs RSS. This is
