@@ -159,18 +159,12 @@ async fn collect_metrics(state: &AppState) -> String {
         best_peer_height,
     );
 
-    // BTC SPV
-    let (btc_height, btc_synced, btc_last_scanned) = {
-        let btc = state.btc_wallet.read().await;
-        match &*btc {
-            Some(wallet) => (
-                wallet.best_height() as u64,
-                wallet.synced() as u64,
-                wallet.last_scanned_height() as u64,
-            ),
-            None => (0, 0, 0),
-        }
-    };
+    // BTC SPV. Read atomics so a running scan holding the wallet lock cannot
+    // stall the metrics endpoint.
+    let health = &state.btc_health;
+    let btc_height = health.best_height.load(Ordering::Relaxed);
+    let btc_synced = health.synced.load(Ordering::Relaxed) as u64;
+    let btc_last_scanned = health.last_scanned_height.load(Ordering::Relaxed);
     write_gauge(
         &mut out,
         "vtorrent_btc_best_height",
@@ -196,7 +190,6 @@ async fn collect_metrics(state: &AppState) -> String {
         btc_height.saturating_sub(btc_last_scanned),
     );
 
-    let health = &state.btc_health;
     write_gauge(
         &mut out,
         "vtorrent_btc_peer_groups",
@@ -406,6 +399,12 @@ mod tests {
     #[tokio::test]
     async fn test_btc_health_metrics_reflect_counters() {
         let state = AppState::new();
+        state.btc_health.best_height.store(100, Ordering::Relaxed);
+        state
+            .btc_health
+            .last_scanned_height
+            .store(90, Ordering::Relaxed);
+        state.btc_health.synced.store(true, Ordering::Relaxed);
         state.btc_health.peer_groups.store(3, Ordering::Relaxed);
         state
             .btc_health
@@ -422,12 +421,27 @@ mod tests {
         state.btc_health.auth_failures.store(2, Ordering::Relaxed);
         state.btc_health.scan_errors.store(4, Ordering::Relaxed);
         let metrics = collect_metrics(&state).await;
+        assert!(metrics.contains("vtorrent_btc_best_height 100"));
+        assert!(metrics.contains("vtorrent_btc_last_scanned_height 90"));
+        assert!(metrics.contains("vtorrent_btc_scan_lag_blocks 10"));
+        assert!(metrics.contains("vtorrent_btc_synced 1"));
         assert!(metrics.contains("vtorrent_btc_peer_groups 3"));
         assert!(metrics.contains("vtorrent_btc_scan_in_progress 1"));
         assert!(metrics.contains("vtorrent_btc_scan_duration_milliseconds 1500"));
         assert!(metrics.contains("vtorrent_btc_last_scan_timestamp_seconds 1700000000"));
         assert!(metrics.contains("vtorrent_btc_auth_failures_total{process_start_time="));
         assert!(metrics.contains("vtorrent_btc_scan_errors_total{process_start_time="));
+    }
+
+    #[tokio::test]
+    async fn metrics_do_not_wait_for_wallet_lock() {
+        let state = AppState::new();
+        let _guard = state.btc_wallet.write().await;
+        let metrics =
+            tokio::time::timeout(std::time::Duration::from_secs(1), collect_metrics(&state))
+                .await
+                .expect("metrics blocked on the wallet lock");
+        assert!(metrics.contains("vtorrent_btc_best_height"));
     }
 
     #[tokio::test]

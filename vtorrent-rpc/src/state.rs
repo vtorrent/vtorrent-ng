@@ -31,6 +31,9 @@ pub struct PeerInfo {
 /// Runtime health counters for the Bitcoin SPV sync loop.
 #[derive(Default)]
 pub struct BtcSyncHealth {
+    pub best_height: AtomicU64,
+    pub last_scanned_height: AtomicU64,
+    pub synced: AtomicBool,
     pub peer_groups: AtomicU64,
     pub scan_in_progress: AtomicBool,
     pub scan_duration_ms: AtomicU64,

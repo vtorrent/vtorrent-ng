@@ -8,7 +8,7 @@ use std::{
 };
 
 use crate::state::{AppState, BtcSyncHealth};
-use vtorrent_btc::{p2p::BtcPeer, sync::network_group};
+use vtorrent_btc::{p2p::BtcPeer, sync::network_group, wallet::BtcWallet};
 
 fn prioritize_peers(
     configured: Option<SocketAddr>,
@@ -68,6 +68,16 @@ fn update_peer_group_metric(health: &BtcSyncHealth, peers: &[BtcPeer]) {
     health
         .peer_groups
         .store(groups.len() as u64, Ordering::Relaxed);
+}
+
+fn update_wallet_metrics(health: &BtcSyncHealth, wallet: &BtcWallet) {
+    health
+        .best_height
+        .store(wallet.best_height() as u64, Ordering::Relaxed);
+    health
+        .last_scanned_height
+        .store(wallet.last_scanned_height() as u64, Ordering::Relaxed);
+    health.synced.store(wallet.synced(), Ordering::Relaxed);
 }
 
 fn unix_now() -> u64 {
@@ -132,12 +142,14 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
             continue;
         }
         if let Some(wallet) = state.btc_wallet.write().await.as_mut() {
+            update_wallet_metrics(&health, wallet);
             let synced = loop {
                 match wallet.sync_with_peers(&mut peers).await {
                     Ok(n) => {
                         tracing::info!("BTC sync: {} headers", n);
                         connect_filter_peers(&candidates, &mut cursor, &mut peers, network).await;
                         update_peer_group_metric(&health, &peers);
+                        update_wallet_metrics(&health, wallet);
                         break true;
                     }
                     Err(error) => {
@@ -150,6 +162,7 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                     }
                 }
             };
+            update_wallet_metrics(&health, wallet);
             let required = if network == bitcoin::Network::Regtest {
                 1
             } else {
@@ -168,6 +181,7 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                 let start = wallet.last_scanned_height().max(retained_floor);
                 let tip = wallet.best_height();
                 if start > tip {
+                    update_wallet_metrics(&health, wallet);
                     health
                         .last_success_unix
                         .store(unix_now(), Ordering::Relaxed);
@@ -195,6 +209,7 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                 health.scan_in_progress.store(false, Ordering::Relaxed);
                 match result {
                     Ok(0) => {
+                        update_wallet_metrics(&health, wallet);
                         health
                             .last_success_unix
                             .store(unix_now(), Ordering::Relaxed);
@@ -206,6 +221,7 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                             .store(unix_now(), Ordering::Relaxed);
                         let done = start.saturating_add(n as u32);
                         wallet.set_last_scanned_height(done);
+                        update_wallet_metrics(&health, wallet);
                         tracing::info!(
                             "BTC UTXO scan (BIP-158): {} blocks (through height {})",
                             n,
@@ -216,6 +232,7 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                         }
                     }
                     Err(e) => {
+                        update_wallet_metrics(&health, wallet);
                         health.scan_errors.fetch_add(1, Ordering::Relaxed);
                         if e.to_string().contains("agreement from") {
                             health.auth_failures.fetch_add(1, Ordering::Relaxed);
