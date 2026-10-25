@@ -100,12 +100,17 @@ and restarted on `513efde` (binary SHA-256
 13:14:05Z. The configured peer connected first, followed by two peers from
 distinct network groups. The probe synced 972,921 headers by 13:20:56Z and
 scanned 100,001 BIP-158 blocks by 13:25:29Z. RSS rose from 27,876 kB at launch
-to a 182,072 kB maximum and held at 182,068 kB for the next 90 minutes. Two
-peer-agreement failures at 13:46Z and 14:30Z each recovered on the next
-five-minute cycle; there were no panics. The full workspace suite at `513efde`
-passed 48 test groups, 1,105 tests, 0 failures, and 7 ignored tests. The 24 h
-observation window ends at **2026-10-25T13:14:05Z**. Prior `1901bb9` artifacts
-remain in `/tmp/vtr-btc-mainnet`.
+to a 182,076 kB maximum and held near 182,070 kB for the next 11 hours. Three
+peer-agreement failures at 13:46Z, 14:30Z, and 23:34Z each recovered on the
+next five-minute cycle; there were no panics. In each case two of the three
+peers dropped during filter-header authentication, the configured peer
+survived, and the next cycle found replacements. The resulting five-minute
+delay affects wallet display, not consensus or the swap paths, which use
+separate peer checks and retries. A five-peer target or in-cycle replenishment
+is optional hardening but would require a new soak. The full workspace suite at
+`513efde` passed 48 test groups, 1,105 tests, 0 failures, and 7 ignored tests.
+The 24 h observation window ends at **2026-10-25T13:14:05Z**. Prior `1901bb9`
+artifacts remain in `/tmp/vtr-btc-mainnet`.
 
 ### Phase B — active soak (drive the header chain and a swap)
 1. Generate regtest BTC blocks against the local bitcoind

@@ -2167,8 +2167,12 @@ the configured peer first, and fails over on header or filter-download errors.
 The configured peer connected first, then two peers from distinct network
 groups. Header sync reached 972,921 by 13:20:56Z; the initial scan completed
 100,001 BIP-158 blocks by 13:25:29Z. RSS peaked at 182,072 kB and held at
-182,068 kB. Two transient agreement failures (13:46Z, 14:30Z) recovered on the
-next cycle, with no panic. The full workspace suite at `513efde` passed 48 test
-groups, 1,105 tests, 0 failures, and 7 ignored tests. The 24 h window ends at
-2026-10-25T13:14:05Z. Earlier `1901bb9` logs remain under
-`/tmp/vtr-btc-mainnet`.
+182,070 kB. Three transient agreement failures (13:46Z, 14:30Z, 23:34Z) each
+recovered on the next cycle, with no panic. Each followed two of three peers
+dropping during filter-header authentication; the configured peer survived.
+The five-minute delay affects wallet display, not consensus or the swap paths,
+which use separate peer checks. A five-peer target or in-cycle replenishment is
+optional hardening and would require a new soak. The full workspace suite at
+`513efde` passed 48 test groups, 1,105 tests, 0 failures, and 7 ignored tests.
+The 24 h window ends at 2026-10-25T13:14:05Z. Earlier `1901bb9` logs remain
+under `/tmp/vtr-btc-mainnet`.
