@@ -246,8 +246,11 @@ actions, operator approval.
       chain, and `513efde` added network-group diversity, configured-peer
       priority, and failover. `c465d1b` added five-peer headroom and in-cycle
       retry. The hardened probe synced 972,999 headers and scanned 100,001
-      blocks at 236,456 kB RSS; its 24 h window ends 2026-10-26T01:29:27Z.
-      Swaps are enabled at mainnet launch, so the active swap soak and
+      blocks. `7ec3b2f` adds atomic scan health metrics; `/metrics` now reports
+      peer groups, scan lag, duration, and failures without blocking during a
+      scan. The current probe synced 973,089 headers and scanned 100,001 blocks
+      at 220,816 kB RSS; its 24 h window ends 2026-10-26T15:20:41Z. Swaps are
+      enabled at mainnet launch, so the active swap soak and
       separate maker and taker VTR node validation are launch gates. Set
       `--btc-birthday` to the wallet creation height to scan funds older than
       the retained window. See `docs/btc-spv-soak-plan.md`.

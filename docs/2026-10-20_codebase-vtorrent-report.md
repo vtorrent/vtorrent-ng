@@ -157,6 +157,9 @@ this review; earlier passing-suite claims are not used to dismiss these probes.
 - Impact: SyncLag, ProcessRssHigh, and BtcSpvStalled do not evaluate as intended
   because their input series do not exist. Valid YAML and passing old metrics
   tests did not prove that the exporters were implemented.
+- Resolution (2026-10-25): `7ec3b2f` implements the missing exporters and adds
+  BTC SPV scan lag, peer groups, duration, and failure metrics; `/metrics` was
+  verified during a live scan. See `docs/rpc-api.md`.
 - Remediation: implement the exporters, assert actual exposition keys and
   values, add promtool rule tests for enabled/disabled/unavailable BTC states,
   and verify the deployed scrape and alert route. Correct the earlier claim

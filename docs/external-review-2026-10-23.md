@@ -66,9 +66,11 @@ and scanned 100,001 blocks at 182,072 kB RSS. The full workspace suite at
 `513efde` passed 48 test groups, 1,105 tests, 0 failures, and 7 ignored tests.
 `c465d1b` adds five-peer headroom and in-cycle scan retry; its probe synced
 972,999 headers and scanned 100,001 blocks at 236,456 kB RSS, with the full
-workspace suite passing 1,105 tests. The completed review candidate remains
-`70ea7b9`; an independent reviewer should include the `1901bb9`, `513efde`,
-and `c465d1b` deltas or review `c465d1b` directly.
+workspace suite passing 1,105 tests. `7ec3b2f` adds atomic BTC SPV health
+metrics and a stale-scan alert, with `/metrics` verified during a live scan.
+The completed review candidate remains `70ea7b9`; an independent reviewer
+should include the `1901bb9`, `513efde`, `c465d1b`, and `7ec3b2f` deltas or
+review `7ec3b2f` directly.
 
 ## High findings
 

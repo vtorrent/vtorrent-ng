@@ -2189,5 +2189,19 @@ Five compact-filter peers connected in distinct groups. Header sync reached
 972,999 by 01:34:40Z; the initial scan completed 100,001 BIP-158 blocks by
 01:40:24Z. RSS was 236,424 kB and held at 236,456 kB through 42 minutes, about
 54 MB above the three-peer build. The full workspace suite at `c465d1b` passed
-48 test groups, 1,105 tests, 0 failures, and 7 ignored tests. The 24 h window
-ends at 2026-10-26T01:29:27Z.
+48 test groups, 1,105 tests, 0 failures, and 7 ignored tests. The probe was
+stopped at 2026-10-25T15:20:41Z after 13h51m, before the 24 h window completed,
+to deploy the metrics build.
+
+## 2026-10-25 — BTC SPV metrics build
+
+`6f617ce` exposed the new gauges but `/metrics` blocked during a scan because
+the handler waited on the wallet write lock. It was replaced after 18 minutes.
+
+`7ec3b2f` moves the published BTC heights to atomics and keeps the five-peer
+target. It synced 973,089 headers by 15:26:37Z and scanned 100,001 BIP-158
+blocks by 15:32:51Z. During the scan, `/metrics` returned `scan_in_progress 1`,
+`peer_groups 5`, and `scan_lag_blocks 973089` without blocking; after the scan
+it returned `last_scanned_height 973090`, `scan_lag_blocks 0`,
+`scan_duration_milliseconds 374114`, and zero errors. RSS was 220,816 kB. The
+24 h window ends at 2026-10-26T15:20:41Z.

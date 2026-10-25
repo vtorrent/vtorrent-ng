@@ -627,3 +627,29 @@ WebSocket header.
 ### GET /metrics
 
 Prometheus-compatible metrics endpoint.
+
+| Metric | Type | Description |
+|---|---|---|
+| `vtorrent_block_height` | Gauge | Current best chain height |
+| `vtorrent_peer_count` | Gauge | Connected P2P peers |
+| `vtorrent_mempool_size` | Gauge | Unconfirmed transactions |
+| `vtorrent_mempool_bytes` | Gauge | Mempool size in bytes |
+| `vtorrent_staking_enabled` | Gauge | 1 when staking is active |
+| `vtorrent_blocks_staked_total` | Gauge | Blocks staked by this process |
+| `vtorrent_uptime_seconds` | Gauge | Seconds since node start |
+| `vtorrent_syncing` | Gauge | 1 while the node is syncing |
+| `vtorrent_best_peer_height` | Gauge | Highest peer-reported height |
+| `vtorrent_btc_best_height` | Gauge | BTC SPV header tip |
+| `vtorrent_btc_synced` | Gauge | 1 when BTC SPV is synced |
+| `vtorrent_btc_last_scanned_height` | Gauge | Next BIP-158 height to scan |
+| `vtorrent_btc_scan_lag_blocks` | Gauge | BTC tip minus last scanned height |
+| `vtorrent_btc_peer_groups` | Gauge | Compact-filter peers in distinct network groups |
+| `vtorrent_btc_scan_in_progress` | Gauge | 1 while a BIP-158 scan runs |
+| `vtorrent_btc_scan_duration_milliseconds` | Gauge | Last scan attempt duration |
+| `vtorrent_btc_last_scan_timestamp_seconds` | Gauge | Unix time of the last successful scan |
+| `vtorrent_btc_auth_failures_total` | Gauge | Scans rejected for weak peer agreement |
+| `vtorrent_btc_scan_errors_total` | Gauge | Failed scan attempts this process |
+| `vtorrent_process_rss_bytes` | Gauge | Daemon resident memory |
+| `vtorrent_torrent_sessions` | Gauge | Active torrent sessions |
+| `vtorrent_dex_orders` | Gauge | Open DEX orders |
+| `vtorrent_ws_subscribers` | Gauge | Active WebSocket subscribers |

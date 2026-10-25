@@ -123,7 +123,24 @@ headers by 01:34:40Z and scanned 100,001 BIP-158 blocks by 01:40:24Z. RSS was
 236,424 kB after the scan and held at 236,456 kB through 42 minutes, about
 54 MB above the three-peer build but within the 256 MiB budget. The full
 workspace suite at `c465d1b` passed 48 test groups, 1,105 tests, 0 failures,
-and 7 ignored tests. The 24 h window ends at **2026-10-26T01:29:27Z**.
+and 7 ignored tests. The probe was stopped at 2026-10-25T15:20:41Z after
+13h51m, before the 24 h window completed, to deploy the metrics build. Its
+artifacts remain at `/tmp/opencode/btc-spv-c465d1b-20261025T012927Z`.
+
+**Metrics build `6f617ce` (2026-10-25):** ran for 18 minutes. It exposed the
+new gauges, but `/metrics` blocked while the scan held the wallet write lock;
+the build was replaced by `7ec3b2f`.
+
+**Metrics build `7ec3b2f` (2026-10-25):** binary SHA-256
+`e10d1abf721a8f31cf75cf06afeb8a4b5b83f3bae641a9bb9654c292f7007e0a`, started
+15:20:41Z. It keeps the five-peer target and adds atomic BTC metrics, so the
+endpoint no longer waits for the wallet lock. It synced 973,089 headers by
+15:26:37Z and scanned 100,001 BIP-158 blocks by 15:32:51Z. During the scan,
+`/metrics` returned `vtorrent_btc_scan_in_progress 1`, `vtorrent_btc_peer_groups
+5`, and `vtorrent_btc_scan_lag_blocks 973089`; after the scan it returned
+`last_scanned_height 973090`, `scan_lag_blocks 0`, `scan_duration_milliseconds
+374114`, and zero auth or scan errors. RSS was 220,816 kB after the scan. The
+24 h window ends at **2026-10-26T15:20:41Z**.
 
 ### Phase B — active soak (drive the header chain and a swap)
 1. Generate regtest BTC blocks against the local bitcoind
