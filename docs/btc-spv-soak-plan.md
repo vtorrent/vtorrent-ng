@@ -107,10 +107,23 @@ peers dropped during filter-header authentication, the configured peer
 survived, and the next cycle found replacements. The resulting five-minute
 delay affects wallet display, not consensus or the swap paths, which use
 separate peer checks and retries. A five-peer target or in-cycle replenishment
-is optional hardening but would require a new soak. The full workspace suite at
+is optional hardening and would require a new soak; both are implemented in `c465d1b`. The full workspace suite at
 `513efde` passed 48 test groups, 1,105 tests, 0 failures, and 7 ignored tests.
-The 24 h observation window ends at **2026-10-25T13:14:05Z**. Prior `1901bb9`
-artifacts remain in `/tmp/vtr-btc-mainnet`.
+The probe was stopped at 2026-10-25T01:29:27Z after 12h15m, before the 24 h
+window completed, to deploy the hardened build. Its artifacts remain at
+`/tmp/opencode/btc-spv-513efde-20261024T131405Z`; prior `1901bb9` artifacts
+remain in `/tmp/vtr-btc-mainnet`.
+
+**Hardened probe on `c465d1b` (2026-10-25):** binary SHA-256
+`814fa22c720c90da5d129704db2fafd1c9576860e9a2f898688d91d46b48cf71`, started
+01:29:27Z. The build keeps five mainnet peers across distinct network groups,
+still connects the configured peer first, and retries a failed scan with
+freshly connected peers before waiting for the next cycle. It synced 972,999
+headers by 01:34:40Z and scanned 100,001 BIP-158 blocks by 01:40:24Z. RSS was
+236,424 kB after the scan and held at 236,456 kB through 42 minutes, about
+54 MB above the three-peer build but within the 256 MiB budget. The full
+workspace suite at `c465d1b` passed 48 test groups, 1,105 tests, 0 failures,
+and 7 ignored tests. The 24 h window ends at **2026-10-26T01:29:27Z**.
 
 ### Phase B — active soak (drive the header chain and a swap)
 1. Generate regtest BTC blocks against the local bitcoind

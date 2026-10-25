@@ -184,7 +184,9 @@ challenge the repairs and their remaining assumptions independently.
   agreement for a fresh mainnet BTC SPV chain and separates authentication from
   the filter download. `513efde` requires distinct network groups, tries the
   configured peer first, and fails over on header or filter-download errors.
-  Include both deltas in the delivery; see `docs/btc-spv-soak-plan.md`.
+  `c465d1b` keeps five mainnet peers in distinct groups and retries failed
+  scans in-cycle. Include all three deltas in the delivery; see
+  `docs/btc-spv-soak-plan.md`.
 - The review delivery is a source snapshot, not a release tag. The core soak
   fleet runs `vtorrent/node:batch-e7691fb` (code `e7691fb`, BTC SPV disabled)
   from 2026-10-21T02:47:54Z to 2026-10-28T02:47:54Z. The review candidate

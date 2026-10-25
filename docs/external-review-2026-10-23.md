@@ -64,9 +64,11 @@ configured peer is attempted first, and failed header or filter-download peers
 are replaced or bypassed. The fresh probe on `513efde` synced 972,921 headers
 and scanned 100,001 blocks at 182,072 kB RSS. The full workspace suite at
 `513efde` passed 48 test groups, 1,105 tests, 0 failures, and 7 ignored tests.
-The completed review candidate
-remains `70ea7b9`; an independent reviewer should include the `1901bb9` and
-`513efde` deltas or review `513efde` directly.
+`c465d1b` adds five-peer headroom and in-cycle scan retry; its probe synced
+972,999 headers and scanned 100,001 blocks at 236,456 kB RSS, with the full
+workspace suite passing 1,105 tests. The completed review candidate remains
+`70ea7b9`; an independent reviewer should include the `1901bb9`, `513efde`,
+and `c465d1b` deltas or review `c465d1b` directly.
 
 ## High findings
 

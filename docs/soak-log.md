@@ -2172,7 +2172,22 @@ recovered on the next cycle, with no panic. Each followed two of three peers
 dropping during filter-header authentication; the configured peer survived.
 The five-minute delay affects wallet display, not consensus or the swap paths,
 which use separate peer checks. A five-peer target or in-cycle replenishment is
-optional hardening and would require a new soak. The full workspace suite at
+optional hardening; both are implemented in `c465d1b`. The full workspace suite at
 `513efde` passed 48 test groups, 1,105 tests, 0 failures, and 7 ignored tests.
-The 24 h window ends at 2026-10-25T13:14:05Z. Earlier `1901bb9` logs remain
-under `/tmp/vtr-btc-mainnet`.
+The probe was stopped at 2026-10-25T01:29:27Z for the hardened build; the 24 h
+window did not complete. Earlier `1901bb9` logs remain under
+`/tmp/vtr-btc-mainnet`.
+
+## 2026-10-25 — hardened BTC SPV probe on c465d1b
+
+The `513efde` probe was replaced at 01:29:27Z with `c465d1b` (binary SHA-256
+`814fa22c720c90da5d129704db2fafd1c9576860e9a2f898688d91d46b48cf71`). The build
+keeps five mainnet peers across distinct network groups, connects the
+configured peer first, and retries failed scans in-cycle with fresh peers.
+
+Five compact-filter peers connected in distinct groups. Header sync reached
+972,999 by 01:34:40Z; the initial scan completed 100,001 BIP-158 blocks by
+01:40:24Z. RSS was 236,424 kB and held at 236,456 kB through 42 minutes, about
+54 MB above the three-peer build. The full workspace suite at `c465d1b` passed
+48 test groups, 1,105 tests, 0 failures, and 7 ignored tests. The 24 h window
+ends at 2026-10-26T01:29:27Z.
