@@ -11,6 +11,8 @@ tests:
         values: '1+0x20'
       - series: 'vtorrent_btc_last_scan_timestamp_seconds{instance="probe"}'
         values: '1+0x14 900+60x5'
+      - series: 'vtorrent_btc_scan_in_progress{instance="probe"}'
+        values: '0+0x20'
     alert_rule_test:
       - eval_time: 10m
         alertname: BtcSpvScanStale
@@ -35,6 +37,8 @@ tests:
         values: '1+0x20'
       - series: 'vtorrent_btc_last_scan_timestamp_seconds{instance="probe"}'
         values: '0+60x20'
+      - series: 'vtorrent_btc_scan_in_progress{instance="probe"}'
+        values: '0+0x20'
     alert_rule_test:
       - eval_time: 20m
         alertname: BtcSpvScanStale
@@ -47,6 +51,8 @@ tests:
         values: '0+0x20'
       - series: 'vtorrent_btc_last_scan_timestamp_seconds{instance="probe"}'
         values: '0+0x20'
+      - series: 'vtorrent_btc_scan_in_progress{instance="probe"}'
+        values: '0+0x20'
     alert_rule_test:
       - eval_time: 20m
         alertname: BtcSpvScanStale
@@ -57,6 +63,22 @@ tests:
     input_series:
       - series: 'vtorrent_btc_synced{instance="probe"}'
         values: '1+0x20'
+      - series: 'vtorrent_btc_scan_in_progress{instance="probe"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: BtcSpvScanStale
+        exp_alerts: []
+
+  - name: initial scan in progress does not alert before its first completion
+    interval: 1m
+    input_series:
+      - series: 'vtorrent_btc_synced{instance="probe"}'
+        values: '1+0x20'
+      - series: 'vtorrent_btc_scan_in_progress{instance="probe"}'
+        values: '1+0x20'
+      - series: 'vtorrent_btc_last_scan_timestamp_seconds{instance="probe"}'
+        values: '0+0x20'
     alert_rule_test:
       - eval_time: 20m
         alertname: BtcSpvScanStale

@@ -2244,3 +2244,9 @@ full HTLC swap settled; two independent daemons agreed on tip 717 and reorg tip
 balance. The separate maker/taker VTR active soak is still open.
 
 The fresh 24 h window ends at **2026-10-27T08:58:17Z**.
+
+The first local alert evaluation exposed a false positive: header sync set
+`synced=1` before the initial scan established a timestamp. The stale-scan
+rule now requires a completed scan (`scan_in_progress == 0`) and a nonzero
+timestamp. Promtool tests cover the initial-scan, recovery, healthy, disabled,
+and absent-timestamp cases; the local rule is inactive after the fix.

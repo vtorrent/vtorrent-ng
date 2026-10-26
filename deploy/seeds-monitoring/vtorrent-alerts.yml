@@ -73,7 +73,7 @@ groups:
           description: "BTC SPV was synced in the last 24h but is not synced now."
 
       - alert: BtcSpvScanStale
-        expr: vtorrent_btc_synced == 1 and time() - vtorrent_btc_last_scan_timestamp_seconds > 600
+        expr: vtorrent_btc_synced == 1 and vtorrent_btc_scan_in_progress == 0 and vtorrent_btc_last_scan_timestamp_seconds > 0 and time() - vtorrent_btc_last_scan_timestamp_seconds > 600
         for: 2m
         labels:
           severity: warning
