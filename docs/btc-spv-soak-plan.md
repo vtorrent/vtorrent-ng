@@ -149,6 +149,16 @@ five peers; the restart logged `Loaded 5 cached BTC peer(s)` and reconnected
 all five in under four seconds. The main 24 h soak remains on `7ec3b2f`; the
 cache build is committed at `2c381fa` and is part of the launch build.
 
+**Final-source probe on `2c381fa` (2026-10-26):** started at 00:54:40Z on RPC
+22555 and P2P 22556, while the `7ec3b2f` probe continued on 22545/22546. The
+first cycle wrote `btc_peers-mainnet.json` with five compact-filter peers,
+synced 973,154 headers by 01:01:01Z, and scanned 100,001 BIP-158 blocks by
+01:08:15Z. During the scan `/metrics` returned `scan_in_progress 1`,
+`peer_groups 5`, and `scan_lag_blocks 973154`; after it returned
+`last_scanned_height 973155`, `scan_lag_blocks 0`,
+`scan_duration_milliseconds 434237`, and zero auth or scan errors. RSS was
+234,216 kB. The 24 h window ends at **2026-10-27T00:54:40Z**.
+
 ### Phase B — active soak (drive the header chain and a swap)
 1. Generate regtest BTC blocks against the local bitcoind
    (`vtr-btc-regtest`) at a controlled rate; watch header count vs RSS. This is

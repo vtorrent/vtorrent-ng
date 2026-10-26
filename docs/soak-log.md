@@ -2210,3 +2210,15 @@ it returned `last_scanned_height 973090`, `scan_lag_blocks 0`,
 test wrote five peers to `btc_peers-mainnet.json`; the restart loaded all five
 and reconnected in under four seconds. The main 24 h soak stays on `7ec3b2f`;
 the cache build is part of the launch build.
+
+## 2026-10-26 — final-source BTC SPV probe on 2c381fa
+
+A second probe started at 00:54:40Z on ports 22555/22556 while `7ec3b2f`
+continued on 22545/22546. The first cycle wrote five compact-filter peers to
+`btc_peers-mainnet.json`, synced 973,154 headers by 01:01:01Z, and scanned
+100,001 BIP-158 blocks by 01:08:15Z.
+
+During the scan `/metrics` returned `scan_in_progress 1`, `peer_groups 5`, and
+`scan_lag_blocks 973154`. After it returned `last_scanned_height 973155`,
+`scan_lag_blocks 0`, `scan_duration_milliseconds 434237`, and zero auth or scan
+errors. RSS was 234,216 kB. The 24 h window ends at 2026-10-27T00:54:40Z.
