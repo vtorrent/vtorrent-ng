@@ -187,7 +187,12 @@ challenge the repairs and their remaining assumptions independently.
   `c465d1b` keeps five mainnet peers in distinct groups and retries failed
   scans in-cycle. `7ec3b2f` adds BTC SPV scan metrics and a stale-scan alert;
   `2c381fa` persists compact-filter peers and tries them before DNS seeds.
-  Include all five deltas in the delivery; see `docs/btc-spv-soak-plan.md`.
+  A fresh internal model review then validated four BTC SPV findings,
+  published with local reproductions in
+  `docs/2026-10-26_security-vtorrent-report.md`. `aeb103a` repairs them and
+  `8639a7f` repairs a restart-lineage gap found by real Bitcoin Core testing.
+  Include all seven deltas in the delivery; the internal review does not
+  replace the independent third-party gate. See `docs/btc-spv-soak-plan.md`.
 - The review delivery is a source snapshot, not a release tag. The core soak
   fleet runs `vtorrent/node:batch-e7691fb` (code `e7691fb`, BTC SPV disabled)
   from 2026-10-21T02:47:54Z to 2026-10-28T02:47:54Z. The review candidate

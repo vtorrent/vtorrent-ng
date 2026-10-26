@@ -249,13 +249,13 @@ actions, operator approval.
       blocks. `7ec3b2f` adds atomic scan health metrics; `/metrics` now reports
       peer groups, scan lag, duration, and failures without blocking during a
       scan. `2c381fa` persists compact-filter peers and tries them before DNS
-      seeds; an isolated restart test loaded five cached peers. A final-source
-      probe on `2c381fa` started 2026-10-26T00:54:40Z, wrote five cached peers,
-      synced 973,154 headers, and scanned 100,001 blocks at 234,216 kB RSS with
-      zero errors. Its 24 h window ends 2026-10-27T00:54:40Z; the `7ec3b2f`
-      probe ends 2026-10-26T15:20:41Z. Swaps are enabled at mainnet launch, so
-      the active swap soak and
-      separate maker and taker VTR node validation are launch gates. Set
+      seeds. A fresh security review then validated two high and two medium
+      findings; `aeb103a` repairs them, and real Bitcoin Core testing exposed a
+      restart-lineage gap repaired in `8639a7f`. The current probe runs
+      `8639a7f`, synced 973,217 headers, and scanned 100,001 blocks at
+      221,584 kB RSS with zero errors. Its 24 h window ends
+      2026-10-27T08:58:17Z. The separate maker/taker VTR active soak remains a
+      launch gate. Set
       `--btc-birthday` to the wallet creation height to scan funds older than
       the retained window. See `docs/btc-spv-soak-plan.md`.
 - [~] **BTC SPV holds ~40 MiB and is not independently soaked** — regtest

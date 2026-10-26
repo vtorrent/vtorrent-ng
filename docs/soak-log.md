@@ -2222,3 +2222,25 @@ During the scan `/metrics` returned `scan_in_progress 1`, `peer_groups 5`, and
 `scan_lag_blocks 973154`. After it returned `last_scanned_height 973155`,
 `scan_lag_blocks 0`, `scan_duration_milliseconds 434237`, and zero auth or scan
 errors. RSS was 234,216 kB. The 24 h window ends at 2026-10-27T00:54:40Z.
+
+## 2026-10-26 — security-remediated BTC SPV probe on 8639a7f
+
+The `2c381fa` probe was replaced at 08:09:04Z by the four-finding repair build
+`aeb103a`, then at 08:58:17Z by `8639a7f` after real Bitcoin Core testing
+exposed a restart-lineage gap. The final-source probe uses ports 22555/22556
+and a fresh data directory.
+
+The repaired build synced 973,217 headers by 09:04:52Z and scanned 100,001
+BIP-158 blocks by 09:14:50Z. Five peer groups connected; `/metrics` remained
+responsive during the scan. At 09:39Z, `best_height` was 973,220,
+`last_scanned_height` 973,221, lag 0, scan duration 4,785 ms, and both failure
+counters were zero. RSS held at 221,584 kB. Transient public-peer EOFs recovered
+without a scan failure.
+
+Full workspace verification on `8639a7f`: 48 groups, 1,118 passed, zero failed,
+seven ignored. Real Bitcoin Core release-mode checks on the repaired source:
+full HTLC swap settled; two independent daemons agreed on tip 717 and reorg tip
+718; reorged-out funding was dropped and the restarted daemon reported zero
+balance. The separate maker/taker VTR active soak is still open.
+
+The fresh 24 h window ends at **2026-10-27T08:58:17Z**.

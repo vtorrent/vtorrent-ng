@@ -69,9 +69,13 @@ and scanned 100,001 blocks at 182,072 kB RSS. The full workspace suite at
 workspace suite passing 1,105 tests. `7ec3b2f` adds atomic BTC SPV health
 metrics and a stale-scan alert, with `/metrics` verified during a live scan.
 `2c381fa` persists compact-filter peers and tries them before DNS seeds.
-The completed review candidate remains `70ea7b9`; an independent reviewer
-should include the `1901bb9`, `513efde`, `c465d1b`, `7ec3b2f`, and `2c381fa`
-deltas or review `2c381fa` directly.
+A later internal model review validated four BTC SPV findings with local
+reproductions in `docs/2026-10-26_security-vtorrent-report.md`. `aeb103a`
+repairs them, and `8639a7f` repairs a restart-lineage gap found by real Bitcoin
+Core testing. The completed review candidate remains `70ea7b9`; an independent
+reviewer should include the `1901bb9`, `513efde`, `c465d1b`, `7ec3b2f`,
+`2c381fa`, `aeb103a`, and `8639a7f` deltas or review `8639a7f` directly.
+The internal review does not replace the independent third-party gate.
 
 ## High findings
 

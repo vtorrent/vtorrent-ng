@@ -1,0 +1,63 @@
+rule_files:
+  - vtorrent-alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: stale BTC scan fires after the grace period and resolves on recovery
+    interval: 1m
+    input_series:
+      - series: 'vtorrent_btc_synced{instance="probe"}'
+        values: '1+0x20'
+      - series: 'vtorrent_btc_last_scan_timestamp_seconds{instance="probe"}'
+        values: '1+0x14 900+60x5'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: BtcSpvScanStale
+        exp_alerts: []
+      - eval_time: 14m
+        alertname: BtcSpvScanStale
+        exp_alerts:
+          - exp_labels:
+              instance: probe
+              severity: warning
+            exp_annotations:
+              summary: BTC SPV scan stale on probe
+              description: No successful BTC SPV scan in the last 10 minutes.
+      - eval_time: 17m
+        alertname: BtcSpvScanStale
+        exp_alerts: []
+
+  - name: caught-up BTC scans do not alert
+    interval: 1m
+    input_series:
+      - series: 'vtorrent_btc_synced{instance="probe"}'
+        values: '1+0x20'
+      - series: 'vtorrent_btc_last_scan_timestamp_seconds{instance="probe"}'
+        values: '0+60x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: BtcSpvScanStale
+        exp_alerts: []
+
+  - name: disabled or unsynced BTC does not produce a stale-scan alert
+    interval: 1m
+    input_series:
+      - series: 'vtorrent_btc_synced{instance="probe"}'
+        values: '0+0x20'
+      - series: 'vtorrent_btc_last_scan_timestamp_seconds{instance="probe"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: BtcSpvScanStale
+        exp_alerts: []
+
+  - name: absent timestamp is not treated as a timestamp of zero
+    interval: 1m
+    input_series:
+      - series: 'vtorrent_btc_synced{instance="probe"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: BtcSpvScanStale
+        exp_alerts: []

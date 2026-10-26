@@ -29,6 +29,22 @@ host. Both are production-seed actions — get approval before applying.
 - `HostDiskFull` — root filesystem < 15% free
 - `HostOutOfMemory` — available RAM < 10%
 
+### Validate the BTC stale-scan rule
+
+The unit tests cover delayed firing, recovery, healthy scans, disabled BTC,
+and an absent timestamp. They need no network access or running daemon:
+
+```bash
+docker run --rm --network none --read-only --tmpfs /tmp:rw,size=64m \
+  --entrypoint promtool \
+  -v "$PWD/deploy/seeds-monitoring:/work:ro" \
+  prom/prometheus:v2.53.0 test rules /work/vtorrent-alerts.test.yml
+```
+
+Passing these tests does not prove notification delivery. Loading production
+rules, configuring an Alertmanager receiver, and testing delivery are separate
+operations.
+
 Notifications are pushed to ntfy topic `vtorrent-seeds-4254e0588837`
 (topic name acts as the secret). Subscribe at https://ntfy.sh/ or in the
 mobile app. `ntfy-relay.py` (systemd unit `ntfy-relay`, listens on

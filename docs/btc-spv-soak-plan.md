@@ -3,6 +3,34 @@
 Status: LAUNCH GATE (swaps enabled at mainnet launch)
 Scope: `vtorrent-btc` SPV path as enabled by `--btc-regtest/--btc-peer/--btc-seed`.
 
+## Current repaired-build window
+
+The current final-source probe runs `8639a7fc4a62c72420a34c4cd0d34e866c67a42f`
+on RPC 22555 and P2P 22556. It started **2026-10-26T08:58:17Z**; the earliest
+24 h signoff is **2026-10-27T08:58:17Z**. Earlier windows below are historical
+and do not validate these repairs. The `2c381fa` probe was stopped at
+2026-10-26T08:09:04Z, and the intermediate `aeb103a` probe at 08:58:17Z. Both
+were stopped before completing their proposed 24 h windows; artifacts were
+retained.
+
+`aeb103a` repairs the four findings in
+`docs/2026-10-26_security-vtorrent-report.md`. Real Bitcoin Core testing then
+exposed an additional restart-lineage case, repaired in `8639a7f`: restored
+chain-derived outputs and the cursor must be rescanned after header history is
+reconstructed. Address and swap-recovery metadata survive the reset. The full
+workspace suite passed 1,118 tests, zero failures, and seven ignored tests.
+
+The current binary SHA-256 is
+`f707ffbb5446de17c1237328a37788bf24309d7842cf920db56a6e15566f8a16`.
+Metadata, logs, and one-minute RSS samples are under
+`/tmp/opencode/btc-spv-8639a7f-20261026T085817Z`. Peer-cache promotion now
+requires validated filter data, rather than only a successful handshake.
+
+A separate local Prometheus at `127.0.0.1:9095` scrapes the repaired probe and
+the historical `7ec3b2f` probe on 22545. The core fleet's Prometheus is
+unchanged. Rule syntax and stale-scan unit tests pass; production notification
+delivery and separate maker/taker VTR active-soak validation remain open.
+
 ## 1. Why this is separate
 
 BTC SPV is a **separable ~40 MiB component** that confounded the core-node RSS
