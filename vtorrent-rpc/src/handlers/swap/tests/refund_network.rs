@@ -550,7 +550,12 @@ async fn claim_refund_fork(claim_wins: bool, loser_confirmed: bool) {
         assert!(mp.get_transaction(&winning_tx.txid()).is_none());
     }
     let observed = reconcile(&loser.state, &id).await.unwrap();
-    assert_eq!(observed.state, VtrSettlementState::SpentElsewhere);
+    let expected = if claim_wins {
+        VtrSettlementState::ClaimConfirming
+    } else {
+        VtrSettlementState::SpentElsewhere
+    };
+    assert_eq!(observed.state, expected);
     assert_eq!(
         observed.spend.as_ref().unwrap().txid,
         hex::encode(winning_tx.txid())

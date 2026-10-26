@@ -67,6 +67,26 @@ fn confirmation(chain: &Chain, txid: &[u8; 32]) -> Option<SwapConfirmation> {
     })
 }
 
+fn claim_preimage_matches(
+    tx: &vtorrent_node::block::Transaction,
+    funding_txid: &[u8; 32],
+    hash_lock: &[u8; 32],
+) -> bool {
+    let Some(input) = tx
+        .inputs
+        .iter()
+        .find(|input| input.prev_txid == *funding_txid && input.prev_vout == 0)
+    else {
+        return false;
+    };
+    let script = &input.script_sig;
+    if script.len() < 34 || script[script.len() - 34] != 0x20 || script.last() != Some(&0x51) {
+        return false;
+    }
+    use sha2::{Digest, Sha256};
+    Sha256::digest(&script[script.len() - 33..script.len() - 1]).as_slice() == hash_lock
+}
+
 fn observes_spend(tx: &vtorrent_node::block::Transaction, funding: &[u8; 32]) -> bool {
     tx.inputs
         .iter()
@@ -172,25 +192,36 @@ pub fn observe_vtr(
                     .get_transaction(txid)
                     .is_some_and(|(tx, _, _)| observes_spend(tx, &funding_txid))
             });
-        let spend = recorded_spend.or_else(|| {
-            (funding.height..=chain.best_height())
-                .rev()
-                .find_map(|height| {
-                    chain
-                        .get_block_at_height(height)?
-                        .transactions
-                        .iter()
-                        .find(|tx| observes_spend(tx, &funding_txid))
-                        .map(|tx| tx.txid())
-                })
-        });
-        if let Some(txid) = spend {
+        let spend = recorded_spend
+            .or_else(|| {
+                (funding.height..=chain.best_height())
+                    .rev()
+                    .find_map(|height| {
+                        chain
+                            .get_block_at_height(height)?
+                            .transactions
+                            .iter()
+                            .find(|tx| observes_spend(tx, &funding_txid))
+                            .map(|tx| tx.txid())
+                    })
+            })
+            .and_then(|txid| {
+                chain
+                    .get_transaction(&txid)
+                    .map(|(tx, _, _)| (txid, tx.clone()))
+            });
+        if let Some((txid, tx)) = spend {
             observation.spend = confirmation(chain, &txid);
             let settled = observation
                 .spend
                 .as_ref()
                 .is_some_and(|c| c.confirmations >= SETTLEMENT_CONFIRMATIONS);
-            observation.state = if Some(txid) == swap.vtr_claim_txid {
+            let locally_recorded = Some(txid) == swap.vtr_claim_txid;
+            let claim = locally_recorded
+                || order
+                    .hash_lock
+                    .is_some_and(|hash| claim_preimage_matches(&tx, &funding_txid, &hash));
+            observation.state = if claim {
                 if settled {
                     Claimed
                 } else {
@@ -217,7 +248,11 @@ pub fn observe_vtr(
     {
         let txid = tx.txid();
         observation.pending_spend_txid = Some(hex::encode(txid));
-        observation.state = if Some(txid) == swap.vtr_claim_txid {
+        let claim = Some(txid) == swap.vtr_claim_txid
+            || order
+                .hash_lock
+                .is_some_and(|hash| claim_preimage_matches(tx, &funding_txid, &hash));
+        observation.state = if claim {
             ClaimPending
         } else if swap.is_vtr_refund(&txid) {
             RefundPending

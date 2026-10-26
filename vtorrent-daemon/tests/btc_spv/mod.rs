@@ -421,6 +421,168 @@ async fn multi_node_htlc_swap_settles_across_real_btc_spv() {
     );
 }
 
+async fn wait_height(daemon: &Daemon, target: u64) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let height = daemon.get("/api/v1/blockchain/height").await["height"]
+                .as_u64()
+                .unwrap();
+            if height >= target {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("daemon did not reach height {target}: {}", daemon.logs()));
+}
+
+fn hash32(value: &str) -> [u8; 32] {
+    hex::decode(value)
+        .unwrap()
+        .try_into()
+        .unwrap_or_else(|_| panic!("expected 32-byte hex, got {value}"))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "manual release-mode test; requires the vtr-btc-regtest container"]
+async fn taker_claims_vtr_on_a_separate_node() {
+    assert!(!cfg!(debug_assertions), "run with --release");
+    let _scenario = RECOVERY_SCENARIO.lock().await;
+    ensure_wallet();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .to_le_bytes();
+    let mut seed = [0xaa; 64];
+    seed[..nanos.len()].copy_from_slice(&nanos);
+    let btc_address = vtorrent_btc::keys::derive_address(&seed, 0, Network::Regtest).unwrap();
+    bitcoin_cli(&["-rpcwallet=multinode", "sendtoaddress", &btc_address, "1.0"]);
+    mine(1);
+
+    let directory = tempfile::tempdir().unwrap();
+    let mut maker = Daemon::start_with_btc(
+        &directory.path().join("maker"),
+        "maker.log",
+        None,
+        None,
+        &hex::encode(seed),
+        BTC_PEER,
+    )
+    .await;
+    wait_btc(&mut maker, height(), 100_000_000).await;
+
+    post(
+        &maker,
+        "/api/v1/faucet",
+        json!({"address": MAKER_ADDR, "amount_satoshis": 20_000_000_000_u64}),
+    )
+    .await;
+    post(
+        &maker,
+        "/api/v1/wallet/import",
+        json!({"wif": MAKER_WIF, "passphrase": "testpass"}),
+    )
+    .await;
+    post(
+        &maker,
+        "/api/v1/wallet/unlock",
+        json!({"passphrase": "testpass", "timeout_secs": 0}),
+    )
+    .await;
+
+    let order = post(
+        &maker,
+        "/api/v1/dex/order",
+        json!({
+            "maker_address": MAKER_ADDR,
+            "maker_btc_address": btc_address,
+            "offer_amount_satoshis": 10_000_000_000u64,
+            "offer_asset": "VTR",
+            "request_amount_satoshis": 100_000u64,
+            "request_asset": "BTC",
+            "expiry_secs": 86_400u64,
+            "passphrase": "testpass",
+        }),
+    )
+    .await;
+    let order_id = order["order_id"].as_str().unwrap().to_owned();
+    let matched = post(
+        &maker,
+        "/api/v1/dex/match",
+        json!({
+            "order_id": order_id,
+            "taker_address": TAKER_ADDR,
+            "passphrase": "testpass",
+        }),
+    )
+    .await;
+    for _ in 0..6 {
+        mine_vtr(&maker).await;
+    }
+
+    let target = maker.get("/api/v1/blockchain/height").await["height"]
+        .as_u64()
+        .unwrap();
+    let taker = Daemon::start(
+        &directory.path().join("taker"),
+        "taker.log",
+        Some(&maker.p2p),
+    )
+    .await;
+    wait_height(&taker, target).await;
+
+    let preimage = maker
+        .get(&format!("/api/v1/debug/order/{order_id}/preimage"))
+        .await["preimage"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let claim =
+        vtorrent_wallet_service::build_vtr_htlc_claim(vtorrent_wallet_service::VtrClaimParams {
+            hash_lock: hash32(matched["hash_lock"].as_str().unwrap()),
+            taker_address: TAKER_ADDR,
+            maker_address: MAKER_ADDR,
+            expiry: matched["expiry"].as_u64().unwrap() as u32,
+            vtr_amount: matched["vtr_amount"].as_u64().unwrap(),
+            funding_txid: hash32(matched["funding_txid"].as_str().unwrap()),
+            preimage: hash32(&preimage),
+            taker_wif: TAKER_WIF,
+        })
+        .unwrap();
+    let txid = hex::encode(claim.txid());
+    let accepted = post(
+        &taker,
+        "/api/v1/blockchain/broadcast",
+        json!({"raw_tx": hex::encode(bincode::serialize(&claim).unwrap())}),
+    )
+    .await;
+    assert_eq!(accepted["txid"], txid);
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    mine_vtr(&maker).await;
+    wait_height(&taker, target + 1).await;
+    let lookup = taker.get(&format!("/api/v1/blockchain/tx/{txid}")).await;
+    assert!(
+        lookup["block_height"].is_number(),
+        "taker did not confirm the claim"
+    );
+    let status = maker.get(&format!("/api/v1/swap/{order_id}/status")).await;
+    assert_eq!(status["vtr"]["state"], "claim_confirming");
+    for _ in 0..5 {
+        mine_vtr(&maker).await;
+    }
+    wait_height(&taker, target + 6).await;
+    let status = maker.get(&format!("/api/v1/swap/{order_id}/status")).await;
+    assert_eq!(status["vtr"]["state"], "claimed");
+    assert_eq!(status["vtr"]["spend"]["txid"], txid);
+
+    taker.stop(false).await;
+    maker.stop(false).await;
+    eprintln!("Separate-node taker claimed VTR: order {order_id}, claim {txid}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "manual release-mode test; requires the vtr-btc-regtest container"]
 async fn btc_spv_drops_a_reorged_out_funding_output() {

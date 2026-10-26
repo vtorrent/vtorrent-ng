@@ -44,6 +44,7 @@ bitcoin           = { workspace = true }
 dhat              = { workspace = true, optional = true }
 
 [dev-dependencies]
+bincode          = { workspace = true }
 secp256k1        = { workspace = true }
 vtorrent-script = { path = "../vtorrent-script" }
 vtorrent-p2p    = { path = "../vtorrent-p2p" }
