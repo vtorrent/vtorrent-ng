@@ -2259,7 +2259,7 @@ P2P, builds and signs the VTR claim locally, broadcasts it to its own node, and
 that node confirms it. The maker verifies the external claim's on-chain
 preimage, reports `claim_confirming`, then `claimed` after six confirmations.
 This closes the separate maker/taker VTR node validation, but not the sustained
-active swap soak.
+active swap soak. Five consecutive release-mode runs passed in 3.28–3.39s.
 
 The full workspace suite after the fix passed 48 groups, 1,118 tests, zero
 failures, and eight ignored tests. Scoped Clippy, formatting, and diff checks

@@ -142,8 +142,9 @@ TMPDIR=/tmp/opencode cargo test -p vtorrent-daemon --release --features test-uti
     -- --ignored --nocapture
 ```
 
-Recorded result: the test passed in 3.39s. It is a focused integration check,
-not a sustained multi-cycle soak.
+Recorded result: the test passed in 3.39s, and five consecutive runs passed
+(3.28–3.39s). It is a focused integration check, not a sustained multi-cycle
+soak.
 
 ## Limits
 
