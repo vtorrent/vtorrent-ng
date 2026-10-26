@@ -9,10 +9,11 @@ use bitcoin::p2p::ServiceFlags;
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::time::{timeout, Duration};
+use tokio::time::{timeout_at, Duration, Instant};
 
 /// Timeout for the version handshake.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A single connection to a Bitcoin peer.
 pub struct BtcPeer {
@@ -20,6 +21,7 @@ pub struct BtcPeer {
     addr: SocketAddr,
     network: bitcoin::Network,
     services: ServiceFlags,
+    filters_validated: bool,
     /// Peer's advertised minimum fee rate in satoshis per kilobyte (BIP133).
     /// Updated when we receive a `feefilter` message.
     feefilter_sats_per_kb: i64,
@@ -34,8 +36,10 @@ impl BtcPeer {
     /// Connect to a peer on a specific Bitcoin network and perform the
     /// version handshake.
     pub async fn connect_with_network(addr: SocketAddr, network: bitcoin::Network) -> Result<Self> {
-        let mut stream = TcpStream::connect(addr)
+        let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+        let mut stream = timeout_at(deadline, TcpStream::connect(addr))
             .await
+            .map_err(|_| BtcError::P2p("connection timed out".into()))?
             .map_err(|e| BtcError::P2p(e.to_string()))?;
 
         let version = VersionMessage {
@@ -58,9 +62,9 @@ impl BtcPeer {
 
         let msg = RawNetworkMessage::new(network.magic(), NetworkMessage::Version(version));
         let payload = serialize(&msg);
-        stream
-            .write_all(&payload)
+        timeout_at(deadline, stream.write_all(&payload))
             .await
+            .map_err(|_| BtcError::P2p("handshake write timed out".into()))?
             .map_err(|e| BtcError::P2p(e.to_string()))?;
 
         // Complete the version handshake: read the peer's version, reply with
@@ -72,20 +76,19 @@ impl BtcPeer {
             addr,
             network,
             services: ServiceFlags::NONE,
+            filters_validated: false,
             feefilter_sats_per_kb: 1_000, // default 1 sat/byte
         };
         let mut got_version = false;
         let mut got_verack = false;
         while !got_verack {
-            let msg = timeout(HANDSHAKE_TIMEOUT, peer.recv())
-                .await
-                .map_err(|_| BtcError::P2p("handshake timed out".into()))??;
+            let msg = peer.recv_until(deadline).await?;
             tracing::debug!("BTC handshake: received {:?}", msg);
             match msg {
                 NetworkMessage::Version(version) => {
                     peer.services = version.services;
                     got_version = true;
-                    peer.send(NetworkMessage::Verack).await?;
+                    peer.send_until(NetworkMessage::Verack, deadline).await?;
                 }
                 NetworkMessage::Verack => got_verack = true,
                 NetworkMessage::WtxidRelay
@@ -114,11 +117,20 @@ impl BtcPeer {
 
     /// Send a raw network message.
     pub async fn send(&mut self, msg: NetworkMessage) -> Result<()> {
+        self.send_until(msg, Instant::now() + RESPONSE_TIMEOUT)
+            .await
+    }
+
+    pub(crate) async fn send_until(
+        &mut self,
+        msg: NetworkMessage,
+        deadline: Instant,
+    ) -> Result<()> {
         let raw = RawNetworkMessage::new(self.network.magic(), msg);
         let payload = serialize(&raw);
-        self.stream
-            .write_all(&payload)
+        timeout_at(deadline, self.stream.write_all(&payload))
             .await
+            .map_err(|_| BtcError::P2p("write timed out".into()))?
             .map_err(|e| BtcError::P2p(e.to_string()))?;
         Ok(())
     }
@@ -130,9 +142,11 @@ impl BtcPeer {
     /// acknowledgement. Instead, wait briefly for a `reject` message: if none
     /// arrives before the timeout, the transaction was accepted and relayed.
     pub async fn broadcast_tx(&mut self, tx: &bitcoin::Transaction) -> Result<()> {
-        self.send(NetworkMessage::Tx(tx.clone())).await?;
+        let deadline = Instant::now() + RESPONSE_TIMEOUT;
+        self.send_until(NetworkMessage::Tx(tx.clone()), deadline)
+            .await?;
         loop {
-            match timeout(HANDSHAKE_TIMEOUT, self.recv()).await {
+            match timeout_at(deadline, self.recv()).await {
                 // No message (and no reject) before the timeout: accepted.
                 Err(_) => return Ok(()),
                 Ok(Err(e)) => return Err(e),
@@ -143,7 +157,8 @@ impl BtcPeer {
                     )));
                 }
                 Ok(Ok(NetworkMessage::Ping(nonce))) => {
-                    self.send(NetworkMessage::Pong(nonce)).await?;
+                    self.send_until(NetworkMessage::Pong(nonce), deadline)
+                        .await?;
                 }
                 Ok(Ok(NetworkMessage::FeeFilter(rate))) => {
                     self.feefilter_sats_per_kb = rate;
@@ -168,7 +183,23 @@ impl BtcPeer {
         self.services.has(ServiceFlags::COMPACT_FILTERS)
     }
 
+    /// Whether this connection supplied independently authenticated filter data.
+    pub fn compact_filters_validated(&self) -> bool {
+        self.filters_validated
+    }
+
+    pub(crate) fn mark_filters_validated(&mut self) {
+        self.filters_validated = true;
+    }
+
     /// Read one raw network message.
+    pub(crate) async fn recv_until(&mut self, deadline: Instant) -> Result<NetworkMessage> {
+        timeout_at(deadline, self.recv())
+            .await
+            .map_err(|_| BtcError::P2p("response timed out".into()))?
+    }
+
+    /// Read one raw network message without a request deadline.
     pub async fn recv(&mut self) -> Result<NetworkMessage> {
         let mut header = [0u8; 24];
         self.stream

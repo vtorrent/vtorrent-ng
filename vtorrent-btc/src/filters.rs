@@ -1,17 +1,21 @@
 use crate::error::{BtcError, Result};
+use crate::headers::HeaderChain;
 use crate::sync::{network_group, NetworkGroup};
 use bitcoin::bip158::{FilterHash, FilterHeader};
 use bitcoin::hashes::Hash;
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 
 pub(crate) const CHECKPOINT_INTERVAL: u32 = 1_000;
 pub(crate) const CFHEADERS_RANGE_LIMIT: usize = 2_000;
 pub(crate) const CFILTERS_RANGE_LIMIT: usize = 1_000;
+const MAX_CANDIDATES: usize = 16;
+const MAX_VOTERS: usize = 8;
 
 #[derive(Debug, Clone)]
 struct FilterRecord {
+    height: u32,
     filter_hash: FilterHash,
     filter_header: FilterHeader,
 }
@@ -19,10 +23,13 @@ struct FilterRecord {
 #[derive(Debug, Default)]
 pub(crate) struct FilterHeaderStore {
     records: HashMap<[u8; 32], FilterRecord>,
-    checkpoints: Vec<FilterHeader>,
+    checkpoints: BTreeMap<u32, FilterHeader>,
+    checkpoint_floor: u32,
     observed_tip: Option<[u8; 32]>,
     agreeing_groups: HashSet<NetworkGroup>,
     candidates: HashMap<([u8; 32], [u8; 32]), HashSet<NetworkGroup>>,
+    candidate_order: VecDeque<([u8; 32], [u8; 32])>,
+    candidate_tip: Option<[u8; 32]>,
 }
 
 impl FilterHeaderStore {
@@ -41,18 +48,19 @@ impl FilterHeaderStore {
             )));
         }
         for (index, checkpoint) in checkpoints.iter().enumerate() {
-            if let Some(existing) = self.checkpoints.get(index) {
+            let height = (index + 1) as u32 * CHECKPOINT_INTERVAL;
+            if height < self.checkpoint_floor {
+                continue;
+            }
+            if let Some(existing) = self.checkpoints.get(&height) {
                 if existing != checkpoint {
                     return Err(BtcError::Sync(format!(
                         "compact-filter checkpoint mismatch at height {}",
-                        (index + 1) as u32 * CHECKPOINT_INTERVAL
+                        height
                     )));
                 }
             }
-        }
-        if checkpoints.len() > self.checkpoints.len() {
-            self.checkpoints
-                .extend_from_slice(&checkpoints[self.checkpoints.len()..]);
+            self.checkpoints.insert(height, *checkpoint);
         }
         if self.observed_tip != Some(stop_hash) {
             self.observed_tip = Some(stop_hash);
@@ -65,18 +73,39 @@ impl FilterHeaderStore {
         if height == 0 || !height.is_multiple_of(CHECKPOINT_INTERVAL) {
             return None;
         }
+        self.checkpoints.get(&height).copied()
+    }
+
+    pub(crate) fn retain_checkpoints(&mut self, floor: u32, tip: u32) {
+        self.checkpoint_floor = floor.saturating_sub(1) / CHECKPOINT_INTERVAL * CHECKPOINT_INTERVAL;
         self.checkpoints
-            .get((height / CHECKPOINT_INTERVAL - 1) as usize)
-            .copied()
+            .retain(|height, _| *height >= self.checkpoint_floor && *height <= tip);
+    }
+
+    pub(crate) fn prune(&mut self, chain: &HeaderChain) {
+        let floor = chain.retained_floor();
+        self.records.retain(|hash, record| {
+            record.height >= floor.saturating_sub(1) && chain.get(hash).is_some()
+        });
+        self.retain_checkpoints(floor, chain.best_height());
+        if self.candidate_tip != chain.best_hash() {
+            self.candidates.clear();
+            self.candidate_order.clear();
+            self.agreeing_groups.clear();
+            self.candidate_tip = chain.best_hash();
+        }
     }
 
     /// Drop all stored filter headers and checkpoint agreement state.
     pub(crate) fn clear(&mut self) {
         self.records.clear();
         self.checkpoints.clear();
+        self.checkpoint_floor = 0;
         self.observed_tip = None;
         self.agreeing_groups.clear();
         self.candidates.clear();
+        self.candidate_order.clear();
+        self.candidate_tip = None;
     }
 
     /// Filter header stored for a block hash, if this wallet has scanned it.
@@ -125,6 +154,7 @@ impl FilterHeaderStore {
             pending.push((
                 *block_hash,
                 FilterRecord {
+                    height,
                     filter_hash: *filter_hash,
                     filter_header,
                 },
@@ -162,20 +192,36 @@ impl FilterHeaderStore {
             .observed_tip
             .ok_or_else(|| BtcError::Sync("compact-filter candidate has no tip".into()))?;
         let fingerprint = candidate.fingerprint();
-        let groups = self.candidates.entry((tip, fingerprint)).or_default();
-        groups.insert(network_group(peer.ip()));
+        if self.candidate_tip != Some(tip) {
+            self.candidates.clear();
+            self.candidate_order.clear();
+            self.candidate_tip = Some(tip);
+        }
+        let key = (tip, fingerprint);
+        if !self.candidates.contains_key(&key) {
+            if self.candidates.len() == MAX_CANDIDATES {
+                if let Some(oldest) = self.candidate_order.pop_front() {
+                    self.candidates.remove(&oldest);
+                }
+            }
+            self.candidate_order.push_back(key);
+        }
+        let groups = self.candidates.entry(key).or_default();
+        if groups.len() < MAX_VOTERS {
+            groups.insert(network_group(peer.ip()));
+        }
         let agreement = groups.len();
         let agreed_groups = groups.clone();
         if agreement < required {
             return Ok(agreement);
         }
 
-        for (index, checkpoint) in candidate.checkpoints.iter().enumerate() {
-            if let Some(existing) = self.checkpoints.get(index) {
+        for (height, checkpoint) in &candidate.checkpoints {
+            if let Some(existing) = self.checkpoints.get(height) {
                 if existing != checkpoint {
                     return Err(BtcError::Sync(format!(
                         "agreed compact-filter candidate conflicts at checkpoint height {}",
-                        (index + 1) as u32 * CHECKPOINT_INTERVAL
+                        height
                     )));
                 }
             }
@@ -193,10 +239,7 @@ impl FilterHeaderStore {
             }
         }
 
-        if candidate.checkpoints.len() > self.checkpoints.len() {
-            self.checkpoints
-                .extend_from_slice(&candidate.checkpoints[self.checkpoints.len()..]);
-        }
+        self.checkpoints.extend(candidate.checkpoints);
         self.records.extend(candidate.records);
         self.observed_tip = Some(tip);
         self.agreeing_groups = agreed_groups;
@@ -206,7 +249,8 @@ impl FilterHeaderStore {
     fn fingerprint(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(self.observed_tip.unwrap_or_default());
-        for checkpoint in &self.checkpoints {
+        for (height, checkpoint) in &self.checkpoints {
+            hasher.update(height.to_le_bytes());
             hasher.update(checkpoint.to_byte_array());
         }
         let mut records: Vec<_> = self.records.iter().collect();
@@ -375,5 +419,160 @@ mod tests {
                 .verify_filter(&[7; 32], b"hidden transactions")
                 .is_err());
         }
+    }
+
+    #[test]
+    fn candidate_churn_and_voters_are_bounded_without_poisoning_honest_agreement() {
+        fn candidate(filter: &[u8], tip: [u8; 32]) -> FilterHeaderStore {
+            let mut candidate = FilterHeaderStore::default();
+            candidate.reconcile_checkpoints(tip, 0, &[]).unwrap();
+            candidate
+                .apply_range(
+                    0,
+                    &[[7; 32]],
+                    &[FilterHash::hash(filter)],
+                    FilterHeader::all_zeros(),
+                )
+                .unwrap();
+            candidate
+        }
+        let mut store = FilterHeaderStore::default();
+        for n in 0u32..1_000 {
+            store
+                .observe_candidate(
+                    "1.1.1.1:8333".parse().unwrap(),
+                    candidate(&n.to_le_bytes(), [8; 32]),
+                    2,
+                )
+                .unwrap();
+            assert!(store.candidates.len() <= MAX_CANDIDATES);
+            assert!(store.candidate_order.len() <= MAX_CANDIDATES);
+        }
+        assert_eq!(
+            store
+                .observe_candidate(
+                    "1.1.1.1:8333".parse().unwrap(),
+                    candidate(b"honest", [8; 32]),
+                    2
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .observe_candidate(
+                    "2.2.2.2:8333".parse().unwrap(),
+                    candidate(b"honest", [8; 32]),
+                    2
+                )
+                .unwrap(),
+            2
+        );
+        store.verify_filter(&[7; 32], b"honest").unwrap();
+        for n in 3..100 {
+            store
+                .observe_candidate(
+                    SocketAddr::from(([n, 0, 0, 1], 8333)),
+                    candidate(b"honest", [8; 32]),
+                    2,
+                )
+                .unwrap();
+        }
+        assert!(store
+            .candidates
+            .values()
+            .all(|voters| voters.len() <= MAX_VOTERS));
+        assert_eq!(
+            store
+                .observe_candidate(
+                    "1.1.1.1:8333".parse().unwrap(),
+                    candidate(b"honest", [9; 32]),
+                    2
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(store.candidates.len(), 1);
+    }
+
+    #[test]
+    fn filter_records_follow_the_retained_header_window() {
+        let genesis = bitcoin::blockdata::constants::genesis_block(bitcoin::Network::Regtest);
+        let mut chain = HeaderChain::unanchored_for_tests();
+        chain
+            .add_header(&bitcoin::consensus::serialize(&genesis.header), 0)
+            .unwrap();
+        chain.set_retention(32);
+        let mut store = FilterHeaderStore::default();
+        let mut parent = genesis.block_hash();
+        let mut previous_filter = FilterHeader::all_zeros();
+        for height in 1u32..=10_000 {
+            let mut header = genesis.header;
+            header.prev_blockhash = parent;
+            header.time += height;
+            header.merkle_root = bitcoin::TxMerkleNode::hash(&height.to_le_bytes());
+            header.nonce = 0;
+            while header.validate_pow(header.target()).is_err() {
+                header.nonce += 1;
+            }
+            let hash = header.block_hash().to_byte_array();
+            chain
+                .add_header(&bitcoin::consensus::serialize(&header), height)
+                .unwrap();
+            let mut candidate = FilterHeaderStore {
+                observed_tip: Some(hash),
+                ..Default::default()
+            };
+            previous_filter = candidate
+                .apply_range(
+                    height,
+                    &[hash],
+                    &[FilterHash::hash(b"filter")],
+                    previous_filter,
+                )
+                .unwrap();
+            store
+                .observe_candidate("1.1.1.1:8333".parse().unwrap(), candidate, 1)
+                .unwrap();
+            store.prune(&chain);
+            assert!(store.records.len() <= 34);
+            assert_eq!(store.candidates.len(), 1);
+            store.verify_filter(&hash, b"filter").unwrap();
+            if height > 1 {
+                assert!(store.header_for(&parent.to_byte_array()).is_some());
+            }
+            parent = header.block_hash();
+        }
+        store
+            .apply_range(
+                10_000,
+                &[[88; 32]],
+                &[FilterHash::hash(b"orphan")],
+                FilterHeader::all_zeros(),
+            )
+            .unwrap();
+        store.prune(&chain);
+        assert!(store.header_for(&[88; 32]).is_none());
+        assert!(store.records.len() <= 34);
+    }
+
+    #[test]
+    fn checkpoint_retention_preserves_the_preceding_anchor() {
+        let checkpoints = vec![FilterHeader::all_zeros(); 120];
+        let mut store = FilterHeaderStore::default();
+        store.retain_checkpoints(100_000, 120_000);
+        store
+            .reconcile_checkpoints([1; 32], 120_000, &checkpoints)
+            .unwrap();
+        assert!(store.checkpoints.len() <= 22);
+        assert!(store.checkpoint(99_000).is_some());
+        assert!(store.checkpoint(98_000).is_none());
+        store.retain_checkpoints(110_000, 120_000);
+        store
+            .reconcile_checkpoints([1; 32], 120_000, &checkpoints)
+            .unwrap();
+        assert!(store.checkpoints.len() <= 12);
+        assert!(store.checkpoint(109_000).is_some());
+        assert!(store.checkpoint(108_000).is_none());
     }
 }

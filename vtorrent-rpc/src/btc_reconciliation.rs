@@ -1,3 +1,4 @@
+use crate::btc_peers::resolve_btc_peers;
 use crate::error::{RpcError, RpcResult};
 use crate::state::AppState;
 use axum::{extract::State, Json};
@@ -22,20 +23,7 @@ pub async fn reconcile_btc_swap(
 pub async fn reconcile(state: &AppState, order_id: &str) -> RpcResult<BtcSwapObservation> {
     reconcile_with_scan(state, order_id, async |htlc, txid, previous| {
         let scan = async {
-            let peers = if let Some(host) = state.btc_peer.read().await.clone() {
-                tokio::net::lookup_host(host)
-                    .await
-                    .map_err(|e| RpcError::BadRequest(format!("BTC peer resolution failed: {e}")))?
-                    .collect::<Vec<_>>()
-            } else if htlc.network == bitcoin::Network::Bitcoin {
-                vtorrent_btc::sync::resolve_seeds()
-                    .await
-                    .map_err(|e| RpcError::BadRequest(e.to_string()))?
-            } else {
-                return Err(RpcError::BadRequest(
-                    "Configure a BTC peer for this network".into(),
-                ));
-            };
+            let peers = resolve_btc_peers(state, htlc.network).await?;
             let btc = state.btc_wallet.read().await;
             btc.as_ref()
                 .ok_or_else(|| RpcError::BadRequest("BTC wallet not initialized".into()))?
@@ -398,40 +386,6 @@ pub async fn release_expired_reservations(state: &AppState) -> usize {
         }
     }
     released
-}
-
-async fn resolve_btc_peers(
-    state: &AppState,
-    network: bitcoin::Network,
-) -> RpcResult<Vec<std::net::SocketAddr>> {
-    if let Some(host) = state.btc_peer.read().await.clone() {
-        Ok(tokio::net::lookup_host(host)
-            .await
-            .map_err(|e| RpcError::BadRequest(format!("BTC peer resolution failed: {e}")))?
-            .collect())
-    } else if network == bitcoin::Network::Bitcoin {
-        let mut peers = state.btc_peer_cache.read().await.clone();
-        match vtorrent_btc::sync::resolve_seeds().await {
-            Ok(seeds) => {
-                for seed in seeds {
-                    if !peers.contains(&seed) {
-                        peers.push(seed);
-                    }
-                }
-            }
-            Err(error) => {
-                if peers.is_empty() {
-                    return Err(RpcError::BadRequest(error.to_string()));
-                }
-                tracing::warn!("BTC seed resolution failed; using cached peers: {}", error);
-            }
-        }
-        Ok(peers)
-    } else {
-        Err(RpcError::BadRequest(
-            "Configure a BTC peer for this network".into(),
-        ))
-    }
 }
 
 /// Run a BTC settlement scan for a contract using already-resolved peers.

@@ -507,20 +507,7 @@ pub async fn btc_claim_with_state(
         state,
         req,
         async |htlc: &vtorrent_btc::htlc::BtcHtlc, txid| {
-            let peers = if let Some(host) = state.btc_peer.read().await.clone() {
-                tokio::net::lookup_host(host)
-                    .await
-                    .map_err(|e| RpcError::Internal(format!("BTC peer resolution failed: {e}")))?
-                    .collect::<Vec<_>>()
-            } else if htlc.network == bitcoin::Network::Bitcoin {
-                vtorrent_btc::sync::resolve_seeds()
-                    .await
-                    .map_err(|e| RpcError::Internal(e.to_string()))?
-            } else {
-                return Err(RpcError::BadRequest(
-                    "Configure a BTC peer for this network".into(),
-                ));
-            };
+            let peers = crate::btc_peers::resolve_btc_peers(state, htlc.network).await?;
             let btc = state.btc_wallet.read().await;
             let wallet = btc
                 .as_ref()

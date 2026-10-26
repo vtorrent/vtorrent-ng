@@ -24,6 +24,7 @@
 //! - DELETE /api/v1/dex/order/:id   — Cancel a DEX order
 
 pub mod btc_claim_bump;
+mod btc_peers;
 pub mod btc_reconciliation;
 pub mod btc_sync;
 pub mod error;

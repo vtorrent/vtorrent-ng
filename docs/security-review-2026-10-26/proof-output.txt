@@ -1,0 +1,5 @@
+F01: higher-work fork accepted before malformed suffix; fallback returned Ok(0), old balance=100000, cursor=2, height=2, synced=true
+F02: header sync remained pending for 12 seconds; healthy fallback requests=0; outer proof timeout required
+F03: configured-only mainnet verifier returns Sync error: BTC contract verification requires 2 distinct compact-filter network groups
+F04: records=10000, candidate entries=10000 after 10,000 distinct tips; no retention applied
+All four review proofs reproduced the reported behavior using local inputs only.

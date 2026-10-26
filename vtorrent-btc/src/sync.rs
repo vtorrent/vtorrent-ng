@@ -5,7 +5,7 @@ use crate::filters::{
     FilterHeaderStore, CFHEADERS_RANGE_LIMIT, CFILTERS_RANGE_LIMIT, CHECKPOINT_INTERVAL,
 };
 use crate::headers::HeaderChain;
-use crate::p2p::BtcPeer;
+use crate::p2p::{BtcPeer, RESPONSE_TIMEOUT};
 use crate::utxo::{Utxo, UtxoSet};
 use bitcoin::consensus::encode::serialize;
 use bitcoin::hashes::Hash;
@@ -16,6 +16,9 @@ use parking_lot::Mutex;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
+use tokio::time::{timeout, timeout_at, Duration, Instant};
+
+const SYNC_PASS_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// Bitcoin DNS seeds (mainnet).
 pub const DNS_SEEDS: &[&str] = &[
@@ -379,18 +382,37 @@ impl BtcSync {
     /// disable BIP-37 bloom filters by default and disconnect peers that send
     /// one. The filter is only used by the UTXO scan.
     pub async fn sync_once(&self, peer: &mut BtcPeer) -> Result<usize> {
-        peer.send(NetworkMessage::GetHeaders(self.build_getheaders()))
-            .await?;
+        timeout(SYNC_PASS_TIMEOUT, self.sync_headers(peer))
+            .await
+            .map_err(|_| BtcError::Sync("BTC header sync timed out".into()))?
+    }
+
+    async fn sync_headers(&self, peer: &mut BtcPeer) -> Result<usize> {
+        let mut deadline = Instant::now() + RESPONSE_TIMEOUT;
+        peer.send_until(
+            NetworkMessage::GetHeaders(self.build_getheaders()),
+            deadline,
+        )
+        .await?;
 
         let mut added = 0usize;
         loop {
-            let msg = peer.recv().await?;
+            let msg = peer.recv_until(deadline).await?;
             tracing::debug!("BTC sync: received {:?}", msg);
             match msg {
                 NetworkMessage::Headers(hdrs) => {
                     let batch_len = hdrs.len();
                     let last_hash = hdrs.last().map(|header| header.block_hash());
+                    let mut batch_added = 0;
                     for h in hdrs {
+                        if self
+                            .headers
+                            .lock()
+                            .get(&h.block_hash().to_byte_array())
+                            .is_some()
+                        {
+                            continue;
+                        }
                         let raw = serialize(&h);
                         let height = {
                             let chain = self.headers.lock();
@@ -401,6 +423,7 @@ impl BtcSync {
                         };
                         self.headers.lock().add_header(&raw, height)?;
                         added += 1;
+                        batch_added += 1;
                     }
                     // Bitcoin Core caps each `headers` message at 2000 entries.
                     // Keep requesting until the peer sends a short batch (or
@@ -408,14 +431,20 @@ impl BtcSync {
                     if batch_len < 2000 {
                         break;
                     }
+                    if batch_added == 0 {
+                        return Err(BtcError::Sync("BTC header peer made no progress".into()));
+                    }
                     let mut request = self.build_getheaders();
                     if let Some(hash) = last_hash {
                         request.locator_hashes.insert(0, hash);
                     }
-                    peer.send(NetworkMessage::GetHeaders(request)).await?;
+                    deadline = Instant::now() + RESPONSE_TIMEOUT;
+                    peer.send_until(NetworkMessage::GetHeaders(request), deadline)
+                        .await?;
                 }
                 NetworkMessage::Ping(nonce) => {
-                    peer.send(NetworkMessage::Pong(nonce)).await?;
+                    peer.send_until(NetworkMessage::Pong(nonce), deadline)
+                        .await?;
                 }
                 NetworkMessage::Verack | NetworkMessage::Version(_) => continue,
                 _ => continue,
@@ -492,18 +521,23 @@ impl BtcSync {
         };
 
         const FILTER_TYPE_BASIC: u8 = 0;
-        peer.send(NetworkMessage::GetCFCheckpt(GetCFCheckpt {
-            filter_type: FILTER_TYPE_BASIC,
-            stop_hash: tip_hash,
-        }))
+        let deadline = Instant::now() + RESPONSE_TIMEOUT;
+        peer.send_until(
+            NetworkMessage::GetCFCheckpt(GetCFCheckpt {
+                filter_type: FILTER_TYPE_BASIC,
+                stop_hash: tip_hash,
+            }),
+            deadline,
+        )
         .await?;
         let checkpoints = loop {
-            match tokio::time::timeout(std::time::Duration::from_secs(10), peer.recv()).await {
+            match timeout_at(deadline, peer.recv()).await {
                 Err(_) => return Err(BtcError::Sync("compact-filter checkpoint timeout".into())),
                 Ok(Err(error)) => return Err(error),
                 Ok(Ok(NetworkMessage::CFCheckpt(checkpoints))) => break checkpoints,
                 Ok(Ok(NetworkMessage::Ping(nonce))) => {
-                    peer.send(NetworkMessage::Pong(nonce)).await?;
+                    peer.send_until(NetworkMessage::Pong(nonce), deadline)
+                        .await?;
                 }
                 Ok(Ok(_)) => continue,
             }
@@ -513,14 +547,14 @@ impl BtcSync {
                 "compact-filter checkpoint response does not match request".into(),
             ));
         }
+        let retained_floor = self.headers.lock().retained_floor();
         let mut candidate = FilterHeaderStore::default();
+        candidate.retain_checkpoints(retained_floor, tip_height);
         candidate.reconcile_checkpoints(
             tip_hash.to_byte_array(),
             tip_height,
             &checkpoints.filter_headers,
         )?;
-
-        let retained_floor = self.headers.lock().retained_floor();
 
         // Prefer the filter header already stored for the block before the
         // scan start. A fresh scan at the retained floor has no such record;
@@ -574,19 +608,24 @@ impl BtcSync {
         for (chunk_index, chunk) in block_hashes.chunks(CFHEADERS_RANGE_LIMIT).enumerate() {
             let chunk_start = request_start + (chunk_index * CFHEADERS_RANGE_LIMIT) as u32;
             let stop_hash = bitcoin::BlockHash::from_byte_array(*chunk.last().unwrap());
-            peer.send(NetworkMessage::GetCFHeaders(GetCFHeaders {
-                filter_type: FILTER_TYPE_BASIC,
-                start_height: chunk_start,
-                stop_hash,
-            }))
+            let deadline = Instant::now() + RESPONSE_TIMEOUT;
+            peer.send_until(
+                NetworkMessage::GetCFHeaders(GetCFHeaders {
+                    filter_type: FILTER_TYPE_BASIC,
+                    start_height: chunk_start,
+                    stop_hash,
+                }),
+                deadline,
+            )
             .await?;
             let response = loop {
-                match tokio::time::timeout(std::time::Duration::from_secs(10), peer.recv()).await {
+                match timeout_at(deadline, peer.recv()).await {
                     Err(_) => return Err(BtcError::Sync("compact-filter header timeout".into())),
                     Ok(Err(error)) => return Err(error),
                     Ok(Ok(NetworkMessage::CFHeaders(headers))) => break headers,
                     Ok(Ok(NetworkMessage::Ping(nonce))) => {
-                        peer.send(NetworkMessage::Pong(nonce)).await?;
+                        peer.send_until(NetworkMessage::Pong(nonce), deadline)
+                            .await?;
                     }
                     Ok(Ok(_)) => continue,
                 }
@@ -618,15 +657,19 @@ impl BtcSync {
             )?);
         }
 
-        self.filter_headers.lock().observe_candidate(
-            peer.addr(),
-            candidate,
-            if self.network == bitcoin::Network::Regtest {
-                1
-            } else {
-                2
-            },
-        )
+        let required = if self.network == bitcoin::Network::Regtest {
+            1
+        } else {
+            2
+        };
+        let agreement =
+            self.filter_headers
+                .lock()
+                .observe_candidate(peer.addr(), candidate, required)?;
+        if agreement >= required {
+            peer.mark_filters_validated();
+        }
+        Ok(agreement)
     }
 
     async fn authenticate_filter_headers_multi(
@@ -675,6 +718,23 @@ impl BtcSync {
         peers: &mut [BtcPeer],
         start_height: u32,
     ) -> Result<usize> {
+        timeout(
+            SYNC_PASS_TIMEOUT,
+            self.scan_utxos_bip158_multi_pass(peers, start_height),
+        )
+        .await
+        .map_err(|_| BtcError::Sync("BTC wallet scan timed out".into()))?
+    }
+
+    async fn scan_utxos_bip158_multi_pass(
+        &self,
+        peers: &mut [BtcPeer],
+        start_height: u32,
+    ) -> Result<usize> {
+        {
+            let chain = self.headers.lock();
+            self.filter_headers.lock().prune(&chain);
+        }
         let start_height = start_height.max(self.headers.lock().retained_floor());
         let expected = self.headers.lock().hashes_from(start_height).len();
         if expected == 0 {
@@ -721,23 +781,31 @@ impl BtcSync {
     /// retained floor the scan fails closed. Raise `--btc-header-retention` or
     /// rescan from an earlier height in that case.
     pub async fn scan_utxos_bip158(&self, peer: &mut BtcPeer, start_height: u32) -> Result<usize> {
-        let start_height = start_height.max(self.headers.lock().retained_floor());
-        let agreement = self.authenticate_filter_headers(peer, start_height).await?;
-        let required = if self.network == bitcoin::Network::Regtest {
-            1
-        } else {
-            2
-        };
-        if agreement < required {
-            return Err(BtcError::Sync(format!(
-                "compact-filter headers require agreement from {} network groups (have {})",
-                required, agreement
-            )));
-        }
-        let mut scanned = 0;
-        self.scan_utxos_bip158_inner(peer, start_height, &mut scanned)
-            .await?;
-        Ok(scanned)
+        timeout(SYNC_PASS_TIMEOUT, async {
+            {
+                let chain = self.headers.lock();
+                self.filter_headers.lock().prune(&chain);
+            }
+            let start_height = start_height.max(self.headers.lock().retained_floor());
+            let agreement = self.authenticate_filter_headers(peer, start_height).await?;
+            let required = if self.network == bitcoin::Network::Regtest {
+                1
+            } else {
+                2
+            };
+            if agreement < required {
+                return Err(BtcError::Sync(format!(
+                    "compact-filter headers require agreement from {} network groups (have {})",
+                    required, agreement
+                )));
+            }
+            let mut scanned = 0;
+            self.scan_utxos_bip158_inner(peer, start_height, &mut scanned)
+                .await?;
+            Ok(scanned)
+        })
+        .await
+        .map_err(|_| BtcError::Sync("BTC wallet scan timed out".into()))?
     }
 
     async fn scan_utxos_bip158_inner(
@@ -790,18 +858,20 @@ impl BtcSync {
                 // Read the next cfilter response (in order). The peer's blockfilter
                 // index can lag behind the tip, so it may send fewer filters than
                 // requested; time out rather than block forever.
+                let deadline = Instant::now() + RESPONSE_TIMEOUT;
                 let filter = loop {
                     if let Some(filter) = queued_filters.pop_front() {
                         break filter;
                     }
-                    match tokio::time::timeout(std::time::Duration::from_secs(10), peer.recv())
-                        .await
-                    {
-                        Err(_) => return Ok(()),
+                    match timeout_at(deadline, peer.recv()).await {
+                        Err(_) => {
+                            return Err(BtcError::Sync("compact-filter download timeout".into()))
+                        }
                         Ok(Err(e)) => return Err(e),
                         Ok(Ok(NetworkMessage::CFilter(cf))) => break cf,
                         Ok(Ok(NetworkMessage::Ping(nonce))) => {
-                            peer.send(NetworkMessage::Pong(nonce)).await?;
+                            peer.send_until(NetworkMessage::Pong(nonce), deadline)
+                                .await?;
                         }
                         Ok(Ok(_)) => continue,
                     }
@@ -818,6 +888,7 @@ impl BtcSync {
                 self.filter_headers
                     .lock()
                     .verify_filter(hash, &filter.filter)?;
+                peer.mark_filters_validated();
 
                 // The cfilter response carries the authoritative block hash, which
                 // is the SipHash key for the filter. Use it (not our header-chain
@@ -837,12 +908,14 @@ impl BtcSync {
 
                 if matched {
                     // Download the full block and record matching outputs.
-                    peer.send(NetworkMessage::GetData(vec![Inventory::WitnessBlock(
-                        block_hash,
-                    )]))
+                    let deadline = Instant::now() + RESPONSE_TIMEOUT;
+                    peer.send_until(
+                        NetworkMessage::GetData(vec![Inventory::WitnessBlock(block_hash)]),
+                        deadline,
+                    )
                     .await?;
                     let block = loop {
-                        match tokio::time::timeout(std::time::Duration::from_secs(10), peer.recv())
+                        match timeout_at(deadline, peer.recv())
                             .await
                             .map_err(|_| BtcError::Sync("BTC block download timeout".into()))??
                         {
@@ -856,7 +929,8 @@ impl BtcSync {
                                 queued_filters.push_back(filter);
                             }
                             NetworkMessage::Ping(nonce) => {
-                                peer.send(NetworkMessage::Pong(nonce)).await?;
+                                peer.send_until(NetworkMessage::Pong(nonce), deadline)
+                                    .await?;
                             }
                             _ => continue,
                         }

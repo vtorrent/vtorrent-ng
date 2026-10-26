@@ -26,7 +26,7 @@ pub struct StoredHeader {
 }
 
 /// A lightweight Bitcoin header chain.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HeaderChain {
     headers: HashMap<[u8; 32], StoredHeader>,
     best_hash: Option<[u8; 32]>,

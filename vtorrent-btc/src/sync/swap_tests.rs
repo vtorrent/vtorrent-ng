@@ -132,6 +132,16 @@ async fn recv(stream: &mut TcpStream) -> std::io::Result<NetworkMessage> {
         .clone())
 }
 
+async fn stall_response(stream: &mut TcpStream, chatty: bool) {
+    if !chatty {
+        let _ = recv(stream).await;
+        return;
+    }
+    while send(stream, NetworkMessage::Ping(1)).await.is_ok() {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
 async fn serve(listener: TcpListener, blocks: Vec<Block>, case: &'static str) {
     let (mut stream, _) = listener.accept().await.unwrap();
     let script = contract().build_script().unwrap().to_p2wsh();
@@ -149,6 +159,10 @@ async fn serve(listener: TcpListener, blocks: Vec<Block>, case: &'static str) {
                 NetworkMessage::Verack
             }
             NetworkMessage::GetHeaders(req) => {
+                if matches!(case, "silent_headers" | "chatty_headers") {
+                    stall_response(&mut stream, case == "chatty_headers").await;
+                    return;
+                }
                 if case == "header_disconnect" {
                     break;
                 }
@@ -157,9 +171,19 @@ async fn serve(listener: TcpListener, blocks: Vec<Block>, case: &'static str) {
                     .iter()
                     .find_map(|hash| blocks.iter().position(|b| b.block_hash() == *hash))
                     .unwrap_or(0);
-                NetworkMessage::Headers(blocks[common + 1..].iter().map(|b| b.header).collect())
+                let mut headers: Vec<_> = blocks[common + 1..].iter().map(|b| b.header).collect();
+                if case == "malformed_suffix" {
+                    let mut orphan = blocks.last().unwrap().header;
+                    orphan.prev_blockhash = bitcoin::BlockHash::all_zeros();
+                    headers.push(orphan);
+                }
+                NetworkMessage::Headers(headers)
             }
             NetworkMessage::GetCFCheckpt(req) => {
+                if case == "checkpoint_chatty" {
+                    stall_response(&mut stream, true).await;
+                    return;
+                }
                 if case == "checkpoint_disconnect" {
                     break;
                 }
@@ -170,6 +194,10 @@ async fn serve(listener: TcpListener, blocks: Vec<Block>, case: &'static str) {
                 })
             }
             NetworkMessage::GetCFHeaders(req) => {
+                if case == "cfheaders_chatty" {
+                    stall_response(&mut stream, true).await;
+                    return;
+                }
                 assert_eq!(req.start_height, 0);
                 NetworkMessage::CFHeaders(CFHeaders {
                     filter_type: 0,
@@ -182,6 +210,10 @@ async fn serve(listener: TcpListener, blocks: Vec<Block>, case: &'static str) {
                 })
             }
             NetworkMessage::GetCFilters(req) => {
+                if case == "filters_chatty" {
+                    stall_response(&mut stream, true).await;
+                    return;
+                }
                 if case == "disconnect" {
                     break;
                 }
@@ -210,6 +242,10 @@ async fn serve(listener: TcpListener, blocks: Vec<Block>, case: &'static str) {
                 continue;
             }
             NetworkMessage::GetData(inventory) => {
+                if case == "block_chatty" {
+                    stall_response(&mut stream, true).await;
+                    return;
+                }
                 let Inventory::WitnessBlock(hash) = inventory[0] else {
                     panic!("expected block request")
                 };
@@ -260,53 +296,170 @@ async fn header_sync_removes_failed_peer_and_uses_healthy_peer() {
 }
 
 #[tokio::test]
+async fn interrupted_header_reorg_does_not_commit_partial_state() {
+    let htlc = contract();
+    let (fork, _) = chain(&htlc, "valid");
+    let valid_fork = fork.clone();
+    let mut old = fork[..2].to_vec();
+    old[1].header.time += 100;
+    old[1].header.nonce = 0;
+    while old[1].header.validate_pow(old[1].header.target()).is_err() {
+        old[1].header.nonce += 1;
+    }
+    let mut wallet = crate::wallet::BtcWallet::with_network([1; 64], htlc.network);
+    wallet.add_header(&serialize(&old[1].header), 1).unwrap();
+    wallet.add_utxo(Utxo {
+        txid: hex::encode([9; 32]),
+        vout: 0,
+        value: 100_000,
+        address: htlc.address().unwrap(),
+        height: 1,
+    });
+    wallet.set_last_scanned_height(2);
+    let mut peers = Vec::new();
+    let mut servers = Vec::new();
+    for (blocks, case) in [(fork, "malformed_suffix"), (old, "valid")] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        servers.push(tokio::spawn(serve(listener, blocks, case)));
+        peers.push(
+            BtcPeer::connect_with_network(addr, htlc.network)
+                .await
+                .unwrap(),
+        );
+    }
+    wallet.sync_with_peers(&mut peers).await.unwrap();
+    assert_eq!(wallet.best_height(), 1);
+    assert_eq!(wallet.balance(), 100_000);
+    assert_eq!(wallet.last_scanned_height(), 2);
+    drop(peers);
+    for server in servers {
+        server.await.unwrap();
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, valid_fork, "valid"));
+    let mut peer = BtcPeer::connect_with_network(addr, htlc.network)
+        .await
+        .unwrap();
+    wallet.sync(&mut peer).await.unwrap();
+    assert_eq!(wallet.best_height(), 6);
+    assert_eq!(wallet.balance(), 0);
+    assert_eq!(wallet.last_scanned_height(), 0);
+    drop(peer);
+    server.await.unwrap();
+}
+
+async fn scan_failover_case(failure: &'static str) {
+    let htlc = contract();
+    let (blocks, txid) = chain(&htlc, "valid");
+    let headers = Arc::new(Mutex::new(HeaderChain::anchored(bitcoin::Network::Regtest)));
+    for (height, block) in blocks.iter().enumerate().skip(1) {
+        headers
+            .lock()
+            .add_header(&serialize(&block.header), height as u32)
+            .unwrap();
+    }
+    let utxos = Arc::new(Mutex::new(UtxoSet::new()));
+    let sync = BtcSync::new(
+        headers,
+        utxos.clone(),
+        vec![htlc.address().unwrap()],
+        htlc.network,
+    );
+    let mut peers = Vec::new();
+    let mut servers = Vec::new();
+    for case in [failure, "valid"] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        servers.push(tokio::spawn(serve(listener, blocks.clone(), case)));
+        peers.push(
+            BtcPeer::connect_with_network(addr, htlc.network)
+                .await
+                .unwrap(),
+        );
+    }
+    assert!(peers.iter().all(|peer| !peer.compact_filters_validated()));
+    let scanned = tokio::time::timeout(
+        std::time::Duration::from_secs(12),
+        sync.scan_utxos_bip158_multi(&mut peers, 0),
+    )
+    .await
+    .expect("peer chatter bypassed the request deadline")
+    .unwrap();
+    assert_eq!(scanned, 7, "failure: {failure}");
+    assert!(peers[1].compact_filters_validated());
+    if matches!(
+        failure,
+        "checkpoint_disconnect" | "checkpoint_chatty" | "cfheaders_chatty"
+    ) {
+        assert!(!peers[0].compact_filters_validated());
+    }
+    {
+        let utxos = utxos.lock();
+        let outputs = utxos.list();
+        assert_eq!(outputs.len(), 1, "failure: {failure}");
+        assert_eq!(
+            outputs[0].txid,
+            bitcoin::Txid::from_byte_array(txid).to_string()
+        );
+        assert_eq!(outputs[0].value, htlc.amount);
+    }
+    drop(peers);
+    for server in servers {
+        server.await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn multi_peer_scan_fails_over_authentication_and_filter_downloads() {
     for failure in ["checkpoint_disconnect", "disconnect", "partial_disconnect"] {
-        let htlc = contract();
-        let (blocks, txid) = chain(&htlc, "valid");
-        let headers = Arc::new(Mutex::new(HeaderChain::anchored(bitcoin::Network::Regtest)));
-        for (height, block) in blocks.iter().enumerate().skip(1) {
-            headers
-                .lock()
-                .add_header(&serialize(&block.header), height as u32)
-                .unwrap();
-        }
-        let utxos = Arc::new(Mutex::new(UtxoSet::new()));
-        let sync = BtcSync::new(
-            headers,
-            utxos.clone(),
-            vec![htlc.address().unwrap()],
-            htlc.network,
-        );
+        scan_failover_case(failure).await;
+    }
+}
+
+#[tokio::test]
+async fn peer_chatter_cannot_extend_filter_or_block_deadlines() {
+    tokio::join!(
+        scan_failover_case("checkpoint_chatty"),
+        scan_failover_case("cfheaders_chatty"),
+        scan_failover_case("filters_chatty"),
+        scan_failover_case("block_chatty"),
+    );
+}
+
+#[tokio::test]
+async fn silent_and_chatty_header_peers_reach_healthy_fallback() {
+    async fn check(case: &'static str) {
+        let (blocks, _) = chain(&contract(), "valid");
         let mut peers = Vec::new();
         let mut servers = Vec::new();
-        for case in [failure, "valid"] {
+        for behavior in [case, "valid"] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
-            servers.push(tokio::spawn(serve(listener, blocks.clone(), case)));
+            servers.push(tokio::spawn(serve(listener, blocks.clone(), behavior)));
             peers.push(
-                BtcPeer::connect_with_network(addr, htlc.network)
+                BtcPeer::connect_with_network(addr, bitcoin::Network::Regtest)
                     .await
                     .unwrap(),
             );
         }
-        let scanned = sync.scan_utxos_bip158_multi(&mut peers, 0).await.unwrap();
-        assert_eq!(scanned, 7, "failure: {failure}");
-        {
-            let utxos = utxos.lock();
-            let outputs = utxos.list();
-            assert_eq!(outputs.len(), 1, "failure: {failure}");
-            assert_eq!(
-                outputs[0].txid,
-                bitcoin::Txid::from_byte_array(txid).to_string()
-            );
-            assert_eq!(outputs[0].value, htlc.amount);
-        }
+        let mut wallet = crate::wallet::BtcWallet::with_network([1; 64], bitcoin::Network::Regtest);
+        let added = tokio::time::timeout(
+            std::time::Duration::from_secs(12),
+            wallet.sync_with_peers(&mut peers),
+        )
+        .await
+        .expect("header peer bypassed the request deadline")
+        .unwrap();
+        assert_eq!(added, 6);
+        assert_eq!(peers.len(), 1);
         drop(peers);
         for server in servers {
             server.await.unwrap();
         }
     }
+    tokio::join!(check("silent_headers"), check("chatty_headers"));
 }
 
 #[tokio::test]
@@ -358,6 +511,11 @@ async fn swap_verification_scans_committed_blocks_and_rejects_bad_funding() {
         };
         let result = wallet.verify_swap_funding(&htlc, txid, &[addr], now).await;
         assert_eq!(result.is_ok(), case == "valid", "case {case}: {result:?}");
+        assert_eq!(
+            wallet.best_height(),
+            0,
+            "contract scans must not mutate wallet headers"
+        );
         server.await.unwrap();
     }
 }
@@ -556,6 +714,7 @@ async fn settlement_scan_follows_higher_work_fork_and_invalidates_old_spend() {
         assert_eq!(scan.invalidated_anchor, reorg);
         assert_eq!(scan.spend.is_none(), reorg);
         assert_eq!(scan.funding.as_ref().unwrap().height, 1);
+        assert_eq!(wallet.best_height(), 0);
         previous = [scan.funding, scan.spend].into_iter().flatten().collect();
         server.await.unwrap();
     }

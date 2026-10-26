@@ -1,0 +1,14 @@
+[package]
+name = "vtorrent-review-proofs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+vtorrent-btc = { path = "../../../vtorrent-btc" }
+bitcoin = { version = "0.32", features = ["rand"] }
+tokio = { version = "1", features = ["full"] }
+sha2 = "0.10"
+hex = "0.4"

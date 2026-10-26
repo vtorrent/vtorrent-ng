@@ -103,7 +103,9 @@ impl BtcWallet {
     /// Must exceed the difficulty retarget period (~2016) and the UTXO-scan
     /// depth. See `docs/btc-spv-soak-plan.md`.
     pub fn set_header_retention(&self, retention: usize) {
-        self.headers.lock().set_retention(retention);
+        let mut chain = self.headers.lock();
+        chain.set_retention(retention);
+        self.filter_headers.lock().prune(&chain);
     }
 
     /// Create a wallet with a UTXO persistence path.  If the file exists,
@@ -391,7 +393,7 @@ impl BtcWallet {
             ));
         }
         let sync = crate::sync::BtcSync::new(
-            self.headers.clone(),
+            Arc::new(Mutex::new(self.headers.lock().clone())),
             Arc::new(Mutex::new(UtxoSet::new())),
             vec![htlc.address()?],
             self.network,
@@ -417,8 +419,9 @@ impl BtcWallet {
         if htlc.network != self.network {
             return Err(BtcError::Sync("BTC swap network mismatch".into()));
         }
+        let headers = Arc::new(Mutex::new(self.headers.lock().clone()));
         let sync = crate::sync::BtcSync::new(
-            self.headers.clone(),
+            headers.clone(),
             Arc::new(Mutex::new(UtxoSet::new())),
             vec![htlc.address()?],
             self.network,
@@ -429,7 +432,7 @@ impl BtcWallet {
         )
         .await
         .map_err(|_| BtcError::Sync("BTC settlement scan timed out".into()))??;
-        let chain = self.headers.lock();
+        let chain = headers.lock();
         if chain.best_hash() != Some(scan.tip_hash) {
             return Err(BtcError::Sync(
                 "BTC tip changed after settlement scan".into(),
@@ -465,14 +468,20 @@ impl BtcWallet {
     /// Run a sync pass against a peer, updating headers and the synced flag.
     pub async fn sync(&mut self, peer: &mut crate::p2p::BtcPeer) -> Result<usize> {
         let previous_best = self.headers.lock().best_hash();
+        let staged_headers = Arc::new(Mutex::new(self.headers.lock().clone()));
         let sync = crate::sync::BtcSync::new_with_filter_headers(
-            self.headers.clone(),
+            staged_headers.clone(),
             self.utxos.clone(),
             self.filter_headers.clone(),
             self.watch_addresses(self.next_index)?,
             self.network,
         );
         let added = sync.sync_once(peer).await?;
+        drop(sync);
+        let staged_headers = Arc::try_unwrap(staged_headers)
+            .map_err(|_| BtcError::Sync("BTC header staging is still shared".into()))?
+            .into_inner();
+        *self.headers.lock() = staged_headers;
         if let Some(previous_best) = previous_best {
             let reorged = {
                 let chain = self.headers.lock();
@@ -508,6 +517,10 @@ impl BtcWallet {
         }
         if added > 0 {
             self.synced = true;
+        }
+        {
+            let chain = self.headers.lock();
+            self.filter_headers.lock().prune(&chain);
         }
         Ok(added)
     }
