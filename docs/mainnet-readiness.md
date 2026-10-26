@@ -256,8 +256,8 @@ actions, operator approval.
       221,584 kB RSS with zero errors. Its 24 h window ends
       2026-10-27T08:58:17Z. A separate taker VTR node now broadcasts and
       confirms the claim in `taker_claims_vtr_on_a_separate_node`; the maker
-      recognizes the external claim. A sustained active swap soak remains a
-      launch gate. Set
+      recognizes the external claim. A 60-cycle one-hour active soak passed with
+      no failures; a fleet-level soak after rebuild remains a launch gate. Set
       `--btc-birthday` to the wallet creation height to scan funds older than
       the retained window. See `docs/btc-spv-soak-plan.md`.
 - [~] **BTC SPV holds ~40 MiB and is not independently soaked** — regtest

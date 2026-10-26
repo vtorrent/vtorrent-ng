@@ -85,8 +85,8 @@ challenge the repairs and their remaining assumptions independently.
 - Evidence: the full HTLC swap settles against real BTC SPV
   (`docs/btc-spv-multinode-reorg-test.md`). The original test uses one VTR
   daemon; `taker_claims_vtr_on_a_separate_node` now builds and confirms the
-  taker claim on a second VTR node, and the maker recognizes it. A sustained
-  active swap soak remains open.
+  taker claim on a second VTR node, and the maker recognizes it. A 60-cycle
+  component-level active soak passed; a fleet-level soak remains open.
 - `vtorrent-btc/src/headers.rs` — header retention. Pruning is amortized with a
   1,024-header slack. The mainnet-scale test inserts 870,000 headers and keeps
   the retained store within 100,000 plus the slack. Review the retention bound

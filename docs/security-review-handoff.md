@@ -94,7 +94,7 @@ TMPDIR=/tmp/opencode cargo test -p vtorrent-daemon --release --features test-uti
 - SPV PoS header acceptance remains fail-closed.
 - The original full swap test uses one VTR daemon; the separate taker node now
   builds and confirms the claim in `taker_claims_vtr_on_a_separate_node`. A
-  sustained active swap soak remains open.
+  60-cycle component-level active soak passed; a fleet-level soak remains open.
 - BTC SPV has a mainnet-scale header and 100,001-block scan probe, but the 24 h
   repaired-build window is still running at review time.
 - A real-bitcoind reorged-out claim test is not covered; the settlement-state

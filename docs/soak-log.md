@@ -2265,3 +2265,13 @@ The full workspace suite after the fix passed 48 groups, 1,118 tests, zero
 failures, and eight ignored tests. Scoped Clippy, formatting, and diff checks
 passed. Commit `9b9a4f7` is pushed; the running BTC SPV probe remains on
 `8639a7f` because this change only affects VTR claim observation.
+
+## 2026-10-26 — one-hour active swap soak
+
+A 60-cycle active soak ran from 12:27 to 13:23 UTC. Each cycle ran a full HTLC
+swap against real Bitcoin SPV, then a separate-node taker claim. All 120 test
+runs passed; there were no failures or panics. Logs and cycle timestamps are
+under `/tmp/opencode/active-swap-soak-9b9a4f7/`.
+
+This closes the component-level active swap gate for `9b9a4f7`. A fleet-level
+soak on the rebuilt release image remains open.
