@@ -6,16 +6,16 @@ All four findings have been repaired on top of `35fd9ccd57ca54fde36f6b0fc33d996d
 
 | Finding | Repair | Regression evidence |
 |---|---|---|
-| F01 | Header sync stages a private header snapshot and commits only on success; contract scans use private snapshots and do not mutate wallet headers | `interrupted_header_reorg_does_not_commit_partial_state` checks failed-prefix rollback and successful-reorg invalidation; contract scan tests assert wallet-header isolation |
+| F01 | Header sync stages a private header snapshot and commits only on success; contract scans use private snapshots; restored chain caches are invalidated when headers are reconstructed without persisted lineage | Failed-prefix rollback, successful-reorg invalidation, contract-scan isolation, and `restored_chain_cache_is_rebuilt_after_first_header_sync` regressions |
 | F02 | Absolute connection, handshake, write, and request deadlines; a 30-minute complete-pass limit; no-progress header batches are rejected; peer-cache promotion requires validated filter data | `silent_and_chatty_header_peers_reach_healthy_fallback`; `peer_chatter_cannot_extend_filter_or_block_deadlines` covers checkpoint, filter-header, compact-filter, and block requests |
 | F03 | One shared resolver supplies configured, cached, and DNS peers to wallet sync, claim verification, and settlement scans; mainnet quorum remains two independent groups | `mainnet_configured_peer_is_supplemented_by_cache_and_seeds`, DNS-failure and non-mainnet isolation tests |
 | F04 | Filter records follow retained headers, including a predecessor anchor; checkpoints retain only the relevant range; votes retain one tip, at most 16 candidate fingerprints, and at most eight groups per candidate | A 10,000-header retention test, hostile candidate/voter churn test, and checkpoint-anchor retention test |
 
 Verification on the repaired working tree:
 
-- `cargo test -p vtorrent-btc -p vtorrent-rpc -p vtorrent-wallet-service --all-features`: 288 passed, zero failed, one intentionally ignored scale test.
+- The original repair's affected-crate run passed 288 tests with zero failures and one ignored scale test. The startup-lineage follow-up adds one regression.
 - `cargo clippy -p vtorrent-btc -p vtorrent-rpc -p vtorrent-wallet-service -p vtorrent-daemon --all-targets --all-features -- -D warnings`: passed.
-- `cargo test --workspace --all-features`: 48 groups, 1,117 passed, zero failed, seven ignored.
+- `cargo test --workspace --all-features`, including the startup-lineage follow-up: 48 groups, 1,118 passed, zero failed, seven ignored.
 - Formatting and diff checks passed.
 
 To rerun the repaired contracts from the repository root:
@@ -25,6 +25,14 @@ bash docs/security-review-2026-10-26/verify-fixes.sh
 ```
 
 The staging snapshots add temporary memory overhead. Release requires a fresh soak of the repaired commit; earlier probes do not validate these changes. Mainnet approval and independent third-party signoff remain open.
+
+### Restart-lineage follow-up
+
+Release-mode validation against real Bitcoin Core found another F01 lifecycle case after the initial `aeb103a` repair: UTXOs and a scan cursor survive restart, but the header branch does not. Reconstructing headers from genesis therefore cannot establish that the restored outputs still belong to the active branch. A reorg while the daemon is stopped left an obsolete balance selectable in the cache.
+
+The startup path now clears the unverified chain cache and resets scanning after its first successful header reconstruction. Address indices, reservations, signed transactions, and swap recovery metadata remain intact. The new local regression failed before the repair and passes afterward. The previously failing real-Bitcoin `btc_spv_drops_a_reorged_out_funding_output` test now passes and reports zero balance after a conflicting spend replaces the funding output.
+
+An ordinary unchanged-chain restart must also rescan under this policy because header lineage is not persisted. On mainnet, funds older than retained history still require sufficient header retention; the repair does not make unavailable history recoverable.
 
 ## Original review verdict
 

@@ -350,6 +350,56 @@ async fn interrupted_header_reorg_does_not_commit_partial_state() {
     server.await.unwrap();
 }
 
+#[tokio::test]
+async fn restored_chain_cache_is_rebuilt_after_first_header_sync() {
+    let path = std::env::temp_dir().join(format!(
+        "btc-restored-cache-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    let mut stored = UtxoSet::new();
+    stored.add(Utxo {
+        txid: hex::encode([9; 32]),
+        vout: 0,
+        value: 100_000,
+        address: crate::keys::derive_address(&[1; 64], 0, bitcoin::Network::Regtest).unwrap(),
+        height: 1,
+    });
+    stored.set_last_scanned_height(2);
+    stored.set_next_index(1);
+    stored.save(&path).unwrap();
+    let mut wallet = crate::wallet::BtcWallet::with_persistence(
+        [1; 64],
+        bitcoin::Network::Regtest,
+        path.clone(),
+    )
+    .unwrap();
+    assert_eq!(wallet.balance(), 100_000);
+    let (blocks, _) = chain(&contract(), "valid");
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, blocks, "valid"));
+    let mut peer = BtcPeer::connect_with_network(addr, bitcoin::Network::Regtest)
+        .await
+        .unwrap();
+    wallet.sync(&mut peer).await.unwrap();
+    assert_eq!(wallet.best_height(), 6);
+    assert_eq!(
+        wallet.balance(),
+        0,
+        "a restored cache has no persisted header lineage"
+    );
+    assert_eq!(wallet.last_scanned_height(), 0);
+    assert_eq!(UtxoSet::load(&path).unwrap().next_index(), 1);
+    assert_eq!(UtxoSet::load(&path).unwrap().last_scanned_height(), 0);
+    drop(peer);
+    server.await.unwrap();
+    std::fs::remove_file(path).unwrap();
+}
+
 async fn scan_failover_case(failure: &'static str) {
     let htlc = contract();
     let (blocks, txid) = chain(&htlc, "valid");

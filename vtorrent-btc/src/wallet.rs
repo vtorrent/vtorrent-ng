@@ -65,6 +65,7 @@ pub struct BtcWallet {
     synced: bool,
     /// Next block height to scan (incremental checkpoint).
     last_scanned_height: u32,
+    rescan_on_sync: bool,
     /// Whether new transactions signal RBF (Replace-By-Fee).
     rbf_enabled: bool,
 }
@@ -94,6 +95,7 @@ impl BtcWallet {
             next_index: 0,
             synced: false,
             last_scanned_height: 0,
+            rescan_on_sync: false,
             rbf_enabled: true,
         }
     }
@@ -118,6 +120,7 @@ impl BtcWallet {
         let utxos = UtxoSet::load(&utxo_path)?;
         let next_index = utxos.next_index();
         let last_scanned_height = utxos.last_scanned_height();
+        let rescan_on_sync = last_scanned_height > 0 || !utxos.list().is_empty();
         Ok(Self {
             seed,
             network,
@@ -128,6 +131,7 @@ impl BtcWallet {
             next_index,
             synced: false,
             last_scanned_height,
+            rescan_on_sync,
             rbf_enabled: true,
         })
     }
@@ -146,6 +150,18 @@ impl BtcWallet {
                 tracing::warn!("Failed to save UTXO set: {}", e);
             }
         }
+    }
+
+    fn reset_chain_cache(&mut self) {
+        self.filter_headers.lock().clear();
+        {
+            let mut utxos = self.utxos.lock();
+            utxos.clear_chain_utxos();
+            utxos.set_last_scanned_height(0);
+        }
+        self.last_scanned_height = 0;
+        self.synced = false;
+        self.save_utxos();
     }
 
     /// The Bitcoin network this wallet operates on.
@@ -482,6 +498,13 @@ impl BtcWallet {
             .map_err(|_| BtcError::Sync("BTC header staging is still shared".into()))?
             .into_inner();
         *self.headers.lock() = staged_headers;
+        if self.rescan_on_sync {
+            self.reset_chain_cache();
+            self.rescan_on_sync = false;
+            tracing::warn!(
+                "BTC headers were rebuilt without persisted lineage; cleared restored chain cache for a full wallet rescan"
+            );
+        }
         if let Some(previous_best) = previous_best {
             let reorged = {
                 let chain = self.headers.lock();
@@ -497,18 +520,7 @@ impl BtcWallet {
                     let chain = self.headers.lock();
                     find_fork(&chain, previous_best)
                 };
-                self.filter_headers.lock().clear();
-                {
-                    let mut utxos = self.utxos.lock();
-                    utxos.clear_chain_utxos();
-                    utxos.set_last_scanned_height(0);
-                }
-                self.save_utxos();
-                // The UTXO set was cleared, so the rescan must start at the
-                // wallet's birthday/zero, not at the fork point; otherwise
-                // outputs below the fork are lost.
-                self.last_scanned_height = 0;
-                self.synced = false;
+                self.reset_chain_cache();
                 tracing::warn!(
                     "BTC header reorg detected at fork height {}; cleared filter/UTXO state and will rescan from height 0",
                     fork
