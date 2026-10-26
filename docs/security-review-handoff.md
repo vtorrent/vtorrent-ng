@@ -92,9 +92,11 @@ TMPDIR=/tmp/opencode cargo test -p vtorrent-daemon --release --features test-uti
 
 - Governance is inactive; activation is unscheduled.
 - SPV PoS header acceptance remains fail-closed.
-- The full swap test uses one VTR daemon; separate maker and taker VTR nodes
-  remain open.
-- BTC SPV has not been soaked at mainnet-scale header counts.
+- The original full swap test uses one VTR daemon; the separate taker node now
+  builds and confirms the claim in `taker_claims_vtr_on_a_separate_node`. A
+  sustained active swap soak remains open.
+- BTC SPV has a mainnet-scale header and 100,001-block scan probe, but the 24 h
+  repaired-build window is still running at review time.
 - A real-bitcoind reorged-out claim test is not covered; the settlement-state
   downgrade is unit-tested.
 - Cold proof reconstruction is unavailable beyond the retained undo window.

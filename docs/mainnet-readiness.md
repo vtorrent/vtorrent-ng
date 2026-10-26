@@ -254,7 +254,9 @@ actions, operator approval.
       restart-lineage gap repaired in `8639a7f`. The current probe runs
       `8639a7f`, synced 973,217 headers, and scanned 100,001 blocks at
       221,584 kB RSS with zero errors. Its 24 h window ends
-      2026-10-27T08:58:17Z. The separate maker/taker VTR active soak remains a
+      2026-10-27T08:58:17Z. A separate taker VTR node now broadcasts and
+      confirms the claim in `taker_claims_vtr_on_a_separate_node`; the maker
+      recognizes the external claim. A sustained active swap soak remains a
       launch gate. Set
       `--btc-birthday` to the wallet creation height to scan funds older than
       the retained window. See `docs/btc-spv-soak-plan.md`.

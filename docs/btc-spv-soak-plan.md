@@ -204,8 +204,10 @@ synced 973,154 headers by 01:01:01Z, and scanned 100,001 BIP-158 blocks by
   funding transactions. See `docs/btc-spv-multinode-reorg-test.md`. A full
   HTLC swap now settles against real BTC SPV, including the maker BTC claim
   and taker VTR claim, and a conflicting-spend test proves a reorged-out
-  funding output disappears after restart. Separate maker and taker VTR nodes
-  remain open.
+  funding output disappears after restart. `taker_claims_vtr_on_a_separate_node`
+  now broadcasts and confirms the taker claim on a second VTR daemon, and the
+  maker recognizes the external claim. A sustained active swap soak remains
+  open.
 - **Header store bounded (2026-10-08):** `HeaderChain` now has an opt-in
   retention window (`--btc-header-retention`, default 100_000 ≈ 11 MiB vs
   ~100 MiB unbounded on mainnet), pruning strictly below `best_height -

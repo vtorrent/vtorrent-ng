@@ -2250,3 +2250,18 @@ The first local alert evaluation exposed a false positive: header sync set
 rule now requires a completed scan (`scan_in_progress == 0`) and a nonzero
 timestamp. Promtool tests cover the initial-scan, recovery, healthy, disabled,
 and absent-timestamp cases; the local rule is inactive after the fix.
+
+## 2026-10-26 — separate-node taker claim
+
+`taker_claims_vtr_on_a_separate_node` now passes on the repaired source. The
+maker runs on one VTR daemon; the taker runs on a second daemon connected over
+P2P, builds and signs the VTR claim locally, broadcasts it to its own node, and
+that node confirms it. The maker verifies the external claim's on-chain
+preimage, reports `claim_confirming`, then `claimed` after six confirmations.
+This closes the separate maker/taker VTR node validation, but not the sustained
+active swap soak.
+
+The full workspace suite after the fix passed 48 groups, 1,118 tests, zero
+failures, and eight ignored tests. Scoped Clippy, formatting, and diff checks
+passed. Commit `9b9a4f7` is pushed; the running BTC SPV probe remains on
+`8639a7f` because this change only affects VTR claim observation.

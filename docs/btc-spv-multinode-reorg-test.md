@@ -127,6 +127,24 @@ was replaced by 8ab28e13e97bba085ec2260f6fbf01a3640cd359cde37559f244bd9364173f1e
 the restarted daemon reports a zero balance
 ```
 
+## Separate maker and taker VTR nodes
+
+`taker_claims_vtr_on_a_separate_node` runs the maker on one VTR daemon and the
+taker on a second daemon connected over P2P. The taker builds and signs the VTR
+claim locally, broadcasts it to its own node, and that node admits and confirms
+it. The maker observes the externally built claim by verifying its on-chain
+preimage, reports `claim_confirming`, and then `claimed` after six
+confirmations. This closes the separate-node taker-claim validation.
+
+```bash
+TMPDIR=/tmp/opencode cargo test -p vtorrent-daemon --release --features test-util \
+    --test process_recovery taker_claims_vtr_on_a_separate_node \
+    -- --ignored --nocapture
+```
+
+Recorded result: the test passed in 3.39s. It is a focused integration check,
+not a sustained multi-cycle soak.
+
 ## Limits
 
 The first test proves that two independent daemons agree on real SPV headers,
@@ -135,10 +153,9 @@ follow a reorg that re-includes the funding transactions. The third test
 proves that a reorged-out funding output disappears after a conflicting spend
 and restart.
 
-The full swap test uses one VTR daemon and one real bitcoind. It exercises the
-real BTC SPV scan, HTLC funding, maker claim, and taker claim, but it does not
-run the maker and taker on separate VTR nodes. The existing VTR refund and
-reorg tests cover multi-daemon VTR behavior.
+The original full swap test uses one VTR daemon. The separate-node test above
+covers the taker claim path; the existing VTR refund and reorg tests cover
+multi-daemon VTR behavior. A sustained active swap soak remains open.
 
 The tests do not cover eclipse attacks, mempool conflicts, or a reorg after a
 BTC claim has been verified. Those remain in the external review scope.

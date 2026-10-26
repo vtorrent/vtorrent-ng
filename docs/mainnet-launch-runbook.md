@@ -61,10 +61,11 @@ started 2026-10-21T02:47:54Z. Launch on that candidate build after the external
 review and the soak. Do not launch on beta.3; it predates the governance and
 proof-service repairs.
 
-Swaps are enabled at mainnet launch. The BTC SPV mainnet-scale soak and the
-separate maker and taker VTR node validation are launch gates. The header
-retention bound is covered by an 870,000-header test; the active swap soak
-remains to be run.
+Swaps are enabled at mainnet launch. The repaired BTC SPV probe has completed
+mainnet-scale header sync and a 100,001-block scan, and
+`taker_claims_vtr_on_a_separate_node` validates the taker claim on a second
+VTR node. The 24 h repaired-build soak and a sustained active swap soak remain
+open. The header retention bound is covered by an 870,000-header test.
 
 ## 4. Launch procedure
 
