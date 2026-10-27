@@ -81,6 +81,15 @@ groups:
           summary: "BTC SPV scan stale on {{ $labels.instance }}"
           description: "No successful BTC SPV scan in the last 10 minutes."
 
+      - alert: BtcSpvScanStuck
+        expr: vtorrent_btc_scan_in_progress == 1
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BTC SPV scan stuck on {{ $labels.instance }}"
+          description: "A BTC SPV scan has been running for more than 30 minutes."
+
       - alert: HostDiskFull
         expr: (node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"}) < 0.15
         for: 10m

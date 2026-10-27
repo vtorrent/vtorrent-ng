@@ -83,3 +83,26 @@ tests:
       - eval_time: 20m
         alertname: BtcSpvScanStale
         exp_alerts: []
+
+  - name: a scan running for more than 30 minutes alerts
+    interval: 1m
+    input_series:
+      - series: 'vtorrent_btc_synced{instance="probe"}'
+        values: '1+0x50'
+      - series: 'vtorrent_btc_scan_in_progress{instance="probe"}'
+        values: '1+0x50'
+      - series: 'vtorrent_btc_last_scan_timestamp_seconds{instance="probe"}'
+        values: '0+0x50'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: BtcSpvScanStuck
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: BtcSpvScanStuck
+        exp_alerts:
+          - exp_labels:
+              instance: probe
+              severity: warning
+            exp_annotations:
+              summary: BTC SPV scan stuck on probe
+              description: A BTC SPV scan has been running for more than 30 minutes.
