@@ -7,7 +7,7 @@
 use bitcoin::{Address, Amount, Transaction, Txid};
 use std::str::FromStr;
 use vtorrent_btc::keys::{derive_address, derive_wif};
-use vtorrent_btc::utxo::Utxo;
+use vtorrent_btc::utxo::{Utxo, UtxoSet};
 use vtorrent_btc::wallet::BtcWallet;
 
 const SEED: [u8; 64] = [0xAB; 64];
@@ -238,7 +238,7 @@ fn fee_estimation_scales_with_inputs() {
 // ─── UTXO persistence ────────────────────────────────────────────────────────
 
 #[test]
-fn utxo_persistence_roundtrip() {
+fn utxo_persistence_hides_restored_outputs_until_rescan() {
     let dir = std::env::temp_dir().join(format!("vtorrent_btc_test_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("utxos.json");
@@ -253,11 +253,15 @@ fn utxo_persistence_roundtrip() {
         wallet.set_utxo_path(path.clone()).unwrap();
     }
 
-    // Reload from disk and verify.
+    // Reload from disk: the data is retained, but chain-derived outputs stay
+    // hidden until the wallet rebuilds and rescans the header lineage.
     {
         let wallet = BtcWallet::with_persistence(SEED, NETWORK, path.clone()).unwrap();
-        assert_eq!(wallet.balance(), 80_000);
-        assert_eq!(wallet.list_utxos().len(), 2);
+        assert_eq!(wallet.balance(), 0);
+        assert!(wallet.list_utxos().is_empty());
+        let stored = UtxoSet::load(&path).unwrap();
+        assert_eq!(stored.total(), 80_000);
+        assert_eq!(stored.list().len(), 2);
     }
 
     std::fs::remove_dir_all(&dir).ok();

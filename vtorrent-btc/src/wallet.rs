@@ -9,6 +9,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::Network;
 use parking_lot::Mutex;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// Whether `ancestor` is on the main chain ending at `tip`.
@@ -65,7 +66,7 @@ pub struct BtcWallet {
     synced: bool,
     /// Next block height to scan (incremental checkpoint).
     last_scanned_height: u32,
-    rescan_on_sync: bool,
+    rescan_on_sync: AtomicBool,
     /// Whether new transactions signal RBF (Replace-By-Fee).
     rbf_enabled: bool,
 }
@@ -95,7 +96,7 @@ impl BtcWallet {
             next_index: 0,
             synced: false,
             last_scanned_height: 0,
-            rescan_on_sync: false,
+            rescan_on_sync: AtomicBool::new(false),
             rbf_enabled: true,
         }
     }
@@ -131,7 +132,7 @@ impl BtcWallet {
             next_index,
             synced: false,
             last_scanned_height,
-            rescan_on_sync,
+            rescan_on_sync: AtomicBool::new(rescan_on_sync),
             rbf_enabled: true,
         })
     }
@@ -229,12 +230,24 @@ impl BtcWallet {
     }
 
     /// Total confirmed balance in satoshis.
+    ///
+    /// Restored chain outputs are hidden until the first successful sync has
+    /// rebuilt and rescanned the header lineage.
     pub fn balance(&self) -> u64 {
+        if self.rescan_on_sync.load(Ordering::Relaxed) {
+            return 0;
+        }
         self.utxos.lock().total()
     }
 
-    /// List all UTXOs.
+    /// List spendable UTXOs.
+    ///
+    /// Restored chain outputs are hidden until the first successful sync has
+    /// rebuilt and rescanned the header lineage.
     pub fn list_utxos(&self) -> Vec<Utxo> {
+        if self.rescan_on_sync.load(Ordering::Relaxed) {
+            return Vec::new();
+        }
         self.utxos.lock().list().to_vec()
     }
 
@@ -246,6 +259,9 @@ impl BtcWallet {
         order_id: String,
         htlc: &crate::htlc::BtcHtlc,
     ) -> Result<()> {
+        if self.rescan_on_sync.load(Ordering::Relaxed) {
+            return Err(crate::error::BtcError::NotSynced);
+        }
         let transaction: bitcoin::Transaction = bitcoin::consensus::deserialize(raw)
             .map_err(|error| crate::error::BtcError::Bitcoin(error.to_string()))?;
         let mut set = self.utxos.lock();
@@ -467,6 +483,7 @@ impl BtcWallet {
 
     /// Add a UTXO.
     pub fn add_utxo(&self, utxo: Utxo) {
+        self.rescan_on_sync.store(false, Ordering::Relaxed);
         self.utxos.lock().add(utxo);
         self.save_utxos();
     }
@@ -498,9 +515,9 @@ impl BtcWallet {
             .map_err(|_| BtcError::Sync("BTC header staging is still shared".into()))?
             .into_inner();
         *self.headers.lock() = staged_headers;
-        if self.rescan_on_sync {
+        if self.rescan_on_sync.load(Ordering::Relaxed) {
             self.reset_chain_cache();
-            self.rescan_on_sync = false;
+            self.rescan_on_sync.store(false, Ordering::Relaxed);
             tracing::warn!(
                 "BTC headers were rebuilt without persisted lineage; cleared restored chain cache for a full wallet rescan"
             );
@@ -630,6 +647,9 @@ impl BtcWallet {
         amount_sats: u64,
         fee_sats: u64,
     ) -> Result<(String, Vec<u8>, Vec<Utxo>)> {
+        if self.rescan_on_sync.load(Ordering::Relaxed) {
+            return Err(crate::error::BtcError::NotSynced);
+        }
         use crate::keys::derive_wif;
         use crate::tx::{build_and_sign, txid_of};
 

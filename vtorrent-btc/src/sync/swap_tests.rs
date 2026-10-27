@@ -377,7 +377,13 @@ async fn restored_chain_cache_is_rebuilt_after_first_header_sync() {
         path.clone(),
     )
     .unwrap();
-    assert_eq!(wallet.balance(), 100_000);
+    assert_eq!(wallet.balance(), 0);
+    assert!(wallet.list_utxos().is_empty());
+    let recipient = crate::keys::derive_address(&[2; 64], 0, bitcoin::Network::Regtest).unwrap();
+    assert!(
+        wallet.send_to(&recipient, 1_000, 1_000).is_err(),
+        "restored outputs must not be spendable before rescan"
+    );
     let (blocks, _) = chain(&contract(), "valid");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
