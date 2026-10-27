@@ -2300,3 +2300,22 @@ average 221,121 kB, last 221,440 kB. It had zero scan-error markers and no
 panics. Final metrics showed tip 973,376, lag 0, five peer groups, and zero
 auth or scan errors. The exact final-source `9b9a4f7` probe continues on
 22545/22546; its 24 h window ends at **2026-10-28T01:12:30Z**.
+
+## 2026-10-27 — second review follow-up and 287a505 probe
+
+The `9b9a4f7` probe was stopped at 10:23:13Z after 9h10m, before its 24 h
+window completed, to deploy the second-review fixes. It recorded 551 RSS
+samples with a 227,416 kB peak and 226,944 kB last sample. Artifacts remain at
+`/tmp/opencode/btc-spv-9b9a4f7-20261027T011230Z`.
+
+`c3b3847` hides restored chain-derived outputs from balance, UTXO listing,
+sends, and swap reservation until the first successful sync rescans them.
+`287a505` adds `BtcSpvScanStuck`. The exact final-source probe started at
+10:23:13Z on 22555/22556, synced 973,382 headers by 10:30:29Z, and scanned
+100,001 BIP-158 blocks by 10:38:59Z. Five peer groups connected; auth and scan
+errors were zero; RSS was 195,328 kB. Its 24 h window ends at
+**2026-10-28T10:23:13Z**.
+
+Full workspace: 48 groups, 1,118 passed, zero failed, eight ignored. BTC
+suites passed 90+29, RPC passed 160, the separate-node taker claim passed, and
+promtool rule tests passed.

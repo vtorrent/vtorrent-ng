@@ -252,9 +252,9 @@ actions, operator approval.
       seeds. A fresh security review then validated two high and two medium
       findings; `aeb103a` repairs them, and real Bitcoin Core testing exposed a
       restart-lineage gap repaired in `8639a7f`. The exact final-source probe
-      runs `9b9a4f7`, synced 973,320 headers, and scanned 100,001 blocks at
-      227,404 kB RSS with zero errors. Its 24 h window ends
-      2026-10-28T01:12:30Z; the earlier `8639a7f` probe completed its 24 h
+      runs `287a505`, synced 973,382 headers, and scanned 100,001 blocks at
+      195,328 kB RSS with zero errors. Its 24 h window ends
+      2026-10-28T10:23:13Z; the earlier `8639a7f` probe completed its 24 h
       window with zero scan errors. A separate taker VTR node now broadcasts and
       confirms the claim in `taker_claims_vtr_on_a_separate_node`; the maker
       recognizes the external claim. A 60-cycle one-hour active soak passed with

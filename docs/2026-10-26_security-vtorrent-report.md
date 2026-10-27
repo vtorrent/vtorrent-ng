@@ -34,6 +34,25 @@ The startup path now clears the unverified chain cache and resets scanning after
 
 An ordinary unchanged-chain restart must also rescan under this policy because header lineage is not persisted. On mainnet, funds older than retained history still require sufficient header retention; the repair does not make unavailable history recoverable.
 
+### Second review follow-up (2026-10-27)
+
+A second internal pass found one high, one medium, and one low issue:
+
+- **High:** restored BTC outputs were visible and selectable before the first
+  successful sync. `c3b3847` hides them from balance, UTXO listing, sends, and
+  swap reservation until the rescan clears the pending flag. Regression tests
+  cover hidden balance, empty listing, blocked send, and the post-sync reset.
+- **Medium:** a scan that started and hung had no alert. `287a505` adds
+  `BtcSpvScanStuck`; promtool tests cover no alert at 20 minutes and firing at
+  40 minutes.
+- **Low:** the review request's verification commands ran from the parent
+  directory. The request now changes into the clone first.
+
+Verification: full workspace 48 groups, 1,118 passed, zero failed, eight
+ignored; BTC suites 90+29 passed; RPC 160 passed; separate-node taker claim
+passed; promtool rules passed. The exact final source is `287a505`; its probe
+ends 2026-10-28T10:23:13Z.
+
 ## Original review verdict
 
 **Request changes before mainnet.** This review validated two high-severity issues and two medium-severity issues. The most important defect leaves BTC wallet state attached to an abandoned branch after a peer partially updates the header chain and then fails. A separate availability issue lets a single silent peer prevent header failover indefinitely.

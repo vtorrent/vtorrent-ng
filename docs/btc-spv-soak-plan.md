@@ -5,14 +5,19 @@ Scope: `vtorrent-btc` SPV path as enabled by `--btc-regtest/--btc-peer/--btc-see
 
 ## Current repaired-build windows
 
-The exact final-source probe runs `9b9a4f73a00c2f816669c1ecb18c270c7df9b9d0`
-on RPC 22545 and P2P 22546. It started **2026-10-27T01:12:30Z**; the earliest
-24 h signoff is **2026-10-28T01:12:30Z**. It synced 973,320 headers by
-01:19:39Z and scanned 100,001 BIP-158 blocks by 01:26:15Z. Five peer groups
-connected; auth and scan errors are zero. RSS was 227,404 kB after the scan.
+The exact final-source probe runs `287a5054f7884b1c5671cd6c01f4119330f1e441`
+on RPC 22555 and P2P 22556. It started **2026-10-27T10:23:13Z**; the earliest
+24 h signoff is **2026-10-28T10:23:13Z**. It synced 973,382 headers by
+10:30:29Z and scanned 100,001 BIP-158 blocks by 10:38:59Z. Five peer groups
+connected; auth and scan errors are zero. RSS was 195,328 kB after the scan.
 Binary SHA-256:
-`6771234675ae4a9fc8c09301b2293d3aa6673ea59ab229e596015e4dcab48f2a`.
+`95fd110e887f3470c02f15f306bdb0621d2e5a72428679ab872f8f12696dfa47`.
 Metadata and one-minute RSS samples are under
+`/tmp/opencode/btc-spv-287a505-20261027T102313Z`.
+
+The `9b9a4f7` probe was stopped at 10:23:13Z after 9h10m, before its 24 h
+window completed. It recorded 551 RSS samples with a 227,416 kB peak and
+226,944 kB last sample. Its artifacts remain at
 `/tmp/opencode/btc-spv-9b9a4f7-20261027T011230Z`.
 
 The `8639a7f` probe completed its 24 h window and was stopped at
@@ -30,14 +35,16 @@ The `2c381fa` probe was stopped at 2026-10-26T08:09:04Z, and the intermediate
 `docs/2026-10-26_security-vtorrent-report.md`. Real Bitcoin Core testing then
 exposed an additional restart-lineage case, repaired in `8639a7f`: restored
 chain-derived outputs and the cursor must be rescanned after header history is
-reconstructed. Address and swap-recovery metadata survive the reset. The full
-workspace suite passed 1,118 tests, zero failures, and eight ignored tests.
+reconstructed. `c3b3847` hides those restored outputs from balance, UTXO
+listing, sends, and swap reservation until the rescan clears the pending flag.
+`287a505` adds the `BtcSpvScanStuck` alert. The full workspace suite passed
+1,118 tests, zero failures, and eight ignored tests.
 
-A separate local Prometheus at `127.0.0.1:9095` now scrapes only the exact
-final-source probe on 22545. The core fleet's Prometheus is unchanged. Rule
-syntax and stale-scan unit tests pass; production notification delivery and a
-fleet-level active soak remain open. The component-level 60-cycle active soak
-passed.
+A separate local Prometheus at `127.0.0.1:9095` scrapes only the exact
+final-source probe on 22555. The core fleet's Prometheus is unchanged. Rule
+syntax and stale/stuck-scan unit tests pass; production notification delivery
+and a fleet-level active soak remain open. The component-level 60-cycle active
+soak passed.
 
 ## 1. Why this is separate
 
