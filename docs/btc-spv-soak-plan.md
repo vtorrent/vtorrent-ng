@@ -3,33 +3,38 @@
 Status: LAUNCH GATE (swaps enabled at mainnet launch)
 Scope: `vtorrent-btc` SPV path as enabled by `--btc-regtest/--btc-peer/--btc-seed`.
 
-## Current repaired-build window
+## Current repaired-build windows
 
-The current final-source probe runs `8639a7fc4a62c72420a34c4cd0d34e866c67a42f`
-on RPC 22555 and P2P 22556. It started **2026-10-26T08:58:17Z**; the earliest
-24 h signoff is **2026-10-27T08:58:17Z**. Earlier windows below are historical
-and do not validate these repairs. The `2c381fa` probe was stopped at
-2026-10-26T08:09:04Z, and the intermediate `aeb103a` probe at 08:58:17Z. Both
-were stopped before completing their proposed 24 h windows; artifacts were
-retained.
+The exact final-source probe runs `9b9a4f73a00c2f816669c1ecb18c270c7df9b9d0`
+on RPC 22545 and P2P 22546. It started **2026-10-27T01:12:30Z**; the earliest
+24 h signoff is **2026-10-28T01:12:30Z**. It synced 973,320 headers by
+01:19:39Z and scanned 100,001 BIP-158 blocks by 01:26:15Z. Five peer groups
+connected; auth and scan errors are zero. RSS was 227,404 kB after the scan.
+Binary SHA-256:
+`6771234675ae4a9fc8c09301b2293d3aa6673ea59ab229e596015e4dcab48f2a`.
+Metadata and one-minute RSS samples are under
+`/tmp/opencode/btc-spv-9b9a4f7-20261027T011230Z`.
+
+The earlier `8639a7f` probe remains on 22555/22556 until its 24 h signoff at
+**2026-10-27T08:58:17Z**. The `7ec3b2f` probe was retired at 01:12:30Z after
+33h49m: 1,500 samples, min 25,432 kB, max 220,916 kB, average 219,890 kB, last
+219,688 kB, two transient scan errors, and zero panics. It completed its 24 h
+window; artifacts remain at `/tmp/opencode/btc-spv-7ec3b2f-20261025T152041Z`.
+The `2c381fa` probe was stopped at 2026-10-26T08:09:04Z, and the intermediate
+`aeb103a` probe at 08:58:17Z; both artifacts were retained.
 
 `aeb103a` repairs the four findings in
 `docs/2026-10-26_security-vtorrent-report.md`. Real Bitcoin Core testing then
 exposed an additional restart-lineage case, repaired in `8639a7f`: restored
 chain-derived outputs and the cursor must be rescanned after header history is
 reconstructed. Address and swap-recovery metadata survive the reset. The full
-workspace suite passed 1,118 tests, zero failures, and seven ignored tests.
+workspace suite passed 1,118 tests, zero failures, and eight ignored tests.
 
-The current binary SHA-256 is
-`f707ffbb5446de17c1237328a37788bf24309d7842cf920db56a6e15566f8a16`.
-Metadata, logs, and one-minute RSS samples are under
-`/tmp/opencode/btc-spv-8639a7f-20261026T085817Z`. Peer-cache promotion now
-requires validated filter data, rather than only a successful handshake.
-
-A separate local Prometheus at `127.0.0.1:9095` scrapes the repaired probe and
-the historical `7ec3b2f` probe on 22545. The core fleet's Prometheus is
-unchanged. Rule syntax and stale-scan unit tests pass; production notification
-delivery and separate maker/taker VTR active-soak validation remain open.
+A separate local Prometheus at `127.0.0.1:9095` scrapes the exact final-source
+probe on 22545 and the earlier `8639a7f` probe on 22555. The core fleet's
+Prometheus is unchanged. Rule syntax and stale-scan unit tests pass; production
+notification delivery and a fleet-level active soak remain open. The
+component-level 60-cycle active soak passed.
 
 ## 1. Why this is separate
 

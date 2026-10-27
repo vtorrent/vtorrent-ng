@@ -2275,3 +2275,19 @@ under `/tmp/opencode/active-swap-soak-9b9a4f7/`.
 
 This closes the component-level active swap gate for `9b9a4f7`. A fleet-level
 soak on the rebuilt release image remains open.
+
+## 2026-10-27 — exact final-source probe and 7ec3b2f retirement
+
+The overdue `7ec3b2f` probe was retired at 01:12:30Z after 33h49m. It completed
+its 24 h window with 1,500 RSS samples, min 25,432 kB, max 220,916 kB, average
+219,890 kB, and last 219,688 kB. It recorded two transient scan errors and no
+panics. Artifacts remain under
+`/tmp/opencode/btc-spv-7ec3b2f-20261025T152041Z`.
+
+The exact final source `9b9a4f7` started on 22545/22546 at 01:12:30Z. It
+synced 973,320 headers by 01:19:39Z and scanned 100,001 BIP-158 blocks by
+01:26:15Z. Five peer groups connected; auth and scan errors were zero; RSS was
+227,404 kB. The 24 h window ends at **2026-10-28T01:12:30Z**, before the core
+run 7 signoff.
+
+The earlier `8639a7f` probe remains on 22555/22556 until 2026-10-27T08:58:17Z.
