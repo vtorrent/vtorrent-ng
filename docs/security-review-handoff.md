@@ -10,6 +10,7 @@ and deliverables are in `docs/security-review-brief.md`.
 | Pinned commit | `70ea7b9dfb3c65dcfb30cb03ec8c168c5d3cbffd` |
 | Post-review fixes | `1901bb9`, `513efde`, `c465d1b` (BTC SPV peer agreement and failover; five-peer headroom and in-cycle retry); `7ec3b2f` (BTC SPV health metrics and stale-scan alert); `2c381fa` (persistent compact-filter peer cache); `aeb103a` (four fresh-review BTC findings); `8639a7f` (restart lineage) |
 | Brief | Latest `docs/security-review-brief.md` from `main`; it pins the candidate |
+| Request | `docs/security-review-request-2026-10-27.md` lists the exact hashes and verification commands |
 | Toolchain | Rust 1.90.0 (`rust-toolchain.toml`) |
 | Dependency lock | Archive the `Cargo.lock` used for the build; it is gitignored |
 | Fleet image | Core soak: `vtorrent/node:batch-e7691fb`; release build: rebuild from `70ea7b9` |
