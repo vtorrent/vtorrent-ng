@@ -15,11 +15,14 @@ Binary SHA-256:
 Metadata and one-minute RSS samples are under
 `/tmp/opencode/btc-spv-9b9a4f7-20261027T011230Z`.
 
-The earlier `8639a7f` probe remains on 22555/22556 until its 24 h signoff at
-**2026-10-27T08:58:17Z**. The `7ec3b2f` probe was retired at 01:12:30Z after
-33h49m: 1,500 samples, min 25,432 kB, max 220,916 kB, average 219,890 kB, last
-219,688 kB, two transient scan errors, and zero panics. It completed its 24 h
-window; artifacts remain at `/tmp/opencode/btc-spv-7ec3b2f-20261025T152041Z`.
+The `8639a7f` probe completed its 24 h window and was stopped at
+2026-10-27T09:07:44Z after 24h09m. It recorded 1,450 RSS samples: min
+23,988 kB, max 258,664 kB, average 221,121 kB, last 221,440 kB, zero scan-error
+markers, and no panics. Final metrics showed tip 973,376, lag 0, five peer
+groups, and zero auth or scan errors. Artifacts remain at
+`/tmp/opencode/btc-spv-8639a7f-20261026T085817Z`. The `7ec3b2f` probe was
+retired at 01:12:30Z after 33h49m with 1,500 samples, min 25,432 kB, max
+220,916 kB, average 219,890 kB, two transient scan errors, and zero panics.
 The `2c381fa` probe was stopped at 2026-10-26T08:09:04Z, and the intermediate
 `aeb103a` probe at 08:58:17Z; both artifacts were retained.
 
@@ -30,11 +33,11 @@ chain-derived outputs and the cursor must be rescanned after header history is
 reconstructed. Address and swap-recovery metadata survive the reset. The full
 workspace suite passed 1,118 tests, zero failures, and eight ignored tests.
 
-A separate local Prometheus at `127.0.0.1:9095` scrapes the exact final-source
-probe on 22545 and the earlier `8639a7f` probe on 22555. The core fleet's
-Prometheus is unchanged. Rule syntax and stale-scan unit tests pass; production
-notification delivery and a fleet-level active soak remain open. The
-component-level 60-cycle active soak passed.
+A separate local Prometheus at `127.0.0.1:9095` now scrapes only the exact
+final-source probe on 22545. The core fleet's Prometheus is unchanged. Rule
+syntax and stale-scan unit tests pass; production notification delivery and a
+fleet-level active soak remain open. The component-level 60-cycle active soak
+passed.
 
 ## 1. Why this is separate
 

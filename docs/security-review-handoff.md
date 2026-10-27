@@ -95,9 +95,9 @@ TMPDIR=/tmp/opencode cargo test -p vtorrent-daemon --release --features test-uti
 - The original full swap test uses one VTR daemon; the separate taker node now
   builds and confirms the claim in `taker_claims_vtr_on_a_separate_node`. A
   60-cycle component-level active soak passed; a fleet-level soak remains open.
-- BTC SPV has a mainnet-scale header and 100,001-block scan probe. The exact
-  final-source `9b9a4f7` probe is running; its 24 h window ends
-  2026-10-28T01:12:30Z.
+- BTC SPV has a mainnet-scale header and 100,001-block scan probe. The earlier
+  `8639a7f` probe completed its 24 h window with zero scan errors; the exact
+  final-source `9b9a4f7` probe is running and ends 2026-10-28T01:12:30Z.
 - A real-bitcoind reorged-out claim test is not covered; the settlement-state
   downgrade is unit-tested.
 - Cold proof reconstruction is unavailable beyond the retained undo window.

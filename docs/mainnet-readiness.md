@@ -254,8 +254,8 @@ actions, operator approval.
       restart-lineage gap repaired in `8639a7f`. The exact final-source probe
       runs `9b9a4f7`, synced 973,320 headers, and scanned 100,001 blocks at
       227,404 kB RSS with zero errors. Its 24 h window ends
-      2026-10-28T01:12:30Z; the earlier `8639a7f` probe ends
-      2026-10-27T08:58:17Z. A separate taker VTR node now broadcasts and
+      2026-10-28T01:12:30Z; the earlier `8639a7f` probe completed its 24 h
+      window with zero scan errors. A separate taker VTR node now broadcasts and
       confirms the claim in `taker_claims_vtr_on_a_separate_node`; the maker
       recognizes the external claim. A 60-cycle one-hour active soak passed with
       no failures; a fleet-level soak after rebuild remains a launch gate. Set

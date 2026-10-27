@@ -2291,3 +2291,12 @@ synced 973,320 headers by 01:19:39Z and scanned 100,001 BIP-158 blocks by
 run 7 signoff.
 
 The earlier `8639a7f` probe remains on 22555/22556 until 2026-10-27T08:58:17Z.
+
+## 2026-10-27 — 8639a7f 24h signoff
+
+The `8639a7f` probe completed its 24 h window and was stopped at 09:07:44Z
+after 24h09m. It recorded 1,450 RSS samples: min 23,988 kB, max 258,664 kB,
+average 221,121 kB, last 221,440 kB. It had zero scan-error markers and no
+panics. Final metrics showed tip 973,376, lag 0, five peer groups, and zero
+auth or scan errors. The exact final-source `9b9a4f7` probe continues on
+22545/22546; its 24 h window ends at **2026-10-28T01:12:30Z**.
