@@ -35,6 +35,15 @@ fn chain(htlc: &crate::htlc::BtcHtlc, case: &str) -> (Vec<Block>, [u8; 32]) {
         }],
     };
     match case {
+        "wallet_spent" => {
+            funding.output[0].script_pubkey = htlc
+                .recipient
+                .parse::<bitcoin::Address<_>>()
+                .unwrap()
+                .require_network(bitcoin::Network::Regtest)
+                .unwrap()
+                .script_pubkey();
+        }
         "amount" => funding.output[0].value = Amount::from_sat(htlc.amount - 1),
         "vout" => funding.output.insert(
             0,
@@ -68,7 +77,7 @@ fn chain(htlc: &crate::htlc::BtcHtlc, case: &str) -> (Vec<Block>, [u8; 32]) {
         if height == 1 {
             txdata.push(funding.clone());
         }
-        if height == 6 && case == "spent" {
+        if height == 6 && matches!(case, "spent" | "wallet_spent") {
             txdata.push(Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::absolute::LockTime::ZERO,
@@ -144,7 +153,17 @@ async fn stall_response(stream: &mut TcpStream, chatty: bool) {
 
 async fn serve(listener: TcpListener, blocks: Vec<Block>, case: &'static str) {
     let (mut stream, _) = listener.accept().await.unwrap();
-    let script = contract().build_script().unwrap().to_p2wsh();
+    let script = if case.starts_with("wallet_") {
+        contract()
+            .recipient
+            .parse::<bitcoin::Address<_>>()
+            .unwrap()
+            .require_network(bitcoin::Network::Regtest)
+            .unwrap()
+            .script_pubkey()
+    } else {
+        contract().build_script().unwrap().to_p2wsh()
+    };
     let filters: Vec<_> = blocks
         .iter()
         .map(|b| BlockFilter::new_script_filter(b, |_| Ok(script.clone())).unwrap())
@@ -198,12 +217,21 @@ async fn serve(listener: TcpListener, blocks: Vec<Block>, case: &'static str) {
                     stall_response(&mut stream, true).await;
                     return;
                 }
-                assert_eq!(req.start_height, 0);
+                let start = req.start_height as usize;
+                let end = blocks
+                    .iter()
+                    .position(|block| block.block_hash() == req.stop_hash)
+                    .unwrap();
+                let previous = filters[..start]
+                    .iter()
+                    .fold(FilterHeader::all_zeros(), |header, filter| {
+                        filter.filter_header(&header)
+                    });
                 NetworkMessage::CFHeaders(CFHeaders {
                     filter_type: 0,
                     stop_hash: req.stop_hash,
-                    previous_filter_header: FilterHeader::all_zeros(),
-                    filter_hashes: filters
+                    previous_filter_header: previous,
+                    filter_hashes: filters[start..=end]
                         .iter()
                         .map(|f| bitcoin::bip158::FilterHash::hash(&f.content))
                         .collect(),
@@ -218,6 +246,9 @@ async fn serve(listener: TcpListener, blocks: Vec<Block>, case: &'static str) {
                     break;
                 }
                 for height in req.start_height as usize..blocks.len() {
+                    if case == "wallet_partial" && height > 1 {
+                        break;
+                    }
                     if case == "partial_disconnect" && height > 0 {
                         return;
                     }
@@ -256,6 +287,12 @@ async fn serve(listener: TcpListener, blocks: Vec<Block>, case: &'static str) {
                     .clone();
                 if case == "merkle" {
                     block.txdata[1].output[0].value = Amount::ZERO;
+                }
+                if case == "wallet_partial" {
+                    send(&mut stream, NetworkMessage::Block(block))
+                        .await
+                        .unwrap();
+                    return;
                 }
                 NetworkMessage::Block(block)
             }
@@ -379,6 +416,18 @@ async fn restored_chain_cache_is_rebuilt_after_first_header_sync() {
     .unwrap();
     assert_eq!(wallet.balance(), 0);
     assert!(wallet.list_utxos().is_empty());
+    wallet.add_utxo(Utxo {
+        txid: hex::encode([9; 32]),
+        vout: 0,
+        value: 100_000,
+        address: crate::keys::derive_address(&[1; 64], 0, bitcoin::Network::Regtest).unwrap(),
+        height: 1,
+    });
+    assert_eq!(
+        wallet.balance(),
+        0,
+        "manual insertion must not unlock restored outputs"
+    );
     let recipient = crate::keys::derive_address(&[2; 64], 0, bitcoin::Network::Regtest).unwrap();
     assert!(
         wallet.send_to(&recipient, 1_000, 1_000).is_err(),
@@ -401,6 +450,144 @@ async fn restored_chain_cache_is_rebuilt_after_first_header_sync() {
     assert_eq!(wallet.last_scanned_height(), 0);
     assert_eq!(UtxoSet::load(&path).unwrap().next_index(), 1);
     assert_eq!(UtxoSet::load(&path).unwrap().last_scanned_height(), 0);
+    let pending = crate::wallet::BtcWallet::with_persistence(
+        [1; 64],
+        bitcoin::Network::Regtest,
+        path.clone(),
+    )
+    .unwrap();
+    pending.add_utxo(Utxo {
+        txid: hex::encode([12; 32]),
+        vout: 0,
+        value: 100_000,
+        address: crate::keys::derive_address(&[1; 64], 0, bitcoin::Network::Regtest).unwrap(),
+        height: 1,
+    });
+    assert!(
+        pending.list_utxos().is_empty(),
+        "a restart immediately after header sync must not unlock the wallet"
+    );
+    drop(pending);
+    wallet.set_last_scanned_height(2);
+    wallet.add_utxo(Utxo {
+        txid: hex::encode([10; 32]),
+        vout: 0,
+        value: 100_000,
+        address: crate::keys::derive_address(&[1; 64], 0, bitcoin::Network::Regtest).unwrap(),
+        height: 1,
+    });
+    assert!(
+        wallet.list_utxos().is_empty(),
+        "a partial or manually advanced cursor must not unlock the wallet"
+    );
+    drop(peer);
+    server.await.unwrap();
+    drop(wallet);
+    let mut wallet = crate::wallet::BtcWallet::with_persistence(
+        [1; 64],
+        bitcoin::Network::Regtest,
+        path.clone(),
+    )
+    .unwrap();
+    assert!(
+        wallet.list_utxos().is_empty(),
+        "restart during rescan must remain locked"
+    );
+    let (blocks, _) = chain(&contract(), "valid");
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, blocks, "valid"));
+    let mut peer = BtcPeer::connect_with_network(addr, bitcoin::Network::Regtest)
+        .await
+        .unwrap();
+    wallet.sync(&mut peer).await.unwrap();
+    let scanned = wallet
+        .scan_utxos_bip158_multi(std::slice::from_mut(&mut peer), 0)
+        .await
+        .unwrap();
+    assert_eq!(scanned, 7);
+    wallet.set_last_scanned_height(scanned as u32);
+    wallet.add_utxo(Utxo {
+        txid: hex::encode([11; 32]),
+        vout: 0,
+        value: 100_000,
+        address: crate::keys::derive_address(&[1; 64], 0, bitcoin::Network::Regtest).unwrap(),
+        height: 1,
+    });
+    assert_eq!(
+        wallet.balance(),
+        100_000,
+        "a complete authenticated scan unlocks the wallet"
+    );
+    drop(peer);
+    server.await.unwrap();
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn partial_rescan_keeps_later_spent_output_unavailable_across_restart() {
+    let path = std::env::temp_dir().join(format!(
+        "btc-partial-rescan-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let mut stored = UtxoSet::new();
+    stored.set_last_scanned_height(2);
+    stored.save(&path).unwrap();
+    let mut wallet = crate::wallet::BtcWallet::with_persistence(
+        [1; 64],
+        bitcoin::Network::Regtest,
+        path.clone(),
+    )
+    .unwrap();
+    let (blocks, _) = chain(&contract(), "wallet_spent");
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, blocks.clone(), "wallet_partial"));
+    let mut peer = BtcPeer::connect_with_network(addr, bitcoin::Network::Regtest)
+        .await
+        .unwrap();
+    wallet.sync(&mut peer).await.unwrap();
+    let scanned = wallet
+        .scan_utxos_bip158_multi(std::slice::from_mut(&mut peer), 0)
+        .await
+        .unwrap();
+    assert_eq!(scanned, 2);
+    wallet.set_last_scanned_height(scanned as u32);
+    assert_eq!(wallet.balance(), 0);
+    assert!(wallet.list_utxos().is_empty());
+    assert!(wallet.send_to(&contract().recipient, 1_000, 1_000).is_err());
+    drop(peer);
+    server.await.unwrap();
+    drop(wallet);
+    let mut wallet = crate::wallet::BtcWallet::with_persistence(
+        [1; 64],
+        bitcoin::Network::Regtest,
+        path.clone(),
+    )
+    .unwrap();
+    assert_eq!(wallet.balance(), 0);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, blocks, "wallet_valid"));
+    let mut peer = BtcPeer::connect_with_network(addr, bitcoin::Network::Regtest)
+        .await
+        .unwrap();
+    wallet.sync(&mut peer).await.unwrap();
+    let scanned = wallet
+        .scan_utxos_bip158_multi(std::slice::from_mut(&mut peer), 0)
+        .await
+        .unwrap();
+    wallet.set_last_scanned_height(scanned as u32);
+    assert_eq!(
+        wallet.balance(),
+        0,
+        "later block spent the discovered output"
+    );
+    assert!(wallet.list_utxos().is_empty());
     drop(peer);
     server.await.unwrap();
     std::fs::remove_file(path).unwrap();

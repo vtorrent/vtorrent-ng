@@ -67,6 +67,8 @@ pub struct BtcWallet {
     /// Next block height to scan (incremental checkpoint).
     last_scanned_height: u32,
     rescan_on_sync: AtomicBool,
+    reset_on_sync: bool,
+    completed_scan: Mutex<Option<(u32, [u8; 32])>>,
     /// Whether new transactions signal RBF (Replace-By-Fee).
     rbf_enabled: bool,
 }
@@ -97,6 +99,8 @@ impl BtcWallet {
             synced: false,
             last_scanned_height: 0,
             rescan_on_sync: AtomicBool::new(false),
+            reset_on_sync: false,
+            completed_scan: Mutex::new(None),
             rbf_enabled: true,
         }
     }
@@ -121,7 +125,8 @@ impl BtcWallet {
         let utxos = UtxoSet::load(&utxo_path)?;
         let next_index = utxos.next_index();
         let last_scanned_height = utxos.last_scanned_height();
-        let rescan_on_sync = last_scanned_height > 0 || !utxos.list().is_empty();
+        let rescan_on_sync =
+            utxos.rescan_required() || last_scanned_height > 0 || !utxos.list().is_empty();
         Ok(Self {
             seed,
             network,
@@ -133,6 +138,8 @@ impl BtcWallet {
             synced: false,
             last_scanned_height,
             rescan_on_sync: AtomicBool::new(rescan_on_sync),
+            reset_on_sync: rescan_on_sync,
+            completed_scan: Mutex::new(None),
             rbf_enabled: true,
         })
     }
@@ -154,11 +161,14 @@ impl BtcWallet {
     }
 
     fn reset_chain_cache(&mut self) {
+        self.rescan_on_sync.store(true, Ordering::Release);
+        *self.completed_scan.lock() = None;
         self.filter_headers.lock().clear();
         {
             let mut utxos = self.utxos.lock();
             utxos.clear_chain_utxos();
             utxos.set_last_scanned_height(0);
+            utxos.set_rescan_required(true);
         }
         self.last_scanned_height = 0;
         self.synced = false;
@@ -234,7 +244,7 @@ impl BtcWallet {
     /// Restored chain outputs are hidden until the first successful sync has
     /// rebuilt and rescanned the header lineage.
     pub fn balance(&self) -> u64 {
-        if self.rescan_on_sync.load(Ordering::Relaxed) {
+        if self.rescan_on_sync.load(Ordering::Acquire) {
             return 0;
         }
         self.utxos.lock().total()
@@ -245,7 +255,7 @@ impl BtcWallet {
     /// Restored chain outputs are hidden until the first successful sync has
     /// rebuilt and rescanned the header lineage.
     pub fn list_utxos(&self) -> Vec<Utxo> {
-        if self.rescan_on_sync.load(Ordering::Relaxed) {
+        if self.rescan_on_sync.load(Ordering::Acquire) {
             return Vec::new();
         }
         self.utxos.lock().list().to_vec()
@@ -259,7 +269,7 @@ impl BtcWallet {
         order_id: String,
         htlc: &crate::htlc::BtcHtlc,
     ) -> Result<()> {
-        if self.rescan_on_sync.load(Ordering::Relaxed) {
+        if self.rescan_on_sync.load(Ordering::Acquire) {
             return Err(crate::error::BtcError::NotSynced);
         }
         let transaction: bitcoin::Transaction = bitcoin::consensus::deserialize(raw)
@@ -483,7 +493,9 @@ impl BtcWallet {
 
     /// Add a UTXO.
     pub fn add_utxo(&self, utxo: Utxo) {
-        self.rescan_on_sync.store(false, Ordering::Relaxed);
+        if self.rescan_on_sync.load(Ordering::Acquire) {
+            return;
+        }
         self.utxos.lock().add(utxo);
         self.save_utxos();
     }
@@ -515,9 +527,9 @@ impl BtcWallet {
             .map_err(|_| BtcError::Sync("BTC header staging is still shared".into()))?
             .into_inner();
         *self.headers.lock() = staged_headers;
-        if self.rescan_on_sync.load(Ordering::Relaxed) {
+        if self.reset_on_sync {
             self.reset_chain_cache();
-            self.rescan_on_sync.store(false, Ordering::Relaxed);
+            self.reset_on_sync = false;
             tracing::warn!(
                 "BTC headers were rebuilt without persisted lineage; cleared restored chain cache for a full wallet rescan"
             );
@@ -585,7 +597,9 @@ impl BtcWallet {
             self.watch_addresses(self.next_index)?,
             self.network,
         );
+        let tip = self.headers.lock().best_hash();
         let scanned = sync.scan_utxos_bip158(peer, start_height).await?;
+        self.note_completed_scan(start_height, scanned, tip);
         if scanned > 0 {
             self.save_utxos();
         }
@@ -604,7 +618,9 @@ impl BtcWallet {
             self.watch_addresses(self.next_index)?,
             self.network,
         );
+        let tip = self.headers.lock().best_hash();
         let scanned = sync.scan_utxos_bip158_multi(peers, start_height).await?;
+        self.note_completed_scan(start_height, scanned, tip);
         if scanned > 0 {
             self.save_utxos();
         }
@@ -616,11 +632,49 @@ impl BtcWallet {
         self.last_scanned_height
     }
 
+    fn note_completed_scan(&self, start: u32, scanned: usize, tip: Option<[u8; 32]>) {
+        if !self.rescan_on_sync.load(Ordering::Acquire) || self.reset_on_sync || scanned == 0 {
+            return;
+        }
+        let chain = self.headers.lock();
+        let Some(tip) = tip else { return };
+        let end = start.saturating_add(scanned as u32);
+        if chain.best_hash() == Some(tip)
+            && start <= self.last_scanned_height.max(chain.retained_floor())
+            && end > chain.best_height()
+        {
+            *self.completed_scan.lock() = Some((end, tip));
+        }
+    }
+
     /// Set the next block height to scan and persist it with the UTXO set.
     pub fn set_last_scanned_height(&mut self, height: u32) {
         self.last_scanned_height = height;
-        self.utxos.lock().set_last_scanned_height(height);
-        self.save_utxos();
+        let chain = self.headers.lock();
+        let completed = self.completed_scan.lock().take().is_some_and(|(end, tip)| {
+            end == height && chain.best_hash() == Some(tip) && height > chain.best_height()
+        });
+        let mut utxos = self.utxos.lock();
+        utxos.set_last_scanned_height(height);
+        if completed {
+            utxos.set_rescan_required(false);
+        }
+        let persisted = match &self.utxo_path {
+            Some(path) => match utxos.save(path) {
+                Ok(()) => true,
+                Err(error) => {
+                    tracing::warn!("Failed to save UTXO set: {}", error);
+                    if completed {
+                        utxos.set_rescan_required(true);
+                    }
+                    false
+                }
+            },
+            None => true,
+        };
+        if completed && persisted {
+            self.rescan_on_sync.store(false, Ordering::Release);
+        }
     }
 
     /// Whether new transactions signal RBF.
@@ -647,7 +701,7 @@ impl BtcWallet {
         amount_sats: u64,
         fee_sats: u64,
     ) -> Result<(String, Vec<u8>, Vec<Utxo>)> {
-        if self.rescan_on_sync.load(Ordering::Relaxed) {
+        if self.rescan_on_sync.load(Ordering::Acquire) {
             return Err(crate::error::BtcError::NotSynced);
         }
         use crate::keys::derive_wif;
@@ -939,7 +993,7 @@ mod tests {
             address: "bc1qtest".into(),
             height: 1,
         });
-        assert_eq!(reloaded.list_utxos().len(), 1);
+        assert!(reloaded.list_utxos().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

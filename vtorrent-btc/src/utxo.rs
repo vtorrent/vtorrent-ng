@@ -56,6 +56,8 @@ pub struct UtxoSet {
     next_index: u32,
     #[serde(default)]
     last_scanned_height: u32,
+    #[serde(default)]
+    rescan_required: bool,
 }
 
 impl UtxoSet {
@@ -77,6 +79,14 @@ impl UtxoSet {
 
     pub fn set_last_scanned_height(&mut self, height: u32) {
         self.last_scanned_height = height;
+    }
+
+    pub(crate) fn rescan_required(&self) -> bool {
+        self.rescan_required
+    }
+
+    pub(crate) fn set_rescan_required(&mut self, required: bool) {
+        self.rescan_required = required;
     }
 
     pub fn add(&mut self, utxo: Utxo) {
