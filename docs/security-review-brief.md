@@ -195,8 +195,9 @@ challenge the repairs and their remaining assumptions independently.
   `8639a7f` repairs a restart-lineage gap found by real Bitcoin Core testing;
   `c3b3847` hides restored outputs until rescan, `287a505` adds a stuck-scan
   alert, `c3a79fa` keeps outputs locked through partial scans and restarts, and
-  `5f4c788` returns canonical Bitcoin transaction IDs. Include all code deltas
-  in the delivery; the internal review does not
+  `5f4c788` returns canonical Bitcoin transaction IDs. `8ba6331` remediates the
+  whole-project review findings and `9a22bcd` tracks the release lockfile.
+  Include all code deltas in the delivery; the internal review does not
   replace the independent third-party gate. See `docs/btc-spv-soak-plan.md`.
 - The review delivery is a source snapshot, not a release tag. The core soak
   fleet runs `vtorrent/node:batch-e7691fb` (code `e7691fb`, BTC SPV disabled)

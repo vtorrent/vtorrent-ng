@@ -23,7 +23,7 @@ Companion to `docs/mainnet-readiness.md` (checklist) and
 | Max supply | 20,000,000 VTR | `consensus.rs:46` |
 | DNS seeds | seed1/2/3.vtorrent.org + `bootstrap/peers.txt` | `docs/dns-seeds.md` |
 | Review candidate source | `70ea7b9` (`bab2456` plus Playwright E2E setup, Vite dev-origin CORS allowance, Tauri path capability fix, durable cold-stake registry fix, desktop restart/persistence parity fixes, wallet-path/IPC hardening, and staking ownership warnings) | `docs/security-review-brief.md` |
-| Post-review mainnet fixes | `1901bb9`, `513efde`, `c465d1b` (BTC SPV peer agreement and failover; five-peer headroom and in-cycle retry); `7ec3b2f` (BTC SPV health metrics and stale-scan alert); `2c381fa` (persistent compact-filter peer cache); `aeb103a` (four fresh-review BTC findings); `8639a7f` (restart lineage); `c3b3847` (hide restored outputs); `287a505` (stuck-scan alert); `c3a79fa` (partial-scan/restart lock); `5f4c788` (canonical txid) | `docs/btc-spv-soak-plan.md` |
+| Post-review mainnet fixes | `1901bb9`, `513efde`, `c465d1b` (BTC SPV peer agreement and failover; five-peer headroom and in-cycle retry); `7ec3b2f` (BTC SPV health metrics and stale-scan alert); `2c381fa` (persistent compact-filter peer cache); `aeb103a` (four fresh-review BTC findings); `8639a7f` (restart lineage); `c3b3847` (hide restored outputs); `287a505` (stuck-scan alert); `c3a79fa` (partial-scan/restart lock); `5f4c788` (canonical txid); `8ba6331` (whole-project remediation); `9a22bcd` (release lockfile) | `docs/btc-spv-soak-plan.md` |
 
 **Genesis is deterministic** and embeds the legacy snapshot (59,375 addresses,
 11,589,746.63 VTR). `GENESIS_TIMESTAMP` and the genesis message are frozen.
@@ -34,7 +34,7 @@ at launch.
 ## 2. Pre-launch gate (all must be green)
 
 1. **External security review** complete; findings fixed with regression tests
-   (`docs/security-review-brief.md`, pinned to `70ea7b9`; include the `1901bb9`, `513efde`, `c465d1b`, `7ec3b2f`, `2c381fa`, `aeb103a`, `8639a7f`, `c3b3847`, `287a505`, `c3a79fa`, and `5f4c788` mainnet fix deltas). The fresh internal review in `docs/2026-10-26_security-vtorrent-report.md` does not satisfy the independent third-party gate.
+   (`docs/security-review-brief.md`, pinned to `70ea7b9`; include the `1901bb9`, `513efde`, `c465d1b`, `7ec3b2f`, `2c381fa`, `aeb103a`, `8639a7f`, `c3b3847`, `287a505`, `c3a79fa`, `5f4c788`, `8ba6331`, and `9a22bcd` mainnet fix deltas). The fresh internal review in `docs/2026-10-26_security-vtorrent-report.md` does not satisfy the independent third-party gate.
 2. **Review candidate selected** (§3): the current build includes the
    consensus batch; launch on the candidate commit and image after review, not
    beta.3.

@@ -2,27 +2,28 @@
 
 ## Scope and status
 
-- Reviewed revision: `6bc25782770bdc8488f62c87caf40cc17148984e`; application code is at `5f4c788d06995b5c77202b531c52055d7cf79c6c`.
+- Reviewed revision: `6bc25782770bdc8488f62c87caf40cc17148984e`; pre-fix application code was `5f4c788d06995b5c77202b531c52055d7cf79c6c`.
+- Remediated revision: `9a22bcd8ccd9bbdb4caf9bec794640fc3c0111aa`.
 - Authorized scope: all workspace crates, the frontend, CI/build, deployment, and operations. This report is **not complete** and does not certify unaudited areas.
 - Reviewer: an internal coding model that helped implement prior changes. This is not independent human security signoff.
 - No production wallets or services were modified during this review. The torrent proof uses a temporary directory and Unix symlink.
 
 ## Remediation status
 
-All six findings from this pass are remediated locally. The original finding text below remains as the pre-fix record.
+All six findings from this pass are remediated and pushed in `8ba6331` and `9a22bcd`. The original finding text below remains as the pre-fix record.
 
 | Finding | Fix | Verification |
 |---|---|---|
 | F01 | Removed secret-bearing CLI flags; added 0600 `--rpc-api-key-file` and `--btc-seed-file`; environment variables remain supported | CLI rejection and file-mode tests; smoke/e2e/compose updated |
 | F02 | Added symlink-aware directory creation, canonical containment checks, and `O_NOFOLLOW` on Unix | Proof now confirms the symlinked path is rejected and no file is overwritten |
-| F03 | Added tracked `release/Cargo.lock`; Docker builds with `--locked`; CI audits and archives that lockfile | Locked daemon build and Docker image build passed |
+| F03 | Added tracked `release/Cargo.lock`; Docker builds with `--locked`; CI audits and archives that lockfile | Locked daemon build and exact-source Docker image `sha256:196a7c82832ecbfba2560f935ea3c431b8e12b77d3f5d7d2b2a5e9046051517c` passed |
 | F04 | Tracker response is consumed incrementally and rejected at the cap | 64 MiB local stream rejected; client did not read the full body |
 | F05 | BTC send now requires passphrase and optional TOTP reauthorization | No-passphrase request rejected; authenticated send succeeded |
 | F06 | Added justified `cargo-machete` metadata for the proof crate | `cargo machete` exits 0 |
 
 Residual: F02's checks close the demonstrated pre-existing-symlink path and protect the final component with `O_NOFOLLOW`, but a local attacker able to race intermediate directory replacement is outside this proof. F01 still accepts secrets through environment variables, which are less exposed than argv but visible to the process owner and container metadata; production should use the 0600 file options.
 
-**Release remains blocked** on the incomplete coverage below, the independent human review, and a soak of the fixed source. The previous "do not launch" verdict applied to the pre-fix revision; it is not a finding against the remediated build.
+**Release remains blocked** on the incomplete coverage below, the independent human review, and a soak of `9a22bcd`. The previous "do not launch" verdict applied to the pre-fix revision; it is not a finding against the remediated build.
 
 ## Original findings and evidence
 
@@ -87,12 +88,15 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 ## Checks performed
 
 - Frontend: `pnpm test` passed 42 tests; `pnpm lint` and `pnpm build` passed. The build reported an existing mixed dynamic/static import warning.
-- `cargo test --workspace --all-features` passed 48 groups with 1,119 tests passed, zero failed, and eight ignored. Ignored tests and external-service workflows are not evidence of success.
+- `cargo test --workspace --all-features` passed 48 groups with 1,121 tests passed, zero failed, and eight ignored. Ignored tests and external-service workflows are not evidence of success.
 - Selected all-feature library suites passed: 406 tests across node, wallet, script, migrate, and snapshot; 319 across core, P2P, overlay, SPV, store, onion, and torrent; and 280 across BTC, RPC, Tauri, and wallet-service, with one ignored test.
 - `cargo fmt --all -- --check` passed. `python3 scripts/verify-genesis.py` independently reproduced the expected snapshot totals and genesis hash.
 - `cargo audit --json --no-fetch` on the local ignored lockfile reported zero vulnerability entries, seven unmaintained warnings, and two unsoundness warnings (`glib 0.18.5`, `rand 0.7.3`). Advisory database freshness and reachability were not established.
 - Semgrep was unavailable. No remote scanner was installed or run.
-- `promtool test rules deploy/seeds-monitoring/vtorrent-alerts.test.yml` passed using the existing local Prometheus image with networking disabled. Production notification delivery was not tested. `cargo machete` failed as described in F06.
+- `promtool test rules deploy/seeds-monitoring/vtorrent-alerts.test.yml` passed using the existing local Prometheus image with networking disabled. Production notification delivery was not tested.
+- `cargo machete` exits 0 after the proof-crate metadata fix.
+- Both local proofs pass: the tracker stops after roughly 6.5 MiB of a 64 MiB stream, the symlink write is rejected, and the no-passphrase BTC send is rejected while the authenticated send succeeds.
+- The exact-source Docker image was built from `9a22bcd` with `--locked`; image ID `sha256:196a7c82832ecbfba2560f935ea3c431b8e12b77d3f5d7d2b2a5e9046051517c`.
 
 ## Coverage and remaining work
 

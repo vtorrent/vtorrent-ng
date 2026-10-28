@@ -7,7 +7,7 @@ the independence gate.
 ## Review target
 
 Review the candidate `70ea7b9dfb3c65dcfb30cb03ec8c168c5d3cbffd` plus the code
-deltas through `5f4c788d06995b5c77202b531c52055d7cf79c6c`. The final code
+deltas through `9a22bcd8ccd9bbdb4caf9bec794640fc3c0111aa`. The final code
 commit is the review head.
 
 | Commit | Full hash | Purpose |
@@ -27,6 +27,8 @@ commit is the review head.
 | `287a505` | `287a5054f7884b1c5671cd6c01f4119330f1e441` | Stuck-scan alert |
 | `c3a79fa` | `c3a79fa34d8dc1b25a1f7f3f1cad8bced40816c2` | Keep outputs locked through partial scans and restarts |
 | `5f4c788` | `5f4c788d06995b5c77202b531c52055d7cf79c6c` | Return canonical Bitcoin transaction IDs |
+| `8ba6331` | `8ba6331fe7465acfc7d586b50e4160bc58dc58a8` | Whole-project review remediation |
+| `9a22bcd` | `9a22bcd8ccd9bbdb4caf9bec794640fc3c0111aa` | Track release dependency lockfile |
 
 Docs-only commits in the delta are evidence, not implementation changes.
 
@@ -35,14 +37,16 @@ Docs-only commits in the delta are evidence, not implementation changes.
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout 5f4c788d06995b5c77202b531c52055d7cf79c6c
+git checkout 9a22bcd8ccd9bbdb4caf9bec794640fc3c0111aa
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
+cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
+cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-proof/Cargo.toml --target-dir target
 cargo test --workspace --all-features
 ```
 
-The last full workspace run on `5f4c788` passed 48 groups, 1,119 tests, zero
-failures, and eight ignored tests.
+The last full workspace run on the remediated source passed 48 groups, 1,121
+tests, zero failures, and eight ignored tests.
 
 ## Scope emphasis
 
@@ -69,7 +73,7 @@ failures, and eight ignored tests.
 
 ## Status
 
-- The exact final-source `5f4c788` probe is running; its 24 h window ends
-  2026-10-29T00:47:06Z.
+- The exact final-source probe must be restarted on `9a22bcd`; the prior
+  `5f4c788` probe does not include the whole-project remediation.
 - Production alert delivery and the fleet-level active soak remain open.
 - Please confirm scope, timeline, and access needs before starting.

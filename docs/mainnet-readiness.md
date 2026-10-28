@@ -43,13 +43,14 @@
 - [ ] **External security review** — **brief finalized, not yet commissioned**:
       `docs/security-review-brief.md` (scope, deliverables, 2-phase engagement).
       The proposed immutable delivery is
-      `70ea7b9dfb3c65dcfb30cb03ec8c168c5d3cbffd` (`bab2456` plus the Playwright
+      `9a22bcd8ccd9bbdb4caf9bec794640fc3c0111aa` (`bab2456` plus the Playwright
       E2E setup, the live cold-stake browser test, the Vite dev-origin CORS
       allowance, the Tauri path capability fix, the durable cold-stake registry
       persistence fix, the desktop restart/persistence parity fixes, the
       wallet-path confinement, import overwrite guard, version bump, IPC error
-      surfacing, and staking ownership warnings, and the live desktop journey,
-      restart, and BTC discovery evidence), which includes the governance,
+      surfacing, and staking ownership warnings, the live desktop journey,
+      restart, and BTC discovery evidence, and the whole-project review
+      remediation in `8ba6331`/`9a22bcd`), which includes the governance,
       reorg, and stake-proof service repairs, the real-bitcoind SPV and swap
       tests, and the independent genesis verifier. The review covers wallet
       encryption (Argon2id + ChaCha20-Poly1305), consensus and governance,
