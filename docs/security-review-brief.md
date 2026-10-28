@@ -193,8 +193,10 @@ challenge the repairs and their remaining assumptions independently.
   published with local reproductions in
   `docs/2026-10-26_security-vtorrent-report.md`. `aeb103a` repairs them and
   `8639a7f` repairs a restart-lineage gap found by real Bitcoin Core testing;
-  `c3b3847` hides restored outputs until rescan and `287a505` adds a stuck-scan
-  alert. Include all code deltas in the delivery; the internal review does not
+  `c3b3847` hides restored outputs until rescan, `287a505` adds a stuck-scan
+  alert, `c3a79fa` keeps outputs locked through partial scans and restarts, and
+  `5f4c788` returns canonical Bitcoin transaction IDs. Include all code deltas
+  in the delivery; the internal review does not
   replace the independent third-party gate. See `docs/btc-spv-soak-plan.md`.
 - The review delivery is a source snapshot, not a release tag. The core soak
   fleet runs `vtorrent/node:batch-e7691fb` (code `e7691fb`, BTC SPV disabled)

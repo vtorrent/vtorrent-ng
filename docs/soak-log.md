@@ -2319,3 +2319,20 @@ errors were zero; RSS was 195,328 kB. Its 24 h window ends at
 Full workspace: 48 groups, 1,118 passed, zero failed, eight ignored. BTC
 suites passed 90+29, RPC passed 160, the separate-node taker claim passed, and
 promtool rule tests passed.
+
+## 2026-10-28 — canonical txid and final-source 5f4c788 probe
+
+The `c3a79fa` probe was stopped at 01:06:57Z after one hour, superseded by the
+canonical-txid fix. It recorded 61 RSS samples, min 29,424 kB, max 238,360 kB,
+last 238,248 kB, with zero scan errors. Artifacts remain under
+`/tmp/opencode/btc-spv-c3a79fa-20261028T000648Z`.
+
+`5f4c788` fixes the wallet to return the canonical Bitcoin txid rather than the
+witness-transaction hash. The exact final-source probe started at 00:47:06Z on
+22575/22576, synced 973,477 headers by 00:56:08Z, and scanned 100,001 BIP-158
+blocks by 01:03:12Z. Five peer groups connected; auth and scan errors were zero;
+RSS was 187,129 kB. Its 24 h window ends at **2026-10-29T00:47:06Z**.
+
+Full workspace: 48 groups, 1,119 passed, zero failed, eight ignored. The real
+Bitcoin Core restart/send check confirmed hidden restored outputs, a restored
+balance after rescan, and a Core-accepted send whose txid matched the wallet.

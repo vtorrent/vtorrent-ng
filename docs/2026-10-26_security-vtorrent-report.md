@@ -48,10 +48,15 @@ A second internal pass found one high, one medium, and one low issue:
 - **Low:** the review request's verification commands ran from the parent
   directory. The request now changes into the clone first.
 
-Verification: full workspace 48 groups, 1,118 passed, zero failed, eight
+Verification: full workspace 48 groups, 1,119 passed, zero failed, eight
 ignored; BTC suites 90+29 passed; RPC 160 passed; separate-node taker claim
-passed; promtool rules passed. The exact final source is `287a505`; its probe
-ends 2026-10-28T10:23:13Z.
+passed; promtool rules passed. The exact final source is `5f4c788`; its probe
+ends 2026-10-29T00:47:06Z.
+
+A restart/send test then exposed a separate correctness issue: the wallet
+returned the witness-transaction hash instead of the canonical Bitcoin txid.
+`5f4c788` returns `compute_txid()`, rejects malformed raw transactions, and was
+verified against Bitcoin Core in the regtest restart/send test.
 
 ## Original review verdict
 

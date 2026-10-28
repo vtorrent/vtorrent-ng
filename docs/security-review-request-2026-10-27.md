@@ -7,7 +7,7 @@ the independence gate.
 ## Review target
 
 Review the candidate `70ea7b9dfb3c65dcfb30cb03ec8c168c5d3cbffd` plus the code
-deltas through `287a5054f7884b1c5671cd6c01f4119330f1e441`. The final code
+deltas through `5f4c788d06995b5c77202b531c52055d7cf79c6c`. The final code
 commit is the review head.
 
 | Commit | Full hash | Purpose |
@@ -25,6 +25,8 @@ commit is the review head.
 | `9b9a4f7` | `9b9a4f73a00c2f816669c1ecb18c270c7df9b9d0` | External taker claim recognition |
 | `c3b3847` | `c3b3847356b46befb3cab96a5ce280831c727ce6` | Hide restored outputs until rescan |
 | `287a505` | `287a5054f7884b1c5671cd6c01f4119330f1e441` | Stuck-scan alert |
+| `c3a79fa` | `c3a79fa34d8dc1b25a1f7f3f1cad8bced40816c2` | Keep outputs locked through partial scans and restarts |
+| `5f4c788` | `5f4c788d06995b5c77202b531c52055d7cf79c6c` | Return canonical Bitcoin transaction IDs |
 
 Docs-only commits in the delta are evidence, not implementation changes.
 
@@ -33,13 +35,13 @@ Docs-only commits in the delta are evidence, not implementation changes.
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout 287a5054f7884b1c5671cd6c01f4119330f1e441
+git checkout 5f4c788d06995b5c77202b531c52055d7cf79c6c
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo test --workspace --all-features
 ```
 
-The last full workspace run on `287a505` passed 48 groups, 1,118 tests, zero
+The last full workspace run on `5f4c788` passed 48 groups, 1,119 tests, zero
 failures, and eight ignored tests.
 
 ## Scope emphasis
@@ -67,7 +69,7 @@ failures, and eight ignored tests.
 
 ## Status
 
-- The exact final-source `287a505` probe is running; its 24 h window ends
-  2026-10-28T10:23:13Z.
+- The exact final-source `5f4c788` probe is running; its 24 h window ends
+  2026-10-29T00:47:06Z.
 - Production alert delivery and the fleet-level active soak remain open.
 - Please confirm scope, timeline, and access needs before starting.

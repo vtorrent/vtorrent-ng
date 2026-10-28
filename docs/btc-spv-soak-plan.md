@@ -5,20 +5,21 @@ Scope: `vtorrent-btc` SPV path as enabled by `--btc-regtest/--btc-peer/--btc-see
 
 ## Current repaired-build windows
 
-The exact final-source probe runs `287a5054f7884b1c5671cd6c01f4119330f1e441`
-on RPC 22555 and P2P 22556. It started **2026-10-27T10:23:13Z**; the earliest
-24 h signoff is **2026-10-28T10:23:13Z**. It synced 973,382 headers by
-10:30:29Z and scanned 100,001 BIP-158 blocks by 10:38:59Z. Five peer groups
-connected; auth and scan errors are zero. RSS was 195,328 kB after the scan.
+The exact final-source probe runs `5f4c788d06995b5c77202b531c52055d7cf79c6c`
+on RPC 22575 and P2P 22576. It started **2026-10-28T00:47:06Z**; the earliest
+24 h signoff is **2026-10-29T00:47:06Z**. It synced 973,477 headers by
+00:56:08Z and scanned 100,001 BIP-158 blocks by 01:03:12Z. Five peer groups
+connected; auth and scan errors are zero. RSS was 187,129 kB after the scan.
 Binary SHA-256:
-`95fd110e887f3470c02f15f306bdb0621d2e5a72428679ab872f8f12696dfa47`.
+`abc82251a3a23d5d81398a6a5f9cbe8ca864d0dcbf338495b262dd905910228e`.
 Metadata and one-minute RSS samples are under
-`/tmp/opencode/btc-spv-287a505-20261027T102313Z`.
+`/tmp/opencode/btc-spv-5f4c788-20261028T004706Z`.
 
-The `9b9a4f7` probe was stopped at 10:23:13Z after 9h10m, before its 24 h
-window completed. It recorded 551 RSS samples with a 227,416 kB peak and
-226,944 kB last sample. Its artifacts remain at
-`/tmp/opencode/btc-spv-9b9a4f7-20261027T011230Z`.
+The `c3a79fa` probe was stopped at 01:06:57Z after one hour, superseded by the
+canonical-txid fix. It recorded 61 samples: min 29,424 kB, max 238,360 kB,
+last 238,248 kB, with zero scan errors. Artifacts remain at
+`/tmp/opencode/btc-spv-c3a79fa-20261028T000648Z`. The `287a505` probe remains
+on 22555/22556 until 2026-10-28T10:23:13Z.
 
 The `8639a7f` probe completed its 24 h window and was stopped at
 2026-10-27T09:07:44Z after 24h09m. It recorded 1,450 RSS samples: min
@@ -36,15 +37,16 @@ The `2c381fa` probe was stopped at 2026-10-26T08:09:04Z, and the intermediate
 exposed an additional restart-lineage case, repaired in `8639a7f`: restored
 chain-derived outputs and the cursor must be rescanned after header history is
 reconstructed. `c3b3847` hides those restored outputs from balance, UTXO
-listing, sends, and swap reservation until the rescan clears the pending flag.
-`287a505` adds the `BtcSpvScanStuck` alert. The full workspace suite passed
-1,118 tests, zero failures, and eight ignored tests.
+listing, sends, and swap reservation until the rescan clears the pending flag;
+`c3a79fa` keeps them locked through partial scans and restarts. `5f4c788`
+returns the canonical Bitcoin txid instead of the witness hash. The full
+workspace suite passed 1,119 tests, zero failures, and eight ignored tests.
 
-A separate local Prometheus at `127.0.0.1:9095` scrapes only the exact
-final-source probe on 22555. The core fleet's Prometheus is unchanged. Rule
-syntax and stale/stuck-scan unit tests pass; production notification delivery
-and a fleet-level active soak remain open. The component-level 60-cycle active
-soak passed.
+A separate local Prometheus at `127.0.0.1:9095` scrapes the exact final-source
+probe on 22575 and the earlier `287a505` probe on 22555. The core fleet's
+Prometheus is unchanged. Rule syntax and stale/stuck-scan unit tests pass;
+production notification delivery and a fleet-level active soak remain open.
+The component-level 60-cycle active soak passed.
 
 ## 1. Why this is separate
 
