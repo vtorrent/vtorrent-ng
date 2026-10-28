@@ -21,5 +21,8 @@ uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
 urlencoding = "2"
 
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

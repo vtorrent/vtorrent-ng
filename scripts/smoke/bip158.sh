@@ -24,8 +24,12 @@ docker exec "$BTC_CONTAINER" bitcoin-cli -regtest -rpcuser=user -rpcpassword=pas
 docker exec "$BTC_CONTAINER" bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
     -rpcwallet=test generatetoaddress 1 "$DAEMON_BTC_ADDR" > /dev/null 2>&1
 
+BTC_SEED_FILE="$DATA/btc-seed.hex"
+mkdir -p "$DATA"
+printf '%s\n' "$BTC_SEED" > "$BTC_SEED_FILE"
+chmod 600 "$BTC_SEED_FILE"
 start_daemon "$DATA" 127.0.0.1:22525 127.0.0.1:22526 \
-    --btc-regtest --btc-seed "$BTC_SEED" --btc-peer "127.0.0.1:$BTC_PORT"
+    --btc-regtest --btc-seed-file "$BTC_SEED_FILE" --btc-peer "127.0.0.1:$BTC_PORT"
 
 # Wait for header sync + BIP-158 scan to complete.
 for _ in $(seq 1 60); do

@@ -119,7 +119,7 @@ node resumes from genesis unexpectedly.
 
 ## Procedure: RPC Key Rotation
 
-The API key is set at launch via `--rpc-api-key` (see the unit's ExecStart).
+The API key is supplied at launch via `--rpc-api-key-file` or `VTORRENT_RPC_API_KEY` (see the unit's ExecStart). Never put it in argv.
 RPC binds to localhost only, so rotation is low-risk:
 
 1. Generate: `openssl rand -base64 32`.

@@ -128,7 +128,8 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "heap-profile")]
     init_heap_profiler();
 
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    config::load_secret_files(&mut cli)?;
 
     // Initialise structured logging
     tracing_subscriber::fmt()
@@ -444,7 +445,7 @@ async fn main() -> anyhow::Result<()> {
             *rpc_state.btc_peer.write().await = Some(peer.clone());
         }
         tracing::info!(
-            "Bitcoin SPV wallet initialized from --btc-seed (network: {:?})",
+            "Bitcoin SPV wallet initialized from configured seed (network: {:?})",
             network
         );
     }

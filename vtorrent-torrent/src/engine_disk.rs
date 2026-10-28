@@ -65,33 +65,26 @@ pub async fn write_piece_to_disk(
 ) -> bool {
     let layout = FileLayout::new(&metainfo.files, metainfo.piece_length);
     // The torrent name is also untrusted and must not escape the download dir.
-    let Some(base) = sanitize_path(download_dir, std::slice::from_ref(&metainfo.name)) else {
+    let Some(base) = safe_directory(download_dir, std::slice::from_ref(&metainfo.name)).await
+    else {
         return false;
     };
     let mut all_ok = true;
     for (file_index, file_offset, bytes) in layout.piece_segments(piece_index, piece_data) {
         let file = &metainfo.files[file_index];
-        // Build the output path, rejecting any component that would escape the
-        // download directory (absolute paths, `..`, or empty components).
-        let Some(path) = sanitize_path(&base, &file.path) else {
+        // Resolve and create the parent with no symlink components; the final
+        // open also uses O_NOFOLLOW on Unix.
+        let Some(path) = safe_file_path(&base, &file.path).await else {
             all_ok = false;
             continue;
         };
-        if let Some(parent) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                tracing::error!("Piece {}: create_dir_all failed: {}", piece_index, e);
-                all_ok = false;
-                continue;
-            }
-        }
         use tokio::io::AsyncSeekExt;
         let write_result: std::result::Result<(), std::io::Error> = async {
-            let mut f = tokio::fs::OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .write(true)
-                .open(&path)
-                .await?;
+            let mut options = tokio::fs::OpenOptions::new();
+            options.create(true).truncate(false).write(true);
+            #[cfg(unix)]
+            options.custom_flags(libc::O_NOFOLLOW);
+            let mut f = options.open(&path).await?;
             f.seek(std::io::SeekFrom::Start(file_offset)).await?;
             f.write_all(&bytes).await?;
             Ok(())
@@ -120,15 +113,19 @@ pub async fn read_piece_from_disk(
     piece_index: u32,
 ) -> Option<Vec<u8>> {
     let layout = FileLayout::new(&metainfo.files, metainfo.piece_length);
-    let base = sanitize_path(download_dir, std::slice::from_ref(&metainfo.name))?;
+    let base = safe_directory(download_dir, std::slice::from_ref(&metainfo.name)).await?;
     let piece_len = piece_length(metainfo, piece_index);
     let mut out = Vec::with_capacity(piece_len as usize);
     for (file_index, file_offset, byte_count) in layout.piece_segment_ranges(piece_index, piece_len)
     {
         let file = &metainfo.files[file_index];
-        let path = sanitize_path(&base, &file.path)?;
+        let path = safe_file_path(&base, &file.path).await?;
         use tokio::io::{AsyncReadExt, AsyncSeekExt};
-        let mut f = tokio::fs::File::open(&path).await.ok()?;
+        let mut options = tokio::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        options.custom_flags(libc::O_NOFOLLOW);
+        let mut f = options.open(&path).await.ok()?;
         let _ = f.seek(std::io::SeekFrom::Start(file_offset)).await;
         let mut buf = vec![0u8; byte_count as usize];
         f.read_exact(&mut buf).await.ok()?;
@@ -137,19 +134,62 @@ pub async fn read_piece_from_disk(
     Some(out)
 }
 
+async fn safe_directory(
+    base: &std::path::Path,
+    components: &[String],
+) -> Option<std::path::PathBuf> {
+    let base = tokio::fs::canonicalize(base).await.ok()?;
+    let mut current = base.clone();
+    for component in components {
+        if !valid_component(component) {
+            return None;
+        }
+        current.push(component);
+        match tokio::fs::symlink_metadata(&current).await {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => return None,
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                tokio::fs::create_dir(&current).await.ok()?;
+            }
+            Err(_) => return None,
+        }
+    }
+    let current = tokio::fs::canonicalize(&current).await.ok()?;
+    current.starts_with(&base).then_some(current)
+}
+
+async fn safe_file_path(
+    base: &std::path::Path,
+    components: &[String],
+) -> Option<std::path::PathBuf> {
+    let (name, parents) = components.split_last()?;
+    if !valid_component(name) {
+        return None;
+    }
+    let parent = safe_directory(base, parents).await?;
+    let path = parent.join(name);
+    if let Ok(metadata) = tokio::fs::symlink_metadata(&path).await {
+        if metadata.file_type().is_symlink() || metadata.is_dir() {
+            return None;
+        }
+    }
+    Some(path)
+}
+
+fn valid_component(component: &str) -> bool {
+    !component.is_empty()
+        && component != "."
+        && component != ".."
+        && !component.contains('/')
+        && !component.contains('\\')
+        && !component.contains(':')
+        && !std::path::Path::new(component).is_absolute()
+}
+
 pub fn sanitize_path(base: &std::path::Path, components: &[String]) -> Option<std::path::PathBuf> {
     let mut path = base.to_path_buf();
     for comp in components {
-        if comp.is_empty()
-            || comp == "."
-            || comp == ".."
-            || comp.contains('/')
-            || comp.contains('\\')
-            // Windows: a colon makes the component an NTFS Alternate Data
-            // Stream ("file.txt:ads") or drive-relative path ("C:x").
-            || comp.contains(':')
-            || std::path::Path::new(comp).is_absolute()
-        {
+        if !valid_component(comp) {
             return None;
         }
         path.push(comp);

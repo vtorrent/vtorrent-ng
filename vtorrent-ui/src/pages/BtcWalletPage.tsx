@@ -8,10 +8,11 @@ export default function BtcWalletPage() {
   const { send, loading: sending, error: sendError } = useSendBtc()
   const [toAddress, setToAddress] = useState('')
   const [amount, setAmount] = useState('')
+  const [passphrase, setPassphrase] = useState('')
   const [sent, setSent] = useState<string | null>(null)
 
   const handleSend = async () => {
-    const txid = await send(toAddress, Number(amount))
+    const txid = await send(toAddress, Number(amount), passphrase)
     if (txid) setSent(txid)
   }
 
@@ -69,6 +70,14 @@ export default function BtcWalletPage() {
           value={amount}
           onChange={(e) => setAmount(e.target.value)}
           placeholder="amount in satoshis"
+          className="w-full bg-navy-900 p-2 rounded text-sm"
+        />
+        <input
+          type="password"
+          value={passphrase}
+          onChange={(e) => setPassphrase(e.target.value)}
+          placeholder="wallet passphrase"
+          autoComplete="current-password"
           className="w-full bg-navy-900 p-2 rounded text-sm"
         />
         <button

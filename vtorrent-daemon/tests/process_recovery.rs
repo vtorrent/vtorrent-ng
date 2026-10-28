@@ -138,10 +138,18 @@ impl Daemon {
             command.env("VTR_TEST_REORG_PAUSE_AFTER", boundary.to_string());
         }
         if let Some((btc_seed, btc_peer)) = btc {
+            let seed_path = directory.join("btc-seed.hex");
+            std::fs::write(&seed_path, format!("{btc_seed}\n")).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&seed_path, std::fs::Permissions::from_mode(0o600))
+                    .unwrap();
+            }
             command.args([
                 "--btc-regtest",
-                "--btc-seed",
-                btc_seed,
+                "--btc-seed-file",
+                seed_path.to_str().unwrap(),
                 "--btc-peer",
                 btc_peer,
             ]);

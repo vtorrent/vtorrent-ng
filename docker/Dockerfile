@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY Cargo.toml Cargo.lock* ./
+COPY Cargo.toml release/Cargo.lock ./
 # All workspace members must be present for `cargo build` to resolve the
 # workspace — even crates the daemon does not depend on (e.g. vtorrent-tauri).
 COPY vtorrent-core ./vtorrent-core
@@ -34,7 +34,7 @@ COPY vtorrent-btc ./vtorrent-btc
 COPY vtorrent-tauri ./vtorrent-tauri
 COPY vtorrent-wallet-service ./vtorrent-wallet-service
 
-RUN cargo build --release -p vtorrent-daemon
+RUN cargo build --release --locked -p vtorrent-daemon
 
 FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
 RUN apt-get update && apt-get install -y --no-install-recommends \

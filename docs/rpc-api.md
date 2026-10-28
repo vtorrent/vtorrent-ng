@@ -4,7 +4,7 @@ Base URL: `http://127.0.0.1:22525`
 
 All request/response bodies are JSON. Authentication via `X-Api-Key` header.
 
-**Auth scope.** When `--rpc-api-key` is set, every wallet, staking, DEX,
+**Auth scope.** When `--rpc-api-key-file` or `VTORRENT_RPC_API_KEY` is set, every wallet, staking, DEX,
 torrent, swap, claim, broadcast and SPV endpoint requires the key — including
 the read-only wallet/staking/DEX endpoints, which expose the hot wallet
 address, balances, UTXO set and order book. Only node-info, blockchain

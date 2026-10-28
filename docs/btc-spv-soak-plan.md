@@ -1,7 +1,7 @@
 # Bitcoin SPV Soak Plan
 
 Status: LAUNCH GATE (swaps enabled at mainnet launch)
-Scope: `vtorrent-btc` SPV path as enabled by `--btc-regtest/--btc-peer/--btc-seed`.
+Scope: `vtorrent-btc` SPV path as enabled by `--btc-regtest/--btc-peer/--btc-seed-file` or `VTORRENT_BTC_SEED`.
 
 ## Current repaired-build windows
 
@@ -84,7 +84,7 @@ retained store within 100,000 plus the 1,024-header slack.
 ## 4. Plan
 
 ### Phase A — passive soak (restore, observe)
-1. Restore the `--btc-regtest/--btc-peer/--btc-seed` args on node1 (the compose
+1. Restore the `--btc-regtest/--btc-peer/--btc-seed-file` args on node1 (the compose
    comment marks where; pre-change copy is
    `.ops-backups/` + `/tmp/opencode/compose.pre-nobtc.yml`).
 2. Run the 5-minute RSS sampler (`/tmp/opencode/rss-watch*.sh`) for ≥24 h.
@@ -273,7 +273,7 @@ Without a birthday, funds older than retained history are not discovered.
 
 ## 8. References
 
-- `vtorrent-daemon/src/config.rs:128,135,139` `--btc-seed/--btc-regtest/--btc-peer`.
+- `vtorrent-daemon/src/config.rs:128,135,139` `--btc-seed-file/--btc-regtest/--btc-peer`.
 - `vtorrent-daemon/src/main.rs:331-370` SPV init; `:824+` sync loop.
 - `vtorrent-btc/src/headers.rs` header store; `htlc.rs`; `wallet.rs`
   (`with_persistence` → `btc_utxos.json`).

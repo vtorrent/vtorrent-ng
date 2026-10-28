@@ -1,0 +1,16 @@
+[package]
+name = "whole-project-review-rpc-proof"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+vtorrent-rpc = { path = "../../../vtorrent-rpc" }
+vtorrent-btc = { path = "../../../vtorrent-btc" }
+bitcoin = "0.32"
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+tower = { version = "0.4", features = ["util"] }
+serde_json = "1"

@@ -31,6 +31,7 @@ services:
     user: "0:0"
     container_name: vtr-node1
     environment:
+      VTORRENT_RPC_API_KEY: "testnet-soak-key"
       # Cap glibc malloc arenas. The staker otherwise grows to ~4-5
       # arenas (~154 MiB RSS, over the then-150 MiB budget) because the
       # multi-threaded staking path allocates from several threads.
@@ -51,8 +52,6 @@ services:
       - "0.0.0.0:22526"
       - --rpc-addr
       - "0.0.0.0:22525"
-      - --rpc-api-key
-      - "testnet-soak-key"
       - --data-dir
       - /data/node1
       - --regtest
@@ -60,7 +59,7 @@ services:
       - --block-body-cache
       - "4096"
       - --isolated
-      # NOTE: BTC SPV args (--btc-regtest/--btc-peer/--btc-seed) are
+      # NOTE: BTC SPV args (--btc-regtest/--btc-peer/--btc-seed-file) are
       # intentionally omitted for this soak window to isolate core-node memory;
       # BTC SPV held ~40 MiB. Restore before swap testing and soak it with its
       # own budget. See docs/soak-log.md 2026-09-25.
@@ -111,6 +110,7 @@ services:
     user: "0:0"
     container_name: vtr-node2
     environment:
+      VTORRENT_RPC_API_KEY: "testnet-soak-key"
       # Cap glibc malloc arenas. The staker otherwise grows to ~4-5
       # arenas (~154 MiB RSS, over the then-150 MiB budget) because the
       # multi-threaded staking path allocates from several threads.
@@ -131,8 +131,6 @@ services:
       - "0.0.0.0:22526"
       - --rpc-addr
       - "0.0.0.0:22525"
-      - --rpc-api-key
-      - "testnet-soak-key"
       - --data-dir
       - /data/node2
       - --seed
@@ -172,6 +170,7 @@ services:
     user: "0:0"
     container_name: vtr-node3
     environment:
+      VTORRENT_RPC_API_KEY: "testnet-soak-key"
       # Cap glibc malloc arenas. The staker otherwise grows to ~4-5
       # arenas (~154 MiB RSS, over the then-150 MiB budget) because the
       # multi-threaded staking path allocates from several threads.
@@ -192,8 +191,6 @@ services:
       - "0.0.0.0:22526"
       - --rpc-addr
       - "0.0.0.0:22525"
-      - --rpc-api-key
-      - "testnet-soak-key"
       - --data-dir
       - /data/node3
       - --seed

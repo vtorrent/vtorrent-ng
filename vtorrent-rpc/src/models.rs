@@ -588,6 +588,10 @@ pub struct BtcSendRequest {
     pub to_address: String,
     pub amount_satoshis: u64,
     pub fee_satoshis: Option<u64>,
+    #[serde(default)]
+    pub passphrase: zeroize::Zeroizing<String>,
+    #[serde(default)]
+    pub otp_code: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

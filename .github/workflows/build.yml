@@ -77,6 +77,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Run Clippy with warnings denied
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Verify release lockfile
+        run: cp release/Cargo.lock Cargo.lock && cargo metadata --locked --format-version 1 > /dev/null
 
   # ─── Dependency security ─────────────────────────────────────────────────────
   security-audit:
@@ -89,10 +91,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Cargo.lock is gitignored (workspace library pattern); resolve it so the
-      # audit action has a lockfile to scan.
-      - name: Generate lockfile
-        run: cargo generate-lockfile
+      # Cargo.lock is gitignored; use the reviewed release lockfile so the
+      # audit scans exactly the dependency graph used by the release image.
+      - name: Use release lockfile
+        run: cp release/Cargo.lock Cargo.lock
 
       - uses: rustsec/audit-check@v2.0.0
         with:
@@ -267,4 +269,4 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ github.ref_name }}" Cargo.lock --clobber
+        run: gh release upload "${{ github.ref_name }}" release/Cargo.lock --clobber

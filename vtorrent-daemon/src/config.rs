@@ -113,19 +113,25 @@ pub struct Cli {
 
     /// Optional API key required for sensitive RPC endpoints.
     ///
-    /// When set, wallet, staking, torrent, DEX, claim and broadcast endpoints
-    /// reject requests that do not include the matching `X-API-Key` header.
-    /// Read-only info endpoints remain open.
-    #[arg(long, env = "VTORRENT_RPC_API_KEY")]
+    /// Read from the environment rather than argv so it is not exposed in the
+    /// process command line. Prefer `--rpc-api-key-file` for production.
+    #[arg(env = "VTORRENT_RPC_API_KEY", hide_env_values = true)]
     pub rpc_api_key: Option<String>,
+
+    /// File containing the RPC API key (mode 0600).
+    #[arg(long, value_name = "PATH")]
+    pub rpc_api_key_file: Option<PathBuf>,
 
     /// 64-byte hex-encoded BIP39 seed for the Bitcoin SPV wallet.
     ///
-    /// Required for cross-chain atomic swaps: the BTC side of an HTLC is
-    /// funded, claimed, and refunded with keys derived from this seed. Without
-    /// it the BTC wallet stays uninitialized and swap settlement is disabled.
-    #[arg(long, env = "VTORRENT_BTC_SEED")]
+    /// Read from the environment rather than argv. Prefer `--btc-seed-file` for
+    /// production so the seed is not exposed in the process command line.
+    #[arg(env = "VTORRENT_BTC_SEED", hide_env_values = true)]
     pub btc_seed: Option<String>,
+
+    /// File containing the 128-hex-character Bitcoin SPV seed (mode 0600).
+    #[arg(long, value_name = "PATH")]
+    pub btc_seed_file: Option<PathBuf>,
 
     /// Run the Bitcoin SPV wallet in regtest mode (local development).
     ///
@@ -159,6 +165,45 @@ pub struct Cli {
     /// checkpoint. Without this flag, the scan starts at the retained floor.
     #[arg(long)]
     pub btc_birthday: Option<u32>,
+}
+
+/// Load secrets from 0600 files, rejecting ambiguous or exposed inputs.
+pub fn load_secret_files(cli: &mut Cli) -> anyhow::Result<()> {
+    if cli.rpc_api_key.is_some() && cli.rpc_api_key_file.is_some() {
+        anyhow::bail!("set only one of VTORRENT_RPC_API_KEY and --rpc-api-key-file");
+    }
+    if cli.btc_seed.is_some() && cli.btc_seed_file.is_some() {
+        anyhow::bail!("set only one of VTORRENT_BTC_SEED and --btc-seed-file");
+    }
+    if let Some(path) = &cli.rpc_api_key_file {
+        cli.rpc_api_key = Some(read_secret_file(path, "RPC API key")?);
+    }
+    if let Some(path) = &cli.btc_seed_file {
+        cli.btc_seed = Some(read_secret_file(path, "BTC seed")?);
+    }
+    Ok(())
+}
+
+fn read_secret_file(path: &std::path::Path, label: &str) -> anyhow::Result<String> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| anyhow::anyhow!("cannot read {label} file {}: {error}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            anyhow::bail!(
+                "{label} file {} must not be group/world readable (chmod 600)",
+                path.display()
+            );
+        }
+    }
+    let value = std::fs::read_to_string(path)
+        .map_err(|error| anyhow::anyhow!("cannot read {label} file {}: {error}", path.display()))?;
+    let value = value.trim_end_matches(['\r', '\n']);
+    if value.is_empty() {
+        anyhow::bail!("{label} file {} is empty", path.display());
+    }
+    Ok(value.to_string())
 }
 
 // ─── Startup Validation ──────────────────────────────────────────────────────
@@ -230,14 +275,15 @@ pub fn validate_startup_config(cli: &Cli, data_dir: &std::path::Path) -> anyhow:
         .parse::<std::net::SocketAddr>()
         .map(|addr| addr.ip().is_loopback())
         .unwrap_or_else(|_| cli.rpc_addr.starts_with("localhost:"));
-    if !rpc_is_loopback
-        && cli
-            .rpc_api_key
-            .as_deref()
-            .map(str::is_empty)
-            .unwrap_or(true)
-    {
-        anyhow::bail!("--rpc-api-key is required when --rpc-addr is not bound to loopback");
+    let has_rpc_key = cli
+        .rpc_api_key
+        .as_deref()
+        .is_some_and(|key| !key.is_empty())
+        || cli.rpc_api_key_file.is_some();
+    if !rpc_is_loopback && !has_rpc_key {
+        anyhow::bail!(
+            "an RPC API key is required when --rpc-addr is not bound to loopback; use --rpc-api-key-file or VTORRENT_RPC_API_KEY"
+        );
     }
     tracing::info!(
         "Port sanity check passed: P2P={}, RPC={}",
@@ -296,4 +342,47 @@ pub fn validate_startup_config(cli: &Cli, data_dir: &std::path::Path) -> anyhow:
     tracing::info!("Data directory validated: {:?} (writable)", data_dir);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn secret_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "vtr-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn secret_files_are_loaded_and_mode_checked() {
+        let path = secret_path("seed");
+        std::fs::write(&path, "ab".repeat(64) + "\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let mut cli =
+            Cli::parse_from(["vtorrent-daemon", "--btc-seed-file", path.to_str().unwrap()]);
+        load_secret_files(&mut cli).unwrap();
+        assert_eq!(cli.btc_seed.as_deref(), Some("ab".repeat(64).as_str()));
+        assert!(Cli::try_parse_from(["vtorrent-daemon", "--btc-seed", "00"]).is_err());
+        assert!(Cli::try_parse_from(["vtorrent-daemon", "--rpc-api-key", "secret"]).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            let mut cli =
+                Cli::parse_from(["vtorrent-daemon", "--btc-seed-file", path.to_str().unwrap()]);
+            assert!(load_secret_files(&mut cli).is_err());
+        }
+        std::fs::remove_file(path).unwrap();
+    }
 }

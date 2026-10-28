@@ -1,0 +1,12 @@
+[package]
+name = "whole-project-review-torrent-proof"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+vtorrent-torrent = { path = "../../../vtorrent-torrent" }
+tokio = { version = "1", features = ["full"] }
+sha1 = "0.10"

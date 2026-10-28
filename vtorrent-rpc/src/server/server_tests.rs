@@ -1364,6 +1364,20 @@ async fn btc_send_requires_an_unlocked_wallet() {
 }
 
 #[tokio::test]
+async fn btc_send_requires_passphrase_even_when_unlocked() {
+    let state = AppState::new();
+    *state.wallet_unlock_expiry.write().await = Some(0);
+    let app = build_router(state);
+    let (status, _) = post_json(
+        app,
+        "/api/v1/btc/send",
+        serde_json::json!({ "to_address": "bcrt1qtest", "amount_satoshis": 1000 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn btc_fund_requires_an_unlocked_wallet() {
     let app = build_router(AppState::new());
     let (status, _) = post_json(

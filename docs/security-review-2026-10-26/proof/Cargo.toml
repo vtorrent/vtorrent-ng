@@ -6,6 +6,9 @@ publish = false
 
 [workspace]
 
+[package.metadata.cargo-machete]
+ignored = ["sha2"]
+
 [dependencies]
 vtorrent-btc = { path = "../../../vtorrent-btc" }
 bitcoin = { version = "0.32", features = ["rand"] }

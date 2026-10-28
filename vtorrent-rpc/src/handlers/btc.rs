@@ -7,6 +7,7 @@ use std::sync::Arc;
 use super::broadcast_btc;
 use super::truncate_chars;
 use crate::error::{RpcError, RpcResult};
+use crate::handlers::verify_wallet_auth;
 use crate::models::*;
 use crate::state::AppState;
 
@@ -77,6 +78,12 @@ pub async fn send_btc(
             "Recipient address is required — provide a valid Bitcoin address".into(),
         ));
     }
+    if req.passphrase.is_empty() {
+        return Err(RpcError::BadRequest(
+            "Wallet passphrase is required to send BTC".into(),
+        ));
+    }
+    let _ = verify_wallet_auth(&state, &req.passphrase, req.otp_code.as_deref()).await?;
     let fee = req.fee_satoshis.unwrap_or(1_000);
     if fee > vtorrent_btc::MAX_MONEY_SATS {
         return Err(RpcError::BadRequest(

@@ -100,12 +100,13 @@ test.beforeAll(async () => {
       '127.0.0.1:22525',
       '--data-dir',
       dataDir,
-      '--rpc-api-key',
-      API_KEY,
       '--log-level',
       'warn',
     ],
-    { stdio: ['ignore', 'pipe', 'pipe'] },
+    {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, VTORRENT_RPC_API_KEY: API_KEY },
+    },
   )
   daemon.stdout?.on('data', chunk => {
     daemonLog += chunk.toString()

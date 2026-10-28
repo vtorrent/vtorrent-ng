@@ -83,7 +83,7 @@ export function useSendBtc() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const send = useCallback(async (toAddress: string, amountSatoshis: number): Promise<string | null> => {
+  const send = useCallback(async (toAddress: string, amountSatoshis: number, passphrase = ''): Promise<string | null> => {
     setLoading(true)
     setError(null)
     try {
@@ -93,6 +93,7 @@ export function useSendBtc() {
       const data = (await rpcPost<{ txid: string }>('/api/v1/btc/send', {
         to_address: toAddress,
         amount_satoshis: amountSatoshis,
+        passphrase,
       })) as { txid: string }
       return data.txid
     } catch (e) {

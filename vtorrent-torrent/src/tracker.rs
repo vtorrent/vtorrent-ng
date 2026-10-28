@@ -341,15 +341,22 @@ impl HttpTracker {
                 )));
             }
         }
-        let bytes = response
-            .bytes()
+        // `Response::bytes()` buffers the whole body before returning. A
+        // tracker can omit Content-Length, so enforce the cap while streaming.
+        let mut response = response;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
             .await
-            .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
-        if bytes.len() as u64 > MAX_TRACKER_RESPONSE {
-            return Err(TorrentError::TrackerError(format!(
-                "Tracker response too large: {} bytes",
-                bytes.len()
-            )));
+            .map_err(|e| TorrentError::TrackerError(e.to_string()))?
+        {
+            if bytes.len().saturating_add(chunk.len()) as u64 > MAX_TRACKER_RESPONSE {
+                return Err(TorrentError::TrackerError(format!(
+                    "Tracker response too large: more than {} bytes",
+                    MAX_TRACKER_RESPONSE
+                )));
+            }
+            bytes.extend_from_slice(&chunk);
         }
 
         parse_tracker_response(&bytes)
