@@ -751,8 +751,7 @@ impl BtcWallet {
             self.rbf_enabled,
         )?;
 
-        let txid = txid_of(&raw);
-        let txid_hex = hex::encode(txid);
+        let txid_hex = txid_of(&raw)?.to_string();
 
         // Remove spent UTXOs from the in-memory set immediately (prevents
         // double-spending within this session) and persist. If broadcasting

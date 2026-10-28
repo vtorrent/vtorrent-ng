@@ -58,9 +58,10 @@ fn wallet_send_to_full_cycle() {
     // Spent UTXOs removed; change is in the tx output but not yet in wallet UTXO set.
     assert_eq!(wallet.balance(), 0);
 
-    // txid matches the hash of the raw bytes.
-    let computed_txid = vtorrent_btc::tx::txid_of(&raw);
-    assert_eq!(txid_hex, hex::encode(computed_txid));
+    assert_eq!(txid_hex, tx.compute_txid().to_string());
+    assert_ne!(txid_hex, tx.compute_wtxid().to_string());
+    assert_eq!(vtorrent_btc::tx::txid_of(&raw).unwrap(), tx.compute_txid());
+    assert!(vtorrent_btc::tx::txid_of(&[0]).is_err());
 }
 
 #[test]

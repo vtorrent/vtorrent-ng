@@ -202,10 +202,11 @@ fn address_matches_wif(address: &str, wif: &str, network: bitcoin::Network) -> R
     Ok(address == derived.to_string())
 }
 
-/// Compute the txid (double-SHA256 of the serialized tx) as bytes.
-pub fn txid_of(raw: &[u8]) -> [u8; 32] {
-    use bitcoin::hashes::{sha256d, Hash};
-    sha256d::Hash::hash(raw).to_byte_array()
+/// Compute the Bitcoin transaction ID, excluding witness data.
+pub fn txid_of(raw: &[u8]) -> Result<bitcoin::Txid> {
+    let transaction: Transaction = bitcoin::consensus::deserialize(raw)
+        .map_err(|error| BtcError::Bitcoin(format!("invalid transaction: {error}")))?;
+    Ok(transaction.compute_txid())
 }
 
 /// Estimate the virtual size (vsize) of a P2WPKH transaction in bytes.
