@@ -88,14 +88,19 @@ from uninterrupted soak measurements.
       7-day window restarted 2026-09-03. A staking allocation fix deployed
       2026-09-04 reduced node1 from 207.7 MiB to 61.6 MiB after six kernel
       hits; the continuous-window check remains pending.)*
-- [~] **Post-upgrade 7-day soak (run 7)** — fleet rebuilt to
+- [x] **Post-upgrade 7-day soak (run 7)** — fleet rebuilt to
       `vtorrent/node:batch-e7691fb` (code commit `e7691fb`) on 2026-10-21.
-      Window started `2026-10-21T02:47:54Z` and ends
+      Window started `2026-10-21T02:47:54Z` and ended
       `2026-10-28T02:47:54Z`. Run 6 ended early at this rebuild. Daily
       observations are automated by `scripts/soak-daily.sh` and recorded in
       `~/.local/state/vtr-soak/observations.md`. Initial state: 3/3 nodes at
       height 54,123, same tip, staking, 0 errors/restarts, `syncing=false`.
-      Sign-off pending. The fleet runs `e7691fb`, which includes the reorg-safe
+      Signed off 2026-10-28T03:44Z: 168 h, height 64,086, 3/3 same tip, 9,968
+      blocks, max cadence 62 s, zero slow blocks, 10,135/10,135 Prometheus
+      samples per node, zero errors or restarts, 9,971 blocks staked. BTC SPV
+      was disabled on this fleet; the release fleet still needs rebuilding from
+      the final reviewed source with BTC SPV enabled. The fleet runs `e7691fb`,
+      which includes the reorg-safe
       BTC wallet state, durable cold-stake script registry, zeroized WIF
       responses, and the WebSocket token cap; the review candidate `70ea7b9`
       adds the Playwright browser E2E setup, the Vite dev-origin CORS

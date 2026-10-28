@@ -2336,3 +2336,19 @@ RSS was 187,129 kB. Its 24 h window ends at **2026-10-29T00:47:06Z**.
 Full workspace: 48 groups, 1,119 passed, zero failed, eight ignored. The real
 Bitcoin Core restart/send check confirmed hidden restored outputs, a restored
 balance after rescan, and a Core-accepted send whose txid matched the wallet.
+
+## 2026-10-28 — run 7 signoff
+
+Run 7 passed with the correct epoch window (`scripts/soak-observe.sh
+1792550874`): 168 hours from 2026-10-21T02:47:54Z to 2026-10-28T02:47:54Z.
+
+- 3/3 nodes at height **64,086**, same tip hash, `syncing=false`, connections
+  2/1/1, mempool 0.
+- 9,968 blocks in the window; median cadence 61 s, maximum 62 s, zero blocks
+  slower than 120 s.
+- 10,135/10,135 Prometheus samples per node, zero down samples, zero gaps over
+  30 s.
+- Zero errors and zero restarts on all three nodes; 9,971 blocks staked.
+- BTC SPV was disabled on the fleet, so this signoff covers core consensus and
+  staking only. Rebuild the release fleet from the final reviewed source with
+  BTC SPV enabled before launch.
