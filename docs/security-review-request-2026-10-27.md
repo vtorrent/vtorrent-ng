@@ -73,7 +73,7 @@ tests, zero failures, and eight ignored tests.
 
 ## Status
 
-- The exact final-source probe must be restarted on `9a22bcd`; the prior
-  `5f4c788` probe does not include the whole-project remediation.
+- The exact final-source `9a22bcd` probe is running; its 24 h window ends
+  2026-10-29T12:12:57Z.
 - Production alert delivery and the fleet-level active soak remain open.
 - Please confirm scope, timeline, and access needs before starting.

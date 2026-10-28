@@ -64,8 +64,8 @@ proof-service repairs.
 Swaps are enabled at mainnet launch. The repaired BTC SPV probe has completed
 mainnet-scale header sync and a 100,001-block scan, and
 `taker_claims_vtr_on_a_separate_node` validates the taker claim on a second
-VTR node. The exact final-source `5f4c788` 24 h soak ends
-2026-10-29T00:47:06Z; a fleet-level active swap soak remains open. A 60-cycle
+VTR node. The exact final-source `9a22bcd` 24 h soak ends
+2026-10-29T12:12:57Z; a fleet-level active swap soak remains open. A 60-cycle
 component-level active soak passed. The header retention bound is covered by an 870,000-header test.
 
 ## 4. Launch procedure

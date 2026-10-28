@@ -2352,3 +2352,22 @@ Run 7 passed with the correct epoch window (`scripts/soak-observe.sh
 - BTC SPV was disabled on the fleet, so this signoff covers core consensus and
   staking only. Rebuild the release fleet from the final reviewed source with
   BTC SPV enabled before launch.
+
+## 2026-10-28 — remediated-source probe on 9a22bcd
+
+The `5f4c788` probe was stopped at 12:12:57Z after 11h25m to deploy the
+whole-project remediation. It recorded 686 RSS samples, peak 219,876 kB, last
+182,808 kB; artifacts remain at
+`/tmp/opencode/btc-spv-5f4c788-20261028T004706Z`.
+
+`9a22bcd` started at 12:12:57Z on 22575/22576 with the seed and RPC API key in
+0600 files. The process argv contained neither secret. It synced 973,549
+headers by 12:23:15Z and scanned 100,001 BIP-158 blocks by 12:35:50Z. Five peer
+groups connected; scan errors were zero; RSS was 213,897 kB. An incremental
+filter-download timeout was recovered by failover, scanning two new blocks by
+12:41:31Z.
+
+Full workspace: 48 groups, 1,121 passed, zero failed, eight ignored. The exact
+source Docker image was built with `--locked`; image ID
+`sha256:196a7c82832ecbfba2560f935ea3c431b8e12b77d3f5d7d2b2a5e9046051517c`.
+The 24 h window ends at **2026-10-29T12:12:57Z**.

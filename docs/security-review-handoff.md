@@ -98,7 +98,7 @@ TMPDIR=/tmp/opencode cargo test -p vtorrent-daemon --release --features test-uti
   60-cycle component-level active soak passed; a fleet-level soak remains open.
 - BTC SPV has a mainnet-scale header and 100,001-block scan probe. The earlier
   `8639a7f` probe completed its 24 h window with zero scan errors; the exact
-  final-source `5f4c788` probe is running and ends 2026-10-29T00:47:06Z.
+  final-source `9a22bcd` probe is running and ends 2026-10-29T12:12:57Z.
 - A real-bitcoind reorged-out claim test is not covered; the settlement-state
   downgrade is unit-tested.
 - Cold proof reconstruction is unavailable beyond the retained undo window.

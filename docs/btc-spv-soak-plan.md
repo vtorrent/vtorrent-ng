@@ -5,48 +5,39 @@ Scope: `vtorrent-btc` SPV path as enabled by `--btc-regtest/--btc-peer/--btc-see
 
 ## Current repaired-build windows
 
-The exact final-source probe runs `5f4c788d06995b5c77202b531c52055d7cf79c6c`
-on RPC 22575 and P2P 22576. It started **2026-10-28T00:47:06Z**; the earliest
-24 h signoff is **2026-10-29T00:47:06Z**. It synced 973,477 headers by
-00:56:08Z and scanned 100,001 BIP-158 blocks by 01:03:12Z. Five peer groups
-connected; auth and scan errors are zero. RSS was 187,129 kB after the scan.
+The exact remediated-source probe runs
+`9a22bcd8ccd9bbdb4caf9bec794640fc3c0111aa` on RPC 22575 and P2P 22576. It
+started **2026-10-28T12:12:57Z**; the earliest 24 h signoff is
+**2026-10-29T12:12:57Z**. The seed and API key are supplied through 0600 files,
+not argv. It synced 973,549 headers by 12:23:15Z and scanned 100,001 BIP-158
+blocks by 12:35:50Z. Five peer groups connected; scan-error count is zero.
+RSS was 213,897 kB after the scan. An incremental filter download timed out and
+the multi-peer failover recovered, scanning two new blocks by 12:41:31Z.
 Binary SHA-256:
-`abc82251a3a23d5d81398a6a5f9cbe8ca864d0dcbf338495b262dd905910228e`.
+`ab55060f50c2d6355ecd67c1dd118ebf87a6146ade413df4fdb4db9a537f940d`.
 Metadata and one-minute RSS samples are under
-`/tmp/opencode/btc-spv-5f4c788-20261028T004706Z`.
+`/tmp/opencode/btc-spv-9a22bcd-20261028T121257Z`.
 
-The `c3a79fa` probe was stopped at 01:06:57Z after one hour, superseded by the
-canonical-txid fix. It recorded 61 samples: min 29,424 kB, max 238,360 kB,
-last 238,248 kB, with zero scan errors. Artifacts remain at
-`/tmp/opencode/btc-spv-c3a79fa-20261028T000648Z`. The `287a505` probe remains
-on 22555/22556 until 2026-10-28T10:23:13Z.
-
-The `8639a7f` probe completed its 24 h window and was stopped at
-2026-10-27T09:07:44Z after 24h09m. It recorded 1,450 RSS samples: min
-23,988 kB, max 258,664 kB, average 221,121 kB, last 221,440 kB, zero scan-error
-markers, and no panics. Final metrics showed tip 973,376, lag 0, five peer
-groups, and zero auth or scan errors. Artifacts remain at
-`/tmp/opencode/btc-spv-8639a7f-20261026T085817Z`. The `7ec3b2f` probe was
-retired at 01:12:30Z after 33h49m with 1,500 samples, min 25,432 kB, max
-220,916 kB, average 219,890 kB, two transient scan errors, and zero panics.
-The `2c381fa` probe was stopped at 2026-10-26T08:09:04Z, and the intermediate
-`aeb103a` probe at 08:58:17Z; both artifacts were retained.
+The `5f4c788` probe was stopped at 12:12:57Z after 11h25m, superseded by the
+whole-project remediation. It recorded 686 samples with a 219,876 kB peak and
+182,808 kB last sample. Its artifacts remain at
+`/tmp/opencode/btc-spv-5f4c788-20261028T004706Z`. The `287a505` probe was
+retired after its window; artifacts remain under
+`/tmp/opencode/btc-spv-287a505-20261027T102313Z`.
 
 `aeb103a` repairs the four findings in
 `docs/2026-10-26_security-vtorrent-report.md`. Real Bitcoin Core testing then
-exposed an additional restart-lineage case, repaired in `8639a7f`: restored
-chain-derived outputs and the cursor must be rescanned after header history is
-reconstructed. `c3b3847` hides those restored outputs from balance, UTXO
-listing, sends, and swap reservation until the rescan clears the pending flag;
-`c3a79fa` keeps them locked through partial scans and restarts. `5f4c788`
-returns the canonical Bitcoin txid instead of the witness hash. The full
-workspace suite passed 1,119 tests, zero failures, and eight ignored tests.
+exposed an additional restart-lineage case, repaired in `8639a7f`. `c3b3847`
+and `c3a79fa` keep restored outputs locked until a complete authenticated
+rescan; `5f4c788` returns canonical Bitcoin txids. `8ba6331` remediates the
+whole-project review, including secret files, BTC-send reauthorization, torrent
+symlink handling, and streamed tracker limits; `9a22bcd` tracks the release
+lockfile. The full workspace suite passed 1,121 tests, zero failures, and eight
+ignored tests.
 
-A separate local Prometheus at `127.0.0.1:9095` scrapes the exact final-source
-probe on 22575 and the earlier `287a505` probe on 22555. The core fleet's
-Prometheus is unchanged. Rule syntax and stale/stuck-scan unit tests pass;
-production notification delivery and a fleet-level active soak remain open.
-The component-level 60-cycle active soak passed.
+A separate local Prometheus at `127.0.0.1:9095` scrapes the exact
+remediated-source probe. Production notification delivery and a fleet-level
+active soak remain open. The component-level 60-cycle active soak passed.
 
 ## 1. Why this is separate
 
