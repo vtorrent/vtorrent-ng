@@ -2427,3 +2427,10 @@ passed a full isolated cross-chain cycle. The taker claimed through its own
 six confirmations. BTC funding and claim each reached six confirmations; the
 maker restart preserved the funded swap. Evidence:
 `/tmp/opencode/candidate-cross-chain-9a22bcd-20261029T010135Z/`.
+
+A further production-image refund attempt used a temporary `libfaketime` image
+and a restart at a future clock offset. The refund was still rejected as
+unexpired, so production-image refund timing remains unproven. The test image
+is not a release artifact. The focused release-mode refund tests remain the
+passing evidence; a future-timestamp block or test-only miner is still needed
+for a release-image proof.
