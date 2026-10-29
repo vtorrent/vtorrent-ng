@@ -5,18 +5,20 @@ Scope: `vtorrent-btc` SPV path as enabled by `--btc-regtest/--btc-peer/--btc-see
 
 ## Current repaired-build windows
 
-The exact remediated-source probe runs
-`9a22bcd8ccd9bbdb4caf9bec794640fc3c0111aa` on RPC 22575 and P2P 22576. It
-started **2026-10-28T12:12:57Z**; the earliest 24 h signoff is
-**2026-10-29T12:12:57Z**. The seed and API key are supplied through 0600 files,
-not argv. It synced 973,549 headers by 12:23:15Z and scanned 100,001 BIP-158
-blocks by 12:35:50Z. Five peer groups connected; scan-error count is zero.
-RSS was 213,897 kB after the scan. An incremental filter download timed out and
-the multi-peer failover recovered, scanning two new blocks by 12:41:31Z.
-Binary SHA-256:
-`ab55060f50c2d6355ecd67c1dd118ebf87a6146ade413df4fdb4db9a537f940d`.
-Metadata and one-minute RSS samples are under
-`/tmp/opencode/btc-spv-9a22bcd-20261028T121257Z`.
+The `9a22bcd` probe completed its 24 h window and was stopped at
+2026-10-29T14:22:59Z after 26h10m. It recorded 1,500 RSS samples: min 28,012 kB,
+max 245,492 kB, average 208,274 kB, last 208,364 kB, and zero scan-error
+markers. It had synced 973,549 headers and scanned 100,001 blocks with five
+peer groups.
+
+The final source `dd98176` reduces the mainnet peer target to four. A
+three-node release fleet with BTC SPV on every node settled at 237/233 MB on
+the nodes that had completed scanning, below the revised 256 MiB steady-state
+alert. A single four-peer release-image node measured 182 MB during and 190 MB
+after its scan. The `ProcessRssHigh` rule ignores the expected scan window;
+`BtcSpvScanStuck` covers a scan that does not finish. The 24 h probe ran the
+five-peer predecessor, while the four-peer steady state was measured
+separately.
 
 The `5f4c788` probe was stopped at 12:12:57Z after 11h25m, superseded by the
 whole-project remediation. It recorded 686 samples with a 219,876 kB peak and

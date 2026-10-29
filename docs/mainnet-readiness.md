@@ -43,14 +43,15 @@
 - [ ] **External security review** — **brief finalized, not yet commissioned**:
       `docs/security-review-brief.md` (scope, deliverables, 2-phase engagement).
       The proposed immutable delivery is
-      `c292fc461f231e732b27de2c9a057de3a9996fed` (`bab2456` plus the Playwright
+      `dd98176fcb6eb724e0753df8ee47dba40df9dc22` (`bab2456` plus the Playwright
       E2E setup, the live cold-stake browser test, the Vite dev-origin CORS
       allowance, the Tauri path capability fix, the durable cold-stake registry
       persistence fix, the desktop restart/persistence parity fixes, the
       wallet-path confinement, import overwrite guard, version bump, IPC error
       surfacing, and staking ownership warnings, the live desktop journey,
       restart, and BTC discovery evidence, and the whole-project review
-      remediation in `8ba6331`/`9a22bcd` and the taker-side claim RPC in `c292fc4`),
+      remediation in `8ba6331`/`9a22bcd`, the taker-side claim RPC in `c292fc4`,
+      and the four-peer memory target in `dd98176`),
       which includes the governance,
       reorg, and stake-proof service repairs, the real-bitcoind SPV and swap
       tests, and the independent genesis verifier. The review covers wallet
@@ -259,11 +260,10 @@ actions, operator approval.
       scan. `2c381fa` persists compact-filter peers and tries them before DNS
       seeds. A fresh security review then validated two high and two medium
       findings; `aeb103a` repairs them, and real Bitcoin Core testing exposed a
-      restart-lineage gap repaired in `8639a7f`. The exact final-source probe
-      runs `9a22bcd`, synced 973,549 headers, and scanned 100,001 blocks at
-      213,897 kB RSS with zero errors. Its 24 h window ends
-      2026-10-29T12:12:57Z; the earlier `8639a7f` probe completed its 24 h
-      window with zero scan errors. A separate taker VTR node now broadcasts and
+      restart-lineage gap repaired in `8639a7f`. The `9a22bcd` probe completed
+      its 24 h window with zero scan errors. The final source `dd98176` uses a
+      four-peer target; a three-node release fleet settled at 237/233 MB after
+      scan, below the revised 256 MiB steady-state alert. A separate taker VTR node now broadcasts and
       confirms the claim in `taker_claims_vtr_on_a_separate_node`; the maker
       recognizes the external claim. A 60-cycle one-hour active soak passed with
       no failures; a fleet-level soak after rebuild remains a launch gate.

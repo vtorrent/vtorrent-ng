@@ -2466,3 +2466,17 @@ below 256 MiB. The `ProcessRssHigh` threshold is now **256 MiB** and still
 suppresses only while `vtorrent_btc_scan_in_progress == 1`; `BtcSpvScanStuck`
 covers a scan that does not finish. No safe allocation reduction was identified
 beyond the four-peer target.
+
+## 2026-10-29 — 9a22bcd 24h signoff and final memory policy
+
+The `9a22bcd` probe completed its 24 h window and was stopped at 14:22:59Z after
+26h10m. It recorded 1,500 RSS samples: min 28,012 kB, max 245,492 kB, average
+208,274 kB, last 208,364 kB, and zero scan-error markers. It had synced 973,549
+headers and scanned 100,001 blocks with five peer groups.
+
+The final source `dd98176` reduces the mainnet peer target to four. A three-node
+release fleet settled at 237/233 MB after scan, below the revised 256 MiB
+steady-state alert; a single four-peer node measured 182 MB during and 190 MB
+after scan. `ProcessRssHigh` ignores the expected scan window, and
+`BtcSpvScanStuck` covers a stuck scan. The 24 h probe used the five-peer
+predecessor; the four-peer steady state was measured separately.

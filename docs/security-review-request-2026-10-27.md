@@ -7,7 +7,7 @@ the independence gate.
 ## Review target
 
 Review the candidate `70ea7b9dfb3c65dcfb30cb03ec8c168c5d3cbffd` plus the code
-deltas through `c292fc461f231e732b27de2c9a057de3a9996fed`. The final code
+deltas through `dd98176fcb6eb724e0753df8ee47dba40df9dc22`. The final code
 commit is the review head.
 
 | Commit | Full hash | Purpose |
@@ -30,6 +30,7 @@ commit is the review head.
 | `8ba6331` | `8ba6331fe7465acfc7d586b50e4160bc58dc58a8` | Whole-project review remediation |
 | `9a22bcd` | `9a22bcd8ccd9bbdb4caf9bec794640fc3c0111aa` | Track release dependency lockfile |
 | `c292fc4` | `c292fc461f231e732b27de2c9a057de3a9996fed` | Taker-side external VTR claim RPC |
+| `dd98176` | `dd98176fcb6eb724e0753df8ee47dba40df9dc22` | Four-peer mainnet target and 256 MiB steady RSS policy |
 
 Docs-only commits in the delta are evidence, not implementation changes.
 
@@ -38,7 +39,7 @@ Docs-only commits in the delta are evidence, not implementation changes.
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout c292fc461f231e732b27de2c9a057de3a9996fed
+git checkout dd98176fcb6eb724e0753df8ee47dba40df9dc22
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
@@ -74,8 +75,8 @@ tests, zero failures, and eight ignored tests.
 
 ## Status
 
-- The BTC SPV probe runs `9a22bcd`; its 24 h window ends 2026-10-29T12:12:57Z.
-  The final source adds only the taker-side VTR claim RPC (`c292fc4`), covered
-  by the candidate-image cross-chain cycle.
+- The `9a22bcd` BTC probe completed its 24 h window with zero scan errors. The
+  final source `dd98176` adds the four-peer target; the release fleet settled
+  at 237/233 MB after scan, below the 256 MiB steady-state alert.
 - Production alert delivery and the fleet-level active soak remain open.
 - Please confirm scope, timeline, and access needs before starting.

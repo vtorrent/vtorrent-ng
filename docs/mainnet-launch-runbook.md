@@ -23,7 +23,7 @@ Companion to `docs/mainnet-readiness.md` (checklist) and
 | Max supply | 20,000,000 VTR | `consensus.rs:46` |
 | DNS seeds | seed1/2/3.vtorrent.org + `bootstrap/peers.txt` | `docs/dns-seeds.md` |
 | Review candidate source | `70ea7b9` (`bab2456` plus Playwright E2E setup, Vite dev-origin CORS allowance, Tauri path capability fix, durable cold-stake registry fix, desktop restart/persistence parity fixes, wallet-path/IPC hardening, and staking ownership warnings) | `docs/security-review-brief.md` |
-| Post-review mainnet fixes | `1901bb9`, `513efde`, `c465d1b` (BTC SPV peer agreement and failover; five-peer headroom and in-cycle retry); `7ec3b2f` (BTC SPV health metrics and stale-scan alert); `2c381fa` (persistent compact-filter peer cache); `aeb103a` (four fresh-review BTC findings); `8639a7f` (restart lineage); `c3b3847` (hide restored outputs); `287a505` (stuck-scan alert); `c3a79fa` (partial-scan/restart lock); `5f4c788` (canonical txid); `8ba6331` (whole-project remediation); `9a22bcd` (release lockfile); `c292fc4` (taker-side external VTR claim RPC) | `docs/btc-spv-soak-plan.md` |
+| Post-review mainnet fixes | `1901bb9`, `513efde`, `c465d1b` (BTC SPV peer agreement and failover; five-peer headroom and in-cycle retry); `7ec3b2f` (BTC SPV health metrics and stale-scan alert); `2c381fa` (persistent compact-filter peer cache); `aeb103a` (four fresh-review BTC findings); `8639a7f` (restart lineage); `c3b3847` (hide restored outputs); `287a505` (stuck-scan alert); `c3a79fa` (partial-scan/restart lock); `5f4c788` (canonical txid); `8ba6331` (whole-project remediation); `9a22bcd` (release lockfile); `c292fc4` (taker-side external VTR claim RPC); `dd98176` (four-peer target and 256 MiB steady RSS policy) | `docs/btc-spv-soak-plan.md` |
 
 **Genesis is deterministic** and embeds the legacy snapshot (59,375 addresses,
 11,589,746.63 VTR). `GENESIS_TIMESTAMP` and the genesis message are frozen.
@@ -64,8 +64,8 @@ proof-service repairs.
 Swaps are enabled at mainnet launch. The repaired BTC SPV probe has completed
 mainnet-scale header sync and a 100,001-block scan, and
 `taker_claims_vtr_on_a_separate_node` validates the taker claim on a second
-VTR node. The exact final-source `9a22bcd` 24 h soak ends
-2026-10-29T12:12:57Z; a fleet-level active swap soak remains open. A 60-cycle
+VTR node. The `9a22bcd` 24 h probe completed with zero scan errors; the final source
+`dd98176` uses four peers and a 256 MiB steady-state alert. a fleet-level active swap soak remains open. A 60-cycle
 component-level active soak passed. The header retention bound is covered by an 870,000-header test.
 
 ## 4. Launch procedure
