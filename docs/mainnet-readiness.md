@@ -266,7 +266,9 @@ actions, operator approval.
       window with zero scan errors. A separate taker VTR node now broadcasts and
       confirms the claim in `taker_claims_vtr_on_a_separate_node`; the maker
       recognizes the external claim. A 60-cycle one-hour active soak passed with
-      no failures; a fleet-level soak after rebuild remains a launch gate. Set
+      no failures; a fleet-level soak after rebuild remains a launch gate.
+      Focused release-mode refund tests pass; production-image refund timing is
+      an accepted deferred check. Set
       `--btc-birthday` to the wallet creation height to scan funds older than
       the retained window. See `docs/btc-spv-soak-plan.md`.
 - [~] **BTC SPV holds ~40 MiB and is not independently soaked** — regtest
