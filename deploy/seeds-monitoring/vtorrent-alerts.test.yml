@@ -134,5 +134,5 @@ tests:
               instance: probe
               severity: warning
             exp_annotations:
-              summary: probe RSS above 220 MiB
+              summary: probe RSS above 256 MiB
               description: Daemon resident memory exceeded the soak budget for 10 minutes.

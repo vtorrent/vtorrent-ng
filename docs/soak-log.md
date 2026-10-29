@@ -2460,9 +2460,9 @@ stopped before the post-scan steady state was captured; logs are under
 `/tmp/opencode/release-fleet-20261029T041537Z/`.
 
 A controlled single four-peer release-image node measured **182 MB during the
-scan and 190 MB after it completed**, below the 220 MiB threshold. The fleet's
-high reading was therefore a concurrent-initial-scan peak, not steady-state
-memory. The `ProcessRssHigh` rule now suppresses only while
-`vtorrent_btc_scan_in_progress == 1`; `BtcSpvScanStuck` still covers a scan that
-does not finish. A three-node post-scan measurement remains the confirming
-step.
+scan and 190 MB after it completed**. A three-node post-scan measurement was
+**237/233 MB** on the two nodes that had finished scanning, above 220 MiB but
+below 256 MiB. The `ProcessRssHigh` threshold is now **256 MiB** and still
+suppresses only while `vtorrent_btc_scan_in_progress == 1`; `BtcSpvScanStuck`
+covers a scan that does not finish. No safe allocation reduction was identified
+beyond the four-peer target.
