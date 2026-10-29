@@ -2371,3 +2371,25 @@ Full workspace: 48 groups, 1,121 passed, zero failed, eight ignored. The exact
 source Docker image was built with `--locked`; image ID
 `sha256:196a7c82832ecbfba2560f935ea3c431b8e12b77d3f5d7d2b2a5e9046051517c`.
 The 24 h window ends at **2026-10-29T12:12:57Z**.
+
+## 2026-10-28 — candidate-image cross-chain cycles
+
+The exact candidate image `vtorrent/node:fixes-9a22bcd`
+(`sha256:196a7c82832ecbfba2560f935ea3c431b8e12b77d3f5d7d2b2a5e9046051517c`)
+passed five repeat cycles on an isolated three-container regtest network with
+real Bitcoin Core regtest. Each cycle discovered the funded BTC output, funded
+and confirmed the VTR HTLC, claimed BTC with six confirmations, and broadcast
+the VTR claim from the separate taker node with six confirmations observed by
+both the taker and the observer. The maker reported the claim.
+
+A sixth cycle included a maker-container restart after six VTR confirmations.
+The restarted node retained the funded swap and completed BTC and VTR
+settlement. Evidence is under
+`/tmp/opencode/candidate-cross-chain-9a22bcd-*` and
+`/tmp/opencode/candidate-cross-chain-soak-9a22bcd/`.
+
+The production-image BTC reorg harness stopped on a harness assertion before
+proving the post-reorg balance; it is not counted as a pass. The focused
+release-mode `btc_spv_drops_a_reorged_out_funding_output` test passes, and
+refund paths remain covered by the test-enabled release-mode tests. The release
+image has no mock clock, so it cannot exercise time-expiry refunds quickly.
