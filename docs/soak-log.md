@@ -2402,3 +2402,18 @@ configured ntfy relay delivered the push with title `🔥 FIRING: DeliveryTest`
 and the expected summary. The alert was then resolved and removed from
 Alertmanager's active alerts. The resolved push may be delayed by the
 configured five-minute group interval and was not used as the delivery proof.
+
+## 2026-10-29 — candidate-image reorg and refund checks
+
+The exact candidate image `vtorrent/node:fixes-9a22bcd`
+(`sha256:196a7c82832ecbfba2560f935ea3c431b8e12b77d3f5d7d2b2a5e9046051517c`)
+passed a production-image reorg check. A funded BTC output was visible, the
+funding block was invalidated, and the restarted candidate reported zero
+balance. Evidence: `/tmp/opencode/candidate-reorg-9a22bcd-20261029T001124Z/`.
+
+A candidate-image VTR refund attempt confirmed six VTR funding blocks but was
+rejected as unexpired after `/debug/mocktime`. The mock clock changes the RPC
+view, not the chain block time used by script verification. The focused
+release-mode refund tests pass; a production-image refund test needs a
+future-timestamp block or a test-only miner. Evidence:
+`/tmp/opencode/candidate-vtr-refund-9a22bcd-20261029T002238Z/`.
