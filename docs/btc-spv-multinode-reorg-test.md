@@ -130,10 +130,11 @@ the restarted daemon reports a zero balance
 ## Separate maker and taker VTR nodes
 
 `taker_claims_vtr_on_a_separate_node` runs the maker on one VTR daemon and the
-taker on a second daemon connected over P2P. The taker builds and signs the VTR
-claim locally, broadcasts it to its own node, and that node admits and confirms
-it. The maker observes the externally built claim by verifying its on-chain
-preimage, reports `claim_confirming`, and then `claimed` after six
+taker on a second daemon connected over P2P. The taker calls its own
+`/api/v1/swap/vtr-claim-external` endpoint with the HTLC terms; that daemon
+verifies the on-chain funding output and script, signs and broadcasts the claim,
+and confirms it. The maker observes the externally built claim by verifying its
+on-chain preimage, reports `claim_confirming`, and then `claimed` after six
 confirmations. This closes the separate-node taker-claim validation.
 
 ```bash

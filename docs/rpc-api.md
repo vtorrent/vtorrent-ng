@@ -326,6 +326,30 @@ Claim VTR by revealing the preimage (taker action).
 }
 ```
 
+### POST /api/v1/swap/vtr-claim-external
+
+Claim a VTR HTLC from its exact funding terms when the taker node does not hold
+the maker's order book. The daemon verifies the funding UTXO, amount, HTLC
+script, preimage, taker address, and signing key before broadcasting.
+
+**Request:**
+```json
+{
+  "order_id": "optional; defaults to the funding txid",
+  "hash_lock": "<64 hex chars>",
+  "taker_address": "V...",
+  "maker_address": "V...",
+  "expiry": 1800000000,
+  "vtr_amount": 100000000,
+  "funding_txid": "<64 hex chars>",
+  "preimage": "<64 hex chars>",
+  "taker_wif": "7..."
+}
+```
+
+Use `passphrase` and optional `otp_code` instead of `taker_wif` when the
+daemon's imported wallet should sign.
+
 ### GET /api/v1/swap/{order_id}/status
 
 Authenticated, read-only VTR settlement view. Reports `order_id`, `vtr` (state,

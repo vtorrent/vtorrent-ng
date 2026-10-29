@@ -7,7 +7,7 @@ the independence gate.
 ## Review target
 
 Review the candidate `70ea7b9dfb3c65dcfb30cb03ec8c168c5d3cbffd` plus the code
-deltas through `9a22bcd8ccd9bbdb4caf9bec794640fc3c0111aa`. The final code
+deltas through `c292fc461f231e732b27de2c9a057de3a9996fed`. The final code
 commit is the review head.
 
 | Commit | Full hash | Purpose |
@@ -29,6 +29,7 @@ commit is the review head.
 | `5f4c788` | `5f4c788d06995b5c77202b531c52055d7cf79c6c` | Return canonical Bitcoin transaction IDs |
 | `8ba6331` | `8ba6331fe7465acfc7d586b50e4160bc58dc58a8` | Whole-project review remediation |
 | `9a22bcd` | `9a22bcd8ccd9bbdb4caf9bec794640fc3c0111aa` | Track release dependency lockfile |
+| `c292fc4` | `c292fc461f231e732b27de2c9a057de3a9996fed` | Taker-side external VTR claim RPC |
 
 Docs-only commits in the delta are evidence, not implementation changes.
 
@@ -37,7 +38,7 @@ Docs-only commits in the delta are evidence, not implementation changes.
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout 9a22bcd8ccd9bbdb4caf9bec794640fc3c0111aa
+git checkout c292fc461f231e732b27de2c9a057de3a9996fed
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
@@ -45,7 +46,7 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 cargo test --workspace --all-features
 ```
 
-The last full workspace run on the remediated source passed 48 groups, 1,121
+The last full workspace run on the final source passed 48 groups, 1,122
 tests, zero failures, and eight ignored tests.
 
 ## Scope emphasis
@@ -73,7 +74,8 @@ tests, zero failures, and eight ignored tests.
 
 ## Status
 
-- The exact final-source `9a22bcd` probe is running; its 24 h window ends
-  2026-10-29T12:12:57Z.
+- The BTC SPV probe runs `9a22bcd`; its 24 h window ends 2026-10-29T12:12:57Z.
+  The final source adds only the taker-side VTR claim RPC (`c292fc4`), covered
+  by the candidate-image cross-chain cycle.
 - Production alert delivery and the fleet-level active soak remain open.
 - Please confirm scope, timeline, and access needs before starting.

@@ -2417,3 +2417,13 @@ view, not the chain block time used by script verification. The focused
 release-mode refund tests pass; a production-image refund test needs a
 future-timestamp block or a test-only miner. Evidence:
 `/tmp/opencode/candidate-vtr-refund-9a22bcd-20261029T002238Z/`.
+
+## 2026-10-29 — candidate taker-RPC cross-chain cycle
+
+The candidate image `vtorrent/node:taker-rpc-c292fc4`
+(`sha256:501959bf202b17d2dfbcae3af3f46659d8353f1ee46d870e210016dd693f6be4`)
+passed a full isolated cross-chain cycle. The taker claimed through its own
+`/api/v1/swap/vtr-claim-external` RPC, and the maker observed the claim after
+six confirmations. BTC funding and claim each reached six confirmations; the
+maker restart preserved the funded swap. Evidence:
+`/tmp/opencode/candidate-cross-chain-9a22bcd-20261029T010135Z/`.
