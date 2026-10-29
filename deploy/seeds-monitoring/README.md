@@ -43,7 +43,9 @@ docker run --rm --network none --read-only --tmpfs /tmp:rw,size=64m \
 
 Passing these tests does not prove notification delivery. Loading production
 rules, configuring an Alertmanager receiver, and testing delivery are separate
-operations.
+operations. On 2026-10-29 a controlled `DeliveryTest` alert was submitted to the
+production Alertmanager and received on the ntfy topic; see `docs/soak-log.md`.
+Resolved-notification timing was not part of that check.
 
 Notifications are pushed to ntfy topic `vtorrent-seeds-4254e0588837`
 (topic name acts as the secret). Subscribe at https://ntfy.sh/ or in the

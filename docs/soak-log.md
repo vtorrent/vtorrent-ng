@@ -2393,3 +2393,12 @@ proving the post-reorg balance; it is not counted as a pass. The focused
 release-mode `btc_spv_drops_a_reorged_out_funding_output` test passes, and
 refund paths remain covered by the test-enabled release-mode tests. The release
 image has no mock clock, so it cannot exercise time-expiry refunds quickly.
+
+## 2026-10-29 — production alert delivery
+
+A controlled `DeliveryTest` alert (severity `info`, instance `vtr-seed1`) was
+submitted to the real Alertmanager on `vtr-seed1` through its local API. The
+configured ntfy relay delivered the push with title `🔥 FIRING: DeliveryTest`
+and the expected summary. The alert was then resolved and removed from
+Alertmanager's active alerts. The resolved push may be delayed by the
+configured five-minute group interval and was not used as the delivery proof.
