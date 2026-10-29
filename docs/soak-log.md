@@ -2449,3 +2449,17 @@ Memory finding: each node held roughly 237 MB RSS, above the existing
 the production Prometheus, so it did not page. This needs a release decision:
 raise the budget/alert or reduce the five-peer BTC target. Evidence:
 `/tmp/opencode/release-fleet-20261029T022209Z/`.
+
+## 2026-10-29 — four-peer release fleet result
+
+A four-peer candidate fleet (`dd98176`, image
+`sha256:2e0be121cdc040890d5d320537eb2a10ee654bb1021c0279d784932129a6ff0d`)
+started at 04:15:37Z with BTC SPV on all three nodes. After the initial scans,
+RSS was **267/246/241 MB**, above the 220 MiB alert and worse than the
+five-peer fleet's ~237 MB. The fleet was stopped and logs preserved under
+`/tmp/opencode/release-fleet-20261029T041537Z/`.
+
+Conclusion: reducing the peer target from five to four did not solve the
+memory issue. The next decision is either profile the filter/header memory,
+test a three-peer target, or explicitly raise the budget. Do not treat the
+four-peer change as a memory fix.
