@@ -1364,6 +1364,28 @@ async fn btc_send_requires_an_unlocked_wallet() {
 }
 
 #[tokio::test]
+async fn external_vtr_claim_rejects_a_mismatched_preimage() {
+    let app = build_router(AppState::new());
+    let (status, body) = post_json(
+        app,
+        "/api/v1/swap/vtr-claim-external",
+        serde_json::json!({
+            "hash_lock": "00".repeat(32),
+            "taker_address": "VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k",
+            "maker_address": "VQ2BZDB3MzX5CEKVCoFJpzqw4eisdEMJHh",
+            "expiry": 1_800_000_000u32,
+            "vtr_amount": 100_000_000u64,
+            "funding_txid": "11".repeat(32),
+            "preimage": "22".repeat(32),
+            "taker_wif": "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.to_string().contains("Preimage"));
+}
+
+#[tokio::test]
 async fn btc_send_requires_passphrase_even_when_unlocked() {
     let state = AppState::new();
     *state.wallet_unlock_expiry.write().await = Some(0);

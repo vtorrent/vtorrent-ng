@@ -148,6 +148,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/dex/match", post(match_dex_order))
         .route("/api/v1/swap/btc-fund", post(btc_fund))
         .route("/api/v1/swap/vtr-claim", post(vtr_claim))
+        .route(
+            "/api/v1/swap/vtr-claim-external",
+            post(crate::handlers::vtr_claim_external),
+        )
         .route("/api/v1/swap/btc-claim", post(btc_claim))
         .route("/api/v1/swap/refund", post(swap_refund))
         .route(

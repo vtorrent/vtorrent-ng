@@ -437,13 +437,6 @@ async fn wait_height(daemon: &Daemon, target: u64) {
     .unwrap_or_else(|_| panic!("daemon did not reach height {target}: {}", daemon.logs()));
 }
 
-fn hash32(value: &str) -> [u8; 32] {
-    hex::decode(value)
-        .unwrap()
-        .try_into()
-        .unwrap_or_else(|_| panic!("expected 32-byte hex, got {value}"))
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "manual release-mode test; requires the vtr-btc-regtest container"]
 async fn taker_claims_vtr_on_a_separate_node() {
@@ -539,26 +532,23 @@ async fn taker_claims_vtr_on_a_separate_node() {
         .as_str()
         .unwrap()
         .to_owned();
-    let claim =
-        vtorrent_wallet_service::build_vtr_htlc_claim(vtorrent_wallet_service::VtrClaimParams {
-            hash_lock: hash32(matched["hash_lock"].as_str().unwrap()),
-            taker_address: TAKER_ADDR,
-            maker_address: MAKER_ADDR,
-            expiry: matched["expiry"].as_u64().unwrap() as u32,
-            vtr_amount: matched["vtr_amount"].as_u64().unwrap(),
-            funding_txid: hash32(matched["funding_txid"].as_str().unwrap()),
-            preimage: hash32(&preimage),
-            taker_wif: TAKER_WIF,
-        })
-        .unwrap();
-    let txid = hex::encode(claim.txid());
     let accepted = post(
         &taker,
-        "/api/v1/blockchain/broadcast",
-        json!({"raw_tx": hex::encode(bincode::serialize(&claim).unwrap())}),
+        "/api/v1/swap/vtr-claim-external",
+        json!({
+            "order_id": order_id,
+            "hash_lock": matched["hash_lock"],
+            "taker_address": TAKER_ADDR,
+            "maker_address": MAKER_ADDR,
+            "expiry": matched["expiry"],
+            "vtr_amount": matched["vtr_amount"],
+            "funding_txid": matched["funding_txid"],
+            "preimage": preimage,
+            "taker_wif": TAKER_WIF,
+        }),
     )
     .await;
-    assert_eq!(accepted["txid"], txid);
+    let txid = accepted["txid"].as_str().unwrap().to_owned();
 
     tokio::time::sleep(Duration::from_secs(1)).await;
     mine_vtr(&maker).await;

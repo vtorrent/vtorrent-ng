@@ -620,7 +620,36 @@ pub struct BtcFundResponse {
 }
 
 /// Request body for `POST /api/v1/swap/vtr-claim`.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ExternalVtrClaimRequest {
+    /// Optional order identifier for the response.
+    #[serde(default)]
+    pub order_id: String,
+    /// HTLC hash lock, 64 hex characters.
+    pub hash_lock: String,
+    /// Taker VTR address (HTLC recipient).
+    pub taker_address: String,
+    /// Maker VTR address (HTLC refund address).
+    pub maker_address: String,
+    /// Exact HTLC expiry used when the output was funded.
+    pub expiry: u32,
+    /// Funded VTR amount in satoshis.
+    pub vtr_amount: u64,
+    /// VTR funding transaction id, 64 hex characters.
+    pub funding_txid: String,
+    /// The preimage revealing the hash lock, 64 hex characters.
+    pub preimage: String,
+    /// Wallet passphrase when using the daemon's imported wallet.
+    #[serde(default)]
+    pub passphrase: zeroize::Zeroizing<String>,
+    #[serde(default)]
+    pub otp_code: Option<String>,
+    /// Explicit taker WIF for headless use; takes precedence when non-empty.
+    #[serde(default)]
+    pub taker_wif: zeroize::Zeroizing<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
 pub struct VtrClaimRequest {
     /// Hex-encoded order ID.
     pub order_id: String,

@@ -489,6 +489,101 @@ pub async fn vtr_claim_with_state(
     })
 }
 
+/// POST /api/v1/swap/vtr-claim-external
+///
+/// Lets a taker node that does not hold the maker's order book claim a VTR
+/// HTLC from its exact funding terms. The chain output, script, amount,
+/// preimage, and signing key are all checked before broadcast.
+pub async fn vtr_claim_external(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ExternalVtrClaimRequest>,
+) -> RpcResult<Json<SwapActionResponse>> {
+    let hash_lock = parse_hash32(&req.hash_lock, "hash lock")?;
+    let preimage = parse_hash32(&req.preimage, "preimage")?;
+    let funding_txid = parse_hash32(&req.funding_txid, "funding txid")?;
+    vtorrent_core::address::validate_p2pkh(&req.taker_address)
+        .map_err(|error| RpcError::BadRequest(error.to_string()))?;
+    vtorrent_core::address::validate_p2pkh(&req.maker_address)
+        .map_err(|error| RpcError::BadRequest(error.to_string()))?;
+    use sha2::{Digest, Sha256};
+    if Sha256::digest(preimage).as_slice() != hash_lock {
+        return Err(RpcError::BadRequest(
+            "Preimage does not match hash lock".into(),
+        ));
+    }
+    let htlc = vtorrent_node::atomic_swap::Htlc::with_expiry(
+        hash_lock,
+        req.taker_address.clone(),
+        req.maker_address.clone(),
+        req.expiry,
+        req.vtr_amount,
+    )
+    .map_err(|error| RpcError::BadRequest(error.to_string()))?;
+    let expected_script = htlc
+        .build_script()
+        .map_err(|error| RpcError::BadRequest(error.to_string()))?;
+    {
+        let chain = state.chain.lock().await;
+        let utxo = chain.get_utxo(&funding_txid, 0).ok_or_else(|| {
+            RpcError::BadRequest("VTR funding output is missing or already spent".into())
+        })?;
+        if utxo.value != req.vtr_amount {
+            return Err(RpcError::BadRequest(format!(
+                "VTR funding amount mismatch: chain has {}, request has {}",
+                utxo.value, req.vtr_amount
+            )));
+        }
+        if utxo.script_pubkey != expected_script {
+            return Err(RpcError::BadRequest(
+                "VTR funding output does not match the supplied HTLC terms".into(),
+            ));
+        }
+    }
+    let taker_wif = if req.taker_wif.is_empty() {
+        verify_wallet_auth(&state, &req.passphrase, req.otp_code.as_deref()).await?
+    } else {
+        req.taker_wif.clone()
+    };
+    let key = vtorrent_core::keys::PrivateKey::from_wif(&taker_wif)
+        .map_err(|error| RpcError::BadRequest(error.to_string()))?;
+    let derived = vtorrent_core::address::Address::from_pubkey(
+        &key.public_key()
+            .map_err(|error| RpcError::BadRequest(error.to_string()))?,
+        key.is_compressed(),
+        vtorrent_core::network::legacy::PUBKEY_ADDRESS_PREFIX,
+    )
+    .to_string();
+    if derived != req.taker_address {
+        return Err(RpcError::BadRequest(
+            "Signing key does not match the taker address".into(),
+        ));
+    }
+    let claim =
+        vtorrent_wallet_service::build_vtr_htlc_claim(vtorrent_wallet_service::VtrClaimParams {
+            hash_lock,
+            taker_address: &req.taker_address,
+            maker_address: &req.maker_address,
+            expiry: req.expiry,
+            vtr_amount: req.vtr_amount,
+            funding_txid,
+            preimage,
+            taker_wif: &taker_wif,
+        })
+        .map_err(RpcError::BadRequest)?;
+    let txid = claim.txid();
+    crate::swap_recovery::validate_vtr(&state, &claim).await?;
+    crate::swap_recovery::submit_vtr(&state, &claim).await?;
+    Ok(Json(SwapActionResponse {
+        order_id: if req.order_id.is_empty() {
+            hex::encode(funding_txid)
+        } else {
+            req.order_id
+        },
+        txid: hex::encode(txid),
+        status: "VtrClaimSubmitted".into(),
+    }))
+}
+
 /// POST /api/v1/swap/btc-claim
 ///
 /// The maker reveals the preimage by claiming BTC.
