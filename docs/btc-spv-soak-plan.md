@@ -276,8 +276,10 @@ Without a birthday, funds older than retained history are not discovered.
 A separate three-node candidate fleet started 2026-10-29T02:22:09Z with BTC
 mainnet SPV enabled on all nodes. All three reached BTC header 973,632 and
 scanned through 973,633 with lag 0. Each held about 237 MB RSS, above the
-220 MiB `ProcessRssHigh` threshold. A four-peer retry (`dd98176`) was worse at
-267/246/241 MB, so peer count is not the dominant cause. The four-peer fleet was
-stopped; evidence is under `/tmp/opencode/release-fleet-20261029T041537Z/`.
-The next step is memory profiling or an explicit budget decision, not another
-peer-count change.
+220 MiB `ProcessRssHigh` threshold. A four-peer fleet (`dd98176`) reached 267/246/241 MB during concurrent
+initial scans; the fleet was stopped before post-scan steady state. A controlled
+single four-peer node settled at 182 MB during and 190 MB after the scan, so the
+fleet peak was scan-related. `ProcessRssHigh` now suppresses during an active
+scan, while `BtcSpvScanStuck` covers a stuck scan. A three-node post-scan
+measurement remains. Evidence: `/tmp/opencode/release-fleet-20261029T041537Z/`
+and `/tmp/opencode/profile-btc-peer4-*`.

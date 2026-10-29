@@ -106,3 +106,33 @@ tests:
             exp_annotations:
               summary: BTC SPV scan stuck on probe
               description: A BTC SPV scan has been running for more than 30 minutes.
+
+  - name: expected BTC scan memory is suppressed from the steady-state RSS alert
+    interval: 1m
+    input_series:
+      - series: 'vtorrent_process_rss_bytes{instance="probe"}'
+        values: '300000000+0x40'
+      - series: 'vtorrent_btc_scan_in_progress{instance="probe"}'
+        values: '1+0x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ProcessRssHigh
+        exp_alerts: []
+
+  - name: sustained high RSS outside a scan still alerts
+    interval: 1m
+    input_series:
+      - series: 'vtorrent_process_rss_bytes{instance="probe"}'
+        values: '300000000+0x40'
+      - series: 'vtorrent_btc_scan_in_progress{instance="probe"}'
+        values: '0+0x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ProcessRssHigh
+        exp_alerts:
+          - exp_labels:
+              instance: probe
+              severity: warning
+            exp_annotations:
+              summary: probe RSS above 220 MiB
+              description: Daemon resident memory exceeded the soak budget for 10 minutes.

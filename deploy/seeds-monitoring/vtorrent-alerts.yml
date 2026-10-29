@@ -55,7 +55,7 @@ groups:
           description: "Local height is more than 10 blocks below the best peer height."
 
       - alert: ProcessRssHigh
-        expr: vtorrent_process_rss_bytes > 220 * 1024 * 1024
+        expr: vtorrent_process_rss_bytes > 220 * 1024 * 1024 unless on(instance) vtorrent_btc_scan_in_progress == 1
         for: 10m
         labels:
           severity: warning

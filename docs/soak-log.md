@@ -2454,12 +2454,15 @@ raise the budget/alert or reduce the five-peer BTC target. Evidence:
 
 A four-peer candidate fleet (`dd98176`, image
 `sha256:2e0be121cdc040890d5d320537eb2a10ee654bb1021c0279d784932129a6ff0d`)
-started at 04:15:37Z with BTC SPV on all three nodes. After the initial scans,
-RSS was **267/246/241 MB**, above the 220 MiB alert and worse than the
-five-peer fleet's ~237 MB. The fleet was stopped and logs preserved under
+started at 04:15:37Z with BTC SPV on all three nodes. During the concurrent
+initial scans, RSS was **267/246/241 MB**, above the 220 MiB alert. The fleet was
+stopped before the post-scan steady state was captured; logs are under
 `/tmp/opencode/release-fleet-20261029T041537Z/`.
 
-Conclusion: reducing the peer target from five to four did not solve the
-memory issue. The next decision is either profile the filter/header memory,
-test a three-peer target, or explicitly raise the budget. Do not treat the
-four-peer change as a memory fix.
+A controlled single four-peer release-image node measured **182 MB during the
+scan and 190 MB after it completed**, below the 220 MiB threshold. The fleet's
+high reading was therefore a concurrent-initial-scan peak, not steady-state
+memory. The `ProcessRssHigh` rule now suppresses only while
+`vtorrent_btc_scan_in_progress == 1`; `BtcSpvScanStuck` still covers a scan that
+does not finish. A three-node post-scan measurement remains the confirming
+step.
