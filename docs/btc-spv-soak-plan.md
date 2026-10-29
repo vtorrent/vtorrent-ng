@@ -270,3 +270,12 @@ Without a birthday, funds older than retained history are not discovered.
   (`with_persistence` → `btc_utxos.json`).
 - `docs/soak-log.md` 2026-09-25 (BTC-SPV attribution); `docker/testnet/docker-compose.yml`
   (node1 args + the "restore before swap testing" comment).
+
+## Release fleet with BTC SPV on every node
+
+A separate three-node candidate fleet started 2026-10-29T02:22:09Z with BTC
+mainnet SPV enabled on all nodes. All three reached BTC header 973,632 and
+scanned through 973,633 with lag 0. Each held about 237 MB RSS, above the
+220 MiB `ProcessRssHigh` threshold; the release owner must decide whether to
+raise the budget or reduce the five-peer target. Evidence:
+`/tmp/opencode/release-fleet-20261029T022209Z/`.

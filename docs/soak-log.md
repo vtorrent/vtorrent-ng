@@ -2434,3 +2434,18 @@ unexpired, so production-image refund timing remains unproven. The test image
 is not a release artifact. The focused release-mode refund tests remain the
 passing evidence; a future-timestamp block or test-only miner is still needed
 for a release-image proof.
+
+## 2026-10-29 — release fleet with BTC SPV enabled
+
+The candidate image `vtorrent/node:taker-rpc-c292fc4`
+(`sha256:501959bf202b17d2dfbcae3af3f46659d8353f1ee46d870e210016dd693f6be4`)
+started as a separate three-node regtest fleet at 2026-10-29T02:22:09Z, with
+BTC mainnet SPV enabled on every node. Two nodes were funded and staking; VTR
+height reached 18. All three nodes synced to BTC header 973,632 and scanned
+through 973,633 with lag 0. A 60-minute sampler is running.
+
+Memory finding: each node held roughly 237 MB RSS, above the existing
+`ProcessRssHigh` alert threshold of 220 MiB. The release fleet is not scraped by
+the production Prometheus, so it did not page. This needs a release decision:
+raise the budget/alert or reduce the five-peer BTC target. Evidence:
+`/tmp/opencode/release-fleet-20261029T022209Z/`.

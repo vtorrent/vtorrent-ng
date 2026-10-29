@@ -271,6 +271,7 @@ actions, operator approval.
       an accepted deferred check. Set
       `--btc-birthday` to the wallet creation height to scan funds older than
       the retained window. See `docs/btc-spv-soak-plan.md`.
+- [~] **BTC SPV holds ~40 MiB and is not independently soaked** — a three-node release fleet with BTC SPV on every node held about 237 MB RSS per node, above the 220 MiB `ProcessRssHigh` threshold. See `docs/soak-log.md` 2026-10-29. The fleet is running; the memory budget needs a decision.
 - [~] **BTC SPV holds ~40 MiB and is not independently soaked** — regtest
       isolated soak is flat (~160 MiB, 140 headers); the 2026-10-24 mainnet
       probe synced 972,892 headers and scanned 100,001 BIP-158 blocks at
