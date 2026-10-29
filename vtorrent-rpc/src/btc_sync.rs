@@ -22,7 +22,7 @@ async fn connect_filter_peers(
     let target = if network == bitcoin::Network::Regtest {
         1
     } else {
-        5
+        4
     };
     while peers.len() < target && *cursor < candidates.len() {
         let addr = candidates[*cursor];
