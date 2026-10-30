@@ -87,6 +87,21 @@ mod tests {
     }
 }
 
+/// Require an unlocked wallet and reauthenticate whenever the wallet is encrypted.
+pub async fn authorize_wallet_operation(
+    state: &AppState,
+    passphrase: &str,
+    otp_code: Option<&str>,
+) -> RpcResult<()> {
+    if !state.is_wallet_unlocked().await {
+        return Err(RpcError::WalletLocked);
+    }
+    if state.wallet_encrypted.read().await.is_some() {
+        verify_wallet_auth(state, passphrase, otp_code).await?;
+    }
+    Ok(())
+}
+
 /// Truncate a string to at most `max` characters for display in error
 /// messages. Byte-slicing arbitrary UTF-8 can split a multi-byte character and
 /// panic the handler task, so this counts chars, not bytes.
@@ -218,7 +233,7 @@ pub(crate) struct HotWalletData {
 }
 
 /// Verify the passphrase and encrypted TOTP configuration before returning a signing key.
-pub(crate) async fn verify_wallet_auth(
+pub async fn verify_wallet_auth(
     state: &AppState,
     passphrase: &str,
     otp_code: Option<&str>,

@@ -54,7 +54,7 @@ impl Node {
                 .as_ref()
                 .map(|s| s.address.clone())
                 .unwrap_or_default();
-            let utxos = chain.get_utxos_for_address(&staking_address);
+            let utxos = chain.get_utxos_for_staking_address(&staking_address);
             // The height-1 bootstrap block's UTXO is brand new, so the next
             // block (height 2) must exempt it from the minimum stake age (T3).
             let tip_is_bootstrap = best_height == 1

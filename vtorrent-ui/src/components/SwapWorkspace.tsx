@@ -254,12 +254,20 @@ export default function SwapWorkspace({ orders, onRefresh }: SwapWorkspaceProps)
               onChange={event => setBtcRefundAddress(event.target.value)}
               disabled={busy}
             />
+            <input
+              type="password"
+              className="input-field"
+              placeholder="Wallet passphrase"
+              value={passphrase}
+              onChange={event => setPassphrase(event.target.value)}
+              disabled={busy}
+            />
             <button
               type="button"
               className="btn-primary w-full"
-              disabled={!effectiveBtcRefundAddress || busy}
+              disabled={!effectiveBtcRefundAddress || !passphrase || busy}
               onClick={() => runAction(
-                () => btcFund({ orderId: selected.id, btcRefundAddress: effectiveBtcRefundAddress }),
+                () => btcFund({ orderId: selected.id, btcRefundAddress: effectiveBtcRefundAddress, passphrase }),
                 'BTC funding submitted. Wait for confirmation.'
               )}
             >
@@ -309,17 +317,27 @@ export default function SwapWorkspace({ orders, onRefresh }: SwapWorkspaceProps)
         actionTitle = 'Claim BTC'
         actionBody = 'Claim BTC after the taker reveals the secret by claiming VTR.'
         actionControls = (
-          <button
-            type="button"
-            className="btn-primary w-full"
-            disabled={busy}
-            onClick={() => runAction(
-              () => btcClaim(selected.id),
-              'BTC claim submitted.'
-            )}
-          >
-            {busy ? 'Claiming BTC…' : 'Claim BTC'}
-          </button>
+          <div className="space-y-3">
+            <input
+              type="password"
+              className="input-field"
+              placeholder="Wallet passphrase"
+              value={passphrase}
+              onChange={event => setPassphrase(event.target.value)}
+              disabled={busy}
+            />
+            <button
+              type="button"
+              className="btn-primary w-full"
+              disabled={!passphrase || busy}
+              onClick={() => runAction(
+                () => btcClaim(selected.id, passphrase),
+                'BTC claim submitted.'
+              )}
+            >
+              {busy ? 'Claiming BTC…' : 'Claim BTC'}
+            </button>
+          </div>
         )
       }
     } else if (vtrClaimed && !btcClaimed) {

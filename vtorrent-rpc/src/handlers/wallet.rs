@@ -209,6 +209,13 @@ pub async fn import_wallet(
                 "A wallet is already imported; set \"overwrite\": true to replace it".into(),
             ));
         }
+    } else if state.wallet_encrypted.read().await.is_some() {
+        let _ = crate::handlers::verify_wallet_auth(
+            &state,
+            &req.current_passphrase,
+            req.current_otp_code.as_deref(),
+        )
+        .await?;
     }
 
     // Validate the WIF key and derive the address.

@@ -75,6 +75,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
+      - name: Use release lockfile
+        run: cp release/Cargo.lock Cargo.lock
       - name: Run Clippy with warnings denied
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Verify release lockfile
@@ -225,6 +227,8 @@ jobs:
         working-directory: vtorrent-ui
         run: pnpm build
 
+      - name: Use release lockfile
+        run: cp release/Cargo.lock Cargo.lock
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
@@ -269,4 +273,4 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ github.ref_name }}" release/Cargo.lock --clobber
+        run: gh release upload "${{ github.ref_name }}" Cargo.lock --clobber

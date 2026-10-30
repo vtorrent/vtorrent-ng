@@ -716,7 +716,7 @@ async fn test_swap_btc_fund_requires_vtr_funded() {
     let (status, body) = post_json(
         app,
         "/api/v1/swap/btc-fund",
-        serde_json::json!({ "order_id": order_id, "btc_refund_address": "bcrt1qtest" }),
+        serde_json::json!({ "order_id": order_id, "btc_refund_address": "bcrt1qtest", "passphrase": "testpassphrase" }),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -1344,6 +1344,7 @@ async fn wallet_import_refuses_to_overwrite_without_opt_in() {
         "wif": wif.to_string(),
         "passphrase": "pass",
         "overwrite": true,
+        "current_passphrase": "pass",
     });
     let (status, _) = post_json(app, "/api/v1/wallet/import", overwrite).await;
     assert_eq!(status, StatusCode::OK);

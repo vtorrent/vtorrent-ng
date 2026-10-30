@@ -97,6 +97,8 @@ pub struct HolePuncher {
     /// attempts can await replies without racing the central loop on the
     /// socket (tokio delivers each datagram to exactly one recv()).
     inbound_tx: broadcast::Sender<(Vec<u8>, SocketAddr)>,
+    /// Sessions evicted because the peer table was full.
+    evicted: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl HolePuncher {
@@ -108,6 +110,7 @@ impl HolePuncher {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             pending: Arc::new(RwLock::new(HashMap::new())),
             inbound_tx,
+            evicted: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -399,6 +402,9 @@ impl HolePuncher {
                     .map(|(k, _)| k.clone())
                 {
                     sessions.remove(&oldest);
+                    if let Ok(mut evicted) = self.evicted.lock() {
+                        evicted.push(oldest);
+                    }
                 }
             }
         }
@@ -478,6 +484,28 @@ impl HolePuncher {
     /// Returns true if a session exists for the given node ID.
     pub async fn is_connected(&self, node_id: &str) -> bool {
         self.sessions.read().await.contains_key(node_id)
+    }
+
+    /// Remove idle sessions and return their node IDs.
+    pub async fn evict_expired(&self) -> Vec<String> {
+        let mut sessions = self.sessions.write().await;
+        let expired: Vec<String> = sessions
+            .iter()
+            .filter(|(_, session)| session.created_at.elapsed() >= SESSION_TTL)
+            .map(|(node_id, _)| node_id.clone())
+            .collect();
+        for node_id in &expired {
+            sessions.remove(node_id);
+        }
+        expired
+    }
+
+    /// Drain sessions evicted because the peer table was full.
+    pub fn drain_evicted(&self) -> Vec<String> {
+        self.evicted
+            .lock()
+            .map(|mut evicted| std::mem::take(&mut *evicted))
+            .unwrap_or_default()
     }
 
     /// Returns the number of active sessions.

@@ -185,6 +185,7 @@ async fn daemon_rpc_refund_bump_survives_restart_and_replaces_peer_mempool() {
     let bump_request = json!({
         "order_id": id, "replaces_txid": original_id,
         "total_fee_satoshis": 20_000, "approve": true,
+        "passphrase": PASSPHRASE,
     });
     let mut unapproved = bump_request.clone();
     unapproved["approve"] = json!(false);

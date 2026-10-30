@@ -42,6 +42,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -u 1000 vtorrent
+RUN install -d -o vtorrent -g vtorrent -m 0700 /home/vtorrent/.vtorrent
 USER vtorrent
 WORKDIR /home/vtorrent
 VOLUME /home/vtorrent/.vtorrent

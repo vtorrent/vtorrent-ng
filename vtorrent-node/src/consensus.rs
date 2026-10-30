@@ -284,12 +284,8 @@ pub(crate) fn validate_block_inner(
         return Err(NodeError::InvalidBlock("Block has no transactions".into()));
     }
 
-    // Check block size is within the consensus limit
-    let block_size: usize = block
-        .transactions
-        .iter()
-        .map(|tx| tx.serialized_size())
-        .sum();
+    // Check the exact wire size, including the header and bincode framing.
+    let block_size = bincode::serialized_size(block).unwrap_or(u64::MAX) as usize;
     if block_size > MAX_BLOCK_SIZE {
         return Err(NodeError::InvalidBlock(format!(
             "Block size {} exceeds maximum {}",

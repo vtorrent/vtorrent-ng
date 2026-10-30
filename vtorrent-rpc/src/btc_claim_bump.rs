@@ -51,6 +51,8 @@ pub async fn bump_with_broadcast(
             "Durable encrypted swap recovery must be enabled".into(),
         ));
     }
+    crate::handlers::authorize_wallet_operation(state, &req.passphrase, req.otp_code.as_deref())
+        .await?;
     let parent = crate::handlers::parse_hash32(&req.replaces_txid, "replaces_txid")?;
     let order = state
         .order_book
@@ -147,6 +149,13 @@ pub async fn bump_with_broadcast(
         .clone()
         .ok_or_else(|| RpcError::BadRequest("Taker BTC refund address not recorded".into()))?;
     let (btc_amount, btc_expiry) = (swap.btc_amount, swap.btc_expiry);
+    let max_fee = btc_amount.saturating_mul(2_000) / 10_000;
+    if req.total_fee_satoshis > max_fee {
+        return Err(RpcError::BadRequest(format!(
+            "Replacement fee {} exceeds the 20% HTLC fee cap ({})",
+            req.total_fee_satoshis, max_fee
+        )));
+    }
     let network = *state.btc_network.read().await;
 
     let (raw, txid) = {

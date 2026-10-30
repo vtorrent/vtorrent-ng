@@ -520,9 +520,9 @@ export default function TradePage() {
                 Match (Fund VTR)
               </button>
               <button
-                disabled={swapBusy || !swapOrderId || !btcRefundAddress}
+                disabled={swapBusy || !swapOrderId || !btcRefundAddress || !takerPassphrase}
                 onClick={() => runSwap(
-                  () => btcFund({ orderId: swapOrderId, btcRefundAddress }),
+                  () => btcFund({ orderId: swapOrderId, btcRefundAddress, passphrase: takerPassphrase }),
                   'BTC funding broadcast attempted — verify confirmation'
                 )}
                 className="btn-primary text-xs disabled:opacity-50"
@@ -540,9 +540,9 @@ export default function TradePage() {
                 Claim VTR
               </button>
               <button
-                disabled={swapBusy || !swapOrderId}
+                disabled={swapBusy || !swapOrderId || !takerPassphrase}
                 onClick={() => runSwap(
-                  () => btcClaim(swapOrderId),
+                  () => btcClaim(swapOrderId, takerPassphrase),
                   'BTC claim broadcast attempted — verify confirmation'
                 )}
                 className="btn-primary text-xs disabled:opacity-50"

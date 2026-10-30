@@ -594,6 +594,8 @@ async fn claim_fixture() -> (AppState, String) {
     fund_btc_with_broadcast(
         &state,
         BtcFundRequest {
+            passphrase: Default::default(),
+            otp_code: None,
             order_id: id.clone(),
             btc_refund_address: refund_address,
         },
@@ -615,6 +617,8 @@ async fn btc_claim_verification_failure_never_broadcasts_or_updates_state() {
     let result = claim_btc_with_verification(
         &state,
         BtcClaimRequest {
+            passphrase: Default::default(),
+            otp_code: None,
             order_id: id.clone(),
         },
         async |_: &vtorrent_btc::htlc::BtcHtlc, _| {
@@ -644,6 +648,8 @@ async fn btc_claim_verifies_exact_public_terms_before_revealing_secret() {
     let result = claim_btc_with_verification(
         &state,
         BtcClaimRequest {
+            passphrase: Default::default(),
+            otp_code: None,
             order_id: id.clone(),
         },
         async |htlc: &vtorrent_btc::htlc::BtcHtlc, txid| {
@@ -677,6 +683,8 @@ async fn btc_claim_rechecks_deadline_after_network_verification() {
     let result = claim_btc_with_verification(
         &state,
         BtcClaimRequest {
+            passphrase: Default::default(),
+            otp_code: None,
             order_id: id.clone(),
         },
         async |_: &vtorrent_btc::htlc::BtcHtlc, _| {
@@ -708,7 +716,11 @@ async fn btc_claim_rejects_order_mismatch_before_network_access() {
         }
         assert!(claim_btc_with_verification(
             &state,
-            BtcClaimRequest { order_id: id },
+            BtcClaimRequest {
+                order_id: id,
+                passphrase: Default::default(),
+                otp_code: None
+            },
             async |_: &vtorrent_btc::htlc::BtcHtlc, _| panic!("invalid terms must fail locally"),
             async |_: &[u8]| panic!("invalid terms must not reveal secret"),
         )
@@ -723,6 +735,8 @@ async fn btc_claim_rechecks_vtr_funding_after_network_verification() {
     let result = claim_btc_with_verification(
         &state,
         BtcClaimRequest {
+            passphrase: Default::default(),
+            otp_code: None,
             order_id: id.clone(),
         },
         async |_: &vtorrent_btc::htlc::BtcHtlc, _| {
@@ -805,6 +819,8 @@ async fn btc_reconciliation_fixture() -> (AppState, String, vtorrent_btc::sync::
     fund_btc_with_broadcast(
         &state,
         BtcFundRequest {
+            passphrase: Default::default(),
+            otp_code: None,
             order_id: id.clone(),
             btc_refund_address: refund,
         },
@@ -1053,6 +1069,8 @@ async fn funding_failure_reserves_input_and_retries_identical_transaction() {
     let result = fund_btc_with_broadcast(
         &state,
         BtcFundRequest {
+            passphrase: Default::default(),
+            otp_code: None,
             order_id: id.clone(),
             btc_refund_address: refund_address.clone(),
         },
@@ -1071,6 +1089,8 @@ async fn funding_failure_reserves_input_and_retries_identical_transaction() {
     let response = fund_btc_with_broadcast(
         &state,
         BtcFundRequest {
+            passphrase: Default::default(),
+            otp_code: None,
             order_id: id.clone(),
             btc_refund_address: refund_address,
         },
@@ -1094,10 +1114,14 @@ async fn concurrent_funding_of_same_order_broadcasts_once() {
     let first = BtcFundRequest {
         order_id: id.clone(),
         btc_refund_address: refund_address.clone(),
+        passphrase: Default::default(),
+        otp_code: None,
     };
     let second = BtcFundRequest {
         order_id: id,
         btc_refund_address: refund_address,
+        passphrase: Default::default(),
+        otp_code: None,
     };
     let (first, second) = tokio::join!(
         fund_btc_with_broadcast(&state, first, async |raw: &[u8]| {
@@ -1123,6 +1147,8 @@ async fn btc_refund_is_independent_and_retry_preserves_raw_transaction() {
     fund_btc_with_broadcast(
         &state,
         BtcFundRequest {
+            passphrase: Default::default(),
+            otp_code: None,
             order_id: id.clone(),
             btc_refund_address: refund_address,
         },
@@ -1210,6 +1236,8 @@ async fn input_reservation_and_signed_funding_survive_wallet_reload() {
     let response = fund_btc_with_broadcast(
         &state,
         BtcFundRequest {
+            passphrase: Default::default(),
+            otp_code: None,
             order_id: id.clone(),
             btc_refund_address: refund_address,
         },
@@ -1305,6 +1333,8 @@ async fn competing_orders_cannot_reuse_reserved_btc_input() {
         fund_btc_with_broadcast(
             &state,
             BtcFundRequest {
+                passphrase: Default::default(),
+                otp_code: None,
                 order_id: id,
                 btc_refund_address: refund_address.clone()
             },
@@ -1317,6 +1347,8 @@ async fn competing_orders_cannot_reuse_reserved_btc_input() {
         fund_btc_with_broadcast(
             &state,
             BtcFundRequest {
+                passphrase: Default::default(),
+                otp_code: None,
                 order_id: other_id,
                 btc_refund_address: refund_address
             },
@@ -1354,6 +1386,8 @@ async fn persistence_failure_never_broadcasts_or_consumes_input() {
     let result = fund_btc_with_broadcast(
         &state,
         BtcFundRequest {
+            passphrase: Default::default(),
+            otp_code: None,
             order_id: id.clone(),
             btc_refund_address: refund_address,
         },
@@ -1395,6 +1429,8 @@ async fn claim_bump_fixture() -> (AppState, String, [u8; 32]) {
     claim_btc_with_verification(
         &state,
         BtcClaimRequest {
+            passphrase: Default::default(),
+            otp_code: None,
             order_id: id.clone(),
         },
         async |_: &vtorrent_btc::htlc::BtcHtlc, _| Ok(()),
@@ -1413,6 +1449,8 @@ fn bump_request(id: &str, parent: [u8; 32], fee: u64) -> crate::models::BtcClaim
         replaces_txid: hex::encode(parent),
         total_fee_satoshis: fee,
         approve: true,
+        passphrase: Default::default(),
+        otp_code: None,
     }
 }
 

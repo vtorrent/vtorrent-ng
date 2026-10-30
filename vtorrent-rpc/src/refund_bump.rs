@@ -189,9 +189,8 @@ pub async fn bump(state: &AppState, req: VtrRefundBumpRequest) -> RpcResult<VtrR
             "Durable encrypted swap recovery must be enabled".into(),
         ));
     }
-    if !state.is_wallet_unlocked().await {
-        return Err(RpcError::WalletLocked);
-    }
+    crate::handlers::authorize_wallet_operation(state, &req.passphrase, req.otp_code.as_deref())
+        .await?;
     let maker_wif = state
         .wallet_wif
         .read()
@@ -206,6 +205,13 @@ pub async fn bump(state: &AppState, req: VtrRefundBumpRequest) -> RpcResult<VtrR
         .get_order(&req.order_id)
         .cloned()
         .ok_or_else(|| RpcError::NotFound("Swap order not found".into()))?;
+    let max_fee = order.vtr_amount.saturating_mul(2_000) / 10_000;
+    if req.total_fee_satoshis > max_fee {
+        return Err(RpcError::BadRequest(format!(
+            "Replacement fee {} exceeds the 20% HTLC fee cap ({})",
+            req.total_fee_satoshis, max_fee
+        )));
+    }
     let now = crate::handlers::now_secs_mock(state).await;
     let mut swaps = state.swaps.write().await;
     let swap = swaps

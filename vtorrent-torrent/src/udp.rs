@@ -2,6 +2,7 @@
 
 use crate::error::{Result, TorrentError};
 use crate::tracker::{AnnounceEvent, TrackerPeer};
+use tokio::time::{timeout, Duration};
 
 /// BEP-15 protocol magic (0x41727101980).
 const PROTOCOL_ID: u64 = 0x0000_0417_2710_1980;
@@ -209,9 +210,9 @@ impl UdpTracker {
         // transaction id; anything else on the ephemeral socket is ignored.
         let mut buf = [0u8; 2048];
         loop {
-            let (n, from) = socket
-                .recv_from(&mut buf)
+            let (n, from) = timeout(Duration::from_secs(5), socket.recv_from(&mut buf))
                 .await
+                .map_err(|_| TorrentError::TrackerError("UDP tracker response timed out".into()))?
                 .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
             if from != self.addr {
                 continue;
@@ -236,9 +237,9 @@ impl UdpTracker {
 
         let mut buf = [0u8; 4096];
         loop {
-            let (n, from) = socket
-                .recv_from(&mut buf)
+            let (n, from) = timeout(Duration::from_secs(5), socket.recv_from(&mut buf))
                 .await
+                .map_err(|_| TorrentError::TrackerError("UDP tracker response timed out".into()))?
                 .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
             if from != self.addr {
                 continue;
@@ -265,9 +266,9 @@ impl UdpTracker {
 
         let mut buf = [0u8; 2048];
         loop {
-            let (n, from) = socket
-                .recv_from(&mut buf)
+            let (n, from) = timeout(Duration::from_secs(5), socket.recv_from(&mut buf))
                 .await
+                .map_err(|_| TorrentError::TrackerError("UDP tracker response timed out".into()))?
                 .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
             if from != self.addr {
                 continue;

@@ -76,7 +76,8 @@ pub struct WalletData {
 pub struct ColdStakeKeys {
     /// The hot staking key (WIF) — export to the staking node.
     pub staking_wif: zeroize::Zeroizing<String>,
-    /// The cold spending key (WIF) — keep offline.
+    /// The cold spending key (WIF) — returned once; never serialized.
+    #[serde(default, skip_serializing)]
     pub spending_wif: zeroize::Zeroizing<String>,
     /// Address derived from the staking key.
     pub staking_address: String,
@@ -208,7 +209,19 @@ impl Wallet {
         if let Some(config) = &data.otp_config {
             if config.enabled {
                 let code = otp_code.ok_or(WalletError::OtpRequired)?;
-                config.verify_code(code)?;
+                let step = config
+                    .verify_step(code)?
+                    .ok_or(WalletError::OtpInvalidCode)?;
+                let step_path = path.with_extension("totp-step");
+                let last = std::fs::read_to_string(&step_path)
+                    .ok()
+                    .and_then(|value| value.trim().parse::<u64>().ok())
+                    .unwrap_or(0);
+                if step <= last {
+                    return Err(WalletError::OtpReplay);
+                }
+                std::fs::write(&step_path, step.to_string())
+                    .map_err(|error| WalletError::Io(error.to_string()))?;
             }
         }
 

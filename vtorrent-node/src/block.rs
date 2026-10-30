@@ -190,27 +190,7 @@ impl Transaction {
 
     /// Returns the approximate serialized size of this transaction in bytes.
     pub fn serialized_size(&self) -> usize {
-        // Base: 4 (version) + 4 (lock_time) + 1 (tx_type)
-        let base = 9usize;
-        let inputs_size: usize = self
-            .inputs
-            .iter()
-            .map(|i| 32 + 4 + 4 + i.script_sig.len())
-            .sum();
-        let outputs_size: usize = self.outputs.iter().map(|o| 8 + o.script_pubkey.len()).sum();
-        // Claim fields are part of the txid hash and wire format; count them
-        // so fee-rate and block-size accounting reflect the real footprint.
-        let claim_size = self
-            .claim_address
-            .as_ref()
-            .map(|a| 1 + a.len())
-            .unwrap_or(0)
-            + self
-                .claim_signature
-                .as_ref()
-                .map(|s| 1 + s.len())
-                .unwrap_or(0);
-        base + inputs_size + outputs_size + claim_size
+        bincode::serialized_size(self).unwrap_or(0) as usize
     }
 
     /// Returns true if this transaction signals Replace-By-Fee (BIP-125).
@@ -645,8 +625,12 @@ mod tests {
         };
         let claim_size = claim.serialized_size();
 
-        // 1 (tag) + 12 (address) + 1 (tag) + 65 (sig) = 79 extra bytes
-        assert_eq!(claim_size, base_size + 79);
+        assert!(claim_size > base_size, "claim fields must affect wire size");
+        assert_eq!(
+            claim_size,
+            bincode::serialized_size(&claim).unwrap() as usize,
+            "serialized_size must match the wire encoding"
+        );
     }
 
     #[test]

@@ -38,6 +38,8 @@ pub(super) async fn fixture(path: &std::path::Path) -> (AppState, String, [u8; 3
 
 pub(super) fn request(id: &str, parent: [u8; 32], fee: u64) -> VtrRefundBumpRequest {
     VtrRefundBumpRequest {
+        passphrase: Default::default(),
+        otp_code: None,
         order_id: id.into(),
         replaces_txid: hex::encode(parent),
         total_fee_satoshis: fee,

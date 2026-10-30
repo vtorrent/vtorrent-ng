@@ -9,10 +9,11 @@ export default function BtcWalletPage() {
   const [toAddress, setToAddress] = useState('')
   const [amount, setAmount] = useState('')
   const [passphrase, setPassphrase] = useState('')
+  const [otpCode, setOtpCode] = useState('')
   const [sent, setSent] = useState<string | null>(null)
 
   const handleSend = async () => {
-    const txid = await send(toAddress, Number(amount), passphrase)
+    const txid = await send(toAddress, Number(amount), passphrase, otpCode || null)
     if (txid) setSent(txid)
   }
 
@@ -78,6 +79,14 @@ export default function BtcWalletPage() {
           onChange={(e) => setPassphrase(e.target.value)}
           placeholder="wallet passphrase"
           autoComplete="current-password"
+          className="w-full bg-navy-900 p-2 rounded text-sm"
+        />
+        <input
+          value={otpCode}
+          onChange={(e) => setOtpCode(e.target.value)}
+          placeholder="2FA code (if enabled)"
+          inputMode="numeric"
+          autoComplete="one-time-code"
           className="w-full bg-navy-900 p-2 rounded text-sm"
         />
         <button

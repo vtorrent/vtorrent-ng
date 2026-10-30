@@ -11,6 +11,9 @@ pub enum WalletError {
     #[error("Invalid OTP code")]
     OtpInvalidCode,
 
+    #[error("OTP code has already been used")]
+    OtpReplay,
+
     #[error("Wallet file is corrupted or invalid")]
     CorruptedWallet,
 

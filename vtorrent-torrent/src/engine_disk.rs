@@ -69,6 +69,24 @@ pub async fn write_piece_to_disk(
     else {
         return false;
     };
+    let marker = base.join(".vtorrent-torrent");
+    if !marker.exists() {
+        if base
+            .read_dir()
+            .map(|mut entries| entries.next().is_some())
+            .unwrap_or(true)
+        {
+            tracing::warn!(
+                "Refusing torrent {}: target directory {} is not owned by vTorrent",
+                metainfo.name,
+                base.display()
+            );
+            return false;
+        }
+        if std::fs::write(&marker, b"vtorrent\n").is_err() {
+            return false;
+        }
+    }
     let mut all_ok = true;
     for (file_index, file_offset, bytes) in layout.piece_segments(piece_index, piece_data) {
         let file = &metainfo.files[file_index];

@@ -208,7 +208,7 @@ fn observe(
     } else if funding.is_none() {
         FundingNotObserved
     } else if let Some(spend) = &scan.spend {
-        if Some(spend.txid) == swap.btc_claim_txid {
+        if Some(spend.txid) == swap.btc_claim_txid || scan.preimage.is_some() {
             if settled {
                 Claimed
             } else {

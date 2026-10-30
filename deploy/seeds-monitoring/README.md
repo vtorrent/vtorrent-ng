@@ -82,3 +82,15 @@ systemctl edit --full prometheus-alertmanager   # add --cluster.listen-address=
 # Grafana per https://grafana.com/docs/grafana/latest/setup-upgrade/install/debian/
 # then provision grafana/datasources + grafana/dashboards and set admin password.
 ```
+
+## External dead-man check
+
+Run `deadman.sh` from a host other than seed1, for example a cron entry on
+seed2 or seed3:
+
+```bash
+SEED1_PROMETHEUS_URL=http://91.98.80.38:9090 NTFY_TOPIC='<topic>'   deploy/seeds-monitoring/deadman.sh
+```
+
+It sends an ntfy alert when seed1 Prometheus is unreachable. Store the topic in
+a 0600 environment file or secret store, not in the unit or argv.

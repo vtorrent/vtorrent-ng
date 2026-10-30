@@ -181,7 +181,24 @@ pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
     Query(params): Query<HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
 ) -> Response {
+    if let Some(origin) = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+    {
+        const ALLOWED: &[&str] = &[
+            "tauri://localhost",
+            "http://tauri.localhost",
+            "http://localhost:1420",
+            "http://127.0.0.1:1420",
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ];
+        if !ALLOWED.contains(&origin) {
+            return axum::http::StatusCode::FORBIDDEN.into_response();
+        }
+    }
     // The upgrade uses a single-use, short-lived token obtained from
     // `POST /api/v1/ws-token` with the API key. The long-lived API key is not
     // accepted in the URL or a header.

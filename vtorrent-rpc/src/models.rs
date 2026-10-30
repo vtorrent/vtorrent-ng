@@ -443,6 +443,12 @@ pub struct ImportWalletRequest {
     /// (and any funds it controls), so it is refused unless this is set.
     #[serde(default)]
     pub overwrite: bool,
+    /// Current wallet passphrase, required when overwriting an existing wallet.
+    #[serde(default)]
+    pub current_passphrase: zeroize::Zeroizing<String>,
+    /// Current TOTP code, required when the existing wallet has 2FA.
+    #[serde(default)]
+    pub current_otp_code: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -609,6 +615,10 @@ pub struct BtcFundRequest {
     pub order_id: String,
     /// The taker's BTC refund address.
     pub btc_refund_address: String,
+    #[serde(default)]
+    pub passphrase: zeroize::Zeroizing<String>,
+    #[serde(default)]
+    pub otp_code: Option<String>,
 }
 
 /// Response for a successful BTC funding.
@@ -682,6 +692,10 @@ pub struct VtrClaimRequest {
 pub struct BtcClaimRequest {
     /// Hex-encoded order ID.
     pub order_id: String,
+    #[serde(default)]
+    pub passphrase: zeroize::Zeroizing<String>,
+    #[serde(default)]
+    pub otp_code: Option<String>,
 }
 
 /// Request body for `POST /api/v1/swap/refund`.
@@ -700,6 +714,10 @@ pub struct VtrRefundBumpRequest {
     pub total_fee_satoshis: u64,
     #[serde(default)]
     pub approve: bool,
+    #[serde(default)]
+    pub passphrase: zeroize::Zeroizing<String>,
+    #[serde(default)]
+    pub otp_code: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -709,6 +727,10 @@ pub struct BtcClaimBumpRequest {
     pub total_fee_satoshis: u64,
     #[serde(default)]
     pub approve: bool,
+    #[serde(default)]
+    pub passphrase: zeroize::Zeroizing<String>,
+    #[serde(default)]
+    pub otp_code: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

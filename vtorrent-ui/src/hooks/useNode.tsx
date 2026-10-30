@@ -555,6 +555,8 @@ export async function matchDexOrder(req: {
 export async function btcFund(req: {
   orderId: string
   btcRefundAddress: string
+  passphrase: string
+  otpCode?: string
 }): Promise<SwapActionResult> {
   if (isTauri()) {
     return camel(await tauriInvoke<SwapActionResult>('btc_fund', req)) as SwapActionResult
@@ -563,6 +565,8 @@ export async function btcFund(req: {
     await rpcPost<unknown>('/api/v1/swap/btc-fund', {
       order_id: req.orderId,
       btc_refund_address: req.btcRefundAddress,
+      passphrase: req.passphrase,
+      otp_code: req.otpCode ?? null,
     })
   ) as SwapActionResult
 }
@@ -588,12 +592,20 @@ export async function vtrClaim(req: {
 }
 
 /** Claim BTC using the revealed preimage (maker). */
-export async function btcClaim(orderId: string): Promise<SwapActionResult> {
+export async function btcClaim(
+  orderId: string,
+  passphrase: string,
+  otpCode?: string
+): Promise<SwapActionResult> {
   if (isTauri()) {
-    return camel(await tauriInvoke<SwapActionResult>('btc_claim', { orderId })) as SwapActionResult
+    return camel(await tauriInvoke<SwapActionResult>('btc_claim', { orderId, passphrase, otpCode })) as SwapActionResult
   }
   return camel(
-    await rpcPost<unknown>('/api/v1/swap/btc-claim', { order_id: orderId })
+    await rpcPost<unknown>('/api/v1/swap/btc-claim', {
+      order_id: orderId,
+      passphrase,
+      otp_code: otpCode ?? null,
+    })
   ) as SwapActionResult
 }
 

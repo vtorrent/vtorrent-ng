@@ -32,6 +32,9 @@ pub enum MigrateError {
     #[error("Key derivation iterations exceed the safety limit: {0}")]
     ExcessiveIterations(u32),
 
+    #[error("Wallet contains too many master keys: {0}")]
+    ExcessiveMasterKeys(usize),
+
     #[error("Wallet requires 2FA OTP code")]
     OtpRequired,
 

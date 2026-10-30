@@ -1,6 +1,7 @@
 //! BitTorrent Kademlia DHT (BEP-5): get_peers, find_node, announce_peer.
 
 use crate::error::{Result, TorrentError};
+use crate::tracker::tracker_target_allowed;
 use crate::tracker::TrackerPeer;
 use std::net::{Ipv4Addr, SocketAddr};
 
@@ -310,6 +311,14 @@ impl DhtClient {
                         continue;
                     }
                     for p in found_peers {
+                        if p.port == 0
+                            || p.ip
+                                .parse()
+                                .map(|ip| !tracker_target_allowed(ip))
+                                .unwrap_or(true)
+                        {
+                            continue;
+                        }
                         if !peers.contains(&p) {
                             peers.push(p);
                         }
@@ -317,6 +326,9 @@ impl DhtClient {
                     for node in nodes {
                         if pending.len() >= MAX_PENDING {
                             break;
+                        }
+                        if node.addr.port() == 0 || !tracker_target_allowed(node.addr.ip()) {
+                            continue;
                         }
                         if !queried.contains(&node.addr) && !pending.contains(&node.addr) {
                             pending.push(node.addr);
@@ -502,8 +514,10 @@ mod tests {
             let _ = n;
         });
 
+        crate::tracker::set_allow_private_tracker_targets(true);
         let client = DhtClient::new(vec![server_addr]);
         let peers = client.get_peers(&[0xAA; 20]).await.unwrap();
+        crate::tracker::set_allow_private_tracker_targets(false);
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].ip, "10.0.0.1");
 

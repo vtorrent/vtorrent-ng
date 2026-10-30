@@ -467,7 +467,8 @@ pub(crate) async fn handle_getblocks(
             let locator: std::collections::HashSet<[u8; 32]> =
                 req.block_locator_hashes.iter().copied().collect();
             let mut start_height = 1u32;
-            for h in (1..=our_height).rev() {
+            let scan_floor = our_height.saturating_sub(10_000).max(1);
+            for h in (scan_floor..=our_height).rev() {
                 if let Some(b) = chain.get_block_at_height(h) {
                     if locator.contains(&b.hash()) {
                         start_height = h + 1;

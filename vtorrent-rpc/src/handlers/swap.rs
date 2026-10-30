@@ -254,13 +254,8 @@ async fn fund_btc_with_broadcast(
     req: BtcFundRequest,
     broadcast: impl AsyncFnOnce(&[u8]) -> RpcResult<[u8; 32]>,
 ) -> RpcResult<BtcFundResponse> {
-    // Funding spends the node's BTC wallet, so require an unlocked wallet —
-    // the API key alone must not authorize moving funds. (The refund path is
-    // deliberately NOT gated: BTC refunds must remain possible without an
-    // unlocked VTR wallet, per docs/rpc-api.md.)
-    if !state.is_wallet_unlocked().await {
-        return Err(RpcError::WalletLocked);
-    }
+    crate::handlers::authorize_wallet_operation(state, &req.passphrase, req.otp_code.as_deref())
+        .await?;
     let order = state
         .order_book
         .read()
@@ -598,6 +593,8 @@ pub async fn btc_claim_with_state(
     state: &AppState,
     req: BtcClaimRequest,
 ) -> RpcResult<SwapActionResponse> {
+    crate::handlers::authorize_wallet_operation(state, &req.passphrase, req.otp_code.as_deref())
+        .await?;
     claim_btc_with_verification(
         state,
         req,

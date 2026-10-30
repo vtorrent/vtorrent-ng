@@ -9,7 +9,7 @@ use crate::metainfo::{Metainfo, TorrentFile};
 use crate::peer_wire::PeerMessage;
 use crate::scheduler::SchedulerState;
 use crate::session::{SessionManager, SessionState};
-use crate::tracker::{AnnounceEvent, AnnounceRequest, HttpTracker};
+use crate::tracker::{tracker_target_allowed, AnnounceEvent, AnnounceRequest, HttpTracker};
 use serde_bencode::value::Value;
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
@@ -333,6 +333,15 @@ pub async fn run_engine(
     let mut metainfo = metainfo;
     if metainfo.pieces.is_empty() {
         for peer in &peers {
+            if peer.port == 0
+                || peer
+                    .ip
+                    .parse()
+                    .map(|ip| !tracker_target_allowed(ip))
+                    .unwrap_or(true)
+            {
+                continue;
+            }
             let addr: SocketAddr = match format!("{}:{}", peer.ip, peer.port).parse() {
                 Ok(a) => a,
                 Err(_) => continue,

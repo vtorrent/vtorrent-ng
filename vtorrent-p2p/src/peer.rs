@@ -159,7 +159,11 @@ pub async fn run_peer(stream: TcpStream, addr: SocketAddr, config: PeerTaskConfi
                                 // Parse and enforce the current hard-boundary protocol version.
                                 let parsed = bincode::deserialize::<VersionMsg>(&msg.payload)
                                     .or_else(|_| serde_json::from_slice(&msg.payload));
-                                if let Ok(v) = parsed {
+                                if let Ok(mut v) = parsed {
+                                    const MAX_VERSION_STRING: usize = 256;
+                                    v.user_agent.truncate(MAX_VERSION_STRING);
+                                    v.addr_from.truncate(MAX_VERSION_STRING);
+                                    v.addr_recv.truncate(MAX_VERSION_STRING);
                                     if v.version != PROTOCOL_VERSION {
                                         tracing::warn!(
                                             "Rejecting peer {} with incompatible protocol version {} (required {})",

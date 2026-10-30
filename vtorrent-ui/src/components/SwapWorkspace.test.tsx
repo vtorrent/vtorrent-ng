@@ -119,10 +119,12 @@ describe('swap workspace', () => {
     render(<SwapWorkspace orders={[order]} onRefresh={vi.fn()} />)
     expect(await screen.findByText('Fund the BTC side')).toBeInTheDocument()
     expect(screen.getByDisplayValue('bcrt1qtest')).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('Wallet passphrase'), { target: { value: 'test-pass' } })
     fireEvent.click(screen.getByRole('button', { name: 'Fund BTC' }))
     await waitFor(() => expect(backend.fundBtc).toHaveBeenCalledWith({
       orderId: 'order-1',
       btcRefundAddress: 'bcrt1qtest',
+      passphrase: 'test-pass',
     }))
   })
 

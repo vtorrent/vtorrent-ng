@@ -328,6 +328,8 @@ pub async fn btc_fund(
     state: tauri::State<'_, AppState>,
     order_id: String,
     btc_refund_address: String,
+    passphrase: String,
+    otp_code: Option<String>,
 ) -> Result<SwapActionResult> {
     let guard = state.node.lock().await;
     let handle = guard
@@ -339,6 +341,8 @@ pub async fn btc_fund(
         vtorrent_rpc::models::BtcFundRequest {
             order_id,
             btc_refund_address,
+            passphrase: passphrase.into(),
+            otp_code,
         },
     )
     .await
@@ -387,6 +391,8 @@ pub async fn vtr_claim(
 pub async fn btc_claim(
     state: tauri::State<'_, AppState>,
     order_id: String,
+    passphrase: String,
+    otp_code: Option<String>,
 ) -> Result<SwapActionResult> {
     let guard = state.node.lock().await;
     let handle = guard
@@ -395,7 +401,11 @@ pub async fn btc_claim(
     state.sync_swap_wallet(&handle.rpc_state).await?;
     let result = vtorrent_rpc::handlers::btc_claim_with_state(
         &handle.rpc_state,
-        vtorrent_rpc::models::BtcClaimRequest { order_id },
+        vtorrent_rpc::models::BtcClaimRequest {
+            order_id,
+            passphrase: passphrase.into(),
+            otp_code,
+        },
     )
     .await
     .map_err(TauriError::from)?;

@@ -189,6 +189,14 @@ impl OtpConfig {
         self.secret_base32.to_string()
     }
 
+    /// Verify a code and return the accepted TOTP step.
+    pub fn verify_step(&self, code: &str) -> Result<Option<u64>> {
+        if !self.enabled {
+            return Err(WalletError::OtpNotEnabled);
+        }
+        TotpSecret::from_base32(&self.secret_base32)?.verify_step(code)
+    }
+
     /// Verify an OTP code against this config.
     pub fn verify_code(&self, code: &str) -> Result<()> {
         if !self.enabled {

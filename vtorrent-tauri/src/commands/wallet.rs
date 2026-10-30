@@ -1009,6 +1009,8 @@ pub async fn send_btc(
     state: State<'_, AppState>,
     to_address: String,
     amount_satoshis: u64,
+    passphrase: String,
+    otp_code: Option<String>,
 ) -> Result<String> {
     if to_address.trim().is_empty() {
         return Err(TauriError::InvalidInput(
@@ -1027,9 +1029,13 @@ pub async fn send_btc(
     // Spending the node's BTC wallet requires an unlocked wallet, matching the
     // VTR path. The desktop command must enforce this too: it talks to the
     // wallet directly and would otherwise bypass the RPC handler's check.
-    if !handle.rpc_state.is_wallet_unlocked().await {
-        return Err(TauriError::WalletLocked);
-    }
+    vtorrent_rpc::handlers::authorize_wallet_operation(
+        &handle.rpc_state,
+        &passphrase,
+        otp_code.as_deref(),
+    )
+    .await
+    .map_err(|error| TauriError::InvalidInput(error.to_string()))?;
 
     let (txid_hex, raw, spent_utxos) = {
         let mut btc = handle.rpc_state.btc_wallet.write().await;

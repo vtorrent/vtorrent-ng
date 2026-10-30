@@ -157,6 +157,23 @@ impl Overlay {
             });
         }
 
+        // Evict idle or capacity-evicted overlay sessions and tell the node.
+        {
+            let puncher = puncher.clone();
+            let event_tx = event_tx.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    for node_id in puncher.evict_expired().await {
+                        let _ = event_tx.send(OverlayEvent::PeerDisconnected(node_id)).await;
+                    }
+                    for node_id in puncher.drain_evicted() {
+                        let _ = event_tx.send(OverlayEvent::PeerDisconnected(node_id)).await;
+                    }
+                }
+            });
+        }
+
         // Spawn the maintenance loop
         {
             let registry = registry.clone();

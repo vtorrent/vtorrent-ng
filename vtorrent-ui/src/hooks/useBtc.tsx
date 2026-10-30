@@ -83,17 +83,18 @@ export function useSendBtc() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const send = useCallback(async (toAddress: string, amountSatoshis: number, passphrase = ''): Promise<string | null> => {
+  const send = useCallback(async (toAddress: string, amountSatoshis: number, passphrase = '', otpCode: string | null = null): Promise<string | null> => {
     setLoading(true)
     setError(null)
     try {
       if (isTauri()) {
-        return await tauriInvoke<string>('send_btc', { toAddress, amountSatoshis })
+        return await tauriInvoke<string>('send_btc', { toAddress, amountSatoshis, passphrase, otpCode })
       }
       const data = (await rpcPost<{ txid: string }>('/api/v1/btc/send', {
         to_address: toAddress,
         amount_satoshis: amountSatoshis,
         passphrase,
+        otp_code: otpCode,
       })) as { txid: string }
       return data.txid
     } catch (e) {
