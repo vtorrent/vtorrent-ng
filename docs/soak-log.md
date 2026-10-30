@@ -2480,3 +2480,15 @@ steady-state alert; a single four-peer node measured 182 MB during and 190 MB
 after scan. `ProcessRssHigh` ignores the expected scan window, and
 `BtcSpvScanStuck` covers a stuck scan. The 24 h probe used the five-peer
 predecessor; the four-peer steady state was measured separately.
+
+## 2026-10-30 — ff148fd candidate cross-chain and restart
+
+The exact candidate image `vtorrent/node:review-fixes-ff148fd`
+(`sha256:2b145500ffa4c2bbc851601645e8d5fe705ee1399fa9ceacae7dfe0528587633`)
+passed an isolated three-container cross-chain cycle against real Bitcoin Core
+regtest. BTC SPV discovered the funded output, VTR funding reached six
+confirmations, BTC claim reached six confirmations, and the separate taker node
+broadcast the VTR claim through its own RPC; the taker and observer each saw six
+confirmations and the maker reported the claim. A maker restart after VTR
+funding preserved the swap and completed settlement. Evidence:
+`/tmp/opencode/candidate-cross-chain-9a22bcd-20261030T013142Z/evidence.json`.
