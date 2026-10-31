@@ -157,6 +157,24 @@ impl TotpSecret {
 }
 
 impl OtpConfig {
+    /// Consume a verified step for this authenticator and wallet.
+    pub fn consume_step(
+        &self,
+        wallet_path: &std::path::Path,
+        step: u64,
+        wallet_last: Option<u64>,
+    ) -> Result<TotpStepGuard> {
+        consume_account_totp_step(wallet_path, &self.secret_base32, step, wallet_last)
+    }
+
+    /// Consume a verified step when the wallet has no file path.
+    pub fn consume_step_unbound(
+        &self,
+        step: u64,
+        wallet_last: Option<u64>,
+    ) -> Result<TotpStepGuard> {
+        consume_account_totp_step_unbound(&self.secret_base32, step, wallet_last)
+    }
     /// Create a new OTP configuration from a generated secret.
     pub fn new(secret: &TotpSecret) -> Self {
         let now = std::time::SystemTime::now()
@@ -207,9 +225,318 @@ impl OtpConfig {
     }
 }
 
+/// Atomically consume a TOTP step for the wallet at `wallet_path`.
+pub fn consume_totp_step(wallet_path: &std::path::Path, step: u64) -> Result<()> {
+    let _guard = consume_totp_step_locked(wallet_path, step)?;
+    Ok(())
+}
+
+/// Holds the account replay lock until the encrypted wallet update completes.
+pub struct TotpStepGuard(std::fs::File);
+
+impl Drop for TotpStepGuard {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
+fn consume_totp_step_locked(wallet_path: &std::path::Path, step: u64) -> Result<TotpStepGuard> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    let path = wallet_path.with_extension("totp-step");
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let (mut file, created) = match options.create_new(true).open(&path) {
+        Ok(file) => (file, true),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let mut options = std::fs::OpenOptions::new();
+            options.read(true).write(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(libc::O_NOFOLLOW);
+            }
+            (
+                options
+                    .open(&path)
+                    .map_err(|error| WalletError::Io(error.to_string()))?,
+                false,
+            )
+        }
+        Err(error) => return Err(WalletError::Io(error.to_string())),
+    };
+    file.lock()
+        .map_err(|error| WalletError::Io(error.to_string()))?;
+    if file
+        .metadata()
+        .map_err(|error| WalletError::Io(error.to_string()))?
+        .len()
+        > 128
+    {
+        return Err(WalletError::Io("TOTP replay state is too large".into()));
+    }
+    let mut previous = String::new();
+    file.read_to_string(&mut previous)
+        .map_err(|error| WalletError::Io(error.to_string()))?;
+    let last = if created && previous.is_empty() {
+        None
+    } else {
+        Some(
+            previous
+                .trim()
+                .parse::<u64>()
+                .map_err(|_| WalletError::Io("invalid TOTP replay state".into()))?,
+        )
+    };
+    if last.is_some_and(|last| step <= last) {
+        return Err(WalletError::OtpReplay);
+    }
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| WalletError::Io(error.to_string()))?;
+    file.set_len(0)
+        .map_err(|error| WalletError::Io(error.to_string()))?;
+    file.write_all(step.to_string().as_bytes())
+        .map_err(|error| WalletError::Io(error.to_string()))?;
+    file.sync_all()
+        .map_err(|error| WalletError::Io(error.to_string()))?;
+    Ok(TotpStepGuard(file))
+}
+
+fn replay_store() -> Result<std::path::PathBuf> {
+    if let Some(path) = std::env::var_os("VTORRENT_TOTP_STATE_DIR") {
+        let path = std::path::PathBuf::from(path);
+        if !path.is_absolute() {
+            return Err(WalletError::Io(
+                "TOTP replay directory must be absolute".into(),
+            ));
+        }
+        return Ok(path);
+    }
+    if let Some(path) = std::env::var_os("XDG_STATE_HOME") {
+        let path = std::path::PathBuf::from(path);
+        if path.is_absolute() {
+            return Ok(path.join("vtorrent/totp-replay"));
+        }
+    }
+    #[cfg(windows)]
+    if let Some(path) = std::env::var_os("LOCALAPPDATA") {
+        let path = std::path::PathBuf::from(path);
+        if path.is_absolute() {
+            return Ok(path.join("vtorrent/totp-replay"));
+        }
+    }
+    let home = std::env::var_os("HOME")
+        .ok_or_else(|| WalletError::Io("no TOTP replay directory available".into()))?;
+    let home = std::path::PathBuf::from(home);
+    if !home.is_absolute() {
+        return Err(WalletError::Io("home directory must be absolute".into()));
+    }
+    Ok(home.join(".local/state/vtorrent/totp-replay"))
+}
+
+/// Consume a step for the same authenticator across wallet copies on this host.
+pub fn consume_account_totp_step(
+    wallet_path: &std::path::Path,
+    secret: &str,
+    step: u64,
+    wallet_last: Option<u64>,
+) -> Result<TotpStepGuard> {
+    consume_account_step_in_store(
+        &replay_store()?,
+        Some(wallet_path),
+        secret,
+        step,
+        wallet_last,
+    )
+}
+
+/// Consume a step when the encrypted wallet is held in memory rather than at a path.
+pub fn consume_account_totp_step_unbound(
+    secret: &str,
+    step: u64,
+    wallet_last: Option<u64>,
+) -> Result<TotpStepGuard> {
+    consume_account_step_in_store(&replay_store()?, None, secret, step, wallet_last)
+}
+
+fn consume_account_step_in_store(
+    store: &std::path::Path,
+    wallet_path: Option<&std::path::Path>,
+    secret: &str,
+    step: u64,
+    wallet_last: Option<u64>,
+) -> Result<TotpStepGuard> {
+    use sha2::{Digest, Sha256};
+    if wallet_last.is_some_and(|last| step <= last) {
+        return Err(WalletError::OtpReplay);
+    }
+    if let Some(wallet_path) = wallet_path {
+        let legacy = wallet_path.with_extension("totp-step");
+        match std::fs::symlink_metadata(&legacy) {
+            Ok(metadata) if metadata.file_type().is_symlink() || metadata.len() > 128 => {
+                return Err(WalletError::Io("invalid legacy TOTP replay state".into()))
+            }
+            Ok(_) => {
+                use std::io::Read;
+                let mut options = std::fs::OpenOptions::new();
+                options.read(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    options.custom_flags(libc::O_NOFOLLOW);
+                }
+                let file = options
+                    .open(&legacy)
+                    .map_err(|error| WalletError::Io(error.to_string()))?;
+                file.lock_shared()
+                    .map_err(|error| WalletError::Io(error.to_string()))?;
+                let mut value = String::new();
+                file.take(129)
+                    .read_to_string(&mut value)
+                    .map_err(|error| WalletError::Io(error.to_string()))?;
+                if value.len() > 128 {
+                    return Err(WalletError::Io("invalid legacy TOTP replay state".into()));
+                }
+                let last = value
+                    .trim()
+                    .parse::<u64>()
+                    .map_err(|_| WalletError::Io("invalid legacy TOTP replay state".into()))?;
+                if step <= last {
+                    return Err(WalletError::OtpReplay);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(WalletError::Io(error.to_string())),
+        }
+    }
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(store)
+        .map_err(|error| WalletError::Io(error.to_string()))?;
+    let metadata =
+        std::fs::symlink_metadata(store).map_err(|error| WalletError::Io(error.to_string()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(WalletError::Io("invalid TOTP replay directory".into()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(WalletError::Io(
+                "TOTP replay directory must not be group/world accessible".into(),
+            ));
+        }
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"vtorrent/totp-replay/v1\0");
+    hasher.update(secret.as_bytes());
+    let account_path = store.join(format!("{}.wallet", hex::encode(hasher.finalize())));
+    consume_totp_step_locked(&account_path, step)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_authenticator_cannot_replay_across_wallet_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "vtr-account-totp-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = root.join("store");
+        let first = root.join("wallet-a.vtr");
+        let second = root.join("wallet-b.vtr");
+        consume_account_step_in_store(&store, Some(&first), "same-secret", 12345, None).unwrap();
+        assert!(matches!(
+            consume_account_step_in_store(&store, Some(&second), "same-secret", 12345, None),
+            Err(WalletError::OtpReplay)
+        ));
+        assert!(matches!(
+            consume_account_step_in_store(&store, Some(&second), "same-secret", 12346, Some(12346)),
+            Err(WalletError::OtpReplay)
+        ));
+        consume_account_step_in_store(&store, Some(&second), "different-secret", 12345, None)
+            .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replay_state_allows_only_one_concurrent_use_and_fails_closed_when_corrupt() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-totp-replay-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wallet.vtr");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    consume_totp_step(&path, 12345).is_ok()
+                })
+            })
+            .collect();
+        assert_eq!(
+            threads
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .filter(|passed| *passed)
+                .count(),
+            1
+        );
+        assert!(matches!(
+            consume_totp_step(&path, 12345),
+            Err(WalletError::OtpReplay)
+        ));
+        std::fs::write(path.with_extension("totp-step"), b"corrupt").unwrap();
+        assert!(consume_totp_step(&path, 12346).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replay_state_rejects_symlinks() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-totp-link-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wallet.vtr");
+        let victim = dir.join("victim");
+        std::fs::write(&victim, b"safe").unwrap();
+        std::os::unix::fs::symlink(&victim, path.with_extension("totp-step")).unwrap();
+        assert!(consume_totp_step(&path, 12345).is_err());
+        assert_eq!(std::fs::read(&victim).unwrap(), b"safe");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn test_totp_generate_and_verify() {

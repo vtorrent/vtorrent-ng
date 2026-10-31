@@ -230,6 +230,8 @@ pub(crate) struct HotWalletData {
     pub version: u8,
     pub wif: zeroize::Zeroizing<String>,
     pub otp_secret: Option<zeroize::Zeroizing<String>>,
+    #[serde(default)]
+    pub last_totp_step: Option<u64>,
 }
 
 /// Verify the passphrase and encrypted TOTP configuration before returning a signing key.
@@ -251,7 +253,7 @@ pub async fn verify_wallet_auth(
             "Wallet decryption produced invalid UTF-8 data — key may be corrupted".into(),
         )
     })?;
-    let (wif, secret) = if text.starts_with('{') {
+    let (wif, secret, mut payload) = if text.starts_with('{') {
         let data: HotWalletData = serde_json::from_str(text)
             .map_err(|_| RpcError::Internal("Encrypted wallet payload is corrupted".into()))?;
         if data.version != 1 {
@@ -267,10 +269,10 @@ pub async fn verify_wallet_auth(
             .map_err(|_| {
                 RpcError::Internal("Encrypted wallet TOTP configuration is corrupted".into())
             })?;
-        (data.wif, secret)
+        (data.wif.clone(), secret, Some(data))
     } else {
         let secret = state.wallet_totp_secret.read().await.clone();
-        (zeroize::Zeroizing::new(text.to_owned()), secret)
+        (zeroize::Zeroizing::new(text.to_owned()), secret, None)
     };
 
     if let Some(secret) = secret {
@@ -294,6 +296,61 @@ pub async fn verify_wallet_auth(
                 return Err(RpcError::Unauthorized(
                     "TOTP code has already been used — wait for the next code".into(),
                 ));
+            }
+            let secret_text = zeroize::Zeroizing::new(secret.to_base32());
+            let embedded = payload.as_ref().and_then(|data| data.last_totp_step);
+            let consumed = if let Some(path) = state.wallet_path.as_deref() {
+                vtorrent_wallet::otp::consume_account_totp_step(path, &secret_text, step, embedded)
+            } else {
+                vtorrent_wallet::otp::consume_account_totp_step_unbound(
+                    &secret_text,
+                    step,
+                    embedded,
+                )
+            };
+            let _replay_guard = consumed.map_err(|error| match error {
+                vtorrent_wallet::error::WalletError::OtpReplay => RpcError::Unauthorized(
+                    "TOTP code has already been used — wait for the next code".into(),
+                ),
+                _ => RpcError::Internal(format!("TOTP replay state unavailable: {error}")),
+            })?;
+            if let Some(data) = payload.as_mut() {
+                data.last_totp_step = Some(step);
+                let plaintext =
+                    zeroize::Zeroizing::new(serde_json::to_vec(data).map_err(|_| {
+                        RpcError::Internal("Unable to serialize hot wallet".into())
+                    })?);
+                let updated = vtorrent_wallet::encryption::encrypt_wallet(&plaintext, passphrase)
+                    .map_err(|error| {
+                    RpcError::Internal(format!("Wallet encryption failed: {error}"))
+                })?;
+                {
+                    let mut current = state.wallet_encrypted.write().await;
+                    let unchanged = current.as_ref().is_some_and(|wallet| {
+                        wallet.version == encrypted.version
+                            && wallet.salt == encrypted.salt
+                            && wallet.nonce == encrypted.nonce
+                            && wallet.ciphertext == encrypted.ciphertext
+                    });
+                    if !unchanged {
+                        return Err(RpcError::BadRequest(
+                            "Wallet changed during TOTP verification; retry with a new code".into(),
+                        ));
+                    }
+                    *current = Some(updated.clone());
+                }
+                if let Err(error) = crate::handlers::wallet::persist_wallet(state).await {
+                    let mut current = state.wallet_encrypted.write().await;
+                    if current.as_ref().is_some_and(|wallet| {
+                        wallet.version == updated.version
+                            && wallet.salt == updated.salt
+                            && wallet.nonce == updated.nonce
+                            && wallet.ciphertext == updated.ciphertext
+                    }) {
+                        *current = Some(encrypted);
+                    }
+                    return Err(error);
+                }
             }
             *last = Some(step);
         }
@@ -533,6 +590,7 @@ mod totp_replay {
             version: 1,
             wif: zeroize::Zeroizing::new(wif.to_string()),
             otp_secret: Some(zeroize::Zeroizing::new(secret.to_base32())),
+            last_totp_step: None,
         };
         let plaintext = zeroize::Zeroizing::new(serde_json::to_vec(&data).unwrap());
         let encrypted = vtorrent_wallet::encryption::encrypt_wallet(&plaintext, "pass").unwrap();
@@ -557,6 +615,25 @@ mod totp_replay {
             err.to_string().contains("already been used"),
             "replay must be rejected, got: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn totp_step_is_shared_across_independent_rpc_states_and_encrypted() {
+        let (first, secret) = state_with_totp().await;
+        let second = AppState::new();
+        *second.wallet_encrypted.write().await = first.wallet_encrypted.read().await.clone();
+        let code = secret.current_code().unwrap();
+        verify_wallet_auth(&first, "pass", Some(&code))
+            .await
+            .unwrap();
+        assert!(matches!(
+            verify_wallet_auth(&second, "pass", Some(&code)).await,
+            Err(RpcError::Unauthorized(_))
+        ));
+        let encrypted = first.wallet_encrypted.read().await.clone().unwrap();
+        let plaintext = vtorrent_wallet::encryption::decrypt_wallet(&encrypted, "pass").unwrap();
+        let data: HotWalletData = serde_json::from_slice(&plaintext).unwrap();
+        assert!(data.last_totp_step.is_some());
     }
 
     #[tokio::test]

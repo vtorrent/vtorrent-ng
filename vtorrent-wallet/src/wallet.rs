@@ -61,6 +61,9 @@ pub struct WalletData {
     pub keys: Vec<WalletKeyEntry>,
     pub default_address: Option<String>,
     pub otp_config: Option<OtpConfig>,
+    /// Last TOTP step consumed by this encrypted wallet.
+    #[serde(default)]
+    pub last_totp_step: Option<u64>,
     /// Optional HD account (BIP39 mnemonic) used as the shared seed.
     #[serde(default)]
     pub hd: Option<crate::hd::HdAccount>,
@@ -182,6 +185,7 @@ impl Wallet {
                 keys: Vec::new(),
                 default_address: None,
                 otp_config: None,
+                last_totp_step: None,
                 hd: None,
                 cold_stake: Vec::new(),
                 created_at: now,
@@ -202,9 +206,10 @@ impl Wallet {
         let wallet_file: WalletFile =
             serde_json::from_str(&json).map_err(|e| WalletError::Serialization(e.to_string()))?;
         let plaintext = decrypt_wallet(&wallet_file.encrypted, passphrase)?;
-        let data: WalletData = serde_json::from_slice(&plaintext)
+        let mut data: WalletData = serde_json::from_slice(&plaintext)
             .map_err(|e| WalletError::Serialization(e.to_string()))?;
 
+        let mut replay_guard = None;
         // If 2FA is enabled, verify the OTP code before returning the wallet
         if let Some(config) = &data.otp_config {
             if config.enabled {
@@ -212,24 +217,33 @@ impl Wallet {
                 let step = config
                     .verify_step(code)?
                     .ok_or(WalletError::OtpInvalidCode)?;
-                let step_path = path.with_extension("totp-step");
-                let last = std::fs::read_to_string(&step_path)
-                    .ok()
-                    .and_then(|value| value.trim().parse::<u64>().ok())
-                    .unwrap_or(0);
-                if step <= last {
-                    return Err(WalletError::OtpReplay);
-                }
-                std::fs::write(&step_path, step.to_string())
-                    .map_err(|error| WalletError::Io(error.to_string()))?;
+                replay_guard = Some(config.consume_step(path, step, data.last_totp_step)?);
+                data.last_totp_step = Some(step);
             }
         }
 
-        Ok(Self {
+        let used_otp = data.last_totp_step.is_some()
+            && data
+                .otp_config
+                .as_ref()
+                .is_some_and(|config| config.enabled);
+        let wallet = Self {
             data,
             passphrase: passphrase.to_string().into(),
             pending_otp: None,
-        })
+        };
+        if used_otp {
+            if std::fs::read_to_string(path).map_err(|error| WalletError::Io(error.to_string()))?
+                != json
+            {
+                return Err(WalletError::Io(
+                    "wallet changed during TOTP verification".into(),
+                ));
+            }
+            wallet.save(path)?;
+        }
+        drop(replay_guard);
+        Ok(wallet)
     }
 
     /// Save the wallet to a file path (encrypts with the stored passphrase).
@@ -500,15 +514,14 @@ impl Wallet {
         let Some(pending) = self.pending_otp.as_ref() else {
             return Err(WalletError::OtpNotEnabled);
         };
-        match pending.verify_code(code) {
-            Ok(()) => {}
-            Err(WalletError::OtpInvalidCode) => return Ok(false),
-            Err(error) => return Err(error),
-        }
+        let Some(step) = pending.verify_step(code)? else {
+            return Ok(false);
+        };
         let mut config = pending.clone();
         config.enabled = true;
         config.enabled_at = unix_now();
         self.data.otp_config = Some(config);
+        self.data.last_totp_step = Some(step);
         self.pending_otp = None;
         self.data.last_modified = unix_now();
         Ok(true)
@@ -552,6 +565,22 @@ impl Wallet {
             Err(WalletError::OtpInvalidCode) => Ok(false),
             Err(e) => Err(e),
         }
+    }
+
+    /// Verify and consume a TOTP code using the wallet's persistent replay state.
+    pub fn verify_2fa_once(&mut self, code: &str, path: &std::path::Path) -> Result<bool> {
+        let config = self
+            .data
+            .otp_config
+            .as_ref()
+            .ok_or(WalletError::OtpNotEnabled)?;
+        let Some(step) = config.verify_step(code)? else {
+            return Ok(false);
+        };
+        let _replay_guard = config.consume_step(path, step, self.data.last_totp_step)?;
+        self.data.last_totp_step = Some(step);
+        self.save(path)?;
+        Ok(true)
     }
 
     // ─── HD / seed ────────────────────────────────────────────────────────────
@@ -604,14 +633,18 @@ impl Wallet {
         let wallet_file: WalletFile =
             serde_json::from_str(json).map_err(|e| WalletError::Serialization(e.to_string()))?;
         let plaintext = decrypt_wallet(&wallet_file.encrypted, passphrase)?;
-        let data: WalletData = serde_json::from_slice(&plaintext)
+        let mut data: WalletData = serde_json::from_slice(&plaintext)
             .map_err(|e| WalletError::Serialization(e.to_string()))?;
 
         // If 2FA is enabled, verify the OTP code before returning the wallet
         if let Some(config) = &data.otp_config {
             if config.enabled {
                 let code = otp_code.ok_or(WalletError::OtpRequired)?;
-                config.verify_code(code)?;
+                let step = config
+                    .verify_step(code)?
+                    .ok_or(WalletError::OtpInvalidCode)?;
+                config.consume_step_unbound(step, data.last_totp_step)?;
+                data.last_totp_step = Some(step);
             }
         }
 
@@ -726,12 +759,47 @@ mod tests {
         let result = Wallet::from_json_file(&json, passphrase, None);
         assert!(matches!(result, Err(WalletError::OtpRequired)));
 
-        // Loading with correct OTP code should succeed
-        let secret = TotpSecret::from_base32(&base32).expect("Base32 decode failed");
-        let code = secret.current_code().expect("Code generation failed");
-        let loaded =
-            Wallet::from_json_file(&json, passphrase, Some(&code)).expect("Load with OTP failed");
-        assert_eq!(loaded.key_count(), wallet.key_count());
+        // The enrollment code has already been consumed and cannot be replayed.
+        assert!(matches!(
+            Wallet::from_json_file(&json, passphrase, Some(&code)),
+            Err(WalletError::OtpReplay)
+        ));
+    }
+
+    #[test]
+    fn wallet_copy_cannot_reuse_otp_and_consumed_step_is_encrypted() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-wallet-copy-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("wallet-a.vtr");
+        let second = dir.join("wallet-b.vtr");
+        let mut wallet = Wallet::create("test-pass").unwrap();
+        let config = wallet.enable_2fa().unwrap();
+        let code = TotpSecret::from_base32(&config.secret_base32())
+            .unwrap()
+            .current_code()
+            .unwrap();
+        assert!(wallet.confirm_pending_2fa(&code).unwrap());
+        wallet.data.last_totp_step = None;
+        wallet.save(&first).unwrap();
+        std::fs::copy(&first, &second).unwrap();
+        let loaded = Wallet::load(&first, "test-pass", Some(&code)).unwrap();
+        assert!(loaded.data.last_totp_step.is_some());
+        assert!(matches!(
+            Wallet::load(&second, "test-pass", Some(&code)),
+            Err(WalletError::OtpReplay)
+        ));
+        let file: WalletFile = serde_json::from_slice(&std::fs::read(&first).unwrap()).unwrap();
+        let plaintext = decrypt_wallet(&file.encrypted, "test-pass").unwrap();
+        let data: WalletData = serde_json::from_slice(&plaintext).unwrap();
+        assert_eq!(data.last_totp_step, loaded.data.last_totp_step);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -328,7 +328,8 @@ async fn test_totp_survives_persisted_wallet_restart() {
     ));
     let mut state = AppState::new();
     state.wallet_path = Some(path.clone());
-    let secret_text = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+    let secret = vtorrent_wallet::otp::TotpSecret::generate();
+    let secret_text = secret.to_base32();
     let (status, body) = post_json(
         build_router(state),
         "/api/v1/wallet/import",
@@ -341,7 +342,7 @@ async fn test_totp_survives_persisted_wallet_restart() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let saved = std::fs::read_to_string(&path).unwrap();
     std::fs::remove_file(path).unwrap();
-    assert!(!saved.contains(secret_text));
+    assert!(!saved.contains(&secret_text));
     let blob: serde_json::Value = serde_json::from_str(&saved).unwrap();
     let restarted = AppState::new();
     *restarted.wallet_encrypted.write().await =
@@ -359,7 +360,6 @@ async fn test_totp_survives_persisted_wallet_restart() {
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
-    let secret = vtorrent_wallet::otp::TotpSecret::from_base32(secret_text).unwrap();
     let (status, body) = post_json(app, "/api/v1/wallet/unlock", serde_json::json!({
         "passphrase": "restart-pass", "timeout_secs": 300, "otp_code": secret.current_code().unwrap()
     })).await;

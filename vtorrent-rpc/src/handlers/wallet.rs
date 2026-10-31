@@ -255,6 +255,7 @@ pub async fn import_wallet(
         version: 1,
         wif: req.wif,
         otp_secret: req.otp_secret,
+        last_totp_step: None,
     };
     let mut plaintext = zeroize::Zeroizing::new(Vec::new());
     serde_json::to_writer(&mut *plaintext, &data)
@@ -283,7 +284,7 @@ pub async fn import_wallet(
 /// No-op when persistence is disabled (standalone/test instances).
 /// Record the staking intent so it survives daemon restarts: the address is
 /// re-armed automatically whenever the wallet is unlocked again.
-async fn persist_wallet(state: &AppState) -> RpcResult<()> {
+pub(super) async fn persist_wallet(state: &AppState) -> RpcResult<()> {
     let Some(path) = &state.wallet_path else {
         return Ok(());
     };
@@ -846,6 +847,7 @@ mod auto_unlock_tests {
             version: 1,
             wif: zeroize::Zeroizing::new(wif.to_string()),
             otp_secret: None,
+            last_totp_step: None,
         };
         let plaintext = zeroize::Zeroizing::new(serde_json::to_vec(&data).unwrap());
         let encrypted =

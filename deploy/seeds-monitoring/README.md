@@ -85,12 +85,33 @@ systemctl edit --full prometheus-alertmanager   # add --cluster.listen-address=
 
 ## External dead-man check
 
-Run `deadman.sh` from a host other than seed1, for example a cron entry on
-seed2 or seed3:
+Run `deadman.sh` from a host other than seed1, for example a systemd timer on
+seed2 or seed3. Use a dedicated SSH identity restricted on seed1 to the
+read-only `monitor-ready.sh` forced command. Pin seed1's verified host key out
+of band, and place the private key, known-hosts file, and ntfy topic in
+root-only files. The remote command checks Prometheus, Alertmanager, and relay
+service readiness without exposing their ports:
 
 ```bash
-SEED1_PROMETHEUS_URL=http://91.98.80.38:9090 NTFY_TOPIC='<topic>'   deploy/seeds-monitoring/deadman.sh
+SEED1_SSH_TARGET='deadman@seed1' \
+SEED1_SSH_KEY='/etc/vtorrent/deadman-key' \
+SEED1_KNOWN_HOSTS='/etc/vtorrent/deadman-known-hosts' \
+NTFY_TOPIC='<topic>' \
+  deploy/seeds-monitoring/deadman.sh
 ```
 
-It sends an ntfy alert when seed1 Prometheus is unreachable. Store the topic in
-a 0600 environment file or secret store, not in the unit or argv.
+It sends one ntfy alert when the check fails and one recovery notification
+afterward, with retries when delivery fails. Store the topic in a 0600
+environment file or secret store, not in the unit or argv. On the
+latest connectivity check, both seed2 and seed3 timed out connecting to
+seed1's port 9090. Do not enable the dead-man timer until a restricted,
+authenticated monitoring path has been configured and tested from its host;
+otherwise it will produce false alerts. The access check did not change the
+production configuration. A strict SSH prerequisite check also found that
+neither host had seed1's host key in its known-hosts file. A dedicated identity,
+verified host-key pin, and restricted command still need to be provisioned.
+
+The forced command is a service-readiness check, not a synthetic end-to-end
+notification heartbeat. Verify the production alert route independently; a
+compromised but running relay could still report healthy. The hermetic
+transition and retry checks run with `sh deploy/seeds-monitoring/tests/deadman-test.sh`.

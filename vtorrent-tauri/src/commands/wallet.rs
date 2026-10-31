@@ -484,6 +484,23 @@ pub fn verify_2fa(state: State<AppState>, code: String) -> Result<bool> {
 
     if wallet.has_pending_2fa() {
         let pending = wallet.pending_2fa_config();
+        let step = pending
+            .as_ref()
+            .ok_or(TauriError::TwoFAFailed)?
+            .verify_step(&code)
+            .map_err(TauriError::from)?;
+        let Some(step) = step else { return Ok(false) };
+        let path = state
+            .wallet_path
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or(TauriError::WalletNotInitialized)?;
+        let _replay_guard = pending
+            .as_ref()
+            .ok_or(TauriError::TwoFAFailed)?
+            .consume_step(&path, step, None)
+            .map_err(TauriError::from)?;
         let valid = wallet
             .confirm_pending_2fa(&code)
             .map_err(TauriError::from)?;
@@ -498,7 +515,15 @@ pub fn verify_2fa(state: State<AppState>, code: String) -> Result<bool> {
         return Ok(valid);
     }
 
-    let valid = wallet.verify_2fa(&code).map_err(TauriError::from)?;
+    let path = state
+        .wallet_path
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or(TauriError::WalletNotInitialized)?;
+    let valid = wallet
+        .verify_2fa_once(&code, &path)
+        .map_err(TauriError::from)?;
     Ok(valid)
 }
 
@@ -507,7 +532,16 @@ pub fn disable_2fa(state: State<AppState>, code: String) -> Result<()> {
     let mut guard = state.wallet.lock().unwrap();
     let wallet = guard.as_mut().ok_or(TauriError::WalletNotInitialized)?;
 
-    if !wallet.verify_2fa(&code).map_err(TauriError::from)? {
+    let path = state
+        .wallet_path
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or(TauriError::WalletNotInitialized)?;
+    if !wallet
+        .verify_2fa_once(&code, &path)
+        .map_err(TauriError::from)?
+    {
         return Err(TauriError::TwoFAFailed);
     }
 
@@ -1560,8 +1594,18 @@ mod tests {
         assert!(state.wallet.lock().unwrap().as_ref().unwrap().has_2fa());
         assert!(path.exists(), "confirmation must persist the active config");
 
-        let loaded = Wallet::load(&path, "password", Some(&code)).unwrap();
-        assert!(loaded.has_2fa());
+        assert!(
+            verify_2fa(state.clone(), code.clone()).is_err(),
+            "enrollment code must not be accepted twice"
+        );
+        assert!(
+            disable_2fa(state.clone(), code.clone()).is_err(),
+            "enrollment code must not disable 2FA"
+        );
+        assert!(
+            Wallet::load(&path, "password", Some(&code)).is_err(),
+            "enrollment code must not unlock after restart"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
