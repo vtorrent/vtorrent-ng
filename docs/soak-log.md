@@ -2492,3 +2492,48 @@ broadcast the VTR claim through its own RPC; the taker and observer each saw six
 confirmations and the maker reported the claim. A maker restart after VTR
 funding preserved the swap and completed settlement. Evidence:
 `/tmp/opencode/candidate-cross-chain-9a22bcd-20261030T013142Z/evidence.json`.
+
+## 2026-11-01 — 35ea52e candidate memory breach and allocator comparison
+
+The `35ea52e` candidate image (`sha256:1e2b398f35af22a40af30c8a53ab9589a3a6e1296f182d1e51b76db8c4cade98`)
+ran as a separate three-node regtest fleet with BTC mainnet SPV on every node,
+using default allocator settings (the launcher set no `MALLOC_*` variables). It
+ran 18 h and was stopped at 16:33Z after 1,065 one-minute samples.
+
+- All three nodes stayed at a single tip (height 1,063), BTC synced, scan lag 0,
+  with **zero restarts and no OOM kills**.
+- Peak RSS was **279.5 / 279.7 / 228.2 MiB**; nodes 1 and 2 spent **129** and
+  **189** samples above the 256 MiB `ProcessRssHigh` threshold, node 1 last at
+  01:25Z and node 2 last at 10:47Z.
+- BTC scan errors were 2/3/0 (peer-group agreement, checkpoint and scan
+  timeouts); every one recovered and scanning continued at lag 0.
+- The 107 sampler failures were `TimeoutError` on `/api/v1/btc/status` during
+  the 22:29–01:25Z startup sync window; none afterwards.
+- Evidence: `/tmp/opencode/candidate-35ea52e-20261031T222808Z/final-summary.json`.
+
+A controlled two-node comparison then isolated the allocator. Both nodes used
+the same image, the same fresh BTC seed, and completed a 100,001-block BIP-158
+scan with five peer groups.
+
+| Workload | Default allocator | Tuned allocator |
+|---|---|---|
+| After BTC initial sync (non-staking, ~10 h) | 160–182 MiB | 100–108 MiB |
+| Staking + BTC SPV (600 samples, 10 h) | 162.4–213.0 MiB | **116.4–127.6 MiB** |
+
+The tuned set is `MALLOC_ARENA_MAX=2`, `MALLOC_MMAP_THRESHOLD_=131072`, and
+`MALLOC_TRIM_THRESHOLD_=131072` — the same values already deployed to the core
+soak fleet on 2026-09-24. Neither comparison node exceeded 256 MiB; the default
+node still reached 213 MiB against 127.6 MiB tuned under identical staking and
+BTC work. Evidence: `/tmp/opencode/allocator-compare-35ea52e-20261101T011803Z/`.
+
+**Release consequence:** the BTC-SPV release fleet must set all three variables
+in the container environment. `docker/testnet/docker-compose.yml` already sets
+them for the core soak; the BTC-enabled release launcher did not, which is why
+the earlier BTC fleets reported 237–267 MB. A tuned `35ea52e` fleet was started
+at 16:34Z (fresh chain, two staking nodes) and is soaking; its first six hours
+measured 78–191 MiB with zero samples above 256 MiB.
+
+This is environmental, not a code change: it lowers allocator retention but does
+not bound the chain-proportional growth described in
+`docs/memory-observability-design.md` §7. The UTXO/pruning item is still the
+long-term fix.

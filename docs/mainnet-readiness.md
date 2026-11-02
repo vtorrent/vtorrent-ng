@@ -321,6 +321,17 @@ actions, operator approval.
       fresh genesis, post-soak consensus batch). Disproven along the way: the
       redb-cache hypothesis; retracted: the BTC-SPV and "plateau" claims. See
       `docs/memory-observability-design.md` §7.2–7.7.
+- [x] **Release fleet must set the allocator variables** — 2026-11-01. The
+      BTC-SPV release launcher set none of them, so the `35ea52e` fleet ran on
+      glibc defaults and peaked at **279.5 / 279.7 / 228.2 MiB**, spending 129
+      and 189 one-minute samples above the 256 MiB `ProcessRssHigh` threshold.
+      A matched two-node comparison on the same image and BTC workload measured
+      **162.4–213.0 MiB default vs 116.4–127.6 MiB tuned** across 600 staking
+      samples. All three variables (`MALLOC_ARENA_MAX=2`,
+      `MALLOC_MMAP_THRESHOLD_=131072`, `MALLOC_TRIM_THRESHOLD_=131072`) are
+      required for any BTC-enabled fleet; `docker/testnet/docker-compose.yml`
+      already sets them. Verified on a fresh tuned `35ea52e` fleet. See
+      `docs/soak-log.md` 2026-11-01.
 - [x] **`v2.0.0-beta.3` tag** — released 2026-10-06 after the 7-day soak
       sign-off; desktop build matrix green; GitHub Release published with 8
       assets. See `docs/release-notes-beta.3.md`.
