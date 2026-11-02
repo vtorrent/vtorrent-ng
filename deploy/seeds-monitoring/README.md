@@ -115,3 +115,48 @@ The forced command is a service-readiness check, not a synthetic end-to-end
 notification heartbeat. Verify the production alert route independently; a
 compromised but running relay could still report healthy. The hermetic
 transition and retry checks run with `sh deploy/seeds-monitoring/tests/deadman-test.sh`.
+
+### Pre-staged deployment artifacts
+
+Nothing in this subsection has been applied to production. These files exist so
+provisioning is a short, reviewable step once the identity and host-key pin are
+approved.
+
+| File | Installed as | Host |
+|---|---|---|
+| `deadman.sh` | `/usr/local/sbin/vtorrent-deadman` (0755) | seed2/seed3 |
+| `systemd/vtorrent-deadman.service` | `/etc/systemd/system/` | seed2/seed3 |
+| `systemd/vtorrent-deadman.timer` | `/etc/systemd/system/` | seed2/seed3 |
+| `ssh/deadman.env.example` | `/etc/vtorrent/deadman.env` (0600 root) | seed2/seed3 |
+| `vtorrent-monitor-ready` | `/usr/local/libexec/vtorrent-monitor-ready` (0755) | seed1 |
+| `monitor-ready.sh` | `/usr/local/libexec/monitor-ready.sh` (0755) | seed1 |
+| `ssh/authorized_keys.deadman` | `~deadman/.ssh/authorized_keys` (0600) | seed1 |
+| `ssh/sshd-deadman.conf` | `/etc/ssh/sshd_config.d/deadman.conf` | seed1 |
+
+The wrapper and the `sshd` `Match User deadman` block both set the forced
+command. The wrapper ignores `SSH_ORIGINAL_COMMAND` entirely, so a key holder
+cannot run anything else even if one of the two layers is missing. Its check is
+hermetic and needs no SSH or running daemon:
+
+```bash
+sh deploy/seeds-monitoring/tests/monitor-ready-wrapper-test.sh
+```
+
+Sequence, after approval:
+
+1. Create the `deadman` account on seed1 with no shell login and no sudo.
+2. Install the wrapper and `monitor-ready.sh` side by side in
+   `/usr/local/libexec`, then install the `sshd` drop-in and
+   `sshd -t` before reloading.
+3. Verify seed1's host key fingerprint out of band, pin it in
+   `/etc/vtorrent/deadman-known-hosts` on the checking host, and confirm
+   `ssh -T ... /usr/local/libexec/vtorrent-monitor-ready` succeeds while
+   `ssh -T ... id` also only reports readiness.
+4. Install the key, environment file, unit, and timer; run the service once by
+   hand and confirm the exit status and state file.
+5. Prove the failure path: make the readiness check fail on purpose and confirm
+   exactly one notification, then confirm the recovery notification on restore.
+
+Steps 3–5 are the ones that remain unverified in production. Host-key pinning
+and the seed2/seed3 → seed1 path are still outstanding; see the paragraph
+above.

@@ -1,0 +1,21 @@
+[Unit]
+Description=vTorrent seed monitoring dead-man check
+Documentation=file:/opt/vtorrent-ng/deploy/seeds-monitoring/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Environment=DEADMAN_STATE_DIR=/var/lib/vtorrent-deadman
+EnvironmentFile=/etc/vtorrent/deadman.env
+StateDirectory=vtorrent-deadman
+StateDirectoryMode=0700
+ExecStart=/usr/local/sbin/vtorrent-deadman
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/var/lib/vtorrent-deadman
+RestrictSUIDSGID=yes
+LockPersonality=yes

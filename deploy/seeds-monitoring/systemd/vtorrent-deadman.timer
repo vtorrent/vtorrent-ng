@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the vTorrent seed dead-man check every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+RandomizedDelaySec=20s
+Persistent=true
+Unit=vtorrent-deadman.service
+
+[Install]
+WantedBy=timers.target

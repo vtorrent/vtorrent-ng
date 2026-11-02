@@ -1,0 +1,11 @@
+# Install as ~deadman/.ssh/authorized_keys on seed1 (mode 0600, owned by
+# deadman; the .ssh directory is 0700).
+#
+# Replace the key and the from="..." addresses before installing. Both seed2
+# (2.29.8.113) and seed3 (5.161.90.55) run the check; add or remove addresses to
+# match the hosts that actually run the timer.
+#
+# `restrict` disables pty, forwarding, agent forwarding, and X11 forwarding.
+# The forced command is defence in depth: the sshd Match block sets the same
+# value and this wrapper ignores the requested command entirely.
+restrict,command="/usr/local/libexec/vtorrent-monitor-ready",from="2.29.8.113,5.161.90.55" ssh-ed25519 AAAA...REPLACE... deadman@seed2-3

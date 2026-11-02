@@ -1,0 +1,8 @@
+#!/bin/sh
+# Forced command for the external dead-man key (see ssh/authorized_keys.deadman).
+#
+# sshd runs this with the requested command in SSH_ORIGINAL_COMMAND. That value
+# is deliberately never read or evaluated: the only thing an authenticated key
+# can do is run monitor-ready.sh from this directory.
+set -eu
+exec "$(dirname "$0")/monitor-ready.sh"
