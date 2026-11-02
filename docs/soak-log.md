@@ -2592,3 +2592,33 @@ graph. It is a wire and persistence format, so replacing it is a compatibility
 change rather than a dependency bump and is not a soak action. The other three
 are confined to the migration tool, the desktop shell, or the build toolchain.
 None of the four is a known exploitable vulnerability.
+
+## 2026-11-02 — ignored BTC SPV tests repaired and wired into nightly
+
+The four `btc_spv` ignored tests had gone stale without anyone noticing.
+`ff148fd` made `POST /api/v1/swap/btc-fund` and `POST /api/v1/swap/btc-claim`
+require the wallet passphrase even while unlocked, but the manual test still
+called both without one, so `multi_node_htlc_swap_settles_across_real_btc_spv`
+failed with `401 Incorrect passphrase`. Nothing exercised these tests
+automatically, which is why a deliberate hardening change broke a test for
+three days without a red build.
+
+Both calls now send `testpass`. All four pass in release mode against the real
+Bitcoin Core regtest container:
+
+```
+btc_spv::btc_spv_drops_a_reorged_out_funding_output ... ok
+btc_spv::independent_daemons_agree_on_btc_spv_tip_and_reorg ... ok
+btc_spv::multi_node_htlc_swap_settles_across_real_btc_spv ... ok
+btc_spv::taker_claims_vtr_on_a_separate_node ... ok
+```
+
+`nightly.yml` gained a `btc-spv-regtest` job that starts `bitcoin/bitcoin:26`,
+waits for RPC, runs those four tests in release mode, and removes the container
+with `if: always()`. Run `41448345149` on `7ba912a` is green, so drift in this
+path now shows up as a failed nightly instead of silence.
+
+The remaining ignored tests are two experiments
+(`governance_reorg::proof_load::canonical_proof_request_cost` and the
+documented quota-recovery case already covered by the nightly's
+`proof-quota-recovery` job); neither is a correctness gate.
