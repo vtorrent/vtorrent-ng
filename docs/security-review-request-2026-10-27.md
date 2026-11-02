@@ -1,14 +1,17 @@
 # Independent security review request
 
-This package requests an independent human security review. The prior internal
-model review in `docs/2026-10-26_security-vtorrent-report.md` does not satisfy
-the independence gate.
+Updated 2026-11-02. This package requests an independent human security review.
+The prior internal model review in `docs/2026-10-26_security-vtorrent-report.md`
+does not satisfy the independence gate.
 
 ## Review target
 
 Review the candidate `70ea7b9dfb3c65dcfb30cb03ec8c168c5d3cbffd` plus the code
-deltas through `dd98176fcb6eb724e0753df8ee47dba40df9dc22`. The final code
+deltas through `115178b2e176a3b9526a989c626da1676026f08b`. The final code
 commit is the review head.
+
+The deltas added after `dd98176` are the reason this request was refreshed; the
+original 2026-10-27 scope predates them.
 
 | Commit | Full hash | Purpose |
 |---|---|---|
@@ -31,15 +34,21 @@ commit is the review head.
 | `9a22bcd` | `9a22bcd8ccd9bbdb4caf9bec794640fc3c0111aa` | Track release dependency lockfile |
 | `c292fc4` | `c292fc461f231e732b27de2c9a057de3a9996fed` | Taker-side external VTR claim RPC |
 | `dd98176` | `dd98176fcb6eb724e0753df8ee47dba40df9dc22` | Four-peer mainnet target and 256 MiB steady RSS policy |
+| `ff148fd` | `ff148fdc6f39e4fac8beb873297c60e8928874f6` | Codebase-wide review remediation (consensus, overlay, P2P, RPC, torrent, UI) |
+| `35ea52e` | `35ea52e4fb847a35f0aa096bbef34baf49ff324e` | TOTP replay state, torrent adoption/partial migration, authenticated dead-man |
+| `800fe0a` | `800fe0a85dc743aab8b11ef3f2f9875305bc98ee` | Docs: allocator requirement for BTC SPV fleets |
+| `115178b` | `115178b2e176a3b9526a989c626da1676026f08b` | Ops: soak status warns on missing allocator settings |
 
-Docs-only commits in the delta are evidence, not implementation changes.
+Docs-only commits in the delta are evidence, not implementation changes. The
+`ff148fd` review findings are documented in
+`docs/2026-10-29_codebase-wide-review.md`.
 
 ## Verification
 
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout dd98176fcb6eb724e0753df8ee47dba40df9dc22
+git checkout 115178b2e176a3b9526a989c626da1676026f08b
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
@@ -47,8 +56,10 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 cargo test --workspace --all-features
 ```
 
-The last full workspace run on the final source passed 48 groups, 1,122
-tests, zero failures, and eight ignored tests.
+The last full workspace run on this source passed 49 groups, 1,135 tests, zero
+failures, and eight ignored manual release-mode tests. Set
+`VTORRENT_TOTP_STATE_DIR` to a fresh directory before running the suite so the
+host-scoped TOTP replay state does not collide with an existing installation.
 
 ## Scope emphasis
 
@@ -57,6 +68,33 @@ tests, zero failures, and eight ignored tests.
 - Mainnet swap claim verification and settlement observation.
 - RPC authorization on sensitive routes.
 - The R1 cold-staking rule and wallet encryption, with explicit verdicts.
+
+Added with `ff148fd` and `35ea52e`:
+
+- **TOTP replay state.** The accepted step is stored in the encrypted wallet and
+  in a locked, authenticator-scoped host file (`vtorrent-wallet/src/otp.rs`),
+  consumed on unlock, enrollment confirmation, verification, and disable
+  (`vtorrent-rpc/src/handlers/mod.rs`, `vtorrent-tauri/src/commands/wallet.rs`).
+  Review the fail-closed behaviour on a corrupt or symlinked state file, the
+  concurrency guarantee, and the documented residual risk: the guarantee is
+  host-local, so a wallet restored on a second machine does not inherit the
+  consumed step. See `docs/totp-replay.md`.
+- **Torrent adoption and partial migration.** `vtorrent-torrent/src/engine_disk.rs`
+  verifies every piece before adopting a legacy complete torrent and copies only
+  hash-verified pieces into an info-hash-bound destination before an atomic
+  `renameat2(RENAME_NOREPLACE)` install. Review the ownership-marker bypass
+  paths, symlink handling, the destination-not-overwritten rule, and the
+  documented concurrent intermediate-directory replacement race. See
+  `docs/torrent-adoption.md`.
+- **Dead-man monitoring.** `deploy/seeds-monitoring/deadman.sh` runs a pinned,
+  dedicated SSH identity against a restricted forced command and deduplicates
+  failure/recovery notifications. Review argument handling, command injection
+  surface, state-file races, and secret handling.
+- **Consensus and networking changes in `ff148fd`.** `vtorrent-node/src/block.rs`,
+  `consensus.rs`, `vtorrent-overlay/src/holepunch.rs`, `overlay.rs`,
+  `vtorrent-p2p/src/peer.rs`, and the torrent DHT/UDP parsers. The
+  `docs/2026-10-29_codebase-wide-review.md` report lists each finding with its
+  fix; verify the fixes rather than re-deriving them.
 
 ## Deliverables
 
@@ -72,11 +110,27 @@ tests, zero failures, and eight ignored tests.
   evidence, including the 60-cycle active swap soak.
 - `docs/btc-spv-multinode-reorg-test.md` for real-Bitcoin Core tests,
   including the separate-node taker claim.
+- `docs/2026-10-29_codebase-wide-review.md` for the whole-tree findings and
+  their fixes.
+- `docs/totp-replay.md` and `docs/torrent-adoption.md` for the new paths'
+  intended guarantees and known limits.
 
 ## Status
 
 - The `9a22bcd` BTC probe completed its 24 h window with zero scan errors. The
   final source `dd98176` adds the four-peer target; the release fleet settled
   at 237/233 MB after scan, below the 256 MiB steady-state alert.
-- Production alert delivery and the fleet-level active soak remain open.
+- `35ea52e` passed an isolated three-container cross-chain cycle against real
+  Bitcoin Core regtest: BTC funding discovery, six VTR funding confirmations,
+  swap preserved across a maker restart, BTC claim with six confirmations, and
+  a separate taker node broadcasting the VTR claim.
+- The full workspace suite passes on `115178b` (49 groups, 1,135 tests, eight
+  ignored). The whole-tree review remediation is documented in
+  `docs/2026-10-29_codebase-wide-review.md`.
+- **Memory is a deployment requirement, not a code fix.** A BTC-SPV fleet
+  launched without the pinned allocator settings peaked at 279.7 MiB and broke
+  the 256 MiB budget; a matched comparison measured 162–213 MiB default versus
+  116–128 MiB tuned. See `docs/soak-log.md` 2026-11-01.
+- A tuned `35ea52e` fleet is soaking. Production dead-man provisioning and
+  independent human review remain open.
 - Please confirm scope, timeline, and access needs before starting.
