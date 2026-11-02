@@ -88,19 +88,27 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      checks: write
-      issues: write
     steps:
       - uses: actions/checkout@v4
+
+      # The audit tool is not part of the shipped graph, so it is built with
+      # current stable rather than the pinned 1.90 MSRV: `cargo install` without
+      # `--locked` pulled a dependency requiring rustc 1.96 and failed every run
+      # from 2026-10-29 onward. The version is pinned and installed with the
+      # crate's own lockfile so the tool itself stays reproducible.
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: cargo install cargo-audit --version 0.22.2 --locked
 
       # Cargo.lock is gitignored; use the reviewed release lockfile so the
       # audit scans exactly the dependency graph used by the release image.
       - name: Use release lockfile
         run: cp release/Cargo.lock Cargo.lock
 
-      - uses: rustsec/audit-check@v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Audit release dependency graph
+        run: cargo audit
 
   # ─── Unused dependency detection ────────────────────────────────────────────
   machete:
