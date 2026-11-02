@@ -26,6 +26,22 @@ echo "────"
 docker ps --filter name=vtr-node --filter name=vtr-btc-regtest --filter name=vtr-prometheus --filter name=vtr-grafana \
     --format '{{.Names}}: {{.Status}}'
 
+# ── Allocator settings ──────────────────────────────────────────────────────
+# glibc defaults retain 60-90 MiB more than the pinned settings under staking
+# and BTC SPV. A BTC-enabled fleet launched without them peaked at 279.7 MiB
+# and broke the 256 MiB budget on 2026-11-01. See docs/soak-log.md.
+REQUIRED_ALLOCATOR=(MALLOC_ARENA_MAX MALLOC_MMAP_THRESHOLD_ MALLOC_TRIM_THRESHOLD_)
+for name in vtr-node1 vtr-node2 vtr-node3; do
+    envs=$(docker inspect "$name" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null || true)
+    [ -n "$envs" ] || continue
+    for key in "${REQUIRED_ALLOCATOR[@]}"; do
+        # shellcheck disable=SC2254
+        if ! grep -q "^${key}=" <<<"$envs"; then
+            echo "WARNING: ${name} is missing ${key}; RSS budget assumes the pinned allocator."
+        fi
+    done
+done
+
 # ── Host readiness: exactly one Docker daemon ────────────────────────────────
 # A second daemon (e.g. an apt-installed docker.service alongside the snap)
 # can take over /run/docker.sock, leaving the CLI blind to the real containers
