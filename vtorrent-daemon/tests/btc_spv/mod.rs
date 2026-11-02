@@ -369,7 +369,11 @@ async fn multi_node_htlc_swap_settles_across_real_btc_spv() {
     let funded = post(
         &maker,
         "/api/v1/swap/btc-fund",
-        json!({"order_id": order_id, "btc_refund_address": refund_address}),
+        json!({
+            "order_id": order_id,
+            "btc_refund_address": refund_address,
+            "passphrase": "testpass",
+        }),
     )
     .await;
     let btc_funding = funded["btc_funding_txid"].as_str().unwrap().to_owned();
@@ -379,7 +383,7 @@ async fn multi_node_htlc_swap_settles_across_real_btc_spv() {
     let claimed = post(
         &maker,
         "/api/v1/swap/btc-claim",
-        json!({"order_id": order_id}),
+        json!({"order_id": order_id, "passphrase": "testpass"}),
     )
     .await;
     let btc_claim = claimed["txid"].as_str().unwrap().to_owned();

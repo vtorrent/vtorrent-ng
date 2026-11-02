@@ -28,3 +28,47 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run real-time proof quota recovery test
         run: cargo test -p vtorrent-daemon --release --features test-util --test process_recovery daemon_proof_quota_expires_and_automatic_retry_completes -- --ignored --nocapture
+
+  btc-spv-regtest:
+    name: BTC SPV regtest ignored tests
+    runs-on: ubuntu-latest
+    # These four tests drive a real Bitcoin Core regtest node through Docker.
+    # They are #[ignore] because they need that container, which is also why
+    # they silently went stale when swap/btc-fund and swap/btc-claim began
+    # requiring a passphrase. Run them nightly so drift is caught here.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Start Bitcoin Core regtest
+        run: |
+          docker run -d --name vtr-btc-regtest \
+            -p 18443:18443 -p 18448:18448 \
+            bitcoin/bitcoin:26 \
+            -regtest=1 -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 \
+            -rpcport=18443 -port=18448 -txindex=1 \
+            -peerblockfilters=1 -blockfilterindex=1 -fallbackfee=0.0002 \
+            -rpcuser=vtr -rpcpassword=vtrtest
+
+      - name: Wait for Bitcoin Core RPC
+        run: |
+          for _ in $(seq 1 60); do
+            if docker exec vtr-btc-regtest bitcoin-cli -regtest \
+                -rpcuser=vtr -rpcpassword=vtrtest getblockchaininfo >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "bitcoind did not become ready" >&2
+          docker logs vtr-btc-regtest >&2
+          exit 1
+
+      - name: Run BTC SPV regtest tests
+        run: |
+          cargo test -p vtorrent-daemon --release --features test-util \
+            --test process_recovery btc_spv:: -- --ignored --test-threads=1
+
+      - name: Stop Bitcoin Core regtest
+        if: always()
+        run: docker rm -f vtr-btc-regtest || true
