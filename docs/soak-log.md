@@ -2537,3 +2537,29 @@ This is environmental, not a code change: it lowers allocator retention but does
 not bound the chain-proportional growth described in
 `docs/memory-observability-design.md` §7. The UTXO/pruning item is still the
 long-term fix.
+
+## 2026-11-02 — production alert rules loaded against the candidate soak
+
+The tuned `35ea52e` fleet was previously scraped by a bare Prometheus with no
+rules, so the soak measured thresholds but never evaluated the alerts that
+would page an operator. A second Prometheus
+(`candidate-35ea52e-prometheus-rules`, port 23961) now scrapes the same three
+nodes under `job="vtorrent-daemon"` — the production job name, with an
+`environment="candidate-35ea52e"` label added — and loads
+`deploy/seeds-monitoring/vtorrent-alerts.yml` byte-identical from the repo.
+
+- All 12 rules report `health=ok` and `state=inactive` at height 490.
+- Every metric the rules depend on returns three series
+  (`up`, `peer_count`, `block_height`, `staking_enabled`,
+  `process_rss_bytes`, `btc_synced`, `btc_scan_in_progress`,
+  `btc_last_scan_timestamp_seconds`).
+- Firing was proven end-to-end on a throwaway Prometheus with the same rule
+  file and one unreachable `vtorrent-daemon` target: `DaemonDown` reached
+  `state=firing` after its 2 m `for:` window with
+  `severity="critical"` and `instance="127.0.0.1:1"`. The throwaway was
+  removed; the soak fleet was not touched.
+
+`HostDiskFull` and `HostOutOfMemory` stay inactive because the candidate fleet
+has no `node_exporter`; they are production-only rules and are not exercised by
+this validation. Notification delivery was not re-tested here — routing through
+`vtr-seed1` Alertmanager to ntfy was verified separately.
