@@ -344,6 +344,7 @@ actions, operator approval.
 | Blocker | Owner | Notes |
 |---|---|---|
 | External security review not scheduled | Lead | Required before final v2.0.0 |
+| `bincode` 1.x unmaintained in the daemon graph | Code | `RUSTSEC-2025-0141`, warning only, no known exploit. Used for wire and persistence formats, so replacement is a compatibility change. Accepted for the launch cut with the risk recorded; see `docs/soak-log.md` 2026-11-02 |
 | Atomic-swap confirmation and full recovery | Code | Timing, reservations, encrypted recovery, per-chain observations, automatic BTC monitoring, and fee-approved VTR refund replacement have local fixes. BTC refund fee replacement is intentionally unsupported (a safety interlock, not a gap). Adversarial multi-node validation remains open in `docs/security-review-2026-09-05.md` |
 
 ## Known Issues (found during soak/E2E, 2026-08-24)

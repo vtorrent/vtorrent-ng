@@ -2563,3 +2563,32 @@ nodes under `job="vtorrent-daemon"` — the production job name, with an
 has no `node_exporter`; they are production-only rules and are not exercised by
 this validation. Notification delivery was not re-tested here — routing through
 `vtr-seed1` Alertmanager to ntfy was verified separately.
+
+## 2026-11-02 — Cargo Audit job repaired; advisory inventory
+
+The `security-audit` job had been failing on every push since 2026-10-29, so no
+advisory data was collected for `c0911c2` through `cea93f3`. The cause was the
+audit tool, not the project: `rustsec/audit-check@v2.0.0` installs `cargo-audit`
+without `--locked`, and a transitive dependency (`kstring@2.0.5`) began
+requiring `rustc 1.96.0` while the job inherited the pinned 1.90.0 toolchain
+from `rust-toolchain.toml`. `cargo install` failed, so `cargo audit` never ran.
+
+The job now installs `cargo-audit 0.22.2 --locked` with
+`RUSTUP_TOOLCHAIN=stable` (the audit tool is not part of the shipped graph) and
+runs `cargo audit` directly against `release/Cargo.lock`. Run
+`41428112385` on `de7505e` is green with all six jobs passing.
+
+First audit result since 2026-10-29: **zero vulnerabilities**, four warnings.
+
+| Advisory | Crate | Reachable from `vtorrent-daemon`? |
+|---|---|---|
+| `RUSTSEC-2025-0141` unmaintained | `bincode` 1.3.3 | **Yes** — `vtorrent-node`, `vtorrent-p2p`, `vtorrent-store`, `vtorrent-wallet` |
+| `RUSTSEC-2026-0097` unsound | `rand` 0.7.3 | No — only via `rusty-leveldb` in `vtorrent-snapshot` |
+| `RUSTSEC-2024-0429` unsound | `glib` 0.18.5 | No — Tauri GTK stack |
+| `RUSTSEC-2024-0370` unmaintained | `proc-macro-error` 1.0.4 | No — build-time only, via `glib-macros` |
+
+`bincode` 1.x being unmaintained is the only finding in the daemon release
+graph. It is a wire and persistence format, so replacing it is a compatibility
+change rather than a dependency bump and is not a soak action. The other three
+are confined to the migration tool, the desktop shell, or the build toolchain.
+None of the four is a known exploitable vulnerability.
