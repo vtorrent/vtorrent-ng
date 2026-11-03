@@ -2622,3 +2622,29 @@ The remaining ignored tests are two experiments
 (`governance_reorg::proof_load::canonical_proof_request_cost` and the
 documented quota-recovery case already covered by the nightly's
 `proof-quota-recovery` job); neither is a correctness gate.
+
+## 2026-11-03 — host page reclaim appears as an RSS dip in the tuned soak
+
+At 09:21–09:22Z the tuned `35ea52e` fleet reported RSS of 44.0 / 43.6 / 44.9 MiB,
+down from roughly 140 MiB a minute earlier, and was back above 90 MiB by 09:23Z.
+The three containers kept their original start time and PID, `RestartCount` stayed
+0, blocks continued to land, and no alert fired.
+
+The cause is host-level page reclaim, not the daemon releasing memory. Two
+unrelated comparison probes on the same host, with different allocator settings
+and their own processes, dipped in the same minute (94.7 → 41.7 → 91.4 MiB and
+94.2 → 41.5 → 91.5 MiB). Five independent processes moving together within one
+sample interval is a host effect; a per-process free would not be synchronised.
+`/proc/pressure/memory` reported `avg10=0.00` at the follow-up check, and the
+host has 127 GiB of swap with a long swap history (`pswpout` 15.5M since boot).
+
+Consequences for reading the soak data:
+
+- The recorded **minimum** RSS values (44.0 / 43.6 / 44.9 MiB) are not application
+  low-water marks and must not be reported as such.
+- Peak readings are unaffected — reclaim lowers RSS, it cannot raise it.
+- The 256 MiB budget comparison and the tuned-versus-default difference both
+  stand, since both sides of that comparison were sampled on this host and both
+  dipped together.
+
+No sample above 256 MiB has been recorded in this run.
