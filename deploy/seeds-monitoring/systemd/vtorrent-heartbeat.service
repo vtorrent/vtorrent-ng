@@ -1,0 +1,17 @@
+[Unit]
+Description=vTorrent seed monitoring heartbeat
+Documentation=file:/opt/vtorrent-ng/deploy/seeds-monitoring/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=/etc/vtorrent/heartbeat.env
+ExecStart=/usr/local/sbin/vtorrent-heartbeat
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=strict
+RestrictSUIDSGID=yes
+LockPersonality=yes

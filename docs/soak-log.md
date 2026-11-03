@@ -2648,3 +2648,27 @@ Consequences for reading the soak data:
   dipped together.
 
 No sample above 256 MiB has been recorded in this run.
+
+## 2026-11-03 — dead-man approach changed to an external heartbeat
+
+The SSH-based dead-man check is not being shipped. It needs a dedicated account
+and key on three hosts plus an out-of-band host-key pin, and both candidate
+checking hosts cannot currently reach seed1 and have no pinned key. It also
+cannot distinguish "seed1 is dead" from "seed2 cannot reach seed1", which is
+exactly the state the access checks kept hitting.
+
+Replacement: `deploy/seeds-monitoring/heartbeat.sh` runs on seed1, invokes
+`monitor-ready.sh`, and pings an external dead-man service only while Prometheus,
+Alertmanager, and the ntfy relay are all ready. Silence is the alarm, so seed1
+dying, losing its network, or losing part of its monitoring stack all stop the
+pings. No inbound path, no SSH key, and no host-key pinning are required.
+
+Hermetic coverage (`tests/heartbeat-test.sh`) checks the healthy ping, the
+failure ping, silence when no failure URL is configured, rejection of a URL
+that would break out of the curl config, and a missing ping URL. The suite was
+validated red-green: forcing the script to ignore readiness makes the failure
+case report `/ping/ok` and the test fails.
+
+This closes the "seed1 itself is gone" gap but not delivery: a running but
+compromised seed1 can still ping. The Alertmanager-to-ntfy route was verified
+separately on 2026-10-29.

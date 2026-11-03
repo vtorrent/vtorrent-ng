@@ -85,78 +85,59 @@ systemctl edit --full prometheus-alertmanager   # add --cluster.listen-address=
 
 ## External dead-man check
 
-Run `deadman.sh` from a host other than seed1, for example a systemd timer on
-seed2 or seed3. Use a dedicated SSH identity restricted on seed1 to the
-read-only `monitor-ready.sh` forced command. Pin seed1's verified host key out
-of band, and place the private key, known-hosts file, and ntfy topic in
-root-only files. The remote command checks Prometheus, Alertmanager, and relay
-service readiness without exposing their ports:
+Prometheus and Alertmanager both run on seed1, so nothing on seed1 can report
+that seed1 itself is gone. The chosen fix is a **heartbeat**: seed1 pings an
+external dead-man service every five minutes, and silence is the alarm.
+
+`heartbeat.sh` runs `monitor-ready.sh` first and pings the service's success URL
+only when Prometheus, Alertmanager, and the ntfy relay are all ready. If local
+readiness fails it pings the optional failure URL instead, so the alert carries
+a reason rather than a bare timeout. URLs are passed to curl on stdin, never as
+argv.
 
 ```bash
-SEED1_SSH_TARGET='deadman@seed1' \
-SEED1_SSH_KEY='/etc/vtorrent/deadman-key' \
-SEED1_KNOWN_HOSTS='/etc/vtorrent/deadman-known-hosts' \
-NTFY_TOPIC='<topic>' \
-  deploy/seeds-monitoring/deadman.sh
+DEADMAN_PING_URL='https://hc-ping.com/<uuid>' \
+DEADMAN_FAIL_URL='https://hc-ping.com/<uuid>/fail' \
+  deploy/seeds-monitoring/heartbeat.sh
 ```
 
-It sends one ntfy alert when the check fails and one recovery notification
-afterward, with retries when delivery fails. Store the topic in a 0600
-environment file or secret store, not in the unit or argv. On the
-latest connectivity check, both seed2 and seed3 timed out connecting to
-seed1's port 9090. Do not enable the dead-man timer until a restricted,
-authenticated monitoring path has been configured and tested from its host;
-otherwise it will produce false alerts. The access check did not change the
-production configuration. A strict SSH prerequisite check also found that
-neither host had seed1's host key in its known-hosts file. A dedicated identity,
-verified host-key pin, and restricted command still need to be provisioned.
+Install on seed1:
 
-The forced command is a service-readiness check, not a synthetic end-to-end
-notification heartbeat. Verify the production alert route independently; a
-compromised but running relay could still report healthy. The hermetic
-transition and retry checks run with `sh deploy/seeds-monitoring/tests/deadman-test.sh`.
-
-### Pre-staged deployment artifacts
-
-Nothing in this subsection has been applied to production. These files exist so
-provisioning is a short, reviewable step once the identity and host-key pin are
-approved.
-
-| File | Installed as | Host |
+| File | Installed as | Mode |
 |---|---|---|
-| `deadman.sh` | `/usr/local/sbin/vtorrent-deadman` (0755) | seed2/seed3 |
-| `systemd/vtorrent-deadman.service` | `/etc/systemd/system/` | seed2/seed3 |
-| `systemd/vtorrent-deadman.timer` | `/etc/systemd/system/` | seed2/seed3 |
-| `ssh/deadman.env.example` | `/etc/vtorrent/deadman.env` (0600 root) | seed2/seed3 |
-| `vtorrent-monitor-ready` | `/usr/local/libexec/vtorrent-monitor-ready` (0755) | seed1 |
-| `monitor-ready.sh` | `/usr/local/libexec/monitor-ready.sh` (0755) | seed1 |
-| `ssh/authorized_keys.deadman` | `~deadman/.ssh/authorized_keys` (0600) | seed1 |
-| `ssh/sshd-deadman.conf` | `/etc/ssh/sshd_config.d/deadman.conf` | seed1 |
+| `heartbeat.sh` | `/usr/local/sbin/vtorrent-heartbeat` | 0755 |
+| `monitor-ready.sh` | `/usr/local/sbin/monitor-ready.sh` | 0755 |
+| `systemd/vtorrent-heartbeat.service` | `/etc/systemd/system/` | 0644 |
+| `systemd/vtorrent-heartbeat.timer` | `/etc/systemd/system/` | 0644 |
+| `heartbeat.env.example` | `/etc/vtorrent/heartbeat.env` | 0600 root |
 
-The wrapper and the `sshd` `Match User deadman` block both set the forced
-command. The wrapper ignores `SSH_ORIGINAL_COMMAND` entirely, so a key holder
-cannot run anything else even if one of the two layers is missing. Its check is
-hermetic and needs no SSH or running daemon:
+Then `systemctl daemon-reload && systemctl enable --now vtorrent-heartbeat.timer`.
+Set the service's period to match the timer (five minutes) plus a grace of at
+least one interval, so a single missed ping does not page.
+
+The hermetic checks need no network and no running daemon:
 
 ```bash
-sh deploy/seeds-monitoring/tests/monitor-ready-wrapper-test.sh
+sh deploy/seeds-monitoring/tests/heartbeat-test.sh
 ```
 
-Sequence, after approval:
+They cover the healthy ping, the failure ping, silence with no failure URL, and
+rejection of a URL that would break out of the curl config.
 
-1. Create the `deadman` account on seed1 with no shell login and no sudo.
-2. Install the wrapper and `monitor-ready.sh` side by side in
-   `/usr/local/libexec`, then install the `sshd` drop-in and
-   `sshd -t` before reloading.
-3. Verify seed1's host key fingerprint out of band, pin it in
-   `/etc/vtorrent/deadman-known-hosts` on the checking host, and confirm
-   `ssh -T ... /usr/local/libexec/vtorrent-monitor-ready` succeeds while
-   `ssh -T ... id` also only reports readiness.
-4. Install the key, environment file, unit, and timer; run the service once by
-   hand and confirm the exit status and state file.
-5. Prove the failure path: make the readiness check fail on purpose and confirm
-   exactly one notification, then confirm the recovery notification on restore.
+**What this does not prove.** A running but compromised seed1 can still ping,
+so heartbeat health is not evidence that alerts would actually be delivered.
+The production Alertmanager-to-ntfy route was verified separately on 2026-10-29;
+resolved-notification timing was not part of that check.
 
-Steps 3–5 are the ones that remain unverified in production. Host-key pinning
-and the seed2/seed3 → seed1 path are still outstanding; see the paragraph
-above.
+### Alternative: SSH-based readiness check (not planned for launch)
+
+`deadman.sh` implements the same idea from seed2 or seed3 over SSH, using a
+dedicated `deadman` account on seed1, a forced command, and a pinned host key.
+It is kept because it is tested and works, but it is **not** part of the launch
+plan: it needs an account and key on three hosts, and both checking hosts
+currently cannot reach seed1 and have no pinned host key. Its artifacts are
+`deadman.sh`, `ssh/`, `vtorrent-monitor-ready`, and
+`systemd/vtorrent-deadman.*`; `sh deploy/seeds-monitoring/tests/deadman-test.sh`
+and `sh deploy/seeds-monitoring/tests/monitor-ready-wrapper-test.sh` cover the
+transition logic and the forced command. Do not enable its timer without
+completing the host-key pin and verifying the path.
