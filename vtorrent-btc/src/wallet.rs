@@ -161,16 +161,36 @@ impl BtcWallet {
     }
 
     fn reset_chain_cache(&mut self) {
+        self.reset_chain_cache_from(None);
+    }
+
+    /// Drop chain-derived state and schedule a rescan.
+    ///
+    /// `Some(fork)` resumes just above the last common ancestor, which is all
+    /// a reorg invalidates. `None` discards everything and rescans from the
+    /// retained floor: that is only correct when the persisted header lineage
+    /// itself cannot be trusted.
+    fn reset_chain_cache_from(&mut self, fork: Option<u32>) {
         self.rescan_on_sync.store(true, Ordering::Release);
         *self.completed_scan.lock() = None;
         self.filter_headers.lock().clear();
-        {
-            let mut utxos = self.utxos.lock();
-            utxos.clear_chain_utxos();
-            utxos.set_last_scanned_height(0);
-            utxos.set_rescan_required(true);
+        match fork {
+            Some(fork) => {
+                let next = fork.saturating_add(1);
+                let mut utxos = self.utxos.lock();
+                utxos.rollback_above(fork);
+                utxos.set_last_scanned_height(next);
+                utxos.set_rescan_required(true);
+                self.last_scanned_height = next;
+            }
+            None => {
+                let mut utxos = self.utxos.lock();
+                utxos.clear_chain_utxos();
+                utxos.set_last_scanned_height(0);
+                utxos.set_rescan_required(true);
+                self.last_scanned_height = 0;
+            }
         }
-        self.last_scanned_height = 0;
         self.synced = false;
         self.save_utxos();
     }
@@ -549,10 +569,11 @@ impl BtcWallet {
                     let chain = self.headers.lock();
                     find_fork(&chain, previous_best)
                 };
-                self.reset_chain_cache();
+                self.reset_chain_cache_from(Some(fork));
                 tracing::warn!(
-                    "BTC header reorg detected at fork height {}; cleared filter/UTXO state and will rescan from height 0",
-                    fork
+                    "BTC header reorg detected at fork height {}; dropped outputs above it and will rescan from height {}",
+                    fork,
+                    self.last_scanned_height
                 );
             }
         }
@@ -910,6 +931,66 @@ mod tests {
             height: 1,
         });
         assert_eq!(w.balance(), 5000);
+    }
+
+    #[test]
+    fn reorg_resumes_above_the_fork_and_keeps_surviving_outputs() {
+        let mut w = BtcWallet::new([7u8; 64]);
+        for (txid, height) in [("aa", 100u32), ("bb", 120), ("cc", 121)] {
+            w.add_utxo(Utxo {
+                txid: txid.repeat(32),
+                vout: 0,
+                value: 1000,
+                address: "bc1qtest".to_string(),
+                height,
+            });
+        }
+        w.mark_synced();
+        w.set_last_scanned_height(200);
+
+        w.reset_chain_cache_from(Some(120));
+
+        assert_eq!(
+            w.last_scanned_height(),
+            121,
+            "rescan must resume just above the fork, not from zero"
+        );
+        assert!(!w.synced(), "a reorg invalidates the synced flag");
+        assert_eq!(
+            w.balance(),
+            0,
+            "outputs stay hidden until the shortened rescan completes"
+        );
+        let kept: Vec<_> = w
+            .utxos
+            .lock()
+            .list()
+            .iter()
+            .map(|u| u.txid[..2].to_string())
+            .collect();
+        assert_eq!(kept, vec!["aa", "bb"], "outputs above the fork are dropped");
+    }
+
+    #[test]
+    fn rebuilt_lineage_still_forces_a_full_rescan() {
+        let mut w = BtcWallet::new([7u8; 64]);
+        w.add_utxo(Utxo {
+            txid: "dd".repeat(32),
+            vout: 0,
+            value: 1000,
+            address: "bc1qtest".to_string(),
+            height: 120,
+        });
+        w.set_last_scanned_height(200);
+
+        w.reset_chain_cache();
+
+        assert_eq!(
+            w.last_scanned_height(),
+            0,
+            "an unknown fork means start over"
+        );
+        assert!(w.utxos.lock().list().is_empty());
     }
 
     #[test]

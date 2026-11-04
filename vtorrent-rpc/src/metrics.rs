@@ -183,12 +183,18 @@ async fn collect_metrics(state: &AppState) -> String {
         "Last BIP-158 block height scanned",
         btc_last_scanned,
     );
-    write_gauge(
-        &mut out,
-        "vtorrent_btc_scan_lag_blocks",
-        "BTC header tip minus last scanned height",
-        btc_height.saturating_sub(btc_last_scanned),
-    );
+    // A zero cursor means "nothing scanned yet" (fresh wallet or a full
+    // rescan), so the difference is the whole header chain and looks like a
+    // catastrophic lag on a dashboard. Omit it until the cursor means
+    // something.
+    if btc_last_scanned > 0 {
+        write_gauge(
+            &mut out,
+            "vtorrent_btc_scan_lag_blocks",
+            "BTC header tip minus last scanned height",
+            btc_height.saturating_sub(btc_last_scanned),
+        );
+    }
 
     write_gauge(
         &mut out,
@@ -360,7 +366,9 @@ mod tests {
         assert!(metrics.contains("vtorrent_uptime_seconds"));
         assert!(metrics.contains("vtorrent_syncing"));
         assert!(metrics.contains("vtorrent_btc_last_scanned_height"));
-        assert!(metrics.contains("vtorrent_btc_scan_lag_blocks"));
+        // Omitted while the scan cursor is 0: the lag would read as the whole
+        // header chain.
+        assert!(!metrics.contains("vtorrent_btc_scan_lag_blocks"));
         assert!(metrics.contains("vtorrent_btc_peer_groups"));
         assert!(metrics.contains("vtorrent_btc_scan_in_progress"));
         assert!(metrics.contains("vtorrent_btc_scan_duration_milliseconds"));

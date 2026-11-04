@@ -116,6 +116,15 @@ impl UtxoSet {
         self.utxos.clear();
     }
 
+    /// Drop chain-derived UTXOs confirmed above `height`.
+    ///
+    /// A reorg only invalidates blocks above the last common ancestor, so the
+    /// rescan can resume from there instead of re-deriving the whole retained
+    /// window. Mempool entries (height 0) and wallet metadata are untouched.
+    pub fn rollback_above(&mut self, height: u32) {
+        self.utxos.retain(|utxo| utxo.height <= height);
+    }
+
     pub fn reserve(&mut self, txid: &str, vout: u32) {
         self.remove(txid, vout);
         self.reserved.insert((txid.to_owned(), vout));
@@ -391,6 +400,56 @@ mod tests {
         assert!(!set.note_spend("a", 0));
         set.clear_spent_reserved("a", 0);
         assert!(!set.was_reserved_spent("a", 0));
+    }
+
+    #[test]
+    fn test_rollback_above_keeps_blocks_at_or_below_the_fork() {
+        let mut set = UtxoSet::new();
+        for (txid, height) in [
+            ("old", 100u32),
+            ("fork", 120),
+            ("above", 121),
+            ("newer", 130),
+        ] {
+            set.add(Utxo {
+                txid: txid.to_string(),
+                vout: 0,
+                value: 1000,
+                address: "bc1qtest".to_string(),
+                height,
+            });
+        }
+        set.reserve("reserved", 0);
+        set.set_next_index(9);
+
+        set.rollback_above(120);
+
+        let mut kept: Vec<_> = set.list().iter().map(|u| u.txid.clone()).collect();
+        kept.sort();
+        assert_eq!(kept, vec!["fork".to_string(), "old".to_string()]);
+        assert_eq!(set.next_index(), 9, "address index is not chain state");
+        assert!(
+            set.release("reserved", 0),
+            "reservation must survive a reorg"
+        );
+    }
+
+    #[test]
+    fn test_rollback_above_zero_keeps_only_mempool_entries() {
+        let mut set = UtxoSet::new();
+        set.add(Utxo {
+            txid: "mempool".to_string(),
+            vout: 0,
+            value: 500,
+            address: "bc1qtest".to_string(),
+            height: 0,
+        });
+        set.add(utxo("confirmed", 0, 1000));
+
+        set.rollback_above(0);
+
+        assert_eq!(set.list().len(), 1);
+        assert_eq!(set.list()[0].txid, "mempool");
     }
 
     #[test]

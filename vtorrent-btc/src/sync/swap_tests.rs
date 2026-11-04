@@ -382,7 +382,9 @@ async fn interrupted_header_reorg_does_not_commit_partial_state() {
     wallet.sync(&mut peer).await.unwrap();
     assert_eq!(wallet.best_height(), 6);
     assert_eq!(wallet.balance(), 0);
-    assert_eq!(wallet.last_scanned_height(), 0);
+    // The fork is height 0, so the rescan resumes at 1 instead of re-deriving
+    // the whole retained window. The invalidated block is still rescanned.
+    assert_eq!(wallet.last_scanned_height(), 1);
     drop(peer);
     server.await.unwrap();
 }

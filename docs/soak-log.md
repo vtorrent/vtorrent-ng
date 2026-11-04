@@ -2672,3 +2672,58 @@ case report `/ping/ok` and the test fails.
 This closes the "seed1 itself is gone" gap but not delivery: a running but
 compromised seed1 can still ping. The Alertmanager-to-ntfy route was verified
 separately on 2026-10-29.
+
+## 2026-11-04 — reorg rescan bounded to the fork height
+
+Reviewing the 19 BTC scan errors from the tuned soak identified one real
+defect. A Bitcoin mainnet reorg at height 974399 on 2026-11-03 was detected by
+all three nodes at 15:40–15:43Z. Each logged
+`cleared filter/UTXO state and will rescan from height 0` and then rescanned
+**100,001 blocks** from the retained floor:
+
+| Node | Rescan duration | Notes |
+|---|---|---|
+| candidate1 | ~13 min | completed 15:53Z |
+| candidate2 | ~13 min | completed 15:53Z |
+| candidate3 | ~40 min | `BTC wallet scan timed out` at 16:13Z, completed 16:23Z |
+
+The fork was three blocks deep, so almost all of that work was unnecessary. It
+also caused the only real alert noise in the run: `BtcSpvScanStuck` fired on
+candidate3 from 16:15Z to 16:23Z, and `BtcSpvScanStale` fired on candidate1 at
+17:07Z during a separate peer outage. Earlier "0 active alerts" checks were
+instantaneous and did not see these.
+
+Fix: `BtcWallet::reset_chain_cache_from(Some(fork))` now drops only outputs
+confirmed above the fork and resumes at `fork + 1`, leaving reservations, swap
+contracts, the pending transaction map, and the address index untouched. The
+fork-less path (persisted header lineage cannot be trusted) still clears
+everything and rescans from the retained floor.
+
+`vtorrent_btc_scan_lag_blocks` is now omitted while the scan cursor is 0. During
+a full rescan it previously reported `best_height` (974402 in this incident),
+which reads as a catastrophic lag on a dashboard when it only means "nothing
+scanned yet".
+
+Verification:
+
+- New unit tests cover the rollback boundary (outputs at the fork survive,
+  outputs above it are dropped, mempool entries survive), the wallet resume
+  height, balance staying hidden until the shortened rescan completes, and the
+  fork-less path still starting from zero.
+- `sync::swap_tests::interrupted_header_reorg_does_not_commit_partial_state`
+  previously asserted a resume height of 0; it now asserts 1, which is what the
+  fork at height 0 implies.
+- The four `btc_spv` release-mode tests against real Bitcoin Core regtest pass,
+  including `btc_spv_drops_a_reorged_out_funding_output` and
+  `independent_daemons_agree_on_btc_spv_tip_and_reorg`.
+
+**Soak provenance:** the 168-hour run is on `35ea52e` and does not exercise this
+change. The BTC reorg path now needs its own evidence — these regtest tests plus
+a shorter fleet soak on the new commit — before the launch cut can claim the
+reorg behaviour was soaked.
+
+The other error classes in the same review are benign: the single-network-group
+and filter-timeout errors are the eclipse protection and public-peer flakiness,
+each retried in-cycle, and catch-up is contiguous — after the 14:17Z failure
+candidate1's next scan reported 2 blocks through 974393, covering the missed
+height.
