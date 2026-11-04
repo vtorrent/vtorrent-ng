@@ -2727,3 +2727,28 @@ and filter-timeout errors are the eclipse protection and public-peer flakiness,
 each retried in-cycle, and catch-up is contiguous — after the 14:17Z failure
 candidate1's next scan reported 2 blocks through 974393, covering the missed
 height.
+
+## 2026-11-04 — post-fix fleet started for the reorg change
+
+The 168-hour run on `35ea52e` cannot vouch for the reorg fix in `f9f1b03`, so a
+second fleet was started on that commit rather than restarting the first. Both
+run concurrently; only the new one carries the reorg change.
+
+- Commit `f9f1b038f973343695d726c8171d81cc5404b11b`, image
+  `vtorrent/node:candidate-f9f1b03`
+  (`sha256:c45dad59cd63df6256aeadd79b2019cd3df367bd299539d913c396999038d926`),
+  built from a Git archive of the commit and labelled with its revision.
+- Started 2026-11-04T10:16Z with `scripts/start-release-fleet.sh`, RPC ports
+  24251–24253, fresh chain, both stakers funded and staking. That is the first
+  fleet started with the committed launcher rather than ad-hoc scripts: it
+  applied all three allocator variables and wrote its own scrape config.
+- `prometheus-f9f1b03` (port 23962) loads `deploy/seeds-monitoring/vtorrent-alerts.yml`
+  unmodified; all 12 rules report healthy and `job="vtorrent-daemon"` has three
+  targets.
+- Sampler writes `/tmp/opencode/release-f9f1b03/samples.jsonl` every minute.
+- First observations: height 2–3, both stakers enabled and each had staked a
+  block, BTC header sync in progress (`btc_synced` 0, expected).
+
+This run does not reset the 168-hour clock for consensus, wallet, P2P, or the
+swap path — those are unchanged since `35ea52e`. It exists so the reorg path has
+fleet evidence of its own.
