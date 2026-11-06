@@ -4,6 +4,19 @@ Daily observations are collected with `scripts/soak-observe.sh`, which prints a
 markdown block ready to append here. It is read-only and exits non-zero if any
 node is down or the fleet disagrees on the tip, so it can gate a cron job.
 
+`scripts/soak-report.py` turns a completed run into its sign-off block. It reads
+the sampler's `samples.jsonl` and, optionally, the fleet's Prometheus, then
+reports the window, sample count and gaps, per-node peak/median/last RSS, samples
+over budget, restarts, height agreement, staking rate, scan-error and scan-lag
+history, and every alert that fired. Every criterion is a computed PASS/FAIL and
+the script exits non-zero unless all of them pass, so a partial run cannot be
+mistaken for a finished one:
+
+```bash
+scripts/soak-report.py --samples /tmp/opencode/<run>/samples.jsonl \
+  --prometheus http://127.0.0.1:23961 --label '<commit> tuned' --hours 168
+```
+
 ## 2026-09-08 — node3 release canary upgrade
 
 Only local regtest follower `vtr-node3` was upgraded to commit
