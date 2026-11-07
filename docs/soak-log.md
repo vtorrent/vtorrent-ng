@@ -2765,3 +2765,31 @@ run concurrently; only the new one carries the reorg change.
 This run does not reset the 168-hour clock for consensus, wallet, P2P, or the
 swap path — those are unchanged since `35ea52e`. It exists so the reorg path has
 fleet evidence of its own.
+
+## 2026-11-07 — soak provenance decision for the launch cut
+
+Decided how fleet time counts while code keeps moving, recorded as a policy in
+`docs/mainnet-readiness.md` §2 so it is not re-decided under schedule pressure:
+
+- The 168-hour clock belongs to the **commit that ships**. A code change restarts
+  it; a run on a superseded commit is evidence, not a gate.
+- Where a delta is narrow and covered by deterministic tests, the longer run on
+  its predecessor still counts for the byte-identical components it exercised,
+  and the delta needs targeted evidence of its own.
+
+Applied to the two runs now in flight:
+
+- The `35ea52e` fleet finishes 168 h on 2026-11-08 around 16:34Z and will be
+  reported as the seven-day result for consensus, staking, P2P, wallet, and swap
+  code, which is unchanged in later commits.
+- The `f9f1b03` fleet keeps running as **opportunistic** evidence for the reorg
+  change. It is deliberately not treated as the gate, because the forthcoming
+  review findings and the `bincode` decision will produce further commits and
+  restart the clock anyway.
+- Once those findings are resolved, the release commit is frozen and a definitive
+  168 h runs on exactly that commit. That is the window that goes in the
+  sign-off, and the commit named there must equal the release commit.
+
+The trade-off accepted: a mainnet reorg at recent depth may not occur during the
+`f9f1b03` window, so the shortened rescan is proven by its unit and regtest tests
+plus whatever the fleet happens to observe, not by a full-week fleet run.

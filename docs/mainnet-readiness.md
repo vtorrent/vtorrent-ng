@@ -78,6 +78,14 @@ Node1 subsequently joined the same release after another green CI gate and
 recorded follower observation. All maintenance interruptions remain excluded
 from uninterrupted soak measurements.
 
+**Soak provenance policy (2026-11-07).** The 168-hour clock belongs to the
+commit that actually ships, not to whatever is HEAD while work continues. A code
+change restarts it; a fleet run on a superseded commit is evidence, not a gate.
+Where a delta is narrow and covered by deterministic tests, the longer run on the
+predecessor still counts for the byte-identical components it exercised, and the
+delta gets its own targeted evidence. The sign-off therefore names the commit the
+window ran on, and that commit must equal the release commit.
+
 - [x] **3+ node Docker testnet** (`docker/testnet/docker-compose.yml`) ran
       **≥7 days and PASSED** — window `2026-09-29T13:36:22Z` →
       `2026-10-06T13:36:22Z` (+169 h): 3/3 nodes agreed on height (33677) and
