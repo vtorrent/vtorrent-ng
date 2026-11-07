@@ -4,10 +4,14 @@ Updated 2026-11-02. This package requests an independent human security review.
 The prior internal model review in `docs/2026-10-26_security-vtorrent-report.md`
 does not satisfy the independence gate.
 
+`docs/security-review-cover-note.md` holds the message to send: the ask, what
+changed since the last round, the questions we most want challenged, and what is
+already accepted so it is not re-litigated.
+
 ## Review target
 
 Review the candidate `70ea7b9dfb3c65dcfb30cb03ec8c168c5d3cbffd` plus the code
-deltas through `115178b2e176a3b9526a989c626da1676026f08b`. The final code
+deltas through `bae6291823be8f067158af6e4e3edfe6771b4a83`. The final code
 commit is the review head.
 
 The deltas added after `dd98176` are the reason this request was refreshed; the
@@ -38,6 +42,9 @@ original 2026-10-27 scope predates them.
 | `35ea52e` | `35ea52e4fb847a35f0aa096bbef34baf49ff324e` | TOTP replay state, torrent adoption/partial migration, authenticated dead-man |
 | `800fe0a` | `800fe0a85dc743aab8b11ef3f2f9875305bc98ee` | Docs: allocator requirement for BTC SPV fleets |
 | `115178b` | `115178b2e176a3b9526a989c626da1676026f08b` | Ops: soak status warns on missing allocator settings |
+| `86344c5` | `86344c59e7d7231bcc14c768350416274bd99ec5` | External dead-man heartbeat for seed1, with hermetic tests |
+| `f9f1b03` | `f9f1b038f973343695d726c8171d81cc5404b11b` | BTC SPV reorg resumes the rescan at the fork height; lag gauge omitted while the scan cursor is 0 |
+| `bae6291` | `bae6291823be8f067158af6e4e3edfe6771b4a83` | Ops: soak sign-off collector |
 
 Docs-only commits in the delta are evidence, not implementation changes. The
 `ff148fd` review findings are documented in
@@ -48,7 +55,7 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout 115178b2e176a3b9526a989c626da1676026f08b
+git checkout bae6291823be8f067158af6e4e3edfe6771b4a83
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
@@ -56,10 +63,13 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 cargo test --workspace --all-features
 ```
 
-The last full workspace run on this source passed 49 groups, 1,135 tests, zero
-failures, and eight ignored manual release-mode tests. Set
-`VTORRENT_TOTP_STATE_DIR` to a fresh directory before running the suite so the
-host-scoped TOTP replay state does not collide with an existing installation.
+The last full local `--all-features` workspace run passed 49 groups, 1,135
+tests, zero failures, and eight ignored manual release-mode tests; CI repeats the
+`--all-features` suite on every push and is green through `f9f1b03`. The tree
+after `f9f1b03` changes only docs, scripts, and the soak tooling, so a reviewer
+can substitute its own run. Set `VTORRENT_TOTP_STATE_DIR` to a fresh directory
+before running the suite so the host-scoped TOTP replay state does not collide
+with an existing installation.
 
 ## Scope emphasis
 
@@ -124,13 +134,24 @@ Added with `ff148fd` and `35ea52e`:
   Bitcoin Core regtest: BTC funding discovery, six VTR funding confirmations,
   swap preserved across a maker restart, BTC claim with six confirmations, and
   a separate taker node broadcasting the VTR claim.
-- The full workspace suite passes on `115178b` (49 groups, 1,135 tests, eight
-  ignored). The whole-tree review remediation is documented in
+- CI runs the workspace suite with `--all-features` on every push and is green
+  through `f9f1b03`. The last counted local run was 49 groups, 1,135 tests, zero
+  failures, eight ignored; `f9f1b03` adds three reorg tests on top. The
+  whole-tree review remediation is documented in
   `docs/2026-10-29_codebase-wide-review.md`.
+- The four BTC SPV release-mode tests run against real Bitcoin Core regtest now
+  run nightly in CI rather than only by hand; they were silently stale for three
+  days before this was fixed.
+- `f9f1b03` narrows a BTC SPV reorg rescan to the fork height. Before it, a
+  three-block mainnet reorg at height 974399 triggered a 100,001-block rescan per
+  node (13, 13 and 40 minutes) and fired `BtcSpvScanStuck`. Unit tests and the
+  regtest suite cover the new path; the fleet evidence for it is still
+  accumulating.
 - **Memory is a deployment requirement, not a code fix.** A BTC-SPV fleet
   launched without the pinned allocator settings peaked at 279.7 MiB and broke
   the 256 MiB budget; a matched comparison measured 162–213 MiB default versus
   116–128 MiB tuned. See `docs/soak-log.md` 2026-11-01.
-- A tuned `35ea52e` fleet is soaking. Production dead-man provisioning and
+- A tuned `35ea52e` fleet is soaking toward 168 h, and a second fleet on
+  `f9f1b03` covers the reorg change. Production dead-man provisioning and
   independent human review remain open.
 - Please confirm scope, timeline, and access needs before starting.
