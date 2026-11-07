@@ -10,7 +10,7 @@ use tokio_util::codec::Framed;
 
 use crate::{
     codec::VtrCodec,
-    message::{NetMessage, PingMsg, VersionMsg, PROTOCOL_VERSION},
+    message::{decode_v2, NetMessage, PingMsg, VersionMsg, PROTOCOL_VERSION},
 };
 
 /// Events emitted by a peer connection to the node.
@@ -157,7 +157,7 @@ pub async fn run_peer(stream: TcpStream, addr: SocketAddr, config: PeerTaskConfi
                         match cmd.as_str() {
                             "version" => {
                                 // Parse and enforce the current hard-boundary protocol version.
-                                let parsed = bincode::deserialize::<VersionMsg>(&msg.payload)
+                                let parsed = decode_v2::<VersionMsg>(&msg.payload)
                                     .or_else(|_| serde_json::from_slice(&msg.payload));
                                 if let Ok(mut v) = parsed {
                                     const MAX_VERSION_STRING: usize = 256;
@@ -213,7 +213,7 @@ pub async fn run_peer(stream: TcpStream, addr: SocketAddr, config: PeerTaskConfi
                             }
                             "ping" => {
                                 // Respond using the negotiated encoding. Pre-handshake pings use JSON.
-                                let ping = bincode::deserialize::<PingMsg>(&msg.payload)
+                                let ping = decode_v2::<PingMsg>(&msg.payload)
                                     .or_else(|_| serde_json::from_slice(&msg.payload));
                                 if let Ok(ping) = ping {
                                     let pong = PingMsg { nonce: ping.nonce };

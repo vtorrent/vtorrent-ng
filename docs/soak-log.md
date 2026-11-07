@@ -2793,3 +2793,33 @@ Applied to the two runs now in flight:
 The trade-off accepted: a mainnet reorg at recent depth may not occur during the
 `f9f1b03` window, so the shortened rescan is proven by its unit and regtest tests
 plus whatever the fleet happens to observe, not by a full-week fleet run.
+
+## 2026-11-07 — remote decodes all use the bounded helper
+
+While recording the `bincode` acceptance, auditing every decode site showed the
+documented claim was wrong in two ways. Three remote-input paths still used plain
+`bincode::deserialize`: the P2P version and ping handlers in
+`vtorrent-p2p/src/peer.rs`, and the overlay version handler in
+`vtorrent-node/src/node/peering.rs`. All three now call `decode_v2`, the capped
+`bincode::options()` deserializer, keeping their JSON fallbacks.
+
+The second correction is about severity. The first draft of the readiness entry
+claimed a string-length allocation amplification in those paths. That is false
+for bincode 1.3: a `VersionMsg` payload declaring a `u64::MAX` string length with
+no bytes behind it is rejected against the remaining input in **5.5 µs** without
+allocating, measured directly against the unmodified decoder. The amplification
+case is collections, which `decode_v2`'s cap already covered and
+`test_decode_v2_rejects_oversized_declared_length` already tested. So this change
+is consistency and defence in depth, not the fix for a demonstrated vulnerability
+— and the readiness entry now says exactly that.
+
+A test written to prove the string case was deleted rather than kept: it passed
+with the unbounded decoder as well, so it had no detection power.
+
+Soak accounting: this is a code change, so per the provenance policy the 168-hour
+clock for the release commit restarts from whichever commit ships. It does not
+justify interrupting the running fleets, because the release commit is still
+going to move once review findings land; the definitive window starts after that
+freeze. The behaviour of valid traffic is unchanged — bounded and unbounded
+decoding agree on every well-formed message, which the existing
+`test_decode_v2_still_accepts_normal_messages` and the P2P handshake tests cover.

@@ -211,11 +211,15 @@ impl Node {
 
                 match msg.command_str() {
                     "version" => {
-                        let version: VersionMsg = bincode::deserialize::<VersionMsg>(&msg.payload)
-                            .or_else(|_| serde_json::from_slice(&msg.payload))
-                            .map_err(|e| {
-                                NodeError::Chain(format!("Invalid overlay version message: {}", e))
-                            })?;
+                        let version: VersionMsg =
+                            vtorrent_p2p::message::decode_v2::<VersionMsg>(&msg.payload)
+                                .or_else(|_| serde_json::from_slice(&msg.payload))
+                                .map_err(|e| {
+                                    NodeError::Chain(format!(
+                                        "Invalid overlay version message: {}",
+                                        e
+                                    ))
+                                })?;
                         self.peer_manager
                             .send_to(peer_addr, NetMessage::new("verack", Vec::new()))
                             .await;
