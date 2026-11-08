@@ -28,7 +28,11 @@ BUDGET_MIB = 256
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--samples', required=True, type=pathlib.Path)
-    parser.add_argument('--prometheus', help='base URL, e.g. http://127.0.0.1:23961')
+    parser.add_argument('--prometheus', help='base URL for metrics, e.g. http://127.0.0.1:23960')
+    parser.add_argument('--alerts-from',
+                        help='base URL holding the alert rules; defaults to --prometheus. '
+                             'Use this when a second Prometheus was started later and only '
+                             'that one evaluates rules.')
     parser.add_argument('--label', default='soak')
     parser.add_argument('--hours', type=float, default=168.0)
     parser.add_argument('--budget-mib', type=float, default=BUDGET_MIB)
@@ -90,6 +94,22 @@ def single_value(result):
     if not result:
         return None
     return float(result[0]['value'][1])
+
+
+def coverage(base, start, end, probe='vtorrent_block_height'):
+    """First and last timestamps actually present, for honesty about the window."""
+    params = urllib.parse.urlencode({
+        'query': probe,
+        'start': start.timestamp(),
+        'end': end.timestamp(),
+        'step': 300,
+    })
+    with urllib.request.urlopen(f'{base}/api/v1/query_range?{params}', timeout=30) as response:
+        payload = json.load(response)
+    stamps = [float(t) for series in payload['data']['result'] for t, _ in series.get('values', [])]
+    if not stamps:
+        return None
+    return min(stamps), max(stamps)
 
 
 def compress_intervals(timestamps, tolerance):
@@ -184,10 +204,21 @@ def main():
         report.append('')
         report.append('### From Prometheus')
         report.append('')
-        peaks = single_value(query_instant(
-            base, f'max(max_over_time(vtorrent_process_rss_bytes[{int(args.hours)}h]))'))
+        cov = coverage(base, start, end)
+        if cov:
+            report.append(f'- Metric data covers {fmt_time(cov[0])} → {fmt_time(cov[1])}')
+            if cov[0] > start.timestamp() + 600:
+                gap = (cov[0] - start.timestamp()) / 3600
+                report.append(f'- **{gap:.1f} h of the window has no metric data here**; '
+                              'counts below cover only the observed range')
+
+        rss_range = series_by_instance(
+            query(base, 'vtorrent_process_rss_bytes', start, end, 60))
+        peaks = max((v for series in rss_range.values() for _, v in series), default=None)
         if peaks is not None:
-            report.append(f'- Fleet-wide RSS peak: **{peaks / 1048576:.1f} MiB**')
+            report.append(f'- Fleet-wide RSS peak: **{peaks / 1048576:.1f} MiB**'
+                          ' (window-bounded; a Prometheus scraped by more than one'
+                          ' fleet on the same targets keeps their history)')
 
         over = query(base, f'vtorrent_process_rss_bytes > {budget:.0f}', start, end, 60)
         over_by_instance = {k: len(v) for k, v in series_by_instance(over).items()}
@@ -215,8 +246,9 @@ def main():
                 parts.append(f'{instance} {values[-1][1] - values[0][1]:.0f}')
             report.append('- BTC scan errors: ' + ', '.join(parts))
 
-        lag = single_value(query_instant(
-            base, f'max(max_over_time(vtorrent_btc_scan_lag_blocks[{int(args.hours)}h]))'))
+        lag_series = series_by_instance(
+            query(base, 'vtorrent_btc_scan_lag_blocks', start, end, 60))
+        lag = max((v for series in lag_series.values() for _, v in series), default=None)
         current = query_instant(base, 'vtorrent_btc_scan_lag_blocks')
         current_max = max((float(s['value'][1]) for s in current), default=None)
         if lag is not None:
@@ -227,7 +259,17 @@ def main():
         if current_max is not None:
             report.append(f'- Current BTC scan lag: **{current_max:.0f} blocks**')
 
-        firing = query(base, 'ALERTS{alertstate="firing"}', start, end, 60)
+        alerts_base = (args.alerts_from or base).rstrip('/')
+        if alerts_base != base:
+            report.append(f'- Alert rules evaluated by `{alerts_base}`')
+            alert_cov = coverage(alerts_base, start, end)
+            if alert_cov:
+                report.append(f'  - that instance has data from {fmt_time(alert_cov[0])}')
+                if alert_cov[0] > start.timestamp() + 600:
+                    gap = (alert_cov[0] - start.timestamp()) / 3600
+                    report.append(f'  - **{gap:.1f} h of the window has no rule evaluation**')
+
+        firing = query(alerts_base, 'ALERTS{alertstate="firing"}', start, end, 60)
         intervals = []
         for series in firing:
             name = series['metric'].get('alertname', '?')
