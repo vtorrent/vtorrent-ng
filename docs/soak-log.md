@@ -2870,3 +2870,30 @@ regtest tests plus the opportunistic fleet) and the bounded remote-decode change
 in `68165c8` (covered by unit tests, handshake tests, and CI). Per the provenance
 policy in `docs/mainnet-readiness.md`, the window that ships must run on the
 commit that ships.
+
+## 2026-11-09 — fleet moved to the release decode change
+
+The signed-off `35ea52e` fleet and the opportunistic `f9f1b03` fleet were both
+stopped after the 168 h report, along with their two Prometheus instances and the
+allocator-comparison probes. Sampler evidence is retained:
+`/tmp/opencode/candidate-35ea52e-tuned-20261101T163403Z/samples.jsonl`,
+`/tmp/opencode/release-f9f1b03/samples.jsonl`, and
+`/tmp/opencode/allocator-compare-archive-20261101T011803Z.jsonl`.
+
+Replacement fleet on `68165c8`, started with `scripts/start-release-fleet.sh`:
+
+- Commit `68165c8a37fecc430b58a2a982f5d6f5255c73ac`, image
+  `vtorrent/node:candidate-68165c8`
+  (`sha256:01dd41147e81c0be681af955876fd365fba0626f0f748f2a5e2e95eb024cc9ca`),
+  built from a Git archive and labelled with its revision.
+- RPC ports 24351–24353, fresh chain, both stakers funded and staking, all three
+  allocator variables pinned, scrape config emitted into its evidence directory.
+- `prometheus-68165c8` on port 23963 loads the production alert file unmodified;
+  12 rules healthy, three targets up.
+- Sampler writes `/tmp/opencode/release-68165c8/samples.jsonl` every minute.
+
+Why this commit: `68165c8` changes the decode path for P2P `version` and `ping`
+and the overlay `version` handler, and peer handshakes are the one thing a fleet
+exercises continuously. This fleet exists so that shipped code runs under real
+peers. It is opportunistic evidence, not the sign-off window; per the provenance
+policy the shipping commit still needs its own 168 h.
