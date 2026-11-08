@@ -120,6 +120,18 @@ window ran on, and that commit must equal the release commit.
       wallet-path confinement, import overwrite guard, version bump, IPC error
       surfacing, and staking ownership warnings, and the live desktop journey,
       restart, and BTC discovery evidence. The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; verified 2FA enrollment, the torrent control availability, the reviewed send quote, verified encrypted backup and restore, the guided swap workspace, the staking readiness assistant, the activity and recovery center, the cold-stake delegation wizard, node settings and diagnostics, torrent controls and reward accounting, and navigation grouping and accessibility improvements, the external review remediation, the activity journal, and the icon-label audit are in `70ea7b9`. The external review should verify them.
+- [x] **Release-candidate 168 h soak with BTC SPV enabled** — separate
+      three-node fleet on `35ea52e`, window `2026-11-01T16:34:53Z` →
+      `2026-11-08T16:34:53Z`, allocator variables pinned, two nodes staking.
+      10,010 samples with zero gaps, zero restarts, 3/3 nodes agreeing at height
+      9,862, RSS peak 213.3 MiB against the 256 MiB budget with zero samples over
+      it, 6,658 and 4,048 blocks staked, BTC scan lag 0. Two alerts fired during
+      a real mainnet reorg rescan and resolved. Coverage caveat: 8.3 h of the
+      window has no rule evaluation because the alerting Prometheus started
+      later. This window carries for consensus, staking, P2P, wallet, and swap
+      code, which are unchanged in later commits; it does not cover the BTC reorg
+      or bounded-decode changes made afterwards. See `docs/soak-log.md`
+      2026-11-08.
 - [x] **Staking soak**: at least one node staked continuously and produced
       blocks at the expected ~60s average over the full 7-day window
       (`2026-09-29T13:36:22Z` → `2026-10-06T13:36:22Z`): node1 staked 1441

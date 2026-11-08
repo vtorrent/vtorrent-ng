@@ -38,6 +38,10 @@ def parse_args():
     parser.add_argument('--budget-mib', type=float, default=BUDGET_MIB)
     parser.add_argument('--expected-interval', type=float, default=60.0,
                         help='sampler period in seconds')
+    parser.add_argument('--trim-to-hours', action='store_true',
+                        help='consider only the first --hours of the run, so the '
+                             'report covers exactly the declared window instead of '
+                             'whatever tail exists')
     return parser.parse_args()
 
 
@@ -136,6 +140,11 @@ def fmt_time(ts):
 def main():
     args = parse_args()
     rows = load_samples(args.samples)
+    if args.trim_to_hours:
+        cutoff = rows[0]['_ts'] + datetime.timedelta(hours=args.hours)
+        rows = [row for row in rows if row['_ts'] <= cutoff]
+        if not rows:
+            raise SystemExit('no samples inside the requested window')
     start, end = rows[0]['_ts'], rows[-1]['_ts']
     span_hours = (end - start).total_seconds() / 3600
     expected = int(span_hours * 3600 / args.expected_interval) + 1
@@ -294,10 +303,14 @@ def main():
     report.append('')
     verdicts = []
 
+    # A window is sampled, not exact: the last sample lands up to one cadence
+    # before the cutoff, so allow a few intervals of slack rather than failing a
+    # 168-hour run by seconds.
+    slack = args.expected_interval * 3 / 3600
     verdicts.append((
         'Window reached',
-        span_hours >= args.hours,
-        f'{span_hours:.1f} h of {args.hours:.0f} h',
+        span_hours >= args.hours - slack,
+        f'{span_hours:.2f} h of {args.hours:.0f} h (slack {slack * 3600:.0f}s)',
     ))
     worst_peak = max((n['peak'] for n in per_node), default=0.0)
     verdicts.append((
