@@ -70,6 +70,9 @@ fn update_wallet_metrics(health: &BtcSyncHealth, wallet: &BtcWallet) {
     health
         .retained_floor
         .store(wallet.retained_floor() as u64, Ordering::Relaxed);
+    health
+        .wallet_history_blocked
+        .store(wallet.history_unavailable(), Ordering::Relaxed);
     health.synced.store(wallet.synced(), Ordering::Relaxed);
 }
 

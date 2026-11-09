@@ -535,6 +535,7 @@ async fn restored_wallet_refuses_scan_when_history_predates_retained_floor() {
             .as_nanos()
     ));
     let mut stored = UtxoSet::new();
+    stored.set_birthday(Some(1));
     stored.set_last_scanned_height(2);
     stored.set_next_index(1);
     stored.save(&path).unwrap();

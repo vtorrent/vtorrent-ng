@@ -433,6 +433,7 @@ async fn main() -> anyhow::Result<()> {
         btc_wallet.set_header_retention(cli.btc_header_retention);
         if let Some(birthday) = cli.btc_birthday {
             btc_wallet.set_last_scanned_height(birthday);
+            btc_wallet.set_birthday(birthday);
         }
         // Zeroize the local seed material; the wallet holds its own copy
         // (zeroized on drop) and the CLI string is process-lifetime anyway.

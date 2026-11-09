@@ -635,15 +635,50 @@ impl BtcWallet {
 
     fn require_retained_wallet_history(&self) -> Result<()> {
         let floor = self.headers.lock().retained_floor();
-        if self.last_scanned_height < floor {
-            self.rescan_on_sync.store(true, Ordering::Release);
-            self.utxos.lock().set_rescan_required(true);
+        let birthday = {
+            let mut utxos = self.utxos.lock();
+            match utxos.birthday() {
+                Some(birthday) => Some(birthday),
+                None => {
+                    // A wallet that never scanned has no earlier history to
+                    // lose: the retained floor is the earliest height it can
+                    // ever have received funds at.
+                    utxos.set_birthday(Some(floor));
+                    None
+                }
+            }
+        };
+        if birthday.is_none() {
             self.save_utxos();
-            return Err(BtcError::Sync(format!(
-                "wallet history before retained header floor {floor} is unavailable; restart with sufficient header retention"
-            )));
+        }
+        if let Some(birthday) = birthday {
+            if birthday < floor {
+                self.rescan_on_sync.store(true, Ordering::Release);
+                self.utxos.lock().set_rescan_required(true);
+                self.save_utxos();
+                return Err(BtcError::Sync(format!(
+                    "wallet history before retained header floor {floor} is unavailable; restart with sufficient header retention"
+                )));
+            }
         }
         Ok(())
+    }
+
+    /// Earliest height this wallet intends to scan.
+    pub fn birthday(&self) -> Option<u32> {
+        self.utxos.lock().birthday()
+    }
+
+    /// Record the earliest height this wallet intends to cover.
+    pub fn set_birthday(&mut self, birthday: u32) {
+        self.utxos.lock().set_birthday(Some(birthday));
+        self.save_utxos();
+    }
+
+    /// True when the retained header window no longer covers the wallet's history.
+    pub fn history_unavailable(&self) -> bool {
+        let floor = self.retained_floor();
+        self.birthday().is_some_and(|birthday| birthday < floor)
     }
 
     /// The next block height to scan.
@@ -916,6 +951,75 @@ mod tests {
         let b = w.next_address().unwrap();
         assert_ne!(a, b);
         assert!(a.starts_with("bc1q"));
+    }
+
+    #[test]
+    fn fresh_wallet_adopts_the_retained_floor_and_is_not_blocked() {
+        let w = BtcWallet::new([7u8; 64]);
+        *w.headers.lock() = HeaderChain::unanchored_for_tests();
+        let mut prev = [0u8; 32];
+        for height in 0..7u32 {
+            let header = test_header(prev, height);
+            prev = header.block_hash().to_byte_array();
+            w.add_header(&bitcoin::consensus::encode::serialize(&header), height)
+                .unwrap();
+        }
+        w.set_header_retention(2);
+        assert_eq!(
+            w.retained_floor(),
+            4,
+            "retention must prune below the floor"
+        );
+
+        assert!(
+            w.require_retained_wallet_history().is_ok(),
+            "a wallet that never scanned has no earlier history to lose"
+        );
+        assert_eq!(w.birthday(), Some(4), "birthday is recorded at the floor");
+        assert!(!w.history_unavailable());
+    }
+
+    #[test]
+    fn wallet_birthday_below_the_retained_floor_stays_blocked() {
+        let mut w = BtcWallet::new([7u8; 64]);
+        *w.headers.lock() = HeaderChain::unanchored_for_tests();
+        let mut prev = [0u8; 32];
+        for height in 0..7u32 {
+            let header = test_header(prev, height);
+            prev = header.block_hash().to_byte_array();
+            w.add_header(&bitcoin::consensus::encode::serialize(&header), height)
+                .unwrap();
+        }
+        w.set_header_retention(2);
+        w.set_birthday(1);
+
+        assert!(
+            w.require_retained_wallet_history().is_err(),
+            "history below the floor cannot be reconstructed"
+        );
+        assert!(w.history_unavailable());
+    }
+
+    fn test_header(prev: [u8; 32], nonce: u32) -> bitcoin::blockdata::block::Header {
+        use bitcoin::blockdata::block::{Header, Version};
+        use bitcoin::{BlockHash, CompactTarget, TxMerkleNode};
+
+        let bits = CompactTarget::from_consensus(0x207fffff);
+        let mut nonce = nonce;
+        loop {
+            let header = Header {
+                version: Version::ONE,
+                prev_blockhash: BlockHash::from_byte_array(prev),
+                merkle_root: TxMerkleNode::all_zeros(),
+                time: 1_700_000_000 + nonce,
+                bits,
+                nonce,
+            };
+            if header.validate_pow(bits.into()).is_ok() {
+                return header;
+            }
+            nonce += 1;
+        }
     }
 
     #[test]

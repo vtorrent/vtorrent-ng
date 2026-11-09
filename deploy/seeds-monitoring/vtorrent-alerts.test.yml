@@ -7,14 +7,8 @@ tests:
   - name: missing retained wallet history alerts and resolves after recovery
     interval: 1m
     input_series:
-      - series: 'vtorrent_btc_synced{instance="probe"}'
-        values: '1+0x12'
-      - series: 'vtorrent_btc_retained_floor{instance="probe"}'
-        values: '100+0x7 0+0x4'
-      - series: 'vtorrent_btc_last_scanned_height{instance="probe"}'
-        values: '0+0x12'
-      - series: 'vtorrent_btc_scan_in_progress{instance="probe"}'
-        values: '0+0x12'
+      - series: 'vtorrent_btc_wallet_history_blocked{instance="probe"}'
+        values: '1+0x7 0+0x4'
     alert_rule_test:
       - eval_time: 4m
         alertname: BtcWalletHistoryUnavailable
@@ -28,7 +22,7 @@ tests:
             exp_annotations:
               summary: BTC wallet history unavailable on probe
               description: BTC wallet requires history older than retained headers; increase retention and rescan.
-      - eval_time: 9m
+      - eval_time: 10m
         alertname: BtcWalletHistoryUnavailable
         exp_alerts: []
 

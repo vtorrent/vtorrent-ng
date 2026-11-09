@@ -58,6 +58,10 @@ pub struct UtxoSet {
     last_scanned_height: u32,
     #[serde(default)]
     rescan_required: bool,
+    /// Earliest height this wallet intends to cover, recorded when it starts
+    /// scanning. A birthday below the retained floor means history is missing.
+    #[serde(default)]
+    birthday: Option<u32>,
 }
 
 impl UtxoSet {
@@ -75,6 +79,14 @@ impl UtxoSet {
 
     pub fn last_scanned_height(&self) -> u32 {
         self.last_scanned_height
+    }
+
+    pub fn birthday(&self) -> Option<u32> {
+        self.birthday
+    }
+
+    pub fn set_birthday(&mut self, birthday: Option<u32>) {
+        self.birthday = birthday;
     }
 
     pub fn set_last_scanned_height(&mut self, height: u32) {

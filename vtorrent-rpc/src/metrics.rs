@@ -189,6 +189,12 @@ async fn collect_metrics(state: &AppState) -> String {
         "Oldest retained BTC header height",
         health.retained_floor.load(Ordering::Relaxed),
     );
+    write_gauge(
+        &mut out,
+        "vtorrent_btc_wallet_history_blocked",
+        "1 when the retained headers no longer cover the wallet's history",
+        health.wallet_history_blocked.load(Ordering::Relaxed) as u64,
+    );
     // A zero cursor means "nothing scanned yet" (fresh wallet or a full
     // rescan), so the difference is the whole header chain and looks like a
     // catastrophic lag on a dashboard. Omit it until the cursor means

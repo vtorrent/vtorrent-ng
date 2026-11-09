@@ -43,6 +43,7 @@ pub struct BtcSyncHealth {
     pub last_success_unix: AtomicU64,
     pub auth_failures: AtomicU64,
     pub scan_errors: AtomicU64,
+    pub wallet_history_blocked: AtomicBool,
 }
 
 /// Shared application state for the RPC API server.

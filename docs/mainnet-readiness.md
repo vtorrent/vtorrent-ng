@@ -60,13 +60,17 @@
 
 ## 2. Testnet Soak
 
-**BTC retained-history blocker:** A wallet that requires history older than its
-retained header floor cannot safely complete its rescan. The wallet now refuses
-that scan and keeps its balance hidden instead of presenting an incomplete
-result. Recovery requires restarting with sufficient retention (for example,
-`--btc-header-retention 0` for unbounded headers) and performing a complete
-rescan. This increases memory and scan cost; availability with the default
-100,000-header retention remains a launch concern, not a resolved gate.
+**BTC retained-history blocker:** A wallet refuses to scan when its recorded
+birthday is older than the retained header floor, because history below that
+floor cannot be reconstructed. The balance stays hidden rather than showing an
+incomplete result, and `BtcWalletHistoryUnavailable` raises a critical alert.
+
+A wallet that has never scanned has no earlier history to lose: it adopts the
+retained floor as its birthday and scans from there, so a fresh installation is
+not blocked. The remaining exposure is a wallet that genuinely holds funds below
+the floor, which needs `--btc-header-retention 0` (unbounded) or a birthday
+below the funding height, plus a complete rescan. Unbounded retention raises
+memory and scan cost, so this stays a launch concern rather than a resolved gate.
 
 > **Run 2 started 2026-09-03 UTC** — fresh consensus-v3 volumes on the dev
 > workstation using `docker/testnet/docker-compose.yml` (3 isolated regtest
