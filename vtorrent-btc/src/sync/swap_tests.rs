@@ -1158,6 +1158,167 @@ async fn scanning_journals_a_created_output_then_its_spend() {
     server.await.unwrap();
 }
 
+#[tokio::test]
+async fn a_covered_reorg_replays_the_journal_instead_of_rescanning_everything() {
+    let mut wallet = crate::wallet::BtcWallet::with_network([1; 64], bitcoin::Network::Regtest);
+    let (blocks, _) = chain(&contract(), "wallet_unspent");
+    wallet.add_header(&serialize(&blocks[0].header), 0).unwrap();
+    for (height, block) in blocks.iter().enumerate().skip(1) {
+        wallet
+            .add_header(&serialize(&block.header), height as u32)
+            .unwrap();
+    }
+    // An entry at 6 makes fork 5 covered: fork + 1 is the first journalled height.
+    wallet.push_undo_for_tests(UndoEntry {
+        height: 6,
+        created: vec![],
+        removed: vec![],
+    });
+
+    let reorged = wallet.reset_for_reorg_for_tests(5);
+    assert!(reorged, "a covered fork must take the journal path");
+    assert_eq!(wallet.last_scanned_height(), 6);
+    assert_eq!(wallet.undo_entries_for_tests().len(), 0);
+    assert!(
+        !wallet.rescan_required_for_tests(),
+        "a journal replay resumes from the fork instead of a full rescan"
+    );
+}
+
+#[tokio::test]
+async fn a_covered_reorg_restores_an_output_spent_on_the_abandoned_branch() {
+    let mut wallet = crate::wallet::BtcWallet::with_network([1; 64], bitcoin::Network::Regtest);
+    let owned = Utxo {
+        txid: "ab".repeat(32),
+        vout: 0,
+        value: 100_000,
+        address: contract().recipient,
+        height: 5,
+    };
+    wallet.add_utxo(owned.clone());
+    wallet.push_undo_for_tests(UndoEntry {
+        height: 6,
+        created: vec![],
+        removed: vec![RemovedOutput {
+            utxo: owned.clone(),
+            prior: PriorState::Free,
+        }],
+    });
+    wallet.remove_utxo_for_tests(&owned.txid, owned.vout);
+
+    assert!(wallet.reset_for_reorg_for_tests(5), "fork at 5 is covered");
+    let restored = wallet
+        .utxo_for_tests(&owned.txid, owned.vout)
+        .expect("output must return");
+    assert_eq!(restored.value, 100_000);
+    assert_eq!(restored.height, 5);
+}
+
+#[tokio::test]
+async fn a_covered_reorg_hides_the_balance_until_the_post_fork_scan() {
+    let mut wallet = crate::wallet::BtcWallet::with_network([1; 64], bitcoin::Network::Regtest);
+    wallet.add_utxo(Utxo {
+        txid: "cd".repeat(32),
+        vout: 0,
+        value: 1_000,
+        address: contract().recipient,
+        height: 3,
+    });
+    wallet.push_undo_for_tests(UndoEntry {
+        height: 6,
+        created: vec![],
+        removed: vec![],
+    });
+
+    assert!(wallet.reset_for_reorg_for_tests(5));
+    assert_eq!(
+        wallet.balance(),
+        0,
+        "outputs below the fork stay hidden until the rescan completes"
+    );
+    assert!(
+        !wallet.history_unavailable(),
+        "a covered rollback must not report missing history"
+    );
+}
+
+#[tokio::test]
+async fn a_covered_header_reorg_in_sync_resumes_from_the_fork() {
+    let htlc = contract();
+    let (fork, _) = chain(&htlc, "valid");
+    let mut old = fork[..3].to_vec();
+    old[2].header.time += 100;
+    old[2].header.nonce = 0;
+    while old[2].header.validate_pow(old[2].header.target()).is_err() {
+        old[2].header.nonce += 1;
+    }
+    let mut wallet = crate::wallet::BtcWallet::with_network([1; 64], htlc.network);
+    wallet.add_header(&serialize(&old[1].header), 1).unwrap();
+    wallet.add_header(&serialize(&old[2].header), 2).unwrap();
+    wallet.add_utxo(Utxo {
+        txid: hex::encode([9; 32]),
+        vout: 0,
+        value: 100_000,
+        address: htlc.address().unwrap(),
+        height: 1,
+    });
+    wallet.set_last_scanned_height(3);
+    // The new chain shares height 1 and diverges at 2, so the journal entry at
+    // 2 covers fork 1 exactly.
+    wallet.push_undo_for_tests(UndoEntry {
+        height: 2,
+        created: vec![],
+        removed: vec![],
+    });
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, fork, "valid"));
+    let mut peer = BtcPeer::connect_with_network(addr, htlc.network)
+        .await
+        .unwrap();
+    wallet.sync(&mut peer).await.unwrap();
+
+    assert_eq!(
+        wallet.last_scanned_height(),
+        2,
+        "a covered reorg must resume at fork + 1, not restart at zero"
+    );
+    assert_eq!(wallet.balance(), 0, "balance stays hidden until the rescan");
+    assert!(
+        wallet.utxo_for_tests(&hex::encode([9; 32]), 0).is_some(),
+        "outputs at or below the fork must survive the rollback"
+    );
+    assert!(wallet.undo_entries_for_tests().is_empty());
+    drop(peer);
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn an_uncovered_reorg_falls_back_to_the_full_reset() {
+    let mut wallet = crate::wallet::BtcWallet::with_network([1; 64], bitcoin::Network::Regtest);
+    wallet.push_undo_for_tests(UndoEntry {
+        height: 6,
+        created: vec![],
+        removed: vec![],
+    });
+    wallet.set_scan_progress(7, Some([9; 32]));
+
+    let reorged = wallet.reset_for_reorg_for_tests(4);
+    assert!(!reorged, "a gap above the fork means the full-reset path");
+    assert_eq!(wallet.last_scanned_height(), 0);
+    assert!(
+        wallet.undo_entries_for_tests().is_empty(),
+        "a full reset must not leave abandoned-branch entries behind"
+    );
+    assert_eq!(
+        wallet.last_scanned_tip(),
+        None,
+        "a full reset must not keep the abandoned tip"
+    );
+    assert!(wallet.rescan_required_for_tests());
+}
+
 #[test]
 fn incomplete_settlement_scan_cannot_publish_evidence() {
     let htlc = contract();

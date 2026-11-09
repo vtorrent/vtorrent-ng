@@ -171,12 +171,43 @@ impl BtcWallet {
         {
             let mut utxos = self.utxos.lock();
             utxos.clear_chain_utxos();
+            // A full reset abandons the whole journal: keeping entries from the
+            // old branch would let a later journal claim coverage it lost.
+            utxos.clear_undo();
+            utxos.set_last_scanned_tip(None);
             utxos.set_last_scanned_height(0);
             utxos.set_rescan_required(true);
         }
         self.last_scanned_height = 0;
         self.synced = false;
         self.save_utxos();
+    }
+
+    /// Roll the wallet back to `fork` by replaying the undo journal.
+    ///
+    /// Returns false without changing anything when the journal does not cover
+    /// every height above `fork`; the caller then falls back to a full reset.
+    /// A replayed reorg resumes scanning at `fork + 1`, so outputs at or below
+    /// the fork survive and only a rescan of the shortened branch is required.
+    fn reset_chain_cache_from_journal(&mut self, fork: u32) -> bool {
+        let next_height = fork.saturating_add(1);
+        {
+            let mut utxos = self.utxos.lock();
+            if !utxos.undo_above(fork) {
+                return false;
+            }
+            utxos.set_last_scanned_height(next_height);
+        }
+        *self.completed_scan.lock() = None;
+        self.filter_headers.lock().clear();
+        self.last_scanned_height = next_height;
+        self.synced = false;
+        // Hide the rolled-back balance until the post-fork scan completes. The
+        // journal still covers the old branch's history, so no full rescan is
+        // required and `history_unavailable` must stay quiet.
+        self.rescan_on_sync.store(true, Ordering::Release);
+        self.save_utxos();
+        true
     }
 
     /// The Bitcoin network this wallet operates on.
@@ -436,6 +467,45 @@ impl BtcWallet {
         self.utxos.lock().undo_entries().to_vec()
     }
 
+    /// Append a journal entry as a scan would.
+    #[cfg(test)]
+    pub(crate) fn push_undo_for_tests(&self, entry: crate::utxo::UndoEntry) {
+        self.utxos.lock().push_undo(entry);
+    }
+
+    /// Take the reorg path a header sync would take for `fork`.
+    #[cfg(test)]
+    pub(crate) fn reset_for_reorg_for_tests(&mut self, fork: u32) -> bool {
+        if self.reset_chain_cache_from_journal(fork) {
+            return true;
+        }
+        self.reset_chain_cache_from(Some(fork));
+        false
+    }
+
+    /// The wallet's record of a spendable outpoint.
+    #[cfg(test)]
+    pub(crate) fn utxo_for_tests(&self, txid: &str, vout: u32) -> Option<Utxo> {
+        self.utxos
+            .lock()
+            .list()
+            .iter()
+            .find(|utxo| utxo.txid == txid && utxo.vout == vout)
+            .cloned()
+    }
+
+    /// Drop a spendable outpoint as a confirmed spend would.
+    #[cfg(test)]
+    pub(crate) fn remove_utxo_for_tests(&self, txid: &str, vout: u32) {
+        self.utxos.lock().remove(txid, vout);
+    }
+
+    /// Whether the persisted UTXO set wants a full rescan.
+    #[cfg(test)]
+    pub(crate) fn rescan_required_for_tests(&self) -> bool {
+        self.utxos.lock().rescan_required()
+    }
+
     /// Freshly scan a swap contract, without trusting the persisted wallet UTXO cache.
     pub async fn verify_swap_funding(
         &self,
@@ -564,11 +634,18 @@ impl BtcWallet {
                     let chain = self.headers.lock();
                     find_fork(&chain, previous_best)
                 };
-                self.reset_chain_cache_from(Some(fork));
-                tracing::warn!(
-                    "BTC header reorg detected near height {}; cleared chain state for a full rescan",
-                    fork
-                );
+                if self.reset_chain_cache_from_journal(fork) {
+                    tracing::warn!(
+                        "BTC header reorg detected near height {}; replayed the undo journal back to the fork",
+                        fork
+                    );
+                } else {
+                    self.reset_chain_cache_from(Some(fork));
+                    tracing::warn!(
+                        "BTC header reorg detected near height {}; journal does not cover the fork, cleared chain state for a full rescan",
+                        fork
+                    );
+                }
             }
         }
         if added > 0 {
@@ -1182,7 +1259,12 @@ mod tests {
             address: "bc1qtest".to_string(),
             height: 120,
         });
-        w.set_last_scanned_height(200);
+        w.push_undo_for_tests(crate::utxo::UndoEntry {
+            height: 120,
+            created: vec![],
+            removed: vec![],
+        });
+        w.set_scan_progress(200, Some([3u8; 32]));
 
         w.reset_chain_cache();
 
@@ -1192,6 +1274,15 @@ mod tests {
             "an unknown fork means start over"
         );
         assert!(w.utxos.lock().list().is_empty());
+        assert!(
+            w.undo_entries_for_tests().is_empty(),
+            "a full reset must drop the abandoned journal"
+        );
+        assert_eq!(
+            w.last_scanned_tip(),
+            None,
+            "a full reset must not keep the abandoned tip"
+        );
     }
 
     #[test]
