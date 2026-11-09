@@ -18,6 +18,32 @@ pub struct Utxo {
     pub height: u32,
 }
 
+/// Reservation state an outpoint had before a block removed it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PriorState {
+    /// The outpoint was spendable.
+    Free,
+    /// The outpoint was held for a swap; the record restores it as reserved.
+    Reserved(Utxo),
+    /// The outpoint had already been spent while reserved.
+    SpentReserved,
+}
+
+/// An output a block removed from the set, with the state to restore.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemovedOutput {
+    pub utxo: Utxo,
+    pub prior: PriorState,
+}
+
+/// Per-height record of what one block did to the set, so a reorg can undo it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UndoEntry {
+    pub height: u32,
+    pub created: Vec<Utxo>,
+    pub removed: Vec<RemovedOutput>,
+}
+
 /// Public contract terms needed to recover the BTC refund after restart.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SwapContract {
@@ -62,6 +88,13 @@ pub struct UtxoSet {
     /// scanning. A birthday below the retained floor means history is missing.
     #[serde(default)]
     birthday: Option<u32>,
+    /// Hash of the tip the scan cursor reached, so a reorg can detect whether
+    /// the journal was built on the same lineage.
+    #[serde(default)]
+    last_scanned_tip: Option<[u8; 32]>,
+    /// Sparse ascending journal of chain-derived changes, for rollback.
+    #[serde(default)]
+    undo: Vec<UndoEntry>,
     /// Set once any confirmed output has been tracked, so a floor change can
     /// never silently adopt a height this wallet may have held funds below.
     #[serde(default)]
@@ -95,6 +128,14 @@ impl UtxoSet {
 
     pub fn set_last_scanned_height(&mut self, height: u32) {
         self.last_scanned_height = height;
+    }
+
+    pub fn last_scanned_tip(&self) -> Option<[u8; 32]> {
+        self.last_scanned_tip
+    }
+
+    pub fn set_last_scanned_tip(&mut self, tip: Option<[u8; 32]>) {
+        self.last_scanned_tip = tip;
     }
 
     pub(crate) fn rescan_required(&self) -> bool {
@@ -145,6 +186,102 @@ impl UtxoSet {
     /// window. Mempool entries (height 0) and wallet metadata are untouched.
     pub fn rollback_above(&mut self, height: u32) {
         self.utxos.retain(|utxo| utxo.height <= height);
+    }
+
+    /// The tracked output for an outpoint, if the wallet still holds it.
+    pub fn outpoint(&self, txid: &str, vout: u32) -> Option<Utxo> {
+        self.utxos
+            .iter()
+            .find(|utxo| utxo.txid == txid && utxo.vout == vout)
+            .cloned()
+    }
+
+    /// The undo journal, oldest entry first.
+    pub fn undo_entries(&self) -> &[UndoEntry] {
+        &self.undo
+    }
+
+    pub fn push_undo(&mut self, entry: UndoEntry) {
+        self.undo.push(entry);
+    }
+
+    pub fn clear_undo(&mut self) {
+        self.undo.clear();
+    }
+
+    /// Drop journal entries below `floor`, then keep at most `max_entries`
+    /// of the newest ones.
+    pub fn prune_undo(&mut self, floor: u32, max_entries: usize) {
+        self.undo.retain(|entry| entry.height >= floor);
+        if self.undo.len() > max_entries {
+            self.undo.drain(..self.undo.len() - max_entries);
+        }
+    }
+
+    /// Roll the set back to `fork` by replaying the journal.
+    ///
+    /// Returns true only when the journal covers every height above `fork`:
+    /// entries must be strictly ascending and the lowest one above the fork
+    /// must be `fork + 1`. Otherwise nothing is mutated and the caller falls
+    /// back to a full reset.
+    pub fn undo_above(&mut self, fork: u32) -> bool {
+        if !self.undo_covers(fork) {
+            return false;
+        }
+        while let Some(entry) = self.undo.last() {
+            if entry.height <= fork {
+                break;
+            }
+            let entry = self.undo.pop().expect("entry just inspected");
+            for created in entry.created {
+                self.remove(&created.txid, created.vout);
+            }
+            for removed in entry.removed {
+                self.restore_removed(removed);
+            }
+        }
+        self.last_scanned_tip = None;
+        true
+    }
+
+    fn undo_covers(&self, fork: u32) -> bool {
+        let ascending = self
+            .undo
+            .windows(2)
+            .all(|pair| pair[0].height < pair[1].height);
+        if !ascending {
+            return false;
+        }
+        self.undo
+            .iter()
+            .find(|entry| entry.height > fork)
+            .is_some_and(|entry| entry.height == fork.saturating_add(1))
+    }
+
+    fn restore_removed(&mut self, removed: RemovedOutput) {
+        let RemovedOutput { utxo, prior } = removed;
+        let key = (utxo.txid.clone(), utxo.vout);
+        self.insert_direct(utxo);
+        match prior {
+            PriorState::Free => {}
+            PriorState::Reserved(reserved) => self.reserve_utxo(reserved),
+            PriorState::SpentReserved => {
+                self.utxos.retain(|u| !(u.txid == key.0 && u.vout == key.1));
+                self.spent_reserved.insert(key);
+            }
+        }
+    }
+
+    fn insert_direct(&mut self, utxo: Utxo) {
+        if self
+            .utxos
+            .iter()
+            .any(|existing| existing.txid == utxo.txid && existing.vout == utxo.vout)
+        {
+            return;
+        }
+        self.seen_funds = true;
+        self.utxos.push(utxo);
     }
 
     pub fn reserve(&mut self, txid: &str, vout: u32) {
@@ -501,6 +638,159 @@ mod tests {
         assert!(set.release("b", 0), "reservation must survive a reorg");
         assert!(set.pending_swap_transactions().contains_key("tx1"));
         assert!(set.swap_contract("order1").is_some());
+    }
+
+    #[test]
+    fn undo_entry_restores_outputs_removed_above_the_fork() {
+        let mut set = UtxoSet::new();
+        set.add(Utxo {
+            txid: "aa".into(),
+            vout: 0,
+            value: 500,
+            address: "bc1q".into(),
+            height: 5,
+        });
+        set.push_undo(UndoEntry {
+            height: 6,
+            created: vec![Utxo {
+                txid: "bb".into(),
+                vout: 0,
+                value: 700,
+                address: "bc1q".into(),
+                height: 6,
+            }],
+            removed: vec![RemovedOutput {
+                utxo: Utxo {
+                    txid: "aa".into(),
+                    vout: 0,
+                    value: 500,
+                    address: "bc1q".into(),
+                    height: 5,
+                },
+                prior: PriorState::Free,
+            }],
+        });
+        set.add(Utxo {
+            txid: "bb".into(),
+            vout: 0,
+            value: 700,
+            address: "bc1q".into(),
+            height: 6,
+        });
+        set.remove("aa", 0);
+
+        assert!(set.undo_above(5));
+        let ids: Vec<_> = set.list().iter().map(|u| u.txid.clone()).collect();
+        assert_eq!(
+            ids,
+            vec!["aa".to_string()],
+            "created above fork dropped, removed restored"
+        );
+        assert_eq!(set.list()[0].value, 500);
+        assert_eq!(set.list()[0].height, 5);
+    }
+
+    #[test]
+    fn undo_restores_reserved_state_instead_of_freeing_the_input() {
+        let mut set = UtxoSet::new();
+        let reserved = utxo("cc", 0, 900);
+        set.push_undo(UndoEntry {
+            height: 7,
+            created: vec![],
+            removed: vec![RemovedOutput {
+                utxo: reserved.clone(),
+                prior: PriorState::Reserved(reserved.clone()),
+            }],
+        });
+        set.note_spend("cc", 0);
+
+        assert!(set.undo_above(6));
+        assert!(
+            set.reserved_utxo("cc", 0).is_some(),
+            "input returns reserved, not selectable"
+        );
+        assert!(!set.list().iter().any(|u| u.txid == "cc"));
+    }
+
+    #[test]
+    fn undo_above_restores_a_spent_reserved_outpoint_as_already_spent() {
+        let mut set = UtxoSet::new();
+        set.push_undo(UndoEntry {
+            height: 8,
+            created: vec![],
+            removed: vec![RemovedOutput {
+                utxo: utxo("dd", 0, 400),
+                prior: PriorState::SpentReserved,
+            }],
+        });
+
+        assert!(set.undo_above(7));
+        assert!(set.was_reserved_spent("dd", 0));
+        assert!(set.reserved_utxo("dd", 0).is_none());
+        assert!(!set.list().iter().any(|u| u.txid == "dd"));
+    }
+
+    #[test]
+    fn undo_above_reports_no_coverage_when_the_fork_is_below_the_journal() {
+        let mut set = UtxoSet::new();
+        set.push_undo(UndoEntry {
+            height: 10,
+            created: vec![],
+            removed: vec![],
+        });
+        assert!(!set.undo_above(5));
+        assert_eq!(set.undo_entries().len(), 1, "no partial application");
+    }
+
+    #[test]
+    fn undo_above_reports_no_coverage_for_gapped_or_unordered_journal() {
+        let mut set = UtxoSet::new();
+        set.push_undo(UndoEntry {
+            height: 12,
+            created: vec![],
+            removed: vec![],
+        });
+        set.push_undo(UndoEntry {
+            height: 10,
+            created: vec![],
+            removed: vec![],
+        });
+        assert!(!set.undo_above(9));
+    }
+
+    #[test]
+    fn prune_undo_drops_below_floor_and_enforces_cap() {
+        let mut set = UtxoSet::new();
+        for height in 1..=5u32 {
+            set.push_undo(UndoEntry {
+                height,
+                created: vec![],
+                removed: vec![],
+            });
+        }
+        set.prune_undo(3, 10);
+        assert_eq!(set.undo_entries().first().unwrap().height, 3);
+        set.prune_undo(0, 2);
+        assert_eq!(set.undo_entries().len(), 2);
+        assert_eq!(set.undo_entries().last().unwrap().height, 5);
+    }
+
+    #[test]
+    fn journal_and_tip_round_trip_through_persistence() {
+        let path = std::env::temp_dir().join(format!("btc-undo-rt-{}.json", std::process::id()));
+        let mut set = UtxoSet::new();
+        set.set_last_scanned_tip(Some([7u8; 32]));
+        set.push_undo(UndoEntry {
+            height: 4,
+            created: vec![],
+            removed: vec![],
+        });
+        set.save(&path).unwrap();
+
+        let loaded = UtxoSet::load(&path).unwrap();
+        assert_eq!(loaded.last_scanned_tip(), Some([7u8; 32]));
+        assert_eq!(loaded.undo_entries().len(), 1);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
