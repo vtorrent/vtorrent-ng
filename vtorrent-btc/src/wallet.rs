@@ -124,12 +124,20 @@ impl BtcWallet {
 
     /// Create a wallet with a UTXO persistence path.  If the file exists,
     /// the UTXO set is loaded from disk on construction.
+    ///
+    /// The undo journal is deliberately not restored. Its scope is one live
+    /// process: a crash can leave a journal beside an older cursor, and
+    /// replaying it in a new process would undo changes this process never
+    /// made. The recorded tip goes with it, since it describes the journal's
+    /// lineage.
     pub fn with_persistence(
         seed: [u8; 64],
         network: Network,
         utxo_path: PathBuf,
     ) -> std::io::Result<Self> {
-        let utxos = UtxoSet::load(&utxo_path)?;
+        let mut utxos = UtxoSet::load(&utxo_path)?;
+        utxos.clear_undo();
+        utxos.set_last_scanned_tip(None);
         let next_index = utxos.next_index();
         let last_scanned_height = utxos.last_scanned_height();
         let rescan_on_sync =
@@ -1386,6 +1394,53 @@ mod tests {
     }
 
     #[test]
+    fn reopening_a_wallet_drops_a_previous_processs_journal() {
+        let path = std::env::temp_dir().join(format!(
+            "btc-journal-reload-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut w =
+            BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
+                .unwrap();
+        w.push_undo_for_tests(crate::utxo::UndoEntry {
+            height: 4,
+            created: vec![],
+            removed: vec![],
+        });
+        w.set_scan_progress(5, Some([7u8; 32]));
+        assert_eq!(
+            UtxoSet::load(&path).unwrap().undo_entries().len(),
+            1,
+            "precondition: the journal reached disk"
+        );
+        drop(w);
+
+        let loaded =
+            BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
+                .unwrap();
+
+        assert!(
+            loaded.undo_entries_for_tests().is_empty(),
+            "journal scope is one process; a crash must not hand it to the next"
+        );
+        assert_eq!(
+            loaded.last_scanned_tip(),
+            None,
+            "the recorded tip belongs to the abandoned journal"
+        );
+        assert_eq!(
+            loaded.last_scanned_height(),
+            5,
+            "the scan cursor itself still resumes"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn clearing_the_chain_cache_clears_the_journal() {
         let mut w = BtcWallet::new([7u8; 64]);
         w.push_undo_for_tests(crate::utxo::UndoEntry {
@@ -1603,7 +1658,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_progress_persists_the_tip_with_the_cursor() {
+    fn scan_progress_persists_the_cursor_without_a_previous_processs_tip() {
         let path = std::env::temp_dir().join(format!("btc-progress-{}.json", std::process::id()));
         let mut w = BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
             .unwrap();
@@ -1613,7 +1668,11 @@ mod tests {
             BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
                 .unwrap();
         assert_eq!(loaded.last_scanned_height(), 42);
-        assert_eq!(loaded.last_scanned_tip(), Some([9u8; 32]));
+        assert_eq!(
+            loaded.last_scanned_tip(),
+            None,
+            "the tip describes a journal that does not survive the process"
+        );
         std::fs::remove_file(path).unwrap();
     }
 
