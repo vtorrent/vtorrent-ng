@@ -44,3 +44,7 @@ append_spv.py
 
 # Isolated worktrees
 .worktrees/
+
+# Python bytecode from the soak tooling tests
+__pycache__/
+*.pyc
