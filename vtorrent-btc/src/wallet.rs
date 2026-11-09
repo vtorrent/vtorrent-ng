@@ -420,6 +420,11 @@ impl BtcWallet {
         self.headers.lock().best_height()
     }
 
+    /// Best known header hash.
+    pub fn best_hash(&self) -> Option<[u8; 32]> {
+        self.headers.lock().best_hash()
+    }
+
     /// Oldest BTC height still available for scanning.
     pub fn retained_floor(&self) -> u32 {
         self.headers.lock().retained_floor()
@@ -729,8 +734,23 @@ impl BtcWallet {
         }
     }
 
+    /// The header tip recorded alongside the cursor, when known.
+    pub fn last_scanned_tip(&self) -> Option<[u8; 32]> {
+        self.utxos.lock().last_scanned_tip()
+    }
+
     /// Set the next block height to scan and persist it with the UTXO set.
     pub fn set_last_scanned_height(&mut self, height: u32) {
+        self.persist_scan_progress(height, None);
+    }
+
+    /// Set the next block height and the header tip it was scanned against,
+    /// persisted together with the UTXO set in a single save.
+    pub fn set_scan_progress(&mut self, next_height: u32, tip: Option<[u8; 32]>) {
+        self.persist_scan_progress(next_height, tip);
+    }
+
+    fn persist_scan_progress(&mut self, height: u32, tip: Option<[u8; 32]>) {
         self.last_scanned_height = height;
         let chain = self.headers.lock();
         let completed = self.completed_scan.lock().take().is_some_and(|(end, tip)| {
@@ -738,6 +758,7 @@ impl BtcWallet {
         });
         let mut utxos = self.utxos.lock();
         utxos.set_last_scanned_height(height);
+        utxos.set_last_scanned_tip(tip);
         utxos.prune_undo(chain.retained_floor(), MAX_UNDO_ENTRIES);
         if completed {
             utxos.set_rescan_required(false);
@@ -1171,6 +1192,21 @@ mod tests {
             "an unknown fork means start over"
         );
         assert!(w.utxos.lock().list().is_empty());
+    }
+
+    #[test]
+    fn scan_progress_persists_the_tip_with_the_cursor() {
+        let path = std::env::temp_dir().join(format!("btc-progress-{}.json", std::process::id()));
+        let mut w = BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
+            .unwrap();
+        w.set_scan_progress(42, Some([9u8; 32]));
+
+        let loaded =
+            BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
+                .unwrap();
+        assert_eq!(loaded.last_scanned_height(), 42);
+        assert_eq!(loaded.last_scanned_tip(), Some([9u8; 32]));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

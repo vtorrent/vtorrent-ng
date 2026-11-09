@@ -239,6 +239,7 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                 let retained_floor = wallet.retained_floor();
                 let start = wallet.last_scanned_height().max(retained_floor);
                 let tip = wallet.best_height();
+                let tip_hash = wallet.best_hash();
                 if start > tip {
                     update_wallet_metrics(&health, wallet);
                     health
@@ -280,7 +281,7 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                             .last_success_unix
                             .store(unix_now(), Ordering::Relaxed);
                         let done = start.saturating_add(n as u32);
-                        wallet.set_last_scanned_height(done);
+                        wallet.set_scan_progress(done, tip_hash);
                         update_wallet_metrics(&health, wallet);
                         tracing::info!(
                             "BTC UTXO scan (BIP-158): {} blocks (through height {})",
