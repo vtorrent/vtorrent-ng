@@ -140,6 +140,7 @@ def fmt_time(ts):
 def main():
     args = parse_args()
     rows = load_samples(args.samples)
+    latest_sample = rows[-1]['_ts']
     if args.trim_to_hours:
         cutoff = rows[0]['_ts'] + datetime.timedelta(hours=args.hours)
         rows = [row for row in rows if row['_ts'] <= cutoff]
@@ -303,13 +304,26 @@ def main():
     report.append('')
     verdicts = []
 
+    complete = all(
+        len(row.get('nodes', [])) == 3 and all(
+            isinstance(node.get('rss_kib'), (int, float)) and node['rss_kib'] > 0
+            and isinstance(node.get('restarts'), int)
+            and isinstance((node.get('info') or {}).get('block_height'), int)
+            and isinstance((node.get('info') or {}).get('best_block_hash'), str)
+            and len(node['info']['best_block_hash']) == 64
+            for node in row['nodes']
+        ) for row in rows
+    )
+    verdicts.append(('Complete three-node telemetry', complete,
+                     'RSS, restarts, height and tip required in every sample'))
+
     # A window is sampled, not exact: the last sample lands up to one cadence
     # before the cutoff, so allow a few intervals of slack rather than failing a
     # 168-hour run by seconds.
     slack = args.expected_interval * 3 / 3600
     verdicts.append((
         'Window reached',
-        span_hours >= args.hours - slack,
+        span_hours >= args.hours - slack and latest_sample >= start + datetime.timedelta(hours=args.hours),
         f'{span_hours:.2f} h of {args.hours:.0f} h (slack {slack * 3600:.0f}s)',
     ))
     worst_peak = max((n['peak'] for n in per_node), default=0.0)
@@ -321,13 +335,17 @@ def main():
     restarts = max((n['restarts'] for n in per_node), default=0)
     verdicts.append(('No container restarts', restarts == 0, f'max {restarts}'))
     heights = [n['height'] for n in per_node if n['height'] is not None]
-    agrees = len(set(heights)) <= 1 if heights else False
+    last_nodes = rows[-1].get('nodes', [])
+    tips = [(n.get('info') or {}).get('best_block_hash') for n in last_nodes]
+    agrees = len(heights) == 3 and len(set(heights)) == 1 and len(tips) == 3 and None not in tips and len(set(tips)) == 1
     verdicts.append((
         'Nodes agree on height',
         agrees,
         f'final heights {heights}',
     ))
     verdicts.append(('Sampler continuity', not gaps, f'{len(gaps)} gap(s)'))
+    verdicts.append(('Independent evidence review', False,
+                     'manual verification of alert coverage, cadence, scan recovery and provenance required'))
 
     for name, ok, detail in verdicts:
         report.append(f"- {'PASS' if ok else '**FAIL**'} — **{name}** ({detail})")

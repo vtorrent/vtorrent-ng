@@ -164,33 +164,17 @@ impl BtcWallet {
         self.reset_chain_cache_from(None);
     }
 
-    /// Drop chain-derived state and schedule a rescan.
-    ///
-    /// `Some(fork)` resumes just above the last common ancestor, which is all
-    /// a reorg invalidates. `None` discards everything and rescans from the
-    /// retained floor: that is only correct when the persisted header lineage
-    /// itself cannot be trusted.
-    fn reset_chain_cache_from(&mut self, fork: Option<u32>) {
+    fn reset_chain_cache_from(&mut self, _fork: Option<u32>) {
         self.rescan_on_sync.store(true, Ordering::Release);
         *self.completed_scan.lock() = None;
         self.filter_headers.lock().clear();
-        match fork {
-            Some(fork) => {
-                let next = fork.saturating_add(1);
-                let mut utxos = self.utxos.lock();
-                utxos.rollback_above(fork);
-                utxos.set_last_scanned_height(next);
-                utxos.set_rescan_required(true);
-                self.last_scanned_height = next;
-            }
-            None => {
-                let mut utxos = self.utxos.lock();
-                utxos.clear_chain_utxos();
-                utxos.set_last_scanned_height(0);
-                utxos.set_rescan_required(true);
-                self.last_scanned_height = 0;
-            }
+        {
+            let mut utxos = self.utxos.lock();
+            utxos.clear_chain_utxos();
+            utxos.set_last_scanned_height(0);
+            utxos.set_rescan_required(true);
         }
+        self.last_scanned_height = 0;
         self.synced = false;
         self.save_utxos();
     }
@@ -571,9 +555,8 @@ impl BtcWallet {
                 };
                 self.reset_chain_cache_from(Some(fork));
                 tracing::warn!(
-                    "BTC header reorg detected at fork height {}; dropped outputs above it and will rescan from height {}",
-                    fork,
-                    self.last_scanned_height
+                    "BTC header reorg detected near height {}; cleared chain state for a full rescan",
+                    fork
                 );
             }
         }
@@ -934,7 +917,7 @@ mod tests {
     }
 
     #[test]
-    fn reorg_resumes_above_the_fork_and_keeps_surviving_outputs() {
+    fn reorg_rebuilds_chain_outputs_from_the_start() {
         let mut w = BtcWallet::new([7u8; 64]);
         for (txid, height) in [("aa", 100u32), ("bb", 120), ("cc", 121)] {
             w.add_utxo(Utxo {
@@ -952,8 +935,8 @@ mod tests {
 
         assert_eq!(
             w.last_scanned_height(),
-            121,
-            "rescan must resume just above the fork, not from zero"
+            0,
+            "reorg must rebuild outputs spent on the abandoned branch"
         );
         assert!(!w.synced(), "a reorg invalidates the synced flag");
         assert_eq!(
@@ -968,7 +951,7 @@ mod tests {
             .iter()
             .map(|u| u.txid[..2].to_string())
             .collect();
-        assert_eq!(kept, vec!["aa", "bb"], "outputs above the fork are dropped");
+        assert!(kept.is_empty(), "chain outputs must be rebuilt");
     }
 
     #[test]
