@@ -681,6 +681,54 @@ async fn partial_rescan_keeps_later_spent_output_unavailable_across_restart() {
     std::fs::remove_file(path).unwrap();
 }
 
+#[tokio::test]
+async fn reconciliation_scan_does_not_mutate_the_shared_set() {
+    let htlc = contract();
+    let (blocks, _) = chain(&htlc, "wallet_spent");
+    let mut wallet = crate::wallet::BtcWallet::with_network([1; 64], bitcoin::Network::Regtest);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, blocks.clone(), "valid"));
+    let mut peer = BtcPeer::connect_with_network(addr, bitcoin::Network::Regtest)
+        .await
+        .unwrap();
+    wallet.sync(&mut peer).await.unwrap();
+    drop(peer);
+    server.await.unwrap();
+
+    let funding_tx = blocks[1].txdata[1].clone();
+    let funding_raw = serialize(&funding_tx);
+    let funding = Utxo {
+        txid: funding_tx.compute_txid().to_string(),
+        vout: 0,
+        value: 100_000,
+        address: htlc.recipient.clone(),
+        height: 1,
+    };
+    wallet.add_utxo(funding.clone());
+    wallet
+        .reserve_swap_input(&funding, &funding_raw, "order1".into(), &htlc)
+        .unwrap();
+    assert!(wallet.undo_entries_for_tests().is_empty());
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let scan_addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, blocks, "wallet_valid"));
+    let spent = wallet
+        .scan_reserved_input_spent(&funding.txid, funding.vout, &[scan_addr])
+        .await
+        .unwrap();
+    server.await.unwrap();
+
+    assert!(spent, "the confirmed spend must be seen");
+    assert!(wallet.reserved_input_spent(&funding.txid, funding.vout));
+    assert!(wallet.list_utxos().is_empty());
+    assert!(
+        wallet.undo_entries_for_tests().is_empty(),
+        "a reconciliation scan from an old height must not change the shared set or journal it from there"
+    );
+}
+
 async fn scan_failover_case(failure: &'static str) {
     let htlc = contract();
     let (blocks, txid) = chain(&htlc, "valid");

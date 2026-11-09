@@ -390,6 +390,13 @@ impl BtcWallet {
     /// Scan from the reserved input's confirmation height and report whether a
     /// confirmed transaction spent it. A spent reserved input proves the signed
     /// funding transaction can no longer confirm.
+    ///
+    /// The scan runs against a scratch set seeded with the reservation, never
+    /// the shared set: a reconciliation can start far below the scan cursor,
+    /// and rewriting shared chain state from an old height would change it with
+    /// no journal entry covering that height. Only the spend outcome is applied.
+    /// If the spend predates the retained floor the scan cannot see it and
+    /// reports not spent, leaving the reservation in place.
     pub async fn scan_reserved_input_spent(
         &self,
         txid: &str,
@@ -399,17 +406,41 @@ impl BtcWallet {
         let Some(utxo) = self.reserved_utxo(txid, vout) else {
             return Ok(false);
         };
+        let addresses = self.watch_addresses(self.next_index)?;
+        let mut spent = false;
         for addr in peers {
-            match crate::p2p::BtcPeer::connect_with_network(*addr, self.network).await {
-                Ok(mut peer) => {
-                    if self.scan_utxos_bip158(&mut peer, utxo.height).await.is_ok() {
-                        return Ok(self.reserved_input_spent(txid, vout));
-                    }
-                }
-                Err(_) => continue,
+            let Ok(mut peer) = crate::p2p::BtcPeer::connect_with_network(*addr, self.network).await
+            else {
+                continue;
+            };
+            let mut scratch = UtxoSet::new();
+            scratch.reserve_utxo(utxo.clone());
+            let scratch = Arc::new(Mutex::new(scratch));
+            let sync = crate::sync::BtcSync::new_with_filter_headers(
+                self.headers.clone(),
+                scratch.clone(),
+                self.filter_headers.clone(),
+                addresses.clone(),
+                self.network,
+            );
+            if sync
+                .scan_utxos_bip158(&mut peer, utxo.height)
+                .await
+                .is_ok()
+                && scratch.lock().was_reserved_spent(txid, vout)
+            {
+                spent = true;
+                break;
             }
         }
-        Ok(false)
+        if spent {
+            let mut set = self.utxos.lock();
+            if set.note_spend(txid, vout) {
+                drop(set);
+                self.save_utxos();
+            }
+        }
+        Ok(spent || self.reserved_input_spent(txid, vout))
     }
 
     /// Release the input reservation for `order_id` and drop its contract.
