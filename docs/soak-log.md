@@ -2932,3 +2932,70 @@ from the code: peer selection, not the change.
 The remaining exposure is unchanged and documented in
 `docs/mainnet-readiness.md`: a wallet that genuinely holds funds below the
 retained floor must be blocked and recovered with unbounded retention.
+
+## 2026-11-09 — BTC reorg undo journal
+
+A BTC wallet rebuilt its whole chain state from the retained header floor on
+every reorg, because the scanned fold could not be undone. On the 2026-11-03
+mainnet reorg that was a 100,001-block rescan per node (13–40 min). Commits
+`aec1a76` through `b63c7af` add a sparse per-height undo journal so a covered
+reorg is rewound to the fork and only the new branch is rescanned. The change is
+wallet-local: no wire format, consensus hash, or chain-store change.
+
+What the journal does:
+
+- Records, for each scanned height that touched the wallet, the outputs the scan
+  added and the outputs it removed, together with each removed outpoint's prior
+  reservation state. Untouched heights store nothing, so entries are sparse.
+- On a reorg with fork `F`, a covering journal is replayed backwards above `F`,
+  the cursor resumes at `F + 1`, and the balance stays hidden until that short
+  post-fork scan completes. `BtcWalletHistoryUnavailable` does not fire, and the
+  wallet is never spendable mid-rollback. `finish_recovered_scan` ends a recovery
+  that has nothing left to scan (for example a reorg at the tip).
+- If the journal does not cover `F`, it is cleared with the tip and the existing
+  full rescan runs: `birthday >= floor` rescans losslessly, while only
+  `birthday < floor` blocks and raises the critical alert.
+- Entries are capped at `MAX_UNDO_ENTRIES = 200_000`, pruned to the retained
+  floor whenever the cursor is saved, and persisted inside the UTXO file, so one
+  save commits the set, cursor, and journal together.
+
+Four review findings shaped the design:
+
+1. **Restart wipes the cache, and therefore the journal.** `reset_chain_cache_from`
+   clears the journal and `last_scanned_tip` along with the rest of the chain
+   state, so the scope is live-process only. Nothing replays across a restart and
+   restart behaviour is unchanged; a journal that survived a restart would make
+   restart recovery skip its full rescan, which needs its own lineage design.
+2. **Atomicity.** The journal is embedded in the UTXO file rather than kept
+   beside it. A separate file has a second commit point; a journal ahead of the
+   persisted set would replay `removed` outputs that were never removed on disk,
+   producing a phantom balance.
+3. **Coverage by contiguous heights with a persisted tip.** Coverage is a height
+   range, not "some entry above the fork". An unordered, gapped, or unparsable
+   journal is discarded as a whole and treated as not covering — never partially
+   applied — and `last_scanned_tip` detects a lineage mismatch on load.
+4. **Removed outputs carry their prior reservation state.** Restoring an output
+   needs its value, address, and height, and an input the abandoned branch spent
+   must return to `Reserved` (or `SpentReserved`), not `Free`, or it could fund a
+   second swap.
+
+Verification:
+
+- 23 journal tests pass in `vtorrent-btc`: the `UtxoSet` model and replay,
+  ordering, coverage, corruption, capping, pruning, and persistence round-trip;
+  scan-time journalling and same-height merging; and the wallet/harness reorg
+  cases (covered replay, restored abandoned-branch spend, uncovered fallback,
+  hidden balance, no alert on a covered reorg, and reset clearing the journal).
+- Full workspace suite (`VTORRENT_TOTP_STATE_DIR=$(mktemp -d) cargo test
+  --workspace --all-features`): 49 test groups, **1171 passed, 0 failed, 8
+  ignored**. The ignored cases are pre-existing and deliberate: the mainnet-scale
+  retention test, six manual release-mode tests (real-bitcoind and governance
+  experiments), and one doc-test. None belongs to this change.
+- `cargo fmt --all -- --check` clean.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean.
+
+**Provenance:** this is unit and harness evidence only. The change touches the
+BTC reorg path, so per the provenance policy it still needs a candidate fleet
+where a reorg is induced or observed before it can be part of a release commit.
+The 168-hour run on `35ea52e` and the opportunistic `68165c8` fleet do not
+exercise it.

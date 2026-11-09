@@ -65,6 +65,22 @@ birthday is older than the retained header floor, because history below that
 floor cannot be reconstructed. The balance stays hidden rather than showing an
 incomplete result, and `BtcWalletHistoryUnavailable` raises a critical alert.
 
+Most reorgs no longer reach that guard. The wallet keeps a sparse undo journal —
+the outputs each scanned block added and removed, with each removed output's
+prior reservation state — persisted inside the UTXO file so one save commits the
+set, the cursor, and the journal together. A reorg the journal covers is rewound
+to the fork in seconds instead of rescanned from the floor; the balance stays
+hidden only until the short post-fork scan finishes, no alert fires, and the
+wallet is never spendable mid-rollback. An uncovered reorg with
+`birthday >= floor` still takes the full rescan, which is lossless because
+nothing the wallet can hold predates the floor. Only `birthday < floor` — a reorg
+the journal cannot rewind *and* a wallet that may have used history below the
+retained floor — raises the critical alert.
+
+Scope is live-process only. A restart clears the chain cache and with it the
+journal, so startup recovery is unchanged and a first scan still starts from the
+retained floor.
+
 A wallet that has never scanned has no earlier history to lose: it adopts the
 retained floor as its birthday and scans from there, so a fresh installation is
 not blocked. The remaining exposure is a wallet that genuinely holds funds below
