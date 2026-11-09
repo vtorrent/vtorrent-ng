@@ -188,10 +188,14 @@ impl UtxoSet {
         self.utxos.retain(|utxo| utxo.height <= height);
     }
 
-    /// The tracked output for an outpoint, if the wallet still holds it.
+    /// The wallet's record of an outpoint, whether it is spendable in `utxos`
+    /// or held in `reserved_utxos`. Reserved inputs have already left the
+    /// spendable set, so a scan that sees one spent still needs its full record
+    /// to journal the removal.
     pub fn outpoint(&self, txid: &str, vout: u32) -> Option<Utxo> {
         self.utxos
             .iter()
+            .chain(self.reserved_utxos.iter())
             .find(|utxo| utxo.txid == txid && utxo.vout == vout)
             .cloned()
     }
@@ -264,8 +268,14 @@ impl UtxoSet {
         self.insert_direct(utxo);
         match prior {
             PriorState::Free => {}
-            PriorState::Reserved(reserved) => self.reserve_utxo(reserved),
+            PriorState::Reserved(reserved) => {
+                self.spent_reserved.remove(&key);
+                self.reserve_utxo(reserved);
+            }
             PriorState::SpentReserved => {
+                self.reserved.remove(&key);
+                self.reserved_utxos
+                    .retain(|u| !(u.txid == key.0 && u.vout == key.1));
                 self.utxos.retain(|u| !(u.txid == key.0 && u.vout == key.1));
                 self.spent_reserved.insert(key);
             }
@@ -694,6 +704,8 @@ mod tests {
     fn undo_restores_reserved_state_instead_of_freeing_the_input() {
         let mut set = UtxoSet::new();
         let reserved = utxo("cc", 0, 900);
+        set.reserve_utxo(reserved.clone());
+        set.note_spend("cc", 0);
         set.push_undo(UndoEntry {
             height: 7,
             created: vec![],
@@ -702,12 +714,15 @@ mod tests {
                 prior: PriorState::Reserved(reserved.clone()),
             }],
         });
-        set.note_spend("cc", 0);
 
         assert!(set.undo_above(6));
         assert!(
             set.reserved_utxo("cc", 0).is_some(),
             "input returns reserved, not selectable"
+        );
+        assert!(
+            !set.was_reserved_spent("cc", 0),
+            "a restored reservation must not stay marked spent"
         );
         assert!(!set.list().iter().any(|u| u.txid == "cc"));
     }
@@ -715,11 +730,13 @@ mod tests {
     #[test]
     fn undo_above_restores_a_spent_reserved_outpoint_as_already_spent() {
         let mut set = UtxoSet::new();
+        let record = utxo("dd", 0, 400);
+        set.reserve_utxo(record.clone());
         set.push_undo(UndoEntry {
             height: 8,
             created: vec![],
             removed: vec![RemovedOutput {
-                utxo: utxo("dd", 0, 400),
+                utxo: record,
                 prior: PriorState::SpentReserved,
             }],
         });
@@ -727,7 +744,26 @@ mod tests {
         assert!(set.undo_above(7));
         assert!(set.was_reserved_spent("dd", 0));
         assert!(set.reserved_utxo("dd", 0).is_none());
+        assert!(
+            !set.release("dd", 0),
+            "a spent reservation must not reappear as reserved"
+        );
         assert!(!set.list().iter().any(|u| u.txid == "dd"));
+    }
+
+    #[test]
+    fn outpoint_finds_spendable_and_reserved_records() {
+        let mut set = UtxoSet::new();
+        set.add(utxo("aa", 0, 500));
+        set.reserve_utxo(utxo("bb", 1, 700));
+
+        let spendable = set.outpoint("aa", 0).expect("spendable outpoint");
+        assert_eq!(spendable.value, 500);
+        let reserved = set.outpoint("bb", 1).expect("reserved outpoint");
+        assert_eq!(reserved.value, 700);
+        assert_eq!(reserved.vout, 1);
+        assert_eq!(reserved.height, 100);
+        assert!(set.outpoint("cc", 0).is_none());
     }
 
     #[test]
