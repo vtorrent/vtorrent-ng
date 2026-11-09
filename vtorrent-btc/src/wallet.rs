@@ -68,6 +68,10 @@ pub struct BtcWallet {
     last_scanned_height: u32,
     rescan_on_sync: AtomicBool,
     reset_on_sync: bool,
+    /// In-process only: the pending rescan replays from a journalled fork, so
+    /// no history below the fork or the retained floor is re-derived. Never
+    /// persisted, because a restart cannot continue a journal recovery.
+    journal_recovered: bool,
     completed_scan: Mutex<Option<(u32, [u8; 32])>>,
     /// Whether new transactions signal RBF (Replace-By-Fee).
     rbf_enabled: bool,
@@ -100,6 +104,7 @@ impl BtcWallet {
             last_scanned_height: 0,
             rescan_on_sync: AtomicBool::new(false),
             reset_on_sync: false,
+            journal_recovered: false,
             completed_scan: Mutex::new(None),
             rbf_enabled: true,
         }
@@ -139,6 +144,7 @@ impl BtcWallet {
             last_scanned_height,
             rescan_on_sync: AtomicBool::new(rescan_on_sync),
             reset_on_sync: rescan_on_sync,
+            journal_recovered: false,
             completed_scan: Mutex::new(None),
             rbf_enabled: true,
         })
@@ -180,6 +186,7 @@ impl BtcWallet {
         }
         self.last_scanned_height = 0;
         self.synced = false;
+        self.journal_recovered = false;
         self.save_utxos();
     }
 
@@ -201,10 +208,12 @@ impl BtcWallet {
         *self.completed_scan.lock() = None;
         self.filter_headers.lock().clear();
         self.last_scanned_height = next_height;
-        self.synced = false;
-        // Hide the rolled-back balance until the post-fork scan completes. The
-        // journal still covers the old branch's history, so no full rescan is
-        // required and `history_unavailable` must stay quiet.
+        // The journal already rewound every height above the fork and the scan
+        // resumes at fork + 1, so nothing below the fork — or below the retained
+        // floor, which coverage guarantees is at most fork + 1 — is re-derived.
+        // Mark the rescan journal-recovered so the missing-history guard and
+        // alert stay quiet, then hide the balance until the scan completes.
+        self.journal_recovered = true;
         self.rescan_on_sync.store(true, Ordering::Release);
         self.save_utxos();
         true
@@ -506,6 +515,12 @@ impl BtcWallet {
         self.utxos.lock().rescan_required()
     }
 
+    /// Whether the pending rescan replays from a journalled fork.
+    #[cfg(test)]
+    pub(crate) fn journal_recovered_for_tests(&self) -> bool {
+        self.journal_recovered
+    }
+
     /// Freshly scan a swap contract, without trusting the persisted wallet UTXO cache.
     pub async fn verify_swap_funding(
         &self,
@@ -722,6 +737,11 @@ impl BtcWallet {
     }
 
     fn require_retained_wallet_history(&self) -> Result<()> {
+        if self.journal_recovered {
+            // The covered rollback kept everything at or below the fork and the
+            // scan starts at fork + 1, so no earlier history is needed.
+            return Ok(());
+        }
         let floor = self.headers.lock().retained_floor();
         enum Decision {
             Ready,
@@ -782,8 +802,11 @@ impl BtcWallet {
     /// incrementally can end up with a birthday below the current floor while
     /// still holding complete history. Only a wallet that needs to rescan is
     /// affected.
+    ///
+    /// A journal-recovered rescan is exempt: it only re-reads heights above the
+    /// fork, so nothing below the floor can be lost.
     pub fn history_unavailable(&self) -> bool {
-        if !self.rescan_on_sync.load(Ordering::Acquire) {
+        if self.journal_recovered || !self.rescan_on_sync.load(Ordering::Acquire) {
             return false;
         }
         let floor = self.retained_floor();
@@ -855,6 +878,7 @@ impl BtcWallet {
         };
         if completed && persisted {
             self.rescan_on_sync.store(false, Ordering::Release);
+            self.journal_recovered = false;
         }
     }
 
@@ -1154,6 +1178,94 @@ mod tests {
         );
         assert_eq!(w.birthday(), Some(4));
         assert!(!w.history_unavailable());
+    }
+
+    #[test]
+    fn a_covered_reorg_keeps_history_available_below_the_floor() {
+        let mut w = BtcWallet::new([7u8; 64]);
+        *w.headers.lock() = HeaderChain::unanchored_for_tests();
+        let mut prev = [0u8; 32];
+        for height in 0..7u32 {
+            let header = test_header(prev, height);
+            prev = header.block_hash().to_byte_array();
+            w.add_header(&bitcoin::consensus::encode::serialize(&header), height)
+                .unwrap();
+        }
+        w.set_header_retention(2);
+        let floor = w.retained_floor();
+        assert_eq!(floor, 4, "the fixture must prune below a non-zero floor");
+        w.set_birthday(floor - 1);
+        w.add_utxo(Utxo {
+            txid: "ef".repeat(32),
+            vout: 0,
+            value: 1_000,
+            address: "bc1qtest".to_string(),
+            height: floor - 1,
+        });
+        w.push_undo_for_tests(crate::utxo::UndoEntry {
+            height: floor + 1,
+            created: vec![],
+            removed: vec![],
+        });
+
+        assert!(
+            w.require_retained_wallet_history().is_err(),
+            "precondition: without the rollback the birthday predates the floor"
+        );
+        assert!(w.reset_for_reorg_for_tests(floor), "the journal covers it");
+
+        assert!(
+            !w.history_unavailable(),
+            "a covered rollback loses nothing below the floor, so no alert"
+        );
+        assert!(
+            w.require_retained_wallet_history().is_ok(),
+            "the post-fork scan starts at fork + 1 and needs no earlier history"
+        );
+        assert_eq!(
+            w.balance(),
+            0,
+            "the balance stays hidden until the post-fork scan completes"
+        );
+    }
+
+    #[test]
+    fn a_completed_post_fork_rescan_clears_the_journal_recovered_marker() {
+        let mut w = BtcWallet::new([7u8; 64]);
+        *w.headers.lock() = HeaderChain::unanchored_for_tests();
+        let mut prev = [0u8; 32];
+        for height in 0..7u32 {
+            let header = test_header(prev, height);
+            prev = header.block_hash().to_byte_array();
+            w.add_header(&bitcoin::consensus::encode::serialize(&header), height)
+                .unwrap();
+        }
+        w.set_header_retention(2);
+        let floor = w.retained_floor();
+        w.set_birthday(floor - 1);
+        w.add_utxo(Utxo {
+            txid: "ef".repeat(32),
+            vout: 0,
+            value: 1_000,
+            address: "bc1qtest".to_string(),
+            height: floor - 1,
+        });
+        w.push_undo_for_tests(crate::utxo::UndoEntry {
+            height: floor + 1,
+            created: vec![],
+            removed: vec![],
+        });
+        assert!(w.reset_for_reorg_for_tests(floor));
+        assert!(w.journal_recovered_for_tests());
+
+        let tip = w.best_hash().unwrap();
+        w.note_completed_scan(floor + 1, 2, Some(tip));
+        w.set_scan_progress(7, Some(tip));
+
+        assert!(
+            !w.journal_recovered_for_tests(),
+            "a completed scan ends the in-process recovery exemption"
+        );
     }
 
     #[test]

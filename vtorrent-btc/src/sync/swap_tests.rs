@@ -1215,34 +1215,6 @@ async fn a_covered_reorg_restores_an_output_spent_on_the_abandoned_branch() {
 }
 
 #[tokio::test]
-async fn a_covered_reorg_hides_the_balance_until_the_post_fork_scan() {
-    let mut wallet = crate::wallet::BtcWallet::with_network([1; 64], bitcoin::Network::Regtest);
-    wallet.add_utxo(Utxo {
-        txid: "cd".repeat(32),
-        vout: 0,
-        value: 1_000,
-        address: contract().recipient,
-        height: 3,
-    });
-    wallet.push_undo_for_tests(UndoEntry {
-        height: 6,
-        created: vec![],
-        removed: vec![],
-    });
-
-    assert!(wallet.reset_for_reorg_for_tests(5));
-    assert_eq!(
-        wallet.balance(),
-        0,
-        "outputs below the fork stay hidden until the rescan completes"
-    );
-    assert!(
-        !wallet.history_unavailable(),
-        "a covered rollback must not report missing history"
-    );
-}
-
-#[tokio::test]
 async fn a_covered_header_reorg_in_sync_resumes_from_the_fork() {
     let htlc = contract();
     let (fork, _) = chain(&htlc, "valid");
