@@ -468,75 +468,78 @@ impl BtcSync {
     /// remove any previously-recorded output that this tx spends.
     ///
     /// Both effects are journalled under `height`, so a reorg can replay them
-    /// backwards. Outputs the set already knew about are not journalled as
-    /// created: replaying that entry must not remove an older record.
+    /// backwards. Only outputs `add` actually inserted are journalled as
+    /// created: replaying that entry must not remove a record the wallet held
+    /// before this block.
     fn record_matching_outputs(&self, tx: &bitcoin::Transaction, height: u32) {
         let txid = tx.compute_txid().to_string();
+
+        // Resolve which outputs belong to the wallet before touching the set, so
+        // address parsing never runs under the UTXO lock.
+        let mut matched = Vec::new();
+        for (vout, out) in tx.output.iter().enumerate() {
+            let script = out.script_pubkey.to_bytes();
+            for addr in &self.addresses {
+                let Ok(a) = bitcoin::Address::from_str(addr) else {
+                    continue;
+                };
+                let Ok(a) = a.require_network(self.network) else {
+                    continue;
+                };
+                if a.script_pubkey().to_bytes() == script {
+                    matched.push((vout as u32, out.value.to_sat(), addr.clone()));
+                }
+            }
+        }
+        if tx.is_coinbase() && !matched.is_empty() {
+            self.coinbase_txids.lock().insert(txid.clone());
+        }
+
         let mut created = Vec::new();
         let mut removed = Vec::new();
-        {
-            let mut utxos = self.utxos.lock();
+        let mut utxos = self.utxos.lock();
 
-            // Remove spent outputs: any input that references a UTXO we already
-            // recorded is now spent and must be dropped from the set.
-            for input in &tx.input {
-                let prev_txid = input.previous_output.txid.to_string();
-                let prev_vout = input.previous_output.vout;
-                let prior = if let Some(reserved) = utxos.reserved_utxo(&prev_txid, prev_vout) {
-                    PriorState::Reserved(reserved.clone())
-                } else if utxos.was_reserved_spent(&prev_txid, prev_vout) {
-                    PriorState::SpentReserved
-                } else {
-                    PriorState::Free
-                };
-                let removal = utxos
-                    .outpoint(&prev_txid, prev_vout)
-                    .map(|utxo| RemovedOutput { utxo, prior });
-                utxos.note_spend(&prev_txid, prev_vout);
-                utxos.remove(&prev_txid, prev_vout);
-                if let Some(removal) = removal {
-                    removed.push(removal);
-                }
+        // Remove spent outputs: any input that references a UTXO we already
+        // recorded is now spent and must be dropped from the set.
+        for input in &tx.input {
+            let prev_txid = input.previous_output.txid.to_string();
+            let prev_vout = input.previous_output.vout;
+            let prior = if let Some(reserved) = utxos.reserved_utxo(&prev_txid, prev_vout) {
+                PriorState::Reserved(reserved.clone())
+            } else if utxos.was_reserved_spent(&prev_txid, prev_vout) {
+                PriorState::SpentReserved
+            } else {
+                PriorState::Free
+            };
+            let removal = utxos
+                .outpoint(&prev_txid, prev_vout)
+                .map(|utxo| RemovedOutput { utxo, prior });
+            utxos.note_spend(&prev_txid, prev_vout);
+            utxos.remove(&prev_txid, prev_vout);
+            if let Some(removal) = removal {
+                removed.push(removal);
             }
+        }
 
-            for (vout, out) in tx.output.iter().enumerate() {
-                let vout = vout as u32;
-                let script = out.script_pubkey.to_bytes();
-                for addr in &self.addresses {
-                    let Ok(a) = bitcoin::Address::from_str(addr) else {
-                        continue;
-                    };
-                    let Ok(a) = a.require_network(self.network) else {
-                        continue;
-                    };
-                    if a.script_pubkey().to_bytes() != script {
-                        continue;
-                    }
-                    if tx.is_coinbase() {
-                        self.coinbase_txids.lock().insert(txid.clone());
-                    }
-                    let known = utxos.outpoint(&txid, vout).is_some();
-                    let utxo = Utxo {
-                        txid: txid.clone(),
-                        vout,
-                        value: out.value.to_sat(),
-                        address: addr.to_string(),
-                        height,
-                    };
-                    utxos.add(utxo.clone());
-                    if !known && utxos.outpoint(&txid, vout).is_some() {
-                        created.push(utxo);
-                    }
-                }
+        for (vout, value, addr) in matched {
+            let utxo = Utxo {
+                txid: txid.clone(),
+                vout,
+                value,
+                address: addr,
+                height,
+            };
+            if utxos.add(utxo.clone()) {
+                created.push(utxo);
             }
+        }
 
-            if !created.is_empty() || !removed.is_empty() {
-                utxos.push_undo(UndoEntry {
-                    height,
-                    created,
-                    removed,
-                });
-            }
+        if !created.is_empty() || !removed.is_empty() {
+            utxos.push_undo(UndoEntry {
+                height,
+                created,
+                removed,
+            });
         }
     }
 
@@ -1139,6 +1142,42 @@ mod tests {
         assert_eq!(set.undo_entries().len(), 1, "one block touches one height");
         assert_eq!(set.undo_entries()[0].height, 7);
         assert_eq!(set.undo_entries()[0].created.len(), 2);
+    }
+
+    #[test]
+    fn test_known_outputs_are_not_rejournalled_as_created() {
+        let addr = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh";
+        let utxos = Arc::new(Mutex::new(UtxoSet::new()));
+        let sync = BtcSync::new(
+            Arc::new(Mutex::new(HeaderChain::unanchored_for_tests())),
+            utxos.clone(),
+            vec![addr.to_string()],
+            bitcoin::Network::Bitcoin,
+        );
+        let script = bitcoin::Address::from_str(addr)
+            .unwrap()
+            .require_network(bitcoin::Network::Bitcoin)
+            .unwrap()
+            .script_pubkey();
+        let tx = bitcoin::Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![],
+            output: vec![bitcoin::TxOut {
+                value: bitcoin::Amount::from_sat(1_000),
+                script_pubkey: script,
+            }],
+        };
+        sync.record_matching_outputs(&tx, 7);
+        sync.record_matching_outputs(&tx, 7);
+
+        let set = utxos.lock();
+        assert_eq!(set.undo_entries().len(), 1);
+        assert_eq!(
+            set.undo_entries()[0].created.len(),
+            1,
+            "an output the set already held is not journalled again"
+        );
     }
 
     #[test]

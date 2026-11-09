@@ -4,17 +4,13 @@ use crate::error::{BtcError, Result};
 use crate::filters::FilterHeaderStore;
 use crate::headers::HeaderChain;
 use crate::keys::derive_address;
-use crate::utxo::{Utxo, UtxoSet};
+use crate::utxo::{Utxo, UtxoSet, MAX_UNDO_ENTRIES};
 use bitcoin::hashes::Hash;
 use bitcoin::Network;
 use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-
-/// Hard cap on journalled heights. Independent of `--btc-header-retention`, so
-/// an unbounded header chain cannot produce an unbounded journal.
-const MAX_UNDO_ENTRIES: usize = 200_000;
 
 /// Whether `ancestor` is on the main chain ending at `tip`.
 fn is_ancestor(chain: &HeaderChain, ancestor: [u8; 32], tip: [u8; 32]) -> bool {

@@ -3,6 +3,10 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// Hard cap on journalled heights. Independent of `--btc-header-retention`, so
+/// an unbounded header chain cannot produce an unbounded journal.
+pub(crate) const MAX_UNDO_ENTRIES: usize = 200_000;
+
 /// A spendable output owned by the wallet.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Utxo {
@@ -146,9 +150,13 @@ impl UtxoSet {
         self.rescan_required = required;
     }
 
-    pub fn add(&mut self, utxo: Utxo) {
+    /// Insert a spendable output.
+    ///
+    /// Returns true only when the output was newly recorded. An outpoint the
+    /// set already holds — or one currently reserved — is left untouched.
+    pub fn add(&mut self, utxo: Utxo) -> bool {
         if self.reserved.contains(&(utxo.txid.clone(), utxo.vout)) {
-            return;
+            return false;
         }
         if !self
             .utxos
@@ -157,7 +165,9 @@ impl UtxoSet {
         {
             self.seen_funds = true;
             self.utxos.push(utxo);
+            return true;
         }
+        false
     }
 
     /// Whether this wallet has ever tracked a confirmed output.
@@ -205,12 +215,15 @@ impl UtxoSet {
         &self.undo
     }
 
-    /// Record one height's changes, in ascending height order.
+    /// Record one height's changes, keeping the journal ascending and bounded.
     ///
-    /// A block can touch the wallet through several transactions, so an entry
-    /// for the same height as the last one is merged rather than appended: the
-    /// journal must stay strictly ascending for [`Self::undo_above`] to trust
-    /// its coverage.
+    /// An entry for the same height as the last one is merged, because a block
+    /// can touch the wallet through several transactions. An entry for a height
+    /// *below* the tail is ignored: it can only come from a reconciliation scan
+    /// re-reading old history, and appending it would make [`Self::undo_above`]
+    /// reject the whole journal as non-ascending. The oldest entries are then
+    /// trimmed so the journal never exceeds [`MAX_UNDO_ENTRIES`], whatever the
+    /// header retention and whichever scan path appends.
     pub fn push_undo(&mut self, entry: UndoEntry) {
         if let Some(last) = self.undo.last_mut() {
             if last.height == entry.height {
@@ -218,8 +231,14 @@ impl UtxoSet {
                 last.removed.extend(entry.removed);
                 return;
             }
+            if last.height > entry.height {
+                return;
+            }
         }
         self.undo.push(entry);
+        if self.undo.len() > MAX_UNDO_ENTRIES {
+            self.undo.drain(..self.undo.len() - MAX_UNDO_ENTRIES);
+        }
     }
 
     pub fn clear_undo(&mut self) {
@@ -805,6 +824,56 @@ mod tests {
             removed: vec![],
         });
         assert!(!set.undo_above(9));
+    }
+
+    #[test]
+    fn push_undo_ignores_an_older_height_and_keeps_coverage() {
+        let mut set = UtxoSet::new();
+        set.push_undo(UndoEntry {
+            height: 9,
+            created: vec![],
+            removed: vec![],
+        });
+        set.push_undo(UndoEntry {
+            height: 5,
+            created: vec![],
+            removed: vec![],
+        });
+
+        assert_eq!(
+            set.undo_entries().len(),
+            1,
+            "older entries are not appended"
+        );
+        assert_eq!(set.undo_entries()[0].height, 9);
+        assert!(
+            set.undo_above(8),
+            "a reconciliation scan must not disable journal coverage"
+        );
+        assert!(set.undo_entries().is_empty());
+    }
+
+    #[test]
+    fn push_undo_trims_the_oldest_entries_at_the_cap() {
+        let mut set = UtxoSet::new();
+        for height in 0..=MAX_UNDO_ENTRIES as u32 {
+            set.push_undo(UndoEntry {
+                height,
+                created: vec![],
+                removed: vec![],
+            });
+        }
+
+        assert_eq!(set.undo_entries().len(), MAX_UNDO_ENTRIES);
+        assert_eq!(
+            set.undo_entries()[0].height,
+            1,
+            "the oldest entry is dropped"
+        );
+        assert_eq!(
+            set.undo_entries().last().unwrap().height,
+            MAX_UNDO_ENTRIES as u32
+        );
     }
 
     #[test]

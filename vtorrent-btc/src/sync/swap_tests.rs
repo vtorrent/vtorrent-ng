@@ -1109,6 +1109,55 @@ async fn saving_the_scan_cursor_prunes_journal_below_the_retained_floor() {
     server.await.unwrap();
 }
 
+#[tokio::test]
+async fn scanning_journals_a_created_output_then_its_spend() {
+    let mut wallet = crate::wallet::BtcWallet::with_network([1; 64], bitcoin::Network::Regtest);
+    let (blocks, _) = chain(&contract(), "wallet_spent");
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, blocks, "wallet_valid"));
+    let mut peer = BtcPeer::connect_with_network(addr, bitcoin::Network::Regtest)
+        .await
+        .unwrap();
+    wallet.sync(&mut peer).await.unwrap();
+    wallet
+        .scan_utxos_bip158_multi(std::slice::from_mut(&mut peer), 0)
+        .await
+        .unwrap();
+
+    let entries = wallet.undo_entries_for_tests();
+    assert_eq!(
+        entries.iter().map(|e| e.height).collect::<Vec<_>>(),
+        vec![1, 6],
+        "the funding height and the spending height are journalled"
+    );
+    assert_eq!(entries[0].created.len(), 1);
+    assert!(entries[0].removed.is_empty());
+    assert_eq!(entries[1].created.len(), 0);
+    assert_eq!(entries[1].removed.len(), 1);
+    let removed = &entries[1].removed[0];
+    assert!(
+        matches!(removed.prior, PriorState::Free),
+        "a spendable output is restored as free"
+    );
+    assert_eq!(removed.utxo.value, 100_000);
+    assert_eq!(removed.utxo.height, 1);
+    assert_eq!(removed.utxo.txid, entries[0].created[0].txid);
+
+    // A later pass that finds nothing new must not extend the journal.
+    wallet
+        .scan_utxos_bip158_multi(std::slice::from_mut(&mut peer), 2)
+        .await
+        .unwrap();
+    assert_eq!(
+        wallet.undo_entries_for_tests().len(),
+        2,
+        "an untouched range appends no entry"
+    );
+    drop(peer);
+    server.await.unwrap();
+}
+
 #[test]
 fn incomplete_settlement_scan_cannot_publish_evidence() {
     let htlc = contract();
