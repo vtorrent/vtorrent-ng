@@ -35,7 +35,7 @@ fn chain(htlc: &crate::htlc::BtcHtlc, case: &str) -> (Vec<Block>, [u8; 32]) {
         }],
     };
     match case {
-        "wallet_spent" => {
+        "wallet_spent" | "wallet_unspent" => {
             funding.output[0].script_pubkey = htlc
                 .recipient
                 .parse::<bitcoin::Address<_>>()
@@ -518,6 +518,86 @@ async fn restored_chain_cache_is_rebuilt_after_first_header_sync() {
         wallet.balance(),
         100_000,
         "a complete authenticated scan unlocks the wallet"
+    );
+    drop(peer);
+    server.await.unwrap();
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn restored_wallet_refuses_scan_when_history_predates_retained_floor() {
+    let path = std::env::temp_dir().join(format!(
+        "btc-floor-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let mut stored = UtxoSet::new();
+    stored.set_last_scanned_height(2);
+    stored.set_next_index(1);
+    stored.save(&path).unwrap();
+    let mut wallet = crate::wallet::BtcWallet::with_persistence(
+        [1; 64],
+        bitcoin::Network::Regtest,
+        path.clone(),
+    )
+    .unwrap();
+    let (blocks, _) = chain(&contract(), "wallet_unspent");
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, blocks.clone(), "wallet_valid"));
+    let mut peer = BtcPeer::connect_with_network(addr, bitcoin::Network::Regtest)
+        .await
+        .unwrap();
+    wallet.sync(&mut peer).await.unwrap();
+    wallet.set_header_retention(2);
+    let floor = wallet.retained_floor();
+    assert!(floor > wallet.last_scanned_height());
+    let result = wallet
+        .scan_utxos_bip158_multi(std::slice::from_mut(&mut peer), floor)
+        .await;
+    assert!(
+        result.unwrap_err().to_string().contains("wallet history"),
+        "missing wallet history must be identified"
+    );
+    assert!(wallet.list_utxos().is_empty());
+    assert!(UtxoSet::load(&path).unwrap().rescan_required());
+    let reopened = crate::wallet::BtcWallet::with_persistence(
+        [1; 64],
+        bitcoin::Network::Regtest,
+        path.clone(),
+    )
+    .unwrap();
+    assert!(reopened.list_utxos().is_empty());
+    drop(peer);
+    server.await.unwrap();
+    drop(reopened);
+    drop(wallet);
+    let mut wallet = crate::wallet::BtcWallet::with_persistence(
+        [1; 64],
+        bitcoin::Network::Regtest,
+        path.clone(),
+    )
+    .unwrap();
+    wallet.set_header_retention(0);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, blocks, "wallet_valid"));
+    let mut peer = BtcPeer::connect_with_network(addr, bitcoin::Network::Regtest)
+        .await
+        .unwrap();
+    wallet.sync(&mut peer).await.unwrap();
+    let scanned = wallet
+        .scan_utxos_bip158_multi(std::slice::from_mut(&mut peer), 0)
+        .await
+        .unwrap();
+    wallet.set_last_scanned_height(scanned as u32);
+    assert_eq!(
+        wallet.balance(),
+        100_000,
+        "complete history must restore the older output"
     );
     drop(peer);
     server.await.unwrap();

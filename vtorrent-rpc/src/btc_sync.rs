@@ -242,7 +242,7 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                 }
                 if wallet.last_scanned_height() < retained_floor {
                     tracing::warn!(
-                        "BTC wallet scan starts at retained floor {}; older history is unavailable. Set --btc-birthday to the wallet creation height to scan older funds.",
+                        "BTC wallet history before retained floor {} is unavailable; restart with sufficient header retention before scanning",
                         retained_floor
                     );
                 }

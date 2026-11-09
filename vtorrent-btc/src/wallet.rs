@@ -594,6 +594,7 @@ impl BtcWallet {
         peer: &mut crate::p2p::BtcPeer,
         start_height: u32,
     ) -> Result<usize> {
+        self.require_retained_wallet_history()?;
         let sync = crate::sync::BtcSync::new_with_filter_headers(
             self.headers.clone(),
             self.utxos.clone(),
@@ -615,6 +616,7 @@ impl BtcWallet {
         peers: &mut [crate::p2p::BtcPeer],
         start_height: u32,
     ) -> Result<usize> {
+        self.require_retained_wallet_history()?;
         let sync = crate::sync::BtcSync::new_with_filter_headers(
             self.headers.clone(),
             self.utxos.clone(),
@@ -629,6 +631,19 @@ impl BtcWallet {
             self.save_utxos();
         }
         Ok(scanned)
+    }
+
+    fn require_retained_wallet_history(&self) -> Result<()> {
+        let floor = self.headers.lock().retained_floor();
+        if self.last_scanned_height < floor {
+            self.rescan_on_sync.store(true, Ordering::Release);
+            self.utxos.lock().set_rescan_required(true);
+            self.save_utxos();
+            return Err(BtcError::Sync(format!(
+                "wallet history before retained header floor {floor} is unavailable; restart with sufficient header retention"
+            )));
+        }
+        Ok(())
     }
 
     /// The next block height to scan.
