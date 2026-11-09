@@ -12,6 +12,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+/// Hard cap on journalled heights. Independent of `--btc-header-retention`, so
+/// an unbounded header chain cannot produce an unbounded journal.
+const MAX_UNDO_ENTRIES: usize = 200_000;
+
 /// Whether `ancestor` is on the main chain ending at `tip`.
 fn is_ancestor(chain: &HeaderChain, ancestor: [u8; 32], tip: [u8; 32]) -> bool {
     let ancestor_height = chain.get(&ancestor).map(|entry| entry.height);
@@ -425,6 +429,12 @@ impl BtcWallet {
         self.headers.lock().retained_floor()
     }
 
+    /// Snapshot of the chain-derived undo journal, oldest entry first.
+    #[cfg(test)]
+    pub(crate) fn undo_entries_for_tests(&self) -> Vec<crate::utxo::UndoEntry> {
+        self.utxos.lock().undo_entries().to_vec()
+    }
+
     /// Freshly scan a swap contract, without trusting the persisted wallet UTXO cache.
     pub async fn verify_swap_funding(
         &self,
@@ -732,6 +742,7 @@ impl BtcWallet {
         });
         let mut utxos = self.utxos.lock();
         utxos.set_last_scanned_height(height);
+        utxos.prune_undo(chain.retained_floor(), MAX_UNDO_ENTRIES);
         if completed {
             utxos.set_rescan_required(false);
         }

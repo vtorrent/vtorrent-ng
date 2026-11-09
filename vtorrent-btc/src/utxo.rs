@@ -205,7 +205,20 @@ impl UtxoSet {
         &self.undo
     }
 
+    /// Record one height's changes, in ascending height order.
+    ///
+    /// A block can touch the wallet through several transactions, so an entry
+    /// for the same height as the last one is merged rather than appended: the
+    /// journal must stay strictly ascending for [`Self::undo_above`] to trust
+    /// its coverage.
     pub fn push_undo(&mut self, entry: UndoEntry) {
+        if let Some(last) = self.undo.last_mut() {
+            if last.height == entry.height {
+                last.created.extend(entry.created);
+                last.removed.extend(entry.removed);
+                return;
+            }
+        }
         self.undo.push(entry);
     }
 

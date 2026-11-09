@@ -1051,6 +1051,64 @@ async fn settlement_scan_follows_higher_work_fork_and_invalidates_old_spend() {
     }
 }
 
+#[tokio::test]
+async fn scanning_records_a_sparse_undo_entry_for_touched_heights() {
+    let mut wallet = crate::wallet::BtcWallet::with_network([1; 64], bitcoin::Network::Regtest);
+    let (blocks, _) = chain(&contract(), "wallet_unspent");
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, blocks, "wallet_valid"));
+    let mut peer = BtcPeer::connect_with_network(addr, bitcoin::Network::Regtest)
+        .await
+        .unwrap();
+    wallet.sync(&mut peer).await.unwrap();
+    wallet
+        .scan_utxos_bip158_multi(std::slice::from_mut(&mut peer), 0)
+        .await
+        .unwrap();
+
+    let entries = wallet.undo_entries_for_tests();
+    assert!(!entries.is_empty(), "the funding block must be journalled");
+    assert!(
+        entries.iter().all(|e| e.height == 1),
+        "only touched heights are stored"
+    );
+    assert_eq!(entries[0].created.len(), 1);
+    drop(peer);
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn saving_the_scan_cursor_prunes_journal_below_the_retained_floor() {
+    let mut wallet = crate::wallet::BtcWallet::with_network([1; 64], bitcoin::Network::Regtest);
+    let (blocks, _) = chain(&contract(), "wallet_unspent");
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, blocks, "wallet_valid"));
+    let mut peer = BtcPeer::connect_with_network(addr, bitcoin::Network::Regtest)
+        .await
+        .unwrap();
+    wallet.sync(&mut peer).await.unwrap();
+    wallet
+        .scan_utxos_bip158_multi(std::slice::from_mut(&mut peer), 0)
+        .await
+        .unwrap();
+    assert!(!wallet.undo_entries_for_tests().is_empty());
+
+    wallet.set_header_retention(2);
+    assert!(
+        wallet.retained_floor() > 1,
+        "the journal entry must fall below the floor"
+    );
+    wallet.set_last_scanned_height(7);
+    assert!(
+        wallet.undo_entries_for_tests().is_empty(),
+        "saving the cursor must drop entries below the retained floor"
+    );
+    drop(peer);
+    server.await.unwrap();
+}
+
 #[test]
 fn incomplete_settlement_scan_cannot_publish_evidence() {
     let htlc = contract();

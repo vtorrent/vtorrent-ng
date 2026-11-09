@@ -6,7 +6,7 @@ use crate::filters::{
 };
 use crate::headers::HeaderChain;
 use crate::p2p::{BtcPeer, RESPONSE_TIMEOUT};
-use crate::utxo::{Utxo, UtxoSet};
+use crate::utxo::{PriorState, RemovedOutput, UndoEntry, Utxo, UtxoSet};
 use bitcoin::consensus::encode::serialize;
 use bitcoin::hashes::Hash;
 use bitcoin::p2p::message::NetworkMessage;
@@ -466,32 +466,76 @@ impl BtcSync {
 
     /// Record every output of `tx` that pays one of the wallet's addresses, and
     /// remove any previously-recorded output that this tx spends.
+    ///
+    /// Both effects are journalled under `height`, so a reorg can replay them
+    /// backwards. Outputs the set already knew about are not journalled as
+    /// created: replaying that entry must not remove an older record.
     fn record_matching_outputs(&self, tx: &bitcoin::Transaction, height: u32) {
         let txid = tx.compute_txid().to_string();
-
-        // Remove spent outputs: any input that references a UTXO we already
-        // recorded is now spent and must be dropped from the set.
-        for input in &tx.input {
-            let prev_txid = input.previous_output.txid.to_string();
-            let prev_vout = input.previous_output.vout;
+        let mut created = Vec::new();
+        let mut removed = Vec::new();
+        {
             let mut utxos = self.utxos.lock();
-            utxos.note_spend(&prev_txid, prev_vout);
-            utxos.remove(&prev_txid, prev_vout);
-        }
 
-        for (vout, out) in tx.output.iter().enumerate() {
-            let script = out.script_pubkey.to_bytes();
-            for addr in &self.addresses {
-                if let Ok(a) = bitcoin::Address::from_str(addr) {
-                    if let Ok(a) = a.require_network(self.network) {
-                        if a.script_pubkey().to_bytes() == script {
-                            if tx.is_coinbase() {
-                                self.coinbase_txids.lock().insert(txid.clone());
-                            }
-                            self.record_utxo(&txid, vout as u32, out.value.to_sat(), addr, height);
-                        }
+            // Remove spent outputs: any input that references a UTXO we already
+            // recorded is now spent and must be dropped from the set.
+            for input in &tx.input {
+                let prev_txid = input.previous_output.txid.to_string();
+                let prev_vout = input.previous_output.vout;
+                let prior = if let Some(reserved) = utxos.reserved_utxo(&prev_txid, prev_vout) {
+                    PriorState::Reserved(reserved.clone())
+                } else if utxos.was_reserved_spent(&prev_txid, prev_vout) {
+                    PriorState::SpentReserved
+                } else {
+                    PriorState::Free
+                };
+                let removal = utxos
+                    .outpoint(&prev_txid, prev_vout)
+                    .map(|utxo| RemovedOutput { utxo, prior });
+                utxos.note_spend(&prev_txid, prev_vout);
+                utxos.remove(&prev_txid, prev_vout);
+                if let Some(removal) = removal {
+                    removed.push(removal);
+                }
+            }
+
+            for (vout, out) in tx.output.iter().enumerate() {
+                let vout = vout as u32;
+                let script = out.script_pubkey.to_bytes();
+                for addr in &self.addresses {
+                    let Ok(a) = bitcoin::Address::from_str(addr) else {
+                        continue;
+                    };
+                    let Ok(a) = a.require_network(self.network) else {
+                        continue;
+                    };
+                    if a.script_pubkey().to_bytes() != script {
+                        continue;
+                    }
+                    if tx.is_coinbase() {
+                        self.coinbase_txids.lock().insert(txid.clone());
+                    }
+                    let known = utxos.outpoint(&txid, vout).is_some();
+                    let utxo = Utxo {
+                        txid: txid.clone(),
+                        vout,
+                        value: out.value.to_sat(),
+                        address: addr.to_string(),
+                        height,
+                    };
+                    utxos.add(utxo.clone());
+                    if !known && utxos.outpoint(&txid, vout).is_some() {
+                        created.push(utxo);
                     }
                 }
+            }
+
+            if !created.is_empty() || !removed.is_empty() {
+                utxos.push_undo(UndoEntry {
+                    height,
+                    created,
+                    removed,
+                });
             }
         }
     }
@@ -1061,6 +1105,40 @@ mod tests {
         assert_eq!(set.list().len(), 1);
         assert_eq!(set.list()[0].value, 1234);
         assert_eq!(set.list()[0].height, 42);
+    }
+
+    #[test]
+    fn test_same_height_matches_merge_into_one_undo_entry() {
+        let addr = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh";
+        let utxos = Arc::new(Mutex::new(UtxoSet::new()));
+        let sync = BtcSync::new(
+            Arc::new(Mutex::new(HeaderChain::unanchored_for_tests())),
+            utxos.clone(),
+            vec![addr.to_string()],
+            bitcoin::Network::Bitcoin,
+        );
+        let script = bitcoin::Address::from_str(addr)
+            .unwrap()
+            .require_network(bitcoin::Network::Bitcoin)
+            .unwrap()
+            .script_pubkey();
+        for value in [1_000, 2_000] {
+            let tx = bitcoin::Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::absolute::LockTime::ZERO,
+                input: vec![],
+                output: vec![bitcoin::TxOut {
+                    value: bitcoin::Amount::from_sat(value),
+                    script_pubkey: script.clone(),
+                }],
+            };
+            sync.record_matching_outputs(&tx, 7);
+        }
+
+        let set = utxos.lock();
+        assert_eq!(set.undo_entries().len(), 1, "one block touches one height");
+        assert_eq!(set.undo_entries()[0].height, 7);
+        assert_eq!(set.undo_entries()[0].created.len(), 2);
     }
 
     #[test]
