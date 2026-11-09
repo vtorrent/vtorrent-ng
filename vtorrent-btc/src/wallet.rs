@@ -1303,6 +1303,9 @@ mod tests {
             created: vec![],
             removed: vec![],
         });
+        w.set_scan_progress(4, Some([3u8; 32]));
+        assert_eq!(w.last_scanned_height(), 4);
+        assert_eq!(w.last_scanned_tip(), Some([3u8; 32]));
 
         w.reset_chain_cache();
 
@@ -1310,7 +1313,11 @@ mod tests {
             w.undo_entries_for_tests().is_empty(),
             "restart path must not replay stale entries"
         );
-        assert_eq!(w.last_scanned_tip(), None);
+        assert_eq!(
+            w.last_scanned_tip(),
+            None,
+            "a full reset must not keep the abandoned tip"
+        );
     }
 
     #[test]
