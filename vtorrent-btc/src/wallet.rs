@@ -36,18 +36,20 @@ fn is_ancestor(chain: &HeaderChain, ancestor: [u8; 32], tip: [u8; 32]) -> bool {
 }
 
 /// Highest height where the old chain and the current main chain agree.
-fn find_fork(chain: &HeaderChain, old_best: [u8; 32]) -> u32 {
+///
+/// Returns `None` when the old branch's headers are no longer retained: with
+/// finite retention that is the common case for a reorg, and the prune floor
+/// must not masquerade as a proven common ancestor.
+fn find_fork(chain: &HeaderChain, old_best: [u8; 32]) -> Option<u32> {
     let mut cursor = old_best;
     loop {
-        let Some(entry) = chain.get(&cursor) else {
-            return chain.retained_floor();
-        };
+        let entry = chain.get(&cursor)?;
         let height = entry.height;
         if chain.hashes_from(height).first().copied() == Some(cursor) {
-            return height;
+            return Some(height);
         }
         if height == 0 {
-            return 0;
+            return Some(0);
         }
         cursor = entry.header.prev_blockhash.to_byte_array();
     }
@@ -492,7 +494,7 @@ impl BtcWallet {
             let chain = self.headers.lock();
             find_fork(&chain, previous_best)
         };
-        self.reset_for_reorg_at(Some(fork))
+        self.reset_for_reorg_at(fork)
     }
 
     /// Apply the reorg decision for a known fork.
@@ -1136,7 +1138,22 @@ mod tests {
 
         assert!(!is_ancestor(&chain, h2_hash, fork3_hash));
         assert!(is_ancestor(&chain, h1_hash, fork3_hash));
-        assert_eq!(find_fork(&chain, h2_hash), 1);
+        assert_eq!(find_fork(&chain, h2_hash), Some(1));
+
+        // With finite retention the abandoned branch can be pruned entirely;
+        // the prune floor is then not a proven common ancestor.
+        chain.set_retention(1);
+        assert_eq!(chain.retained_floor(), 2);
+        assert_eq!(
+            find_fork(&chain, h2_hash),
+            None,
+            "a pruned branch must not report the retained floor as its fork"
+        );
+        assert_eq!(
+            find_fork(&chain, fork3_hash),
+            Some(3),
+            "the tip is trivially its own fork"
+        );
     }
 
     #[test]
@@ -1318,6 +1335,54 @@ mod tests {
             "the journal already restored everything at or below the fork"
         );
         assert!(!w.rescan_required_for_tests());
+    }
+
+    #[test]
+    fn a_fully_pruned_old_branch_forces_a_full_reset_not_the_journal() {
+        let mut w = BtcWallet::new([7u8; 64]);
+        *w.headers.lock() = HeaderChain::unanchored_for_tests();
+        let mut prev = [0u8; 32];
+        let mut hashes = Vec::new();
+        for height in 0..7u32 {
+            let header = test_header(prev, height);
+            prev = header.block_hash().to_byte_array();
+            hashes.push(prev);
+            w.add_header(&bitcoin::consensus::encode::serialize(&header), height)
+                .unwrap();
+        }
+        w.set_header_retention(2);
+        let floor = w.retained_floor();
+        assert_eq!(floor, 4, "the fixture must prune below a non-zero floor");
+        // A journal entry at floor + 1 would cover a fork *at* the floor, so
+        // only the fallback itself decides the path.
+        w.push_undo_for_tests(crate::utxo::UndoEntry {
+            height: floor + 1,
+            created: vec![],
+            removed: vec![],
+        });
+        w.set_scan_progress(floor + 2, Some([3u8; 32]));
+
+        // The abandoned branch's header at height 2 is below the floor.
+        let pruned = hashes[2];
+        assert!(
+            !w.reset_for_reorg_for_tests(pruned),
+            "a pruned old branch has no proven common ancestor, so the journal may not claim one"
+        );
+        assert_eq!(
+            w.last_scanned_height(),
+            0,
+            "the full reset rescans the retained window from its floor"
+        );
+        assert!(
+            w.undo_entries_for_tests().is_empty(),
+            "the journal built on the abandoned branch must be dropped"
+        );
+        assert_eq!(w.last_scanned_tip(), None);
+        assert!(
+            w.rescan_required_for_tests(),
+            "a full reset owes a rescan of the new branch"
+        );
+        assert!(!w.journal_recovered_for_tests());
     }
 
     #[test]
