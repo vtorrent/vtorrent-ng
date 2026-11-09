@@ -2903,3 +2903,32 @@ and the overlay `version` handler, and peer handshakes are the one thing a fleet
 exercises continuously. This fleet exists so that shipped code runs under real
 peers. It is opportunistic evidence, not the sign-off window; per the provenance
 policy the shipping commit still needs its own 168 h.
+
+## 2026-11-09 — retained-history handling verified on a live fleet
+
+The fail-closed guard, its alert, and the fresh-wallet exception were validated
+on separate local candidate fleets:
+
+- `06f1b72` (guard only) blocked all three BTC wallets after header sync and
+  produced no alert, because `btc_synced` reflects header sync, not wallet
+  readiness. That gap is why `vtorrent_btc_wallet_history_blocked` and
+  `BtcWalletHistoryUnavailable` were added.
+- `e1845db` produced the alert on the real blocked condition, but a healthy
+  node was later reported blocked once the floor advanced past its recorded
+  birthday — a false positive.
+- `704ba39` narrowed the check to wallets that actually need a rescan, but a
+  node still ended blocked after a reorg reset moved it below the advanced
+  floor.
+- `12219b6` adds the missing distinction: a wallet that has never tracked an
+  output adopts the new floor, while a wallet that has held funds stays blocked.
+
+Final verification on the `12219b6` fleet at 975,171: all three nodes finished
+scanning from the retained floor (875,170), `vtorrent_btc_wallet_history_blocked`
+stayed **0**, scan lag reached **0**, RSS held at 142–162 MiB, and **no alert
+fired**. A concurrent single-node probe with a fixed peer synced 975,168 headers
+in about four minutes, which separated the fleet's temporary header-sync failure
+from the code: peer selection, not the change.
+
+The remaining exposure is unchanged and documented in
+`docs/mainnet-readiness.md`: a wallet that genuinely holds funds below the
+retained floor must be blocked and recovered with unbounded retention.
