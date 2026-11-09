@@ -260,6 +260,10 @@ impl UtxoSet {
     /// entries must be strictly ascending and the lowest one above the fork
     /// must be `fork + 1`. Otherwise nothing is mutated and the caller falls
     /// back to a full reset.
+    ///
+    /// A `removed` outpoint the same entry also created is not restored: the
+    /// block created and spent it, so undoing the creation must win. Restoring
+    /// it would leave a phantom UTXO the post-fork rescan can never remove.
     pub fn undo_above(&mut self, fork: u32) -> bool {
         if !self.undo_covers(fork) {
             return false;
@@ -269,11 +273,19 @@ impl UtxoSet {
                 break;
             }
             let entry = self.undo.pop().expect("entry just inspected");
+            let created_in_block: std::collections::HashSet<(&str, u32)> = entry
+                .created
+                .iter()
+                .map(|utxo| (utxo.txid.as_str(), utxo.vout))
+                .collect();
+            for removed in entry.removed {
+                if created_in_block.contains(&(removed.utxo.txid.as_str(), removed.utxo.vout)) {
+                    continue;
+                }
+                self.restore_removed(removed);
+            }
             for created in entry.created {
                 self.remove(&created.txid, created.vout);
-            }
-            for removed in entry.removed {
-                self.restore_removed(removed);
             }
         }
         self.last_scanned_tip = None;
@@ -796,6 +808,36 @@ mod tests {
         assert_eq!(reserved.vout, 1);
         assert_eq!(reserved.height, 100);
         assert!(set.outpoint("cc", 0).is_none());
+    }
+
+    #[test]
+    fn undo_above_drops_an_outpoint_a_block_created_and_spent() {
+        let mut set = UtxoSet::new();
+        // A block can create an output and spend it in the same block. Undoing
+        // the block must leave the outpoint absent: the restore of the spend
+        // must not resurrect the creation that is also being undone.
+        let created = Utxo {
+            txid: "ab".repeat(32),
+            vout: 0,
+            value: 700,
+            address: "bc1q".into(),
+            height: 9,
+        };
+        set.push_undo(UndoEntry {
+            height: 9,
+            created: vec![created.clone()],
+            removed: vec![RemovedOutput {
+                utxo: created,
+                prior: PriorState::Free,
+            }],
+        });
+
+        assert!(set.undo_above(8));
+        assert!(
+            set.outpoint(&"ab".repeat(32), 0).is_none(),
+            "an output created and spent in the undone block must not be restored"
+        );
+        assert!(set.list().is_empty());
     }
 
     #[test]
