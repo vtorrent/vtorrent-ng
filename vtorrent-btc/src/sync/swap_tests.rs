@@ -538,6 +538,13 @@ async fn restored_wallet_refuses_scan_when_history_predates_retained_floor() {
     stored.set_birthday(Some(1));
     stored.set_last_scanned_height(2);
     stored.set_next_index(1);
+    stored.add(Utxo {
+        txid: hex::encode([9; 32]),
+        vout: 0,
+        value: 100_000,
+        address: crate::keys::derive_address(&[1; 64], 0, bitcoin::Network::Regtest).unwrap(),
+        height: 1,
+    });
     stored.save(&path).unwrap();
     let mut wallet = crate::wallet::BtcWallet::with_persistence(
         [1; 64],

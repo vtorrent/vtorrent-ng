@@ -62,6 +62,10 @@ pub struct UtxoSet {
     /// scanning. A birthday below the retained floor means history is missing.
     #[serde(default)]
     birthday: Option<u32>,
+    /// Set once any confirmed output has been tracked, so a floor change can
+    /// never silently adopt a height this wallet may have held funds below.
+    #[serde(default)]
+    seen_funds: bool,
 }
 
 impl UtxoSet {
@@ -110,8 +114,14 @@ impl UtxoSet {
             .iter()
             .any(|u| u.txid == utxo.txid && u.vout == utxo.vout)
         {
+            self.seen_funds = true;
             self.utxos.push(utxo);
         }
+    }
+
+    /// Whether this wallet has ever tracked a confirmed output.
+    pub fn has_seen_funds(&self) -> bool {
+        self.seen_funds
     }
 
     pub fn remove(&mut self, txid: &str, vout: u32) {

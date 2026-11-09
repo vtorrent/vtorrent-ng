@@ -635,33 +635,46 @@ impl BtcWallet {
 
     fn require_retained_wallet_history(&self) -> Result<()> {
         let floor = self.headers.lock().retained_floor();
-        let birthday = {
+        enum Decision {
+            Ready,
+            Adopted,
+            Blocked,
+        }
+        let decision = {
             let mut utxos = self.utxos.lock();
             match utxos.birthday() {
-                Some(birthday) => Some(birthday),
                 None => {
                     // A wallet that never scanned has no earlier history to
                     // lose: the retained floor is the earliest height it can
                     // ever have received funds at.
                     utxos.set_birthday(Some(floor));
-                    None
+                    Decision::Adopted
                 }
+                Some(birthday) if birthday >= floor => Decision::Ready,
+                Some(_) if !utxos.has_seen_funds() => {
+                    // The floor advanced past the birthday, but this wallet has
+                    // never held an output, so nothing below it can be lost.
+                    utxos.set_birthday(Some(floor));
+                    Decision::Adopted
+                }
+                Some(_) => Decision::Blocked,
             }
         };
-        if birthday.is_none() {
-            self.save_utxos();
-        }
-        if let Some(birthday) = birthday {
-            if birthday < floor {
+        match decision {
+            Decision::Ready => Ok(()),
+            Decision::Adopted => {
+                self.save_utxos();
+                Ok(())
+            }
+            Decision::Blocked => {
                 self.rescan_on_sync.store(true, Ordering::Release);
                 self.utxos.lock().set_rescan_required(true);
                 self.save_utxos();
-                return Err(BtcError::Sync(format!(
+                Err(BtcError::Sync(format!(
                     "wallet history before retained header floor {floor} is unavailable; restart with sufficient header retention"
-                )));
+                )))
             }
         }
-        Ok(())
     }
 
     /// Earliest height this wallet intends to scan.
@@ -686,7 +699,8 @@ impl BtcWallet {
             return false;
         }
         let floor = self.retained_floor();
-        self.birthday().is_some_and(|birthday| birthday < floor)
+        let utxos = self.utxos.lock();
+        utxos.has_seen_funds() && utxos.birthday().is_some_and(|birthday| birthday < floor)
     }
 
     /// The next block height to scan.
@@ -1000,12 +1014,41 @@ mod tests {
         }
         w.set_header_retention(2);
         w.set_birthday(1);
+        w.add_utxo(Utxo {
+            txid: "ee".repeat(32),
+            vout: 0,
+            value: 1000,
+            address: "bc1qtest".to_string(),
+            height: 2,
+        });
 
         assert!(
             w.require_retained_wallet_history().is_err(),
             "history below the floor cannot be reconstructed"
         );
         assert!(w.history_unavailable());
+    }
+
+    #[test]
+    fn wallet_without_funds_adopts_the_advanced_floor() {
+        let mut w = BtcWallet::new([7u8; 64]);
+        *w.headers.lock() = HeaderChain::unanchored_for_tests();
+        let mut prev = [0u8; 32];
+        for height in 0..7u32 {
+            let header = test_header(prev, height);
+            prev = header.block_hash().to_byte_array();
+            w.add_header(&bitcoin::consensus::encode::serialize(&header), height)
+                .unwrap();
+        }
+        w.set_header_retention(2);
+        w.set_birthday(1);
+
+        assert!(
+            w.require_retained_wallet_history().is_ok(),
+            "a wallet that never held funds loses nothing when the floor advances"
+        );
+        assert_eq!(w.birthday(), Some(4));
+        assert!(!w.history_unavailable());
     }
 
     #[test]
