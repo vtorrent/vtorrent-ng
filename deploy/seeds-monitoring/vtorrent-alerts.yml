@@ -63,6 +63,15 @@ groups:
           summary: "{{ $labels.instance }} RSS above 256 MiB"
           description: "Daemon resident memory exceeded the soak budget for 10 minutes."
 
+      - alert: BtcWalletHistoryUnavailable
+        expr: vtorrent_btc_retained_floor > vtorrent_btc_last_scanned_height and vtorrent_btc_synced == 1 and vtorrent_btc_scan_in_progress == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "BTC wallet history unavailable on {{ $labels.instance }}"
+          description: "BTC wallet requires history older than retained headers; increase retention and rescan."
+
       - alert: BtcSpvStalled
         expr: vtorrent_btc_synced == 0 and on(instance) max_over_time(vtorrent_btc_synced[24h]) > 0
         for: 10m

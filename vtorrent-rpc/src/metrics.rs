@@ -183,6 +183,12 @@ async fn collect_metrics(state: &AppState) -> String {
         "Last BIP-158 block height scanned",
         btc_last_scanned,
     );
+    write_gauge(
+        &mut out,
+        "vtorrent_btc_retained_floor",
+        "Oldest retained BTC header height",
+        health.retained_floor.load(Ordering::Relaxed),
+    );
     // A zero cursor means "nothing scanned yet" (fresh wallet or a full
     // rescan), so the difference is the whole header chain and looks like a
     // catastrophic lag on a dashboard. Omit it until the cursor means
@@ -366,6 +372,7 @@ mod tests {
         assert!(metrics.contains("vtorrent_uptime_seconds"));
         assert!(metrics.contains("vtorrent_syncing"));
         assert!(metrics.contains("vtorrent_btc_last_scanned_height"));
+        assert!(metrics.contains("vtorrent_btc_retained_floor 0"));
         // Omitted while the scan cursor is 0: the lag would read as the whole
         // header chain.
         assert!(!metrics.contains("vtorrent_btc_scan_lag_blocks"));
@@ -408,6 +415,7 @@ mod tests {
     async fn test_btc_health_metrics_reflect_counters() {
         let state = AppState::new();
         state.btc_health.best_height.store(100, Ordering::Relaxed);
+        state.btc_health.retained_floor.store(80, Ordering::Relaxed);
         state
             .btc_health
             .last_scanned_height
@@ -431,6 +439,7 @@ mod tests {
         let metrics = collect_metrics(&state).await;
         assert!(metrics.contains("vtorrent_btc_best_height 100"));
         assert!(metrics.contains("vtorrent_btc_last_scanned_height 90"));
+        assert!(metrics.contains("vtorrent_btc_retained_floor 80"));
         assert!(metrics.contains("vtorrent_btc_scan_lag_blocks 10"));
         assert!(metrics.contains("vtorrent_btc_synced 1"));
         assert!(metrics.contains("vtorrent_btc_peer_groups 3"));

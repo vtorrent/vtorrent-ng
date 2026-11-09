@@ -35,6 +35,7 @@ pub struct PeerInfo {
 pub struct BtcSyncHealth {
     pub best_height: AtomicU64,
     pub last_scanned_height: AtomicU64,
+    pub retained_floor: AtomicU64,
     pub synced: AtomicBool,
     pub peer_groups: AtomicU64,
     pub scan_in_progress: AtomicBool,

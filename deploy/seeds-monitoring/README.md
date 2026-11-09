@@ -28,6 +28,9 @@ host. Both are production-seed actions — get approval before applying.
 - `StakingStopped` — staking flipped off within the last 24h
 - `HostDiskFull` — root filesystem < 15% free
 - `HostOutOfMemory` — available RAM < 10%
+- `BtcWalletHistoryUnavailable` — synced BTC headers have pruned history the
+  wallet still needs; increase header retention and rescan before relying on
+  the balance. Header sync alone does not establish wallet readiness.
 
 ### Validate the BTC stale-scan rule
 

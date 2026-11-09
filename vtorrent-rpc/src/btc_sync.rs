@@ -67,6 +67,9 @@ fn update_wallet_metrics(health: &BtcSyncHealth, wallet: &BtcWallet) {
     health
         .last_scanned_height
         .store(wallet.last_scanned_height() as u64, Ordering::Relaxed);
+    health
+        .retained_floor
+        .store(wallet.retained_floor() as u64, Ordering::Relaxed);
     health.synced.store(wallet.synced(), Ordering::Relaxed);
 }
 
