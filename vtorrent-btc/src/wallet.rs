@@ -882,6 +882,25 @@ impl BtcWallet {
         }
     }
 
+    /// Complete a journal-recovered rescan that has nothing left to scan.
+    ///
+    /// A covered rollback resumes at `fork + 1`; when the tip never moved past
+    /// the fork (or the scan finds no blocks) no `set_scan_progress` call runs,
+    /// so without this the recovery would leave the balance hidden and the
+    /// history guard short-circuited indefinitely. The journal already restored
+    /// everything at or below the fork, so recovery ends here: the exemption is
+    /// dropped, the balance becomes visible, and the rescan requirement clears.
+    /// A no-op for any wallet that is not journal-recovered.
+    pub fn finish_recovered_scan(&mut self) {
+        if !self.journal_recovered {
+            return;
+        }
+        self.journal_recovered = false;
+        self.rescan_on_sync.store(false, Ordering::Release);
+        self.utxos.lock().set_rescan_required(false);
+        self.save_utxos();
+    }
+
     /// Whether new transactions signal RBF.
     pub fn rbf_enabled(&self) -> bool {
         self.rbf_enabled
@@ -1180,8 +1199,9 @@ mod tests {
         assert!(!w.history_unavailable());
     }
 
-    #[test]
-    fn a_covered_reorg_keeps_history_available_below_the_floor() {
+    /// A wallet whose birthday predates the retained floor, with a journal
+    /// entry at `floor + 1` so the fork at the floor is covered.
+    fn wallet_awaiting_journal_recovery() -> BtcWallet {
         let mut w = BtcWallet::new([7u8; 64]);
         *w.headers.lock() = HeaderChain::unanchored_for_tests();
         let mut prev = [0u8; 32];
@@ -1207,6 +1227,13 @@ mod tests {
             created: vec![],
             removed: vec![],
         });
+        w
+    }
+
+    #[test]
+    fn a_covered_reorg_keeps_history_available_below_the_floor() {
+        let mut w = wallet_awaiting_journal_recovery();
+        let floor = w.retained_floor();
 
         assert!(
             w.require_retained_wallet_history().is_err(),
@@ -1231,40 +1258,59 @@ mod tests {
 
     #[test]
     fn a_completed_post_fork_rescan_clears_the_journal_recovered_marker() {
-        let mut w = BtcWallet::new([7u8; 64]);
-        *w.headers.lock() = HeaderChain::unanchored_for_tests();
-        let mut prev = [0u8; 32];
-        for height in 0..7u32 {
-            let header = test_header(prev, height);
-            prev = header.block_hash().to_byte_array();
-            w.add_header(&bitcoin::consensus::encode::serialize(&header), height)
-                .unwrap();
-        }
-        w.set_header_retention(2);
+        let mut w = wallet_awaiting_journal_recovery();
         let floor = w.retained_floor();
-        w.set_birthday(floor - 1);
-        w.add_utxo(Utxo {
-            txid: "ef".repeat(32),
-            vout: 0,
-            value: 1_000,
-            address: "bc1qtest".to_string(),
-            height: floor - 1,
-        });
-        w.push_undo_for_tests(crate::utxo::UndoEntry {
-            height: floor + 1,
-            created: vec![],
-            removed: vec![],
-        });
         assert!(w.reset_for_reorg_for_tests(floor));
         assert!(w.journal_recovered_for_tests());
 
         let tip = w.best_hash().unwrap();
         w.note_completed_scan(floor + 1, 2, Some(tip));
-        w.set_scan_progress(7, Some(tip));
+        w.set_scan_progress(floor + 3, Some(tip));
 
         assert!(
             !w.journal_recovered_for_tests(),
             "a completed scan ends the in-process recovery exemption"
+        );
+    }
+
+    #[test]
+    fn finishing_a_stalled_journal_recovery_restores_the_balance_and_guard() {
+        let mut w = wallet_awaiting_journal_recovery();
+        let floor = w.retained_floor();
+        assert!(w.reset_for_reorg_for_tests(floor));
+        assert!(w.journal_recovered_for_tests());
+        assert_eq!(w.balance(), 0, "still hidden before the recovery completes");
+
+        w.finish_recovered_scan();
+
+        assert!(
+            !w.journal_recovered_for_tests(),
+            "nothing above the fork ends the recovery and its exemption"
+        );
+        assert_eq!(
+            w.balance(),
+            1_000,
+            "the journal already restored everything at or below the fork"
+        );
+        assert!(!w.rescan_required_for_tests());
+    }
+
+    #[test]
+    fn a_chain_cache_reset_clears_the_journal_recovered_marker() {
+        let mut w = wallet_awaiting_journal_recovery();
+        let floor = w.retained_floor();
+        assert!(w.reset_for_reorg_for_tests(floor));
+        assert!(w.journal_recovered_for_tests());
+
+        w.reset_chain_cache();
+
+        assert!(
+            !w.journal_recovered_for_tests(),
+            "a stale exemption must not suppress a later alert"
+        );
+        assert!(
+            w.history_unavailable(),
+            "a full reset needs history below the floor again, so the alert returns"
         );
     }
 

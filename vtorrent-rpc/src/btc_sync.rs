@@ -241,6 +241,9 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                 let tip = wallet.best_height();
                 let tip_hash = wallet.best_hash();
                 if start > tip {
+                    // A covered reorg can land here with nothing above the fork
+                    // to scan; that finishes the journal recovery.
+                    wallet.finish_recovered_scan();
                     update_wallet_metrics(&health, wallet);
                     health
                         .last_success_unix
@@ -270,6 +273,8 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                 health.scan_in_progress.store(false, Ordering::Relaxed);
                 match result {
                     Ok(0) => {
+                        // No blocks to scan finishes a journal recovery too.
+                        wallet.finish_recovered_scan();
                         update_wallet_metrics(&health, wallet);
                         health
                             .last_success_unix
