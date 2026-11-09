@@ -482,14 +482,54 @@ impl BtcWallet {
         self.utxos.lock().push_undo(entry);
     }
 
-    /// Take the reorg path a header sync would take for `fork`.
-    #[cfg(test)]
-    pub(crate) fn reset_for_reorg_for_tests(&mut self, fork: u32) -> bool {
-        if self.reset_chain_cache_from_journal(fork) {
-            return true;
+    /// Recover from `previous_best` having been orphaned.
+    ///
+    /// Rolls chain state back to the highest proven common ancestor, replaying
+    /// the journal when it covers the fork and falling back to a full rescan
+    /// otherwise. Returns true when the journal covered the fork.
+    fn reset_for_reorg(&mut self, previous_best: [u8; 32]) -> bool {
+        let fork = {
+            let chain = self.headers.lock();
+            find_fork(&chain, previous_best)
+        };
+        self.reset_for_reorg_at(Some(fork))
+    }
+
+    /// Apply the reorg decision for a known fork.
+    ///
+    /// `None` means no common ancestor is retained, which forces the full
+    /// reset: the journal path may only claim a proven ancestor.
+    fn reset_for_reorg_at(&mut self, fork: Option<u32>) -> bool {
+        if let Some(fork) = fork {
+            if self.reset_chain_cache_from_journal(fork) {
+                tracing::warn!(
+                    "BTC header reorg detected near height {fork}; replayed the undo journal back to the fork"
+                );
+                return true;
+            }
         }
-        self.reset_chain_cache_from(Some(fork));
+        self.reset_chain_cache_from(fork);
+        match fork {
+            Some(fork) => tracing::warn!(
+                "BTC header reorg detected near height {fork}; journal does not cover the fork, cleared chain state for a full rescan"
+            ),
+            None => tracing::warn!(
+                "BTC header reorg abandoned a pruned branch; no common ancestor is retained, cleared chain state for a full rescan"
+            ),
+        }
         false
+    }
+
+    /// Take the reorg decision for `fork` as a header sync would.
+    #[cfg(test)]
+    pub(crate) fn reset_for_reorg_at_for_tests(&mut self, fork: Option<u32>) -> bool {
+        self.reset_for_reorg_at(fork)
+    }
+
+    /// Take the reorg path a header sync would take for `previous_best`.
+    #[cfg(test)]
+    pub(crate) fn reset_for_reorg_for_tests(&mut self, previous_best: [u8; 32]) -> bool {
+        self.reset_for_reorg(previous_best)
     }
 
     /// The wallet's record of a spendable outpoint.
@@ -645,22 +685,7 @@ impl BtcWallet {
                 }
             };
             if reorged {
-                let fork = {
-                    let chain = self.headers.lock();
-                    find_fork(&chain, previous_best)
-                };
-                if self.reset_chain_cache_from_journal(fork) {
-                    tracing::warn!(
-                        "BTC header reorg detected near height {}; replayed the undo journal back to the fork",
-                        fork
-                    );
-                } else {
-                    self.reset_chain_cache_from(Some(fork));
-                    tracing::warn!(
-                        "BTC header reorg detected near height {}; journal does not cover the fork, cleared chain state for a full rescan",
-                        fork
-                    );
-                }
+                self.reset_for_reorg(previous_best);
             }
         }
         if added > 0 {
@@ -1239,7 +1264,7 @@ mod tests {
             w.require_retained_wallet_history().is_err(),
             "precondition: without the rollback the birthday predates the floor"
         );
-        assert!(w.reset_for_reorg_for_tests(floor), "the journal covers it");
+        assert!(w.reset_for_reorg_at(Some(floor)), "the journal covers it");
 
         assert!(
             !w.history_unavailable(),
@@ -1260,7 +1285,7 @@ mod tests {
     fn a_completed_post_fork_rescan_clears_the_journal_recovered_marker() {
         let mut w = wallet_awaiting_journal_recovery();
         let floor = w.retained_floor();
-        assert!(w.reset_for_reorg_for_tests(floor));
+        assert!(w.reset_for_reorg_at(Some(floor)));
         assert!(w.journal_recovered_for_tests());
 
         let tip = w.best_hash().unwrap();
@@ -1277,7 +1302,7 @@ mod tests {
     fn finishing_a_stalled_journal_recovery_restores_the_balance_and_guard() {
         let mut w = wallet_awaiting_journal_recovery();
         let floor = w.retained_floor();
-        assert!(w.reset_for_reorg_for_tests(floor));
+        assert!(w.reset_for_reorg_at(Some(floor)));
         assert!(w.journal_recovered_for_tests());
         assert_eq!(w.balance(), 0, "still hidden before the recovery completes");
 
@@ -1330,7 +1355,7 @@ mod tests {
         );
         assert!(w.history_unavailable(), "precondition: the alert is up");
 
-        assert!(w.reset_for_reorg_for_tests(floor), "the journal covers it");
+        assert!(w.reset_for_reorg_at(Some(floor)), "the journal covers it");
 
         assert!(
             !w.history_unavailable(),
@@ -1344,7 +1369,7 @@ mod tests {
         let floor = w.retained_floor();
         w.utxos.lock().set_rescan_required(true);
 
-        assert!(w.reset_for_reorg_for_tests(floor));
+        assert!(w.reset_for_reorg_at(Some(floor)));
         assert!(
             w.rescan_required_for_tests(),
             "the covered rollback still owes a rescan"
@@ -1368,7 +1393,7 @@ mod tests {
     fn a_chain_cache_reset_clears_the_journal_recovered_marker() {
         let mut w = wallet_awaiting_journal_recovery();
         let floor = w.retained_floor();
-        assert!(w.reset_for_reorg_for_tests(floor));
+        assert!(w.reset_for_reorg_at(Some(floor)));
         assert!(w.journal_recovered_for_tests());
 
         w.reset_chain_cache();

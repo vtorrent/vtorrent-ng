@@ -1175,7 +1175,7 @@ async fn a_covered_reorg_replays_the_journal_instead_of_rescanning_everything() 
         removed: vec![],
     });
 
-    let reorged = wallet.reset_for_reorg_for_tests(5);
+    let reorged = wallet.reset_for_reorg_at_for_tests(Some(5));
     assert!(reorged, "a covered fork must take the journal path");
     assert_eq!(wallet.last_scanned_height(), 6);
     assert_eq!(wallet.undo_entries_for_tests().len(), 0);
@@ -1206,7 +1206,7 @@ async fn a_covered_reorg_restores_an_output_spent_on_the_abandoned_branch() {
     });
     wallet.remove_utxo_for_tests(&owned.txid, owned.vout);
 
-    assert!(wallet.reset_for_reorg_for_tests(5), "fork at 5 is covered");
+    assert!(wallet.reset_for_reorg_at_for_tests(Some(5)), "fork at 5 is covered");
     let restored = wallet
         .utxo_for_tests(&owned.txid, owned.vout)
         .expect("output must return");
@@ -1276,7 +1276,7 @@ async fn an_uncovered_reorg_falls_back_to_the_full_reset() {
     });
     wallet.set_scan_progress(7, Some([9; 32]));
 
-    let reorged = wallet.reset_for_reorg_for_tests(4);
+    let reorged = wallet.reset_for_reorg_at_for_tests(Some(4));
     assert!(!reorged, "a gap above the fork means the full-reset path");
     assert_eq!(wallet.last_scanned_height(), 0);
     assert!(
