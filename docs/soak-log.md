@@ -2999,3 +2999,20 @@ BTC reorg path, so per the provenance policy it still needs a candidate fleet
 where a reorg is induced or observed before it can be part of a release commit.
 The 168-hour run on `35ea52e` and the opportunistic `68165c8` fleet do not
 exercise it.
+
+**Known limitations of the journal, recorded deliberately.**
+
+- Coverage is strict: the first journalled height above a fork must be exactly
+  `fork + 1`. Without a per-height sentinel an untouched height cannot be
+  distinguished from a lost entry, so anything else falls back to the full
+  rescan (or, below the floor, to the fail-closed alert). Conservative by
+  design; it costs rescans, never correctness.
+- `last_scanned_tip` is persisted but always cleared on load and read by no
+  production decision. It exists for a future lineage-persistence design; the
+  current scope is live-process only.
+- The reserved-input reconciliation scan now works on a scratch set and applies
+  only the spend observation, which narrows but does not close a pre-existing
+  hole: that applied `note_spend` carries no undo entry, so an in-process reorg
+  that un-spends it leaves the shared set in `spent_reserved`. Affects swap
+  reservation state only, not balances.
+
