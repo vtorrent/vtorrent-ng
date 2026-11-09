@@ -1296,6 +1296,68 @@ mod tests {
     }
 
     #[test]
+    fn clearing_the_chain_cache_clears_the_journal() {
+        let mut w = BtcWallet::new([7u8; 64]);
+        w.push_undo_for_tests(crate::utxo::UndoEntry {
+            height: 3,
+            created: vec![],
+            removed: vec![],
+        });
+
+        w.reset_chain_cache();
+
+        assert!(
+            w.undo_entries_for_tests().is_empty(),
+            "restart path must not replay stale entries"
+        );
+        assert_eq!(w.last_scanned_tip(), None);
+    }
+
+    #[test]
+    fn a_covered_reorg_does_not_raise_the_history_alert() {
+        let mut w = wallet_awaiting_journal_recovery();
+        let floor = w.retained_floor();
+        assert!(
+            w.require_retained_wallet_history().is_err(),
+            "precondition: the alert is armed before the rollback"
+        );
+        assert!(w.history_unavailable(), "precondition: the alert is up");
+
+        assert!(w.reset_for_reorg_for_tests(floor), "the journal covers it");
+
+        assert!(
+            !w.history_unavailable(),
+            "a covered reorg is recoverable, not an operator incident"
+        );
+    }
+
+    #[test]
+    fn a_covered_rollback_keeps_rescan_required_until_the_recovery_finishes() {
+        let mut w = wallet_awaiting_journal_recovery();
+        let floor = w.retained_floor();
+        w.utxos.lock().set_rescan_required(true);
+
+        assert!(w.reset_for_reorg_for_tests(floor));
+        assert!(
+            w.rescan_required_for_tests(),
+            "the covered rollback still owes a rescan"
+        );
+        assert_eq!(w.balance(), 0, "the balance stays hidden during the rescan");
+
+        w.finish_recovered_scan();
+
+        assert!(
+            !w.rescan_required_for_tests(),
+            "finishing the recovery must clear the rescan requirement"
+        );
+        assert_eq!(
+            w.balance(),
+            1_000,
+            "finishing the recovery must stop hiding the balance"
+        );
+    }
+
+    #[test]
     fn a_chain_cache_reset_clears_the_journal_recovered_marker() {
         let mut w = wallet_awaiting_journal_recovery();
         let floor = w.retained_floor();
