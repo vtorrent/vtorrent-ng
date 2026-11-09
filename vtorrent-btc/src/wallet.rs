@@ -423,10 +423,7 @@ impl BtcWallet {
                 addresses.clone(),
                 self.network,
             );
-            if sync
-                .scan_utxos_bip158(&mut peer, utxo.height)
-                .await
-                .is_ok()
+            if sync.scan_utxos_bip158(&mut peer, utxo.height).await.is_ok()
                 && scratch.lock().was_reserved_spent(txid, vout)
             {
                 spent = true;
@@ -906,6 +903,9 @@ impl BtcWallet {
     }
 
     /// Set the next block height to scan and persist it with the UTXO set.
+    ///
+    /// Clears the recorded header tip: the tip belongs to the journal pair, and
+    /// a cursor written without one must not claim a lineage it cannot prove.
     pub fn set_last_scanned_height(&mut self, height: u32) {
         self.persist_scan_progress(height, None);
     }
@@ -919,9 +919,13 @@ impl BtcWallet {
     fn persist_scan_progress(&mut self, height: u32, tip: Option<[u8; 32]>) {
         self.last_scanned_height = height;
         let chain = self.headers.lock();
-        let completed = self.completed_scan.lock().take().is_some_and(|(end, tip)| {
-            end == height && chain.best_hash() == Some(tip) && height > chain.best_height()
-        });
+        let completed = self
+            .completed_scan
+            .lock()
+            .take()
+            .is_some_and(|(end, tip_hash)| {
+                end == height && chain.best_hash() == Some(tip_hash) && height > chain.best_height()
+            });
         let mut utxos = self.utxos.lock();
         utxos.set_last_scanned_height(height);
         utxos.set_last_scanned_tip(tip);
@@ -1434,9 +1438,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let mut w =
-            BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
-                .unwrap();
+        let mut w = BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
+            .unwrap();
         w.push_undo_for_tests(crate::utxo::UndoEntry {
             height: 4,
             created: vec![],
@@ -1685,6 +1688,26 @@ mod tests {
             w.last_scanned_tip(),
             None,
             "a full reset must not keep the abandoned tip"
+        );
+    }
+
+    #[test]
+    fn the_height_only_setter_clears_a_stored_tip() {
+        let mut w = BtcWallet::new([7u8; 64]);
+        w.set_scan_progress(10, Some([5u8; 32]));
+        assert_eq!(
+            w.last_scanned_tip(),
+            Some([5u8; 32]),
+            "precondition: a tip is recorded"
+        );
+
+        w.set_last_scanned_height(11);
+
+        assert_eq!(w.last_scanned_height(), 11);
+        assert_eq!(
+            w.last_scanned_tip(),
+            None,
+            "a cursor written without a tip must not keep the previous lineage"
         );
     }
 

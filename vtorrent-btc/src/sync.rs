@@ -454,6 +454,11 @@ impl BtcSync {
     }
 
     /// Record a confirmed output into the UTXO set.
+    ///
+    /// Test-only: the scan path journals its changes through
+    /// [`Self::record_matching_outputs`], and an unjournalled insert here would
+    /// let a caller diverge the set from the rollback record.
+    #[cfg(test)]
     pub fn record_utxo(&self, txid: &str, vout: u32, value: u64, address: &str, height: u32) {
         self.utxos.lock().add(Utxo {
             txid: txid.to_string(),

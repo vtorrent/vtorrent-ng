@@ -1254,7 +1254,10 @@ async fn a_covered_reorg_restores_an_output_spent_on_the_abandoned_branch() {
     });
     wallet.remove_utxo_for_tests(&owned.txid, owned.vout);
 
-    assert!(wallet.reset_for_reorg_at_for_tests(Some(5)), "fork at 5 is covered");
+    assert!(
+        wallet.reset_for_reorg_at_for_tests(Some(5)),
+        "fork at 5 is covered"
+    );
     let restored = wallet
         .utxo_for_tests(&owned.txid, owned.vout)
         .expect("output must return");
