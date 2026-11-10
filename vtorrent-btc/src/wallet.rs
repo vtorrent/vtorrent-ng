@@ -520,6 +520,12 @@ impl BtcWallet {
         self.utxos.lock().undo_entries().to_vec()
     }
 
+    /// Wallet-local spends the scan has not observed yet.
+    #[cfg(test)]
+    pub(crate) fn pending_removal_count_for_tests(&self) -> usize {
+        self.utxos.lock().pending_removals().len()
+    }
+
     /// Append a journal entry as a scan would.
     #[cfg(test)]
     pub(crate) fn push_undo_for_tests(&self, entry: crate::utxo::UndoEntry) {
@@ -1112,10 +1118,12 @@ impl BtcWallet {
         // using the returned selection — otherwise the wallet would forget
         // spendable outputs for a tx that never made it onto the network.
         //
-        // The removal is journalled at the scan cursor: once the outpoint has
-        // left the set the confirming scan can no longer record the spend, so
-        // this entry is what lets a covered reorg restore the output if the
-        // transaction never confirms on the new branch.
+        // The removal is tracked as a pending removal, not as a journal entry at
+        // the scan cursor: the spend can only confirm at or after that cursor,
+        // so a reorg with the fork at or above it would keep the entry and never
+        // replay it. The pending record is moved into the confirming height's
+        // journal entry when the scan sees the spend, and restored by any
+        // covered rollback until then.
         let mut set = self.utxos.lock();
         let cursor = self.last_scanned_height;
         let removed: Vec<Utxo> = selected
@@ -1126,7 +1134,7 @@ impl BtcWallet {
         for u in &selected {
             set.remove(&u.txid, u.vout);
         }
-        set.journal_local_removals(&removed, cursor);
+        set.record_pending_removals(&removed, &txid_hex, cursor);
         drop(set);
         self.save_utxos();
 
@@ -1144,9 +1152,10 @@ impl BtcWallet {
     /// Re-add previously spent UTXOs (e.g. when a broadcast failed) and
     /// persist the restored set.
     ///
-    /// This cancels the journal entry `send_to` wrote for the removal, because
-    /// the send never happened: undoing a later reorg must not drop an output
-    /// that was never actually spent.
+    /// This cancels the pending removal `send_to` recorded, because the send
+    /// never happened: undoing a later reorg must not restore an outpoint twice
+    /// or drop one that was never actually spent. A removal a scan already
+    /// journalled is cancelled too.
     pub fn restore_utxos(&self, utxos: &[Utxo]) {
         {
             let mut set = self.utxos.lock();
@@ -1156,7 +1165,7 @@ impl BtcWallet {
                     added.push(u.clone());
                 }
             }
-            set.journal_local_additions(&added, self.last_scanned_height);
+            set.cancel_local_removals(&added);
         }
         self.save_utxos();
     }
@@ -1665,7 +1674,227 @@ mod tests {
             w.utxo_for_tests(&owned.txid, owned.vout)
                 .map(|utxo| utxo.value),
             Some(100_000),
-            "a wallet-originated spend must be journalled so a covered reorg restores it"
+            "a wallet-originated spend must be tracked so a covered reorg restores it"
+        );
+    }
+
+    /// Feed a confirmed transaction into the wallet's shared set exactly as the
+    /// BIP-158 scan does.
+    fn scan_confirmed_tx(w: &BtcWallet, tx: &bitcoin::Transaction, height: u32) {
+        let sync = crate::sync::BtcSync::new(
+            w.headers.clone(),
+            w.utxos.clone(),
+            w.watch_addresses(w.next_index).unwrap(),
+            w.network,
+        );
+        sync.record_matching_outputs(tx, height);
+    }
+
+    /// A transaction paying `address`, with a foreign input the wallet does not
+    /// track.
+    fn incoming_tx(address: &str, value: u64, seed: u8) -> bitcoin::Transaction {
+        use std::str::FromStr;
+
+        let script = bitcoin::Address::from_str(address)
+            .unwrap()
+            .require_network(bitcoin::Network::Regtest)
+            .unwrap()
+            .script_pubkey();
+        bitcoin::Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::TxIn {
+                previous_output: bitcoin::OutPoint::new(
+                    bitcoin::Txid::from_byte_array([seed; 32]),
+                    0,
+                ),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![bitcoin::TxOut {
+                value: bitcoin::Amount::from_sat(value),
+                script_pubkey: script,
+            }],
+        }
+    }
+
+    #[test]
+    fn a_reorg_at_the_send_cursor_restores_the_sent_input() {
+        let mut w = BtcWallet::with_network([7u8; 64], bitcoin::Network::Regtest);
+        let owned = Utxo {
+            txid: "ab".repeat(32),
+            vout: 0,
+            value: 100_000,
+            address: w.current_address().unwrap(),
+            height: 100,
+        };
+        w.add_utxo(owned.clone());
+        w.set_last_scanned_height(101);
+        let recipient =
+            crate::keys::derive_address(&[9u8; 64], 0, bitcoin::Network::Regtest).unwrap();
+
+        let (txid, raw, _) = w.send_to(&recipient, 50_000, 1_000).unwrap();
+        assert!(
+            w.undo_entries_for_tests().is_empty(),
+            "a send cannot claim a scanned height: it may confirm at or above the cursor"
+        );
+        assert_eq!(w.pending_removal_count_for_tests(), 1);
+
+        // The send confirms at 102. The scan adds the change and takes the
+        // removal from the pending record, so height 102 owns it.
+        let tx: bitcoin::Transaction = bitcoin::consensus::deserialize(&raw).unwrap();
+        scan_confirmed_tx(&w, &tx, 102);
+        assert_eq!(
+            w.pending_removal_count_for_tests(),
+            0,
+            "the confirming height retires the pending record"
+        );
+        let entry = w
+            .undo_entries_for_tests()
+            .into_iter()
+            .find(|entry| entry.height == 102)
+            .expect("the confirming block is journalled");
+        assert!(
+            entry
+                .removed
+                .iter()
+                .any(|removed| removed.utxo.txid == owned.txid),
+            "the confirming entry must carry the removal so the fold stays complete"
+        );
+        assert!(
+            entry.created.iter().any(|created| created.txid == txid),
+            "precondition: the change is journalled at 102"
+        );
+
+        // One-block reorg to the cursor the send was built at: below the confirm
+        // height, so the spend is reorged out.
+        assert!(w.reset_for_reorg_at_for_tests(Some(101)));
+        assert_eq!(
+            w.utxo_for_tests(&owned.txid, owned.vout)
+                .map(|utxo| utxo.value),
+            Some(100_000),
+            "a spend confirmed above the fork must return its input, even when the fork is the send cursor"
+        );
+        assert!(
+            w.utxo_for_tests(&txid, 1).is_none(),
+            "the change created above the fork is dropped"
+        );
+        assert_eq!(
+            w.last_scanned_height(),
+            102,
+            "the post-fork rescan starts at the fork + 1"
+        );
+    }
+
+    #[test]
+    fn a_reorg_below_the_confirm_height_restores_a_confirmed_send() {
+        let mut w = BtcWallet::with_network([7u8; 64], bitcoin::Network::Regtest);
+        let owned = Utxo {
+            txid: "cd".repeat(32),
+            vout: 0,
+            value: 80_000,
+            address: w.current_address().unwrap(),
+            height: 100,
+        };
+        w.add_utxo(owned.clone());
+        // A block at 104 touched the wallet, so a fork at 103 is covered.
+        w.push_undo_for_tests(crate::utxo::UndoEntry {
+            height: 104,
+            created: vec![],
+            removed: vec![],
+        });
+        w.set_last_scanned_height(105);
+        let recipient =
+            crate::keys::derive_address(&[9u8; 64], 0, bitcoin::Network::Regtest).unwrap();
+
+        let (txid, raw, _) = w.send_to(&recipient, 40_000, 1_000).unwrap();
+        let tx: bitcoin::Transaction = bitcoin::consensus::deserialize(&raw).unwrap();
+        scan_confirmed_tx(&w, &tx, 106);
+
+        let entry = w
+            .undo_entries_for_tests()
+            .into_iter()
+            .find(|entry| entry.height == 106)
+            .expect("the confirming block is journalled");
+        assert!(
+            entry
+                .removed
+                .iter()
+                .any(|removed| removed.utxo.txid == owned.txid),
+            "a confirmed send is journalled at its confirm height"
+        );
+
+        assert!(w.reset_for_reorg_at_for_tests(Some(103)));
+        assert_eq!(
+            w.utxo_for_tests(&owned.txid, owned.vout)
+                .map(|utxo| utxo.value),
+            Some(80_000),
+            "a send that reorgs below its confirm height must be restored"
+        );
+        assert!(
+            w.utxo_for_tests(&txid, 1).is_none(),
+            "the change from the abandoned block is dropped"
+        );
+    }
+
+    #[test]
+    fn a_send_whose_transaction_disappears_is_restored_once() {
+        let mut w = BtcWallet::with_network([7u8; 64], bitcoin::Network::Regtest);
+        let owned = Utxo {
+            txid: "ef".repeat(32),
+            vout: 0,
+            value: 100_000,
+            address: w.current_address().unwrap(),
+            height: 100,
+        };
+        w.add_utxo(owned.clone());
+        w.set_last_scanned_height(101);
+        let recipient =
+            crate::keys::derive_address(&[9u8; 64], 0, bitcoin::Network::Regtest).unwrap();
+
+        let (_, _, _) = w.send_to(&recipient, 50_000, 1_000).unwrap();
+        // Block 102 touched the wallet (an incoming payment), so a fork at 101
+        // is covered by its entry.
+        let incoming = incoming_tx(&w.current_address().unwrap(), 5_000, 7);
+        scan_confirmed_tx(&w, &incoming, 102);
+
+        assert!(w.reset_for_reorg_at_for_tests(Some(101)));
+        assert_eq!(
+            w.utxo_for_tests(&owned.txid, owned.vout)
+                .map(|utxo| utxo.value),
+            Some(100_000),
+            "a send whose transaction disappeared must return its input"
+        );
+        assert_eq!(
+            w.utxos.lock().total(),
+            100_000,
+            "the restored input is counted once, not twice"
+        );
+
+        // The new branch has nothing of the wallet's in block 102, and the
+        // rescan must not double-count the restored outpoint.
+        let unrelated = incoming_tx(
+            &crate::keys::derive_address(&[9u8; 64], 9, bitcoin::Network::Regtest).unwrap(),
+            1_000,
+            8,
+        );
+        scan_confirmed_tx(&w, &unrelated, 102);
+        assert_eq!(w.utxos.lock().total(), 100_000);
+        assert_eq!(
+            w.utxos
+                .lock()
+                .list()
+                .iter()
+                .filter(|utxo| utxo.txid == owned.txid && utxo.vout == owned.vout)
+                .count(),
+            1,
+            "a restored send is not counted twice by the rescan"
+        );
+        assert_eq!(
+            w.pending_removal_count_for_tests(),
+            0,
+            "the rollback retired the pending record"
         );
     }
 

@@ -48,6 +48,24 @@ pub struct UndoEntry {
     pub removed: Vec<RemovedOutput>,
 }
 
+/// A wallet-local spend the scan has not observed on chain yet.
+///
+/// A send removes its inputs immediately, before any block can confirm them, so
+/// its removal belongs to no scanned height. Keeping it out of the height-indexed
+/// journal is what makes the boundary case correct: a spend built at cursor `C`
+/// can confirm at any `H >= C`, so a fork `F` with `C <= F < H` would reorg the
+/// spend out while the journalled height `C` survives [`UtxoSet::undo_above`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingRemoval {
+    /// The outpoint the send removed, with the state to restore.
+    pub removed: RemovedOutput,
+    /// Transaction id the send broadcast. The scan retires the record when it
+    /// sees this transaction spend the outpoint.
+    pub txid: String,
+    /// Scan cursor when the send was built.
+    pub height: u32,
+}
+
 /// Public contract terms needed to recover the BTC refund after restart.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SwapContract {
@@ -100,6 +118,11 @@ pub struct UtxoSet {
     /// Sparse ascending journal of chain-derived changes, for rollback.
     #[serde(default)]
     undo: Vec<UndoEntry>,
+    /// Wallet-local spends the scan has not observed yet, appended by a send.
+    /// Independent of the journal's height ordering: a spend built at the scan
+    /// cursor can confirm at or above it.
+    #[serde(default)]
+    pending_removals: Vec<PendingRemoval>,
     /// Reservation spends observed by this process's reconciliation scan,
     /// mapped to the reserved record they replaced. Live-process only: a
     /// covered rollback clears it and puts the reservations back.
@@ -256,77 +279,90 @@ impl UtxoSet {
 
     pub fn clear_undo(&mut self) {
         self.undo.clear();
+        self.pending_removals.clear();
     }
 
-    /// Journal outpoints removed by a wallet-local action (a send) at the
-    /// current scan cursor.
+    /// The wallet-local spends the scan has not observed yet.
+    pub fn pending_removals(&self) -> &[PendingRemoval] {
+        &self.pending_removals
+    }
+
+    /// Record the outpoints a wallet-local send removed.
     ///
-    /// The confirming scan can no longer record the removal, because the
-    /// outpoint has already left the set, so without this entry a covered
-    /// reorg would not restore an output whose spend never made it on chain.
-    /// The cursor height is the journal tail, so a block that later touches
-    /// the same height merges into this entry.
-    pub fn journal_local_removals(&mut self, utxos: &[Utxo], height: u32) {
-        if utxos.is_empty() {
-            return;
-        }
-        let removed = utxos
-            .iter()
-            .map(|utxo| {
-                let prior = if let Some(reserved) = self.reserved_utxo(&utxo.txid, utxo.vout) {
-                    PriorState::Reserved(reserved.clone())
-                } else if self.was_reserved_spent(&utxo.txid, utxo.vout) {
-                    PriorState::SpentReserved
-                } else {
-                    PriorState::Free
-                };
-                RemovedOutput {
+    /// Each record carries the spending transaction and the cursor the send was
+    /// built at, so the scan can retire it when the spend confirms and a covered
+    /// rollback can restore it without consulting the journal's heights.
+    pub fn record_pending_removals(&mut self, utxos: &[Utxo], txid: &str, height: u32) {
+        for utxo in utxos {
+            if self.pending_removals.iter().any(|pending| {
+                pending.removed.utxo.txid == utxo.txid && pending.removed.utxo.vout == utxo.vout
+            }) {
+                continue;
+            }
+            let prior = if let Some(reserved) = self.reserved_utxo(&utxo.txid, utxo.vout) {
+                PriorState::Reserved(reserved.clone())
+            } else if self.was_reserved_spent(&utxo.txid, utxo.vout) {
+                PriorState::SpentReserved
+            } else {
+                PriorState::Free
+            };
+            self.pending_removals.push(PendingRemoval {
+                removed: RemovedOutput {
                     utxo: utxo.clone(),
                     prior,
-                }
-            })
-            .collect();
-        self.push_undo(UndoEntry {
-            height,
-            created: vec![],
-            removed,
-        });
+                },
+                txid: txid.to_owned(),
+                height,
+            });
+        }
+        if self.pending_removals.len() > MAX_UNDO_ENTRIES {
+            self.pending_removals
+                .drain(..self.pending_removals.len() - MAX_UNDO_ENTRIES);
+        }
     }
 
-    /// Journal outpoints a wallet-local action (a failed broadcast) re-added.
+    /// Retire the pending record for an outpoint the scan just saw spent.
     ///
-    /// When the matching removal is still in the journal the two cancel: the
-    /// send never happened, so the journal must keep claiming nothing about
-    /// that outpoint. Only an addition with no recorded removal is journalled
-    /// as `created`, because undoing it must remove the record again.
-    pub fn journal_local_additions(&mut self, utxos: &[Utxo], height: u32) {
-        if utxos.is_empty() {
-            return;
-        }
-        let mut created = Vec::new();
-        for utxo in utxos {
-            let cancelled = self.undo.iter_mut().rev().find_map(|entry| {
-                entry
-                    .removed
+    /// The spending transaction is matched first so the record is retired by the
+    /// send it belongs to. A record for the same outpoint is still taken when
+    /// the txid differs, because an outpoint can only be spent once: a
+    /// replacement transaction then keeps the fold complete instead of losing
+    /// the removal.
+    pub fn take_pending_removal(
+        &mut self,
+        spending_txid: &str,
+        txid: &str,
+        vout: u32,
+    ) -> Option<RemovedOutput> {
+        let matches = |pending: &PendingRemoval| {
+            pending.removed.utxo.txid == txid && pending.removed.utxo.vout == vout
+        };
+        let index = self
+            .pending_removals
+            .iter()
+            .position(|pending| matches(pending) && pending.txid == spending_txid)
+            .or_else(|| self.pending_removals.iter().position(matches))?;
+        Some(self.pending_removals.remove(index).removed)
+    }
+
+    /// Cancel the removal state a failed broadcast must not leave behind.
+    ///
+    /// A send no longer journals at the cursor, so the matching record is a
+    /// pending removal. A removal a scan already journalled is cancelled too,
+    /// so the send never happened as far as a later rollback is concerned.
+    pub fn cancel_local_removals(&mut self, utxos: &[Utxo]) {
+        for entry in &mut self.undo {
+            entry.removed.retain(|removed| {
+                !utxos
                     .iter()
-                    .position(|removed| {
-                        removed.utxo.txid == utxo.txid && removed.utxo.vout == utxo.vout
-                    })
-                    .map(|index| {
-                        entry.removed.remove(index);
-                    })
-            });
-            if cancelled.is_none() {
-                created.push(utxo.clone());
-            }
-        }
-        if !created.is_empty() {
-            self.push_undo(UndoEntry {
-                height,
-                created,
-                removed: vec![],
+                    .any(|utxo| removed.utxo.txid == utxo.txid && removed.utxo.vout == utxo.vout)
             });
         }
+        self.pending_removals.retain(|pending| {
+            !utxos.iter().any(|utxo| {
+                pending.removed.utxo.txid == utxo.txid && pending.removed.utxo.vout == utxo.vout
+            })
+        });
     }
 
     /// Remember that this process's reconciliation scan observed `utxo` spent
@@ -339,10 +375,20 @@ impl UtxoSet {
 
     /// Drop journal entries below `floor`, then keep at most `max_entries`
     /// of the newest ones.
+    ///
+    /// A pending removal whose broadcast height fell below the floor is dropped
+    /// with them: the range it was built at can no longer be re-derived, so the
+    /// record could only restore an outpoint the wallet may never rescan.
     pub fn prune_undo(&mut self, floor: u32, max_entries: usize) {
         self.undo.retain(|entry| entry.height >= floor);
         if self.undo.len() > max_entries {
             self.undo.drain(..self.undo.len() - max_entries);
+        }
+        self.pending_removals
+            .retain(|pending| pending.height >= floor);
+        if self.pending_removals.len() > max_entries {
+            self.pending_removals
+                .drain(..self.pending_removals.len() - max_entries);
         }
     }
 
@@ -356,9 +402,23 @@ impl UtxoSet {
     /// A `removed` outpoint the same entry also created is not restored: the
     /// block created and spent it, so undoing the creation must win. Restoring
     /// it would leave a phantom UTXO the post-fork rescan can never remove.
+    ///
+    /// Pending wallet-local removals and reservation observations are put back
+    /// before the replay, not after: an entry that undoes the creation of the
+    /// very outpoint they belong to must win, or the rollback would leave a
+    /// phantom record behind. A pending spend the new branch still confirms is
+    /// removed again by the post-fork scan, so restoring it is self-correcting.
     pub fn undo_above(&mut self, fork: u32) -> bool {
         if !self.undo_covers(fork) {
             return false;
+        }
+        for (_, utxo) in std::mem::take(&mut self.observed_reservation_spends) {
+            let key = (utxo.txid.clone(), utxo.vout);
+            self.spent_reserved.remove(&key);
+            self.reserve_utxo(utxo);
+        }
+        for pending in std::mem::take(&mut self.pending_removals) {
+            self.restore_removed(pending.removed);
         }
         while let Some(entry) = self.undo.last() {
             if entry.height <= fork {
@@ -379,11 +439,6 @@ impl UtxoSet {
             for created in entry.created {
                 self.forget_outpoint(&created.txid, created.vout);
             }
-        }
-        for (_, utxo) in std::mem::take(&mut self.observed_reservation_spends) {
-            let key = (utxo.txid.clone(), utxo.vout);
-            self.spent_reserved.remove(&key);
-            self.reserve_utxo(utxo);
         }
         self.last_scanned_tip = None;
         true
@@ -587,11 +642,11 @@ impl UtxoSet {
     /// Load the UTXO set from a JSON file.  Returns an empty set if the
     /// file does not exist.
     ///
-    /// The undo journal and its tip are wallet-local recovery aids, so a
-    /// corrupt one is discarded rather than failing the wallet: the journal
-    /// loads empty and the wallet falls back to case 2 or 3. The settled
-    /// balance is not recovery data, so a corrupt `utxos` field still fails
-    /// the load.
+    /// The undo journal, its pending removals, and its tip are wallet-local
+    /// recovery aids, so a corrupt one is discarded rather than failing the
+    /// wallet: the journal loads empty and the wallet falls back to case 2 or 3.
+    /// The settled balance is not recovery data, so a corrupt `utxos` field
+    /// still fails the load.
     pub fn load(path: &Path) -> std::io::Result<Self> {
         let json = match std::fs::read_to_string(path) {
             Ok(json) => json,
@@ -613,7 +668,8 @@ impl UtxoSet {
 }
 
 /// Discard a journalled field that does not parse, leaving the rest of the set
-/// intact. Only the undo journal and its tip are tolerated this way.
+/// intact. Only the undo journal, its pending removals, and its tip are
+/// tolerated this way.
 fn sanitize_journal_fields(value: &mut serde_json::Value) {
     let Some(object) = value.as_object_mut() else {
         return;
@@ -622,6 +678,15 @@ fn sanitize_journal_fields(value: &mut serde_json::Value) {
         && serde_json::from_value::<Vec<UndoEntry>>(object["undo"].clone()).is_err()
     {
         object.insert("undo".into(), serde_json::Value::Array(Vec::new()));
+    }
+    if object.contains_key("pending_removals")
+        && serde_json::from_value::<Vec<PendingRemoval>>(object["pending_removals"].clone())
+            .is_err()
+    {
+        object.insert(
+            "pending_removals".into(),
+            serde_json::Value::Array(Vec::new()),
+        );
     }
     if object.contains_key("last_scanned_tip")
         && serde_json::from_value::<Option<[u8; 32]>>(object["last_scanned_tip"].clone()).is_err()
@@ -1059,6 +1124,38 @@ mod tests {
     }
 
     #[test]
+    fn undo_above_does_not_resurrect_a_reservation_for_a_dropped_created_outpoint() {
+        let record = utxo("ab", 0, 700);
+        let mut set = UtxoSet::new();
+        set.reserve_utxo(record.clone());
+        assert!(set.note_spend(&record.txid, record.vout));
+        // The reconciliation scan observed the spend, but the outpoint's own
+        // creation is above the fork, so the replay drops it entirely. Restoring
+        // the observation afterwards would reserve an outpoint that no longer
+        // exists anywhere else in the set.
+        set.record_reservation_spend(record.clone());
+        set.push_undo(UndoEntry {
+            height: 101,
+            created: vec![record.clone()],
+            removed: vec![],
+        });
+        set.push_undo(UndoEntry {
+            height: 102,
+            created: vec![],
+            removed: vec![],
+        });
+
+        assert!(set.undo_above(100));
+        assert!(
+            set.outpoint(&record.txid, record.vout).is_none(),
+            "a dropped creation must not return as a phantom reservation"
+        );
+        assert!(!set.was_reserved_spent(&record.txid, record.vout));
+        assert!(!set.release(&record.txid, record.vout));
+        assert!(!set.reserved.contains(&(record.txid.clone(), record.vout)));
+    }
+
+    #[test]
     fn undo_above_restores_a_reservation_observed_spent_by_reconciliation() {
         let record = utxo("aa", 0, 500);
         let mut set = UtxoSet::new();
@@ -1231,6 +1328,70 @@ mod tests {
         set.prune_undo(0, 2);
         assert_eq!(set.undo_entries().len(), 2);
         assert_eq!(set.undo_entries().last().unwrap().height, 5);
+    }
+
+    #[test]
+    fn undo_above_restores_a_pending_removal_built_at_the_fork() {
+        let record = utxo("aa", 0, 500);
+        let mut set = UtxoSet::new();
+        set.add(record.clone());
+        set.remove(&record.txid, record.vout);
+        set.record_pending_removals(std::slice::from_ref(&record), "ff", 101);
+        // Coverage for a fork at 101: the first journalled height above it must
+        // be 102.
+        set.push_undo(UndoEntry {
+            height: 102,
+            created: vec![],
+            removed: vec![],
+        });
+
+        assert!(set.undo_above(101));
+        assert!(
+            set.outpoint(&record.txid, record.vout).is_some(),
+            "a pending spend built at the fork cursor is reorged out and must return"
+        );
+        assert!(
+            set.pending_removals().is_empty(),
+            "the post-fork scan re-observes the spend, so the record is retired"
+        );
+    }
+
+    #[test]
+    fn a_failed_broadcast_cancels_its_pending_removal() {
+        let record = utxo("aa", 0, 500);
+        let mut set = UtxoSet::new();
+        set.add(record.clone());
+        set.remove(&record.txid, record.vout);
+        set.record_pending_removals(std::slice::from_ref(&record), "ff", 101);
+
+        assert!(set.add(record.clone()));
+        set.cancel_local_removals(std::slice::from_ref(&record));
+
+        assert!(
+            set.pending_removals().is_empty(),
+            "the send never happened, so its pending removal must be cancelled"
+        );
+        assert_eq!(set.list().len(), 1);
+    }
+
+    #[test]
+    fn clear_undo_clears_pending_removals() {
+        let mut set = UtxoSet::new();
+        set.record_pending_removals(&[utxo("aa", 0, 500)], "ff", 101);
+        set.clear_undo();
+        assert!(set.pending_removals().is_empty());
+    }
+
+    #[test]
+    fn prune_undo_drops_pending_removals_below_the_floor() {
+        let mut set = UtxoSet::new();
+        set.record_pending_removals(&[utxo("aa", 0, 500)], "ff", 5);
+        set.record_pending_removals(&[utxo("bb", 0, 700)], "ee", 6);
+
+        set.prune_undo(6, MAX_UNDO_ENTRIES);
+
+        assert_eq!(set.pending_removals().len(), 1);
+        assert_eq!(set.pending_removals()[0].removed.utxo.txid, "bb");
     }
 
     #[test]

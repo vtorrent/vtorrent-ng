@@ -2947,9 +2947,15 @@ What the journal does:
 - Records, for each scanned height that touched the wallet, the outputs the scan
   added and the outputs it removed, together with each removed outpoint's prior
   reservation state. Untouched heights store nothing, so entries are sparse.
-  Wallet-local removals are journalled at the scan cursor too: a send journals
-  its removed outpoints, and a failed broadcast's restore cancels that entry, so
-  a covered reorg can restore an output whose spend never confirmed.
+  Wallet-local spends are tracked outside the height index as **pending
+  removals**: a send removes its inputs before any block confirms them, and the
+  spend can only confirm at or above the cursor it was built at, so no journalled
+  height classifies it. The confirming scan moves the record into that block's
+  entry (matched by txid), a covered rollback restores it, and a failed
+  broadcast's restore cancels it.
+- A pending removal whose broadcast height falls below the retained floor is
+  pruned with the journal entries: the range it was built at can no longer be
+  re-derived.
 - On a reorg with fork `F`, a covering journal is replayed backwards above `F`,
   the cursor resumes at `F + 1`, and the balance stays hidden until that short
   post-fork scan completes. `BtcWalletHistoryUnavailable` does not fire, and the
@@ -2992,11 +2998,14 @@ Verification:
   scan-time journalling and same-height merging; and the wallet/harness reorg
   cases (covered replay, restored abandoned-branch spend, uncovered fallback,
   hidden balance, no alert on a covered reorg, and reset clearing the journal).
-  Post-review regressions cover wallet-local send journalling and restore
-  cancellation, dropped-creation reservation cleanup, conditional recovery
-  abandonment when the floor passes the cursor, corrupt-journal tolerance,
-  reconciliation-spend rollback, an N-entry fold compared with a forward
-  rebuild, and a harness rollback-plus-rescan compared with a fresh full scan.
+  Post-review regressions cover wallet-local send tracking and restore
+  cancellation, the send-cursor boundary reorg, a confirmed send reorged below
+  its confirm height, a send whose transaction disappears, dropped-creation
+  reservation cleanup (including an observation that must not resurrect it),
+  conditional recovery abandonment when the floor passes the cursor,
+  corrupt-journal tolerance, reconciliation-spend rollback, an N-entry fold
+  compared with a forward rebuild, and a harness rollback-plus-rescan compared
+  with a fresh full scan.
 - Full workspace suite (`VTORRENT_TOTP_STATE_DIR=$(mktemp -d) cargo test
   --workspace --all-features`): 49 test groups, **1171 passed, 0 failed, 8
   ignored**. The ignored cases are pre-existing and deliberate: the mainnet-scale
@@ -3030,4 +3039,14 @@ exercise it.
   live-process state, so a covered rollback puts the reservation back instead of
   leaving the outpoint permanently `spent_reserved`. It affects swap
   reservation state only, not balances.
+- **Peers-unavailable is a silent, self-clearing gap.** Trigger: a covered
+  rollback has set the recovery exemption, the retained floor is still at or
+  below the resumed cursor, and recovery cannot progress because there are no
+  usable peers (peer discovery yields none, or compact-filter sync fails against
+  every peer). While that holds, the balance stays hidden and
+  `BtcWalletHistoryUnavailable` is suppressed, with no alert, until peers return
+  and the post-fork scan completes. The exemption is not withdrawn, because the
+  range is still recoverable; the wallet is simply not spendable and not
+  visible in the meantime. Recorded as a known limitation with that trigger;
+  behaviour is unchanged for it.
 

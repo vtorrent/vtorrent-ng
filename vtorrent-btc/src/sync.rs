@@ -476,7 +476,12 @@ impl BtcSync {
     /// backwards. Only outputs `add` actually inserted are journalled as
     /// created: replaying that entry must not remove a record the wallet held
     /// before this block.
-    fn record_matching_outputs(&self, tx: &bitcoin::Transaction, height: u32) {
+    ///
+    /// A spend the wallet itself sent has already left the set, so its record
+    /// comes from the pending removal the send left behind. Retiring it here
+    /// puts the removal in the confirming height's entry, which keeps the fold
+    /// complete and lets the journal replay it.
+    pub(crate) fn record_matching_outputs(&self, tx: &bitcoin::Transaction, height: u32) {
         let txid = tx.compute_txid().to_string();
 
         // Resolve which outputs belong to the wallet before touching the set, so
@@ -509,16 +514,21 @@ impl BtcSync {
         for input in &tx.input {
             let prev_txid = input.previous_output.txid.to_string();
             let prev_vout = input.previous_output.vout;
-            let prior = if let Some(reserved) = utxos.reserved_utxo(&prev_txid, prev_vout) {
-                PriorState::Reserved(reserved.clone())
-            } else if utxos.was_reserved_spent(&prev_txid, prev_vout) {
-                PriorState::SpentReserved
-            } else {
-                PriorState::Free
-            };
-            let removal = utxos
-                .outpoint(&prev_txid, prev_vout)
-                .map(|utxo| RemovedOutput { utxo, prior });
+            let removal =
+                if let Some(pending) = utxos.take_pending_removal(&txid, &prev_txid, prev_vout) {
+                    Some(pending)
+                } else {
+                    let prior = if let Some(reserved) = utxos.reserved_utxo(&prev_txid, prev_vout) {
+                        PriorState::Reserved(reserved.clone())
+                    } else if utxos.was_reserved_spent(&prev_txid, prev_vout) {
+                        PriorState::SpentReserved
+                    } else {
+                        PriorState::Free
+                    };
+                    utxos
+                        .outpoint(&prev_txid, prev_vout)
+                        .map(|utxo| RemovedOutput { utxo, prior })
+                };
             utxos.note_spend(&prev_txid, prev_vout);
             utxos.remove(&prev_txid, prev_vout);
             if let Some(removal) = removal {

@@ -113,6 +113,7 @@ UtxoSet {
   ...
   last_scanned_tip: Option<[u8; 32]>,   // hash of the tip the cursor reached
   undo: Vec<UndoEntry>,                 // ascending, sparse, capped
+  pending_removals: Vec<PendingRemoval>,// wallet-local sends not yet observed
 }
 UndoEntry {
   height: u32,
@@ -122,6 +123,11 @@ UndoEntry {
 RemovedOutput {
   utxo: Utxo,                               // txid, vout, value, address, height
   prior: PriorState,                        // Free | Reserved(Utxo) | SpentReserved
+}
+PendingRemoval {
+  removed: RemovedOutput,                   // what the send removed
+  txid: String,                             // the spending transaction
+  height: u32,                              // scan cursor the send was built at
 }
 ```
 
@@ -134,10 +140,26 @@ Entries are **sparse**: only heights that touched the wallet are stored, because
 an untouched block is a no-op for the fold. Coverage is therefore a height range
 plus internal ordering, not one entry per block.
 
+Wallet-local spends do **not** get a height entry. A send removes its inputs
+before any block confirms them, and the spend can only confirm at or above the
+scan cursor the send was built at, so a fork at or above that cursor would reorg
+the spend out while the entry survives the replay. Instead `send_to` appends a
+`PendingRemoval` carrying the record, the spending txid, and the broadcast
+height. The scan retires it when it sees that txid spend the outpoint, putting it
+into the confirming height's `removed` list so the fold stays complete. A
+covered rollback restores every pending removal unconditionally — a spend still
+valid on the new branch is re-removed by the post-fork scan, which is
+self-correcting — and a failed broadcast cancels the matching record rather than
+adding a second one. Pending records are cleared with the journal and pruned once
+their broadcast height falls below `floor`.
+
 **Rollback** applies entries from the highest covered height down to `F+1` in
 reverse: re-add `removed` (inserting directly, bypassing `add`'s reserved-outpoint
 filter), drop `created`, and restore each outpoint's prior reservation state.
-`last_scanned_height` becomes `F + 1` and `last_scanned_tip` is cleared.
+Pending removals and reconciliation observations are put back **before** the
+replay, so an entry that undoes the creation of their outpoint still wins and no
+phantom record survives. `last_scanned_height` becomes `F + 1` and
+`last_scanned_tip` is cleared.
 
 **Pruning.** Entries below `floor` are dropped whenever the scan cursor is saved
 (`persist_scan_progress`), and entries are capped by count as a safety valve so
@@ -145,9 +167,10 @@ filter), drop `created`, and restore each outpoint's prior reservation state.
 removes a range a later reorg needs, case 2 or 3 applies — the rule degrades,
 never lies.
 
-**Corruption.** On load, a `undo` field that fails to parse is discarded and
-replaced with an empty journal, and a malformed `last_scanned_tip` is dropped;
-the rest of the set, including the settled balance, still has to parse. A
+**Corruption.** On load, a `undo` or `pending_removals` field that fails to parse
+is discarded and replaced with an empty list, and a malformed
+`last_scanned_tip` is dropped; the rest of the set, including the settled
+balance, still has to parse. A
 journal that loaded but is not ascending or does not start at `fork + 1` is
 rejected whole and treated as not-covering; the wallet then takes case 2 or 3.
 It is never partially applied. `last_scanned_tip` is persisted, always cleared
@@ -165,11 +188,11 @@ design, not a coverage or lineage check.
 - Journal, cursor, and `last_scanned_tip` live in one file and one save, so a
   crash cannot leave them inconsistent.
 - The journal lives inside `UtxoSet`; there is no separate sink. Only the shared
-  wallet set is journalled: the main scan path, plus wallet-local sends and
-  failed-broadcast restores. Swap verification and observation build `BtcSync`
-  over a scratch `UtxoSet`, so their scratch sets never reach the wallet's
-  journal; the reconciliation scan applies only a reservation-spend observation,
-  which a covered rollback clears.
+  wallet set is journalled: the main scan path, plus the pending removals a send
+  records and a failed broadcast cancels. Swap verification and observation build
+  `BtcSync` over a scratch `UtxoSet`, so their scratch sets never reach the
+  wallet's journal; the reconciliation scan applies only a reservation-spend
+  observation, which a covered rollback clears.
 - `reset_chain_cache` clears the journal with the rest of the chain state, which
   is what makes the live-process-only scope explicit in code.
 
