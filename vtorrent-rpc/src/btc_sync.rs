@@ -76,6 +76,17 @@ fn update_wallet_metrics(health: &BtcSyncHealth, wallet: &BtcWallet) {
     health.synced.store(wallet.synced(), Ordering::Relaxed);
 }
 
+/// Publish the wallet's recovery state to the metrics singletons.
+///
+/// Runs before any peer resolution or connection, so a daemon that restarts
+/// into a blocked wallet with no reachable peers still reports
+/// `wallet_history_blocked` instead of publishing zero until a peer returns.
+async fn publish_wallet_metrics(state: &AppState) {
+    if let Some(wallet) = state.btc_wallet.read().await.as_ref() {
+        update_wallet_metrics(&state.btc_health, wallet);
+    }
+}
+
 fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -171,6 +182,9 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
             tokio::time::sleep(Duration::from_secs(30)).await;
             continue;
         }
+        // Publish before peers are resolved or connected: a blocked wallet must
+        // report its state even when the peer set ends up empty.
+        publish_wallet_metrics(&state).await;
         let network = *state.btc_network.read().await;
         let health = state.btc_health.clone();
         let peer_cache = state.btc_peer_cache.clone();
@@ -342,6 +356,83 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::AppState;
+
+    /// A regtest header chain on top of genesis, so the wallet has a non-zero
+    /// retained floor.
+    fn add_headers(wallet: &BtcWallet, count: u32) {
+        use bitcoin::blockdata::block::{Header, Version};
+        use bitcoin::hashes::Hash;
+        use bitcoin::{BlockHash, CompactTarget, TxMerkleNode};
+
+        let bits = CompactTarget::from_consensus(0x207fffff);
+        let mut prev = bitcoin::constants::genesis_block(bitcoin::Network::Regtest)
+            .block_hash()
+            .to_byte_array();
+        for height in 1..=count {
+            let mut nonce = height;
+            let header = loop {
+                let header = Header {
+                    version: Version::ONE,
+                    prev_blockhash: BlockHash::from_byte_array(prev),
+                    merkle_root: TxMerkleNode::all_zeros(),
+                    time: 1_700_000_000 + height,
+                    bits,
+                    nonce,
+                };
+                if header.validate_pow(bits.into()).is_ok() {
+                    break header;
+                }
+                nonce += 1;
+            };
+            prev = header.block_hash().to_byte_array();
+            wallet
+                .add_header(&bitcoin::consensus::encode::serialize(&header), height)
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn wallet_metrics_publish_history_blocked_with_an_empty_peer_set() {
+        let path = std::env::temp_dir().join(format!(
+            "vtr-btc-blocked-wallet-{}-{}.json",
+            std::process::id(),
+            unix_now()
+        ));
+        std::fs::write(
+            &path,
+            r#"{"utxos":[],"birthday":0,"seen_funds":true,"rescan_required":true}"#,
+        )
+        .unwrap();
+        let wallet =
+            BtcWallet::with_persistence([1u8; 64], bitcoin::Network::Regtest, path.clone())
+                .unwrap();
+        add_headers(&wallet, 7);
+        wallet.set_header_retention(2);
+        assert!(
+            wallet.history_unavailable(),
+            "precondition: the restored wallet is blocked"
+        );
+
+        let state = AppState::new();
+        *state.btc_wallet.write().await = Some(wallet);
+        assert_eq!(
+            state.btc_health.peer_groups.load(Ordering::Relaxed),
+            0,
+            "no peer was connected"
+        );
+
+        publish_wallet_metrics(&state).await;
+
+        assert!(
+            state
+                .btc_health
+                .wallet_history_blocked
+                .load(Ordering::Relaxed),
+            "the blocked state must be published before peers are resolved"
+        );
+        tokio::fs::remove_file(path).await.unwrap();
+    }
 
     #[tokio::test]
     async fn peer_cache_round_trips() {
