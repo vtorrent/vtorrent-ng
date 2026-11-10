@@ -251,10 +251,22 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                     break;
                 }
                 if wallet.last_scanned_height() < retained_floor {
-                    tracing::warn!(
-                        "BTC wallet history before retained floor {} is unavailable; restart with sufficient header retention before scanning",
-                        retained_floor
-                    );
+                    // The floor moved past the resumed cursor while a journal
+                    // recovery was pending: the undone range can no longer be
+                    // re-derived, so withdraw the exemption and let the history
+                    // guard (case 2/3) decide rather than scanning past it.
+                    if wallet.abandon_journal_recovery() {
+                        tracing::warn!(
+                            "BTC journal recovery abandoned: retained floor {} is above the resumed scan cursor; the history guard now decides",
+                            retained_floor
+                        );
+                        update_wallet_metrics(&health, wallet);
+                    } else {
+                        tracing::warn!(
+                            "BTC wallet history before retained floor {} is unavailable; restart with sufficient header retention before scanning",
+                            retained_floor
+                        );
+                    }
                 }
                 if wallet.last_scanned_height() > wallet.best_height() {
                     tracing::warn!(

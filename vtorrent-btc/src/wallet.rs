@@ -73,7 +73,9 @@ pub struct BtcWallet {
     /// In-process only: the pending rescan replays from a journalled fork, so
     /// no history below the fork or the retained floor is re-derived. Never
     /// persisted, because a restart cannot continue a journal recovery.
-    journal_recovered: bool,
+    /// Atomic so the `&self` guard readers can abandon the recovery when the
+    /// retained floor advances past the resumed cursor.
+    journal_recovered: AtomicBool,
     completed_scan: Mutex<Option<(u32, [u8; 32])>>,
     /// Whether new transactions signal RBF (Replace-By-Fee).
     rbf_enabled: bool,
@@ -106,7 +108,7 @@ impl BtcWallet {
             last_scanned_height: 0,
             rescan_on_sync: AtomicBool::new(false),
             reset_on_sync: false,
-            journal_recovered: false,
+            journal_recovered: AtomicBool::new(false),
             completed_scan: Mutex::new(None),
             rbf_enabled: true,
         }
@@ -154,7 +156,7 @@ impl BtcWallet {
             last_scanned_height,
             rescan_on_sync: AtomicBool::new(rescan_on_sync),
             reset_on_sync: rescan_on_sync,
-            journal_recovered: false,
+            journal_recovered: AtomicBool::new(false),
             completed_scan: Mutex::new(None),
             rbf_enabled: true,
         })
@@ -196,7 +198,7 @@ impl BtcWallet {
         }
         self.last_scanned_height = 0;
         self.synced = false;
-        self.journal_recovered = false;
+        self.journal_recovered.store(false, Ordering::Release);
         self.save_utxos();
     }
 
@@ -223,7 +225,7 @@ impl BtcWallet {
         // floor, which coverage guarantees is at most fork + 1 — is re-derived.
         // Mark the rescan journal-recovered so the missing-history guard and
         // alert stay quiet, then hide the balance until the scan completes.
-        self.journal_recovered = true;
+        self.journal_recovered.store(true, Ordering::Release);
         self.rescan_on_sync.store(true, Ordering::Release);
         self.save_utxos();
         true
@@ -433,6 +435,10 @@ impl BtcWallet {
         if spent {
             let mut set = self.utxos.lock();
             if set.note_spend(txid, vout) {
+                // No height carries this observation, so remember it as
+                // live-process state: a covered rollback puts the reservation
+                // back instead of leaving the outpoint spent forever.
+                set.record_reservation_spend(utxo);
                 drop(set);
                 self.save_utxos();
             }
@@ -593,10 +599,16 @@ impl BtcWallet {
         self.utxos.lock().rescan_required()
     }
 
+    /// Whether the balance and spendable list are hidden pending a rescan.
+    #[cfg(test)]
+    pub(crate) fn rescan_on_sync_for_tests(&self) -> bool {
+        self.rescan_on_sync.load(Ordering::Acquire)
+    }
+
     /// Whether the pending rescan replays from a journalled fork.
     #[cfg(test)]
     pub(crate) fn journal_recovered_for_tests(&self) -> bool {
-        self.journal_recovered
+        self.journal_recovered.load(Ordering::Acquire)
     }
 
     /// Freshly scan a swap contract, without trusting the persisted wallet UTXO cache.
@@ -800,10 +812,16 @@ impl BtcWallet {
     }
 
     fn require_retained_wallet_history(&self) -> Result<()> {
-        if self.journal_recovered {
+        if self.journal_recovered.load(Ordering::Acquire) {
             // The covered rollback kept everything at or below the fork and the
-            // scan starts at fork + 1, so no earlier history is needed.
-            return Ok(());
+            // scan starts at fork + 1, so no earlier history is needed — but
+            // only while the retained floor has not advanced past that cursor.
+            // Once it has, the skipped range can no longer be re-derived and
+            // the ordinary case 2/3 logic (and alert) must decide.
+            if self.recovery_exemption_active() {
+                return Ok(());
+            }
+            self.abandon_journal_recovery();
         }
         let floor = self.headers.lock().retained_floor();
         enum Decision {
@@ -866,15 +884,56 @@ impl BtcWallet {
     /// still holding complete history. Only a wallet that needs to rescan is
     /// affected.
     ///
-    /// A journal-recovered rescan is exempt: it only re-reads heights above the
+    /// A journal-recovered rescan is exempt only while the resumed cursor is
+    /// still at or above the retained floor: it only re-reads heights above the
     /// fork, so nothing below the floor can be lost.
     pub fn history_unavailable(&self) -> bool {
-        if self.journal_recovered || !self.rescan_on_sync.load(Ordering::Acquire) {
+        if !self.rescan_on_sync.load(Ordering::Acquire) {
             return false;
+        }
+        if self.journal_recovered.load(Ordering::Acquire) {
+            if self.recovery_exemption_active() {
+                return false;
+            }
+            self.abandon_journal_recovery();
         }
         let floor = self.retained_floor();
         let utxos = self.utxos.lock();
         utxos.has_seen_funds() && utxos.birthday().is_some_and(|birthday| birthday < floor)
+    }
+
+    /// Whether the journal-recovery exemption is still sound.
+    ///
+    /// The covered rollback resumes at `fork + 1`; if the retained floor has
+    /// since advanced past that cursor, the scan would start above the range the
+    /// journal undid and could not re-derive it. The exemption then has to be
+    /// withdrawn so the regular history guard decides.
+    fn recovery_exemption_active(&self) -> bool {
+        self.journal_recovered.load(Ordering::Acquire)
+            && self.last_scanned_height >= self.retained_floor()
+    }
+
+    /// Withdraw a journal recovery whose resumed cursor fell below the retained
+    /// floor.
+    ///
+    /// Clears the journal and tip and sets `rescan_required` so the ordinary
+    /// case 2/3 path (including the critical alert) decides what happens next.
+    /// Returns true if a recovery was actually abandoned.
+    pub fn abandon_journal_recovery(&self) -> bool {
+        if !self.journal_recovered.swap(false, Ordering::AcqRel) {
+            return false;
+        }
+        {
+            let mut utxos = self.utxos.lock();
+            utxos.clear_undo();
+            utxos.set_last_scanned_tip(None);
+            utxos.set_rescan_required(true);
+        }
+        tracing::warn!(
+            "BTC journal recovery abandoned: the retained header floor advanced past the resumed scan cursor; cleared the journal so the history guard decides"
+        );
+        self.save_utxos();
+        true
     }
 
     /// The next block height to scan.
@@ -948,7 +1007,7 @@ impl BtcWallet {
         };
         if completed && persisted {
             self.rescan_on_sync.store(false, Ordering::Release);
-            self.journal_recovered = false;
+            self.journal_recovered.store(false, Ordering::Release);
         }
     }
 
@@ -962,10 +1021,10 @@ impl BtcWallet {
     /// dropped, the balance becomes visible, and the rescan requirement clears.
     /// A no-op for any wallet that is not journal-recovered.
     pub fn finish_recovered_scan(&mut self) {
-        if !self.journal_recovered {
+        if !self.journal_recovered.load(Ordering::Acquire) {
             return;
         }
-        self.journal_recovered = false;
+        self.journal_recovered.store(false, Ordering::Release);
         self.rescan_on_sync.store(false, Ordering::Release);
         self.utxos.lock().set_rescan_required(false);
         self.save_utxos();
@@ -1052,10 +1111,22 @@ impl BtcWallet {
         // later fails, the caller must roll back via [`BtcWallet::restore_utxos`]
         // using the returned selection — otherwise the wallet would forget
         // spendable outputs for a tx that never made it onto the network.
+        //
+        // The removal is journalled at the scan cursor: once the outpoint has
+        // left the set the confirming scan can no longer record the spend, so
+        // this entry is what lets a covered reorg restore the output if the
+        // transaction never confirms on the new branch.
         let mut set = self.utxos.lock();
+        let cursor = self.last_scanned_height;
+        let removed: Vec<Utxo> = selected
+            .iter()
+            .filter(|utxo| set.outpoint(&utxo.txid, utxo.vout).is_some())
+            .cloned()
+            .collect();
         for u in &selected {
             set.remove(&u.txid, u.vout);
         }
+        set.journal_local_removals(&removed, cursor);
         drop(set);
         self.save_utxos();
 
@@ -1072,12 +1143,20 @@ impl BtcWallet {
 
     /// Re-add previously spent UTXOs (e.g. when a broadcast failed) and
     /// persist the restored set.
+    ///
+    /// This cancels the journal entry `send_to` wrote for the removal, because
+    /// the send never happened: undoing a later reorg must not drop an output
+    /// that was never actually spent.
     pub fn restore_utxos(&self, utxos: &[Utxo]) {
         {
             let mut set = self.utxos.lock();
+            let mut added = Vec::new();
             for u in utxos {
-                set.add(u.clone());
+                if set.add(u.clone()) {
+                    added.push(u.clone());
+                }
             }
+            set.journal_local_additions(&added, self.last_scanned_height);
         }
         self.save_utxos();
     }
@@ -1518,28 +1597,128 @@ mod tests {
     }
 
     #[test]
-    fn a_covered_rollback_keeps_rescan_required_until_the_recovery_finishes() {
+    fn a_covered_rollback_does_not_require_a_rescan_until_it_finishes() {
         let mut w = wallet_awaiting_journal_recovery();
         let floor = w.retained_floor();
-        w.utxos.lock().set_rescan_required(true);
+        assert!(
+            !w.rescan_required_for_tests(),
+            "precondition: the wallet owes no rescan before the reorg"
+        );
 
         assert!(w.reset_for_reorg_at(Some(floor)));
         assert!(
-            w.rescan_required_for_tests(),
-            "the covered rollback still owes a rescan"
+            !w.rescan_required_for_tests(),
+            "a covered rollback resumes from the fork, so it must not demand a full rescan"
         );
         assert_eq!(w.balance(), 0, "the balance stays hidden during the rescan");
+        assert!(w.rescan_on_sync_for_tests());
 
         w.finish_recovered_scan();
 
+        assert!(!w.rescan_required_for_tests());
         assert!(
-            !w.rescan_required_for_tests(),
-            "finishing the recovery must clear the rescan requirement"
+            !w.rescan_on_sync_for_tests(),
+            "finishing the recovery must stop hiding the balance"
         );
         assert_eq!(
             w.balance(),
             1_000,
             "finishing the recovery must stop hiding the balance"
+        );
+    }
+
+    #[test]
+    fn a_covered_reorg_restores_an_output_the_wallet_sent() {
+        let mut w = BtcWallet::with_network([7u8; 64], bitcoin::Network::Regtest);
+        let address = w.current_address().unwrap();
+        let owned = Utxo {
+            txid: "ab".repeat(32),
+            vout: 0,
+            value: 100_000,
+            address,
+            height: 100,
+        };
+        w.add_utxo(owned.clone());
+        // Coverage starts at 61 so a fork at 60 is covered; the output itself
+        // predates the send and must survive the rollback.
+        w.push_undo_for_tests(crate::utxo::UndoEntry {
+            height: 61,
+            created: vec![],
+            removed: vec![],
+        });
+        w.set_last_scanned_height(101);
+        let recipient =
+            crate::keys::derive_address(&[9u8; 64], 0, bitcoin::Network::Regtest).unwrap();
+
+        let (_, _, selected) = w.send_to(&recipient, 50_000, 1_000).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert!(
+            w.utxo_for_tests(&owned.txid, owned.vout).is_none(),
+            "precondition: the send removed the output from the set"
+        );
+
+        assert!(
+            w.reset_for_reorg_at_for_tests(Some(60)),
+            "the journal covers fork 60"
+        );
+        assert_eq!(
+            w.utxo_for_tests(&owned.txid, owned.vout)
+                .map(|utxo| utxo.value),
+            Some(100_000),
+            "a wallet-originated spend must be journalled so a covered reorg restores it"
+        );
+    }
+
+    #[test]
+    fn advancing_the_floor_past_the_resumed_cursor_abandons_the_recovery() {
+        let mut w = wallet_awaiting_journal_recovery();
+        let floor = w.retained_floor();
+        assert!(w.reset_for_reorg_at(Some(floor)));
+        assert!(w.journal_recovered_for_tests());
+        let resumed = w.last_scanned_height();
+        assert!(resumed >= floor, "precondition: the exemption is active");
+
+        let mut prev = w.best_hash().unwrap();
+        for height in 7..9u32 {
+            let header = test_header(prev, height);
+            prev = header.block_hash().to_byte_array();
+            w.add_header(&bitcoin::consensus::encode::serialize(&header), height)
+                .unwrap();
+        }
+        let advanced = w.retained_floor();
+        assert!(
+            advanced > resumed,
+            "the fixture must advance the floor past the resumed cursor"
+        );
+
+        assert!(
+            w.history_unavailable(),
+            "an abandoned recovery must let the critical alert fire"
+        );
+        assert!(!w.journal_recovered_for_tests());
+        assert!(
+            w.undo_entries_for_tests().is_empty(),
+            "the abandoned journal must not cover a later reorg"
+        );
+        assert_eq!(w.last_scanned_tip(), None);
+        assert!(
+            w.rescan_required_for_tests(),
+            "the regular case 2/3 path must decide after an abandoned recovery"
+        );
+    }
+
+    #[test]
+    fn the_recovery_exemption_holds_while_the_floor_stays_below_the_cursor() {
+        let mut w = wallet_awaiting_journal_recovery();
+        let floor = w.retained_floor();
+        assert!(w.reset_for_reorg_at(Some(floor)));
+        assert!(w.last_scanned_height() >= w.retained_floor());
+
+        assert!(w.require_retained_wallet_history().is_ok());
+        assert!(!w.history_unavailable());
+        assert!(
+            w.journal_recovered_for_tests(),
+            "an active exemption must not be abandoned"
         );
     }
 
