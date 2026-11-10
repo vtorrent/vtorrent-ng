@@ -92,13 +92,19 @@ pub struct UtxoSet {
     /// scanning. A birthday below the retained floor means history is missing.
     #[serde(default)]
     birthday: Option<u32>,
-    /// Hash of the tip the scan cursor reached, so a reorg can detect whether
-    /// the journal was built on the same lineage.
+    /// Hash of the tip the scan cursor reached. Persisted, always cleared on
+    /// load, and read by no decision today: it is the seam for a future
+    /// lineage-persistence design, not a coverage check.
     #[serde(default)]
     last_scanned_tip: Option<[u8; 32]>,
     /// Sparse ascending journal of chain-derived changes, for rollback.
     #[serde(default)]
     undo: Vec<UndoEntry>,
+    /// Reservation spends observed by this process's reconciliation scan,
+    /// mapped to the reserved record they replaced. Live-process only: a
+    /// covered rollback clears it and puts the reservations back.
+    #[serde(default, skip)]
+    observed_reservation_spends: std::collections::BTreeMap<(String, u32), Utxo>,
     /// Set once any confirmed output has been tracked, so a floor change can
     /// never silently adopt a height this wallet may have held funds below.
     #[serde(default)]
@@ -215,6 +221,13 @@ impl UtxoSet {
         &self.undo
     }
 
+    /// Replace the journal verbatim, bypassing [`Self::push_undo`]'s ordering
+    /// guard, so tests can construct an unordered or gapped journal.
+    #[cfg(test)]
+    pub(crate) fn set_undo_raw(&mut self, entries: Vec<UndoEntry>) {
+        self.undo = entries;
+    }
+
     /// Record one height's changes, keeping the journal ascending and bounded.
     ///
     /// An entry for the same height as the last one is merged, because a block
@@ -243,6 +256,85 @@ impl UtxoSet {
 
     pub fn clear_undo(&mut self) {
         self.undo.clear();
+    }
+
+    /// Journal outpoints removed by a wallet-local action (a send) at the
+    /// current scan cursor.
+    ///
+    /// The confirming scan can no longer record the removal, because the
+    /// outpoint has already left the set, so without this entry a covered
+    /// reorg would not restore an output whose spend never made it on chain.
+    /// The cursor height is the journal tail, so a block that later touches
+    /// the same height merges into this entry.
+    pub fn journal_local_removals(&mut self, utxos: &[Utxo], height: u32) {
+        if utxos.is_empty() {
+            return;
+        }
+        let removed = utxos
+            .iter()
+            .map(|utxo| {
+                let prior = if let Some(reserved) = self.reserved_utxo(&utxo.txid, utxo.vout) {
+                    PriorState::Reserved(reserved.clone())
+                } else if self.was_reserved_spent(&utxo.txid, utxo.vout) {
+                    PriorState::SpentReserved
+                } else {
+                    PriorState::Free
+                };
+                RemovedOutput {
+                    utxo: utxo.clone(),
+                    prior,
+                }
+            })
+            .collect();
+        self.push_undo(UndoEntry {
+            height,
+            created: vec![],
+            removed,
+        });
+    }
+
+    /// Journal outpoints a wallet-local action (a failed broadcast) re-added.
+    ///
+    /// When the matching removal is still in the journal the two cancel: the
+    /// send never happened, so the journal must keep claiming nothing about
+    /// that outpoint. Only an addition with no recorded removal is journalled
+    /// as `created`, because undoing it must remove the record again.
+    pub fn journal_local_additions(&mut self, utxos: &[Utxo], height: u32) {
+        if utxos.is_empty() {
+            return;
+        }
+        let mut created = Vec::new();
+        for utxo in utxos {
+            let cancelled = self.undo.iter_mut().rev().find_map(|entry| {
+                entry
+                    .removed
+                    .iter()
+                    .position(|removed| {
+                        removed.utxo.txid == utxo.txid && removed.utxo.vout == utxo.vout
+                    })
+                    .map(|index| {
+                        entry.removed.remove(index);
+                    })
+            });
+            if cancelled.is_none() {
+                created.push(utxo.clone());
+            }
+        }
+        if !created.is_empty() {
+            self.push_undo(UndoEntry {
+                height,
+                created,
+                removed: vec![],
+            });
+        }
+    }
+
+    /// Remember that this process's reconciliation scan observed `utxo` spent
+    /// while it was reserved, so a covered rollback can put the reservation
+    /// back instead of leaving `spent_reserved` behind forever.
+    pub(crate) fn record_reservation_spend(&mut self, utxo: Utxo) {
+        self.observed_reservation_spends
+            .insert((utxo.txid.clone(), utxo.vout), utxo);
     }
 
     /// Drop journal entries below `floor`, then keep at most `max_entries`
@@ -285,11 +377,28 @@ impl UtxoSet {
                 self.restore_removed(removed);
             }
             for created in entry.created {
-                self.remove(&created.txid, created.vout);
+                self.forget_outpoint(&created.txid, created.vout);
             }
+        }
+        for (_, utxo) in std::mem::take(&mut self.observed_reservation_spends) {
+            let key = (utxo.txid.clone(), utxo.vout);
+            self.spent_reserved.remove(&key);
+            self.reserve_utxo(utxo);
         }
         self.last_scanned_tip = None;
         true
+    }
+
+    /// Drop every record of an outpoint: spendable, reserved, and
+    /// spent-reserved. Undoing a creation must not leave a phantom reservation
+    /// whose funding transaction no longer exists.
+    fn forget_outpoint(&mut self, txid: &str, vout: u32) {
+        let key = (txid.to_owned(), vout);
+        self.utxos.retain(|u| !(u.txid == txid && u.vout == vout));
+        self.reserved.remove(&key);
+        self.reserved_utxos
+            .retain(|u| !(u.txid == txid && u.vout == vout));
+        self.spent_reserved.remove(&key);
     }
 
     fn undo_covers(&self, fork: u32) -> bool {
@@ -477,13 +586,22 @@ impl UtxoSet {
 
     /// Load the UTXO set from a JSON file.  Returns an empty set if the
     /// file does not exist.
+    ///
+    /// The undo journal and its tip are wallet-local recovery aids, so a
+    /// corrupt one is discarded rather than failing the wallet: the journal
+    /// loads empty and the wallet falls back to case 2 or 3. The settled
+    /// balance is not recovery data, so a corrupt `utxos` field still fails
+    /// the load.
     pub fn load(path: &Path) -> std::io::Result<Self> {
         let json = match std::fs::read_to_string(path) {
             Ok(json) => json,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Self::new()),
             Err(error) => return Err(error),
         };
-        let set: UtxoSet = serde_json::from_str(&json)
+        let mut value: serde_json::Value = serde_json::from_str(&json)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        sanitize_journal_fields(&mut value);
+        let set: UtxoSet = serde_json::from_value(value)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         tracing::debug!(
             "UTXO set loaded: {} entries from {}",
@@ -491,6 +609,24 @@ impl UtxoSet {
             path.display()
         );
         Ok(set)
+    }
+}
+
+/// Discard a journalled field that does not parse, leaving the rest of the set
+/// intact. Only the undo journal and its tip are tolerated this way.
+fn sanitize_journal_fields(value: &mut serde_json::Value) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    if object.contains_key("undo")
+        && serde_json::from_value::<Vec<UndoEntry>>(object["undo"].clone()).is_err()
+    {
+        object.insert("undo".into(), serde_json::Value::Array(Vec::new()));
+    }
+    if object.contains_key("last_scanned_tip")
+        && serde_json::from_value::<Option<[u8; 32]>>(object["last_scanned_tip"].clone()).is_err()
+    {
+        object.remove("last_scanned_tip");
     }
 }
 
@@ -853,19 +989,181 @@ mod tests {
     }
 
     #[test]
-    fn undo_above_reports_no_coverage_for_gapped_or_unordered_journal() {
+    fn undo_above_reports_no_coverage_for_an_unordered_or_gapped_journal() {
+        // `push_undo` drops an out-of-order entry, so build the bad journals
+        // directly: the coverage check must reject them without mutating.
+        for entries in [
+            vec![
+                UndoEntry {
+                    height: 12,
+                    created: vec![utxo("aa", 0, 500)],
+                    removed: vec![],
+                },
+                UndoEntry {
+                    height: 10,
+                    created: vec![],
+                    removed: vec![],
+                },
+            ],
+            vec![UndoEntry {
+                height: 12,
+                created: vec![],
+                removed: vec![],
+            }],
+        ] {
+            let mut set = UtxoSet::new();
+            set.add(utxo("aa", 0, 500));
+            set.set_last_scanned_tip(Some([9u8; 32]));
+            set.set_undo_raw(entries);
+            let before = serde_json::to_string(&set).unwrap();
+
+            assert!(!set.undo_above(9), "a bad journal must not claim coverage");
+            assert_eq!(
+                serde_json::to_string(&set).unwrap(),
+                before,
+                "an uncovered rollback must leave the set byte-identical"
+            );
+        }
+    }
+
+    #[test]
+    fn undo_above_clears_reservation_state_of_a_dropped_created_outpoint() {
+        let record = utxo("aa", 0, 500);
         let mut set = UtxoSet::new();
+        set.reserve_utxo(record.clone());
+        // The outpoint is created at 101, reserved, then spent while reserved
+        // at 102. Its creation is above the fork, so the rollback drops it.
         set.push_undo(UndoEntry {
-            height: 12,
-            created: vec![],
+            height: 101,
+            created: vec![record.clone()],
             removed: vec![],
         });
+        set.push_undo(UndoEntry {
+            height: 102,
+            created: vec![],
+            removed: vec![RemovedOutput {
+                utxo: record.clone(),
+                prior: PriorState::Reserved(record.clone()),
+            }],
+        });
+        set.note_spend(&record.txid, record.vout);
+
+        assert!(set.undo_above(100));
+        assert!(
+            set.outpoint(&record.txid, record.vout).is_none(),
+            "a dropped creation must not leave a phantom reservation"
+        );
+        assert!(!set.was_reserved_spent(&record.txid, record.vout));
+        assert!(!set.release(&record.txid, record.vout));
+        assert!(!set.reserved.contains(&(record.txid.clone(), record.vout)));
+    }
+
+    #[test]
+    fn undo_above_restores_a_reservation_observed_spent_by_reconciliation() {
+        let record = utxo("aa", 0, 500);
+        let mut set = UtxoSet::new();
+        set.reserve_utxo(record.clone());
+        assert!(set.note_spend(&record.txid, record.vout));
+        set.record_reservation_spend(record.clone());
+        assert!(set.was_reserved_spent(&record.txid, record.vout));
         set.push_undo(UndoEntry {
             height: 10,
             created: vec![],
             removed: vec![],
         });
-        assert!(!set.undo_above(9));
+
+        assert!(set.undo_above(9));
+        assert!(
+            !set.was_reserved_spent(&record.txid, record.vout),
+            "a covered rollback must not leave the observed spend behind"
+        );
+        assert!(
+            set.reserved_utxo(&record.txid, record.vout).is_some(),
+            "the outpoint returns to its pre-observation reserved state"
+        );
+    }
+
+    fn folded(entries: &[(&str, u32, u64)]) -> Vec<(String, u32, u64, u32)> {
+        let mut folded: Vec<(String, u32, u64, u32)> = entries
+            .iter()
+            .map(|(txid, vout, value)| (txid.to_string(), *vout, *value, 100))
+            .collect();
+        folded.sort();
+        folded
+    }
+
+    #[test]
+    fn undo_above_n_blocks_equals_a_forward_fold_to_the_fork() {
+        let base = utxo("aa", 0, 500);
+        let six = utxo("bb", 0, 600);
+        let eight = utxo("cc", 0, 800);
+        let mut set = UtxoSet::new();
+        // Fold the chain forward: aa is created below the fork, bb at 6 spends
+        // aa, cc at 8 spends bb.
+        set.add(base.clone());
+        // Height 5 is a sentinel so fork 4 is covered (the first journalled
+        // height above a fork must be fork + 1).
+        set.push_undo(UndoEntry {
+            height: 5,
+            created: vec![],
+            removed: vec![],
+        });
+        set.push_undo(UndoEntry {
+            height: 6,
+            created: vec![six.clone()],
+            removed: vec![RemovedOutput {
+                utxo: base.clone(),
+                prior: PriorState::Free,
+            }],
+        });
+        set.push_undo(UndoEntry {
+            height: 8,
+            created: vec![eight.clone()],
+            removed: vec![RemovedOutput {
+                utxo: six.clone(),
+                prior: PriorState::Free,
+            }],
+        });
+        set.remove(&base.txid, base.vout);
+        set.add(six.clone());
+        set.remove(&six.txid, six.vout);
+        set.add(eight.clone());
+
+        assert!(set.undo_above(4));
+        let rolled: Vec<_> = set
+            .list()
+            .iter()
+            .map(|u| (u.txid.clone(), u.vout, u.value, u.height))
+            .collect();
+        let expected = folded(&[("aa", 0, 500)]);
+        assert_eq!(rolled, expected, "N-entry replay must equal the fork state");
+    }
+
+    #[test]
+    fn a_corrupt_journal_is_discarded_without_losing_the_utxo_set() {
+        let dir =
+            std::env::temp_dir().join(format!("vtorrent_utxo_corrupt_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("utxos.json");
+        let mut set = UtxoSet::new();
+        set.add(utxo("aa", 0, 5000));
+        set.set_last_scanned_tip(Some([7u8; 32]));
+        let mut value = serde_json::to_value(&set).unwrap();
+        value["undo"] = serde_json::json!("not-a-journal");
+        value["last_scanned_tip"] = serde_json::json!("not-a-tip");
+        std::fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
+
+        let loaded = UtxoSet::load(&path).expect("a corrupt journal must not fail the load");
+        assert_eq!(loaded.total(), 5000);
+        assert_eq!(loaded.list().len(), 1);
+        assert!(loaded.undo_entries().is_empty());
+        assert_eq!(loaded.last_scanned_tip(), None);
+
+        // The settled balance is not recovery data: corrupting it still fails.
+        value["utxos"] = serde_json::json!("not-a-balance");
+        std::fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
+        assert!(UtxoSet::load(&path).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
