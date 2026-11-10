@@ -384,6 +384,16 @@ impl UtxoSet {
             .insert((utxo.txid.clone(), utxo.vout), (utxo, observed_at));
     }
 
+    /// Drop the live-process observation recorded for an outpoint.
+    ///
+    /// Once the contract that held the input is gone, the observation can only
+    /// re-reserve an outpoint nothing needs: `release_expired_reservations`
+    /// iterates contracts, so a contract-less reservation is never released.
+    pub(crate) fn forget_reservation_spend(&mut self, txid: &str, vout: u32) {
+        self.observed_reservation_spends
+            .remove(&(txid.to_owned(), vout));
+    }
+
     /// Drop journal entries below `floor`, then keep at most `max_entries`
     /// of the newest ones.
     ///
@@ -431,7 +441,11 @@ impl UtxoSet {
                 continue;
             }
             self.spent_reserved.remove(&key);
-            self.reserve_utxo(utxo);
+            // Same guard as `restore_removed`: an observation can outlive the
+            // contract that made it, and nothing would ever release it again.
+            if self.swap_holds_outpoint(&key.0, key.1) {
+                self.reserve_utxo(utxo);
+            }
         }
         for pending in std::mem::take(&mut self.pending_removals) {
             self.restore_removed(pending.removed);
@@ -513,21 +527,33 @@ impl UtxoSet {
     }
 
     /// Whether a persisted swap contract or a retained signed funding
-    /// transaction still spends `txid:vout`.
+    /// transaction may still spend `txid:vout`.
+    ///
+    /// Fails closed: a retained record that cannot prove it does not reference
+    /// the outpoint counts as referencing it, so no rollback frees an input a
+    /// live contract still holds. Only a definite non-reference frees one.
     fn swap_holds_outpoint(&self, txid: &str, vout: u32) -> bool {
-        if self.swap_contracts.values().any(|contract| {
-            contract.input_txid.as_deref() == Some(txid) && contract.input_vout == Some(vout)
-        }) {
-            return true;
-        }
-        self.pending_swap_transactions.values().any(|raw| {
-            bitcoin::consensus::deserialize::<bitcoin::Transaction>(raw).is_ok_and(|tx| {
-                tx.input.iter().any(|input| {
-                    input.previous_output.txid.to_string() == txid
-                        && input.previous_output.vout == vout
-                })
+        let contract_holds = self.swap_contracts.values().any(|contract| {
+            match (contract.input_txid.as_deref(), contract.input_vout) {
+                // A contract persisted before input tracking cannot prove it
+                // does not hold this outpoint.
+                (None, _) => true,
+                (Some(_), None) => true,
+                (Some(held_txid), Some(held_vout)) => held_txid == txid && held_vout == vout,
+            }
+        });
+        contract_holds
+            || self.pending_swap_transactions.values().any(|raw| {
+                match bitcoin::consensus::deserialize::<bitcoin::Transaction>(raw) {
+                    // An unparseable retained transaction could still be the
+                    // funding spend of any outpoint.
+                    Err(_) => true,
+                    Ok(tx) => tx.input.iter().any(|input| {
+                        input.previous_output.txid.to_string() == txid
+                            && input.previous_output.vout == vout
+                    }),
+                }
             })
-        })
     }
 
     fn insert_direct(&mut self, utxo: Utxo) {
@@ -746,6 +772,21 @@ mod tests {
             value,
             address: "bc1qtest".to_string(),
             height: 100,
+        }
+    }
+
+    fn swap_contract(order_id: &str, input: Option<(&str, u32)>) -> SwapContract {
+        SwapContract {
+            order_id: order_id.to_string(),
+            funding_txid: format!("funding{order_id}"),
+            hash_lock: [0u8; 32],
+            recipient: "bc1q".to_string(),
+            refund_address: "bc1q".to_string(),
+            expiry: 100,
+            amount: 1000,
+            refund_raw: None,
+            input_txid: input.map(|(txid, _)| txid.to_string()),
+            input_vout: input.map(|(_, vout)| vout),
         }
     }
 
@@ -1254,6 +1295,7 @@ mod tests {
         let record = utxo("aa", 0, 500);
         let mut set = UtxoSet::new();
         set.reserve_utxo(record.clone());
+        set.record_swap_contract(swap_contract("live", Some((&record.txid, record.vout))));
         assert!(set.note_spend(&record.txid, record.vout));
         set.record_reservation_spend(record.clone(), 10);
         assert!(set.was_reserved_spent(&record.txid, record.vout));
@@ -1272,6 +1314,99 @@ mod tests {
             set.reserved_utxo(&record.txid, record.vout).is_some(),
             "the outpoint returns to its pre-observation reserved state"
         );
+    }
+
+    #[test]
+    fn undo_above_does_not_re_reserve_an_observation_no_contract_holds() {
+        let record = utxo("af", 0, 500);
+        let mut set = UtxoSet::new();
+        set.reserve_utxo(record.clone());
+        assert!(set.note_spend(&record.txid, record.vout));
+        set.record_reservation_spend(record.clone(), 10);
+        set.push_undo(UndoEntry {
+            height: 10,
+            created: vec![],
+            removed: vec![],
+        });
+
+        assert!(set.undo_above(9));
+
+        assert!(
+            !set.was_reserved_spent(&record.txid, record.vout),
+            "the rollback still undoes the observation"
+        );
+        assert!(
+            set.reserved_utxo(&record.txid, record.vout).is_none(),
+            "no contract holds the outpoint, so restoring the reservation would hide it forever"
+        );
+        assert!(
+            set.observed_reservation_spends.is_empty(),
+            "the restored observation must not be kept for a later rollback"
+        );
+    }
+
+    #[test]
+    fn a_legacy_contract_keeps_its_outpoint_reserved() {
+        let record = utxo("ag", 0, 500);
+        let mut set = UtxoSet::new();
+        set.record_swap_contract(swap_contract("legacy", None));
+        set.push_undo(UndoEntry {
+            height: 11,
+            created: vec![],
+            removed: vec![RemovedOutput {
+                utxo: record.clone(),
+                prior: PriorState::Reserved(record.clone()),
+            }],
+        });
+
+        assert!(set.undo_above(10));
+        assert!(
+            set.reserved_utxo(&record.txid, record.vout).is_some(),
+            "a contract without input tracking cannot prove it dropped the input"
+        );
+    }
+
+    #[test]
+    fn an_unparseable_retained_funding_transaction_keeps_its_outpoint_reserved() {
+        let record = utxo("ah", 0, 500);
+        let mut set = UtxoSet::new();
+        set.record_swap_transaction("funding".into(), vec![1, 2, 3]);
+        set.push_undo(UndoEntry {
+            height: 11,
+            created: vec![],
+            removed: vec![RemovedOutput {
+                utxo: record.clone(),
+                prior: PriorState::Reserved(record.clone()),
+            }],
+        });
+
+        assert!(set.undo_above(10));
+        assert!(
+            set.reserved_utxo(&record.txid, record.vout).is_some(),
+            "an undecodable retained transaction might still spend the input"
+        );
+    }
+
+    #[test]
+    fn a_contract_for_another_outpoint_frees_the_restored_one() {
+        let record = utxo("ai", 0, 500);
+        let mut set = UtxoSet::new();
+        set.record_swap_contract(swap_contract("live", Some(("b", 1))));
+        set.push_undo(UndoEntry {
+            height: 11,
+            created: vec![],
+            removed: vec![RemovedOutput {
+                utxo: record.clone(),
+                prior: PriorState::Reserved(record.clone()),
+            }],
+        });
+
+        assert!(set.undo_above(10));
+        assert!(
+            set.reserved_utxo(&record.txid, record.vout).is_none(),
+            "a definite non-reference frees the outpoint"
+        );
+        assert_eq!(set.list().len(), 1, "the output itself is restored");
     }
 
     #[test]
@@ -1530,6 +1665,11 @@ mod tests {
         let mut set = UtxoSet::new();
         set.record_pending_removals(&[utxo("aa", 0, 500)], "ff", 5);
         set.record_pending_removals(&[utxo("bb", 0, 700)], "ee", 6);
+        set.push_undo(UndoEntry {
+            height: 5,
+            created: vec![],
+            removed: vec![],
+        });
 
         set.prune_undo(6, MAX_UNDO_ENTRIES);
 
@@ -1539,7 +1679,10 @@ mod tests {
             "a pending removal is self-contained and may be the only copy of an unseen send"
         );
         assert_eq!(set.pending_removals()[0].removed.utxo.txid, "aa");
-        assert!(set.undo_entries().is_empty());
+        assert!(
+            set.undo_entries().is_empty(),
+            "an undo entry below the floor is pruned"
+        );
     }
 
     #[test]

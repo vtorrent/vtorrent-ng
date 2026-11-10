@@ -488,6 +488,10 @@ impl BtcWallet {
         let released = set.release(&txid, vout);
         set.remove_swap_contract(order_id);
         set.clear_spent_reserved(&txid, vout);
+        // The observation exists to put the reservation back after a covered
+        // rollback. With the contract gone nothing could release it again, so
+        // keeping it would hide the outpoint on the next covered reorg.
+        set.forget_reservation_spend(&txid, vout);
         if let Some(path) = &self.utxo_path {
             if let Err(error) = set.save(path) {
                 *set = previous;
@@ -932,6 +936,10 @@ impl BtcWallet {
     /// The status APIs report `balance()` beside `synced`, so without this a
     /// wallet mid-recovery or blocked by the history guard would render as
     /// "0 BTC / Synced" with no indication that the number is hidden.
+    ///
+    /// Both terms are needed: `history_unavailable` is the case-3 alert, and it
+    /// short-circuits to false while the journal-recovery exemption is active —
+    /// exactly the window a covered rollback hides the balance in.
     pub fn balance_hidden(&self) -> bool {
         self.rescan_on_sync.load(Ordering::Acquire) || self.history_unavailable()
     }
@@ -2347,6 +2355,45 @@ mod tests {
         });
         assert!(reloaded.list_utxos().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_released_swap_cannot_be_re_reserved_by_a_covered_rollback() {
+        let mut w = BtcWallet::new([7u8; 64]);
+        let record = Utxo {
+            txid: "ce".repeat(32),
+            vout: 0,
+            value: 40_000,
+            address: "bc1qtest".into(),
+            height: 5,
+        };
+        {
+            let mut set = w.utxos.lock();
+            set.reserve_utxo(record.clone());
+            set.record_swap_contract(contract("order1", Some((&record.txid, record.vout))));
+            assert!(set.note_spend(&record.txid, record.vout));
+            set.record_reservation_spend(record.clone(), 10);
+        }
+
+        assert!(w.release_swap_reservation("order1").unwrap());
+        assert!(w.swap_contract("order1").is_none());
+        assert!(!w.reserved_input_spent(&record.txid, record.vout));
+
+        w.push_undo_for_tests(crate::utxo::UndoEntry {
+            height: 11,
+            created: vec![],
+            removed: vec![],
+        });
+        assert!(w.reset_for_reorg_at_for_tests(Some(10)));
+
+        assert!(
+            w.reserved_utxo(&record.txid, record.vout).is_none(),
+            "the contract is gone, so a covered rollback must not re-reserve the outpoint"
+        );
+        assert!(
+            !w.reserved_input_spent(&record.txid, record.vout),
+            "an observation of a released swap must not survive the rollback"
+        );
     }
 
     #[test]
