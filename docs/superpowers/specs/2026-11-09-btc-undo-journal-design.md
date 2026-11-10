@@ -53,12 +53,14 @@ dropping a possible output.
 ## 3. Constraints
 
 - Wallet-local data only; no consensus or peer-visible change.
-- Must survive restart and must be pruned in step with header retention, or it
-  becomes a second unbounded store.
+- Scope is one live process: the journal is cleared on load and on every
+  chain-cache reset, so no restart may rely on it. It must still be pruned in
+  step with header retention, or it becomes a second unbounded store.
 - Must be validated against the real reorg tests
   (`vtorrent-btc/src/sync/swap_tests.rs`) as well as unit tests.
 - Must not weaken `require_retained_wallet_history`; it may only be reached less
-  often.
+  often, and the case-1 exemption must be withdrawn if the retained floor
+  advances past the resumed cursor.
 
 ## 4. Approaches Considered
 
@@ -93,6 +95,11 @@ wallet may hold funds you cannot currently see*.
 Case 1 hides the balance by setting `rescan_on_sync` but deliberately does **not**
 set `rescan_required`, so it clears when the post-fork scan completes and the
 critical alert stays case-3-only. The wallet is never spendable mid-rollback.
+The exemption is conditional: it holds only while the resumed cursor
+(`fork + 1`) is still at or above the retained floor. If the floor advances past
+it while the recovery is pending, the recovery is abandoned — the journal and
+tip are cleared and `rescan_required` is set — so case 2/3 and the alert decide
+instead of scanning over an under-reported range.
 
 ## 6. Journal Format
 
@@ -132,30 +139,37 @@ reverse: re-add `removed` (inserting directly, bypassing `add`'s reserved-outpoi
 filter), drop `created`, and restore each outpoint's prior reservation state.
 `last_scanned_height` becomes `F + 1` and `last_scanned_tip` is cleared.
 
-**Pruning.** Entries below `floor` are dropped whenever the header chain prunes,
-and entries are capped by count as a safety valve so
+**Pruning.** Entries below `floor` are dropped whenever the scan cursor is saved
+(`persist_scan_progress`), and entries are capped by count as a safety valve so
 `--btc-header-retention 0` cannot produce an unbounded journal. If pruning
 removes a range a later reorg needs, case 2 or 3 applies — the rule degrades,
 never lies.
 
-**Corruption.** A journal that fails to parse, is not ascending, or has a gap in
-its recorded range is discarded as a whole and treated as not-covering; the
-wallet then takes case 2 or 3. It is never partially applied. `last_scanned_tip`
-is used to detect a lineage mismatch on load, not to judge coverage.
+**Corruption.** On load, a `undo` field that fails to parse is discarded and
+replaced with an empty journal, and a malformed `last_scanned_tip` is dropped;
+the rest of the set, including the settled balance, still has to parse. A
+journal that loaded but is not ascending or does not start at `fork + 1` is
+rejected whole and treated as not-covering; the wallet then takes case 2 or 3.
+It is never partially applied. `last_scanned_tip` is persisted, always cleared
+on load, and read by no decision today: it is the seam for a future lineage
+design, not a coverage or lineage check.
 
 ## 7. Interaction With Existing Behaviour
 
 - `require_retained_wallet_history` keeps its current semantics; the journal
-  only makes case 1 and case 2 avoid it.
+  only makes case 1 and case 2 avoid it, and case 1's exemption is withdrawn if
+  the retained floor advances past the resumed cursor.
 - `seen_funds` continues to gate birthday adoption.
 - `BtcWalletHistoryUnavailable` and `vtorrent_btc_wallet_history_blocked` are
   unchanged; they now fire only in case 3.
 - Journal, cursor, and `last_scanned_tip` live in one file and one save, so a
   crash cannot leave them inconsistent.
-- The journal is owned by `BtcWallet`. Only the main scan path appends entries;
-  swap verification and observation build `BtcSync` over a scratch `UtxoSet` and
-  must never journal. The scan takes an optional journal sink and the scratch
-  call sites pass none.
+- The journal lives inside `UtxoSet`; there is no separate sink. Only the shared
+  wallet set is journalled: the main scan path, plus wallet-local sends and
+  failed-broadcast restores. Swap verification and observation build `BtcSync`
+  over a scratch `UtxoSet`, so their scratch sets never reach the wallet's
+  journal; the reconciliation scan applies only a reservation-spend observation,
+  which a covered rollback clears.
 - `reset_chain_cache` clears the journal with the rest of the chain state, which
   is what makes the live-process-only scope explicit in code.
 

@@ -2947,6 +2947,9 @@ What the journal does:
 - Records, for each scanned height that touched the wallet, the outputs the scan
   added and the outputs it removed, together with each removed outpoint's prior
   reservation state. Untouched heights store nothing, so entries are sparse.
+  Wallet-local removals are journalled at the scan cursor too: a send journals
+  its removed outpoints, and a failed broadcast's restore cancels that entry, so
+  a covered reorg can restore an output whose spend never confirmed.
 - On a reorg with fork `F`, a covering journal is replayed backwards above `F`,
   the cursor resumes at `F + 1`, and the balance stays hidden until that short
   post-fork scan completes. `BtcWalletHistoryUnavailable` does not fire, and the
@@ -2970,10 +2973,13 @@ Four review findings shaped the design:
    beside it. A separate file has a second commit point; a journal ahead of the
    persisted set would replay `removed` outputs that were never removed on disk,
    producing a phantom balance.
-3. **Coverage by contiguous heights with a persisted tip.** Coverage is a height
-   range, not "some entry above the fork". An unordered, gapped, or unparsable
-   journal is discarded as a whole and treated as not covering — never partially
-   applied — and `last_scanned_tip` detects a lineage mismatch on load.
+3. **Coverage by contiguous heights.** Coverage is a height range, not "some
+   entry above the fork". An unordered or gapped journal is rejected whole and
+   treated as not covering — never partially applied. A journal that fails to
+   parse on load is discarded (with its tip) while the settled balance still has
+   to parse, so wallet-local recovery data can never kill the daemon.
+   `last_scanned_tip` is persisted, always cleared on load, and read by no
+   decision today; it is the seam for a future lineage design.
 4. **Removed outputs carry their prior reservation state.** Restoring an output
    needs its value, address, and height, and an input the abandoned branch spent
    must return to `Reserved` (or `SpentReserved`), not `Free`, or it could fund a
@@ -2981,11 +2987,16 @@ Four review findings shaped the design:
 
 Verification:
 
-- 23 journal tests pass in `vtorrent-btc`: the `UtxoSet` model and replay,
+- The journal tests pass in `vtorrent-btc`: the `UtxoSet` model and replay,
   ordering, coverage, corruption, capping, pruning, and persistence round-trip;
   scan-time journalling and same-height merging; and the wallet/harness reorg
   cases (covered replay, restored abandoned-branch spend, uncovered fallback,
   hidden balance, no alert on a covered reorg, and reset clearing the journal).
+  Post-review regressions cover wallet-local send journalling and restore
+  cancellation, dropped-creation reservation cleanup, conditional recovery
+  abandonment when the floor passes the cursor, corrupt-journal tolerance,
+  reconciliation-spend rollback, an N-entry fold compared with a forward
+  rebuild, and a harness rollback-plus-rescan compared with a fresh full scan.
 - Full workspace suite (`VTORRENT_TOTP_STATE_DIR=$(mktemp -d) cargo test
   --workspace --all-features`): 49 test groups, **1171 passed, 0 failed, 8
   ignored**. The ignored cases are pre-existing and deliberate: the mainnet-scale
@@ -3010,9 +3021,13 @@ exercise it.
 - `last_scanned_tip` is persisted but always cleared on load and read by no
   production decision. It exists for a future lineage-persistence design; the
   current scope is live-process only.
-- The reserved-input reconciliation scan now works on a scratch set and applies
-  only the spend observation, which narrows but does not close a pre-existing
-  hole: that applied `note_spend` carries no undo entry, so an in-process reorg
-  that un-spends it leaves the shared set in `spent_reserved`. Affects swap
+- The case-1 exemption is conditional on the resumed cursor staying at or above
+  the retained floor. If the floor advances past it, the recovery is abandoned:
+  the journal and tip are cleared and `rescan_required` is set, so case 2/3 and
+  the critical alert decide rather than scanning over an under-reported range.
+- The reserved-input reconciliation scan works on a scratch set and applies only
+  the spend observation. That observation is tracked on `UtxoSet` as
+  live-process state, so a covered rollback puts the reservation back instead of
+  leaving the outpoint permanently `spent_reserved`. It affects swap
   reservation state only, not balances.
 
