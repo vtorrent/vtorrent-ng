@@ -1318,6 +1318,117 @@ async fn a_covered_header_reorg_in_sync_resumes_from_the_fork() {
 }
 
 #[tokio::test]
+async fn a_covered_reorg_then_rescan_matches_a_fresh_full_scan() {
+    fn next_block(
+        parent: &Block,
+        height: u32,
+        extra: Option<Transaction>,
+        time_delta: u32,
+    ) -> Block {
+        let mut coinbase = parent.txdata[0].clone();
+        coinbase.lock_time = bitcoin::absolute::LockTime::from_height(height).unwrap();
+        let mut txdata = vec![coinbase];
+        if let Some(tx) = extra {
+            txdata.push(tx);
+        }
+        let mut block = Block {
+            header: bitcoin::block::Header {
+                version: bitcoin::block::Version::TWO,
+                prev_blockhash: parent.block_hash(),
+                merkle_root: bitcoin::TxMerkleNode::all_zeros(),
+                time: parent.header.time + time_delta,
+                bits: parent.header.bits,
+                nonce: 0,
+            },
+            txdata,
+        };
+        block.header.merkle_root = block.compute_merkle_root().unwrap();
+        while block.header.validate_pow(block.header.target()).is_err() {
+            block.header.nonce += 1;
+        }
+        block
+    }
+
+    let htlc = contract();
+    // A real two-touched-block chain: height 1 receives, height 2 spends. The
+    // replacement branch shares height 1 and drops the spend.
+    let (full, _) = chain(&htlc, "wallet_spent");
+    let funding = full[1].clone();
+    let spend = full[6].txdata[1].clone();
+    let branch_a = vec![
+        full[0].clone(),
+        funding.clone(),
+        next_block(&funding, 2, Some(spend), 1),
+    ];
+    let branch_b_block2 = next_block(&funding, 2, None, 2);
+    let branch_b = vec![
+        full[0].clone(),
+        funding.clone(),
+        branch_b_block2.clone(),
+        next_block(&branch_b_block2, 3, None, 3),
+    ];
+
+    async fn sync_scan(
+        wallet: &mut crate::wallet::BtcWallet,
+        blocks: Vec<Block>,
+        start: u32,
+    ) -> usize {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(serve(listener, blocks, "wallet_valid"));
+        let mut peer = BtcPeer::connect_with_network(addr, bitcoin::Network::Regtest)
+            .await
+            .unwrap();
+        wallet.sync(&mut peer).await.unwrap();
+        let tip = wallet.best_hash().unwrap();
+        let scanned = wallet
+            .scan_utxos_bip158_multi(std::slice::from_mut(&mut peer), start)
+            .await
+            .unwrap();
+        wallet.set_scan_progress(start + scanned as u32, Some(tip));
+        drop(peer);
+        server.await.unwrap();
+        scanned
+    }
+
+    let mut wallet = crate::wallet::BtcWallet::with_network([1; 64], bitcoin::Network::Regtest);
+    assert_eq!(sync_scan(&mut wallet, branch_a, 0).await, 3usize);
+    assert!(
+        wallet.list_utxos().is_empty(),
+        "the branch spent the output"
+    );
+    let journalled: Vec<u32> = wallet
+        .undo_entries_for_tests()
+        .iter()
+        .map(|entry| entry.height)
+        .collect();
+    assert_eq!(journalled, vec![1, 2], "both touched heights are recorded");
+
+    // The replacement branch is a real (higher-work) reorg: same height 1,
+    // different height 2, plus an extra block so the wallet follows it.
+    assert_eq!(sync_scan(&mut wallet, branch_b.clone(), 2).await, 2usize);
+    let rolled = wallet.list_utxos();
+
+    let mut fresh = crate::wallet::BtcWallet::with_network([1; 64], bitcoin::Network::Regtest);
+    assert_eq!(sync_scan(&mut fresh, branch_b, 0).await, 4usize);
+
+    let shape = |list: &[Utxo]| -> Vec<(String, u32, u64, u32)> {
+        let mut shape: Vec<_> = list
+            .iter()
+            .map(|utxo| (utxo.txid.clone(), utxo.vout, utxo.value, utxo.height))
+            .collect();
+        shape.sort();
+        shape
+    };
+    assert_eq!(
+        shape(&rolled),
+        shape(&fresh.list_utxos()),
+        "the journal rollback plus post-fork rescan must equal a full rescan"
+    );
+    assert_eq!(rolled.len(), 1, "the unspent output returns");
+}
+
+#[tokio::test]
 async fn an_uncovered_reorg_falls_back_to_the_full_reset() {
     let mut wallet = crate::wallet::BtcWallet::with_network([1; 64], bitcoin::Network::Regtest);
     wallet.push_undo_for_tests(UndoEntry {
