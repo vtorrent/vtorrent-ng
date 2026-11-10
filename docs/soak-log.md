@@ -2953,9 +2953,11 @@ What the journal does:
   height classifies it. The confirming scan moves the record into that block's
   entry (matched by txid), a covered rollback restores it, and a failed
   broadcast's restore cancels it.
-- A pending removal whose broadcast height falls below the retained floor is
-  pruned with the journal entries: the range it was built at can no longer be
-  re-derived.
+- Pending removals are never pruned by height. The record is self-contained and
+  may be the only copy of a send whose confirming spend has not been seen;
+  dropping it once its broadcast height fell below the retained floor would
+  leave a covered rollback unable to restore the input. Only the count cap
+  bounds the list.
 - On a reorg with fork `F`, a covering journal is replayed backwards above `F`,
   the cursor resumes at `F + 1`, and the balance stays hidden until that short
   post-fork scan completes. `BtcWalletHistoryUnavailable` does not fire, and the
@@ -3039,14 +3041,15 @@ exercise it.
   live-process state, so a covered rollback puts the reservation back instead of
   leaving the outpoint permanently `spent_reserved`. It affects swap
   reservation state only, not balances.
-- **Peers-unavailable is a silent, self-clearing gap.** Trigger: a covered
-  rollback has set the recovery exemption, the retained floor is still at or
-  below the resumed cursor, and recovery cannot progress because there are no
+- **Peers-unavailable is a self-clearing gap with a warning alert.** Trigger: a
+  covered rollback has set the recovery exemption, the retained floor is still at
+  or below the resumed cursor, and recovery cannot progress because there are no
   usable peers (peer discovery yields none, or compact-filter sync fails against
   every peer). While that holds, the balance stays hidden and
-  `BtcWalletHistoryUnavailable` is suppressed, with no alert, until peers return
-  and the post-fork scan completes. The exemption is not withdrawn, because the
-  range is still recoverable; the wallet is simply not spendable and not
-  visible in the meantime. Recorded as a known limitation with that trigger;
+  `BtcWalletHistoryUnavailable` is suppressed. A warning-only `BtcSpvScanStale`
+  fires once the last successful scan is 10 minutes old; it clears when peers
+  return and the post-fork scan completes. The exemption is not withdrawn,
+  because the range is still recoverable; the wallet is simply not spendable and
+  not visible in the meantime. Recorded as a known limitation with that trigger;
   behaviour is unchanged for it.
 

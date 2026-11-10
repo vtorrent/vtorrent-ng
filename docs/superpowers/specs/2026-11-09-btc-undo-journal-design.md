@@ -218,10 +218,13 @@ Integration (`sync/swap_tests.rs`, existing harness):
     UTXO set as a full rescan.
 11. Reorg plus a spent-on-abandoned-branch output: the output returns via the
     journal (this is the case the earlier fork-only rollback got wrong).
-12. A swap funding input spent on the abandoned branch returns to *reserved*, not
-    selectable, after rollback.
+12. Restoring a `PriorState::Reserved` record re-reserves the outpoint only
+    while a swap contract or retained funding transaction still references it;
+    a released swap's outpoint returns spendable. Covered by the `UtxoSet` unit
+    test in `utxo.rs` — the `swap_tests` harness holds no reserved journal entry.
 13. Balance is hidden from rollback until the post-fork scan completes, and
-    `BtcWalletHistoryUnavailable` does not fire for a covered reorg.
+    `BtcWalletHistoryUnavailable` does not fire for a covered reorg. A rescan the
+    wallet already owed before the rollback is not cleared by it.
 
 Alert: `promtool` test already covers case 3 firing and resolving.
 
