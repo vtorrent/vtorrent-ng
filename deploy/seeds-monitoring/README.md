@@ -31,6 +31,9 @@ host. Both are production-seed actions — get approval before applying.
 - `BtcWalletHistoryUnavailable` — synced BTC headers have pruned history the
   wallet still needs; increase header retention and rescan before relying on
   the balance. Header sync alone does not establish wallet readiness.
+- `BtcSpvNeverSynced` — BTC is configured but no first header sync has completed
+  within two hours of process start. Without it a node whose SPV bootstrap never
+  succeeds looks healthy while its BTC wallet and swaps cannot see funding.
 
 ### Validate the BTC stale-scan rule
 

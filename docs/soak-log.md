@@ -3090,3 +3090,28 @@ Scope of this evidence: single node, local Bitcoin regtest, one induced reorg at
 fork depth 1. It proves the journal path engages and is correct on a real chain;
 it is not the multi-day, three-node, mainnet-SPV release soak the provenance
 policy still requires.
+
+## 2026-11-10 — first-sync stall exposed a missing alert
+
+While starting the `177f928` release fleet, all three nodes accepted the VTR
+chain normally (height 35, peers 2/1/1, no restarts) but never completed a BTC
+header sync: `best_height 0` and `synced 0` for forty minutes, with 19
+`response timed out` / `early eof` events on node 1 in twenty minutes. A
+single-node probe with a fixed peer and the same image stalled identically, and
+it also draws DNS-seed peers, so the failure was peer-wide; host TCP to those
+peers succeeded. The same image had synced 975,168 headers from a fixed peer
+earlier the same day, and the regtest reorg proof was unaffected. The most
+likely explanation is peer-side throttling of this host after many full header
+syncs; that is not proven.
+
+The gap this exposed: `BtcSpvStalled` requires `synced == 0` **and** evidence of
+a sync in the last 24 hours, so a node that has never completed its first sync
+looks healthy indefinitely. Our own fleet sat in exactly that state with zero
+alerts.
+
+Added `BtcSpvNeverSynced`: `vtorrent_btc_configured == 1 and
+vtorrent_btc_synced == 0 and vtorrent_uptime_seconds > 7200`, `for: 10m`,
+severity critical. It is gated on a new `vtorrent_btc_configured` gauge so a
+node with BTC disabled does not alert. A new `promtool` case covers firing at
+2h20m, silence at 1h, and silence when BTC is disabled; the metrics suite pins
+the gauge default.

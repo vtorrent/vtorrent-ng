@@ -191,6 +191,12 @@ async fn collect_metrics(state: &AppState) -> String {
     );
     write_gauge(
         &mut out,
+        "vtorrent_btc_configured",
+        "1 when a BTC wallet is configured on this node",
+        health.configured.load(Ordering::Relaxed) as u64,
+    );
+    write_gauge(
+        &mut out,
         "vtorrent_btc_wallet_history_blocked",
         "1 when the retained headers no longer cover the wallet's history",
         health.wallet_history_blocked.load(Ordering::Relaxed) as u64,

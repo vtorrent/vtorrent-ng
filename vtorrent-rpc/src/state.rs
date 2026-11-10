@@ -44,6 +44,9 @@ pub struct BtcSyncHealth {
     pub auth_failures: AtomicU64,
     pub scan_errors: AtomicU64,
     pub wallet_history_blocked: AtomicBool,
+    /// Whether a BTC wallet is installed, so "never synced" only alerts when
+    /// BTC is actually enabled.
+    pub configured: AtomicBool,
 }
 
 /// Shared application state for the RPC API server.

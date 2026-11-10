@@ -72,6 +72,15 @@ groups:
           summary: "BTC wallet history unavailable on {{ $labels.instance }}"
           description: "BTC wallet requires history older than retained headers; increase retention and rescan."
 
+      - alert: BtcSpvNeverSynced
+        expr: vtorrent_btc_configured == 1 and vtorrent_btc_synced == 0 and vtorrent_uptime_seconds > 7200
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "BTC SPV has never synced on {{ $labels.instance }}"
+          description: "BTC SPV has not completed a first header sync; the wallet and swaps cannot see funding."
+
       - alert: BtcSpvStalled
         expr: vtorrent_btc_synced == 0 and on(instance) max_over_time(vtorrent_btc_synced[24h]) > 0
         for: 10m

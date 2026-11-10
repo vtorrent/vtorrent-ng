@@ -4,6 +4,35 @@ rule_files:
 evaluation_interval: 1m
 
 tests:
+  - name: spv that never completes a first sync alerts, and stays quiet when BTC is disabled
+    interval: 1m
+    input_series:
+      - series: 'vtorrent_btc_synced{instance="probe"}'
+        values: '0+0x200'
+      - series: 'vtorrent_btc_configured{instance="probe"}'
+        values: '1+0x200'
+      - series: 'vtorrent_uptime_seconds{instance="probe"}'
+        values: '0+60x200'
+      - series: 'vtorrent_btc_synced{instance="disabled"}'
+        values: '0+0x200'
+      - series: 'vtorrent_btc_configured{instance="disabled"}'
+        values: '0+0x200'
+      - series: 'vtorrent_uptime_seconds{instance="disabled"}'
+        values: '0+60x200'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: BtcSpvNeverSynced
+        exp_alerts: []
+      - eval_time: 140m
+        alertname: BtcSpvNeverSynced
+        exp_alerts:
+          - exp_labels:
+              instance: probe
+              severity: critical
+            exp_annotations:
+              summary: BTC SPV has never synced on probe
+              description: BTC SPV has not completed a first header sync; the wallet and swaps cannot see funding.
+
   - name: missing retained wallet history alerts and resolves after recovery
     interval: 1m
     input_series:

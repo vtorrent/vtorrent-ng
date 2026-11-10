@@ -179,9 +179,11 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
     tracing::info!("Bitcoin SPV sync task started");
     loop {
         if state.btc_wallet.read().await.is_none() {
+            state.btc_health.configured.store(false, Ordering::Relaxed);
             tokio::time::sleep(Duration::from_secs(30)).await;
             continue;
         }
+        state.btc_health.configured.store(true, Ordering::Relaxed);
         // Publish before peers are resolved or connected: a blocked wallet must
         // report its state even when the peer set ends up empty.
         publish_wallet_metrics(&state).await;
