@@ -3115,3 +3115,10 @@ severity critical. It is gated on a new `vtorrent_btc_configured` gauge so a
 node with BTC disabled does not alert. A new `promtool` case covers firing at
 2h20m, silence at 1h, and silence when BTC is disabled; the metrics suite pins
 the gauge default.
+
+Measured against the real stall: the fleet started 14:52:29Z, failed every header
+attempt until 16:14:56Z, then synced 975,320 headers in one pass — **82 minutes of
+stall that cleared without intervention**. The 2-hour threshold was chosen to sit
+above that observed self-healing window while still catching a bootstrap that
+never succeeds. By 23:06Z all three nodes were synced at 975,356 with scan lag 0,
+heights agreeing, zero restarts and zero alerts.
