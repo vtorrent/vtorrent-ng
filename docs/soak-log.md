@@ -3041,6 +3041,12 @@ exercise it.
   live-process state, so a covered rollback puts the reservation back instead of
   leaving the outpoint permanently `spent_reserved`. It affects swap
   reservation state only, not balances.
+- **Legacy swap contracts make restored reservations fail closed.** A contract
+  persisted before `input_txid` tracking has `input_txid: None`, is never
+  auto-released, and offers no way to prove it does not hold a restored
+  reservation. Such a reservation is therefore kept reserved: permanently
+  non-spendable and excluded from the balance. Narrowing the rule to the
+  contract's retained funding raw is a follow-up.
 - **Peers-unavailable is a self-clearing gap with a warning alert.** Trigger: a
   covered rollback has set the recovery exemption, the retained floor is still at
   or below the resumed cursor, and recovery cannot progress because there are no
