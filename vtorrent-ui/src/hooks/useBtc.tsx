@@ -16,7 +16,7 @@ export interface BtcStatus {
 
 async function fetchBtcStatus(): Promise<BtcStatus> {
   if (isTauri()) {
-    return tauriInvoke<BtcStatus>('get_btc_status')
+    return camel(await tauriInvoke<unknown>('get_btc_status')) as BtcStatus
   }
   return camel(await rpcGet<unknown>('/api/v1/btc/status')) as BtcStatus
 }

@@ -32,7 +32,9 @@ export default function BtcWalletPage() {
               : `${(status?.balanceSatoshis ?? 0) / 100_000_000} BTC`}
           </p>
           {status?.balanceHidden && (
-            <p className="text-xs text-amber-400">balance hidden while rescanning</p>
+            <p className="text-xs text-amber-400">
+              balance hidden until the wallet can scan it
+            </p>
           )}
         </div>
         <div className="bg-navy-800 rounded-lg p-4">
