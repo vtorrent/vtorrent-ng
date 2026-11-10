@@ -3059,3 +3059,34 @@ exercise it.
   not visible in the meantime. Recorded as a known limitation with that trigger;
   behaviour is unchanged for it.
 
+
+## 2026-11-10 — live reorg exercises the undo journal (regtest)
+
+The journal's whole point is that a covered reorg replays instead of rescanning
+100,000 retained headers. That was exercised against a real Bitcoin Core regtest
+node with the daemon running, not simulated.
+
+Setup: image `vtorrent/node:candidate-177f928`
+(`sha256:cfb366506787799e15a932195ca47376c99e14aeec5123669845a28bee2e1e7b`,
+commit `177f928`), one daemon on `--btc-regtest` against `vtr-btc-regtest`, a
+fresh SPV seed, `--btc-header-retention 100000`.
+
+1. A faucet-style payment funded the wallet address in regtest block 1779; the
+   daemon synced and reported `balance_satoshis: 100000000`, `synced: true`.
+2. The funding block was invalidated and two replacement blocks were mined on
+   the competing branch, making it the heaviest chain at height 1780.
+3. On the next 300-second sync the daemon logged
+   `BTC header reorg detected near height 1778; replayed the undo journal back to the fork`
+   and then `BTC UTXO scan (BIP-158): 2 blocks (through height 1780)` — **two
+   blocks, not 1,781**. The `cleared chain state for a full rescan` fallback
+   appears **zero** times in the log.
+4. Final state: balance still `100000000` (the funding transaction was returned
+   to the mempool and re-mined on the new branch, so this is correct), scan lag
+   `0`, `vtorrent_btc_wallet_history_blocked` `0`, `btc_scan_errors_total` `0`.
+
+Evidence: `/tmp/opencode/reorg-proof/evidence.txt`.
+
+Scope of this evidence: single node, local Bitcoin regtest, one induced reorg at
+fork depth 1. It proves the journal path engages and is correct on a real chain;
+it is not the multi-day, three-node, mainnet-SPV release soak the provenance
+policy still requires.
