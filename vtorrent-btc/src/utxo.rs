@@ -124,10 +124,11 @@ pub struct UtxoSet {
     #[serde(default)]
     pending_removals: Vec<PendingRemoval>,
     /// Reservation spends observed by this process's reconciliation scan,
-    /// mapped to the reserved record they replaced. Live-process only: a
-    /// covered rollback clears it and puts the reservations back.
+    /// mapped to the reserved record they replaced and the chain height the
+    /// observation was made at. Live-process only: a covered rollback restores
+    /// the observations made above its fork.
     #[serde(default, skip)]
-    observed_reservation_spends: std::collections::BTreeMap<(String, u32), Utxo>,
+    observed_reservation_spends: std::collections::BTreeMap<(String, u32), (Utxo, u32)>,
     /// Set once any confirmed output has been tracked, so a floor change can
     /// never silently adopt a height this wallet may have held funds below.
     #[serde(default)]
@@ -277,9 +278,15 @@ impl UtxoSet {
         }
     }
 
+    /// Drop every recovery record built on the chain state being reset.
+    ///
+    /// Reservation observations belong here too: they describe a spend on the
+    /// abandoned branch, and replaying one after a full reset would re-reserve
+    /// an outpoint the new branch may already have spent.
     pub fn clear_undo(&mut self) {
         self.undo.clear();
         self.pending_removals.clear();
+        self.observed_reservation_spends.clear();
     }
 
     /// The wallet-local spends the scan has not observed yet.
@@ -368,24 +375,27 @@ impl UtxoSet {
     /// Remember that this process's reconciliation scan observed `utxo` spent
     /// while it was reserved, so a covered rollback can put the reservation
     /// back instead of leaving `spent_reserved` behind forever.
-    pub(crate) fn record_reservation_spend(&mut self, utxo: Utxo) {
+    ///
+    /// `observed_at` is the chain height the observation was made at. A
+    /// rollback only restores observations above its fork: a spend observed
+    /// below the fork happened on the surviving branch and is still true.
+    pub(crate) fn record_reservation_spend(&mut self, utxo: Utxo, observed_at: u32) {
         self.observed_reservation_spends
-            .insert((utxo.txid.clone(), utxo.vout), utxo);
+            .insert((utxo.txid.clone(), utxo.vout), (utxo, observed_at));
     }
 
     /// Drop journal entries below `floor`, then keep at most `max_entries`
     /// of the newest ones.
     ///
-    /// A pending removal whose broadcast height fell below the floor is dropped
-    /// with them: the range it was built at can no longer be re-derived, so the
-    /// record could only restore an outpoint the wallet may never rescan.
+    /// Pending removals are never pruned by height: a record is self-contained
+    /// and may be the only copy of a send whose confirming spend has not been
+    /// seen. Dropping it by broadcast height would leave a covered rollback
+    /// unable to restore the input. Only the count cap bounds them.
     pub fn prune_undo(&mut self, floor: u32, max_entries: usize) {
         self.undo.retain(|entry| entry.height >= floor);
         if self.undo.len() > max_entries {
             self.undo.drain(..self.undo.len() - max_entries);
         }
-        self.pending_removals
-            .retain(|pending| pending.height >= floor);
         if self.pending_removals.len() > max_entries {
             self.pending_removals
                 .drain(..self.pending_removals.len() - max_entries);
@@ -408,12 +418,18 @@ impl UtxoSet {
     /// very outpoint they belong to must win, or the rollback would leave a
     /// phantom record behind. A pending spend the new branch still confirms is
     /// removed again by the post-fork scan, so restoring it is self-correcting.
+    /// An observation below the fork survives: it recorded a spend on the
+    /// branch the rollback keeps.
     pub fn undo_above(&mut self, fork: u32) -> bool {
         if !self.undo_covers(fork) {
             return false;
         }
-        for (_, utxo) in std::mem::take(&mut self.observed_reservation_spends) {
-            let key = (utxo.txid.clone(), utxo.vout);
+        for (key, (utxo, observed_at)) in std::mem::take(&mut self.observed_reservation_spends) {
+            if observed_at <= fork {
+                self.observed_reservation_spends
+                    .insert(key, (utxo, observed_at));
+                continue;
+            }
             self.spent_reserved.remove(&key);
             self.reserve_utxo(utxo);
         }
@@ -478,7 +494,13 @@ impl UtxoSet {
             PriorState::Free => {}
             PriorState::Reserved(reserved) => {
                 self.spent_reserved.remove(&key);
-                self.reserve_utxo(reserved);
+                // Only re-reserve while something still needs the input held.
+                // A released swap contract cannot release it again, and no
+                // confirmed spend exists to expire the reservation, so an
+                // orphaned reservation would hide the outpoint forever.
+                if self.swap_holds_outpoint(&key.0, key.1) {
+                    self.reserve_utxo(reserved);
+                }
             }
             PriorState::SpentReserved => {
                 self.reserved.remove(&key);
@@ -488,6 +510,24 @@ impl UtxoSet {
                 self.spent_reserved.insert(key);
             }
         }
+    }
+
+    /// Whether a persisted swap contract or a retained signed funding
+    /// transaction still spends `txid:vout`.
+    fn swap_holds_outpoint(&self, txid: &str, vout: u32) -> bool {
+        if self.swap_contracts.values().any(|contract| {
+            contract.input_txid.as_deref() == Some(txid) && contract.input_vout == Some(vout)
+        }) {
+            return true;
+        }
+        self.pending_swap_transactions.values().any(|raw| {
+            bitcoin::consensus::deserialize::<bitcoin::Transaction>(raw).is_ok_and(|tx| {
+                tx.input.iter().any(|input| {
+                    input.previous_output.txid.to_string() == txid
+                        && input.previous_output.vout == vout
+                })
+            })
+        })
     }
 
     fn insert_direct(&mut self, utxo: Utxo) {
@@ -950,6 +990,18 @@ mod tests {
         let mut set = UtxoSet::new();
         let reserved = utxo("cc", 0, 900);
         set.reserve_utxo(reserved.clone());
+        set.record_swap_contract(SwapContract {
+            order_id: "order-cc".into(),
+            funding_txid: "ff".into(),
+            hash_lock: [0u8; 32],
+            recipient: "bc1q".into(),
+            refund_address: "bc1q".into(),
+            expiry: 100,
+            amount: 900,
+            refund_raw: None,
+            input_txid: Some("cc".into()),
+            input_vout: Some(0),
+        });
         set.note_spend("cc", 0);
         set.push_undo(UndoEntry {
             height: 7,
@@ -970,6 +1022,48 @@ mod tests {
             "a restored reservation must not stay marked spent"
         );
         assert!(!set.list().iter().any(|u| u.txid == "cc"));
+    }
+
+    #[test]
+    fn undo_does_not_resurrect_a_reservation_a_released_swap_no_longer_needs() {
+        let mut set = UtxoSet::new();
+        let reserved = utxo("cd", 0, 900);
+        set.reserve_utxo(reserved.clone());
+        set.record_swap_contract(SwapContract {
+            order_id: "order-cd".into(),
+            funding_txid: "fe".into(),
+            hash_lock: [0u8; 32],
+            recipient: "bc1q".into(),
+            refund_address: "bc1q".into(),
+            expiry: 100,
+            amount: 900,
+            refund_raw: None,
+            input_txid: Some("cd".into()),
+            input_vout: Some(0),
+        });
+        set.push_undo(UndoEntry {
+            height: 7,
+            created: vec![],
+            removed: vec![RemovedOutput {
+                utxo: reserved.clone(),
+                prior: PriorState::Reserved(reserved.clone()),
+            }],
+        });
+        // The swap is released before the reorg: nothing can release the
+        // reservation again, so restoring it would hide the input forever.
+        set.note_spend("cd", 0);
+        set.remove_swap_contract("order-cd");
+
+        assert!(set.undo_above(6));
+        assert!(
+            set.reserved_utxo("cd", 0).is_none(),
+            "no live swap holds the outpoint, so it must not come back reserved"
+        );
+        assert!(
+            set.list().iter().any(|u| u.txid == "cd" && u.vout == 0),
+            "the outpoint must return spendable"
+        );
+        assert!(!set.was_reserved_spent("cd", 0));
     }
 
     #[test]
@@ -1133,7 +1227,7 @@ mod tests {
         // creation is above the fork, so the replay drops it entirely. Restoring
         // the observation afterwards would reserve an outpoint that no longer
         // exists anywhere else in the set.
-        set.record_reservation_spend(record.clone());
+        set.record_reservation_spend(record.clone(), 101);
         set.push_undo(UndoEntry {
             height: 101,
             created: vec![record.clone()],
@@ -1161,7 +1255,7 @@ mod tests {
         let mut set = UtxoSet::new();
         set.reserve_utxo(record.clone());
         assert!(set.note_spend(&record.txid, record.vout));
-        set.record_reservation_spend(record.clone());
+        set.record_reservation_spend(record.clone(), 10);
         assert!(set.was_reserved_spent(&record.txid, record.vout));
         set.push_undo(UndoEntry {
             height: 10,
@@ -1177,6 +1271,39 @@ mod tests {
         assert!(
             set.reserved_utxo(&record.txid, record.vout).is_some(),
             "the outpoint returns to its pre-observation reserved state"
+        );
+    }
+
+    #[test]
+    fn undo_above_leaves_an_observation_below_the_fork_alone() {
+        let record = utxo("ae", 0, 500);
+        let mut set = UtxoSet::new();
+        set.reserve_utxo(record.clone());
+        assert!(set.note_spend(&record.txid, record.vout));
+        set.record_reservation_spend(record.clone(), 10);
+        // An entry above the fork makes a fork at 300 covered.
+        set.push_undo(UndoEntry {
+            height: 301,
+            created: vec![],
+            removed: vec![],
+        });
+
+        assert!(set.undo_above(300));
+
+        assert!(
+            set.reserved_utxo(&record.txid, record.vout).is_none(),
+            "a spend observed below the fork happened on the surviving branch"
+        );
+        assert!(
+            set.was_reserved_spent(&record.txid, record.vout),
+            "the observation must stay spent"
+        );
+        assert_eq!(
+            set.observed_reservation_spends
+                .get(&(record.txid.clone(), record.vout))
+                .map(|(_, observed_at)| *observed_at),
+            Some(10),
+            "an observation below the fork is untouched, not discarded"
         );
     }
 
@@ -1383,15 +1510,53 @@ mod tests {
     }
 
     #[test]
-    fn prune_undo_drops_pending_removals_below_the_floor() {
+    fn clear_undo_clears_reservation_observations() {
+        let mut set = UtxoSet::new();
+        let record = utxo("aa", 0, 500);
+        set.reserve_utxo(record.clone());
+        set.note_spend(&record.txid, record.vout);
+        set.record_reservation_spend(record.clone(), 10);
+
+        set.clear_undo();
+
+        assert!(
+            set.observed_reservation_spends.is_empty(),
+            "a full reset abandons observations made on the old chain state"
+        );
+    }
+
+    #[test]
+    fn prune_undo_keeps_pending_removals_below_the_floor() {
         let mut set = UtxoSet::new();
         set.record_pending_removals(&[utxo("aa", 0, 500)], "ff", 5);
         set.record_pending_removals(&[utxo("bb", 0, 700)], "ee", 6);
 
         set.prune_undo(6, MAX_UNDO_ENTRIES);
 
-        assert_eq!(set.pending_removals().len(), 1);
-        assert_eq!(set.pending_removals()[0].removed.utxo.txid, "bb");
+        assert_eq!(
+            set.pending_removals().len(),
+            2,
+            "a pending removal is self-contained and may be the only copy of an unseen send"
+        );
+        assert_eq!(set.pending_removals()[0].removed.utxo.txid, "aa");
+        assert!(set.undo_entries().is_empty());
+    }
+
+    #[test]
+    fn prune_undo_caps_pending_removals() {
+        let mut set = UtxoSet::new();
+        for vout in 0..3u32 {
+            set.record_pending_removals(&[utxo("aa", vout, 500)], "ff", 5);
+        }
+
+        set.prune_undo(0, 2);
+
+        assert_eq!(set.pending_removals().len(), 2);
+        assert_eq!(
+            set.pending_removals()[1].removed.utxo.vout,
+            2,
+            "the newest records are kept"
+        );
     }
 
     #[test]

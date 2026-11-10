@@ -682,7 +682,7 @@ async fn partial_rescan_keeps_later_spent_output_unavailable_across_restart() {
 }
 
 #[tokio::test]
-async fn reconciliation_scan_does_not_mutate_the_shared_set() {
+async fn reconciliation_scan_applies_only_the_spend_observation_to_the_shared_set() {
     let htlc = contract();
     let (blocks, _) = chain(&htlc, "wallet_spent");
     let mut wallet = crate::wallet::BtcWallet::with_network([1; 64], bitcoin::Network::Regtest);
@@ -1216,10 +1216,20 @@ async fn a_covered_reorg_replays_the_journal_instead_of_rescanning_everything() 
             .add_header(&serialize(&block.header), height as u32)
             .unwrap();
     }
+    // The abandoned branch created an output the set still holds; only the
+    // replay can drop it.
+    let created = Utxo {
+        txid: "ac".repeat(32),
+        vout: 0,
+        value: 100_000,
+        address: contract().recipient,
+        height: 6,
+    };
+    wallet.add_utxo(created.clone());
     // An entry at 6 makes fork 5 covered: fork + 1 is the first journalled height.
     wallet.push_undo_for_tests(UndoEntry {
         height: 6,
-        created: vec![],
+        created: vec![created.clone()],
         removed: vec![],
     });
 
@@ -1227,6 +1237,10 @@ async fn a_covered_reorg_replays_the_journal_instead_of_rescanning_everything() 
     assert!(reorged, "a covered fork must take the journal path");
     assert_eq!(wallet.last_scanned_height(), 6);
     assert_eq!(wallet.undo_entries_for_tests().len(), 0);
+    assert!(
+        wallet.utxo_for_tests(&created.txid, created.vout).is_none(),
+        "the replay must drop an output the abandoned branch created"
+    );
     assert!(
         !wallet.rescan_required_for_tests(),
         "a journal replay resumes from the fork instead of a full rescan"
