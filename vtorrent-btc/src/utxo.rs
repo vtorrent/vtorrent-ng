@@ -394,6 +394,12 @@ impl UtxoSet {
             .remove(&(txid.to_owned(), vout));
     }
 
+    /// How many live-process reservation observations are held.
+    #[cfg(test)]
+    pub(crate) fn observed_reservation_spend_count(&self) -> usize {
+        self.observed_reservation_spends.len()
+    }
+
     /// Drop journal entries below `floor`, then keep at most `max_entries`
     /// of the newest ones.
     ///
@@ -445,6 +451,13 @@ impl UtxoSet {
             // contract that made it, and nothing would ever release it again.
             if self.swap_holds_outpoint(&key.0, key.1) {
                 self.reserve_utxo(utxo);
+            } else {
+                // The observation was the last copy of the record: `note_spend`
+                // dropped it from `reserved_utxos`. The spend happened on the
+                // branch this rollback abandons, so the outpoint is unspent
+                // again, and the post-fork scan starts at `fork + 1`, so only
+                // restoring it here puts it back in `utxos`.
+                self.insert_direct(utxo);
             }
         }
         for pending in std::mem::take(&mut self.pending_removals) {
@@ -1342,6 +1355,55 @@ mod tests {
         assert!(
             set.observed_reservation_spends.is_empty(),
             "the restored observation must not be kept for a later rollback"
+        );
+
+        assert!(
+            set.outpoint(&record.txid, record.vout).is_some(),
+            "the observed spend was on the abandoned branch, so the outpoint is unspent again"
+        );
+        assert_eq!(
+            set.total(),
+            record.value,
+            "a restored outpoint must count toward the balance, not just stop being reserved"
+        );
+    }
+
+    #[test]
+    fn undo_above_restores_an_outpoint_whose_contract_was_released() {
+        let record = utxo("aj", 0, 700);
+        let mut set = UtxoSet::new();
+        set.reserve_utxo(record.clone());
+        set.record_swap_contract(swap_contract("order1", Some((&record.txid, record.vout))));
+        assert!(set.note_spend(&record.txid, record.vout));
+        set.record_reservation_spend(record.clone(), 10);
+
+        set.release(&record.txid, record.vout);
+        set.remove_swap_contract("order1");
+        assert!(set.reserved_utxo(&record.txid, record.vout).is_none());
+        assert_eq!(set.total(), 0, "a spent reservation is not spendable");
+
+        set.push_undo(UndoEntry {
+            height: 10,
+            created: vec![],
+            removed: vec![],
+        });
+        assert!(set.undo_above(9));
+
+        assert!(
+            set.reserved_utxo(&record.txid, record.vout).is_none(),
+            "the released contract cannot hold the outpoint again"
+        );
+        let restored = set
+            .outpoint(&record.txid, record.vout)
+            .expect("the last copy of the record must return to the spendable set");
+        assert_eq!(
+            (restored.txid, restored.vout, restored.value),
+            (record.txid.clone(), record.vout, record.value)
+        );
+        assert_eq!(
+            set.total(),
+            record.value,
+            "the restored outpoint must count toward the balance"
         );
     }
 

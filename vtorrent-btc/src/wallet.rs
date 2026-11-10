@@ -622,6 +622,12 @@ impl BtcWallet {
         self.utxos.lock().remove(txid, vout);
     }
 
+    /// Live-process reservation observations the set is holding.
+    #[cfg(test)]
+    pub(crate) fn observed_reservation_spend_count_for_tests(&self) -> usize {
+        self.utxos.lock().observed_reservation_spend_count()
+    }
+
     /// Whether the persisted UTXO set wants a full rescan.
     #[cfg(test)]
     pub(crate) fn rescan_required_for_tests(&self) -> bool {
@@ -2378,6 +2384,11 @@ mod tests {
         assert!(w.release_swap_reservation("order1").unwrap());
         assert!(w.swap_contract("order1").is_none());
         assert!(!w.reserved_input_spent(&record.txid, record.vout));
+        assert_eq!(
+            w.observed_reservation_spend_count_for_tests(),
+            0,
+            "releasing the contract must drop the observation that would re-reserve it"
+        );
 
         w.push_undo_for_tests(crate::utxo::UndoEntry {
             height: 11,
