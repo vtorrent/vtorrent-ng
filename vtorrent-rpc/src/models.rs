@@ -587,6 +587,9 @@ pub struct BtcStatusResponse {
     pub address: Option<String>,
     pub best_height: u32,
     pub synced: bool,
+    /// True while `balance_satoshis` is withheld pending a rescan or blocked by
+    /// the history guard, so a client never renders a hidden balance as zero.
+    pub balance_hidden: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

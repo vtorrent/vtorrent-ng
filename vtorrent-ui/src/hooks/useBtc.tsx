@@ -9,6 +9,7 @@ export interface BtcStatus {
   address: string | null
   bestHeight: number
   synced: boolean
+  balanceHidden: boolean
 }
 
 // ─── Fetch functions ──────────────────────────────────────────────────────────

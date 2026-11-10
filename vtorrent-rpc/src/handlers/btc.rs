@@ -22,6 +22,7 @@ pub async fn get_btc_status(
             address: None,
             best_height: 0,
             synced: false,
+            balance_hidden: false,
         })),
         Some(w) => Ok(Json(BtcStatusResponse {
             initialized: true,
@@ -29,6 +30,7 @@ pub async fn get_btc_status(
             address: w.current_address().ok(),
             best_height: w.best_height(),
             synced: w.synced(),
+            balance_hidden: w.balance_hidden(),
         })),
     }
 }
@@ -124,4 +126,52 @@ pub async fn send_btc(
         txid: txid_hex,
         raw_tx: String::new(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wallet_file(name: &str, contents: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "vtr-rpc-btc-status-{}-{name}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn btc_status_reports_a_hidden_balance() {
+        let path = wallet_file(
+            "hidden",
+            r#"{"utxos":[],"birthday":0,"seen_funds":true,"rescan_required":true}"#,
+        );
+        let hidden = vtorrent_btc::wallet::BtcWallet::with_persistence(
+            [1u8; 64],
+            bitcoin::Network::Regtest,
+            path.clone(),
+        )
+        .unwrap();
+
+        let state = Arc::new(AppState::new());
+        *state.btc_wallet.write().await = Some(hidden);
+        let status = get_btc_status(State(Arc::clone(&state))).await.unwrap().0;
+        assert!(status.initialized);
+        assert_eq!(
+            status.balance_satoshis, 0,
+            "the persisted reset hides the restored balance"
+        );
+        assert!(
+            status.balance_hidden,
+            "a withheld balance must be reported, not rendered as 0 BTC"
+        );
+
+        let visible =
+            vtorrent_btc::wallet::BtcWallet::with_network([2u8; 64], bitcoin::Network::Regtest);
+        *state.btc_wallet.write().await = Some(visible);
+        let status = get_btc_status(State(state)).await.unwrap().0;
+        assert!(!status.balance_hidden);
+        std::fs::remove_file(path).unwrap();
+    }
 }

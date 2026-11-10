@@ -115,6 +115,9 @@ pub struct BtcStatus {
     pub address: Option<String>,
     pub best_height: u32,
     pub synced: bool,
+    /// True while `balance_satoshis` is withheld pending a rescan or blocked by
+    /// the history guard, so the UI never renders a hidden balance as zero.
+    pub balance_hidden: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -986,6 +989,7 @@ pub async fn get_btc_status(state: State<'_, AppState>) -> Result<BtcStatus> {
             address: None,
             best_height: 0,
             synced: false,
+            balance_hidden: false,
         }),
         Some(wallet) => Ok(BtcStatus {
             initialized: true,
@@ -993,6 +997,7 @@ pub async fn get_btc_status(state: State<'_, AppState>) -> Result<BtcStatus> {
             address: wallet.current_address().ok(),
             best_height: wallet.best_height(),
             synced: wallet.synced(),
+            balance_hidden: wallet.balance_hidden(),
         }),
     }
 }

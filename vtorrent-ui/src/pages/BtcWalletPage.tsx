@@ -27,8 +27,13 @@ export default function BtcWalletPage() {
         <div className="bg-navy-800 rounded-lg p-4">
           <p className="text-sm text-gray-400">Balance</p>
           <p className="text-2xl font-bold">
-            {(status?.balanceSatoshis ?? 0) / 100_000_000} BTC
+            {status?.balanceHidden
+              ? '— BTC'
+              : `${(status?.balanceSatoshis ?? 0) / 100_000_000} BTC`}
           </p>
+          {status?.balanceHidden && (
+            <p className="text-xs text-amber-400">balance hidden while rescanning</p>
+          )}
         </div>
         <div className="bg-navy-800 rounded-lg p-4">
           <p className="text-sm text-gray-400">Sync Height</p>
