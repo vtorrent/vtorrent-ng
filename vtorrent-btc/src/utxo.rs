@@ -544,6 +544,27 @@ impl UtxoSet {
         }
     }
 
+    /// Whether a stored outpoint id references `txid:vout`.
+    ///
+    /// Both ids are compared as parsed [`bitcoin::Txid`] bytes, so a
+    /// non-canonical stored spelling still matches the outpoint it names. An id
+    /// that cannot be parsed cannot prove it is a different outpoint, so it
+    /// counts as a match (fail closed).
+    fn outpoint_matches(stored_txid: &str, stored_vout: u32, txid: &str, vout: u32) -> bool {
+        use std::str::FromStr;
+
+        if stored_vout != vout {
+            return false;
+        }
+        match (
+            bitcoin::Txid::from_str(stored_txid),
+            bitcoin::Txid::from_str(txid),
+        ) {
+            (Ok(stored), Ok(queried)) => stored == queried,
+            _ => true,
+        }
+    }
+
     /// Whether a persisted swap contract or a retained signed funding
     /// transaction may still spend `txid:vout`.
     ///
@@ -561,9 +582,7 @@ impl UtxoSet {
                 (None, _) => {
                     let held = self.legacy_contract_holds(contract, txid, vout);
                     if held
-                        && !self
-                            .pending_swap_transactions
-                            .contains_key(&contract.funding_txid)
+                        && !self.retained_funding_is_usable(contract)
                         && !self.legacy_contract_warnings.contains(&contract.order_id)
                     {
                         unreported.push(contract.clone());
@@ -572,12 +591,12 @@ impl UtxoSet {
                 }
                 (Some(_), None) => contract_holds = true,
                 (Some(held_txid), Some(held_vout)) => {
-                    contract_holds |= held_txid == txid && held_vout == vout;
+                    contract_holds |= Self::outpoint_matches(held_txid, held_vout, txid, vout);
                 }
             }
         }
         for contract in unreported {
-            self.warn_legacy_contract_without_raw(&contract);
+            self.warn_unresolvable_legacy_contract(&contract);
         }
         contract_holds
             || self.pending_swap_transactions.values().any(|raw| {
@@ -586,11 +605,23 @@ impl UtxoSet {
                     // funding spend of any outpoint.
                     Err(_) => true,
                     Ok(tx) => tx.input.iter().any(|input| {
-                        input.previous_output.txid.to_string() == txid
-                            && input.previous_output.vout == vout
+                        Self::outpoint_matches(
+                            &input.previous_output.txid.to_string(),
+                            input.previous_output.vout,
+                            txid,
+                            vout,
+                        )
                     }),
                 }
             })
+    }
+
+    /// Whether a legacy contract retains a funding raw that can be decoded and
+    /// compared against a restored outpoint.
+    fn retained_funding_is_usable(&self, contract: &SwapContract) -> bool {
+        self.pending_swap_transactions
+            .get(&contract.funding_txid)
+            .is_some_and(|raw| bitcoin::consensus::deserialize::<bitcoin::Transaction>(raw).is_ok())
     }
 
     /// Whether a contract persisted before input tracking may still hold
@@ -607,18 +638,23 @@ impl UtxoSet {
         match bitcoin::consensus::deserialize::<bitcoin::Transaction>(raw) {
             Err(_) => true,
             Ok(funding) => funding.input.iter().any(|input| {
-                input.previous_output.txid.to_string() == txid && input.previous_output.vout == vout
+                Self::outpoint_matches(
+                    &input.previous_output.txid.to_string(),
+                    input.previous_output.vout,
+                    txid,
+                    vout,
+                )
             }),
         }
     }
 
     /// Report a legacy contract that cannot be narrowed, once per contract.
     ///
-    /// Without a retained funding raw there is nothing to compare inputs
-    /// against, so every restored reservation stays held for as long as the
-    /// contract exists. That is deliberate, but silent stickiness is not: an
-    /// operator needs the reason in the log.
-    fn warn_legacy_contract_without_raw(&mut self, contract: &SwapContract) {
+    /// Without a retained funding raw — or with one that does not parse — there
+    /// is nothing to compare inputs against, so every restored reservation stays
+    /// held for as long as the contract exists. That is deliberate, but silent
+    /// stickiness is not: an operator needs the reason in the log.
+    fn warn_unresolvable_legacy_contract(&mut self, contract: &SwapContract) {
         if !self
             .legacy_contract_warnings
             .insert(contract.order_id.clone())
@@ -628,7 +664,7 @@ impl UtxoSet {
         tracing::warn!(
             order_id = %contract.order_id,
             funding_txid = %contract.funding_txid,
-            "BTC swap contract predates input tracking and retains no funding transaction; \
+            "BTC swap contract predates input tracking and retains no usable funding transaction; \
              every restored reservation is kept held while it exists"
         );
     }
@@ -1647,6 +1683,57 @@ mod tests {
         assert!(
             set.reserved_utxo(&record.txid, record.vout).is_some(),
             "an undecodable retained transaction might still spend the input"
+        );
+    }
+
+    #[test]
+    fn an_unparseable_retained_funding_still_warns() {
+        let record = utxo("aj", 0, 500);
+        let mut set = UtxoSet::new();
+        let contract = swap_contract("legacy-corrupt-raw", None);
+        set.record_swap_transaction(contract.funding_txid.clone(), vec![1, 2, 3]);
+        set.record_swap_contract(contract);
+        set.push_undo(UndoEntry {
+            height: 11,
+            created: vec![],
+            removed: vec![RemovedOutput {
+                utxo: record.clone(),
+                prior: PriorState::Reserved(record.clone()),
+            }],
+        });
+
+        assert!(set.undo_above(10));
+        assert!(
+            set.reserved_utxo(&record.txid, record.vout).is_some(),
+            "a raw that does not parse cannot rule the reference out"
+        );
+        assert!(
+            set.legacy_contract_warnings.contains("legacy-corrupt-raw"),
+            "a present-but-unparseable raw is just as unresolvable as a missing one"
+        );
+    }
+
+    #[test]
+    fn a_non_canonical_stored_txid_still_matches_the_raw_that_spends_it() {
+        let canonical = "ab".repeat(32);
+        let mut set = UtxoSet::new();
+        set.record_swap_transaction("funding".into(), funding_spending_raw(&canonical, 4));
+
+        assert!(
+            set.swap_holds_outpoint(&canonical.to_uppercase(), 4),
+            "the raw really spends this outpoint, so a differently-cased id must not free it"
+        );
+    }
+
+    #[test]
+    fn an_unparseable_stored_txid_fails_closed() {
+        let canonical = "ac".repeat(32);
+        let mut set = UtxoSet::new();
+        set.record_swap_transaction("funding".into(), funding_spending_raw(&canonical, 2));
+
+        assert!(
+            set.swap_holds_outpoint("not-a-txid", 2),
+            "an id that cannot be parsed cannot prove it is a different outpoint"
         );
     }
 

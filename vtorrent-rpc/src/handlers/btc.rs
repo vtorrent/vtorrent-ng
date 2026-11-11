@@ -117,7 +117,11 @@ pub async fn send_btc(
     // Broadcast to the Bitcoin network.
     if let Err(e) = broadcast_btc(&state, &raw).await {
         if let Some(w) = state.btc_wallet.write().await.as_mut() {
-            w.restore_utxos(&spent_utxos);
+            if let Err(restore) = w.restore_utxos(&spent_utxos) {
+                return Err(RpcError::Internal(format!(
+                    "{e}; additionally failed to restore spent BTC inputs: {restore}"
+                )));
+            }
         }
         return Err(e);
     }

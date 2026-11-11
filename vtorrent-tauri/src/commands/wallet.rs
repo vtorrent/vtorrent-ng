@@ -1088,7 +1088,11 @@ pub async fn send_btc(
 
     if let Err(e) = broadcast_btc_tx(&handle.rpc_state, &raw).await {
         if let Some(wallet) = handle.rpc_state.btc_wallet.write().await.as_mut() {
-            wallet.restore_utxos(&spent_utxos);
+            if let Err(restore) = wallet.restore_utxos(&spent_utxos) {
+                return Err(TauriError::NodeError(format!(
+                    "{e}; additionally failed to restore spent BTC inputs: {restore}"
+                )));
+            }
         }
         return Err(TauriError::NodeError(e));
     }
