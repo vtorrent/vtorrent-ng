@@ -177,12 +177,22 @@ impl BtcWallet {
     }
 
     /// Save the current UTXO set to disk (if a persistence path is set).
+    ///
+    /// Only for call sites where a failed write is survivable (background
+    /// bookkeeping): the error is logged. A path whose in-memory change must be
+    /// durable or undone calls [`BtcWallet::try_save_utxos`] instead.
     fn save_utxos(&self) {
-        if let Some(ref path) = self.utxo_path {
-            if let Err(e) = self.utxos.lock().save(path) {
-                tracing::warn!("Failed to save UTXO set: {}", e);
-            }
+        if let Err(error) = self.try_save_utxos() {
+            tracing::warn!("Failed to save UTXO set: {}", error);
         }
+    }
+
+    /// Save the current UTXO set, reporting a failed write to the caller.
+    fn try_save_utxos(&self) -> std::io::Result<()> {
+        if let Some(ref path) = self.utxo_path {
+            self.utxos.lock().save(path)?;
+        }
+        Ok(())
     }
 
     fn reset_chain_cache(&mut self) {
@@ -1109,6 +1119,10 @@ impl BtcWallet {
     /// Returns `(txid_hex, raw_tx_bytes)` — the caller should broadcast
     /// `raw_tx_bytes` to the network.
     ///
+    /// Fails, leaving the in-memory set untouched, when the removal cannot be
+    /// persisted: an unpersisted removal is lost on restart, and the rescan
+    /// would offer the same outpoints for a second spend.
+    ///
     /// Only works when all selected UTXOs belong to the same derived address.
     pub fn send_to(
         &mut self,
@@ -1180,19 +1194,31 @@ impl BtcWallet {
         // replay it. The pending record is moved into the confirming height's
         // journal entry when the scan sees the spend, and restored by any
         // covered rollback until then.
-        let mut set = self.utxos.lock();
-        let cursor = self.last_scanned_height;
-        let removed: Vec<Utxo> = selected
-            .iter()
-            .filter(|utxo| set.outpoint(&utxo.txid, utxo.vout).is_some())
-            .cloned()
-            .collect();
-        for u in &selected {
-            set.remove(&u.txid, u.vout);
+        let previous = {
+            let mut set = self.utxos.lock();
+            let previous = set.clone();
+            let cursor = self.last_scanned_height;
+            let removed: Vec<Utxo> = selected
+                .iter()
+                .filter(|utxo| set.outpoint(&utxo.txid, utxo.vout).is_some())
+                .cloned()
+                .collect();
+            for u in &selected {
+                set.remove(&u.txid, u.vout);
+            }
+            set.record_pending_removals(&removed, &txid_hex, cursor);
+            previous
+        };
+        if let Err(error) = self.try_save_utxos() {
+            // The removal only protects the inputs once it is on disk: after a
+            // restart the scan would find them spendable again. Building a send
+            // on top of an unpersisted removal would license spending the same
+            // outpoints twice, so undo it and report the failure instead.
+            *self.utxos.lock() = previous;
+            return Err(crate::error::BtcError::Bitcoin(format!(
+                "Could not persist BTC send: {error}"
+            )));
         }
-        set.record_pending_removals(&removed, &txid_hex, cursor);
-        drop(set);
-        self.save_utxos();
 
         tracing::info!(
             "BTC built: {} sats to {} (txid: {}, fee: {} sats)",
@@ -1817,6 +1843,53 @@ mod tests {
             Some(100_000),
             "a wallet-originated spend must be tracked so a covered reorg restores it"
         );
+    }
+
+    #[test]
+    fn a_send_whose_removal_cannot_be_persisted_fails_and_keeps_its_inputs() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtorrent_btc_send_save_failure_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut w = BtcWallet::with_persistence(
+            [7u8; 64],
+            bitcoin::Network::Regtest,
+            dir.join("utxos.json"),
+        )
+        .unwrap();
+        let owned = Utxo {
+            txid: "ba".repeat(32),
+            vout: 0,
+            value: 100_000,
+            address: w.current_address().unwrap(),
+            height: 100,
+        };
+        w.add_utxo(owned.clone());
+        // A path whose parent directory does not exist fails the write for
+        // every user, root included.
+        w.utxo_path = Some(dir.join("missing").join("utxos.json"));
+        let recipient =
+            crate::keys::derive_address(&[9u8; 64], 0, bitcoin::Network::Regtest).unwrap();
+
+        assert!(
+            w.send_to(&recipient, 50_000, 1_000).is_err(),
+            "a send must not report success when its removal was not persisted"
+        );
+        assert_eq!(
+            w.utxo_for_tests(&owned.txid, owned.vout)
+                .map(|utxo| utxo.value),
+            Some(100_000),
+            "the rolled-back set must still hold the selected outpoint"
+        );
+        assert_eq!(w.utxos.lock().total(), 100_000);
+        assert_eq!(
+            w.pending_removal_count_for_tests(),
+            0,
+            "a failed persist must roll the recorded removal back too"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Feed a confirmed transaction into the wallet's shared set exactly as the

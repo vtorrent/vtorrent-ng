@@ -3041,12 +3041,17 @@ exercise it.
   live-process state, so a covered rollback puts the reservation back instead of
   leaving the outpoint permanently `spent_reserved`. It affects swap
   reservation state only, not balances.
-- **Legacy swap contracts make restored reservations fail closed.** A contract
-  persisted before `input_txid` tracking has `input_txid: None`, is never
-  auto-released, and offers no way to prove it does not hold a restored
-  reservation. Such a reservation is therefore kept reserved: permanently
-  non-spendable and excluded from the balance. Narrowing the rule to the
-  contract's retained funding raw is a follow-up.
+- **Legacy swap contracts hold only what their retained funding raw spends.** A
+  contract persisted before `input_txid` tracking has `input_txid: None` and is
+  never auto-released, so it offers no recorded input to compare against. A
+  restored reservation is now kept reserved only when the contract's retained
+  funding raw exists, parses, and demonstrably spends that outpoint; a raw that
+  spends a different outpoint frees the reservation, which returns to the
+  spendable set and the balance. With no retained raw — or one that does not
+  parse — nothing can rule the reference out, so the reservation stays held
+  (permanently non-spendable and excluded from the balance), and a
+  `tracing::warn!` names the contract once so an operator can see why it is
+  stuck.
 - **Peers-unavailable is a self-clearing gap with a warning alert.** Trigger: a
   covered rollback has set the recovery exemption, the retained floor is still at
   or below the resumed cursor, and recovery cannot progress because there are no

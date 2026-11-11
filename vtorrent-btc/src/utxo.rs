@@ -129,6 +129,11 @@ pub struct UtxoSet {
     /// the observations made above its fork.
     #[serde(default, skip)]
     observed_reservation_spends: std::collections::BTreeMap<(String, u32), (Utxo, u32)>,
+    /// Legacy swap contracts already reported as unable to prove what they
+    /// hold, so the warning fires once per contract rather than once per
+    /// rollback. Live-process only.
+    #[serde(default, skip)]
+    legacy_contract_warnings: std::collections::BTreeSet<String>,
     /// Set once any confirmed output has been tracked, so a floor change can
     /// never silently adopt a height this wallet may have held funds below.
     #[serde(default)]
@@ -545,16 +550,35 @@ impl UtxoSet {
     /// Fails closed: a retained record that cannot prove it does not reference
     /// the outpoint counts as referencing it, so no rollback frees an input a
     /// live contract still holds. Only a definite non-reference frees one.
-    fn swap_holds_outpoint(&self, txid: &str, vout: u32) -> bool {
-        let contract_holds = self.swap_contracts.values().any(|contract| {
+    fn swap_holds_outpoint(&mut self, txid: &str, vout: u32) -> bool {
+        let mut unreported: Vec<SwapContract> = Vec::new();
+        let mut contract_holds = false;
+        for contract in self.swap_contracts.values() {
             match (contract.input_txid.as_deref(), contract.input_vout) {
-                // A contract persisted before input tracking cannot prove it
-                // does not hold this outpoint.
-                (None, _) => true,
-                (Some(_), None) => true,
-                (Some(held_txid), Some(held_vout)) => held_txid == txid && held_vout == vout,
+                // A contract persisted before input tracking has no recorded
+                // input; only its retained funding raw can rule the outpoint
+                // out.
+                (None, _) => {
+                    let held = self.legacy_contract_holds(contract, txid, vout);
+                    if held
+                        && !self
+                            .pending_swap_transactions
+                            .contains_key(&contract.funding_txid)
+                        && !self.legacy_contract_warnings.contains(&contract.order_id)
+                    {
+                        unreported.push(contract.clone());
+                    }
+                    contract_holds |= held;
+                }
+                (Some(_), None) => contract_holds = true,
+                (Some(held_txid), Some(held_vout)) => {
+                    contract_holds |= held_txid == txid && held_vout == vout;
+                }
             }
-        });
+        }
+        for contract in unreported {
+            self.warn_legacy_contract_without_raw(&contract);
+        }
         contract_holds
             || self.pending_swap_transactions.values().any(|raw| {
                 match bitcoin::consensus::deserialize::<bitcoin::Transaction>(raw) {
@@ -567,6 +591,46 @@ impl UtxoSet {
                     }),
                 }
             })
+    }
+
+    /// Whether a contract persisted before input tracking may still hold
+    /// `txid:vout`.
+    ///
+    /// With no recorded input, the retained funding raw is the only proof: a
+    /// transaction that parses and spends another outpoint rules the reference
+    /// out, and one that spends this outpoint keeps it held. Without a raw — or
+    /// with one that does not parse — nothing can rule it out, so it stays held.
+    fn legacy_contract_holds(&self, contract: &SwapContract, txid: &str, vout: u32) -> bool {
+        let Some(raw) = self.pending_swap_transactions.get(&contract.funding_txid) else {
+            return true;
+        };
+        match bitcoin::consensus::deserialize::<bitcoin::Transaction>(raw) {
+            Err(_) => true,
+            Ok(funding) => funding.input.iter().any(|input| {
+                input.previous_output.txid.to_string() == txid && input.previous_output.vout == vout
+            }),
+        }
+    }
+
+    /// Report a legacy contract that cannot be narrowed, once per contract.
+    ///
+    /// Without a retained funding raw there is nothing to compare inputs
+    /// against, so every restored reservation stays held for as long as the
+    /// contract exists. That is deliberate, but silent stickiness is not: an
+    /// operator needs the reason in the log.
+    fn warn_legacy_contract_without_raw(&mut self, contract: &SwapContract) {
+        if !self
+            .legacy_contract_warnings
+            .insert(contract.order_id.clone())
+        {
+            return;
+        }
+        tracing::warn!(
+            order_id = %contract.order_id,
+            funding_txid = %contract.funding_txid,
+            "BTC swap contract predates input tracking and retains no funding transaction; \
+             every restored reservation is kept held while it exists"
+        );
     }
 
     fn insert_direct(&mut self, utxo: Utxo) {
@@ -1425,6 +1489,143 @@ mod tests {
         assert!(
             set.reserved_utxo(&record.txid, record.vout).is_some(),
             "a contract without input tracking cannot prove it dropped the input"
+        );
+    }
+
+    /// Serialize a funding transaction whose single input spends `txid:vout`.
+    fn funding_spending_raw(txid: &str, vout: u32) -> Vec<u8> {
+        use std::str::FromStr;
+
+        let transaction = bitcoin::Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::TxIn {
+                previous_output: bitcoin::OutPoint::new(
+                    bitcoin::Txid::from_str(txid).expect("test txid is valid hex"),
+                    vout,
+                ),
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![],
+        };
+        bitcoin::consensus::serialize(&transaction)
+    }
+
+    #[test]
+    fn a_legacy_contract_whose_retained_funding_spends_the_outpoint_keeps_it_reserved() {
+        let record = utxo(&"ac".repeat(32), 0, 500);
+        let mut set = UtxoSet::new();
+        let contract = swap_contract("legacy-funding", None);
+        set.record_swap_transaction(
+            contract.funding_txid.clone(),
+            funding_spending_raw(&record.txid, 0),
+        );
+        set.record_swap_contract(contract);
+        set.push_undo(UndoEntry {
+            height: 11,
+            created: vec![],
+            removed: vec![RemovedOutput {
+                utxo: record.clone(),
+                prior: PriorState::Reserved(record.clone()),
+            }],
+        });
+
+        assert!(set.undo_above(10));
+        assert!(
+            set.reserved_utxo(&record.txid, record.vout).is_some(),
+            "the retained funding transaction demonstrably spends the outpoint"
+        );
+    }
+
+    #[test]
+    fn a_legacy_contract_whose_retained_funding_spends_another_outpoint_frees_it() {
+        let record = utxo(&"ad".repeat(32), 0, 500);
+        let other = "ae".repeat(32);
+        let mut set = UtxoSet::new();
+        let contract = swap_contract("legacy-elsewhere", None);
+        set.record_swap_transaction(
+            contract.funding_txid.clone(),
+            funding_spending_raw(&other, 1),
+        );
+        set.record_swap_contract(contract);
+        set.push_undo(UndoEntry {
+            height: 11,
+            created: vec![],
+            removed: vec![RemovedOutput {
+                utxo: record.clone(),
+                prior: PriorState::Reserved(record.clone()),
+            }],
+        });
+
+        assert!(set.undo_above(10));
+        assert!(
+            set.reserved_utxo(&record.txid, record.vout).is_none(),
+            "a retained funding transaction spending another outpoint frees this one"
+        );
+        assert_eq!(set.list().len(), 1, "the output itself is restored");
+        assert_eq!(
+            set.total(),
+            record.value,
+            "the freed outpoint must count toward the balance"
+        );
+    }
+
+    #[test]
+    fn a_legacy_contract_without_a_retained_funding_still_fails_closed() {
+        let record = utxo(&"af".repeat(32), 0, 500);
+        let mut set = UtxoSet::new();
+        set.record_swap_contract(swap_contract("legacy-no-raw", None));
+        set.push_undo(UndoEntry {
+            height: 11,
+            created: vec![],
+            removed: vec![RemovedOutput {
+                utxo: record.clone(),
+                prior: PriorState::Reserved(record.clone()),
+            }],
+        });
+
+        assert!(set.undo_above(10));
+        assert!(
+            set.reserved_utxo(&record.txid, record.vout).is_some(),
+            "with no retained raw nothing can prove the outpoint is not held"
+        );
+        assert!(
+            set.legacy_contract_warnings.contains("legacy-no-raw"),
+            "an operator must be able to see why the reservation stays stuck"
+        );
+    }
+
+    #[test]
+    fn a_legacy_contract_without_a_retained_funding_warns_once() {
+        let record = utxo(&"ag".repeat(32), 0, 500);
+        let mut set = UtxoSet::new();
+        set.record_swap_contract(swap_contract("legacy-once", None));
+        set.push_undo(UndoEntry {
+            height: 11,
+            created: vec![],
+            removed: vec![RemovedOutput {
+                utxo: record.clone(),
+                prior: PriorState::Reserved(record.clone()),
+            }],
+        });
+        assert!(set.undo_above(10));
+        let warned: std::collections::BTreeSet<String> =
+            set.legacy_contract_warnings.iter().cloned().collect();
+
+        set.push_undo(UndoEntry {
+            height: 21,
+            created: vec![],
+            removed: vec![RemovedOutput {
+                utxo: record.clone(),
+                prior: PriorState::Reserved(record.clone()),
+            }],
+        });
+        assert!(set.undo_above(20));
+        assert_eq!(
+            set.legacy_contract_warnings, warned,
+            "a second rollback must not repeat the warning"
         );
     }
 
