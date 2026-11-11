@@ -3146,3 +3146,27 @@ the commit intended to ship, per the provenance policy.
 
 Any further code change restarts this window. Findings from the external review
 therefore either land before the window closes or move the launch date.
+
+## 2026-11-11 — 21-hour rehearsal on the release candidate
+
+Ran `scripts/soak-report.py` over the first 21 hours of the `d2e65a8` window to
+catch evidence gaps early rather than on the final day.
+
+- **Complete three-node telemetry**, 0 sampler gaps, metric data covering
+  01:27Z → 22:22Z, heights agreeing (1,235), **0 restarts**, **0 samples over
+  256 MiB**. RSS peaks 187.9 / 191.4 / 187.9 MiB by sampler, 201.1 MiB
+  fleet-wide by scrape.
+- Staking 40.3 and 38.2 blocks/hour.
+- Scan errors 4 / 7 / 1, all transient; current scan lag 0.
+- The only failing criterion is the deliberate "independent evidence review"
+  gate, which exists so a report can never self-certify.
+
+Two `BtcSpvScanStuck` alerts fired during bootstrap:
+`candidate1` 02:17–02:30Z (13 min) and `candidate2` 03:15–03:23Z (8 min). Both
+were the initial 100,000-block BIP-158 scan exceeding the 30-minute `for:`
+window while the cursor was still 0, and both resolved without intervention;
+`candidate3` never triggered it. This is alert noise on a fresh chain rather
+than a fault: a node bootstrapping SPV will page an operator unless `for:` is
+raised for first sync or the rule suppresses while `vtorrent_btc_synced == 0`.
+Recorded for the launch decision; the code stays frozen, and these docs commits
+do not change the image (`sha256:eba681b5…`).
