@@ -3127,3 +3127,22 @@ stall that cleared without intervention**. The 2-hour threshold was chosen to si
 above that observed self-healing window while still catching a bootstrap that
 never succeeds. By 23:06Z all three nodes were synced at 975,356 with scan lag 0,
 heights agreeing, zero restarts and zero alerts.
+
+## 2026-11-11 — definitive soak started on the release candidate
+
+Code was frozen after four review waves. The 168-hour window now runs on exactly
+the commit intended to ship, per the provenance policy.
+
+- Commit `d2e65a8f5c701f9cebf2f280cccc01376abc0aae`, image
+  `vtorrent/node:release-candidate-d2e65a8`
+  (`sha256:eba681b5131962f7a595067aa4553d1bed113db9758b774566263407ff64cd3e`),
+  built from a Git archive and labelled with the revision.
+- Started `2026-11-11T01:26:29Z`; **window ends `2026-11-18T01:26:29Z`**.
+- Three isolated regtest nodes with BTC mainnet SPV, allocator pinned, two
+  stakers funded, RPC ports 25451–25453, Prometheus on 23971 loading the
+  production alert file (14 rules, all healthy, including `BtcSpvNeverSynced`).
+- The preceding `177f928` fleet was stopped; its evidence stays in
+  `/tmp/opencode/release-177f928/`.
+
+Any further code change restarts this window. Findings from the external review
+therefore either land before the window closes or move the launch date.
