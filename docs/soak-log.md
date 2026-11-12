@@ -3192,3 +3192,12 @@ than shipping around them.
 Because the image changes, the 168-hour window restarts on the next release
 candidate; the `d2e65a8` fleet's 21 hours remain evidence for that commit, not
 for the next one.
+
+**Window restarted on the fixed candidate.** Commit
+`b729e364d9ea7701ba27e423d1248b96726aaf27`, image
+`vtorrent/node:release-candidate-b729e36`
+(`sha256:1110df3e25550478b7bc578060ebdc62b91bbc66d7566fa610b763d27e2241b6`),
+started `2026-11-12T00:39:23Z`; **window ends `2026-11-19T00:39:23Z`**.
+Three nodes, BTC mainnet SPV, allocator pinned, RPC 25551–25553, Prometheus on
+23972 with 14 healthy rules. The `d2e65a8` fleet's 23 hours remain evidence for
+that commit only.
