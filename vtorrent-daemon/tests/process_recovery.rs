@@ -10,6 +10,24 @@ use std::{
 use tokio::process::{Child, Command};
 use vtorrent_store::store::BlockStore;
 
+/// Path to the built daemon binary.
+///
+/// Cargo normally exports `CARGO_BIN_EXE_vtorrent-daemon` for integration
+/// tests, but not in every invocation (it is absent in some workspace +
+/// all-features builds). Prefer it, then fall back to the profile directory.
+fn daemon_executable() -> PathBuf {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_vtorrent-daemon") {
+        return PathBuf::from(path);
+    }
+    let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("target")
+        .join(profile)
+        .join("vtorrent-daemon")
+}
+
+
 #[cfg(all(target_os = "linux", feature = "test-util"))]
 mod btc_spv;
 #[cfg(feature = "test-util")]
@@ -88,9 +106,8 @@ impl Daemon {
         let p2p = p2p_port.local_addr().unwrap().to_string();
         let log = directory.join(log_name);
         let output = std::fs::File::create(&log).unwrap();
-        let mut command = Command::new(
-            executable.unwrap_or_else(|| Path::new(env!("CARGO_BIN_EXE_vtorrent-daemon"))),
-        );
+        let fallback = daemon_executable();
+        let mut command = Command::new(executable.unwrap_or(fallback.as_path()));
         command
             .args([
                 "--regtest",

@@ -123,6 +123,22 @@ fn load_chain_from_store(
     }
 }
 
+/// UTXO file for this seed. Two wallets on one data directory must not share
+/// state (cursor, reservations, contracts, birthday), so the filename carries a
+/// seed-derived id, matching the desktop path's scheme.
+fn btc_utxo_path(
+    data_dir: &std::path::Path,
+    network_label: &str,
+    seed: &[u8; 64],
+) -> std::path::PathBuf {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"vtorrent-btc-wallet-id-v1");
+    hasher.update(seed);
+    let wallet_id = hex::encode(&hasher.finalize()[..8]);
+    data_dir.join(format!("btc_utxos-{network_label}-{wallet_id}.json"))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "heap-profile")]
@@ -426,7 +442,7 @@ async fn main() -> anyhow::Result<()> {
         let mut btc_wallet = vtorrent_btc::wallet::BtcWallet::with_persistence(
             seed,
             network,
-            data_dir.join(format!("btc_utxos-{network_label}.json")),
+            btc_utxo_path(&data_dir, network_label, &seed),
         )
         .map_err(|e| anyhow::anyhow!("Could not load persistent BTC wallet state: {}", e))?;
         // Bound the in-memory SPV header chain (mainnet ~870k headers).
@@ -1135,5 +1151,24 @@ mod passphrase_file_tests {
         let dir = tempfile::tempdir().unwrap();
         let err = validate_passphrase_file(&dir.path().join("nope")).unwrap_err();
         assert!(err.to_string().contains("not readable"), "got: {err}");
+    }
+}
+
+#[cfg(test)]
+mod btc_utxo_path_tests {
+    use super::btc_utxo_path;
+    use std::path::Path;
+
+    #[test]
+    fn two_wallets_on_one_data_dir_do_not_share_state() {
+        let dir = Path::new("/tmp/vtr");
+        let first = btc_utxo_path(dir, "mainnet", &[1u8; 64]);
+        let second = btc_utxo_path(dir, "mainnet", &[2u8; 64]);
+        assert_ne!(
+            first, second,
+            "different seeds must not share the UTXO file"
+        );
+        assert_eq!(first, btc_utxo_path(dir, "mainnet", &[1u8; 64]));
+        assert!(first.to_string_lossy().contains("btc_utxos-mainnet-"));
     }
 }

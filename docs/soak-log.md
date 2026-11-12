@@ -3170,3 +3170,25 @@ than a fault: a node bootstrapping SPV will page an operator unless `for:` is
 raised for first sync or the rule suppresses while `vtorrent_btc_synced == 0`.
 Recorded for the launch decision; the code stays frozen, and these docs commits
 do not change the image (`sha256:eba681b5…`).
+
+## 2026-11-12 — two launch fixes before the window closes
+
+The 21-hour rehearsal surfaced two defects worth fixing before sign-off rather
+than shipping around them.
+
+- **Bootstrap paged as a stuck scan.** `BtcSpvScanStuck` fired twice during the
+  first sync (13 and 8 minutes over its 30-minute `for:`) because a fresh node's
+  initial 100,000-block BIP-158 scan legitimately runs that long. The rule now
+  requires `vtorrent_btc_synced == 1`, so it only reports a scan that stalls
+  after the chain is bootstrapped; `BtcSpvNeverSynced` still covers a bootstrap
+  that never finishes. A `promtool` case pins silence while `synced == 0`.
+- **Two wallets shared one UTXO file.** The daemon used
+  `btc_utxos-{network}.json`, so switching `--btc-seed` on one data directory
+  adopted the previous wallet's cursor, reservations, contracts, `birthday`, and
+  `seen_funds`. The filename now carries the same seed-derived id the desktop
+  path already used (`sha256("vtorrent-btc-wallet-id-v1" || seed)[..8]`), with a
+  unit test that two seeds never collide and the same seed is stable.
+
+Because the image changes, the 168-hour window restarts on the next release
+candidate; the `d2e65a8` fleet's 21 hours remain evidence for that commit, not
+for the next one.

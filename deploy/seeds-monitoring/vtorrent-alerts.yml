@@ -100,7 +100,9 @@ groups:
           description: "No successful BTC SPV scan in the last 10 minutes."
 
       - alert: BtcSpvScanStuck
-        expr: vtorrent_btc_scan_in_progress == 1
+        # A fresh node's initial 100k-block scan legitimately exceeds 30 minutes;
+        # BtcSpvNeverSynced covers a bootstrap that never finishes.
+        expr: vtorrent_btc_scan_in_progress == 1 and vtorrent_btc_synced == 1
         for: 30m
         labels:
           severity: warning
