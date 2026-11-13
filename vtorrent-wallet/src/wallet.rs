@@ -172,6 +172,17 @@ impl Drop for Wallet {
     }
 }
 
+/// Minimum length for a newly created or imported wallet passphrase.
+/// Existing shorter passphrases still unlock; this applies only to new wallets.
+pub const MIN_PASSPHRASE_CHARS: usize = 8;
+
+pub fn validate_new_passphrase(passphrase: &str) -> Result<()> {
+    if passphrase.chars().count() < MIN_PASSPHRASE_CHARS {
+        return Err(WalletError::WeakPassphrase);
+    }
+    Ok(())
+}
+
 impl Wallet {
     // ─── Construction ─────────────────────────────────────────────────────────
 
@@ -706,6 +717,12 @@ mod tests {
         let loaded = Wallet::from_json_file(&json, passphrase, None).expect("Load failed");
         assert_eq!(loaded.key_count(), wallet.key_count());
         assert_eq!(loaded.addresses(), wallet.addresses());
+    }
+
+    #[test]
+    fn new_passphrases_must_meet_the_minimum_length() {
+        assert!(validate_new_passphrase("1234567").is_err());
+        assert!(validate_new_passphrase("12345678").is_ok());
     }
 
     #[test]

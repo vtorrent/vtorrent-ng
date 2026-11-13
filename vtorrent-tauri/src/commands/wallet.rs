@@ -219,10 +219,8 @@ pub fn create_wallet(
     state.cold_stake_scripts.lock().unwrap().clear();
     state.prepared_sends.lock().unwrap().clear();
     let passphrase = zeroize::Zeroizing::new(passphrase);
-    if passphrase.len() < 8 {
-        return Err(TauriError::InvalidInput(
-            "Passphrase must be at least 8 characters".into(),
-        ));
+    if let Err(error) = vtorrent_wallet::wallet::validate_new_passphrase(&passphrase) {
+        return Err(TauriError::InvalidInput(error.to_string()));
     }
 
     let path = std::path::PathBuf::from(&wallet_path);
@@ -359,10 +357,8 @@ pub fn import_legacy_wallet(
             .map_err(|e| TauriError::InvalidInput(format!("Invalid base64: {}", e)))?,
     );
 
-    if new_wallet_passphrase.is_empty() {
-        return Err(TauriError::InvalidInput(
-            "A new wallet passphrase is required".into(),
-        ));
+    if let Err(error) = vtorrent_wallet::wallet::validate_new_passphrase(&new_wallet_passphrase) {
+        return Err(TauriError::InvalidInput(error.to_string()));
     }
 
     let extraction = extract_wallet(&wallet_bytes, passphrase.as_ref().map(|p| p.as_str()))

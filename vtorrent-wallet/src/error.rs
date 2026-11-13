@@ -20,6 +20,9 @@ pub enum WalletError {
     #[error("Incorrect passphrase")]
     IncorrectPassphrase,
 
+    #[error("Passphrase must be at least 8 characters")]
+    WeakPassphrase,
+
     #[error("2FA is enabled — OTP code required")]
     OtpRequired,
 

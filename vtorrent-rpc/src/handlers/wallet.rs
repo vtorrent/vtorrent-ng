@@ -192,12 +192,8 @@ pub async fn import_wallet(
             "WIF private key is required — provide a base58-encoded WIF string".into(),
         ));
     }
-    if req.passphrase.is_empty() {
-        return Err(RpcError::BadRequest(
-            "Passphrase is required — used for Argon2id + ChaCha20-Poly1305 wallet encryption"
-                .into(),
-        ));
-    }
+    vtorrent_wallet::wallet::validate_new_passphrase(&req.passphrase)
+        .map_err(|error| RpcError::BadRequest(error.to_string()))?;
 
     // Refuse to silently replace an existing wallet: the previous encrypted key
     // (and any funds it controls) would be destroyed. The caller must opt in.

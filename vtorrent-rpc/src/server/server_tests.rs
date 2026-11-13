@@ -1046,7 +1046,7 @@ async fn test_api_key_protects_sensitive_endpoints() {
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({
                         "wif": "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS",
-                        "passphrase": "test"
+                        "passphrase": "test-pass"
                     }))
                     .unwrap(),
                 ))
@@ -1065,7 +1065,7 @@ async fn test_api_key_protects_sensitive_endpoints() {
                 .header("x-api-key", "s3cret")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({
-                        "passphrase": "test", "timeout_secs": 300
+                        "passphrase": "test-pass", "timeout_secs": 300
                     }))
                     .unwrap(),
                 ))
@@ -1212,7 +1212,7 @@ async fn test_api_key_disabled_by_default() {
         "/api/v1/wallet/import",
         serde_json::json!({
             "wif": "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS",
-            "passphrase": "test"
+            "passphrase": "test-pass"
         }),
     )
     .await;
@@ -1220,7 +1220,7 @@ async fn test_api_key_disabled_by_default() {
     let (status, body) = post_json(
         app,
         "/api/v1/wallet/unlock",
-        serde_json::json!({ "passphrase": "test", "timeout_secs": 300 }),
+        serde_json::json!({ "passphrase": "test-pass", "timeout_secs": 300 }),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -1364,7 +1364,7 @@ async fn wallet_import_refuses_to_overwrite_without_opt_in() {
         .to_wif(198);
     let body = serde_json::json!({
         "wif": wif.to_string(),
-        "passphrase": "pass",
+        "passphrase": "pass-word",
     });
     // First import succeeds.
     let (status, _) = post_json(app.clone(), "/api/v1/wallet/import", body.clone()).await;
@@ -1383,9 +1383,9 @@ async fn wallet_import_refuses_to_overwrite_without_opt_in() {
     // With the explicit opt-in it succeeds.
     let overwrite = serde_json::json!({
         "wif": wif.to_string(),
-        "passphrase": "pass",
+        "passphrase": "pass-word",
         "overwrite": true,
-        "current_passphrase": "pass",
+        "current_passphrase": "pass-word",
     });
     let (status, _) = post_json(app, "/api/v1/wallet/import", overwrite).await;
     assert_eq!(status, StatusCode::OK);
