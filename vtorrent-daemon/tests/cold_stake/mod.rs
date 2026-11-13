@@ -40,9 +40,17 @@ async fn cold_stake_funding_propagates_and_confirms_on_two_daemons() {
     receiver.wait_tip(&funding_tip).await;
 
     let keys = sender
-        .post("/api/v1/wallet/cold-stake", json!({"locktime": 0}))
+        .post(
+            "/api/v1/wallet/cold-stake",
+            json!({"locktime": 0, "spending_key_passphrase": "test-pass"}),
+        )
         .await;
     assert!(keys.get("address").is_none(), "no burn address in response");
+    assert!(
+        keys.get("spending_wif").is_none(),
+        "the spending key must not cross the RPC boundary"
+    );
+    assert!(std::path::Path::new(keys["spending_key_file"].as_str().unwrap()).exists());
     let script_hex = keys["script_pubkey"].as_str().unwrap();
     let script = hex::decode(script_hex).unwrap();
     let funded = sender
