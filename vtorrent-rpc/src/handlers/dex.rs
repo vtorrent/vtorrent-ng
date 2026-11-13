@@ -148,6 +148,11 @@ pub async fn cancel_dex_order(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> RpcResult<Json<Value>> {
+    if !state.is_wallet_unlocked().await {
+        return Err(RpcError::Unauthorized(
+            "Wallet locked — unlock the maker's wallet to cancel this order".into(),
+        ));
+    }
     let maker = state.wallet_change_address.read().await.clone();
     let order = {
         let order_book = state.order_book.read().await;

@@ -367,6 +367,13 @@ pub async fn vtr_claim(
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
     state.sync_swap_wallet(&handle.rpc_state).await?;
+    let taker_wif = handle
+        .rpc_state
+        .wallet_wif
+        .read()
+        .await
+        .clone()
+        .ok_or(TauriError::WalletLocked)?;
     let result = vtorrent_rpc::handlers::vtr_claim_with_state(
         &handle.rpc_state,
         vtorrent_rpc::models::VtrClaimRequest {
@@ -374,7 +381,7 @@ pub async fn vtr_claim(
             preimage,
             passphrase: passphrase.into(),
             otp_code,
-            taker_wif: String::new().into(),
+            taker_wif,
         },
     )
     .await

@@ -298,31 +298,33 @@ pub(super) async fn persist_wallet(state: &AppState) -> RpcResult<()> {
     // disk; run the write on the blocking pool instead.
     let path = path.clone();
     tokio::task::spawn_blocking(move || {
-        let tmp = path.with_extension("json.tmp");
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let tmp = path.with_extension(format!("json.tmp.{}.{}", std::process::id(), nanos));
         let bytes = serde_json::to_vec_pretty(&blob).map_err(|e| {
             RpcError::Internal(format!("Wallet serialize failed (JSON encoding): {}", e))
         })?;
-        // Create the temp file with 0600 BEFORE writing content: setting the
-        // mode after the write leaves a window where the encrypted wallet is
-        // world-readable (default umask).
+        // A unique name plus create_new avoids following a pre-created symlink
+        // or sharing a deterministic temp file with a concurrent save.
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&tmp)
-                .and_then(|mut f| std::io::Write::write_all(&mut f, &bytes))
-                .map_err(|e| {
-                    RpcError::Internal(format!("Wallet write to {} failed: {}", tmp.display(), e))
-                })?;
+            options.mode(0o600);
         }
-        #[cfg(not(unix))]
-        std::fs::write(&tmp, &bytes).map_err(|e| {
+        let mut file = options.open(&tmp).map_err(|e| {
             RpcError::Internal(format!("Wallet write to {} failed: {}", tmp.display(), e))
         })?;
+        std::io::Write::write_all(&mut file, &bytes).map_err(|e| {
+            RpcError::Internal(format!("Wallet write to {} failed: {}", tmp.display(), e))
+        })?;
+        file.sync_all().map_err(|e| {
+            RpcError::Internal(format!("Wallet sync of {} failed: {}", tmp.display(), e))
+        })?;
+        drop(file);
         std::fs::rename(&tmp, &path).map_err(|e| {
             RpcError::Internal(format!(
                 "Wallet rename from {} to {} failed: {}",
@@ -331,6 +333,17 @@ pub(super) async fn persist_wallet(state: &AppState) -> RpcResult<()> {
                 e
             ))
         })?;
+        if let Some(parent) = path.parent() {
+            std::fs::File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|e| {
+                    RpcError::Internal(format!(
+                        "Wallet directory sync of {} failed: {}",
+                        parent.display(),
+                        e
+                    ))
+                })?;
+        }
         tracing::info!("Encrypted wallet persisted to {}", path.display());
         Ok(())
     })
