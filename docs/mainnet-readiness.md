@@ -244,7 +244,7 @@ window ran on, and that commit must equal the release commit.
       restart, ban-list inspection, chain-state recovery, RPC key rotation,
       seed failover/DNS changes, reorg response, and alert triage. Formal
       on-call rotation (who carries the pager) is a launch-week decision.
-- [~] **Seed1 dead-man heartbeat** — live since 2026-11-13. Prometheus and
+- [x] **Seed1 dead-man heartbeat** — live since 2026-11-13. Prometheus and
       Alertmanager both run on seed1, so nothing on that host can report that
       seed1 itself is gone; `heartbeat.sh` on seed1 pings an external dead-man
       check (5-minute period, 5-minute grace) every five minutes, but only while
@@ -252,9 +252,10 @@ window ran on, and that commit must equal the release commit.
       stopping the timer at 05:27:03Z produced exactly one alert around 05:37Z,
       and restarting it at 05:39:32Z produced exactly one recovery
       notification, both confirmed by the operator. The ping URL was shared in
-      chat and passed as an installer argument. Rotate it, install its replacement
-      without exposing it in arguments, and verify alert and recovery again.
-      The host-to-host SSH alternative (`deadman.sh`) remains documented but unused.
+      chat and passed as an installer argument; the operator accepted that
+      exposure because the URL only permits pinging this check. No rotation is
+      required. The host-to-host SSH alternative (`deadman.sh`) remains documented
+      but unused.
 - [ ] **BTC daemon wallet migration** — the seed-scoped wallet path does not
       load the former `btc_utxos-<network>.json` file. Establish a safe migration
       and recovery procedure for existing state, including swap metadata, before

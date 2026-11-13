@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Install the dead-man heartbeat on seed1.
 #
-# The ping URL is a credential. This installer accepts it in argv, so it can
-# appear in process listings and shell history; use a different secure method
-# until the installer supports secret input without command-line arguments.
+# The ping URL is a credential that only permits pinging this check. This
+# installer accepts it in argv, so it can appear in process listings and shell
+# history. The operator accepted that exposure on 2026-11-13; keep the URL out
+# of shared logs where practical.
 #
 # Usage:
 #   scripts/install-heartbeat.sh --ping-url 'https://hc-ping.com/<uuid>' \

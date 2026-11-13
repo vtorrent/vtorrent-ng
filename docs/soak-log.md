@@ -3225,7 +3225,8 @@ Installed `vtorrent-heartbeat.timer` on vtr-seed1 with
 (5-minute period, 5-minute grace). The ping URL exists only in
 `/etc/vtorrent/heartbeat.env` (0600) and was written via `scp`. Correction:
 the URL was also shared in chat and passed to the installer as an argument,
-where it could appear in a process list. Rotate it and reverify the replacement.
+where it could appear in a process list. The operator accepted that exposure
+because the URL only permits pinging this check. No rotation is required.
 
 Verification was destructive on purpose:
 

@@ -85,9 +85,10 @@ credentials or live infrastructure access are needed.
   them a BTC-enabled fleet peaked at 279.7 MiB. That is a deployment
   requirement, not a code defect.
 - The seed1 dead-man heartbeat was installed and exercised on 2026-11-13: a
-  stopped timer produced one alert and restoring it produced one recovery. Its
-  credential was exposed during installation and is being rotated; that is an
-  operational fix, not a code-review item.
+  stopped timer produced one alert and restoring it produced one recovery. The
+  operator accepted the ping URL's exposure during installation because it only
+  permits pinging this check. That is an operational risk decision, not a
+  code-review item.
 - The legacy BTC wallet file has no seed identity, and the seed-scoped path does
   not migrate it. This is a known open risk for existing wallets, not accepted
   for release without a reviewed migration. It is outside this review's code
