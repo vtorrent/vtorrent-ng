@@ -1358,6 +1358,11 @@ pub struct ColdStakeReq {
     pub locktime: u32,
     #[serde(default)]
     pub label: Option<String>,
+    /// Passphrase for the encrypted spending-key export.
+    pub spending_key_passphrase: String,
+    /// Optional export path. Defaults next to the wallet file.
+    #[serde(default)]
+    pub export_path: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -1369,8 +1374,9 @@ pub struct ColdStakeResp {
     pub script_hash: String,
     /// The hot staking key (WIF) — export to the staking node.
     pub staking_wif: zeroize::Zeroizing<String>,
-    /// The cold spending key (WIF) — keep offline. Shown once; not persisted.
-    pub spending_wif: zeroize::Zeroizing<String>,
+    /// Path to the encrypted spending-key export. The key itself never leaves
+    /// the backend.
+    pub spending_key_file: String,
     pub locktime: u32,
 }
 
@@ -1395,6 +1401,28 @@ pub async fn create_cold_stake(
     let keys =
         vtorrent_wallet::wallet::generate_cold_stake_keys(req.locktime, req.label.as_deref())
             .map_err(|e| RpcError::Internal(format!("cold-stake key generation failed: {e}")))?;
+    let export_path = req
+        .export_path
+        .as_ref()
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            state
+                .wallet_path
+                .as_ref()
+                .map(|path| path.with_extension("spending-key"))
+        })
+        .ok_or_else(|| {
+            RpcError::BadRequest(
+                "export_path is required when the node has no wallet file path".into(),
+            )
+        })?;
+    vtorrent_wallet::cold_stake_export::export_spending_key(
+        &export_path,
+        keys.spending_wif.as_str(),
+        &keys.spending_address,
+        &req.spending_key_passphrase,
+    )
+    .map_err(|e| RpcError::BadRequest(e.to_string()))?;
     let script_hash = hex::encode(vtorrent_core::crypto::hash160(&keys.script_pubkey));
     if let Some(wallet_path) = &state.wallet_path {
         vtorrent_wallet::cold_stake_registry::add(wallet_path, &script_hash).map_err(|e| {
@@ -1422,7 +1450,7 @@ pub async fn create_cold_stake(
             script_pubkey,
             script_hash,
             staking_wif: keys.staking_wif,
-            spending_wif: keys.spending_wif,
+            spending_key_file: export_path.display().to_string(),
             locktime: keys.locktime,
         }),
     ))

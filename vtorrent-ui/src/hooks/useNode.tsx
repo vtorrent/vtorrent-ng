@@ -815,19 +815,33 @@ export interface ColdStakeKeys {
   scriptPubkey: string
   scriptHash: string
   stakingWif: string
-  spendingWif: string
+  spendingKeyFile: string
   stakingAddress: string
   spendingAddress: string
   locktime: number
 }
 
 /** Generate a P2CS cold-staking key pair (stateless; spending key not stored). */
-export async function createColdStake(locktime = 0): Promise<ColdStakeKeys> {
+export async function createColdStake(
+  locktime = 0,
+  spendingKeyPassphrase = '',
+  exportPath?: string
+): Promise<ColdStakeKeys> {
   if (isTauri()) {
-    return camel(await tauriInvoke<ColdStakeKeys>('create_cold_stake', { locktime })) as ColdStakeKeys
+    return camel(
+      await tauriInvoke<ColdStakeKeys>('create_cold_stake', {
+        locktime,
+        spendingKeyPassphrase,
+        exportPath: exportPath ?? null,
+      })
+    ) as ColdStakeKeys
   }
   return camel(
-    await rpcPost<unknown>('/api/v1/wallet/cold-stake', { locktime })
+    await rpcPost<unknown>('/api/v1/wallet/cold-stake', {
+      locktime,
+      spending_key_passphrase: spendingKeyPassphrase,
+      export_path: exportPath ?? null,
+    })
   ) as ColdStakeKeys
 }
 

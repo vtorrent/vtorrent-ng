@@ -826,7 +826,7 @@ pub struct ColdStakeKeys {
     pub script_pubkey: String,
     pub script_hash: String,
     pub staking_wif: zeroize::Zeroizing<String>,
-    pub spending_wif: zeroize::Zeroizing<String>,
+    pub spending_key_file: String,
     pub staking_address: String,
     pub spending_address: String,
     pub locktime: u32,
@@ -839,6 +839,8 @@ pub async fn create_cold_stake(
     state: State<'_, AppState>,
     locktime: u32,
     label: Option<String>,
+    spending_key_passphrase: String,
+    export_path: Option<String>,
 ) -> Result<ColdStakeKeys> {
     const MAX_LOCKTIME: u32 = 2_100_000_000;
     if locktime != 0 && locktime > MAX_LOCKTIME {
@@ -851,8 +853,27 @@ pub async fn create_cold_stake(
     let keys = wallet
         .generate_cold_stake_keys(locktime, label.as_deref())
         .map_err(TauriError::from)?;
+    let wallet_path = state.wallet_path.lock().unwrap().clone();
+    let export_path = export_path
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            wallet_path
+                .as_ref()
+                .map(|path| path.with_extension("spending-key"))
+        })
+        .ok_or_else(|| {
+            TauriError::InvalidInput(
+                "An export path is required when no wallet file path is set".into(),
+            )
+        })?;
+    vtorrent_wallet::cold_stake_export::export_spending_key(
+        &export_path,
+        keys.spending_wif.as_str(),
+        &keys.spending_address,
+        &spending_key_passphrase,
+    )?;
     let script_hash = hex::encode(vtorrent_core::crypto::hash160(&keys.script_pubkey));
-    if let Some(wallet_path) = state.wallet_path.lock().unwrap().clone() {
+    if let Some(wallet_path) = wallet_path {
         vtorrent_wallet::cold_stake_registry::add(&wallet_path, &script_hash).map_err(|e| {
             TauriError::Io(format!("Could not persist cold-stake script hash: {e}"))
         })?;
@@ -867,7 +888,7 @@ pub async fn create_cold_stake(
         script_pubkey: hex::encode(&keys.script_pubkey),
         script_hash,
         staking_wif: keys.staking_wif,
-        spending_wif: keys.spending_wif,
+        spending_key_file: export_path.display().to_string(),
         staking_address: keys.staking_address,
         spending_address: keys.spending_address,
         locktime: keys.locktime,
@@ -1373,10 +1394,16 @@ mod tests {
         assert!(matches!(error, TauriError::InvalidInput(_)));
         assert!(submitted.try_recv().is_err());
 
-        let keys = invoke("create_cold_stake", serde_json::json!({ "locktime": 0 }))
-            .expect("create command accepts omitted optional label")
-            .deserialize::<serde_json::Value>()
-            .unwrap();
+        let keys = invoke(
+            "create_cold_stake",
+            serde_json::json!({
+                "locktime": 0,
+                "spendingKeyPassphrase": "test-pass",
+            }),
+        )
+        .expect("create command accepts omitted optional label")
+        .deserialize::<serde_json::Value>()
+        .unwrap();
         let script_hash = keys["script_hash"].as_str().unwrap();
         assert!(vtorrent_wallet::cold_stake_registry::contains(
             &wallet_path,
@@ -1465,7 +1492,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         *state.wallet_path.lock().unwrap() = Some(dir.join("wallet.vtr"));
         *state.wallet.lock().unwrap() = Some(Wallet::create("pw").unwrap());
-        let keys = create_cold_stake(state.clone(), 0, None).await.unwrap();
+        let keys = create_cold_stake(state.clone(), 0, None, "test-pass".into(), None)
+            .await
+            .unwrap();
+        assert!(std::path::Path::new(&keys.spending_key_file).exists());
         assert_eq!(keys.script_pubkey.len(), 120);
         assert_eq!(keys.script_hash.len(), 40);
         let script = hex::decode(&keys.script_pubkey).unwrap();
@@ -1693,7 +1723,9 @@ mod tests {
             .unwrap();
         app.manage(AppState::new());
         let state = app.state::<AppState>();
-        let error = create_cold_stake(state.clone(), 0, None).await.unwrap_err();
+        let error = create_cold_stake(state.clone(), 0, None, "test-pass".into(), None)
+            .await
+            .unwrap_err();
         assert!(matches!(error, TauriError::WalletNotInitialized));
     }
 

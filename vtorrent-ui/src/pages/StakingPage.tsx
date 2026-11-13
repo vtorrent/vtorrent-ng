@@ -333,6 +333,7 @@ function ColdStakePanel() {
   const [txid, setTxid] = useState<string | null>(null)
   const [fundedSats, setFundedSats] = useState(0)
   const [savedSpending, setSavedSpending] = useState(false)
+  const [coldStakePassphrase, setColdStakePassphrase] = useState('')
   const [copied, setCopied] = useState<string | null>(null)
   const [verifying, setVerifying] = useState(false)
   const [verifyMsg, setVerifyMsg] = useState<string | null>(null)
@@ -349,7 +350,7 @@ function ColdStakePanel() {
     setSavedSpending(false)
     setFundedSats(0)
     try {
-      setKeys(await createColdStake(0))
+      setKeys(await createColdStake(0, coldStakePassphrase))
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -428,17 +429,6 @@ function ColdStakePanel() {
         locktime: keys.locktime,
       }, null, 2)
     : ''
-  const spendingPackage = keys
-    ? JSON.stringify({
-        version: 1,
-        kind: 'vtorrent-cold-stake-spending',
-        spending_address: keys.spendingAddress,
-        script_pubkey: keys.scriptPubkey,
-        spending_wif: keys.spendingWif,
-        locktime: keys.locktime,
-      }, null, 2)
-    : ''
-
   const startDelegate = async () => {
     setDelegateBusy(true)
     setDelegateError(null)
@@ -475,7 +465,7 @@ function ColdStakePanel() {
           <button
             data-testid="cold-stake-generate"
             onClick={generate}
-            disabled={busy}
+            disabled={busy || coldStakePassphrase.length < 8}
             className="btn-secondary text-xs"
           >
             {busy ? 'Generating…' : 'Generate key pair'}
@@ -508,6 +498,13 @@ function ColdStakePanel() {
             Stake from a node that holds only the <strong>staking key</strong>. The
             <strong> spending key</strong> stays offline and is the only key that can move funds.
           </p>
+          <input
+            type="password"
+            className="input-field mb-3"
+            placeholder="Export passphrase for the spending-key file (min 8 characters)"
+            value={coldStakePassphrase}
+            onChange={event => setColdStakePassphrase(event.target.value)}
+          />
           {error && <p className="text-xs text-red-400">{error}</p>}
           {keys && (
             <div className="space-y-3 text-xs">
@@ -544,19 +541,19 @@ function ColdStakePanel() {
               </div>
               <div>
                 <div className="flex items-center justify-between gap-2">
-                  <div className="text-gray-500">Spending key (cold — keep offline, shown once)</div>
+                  <div className="text-gray-500">Encrypted spending-key file (keep offline)</div>
                   <button
                     data-testid="cold-stake-copy-spending"
-                    onClick={() => copy(spendingPackage, 'spending')}
+                    onClick={() => copy(keys.spendingKeyFile, 'spending')}
                     className="text-red-400 hover:text-red-300"
                   >
-                    {copied === 'spending' ? 'Copied' : 'Copy key'}
+                    {copied === 'spending' ? 'Copied' : 'Copy path'}
                   </button>
                 </div>
-                <div data-testid="cold-stake-spending-wif" className="font-mono text-red-300 break-all">{keys.spendingWif}</div>
+                <div data-testid="cold-stake-spending-file" className="font-mono text-red-300 break-all">{keys.spendingKeyFile}</div>
               </div>
               <p className="text-red-400">
-                The spending key is not stored by this node. Save it offline now.
+                The spending key is encrypted in this file and is not stored by the node. Copy it offline now.
               </p>
               <label className="flex items-start gap-2 text-gray-400">
                 <input

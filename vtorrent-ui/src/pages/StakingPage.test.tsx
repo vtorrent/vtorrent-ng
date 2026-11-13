@@ -35,13 +35,16 @@ const keys: ColdStakeKeys = {
   scriptPubkey: '63' + 'ab'.repeat(59),
   scriptHash: 'cd'.repeat(20),
   stakingWif: 'test-hot-key',
-  spendingWif: 'test-cold-key',
+  spendingKeyFile: '/tmp/wallet.spending-key',
   stakingAddress: 'VStakingAddress',
   spendingAddress: 'VSpendingAddress',
   locktime: 0,
 }
 
 async function generate() {
+  fireEvent.change(screen.getByPlaceholderText('Export passphrase for the spending-key file (min 8 characters)'), {
+    target: { value: 'test-passphrase' },
+  })
   fireEvent.click(screen.getByRole('button', { name: 'Generate key pair' }))
   await screen.findByText(keys.scriptPubkey)
 }
@@ -63,7 +66,7 @@ describe('cold-stake panel', () => {
     render(<StakingPage />)
     await generate()
     saveSpendingKey()
-    expect(backend.create).toHaveBeenCalledWith(0)
+    expect(backend.create).toHaveBeenCalledWith(0, 'test-passphrase')
     expect(screen.getByText(keys.scriptHash)).toBeInTheDocument()
     expect(screen.queryByText('P2CS address (fund this)')).not.toBeInTheDocument()
 
