@@ -102,8 +102,26 @@ pub async fn match_dex_order_with_wif(
         ));
     }
     let (preimage, hash_lock) = match (order.preimage, order.hash_lock) {
-        (Some(preimage), Some(hash_lock)) => (preimage, hash_lock),
-        _ => {
+        (Some(preimage), Some(hash_lock)) => {
+            use sha2::{Digest, Sha256};
+            if Sha256::digest(preimage).as_slice() != hash_lock {
+                return Err(RpcError::BadRequest(
+                    "Order preimage does not match its published hash lock".into(),
+                ));
+            }
+            (preimage, hash_lock)
+        }
+        (None, Some(_)) => {
+            return Err(RpcError::BadRequest(
+                "Order has a published hash lock but no preimage; refusing to re-key it".into(),
+            ))
+        }
+        (Some(_), None) => {
+            return Err(RpcError::BadRequest(
+                "Order has a preimage but no hash lock".into(),
+            ))
+        }
+        (None, None) => {
             let swap = AtomicSwap::new();
             (swap.preimage, swap.hash_lock)
         }

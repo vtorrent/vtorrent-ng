@@ -733,6 +733,26 @@ async fn test_swap_btc_fund_requires_vtr_funded() {
         "dust VTR claim must be rejected"
     );
 
+    let (status, _) = post_json(
+        app.clone(),
+        "/api/v1/dex/order",
+        serde_json::json!({
+            "maker_address": "VQ2BZDB3MzX5CEKVCoFJpzqw4eisdEMJHh",
+            "offer_asset": "VTR",
+            "offer_amount_satoshis": 1_000_000,
+            "request_asset": "BTC",
+            "request_amount_satoshis": 100_000,
+            "expiry_secs": 3600,
+            "passphrase": "testpassphrase"
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "an order must use the unlocked wallet's maker address"
+    );
+
     // btc-fund without a prior match: swap state does not exist → 400.
     let (status, body) = post_json(
         app,

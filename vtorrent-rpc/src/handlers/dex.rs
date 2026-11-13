@@ -59,6 +59,12 @@ pub async fn place_dex_order_with_state(
     if !state.is_wallet_unlocked().await {
         return Err(RpcError::WalletLocked);
     }
+    let maker = state.wallet_change_address.read().await.clone();
+    if maker.as_deref() != Some(req.maker_address.as_str()) {
+        return Err(RpcError::Unauthorized(
+            "The maker address must belong to the unlocked wallet".into(),
+        ));
+    }
     if req.offer_amount_satoshis == 0 || req.request_amount_satoshis == 0 {
         return Err(RpcError::BadRequest(format!(
             "DEX order amounts must be greater than zero (offer: {} sats, request: {} sats)",
