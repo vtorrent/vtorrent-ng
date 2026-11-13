@@ -391,16 +391,32 @@ pub struct SwapDeadlinesResponse {
 /// Read-only: every open swap with its BTC HTLC expiry and time remaining, so
 /// the UI can raise escalating, money-critical notifications. A missed
 /// `btc_expiry` can strand funds. See `docs/notifications-design.md`.
+fn swap_at_risk(swap: &vtorrent_node::atomic_swap::SwapState) -> bool {
+    use vtorrent_node::atomic_swap::{BtcSettlementState, VtrSettlementState};
+    let vtr_settled = swap.vtr_observation.as_ref().is_some_and(|observation| {
+        matches!(
+            observation.state,
+            VtrSettlementState::Claimed | VtrSettlementState::Refunded
+        )
+    });
+    let btc_settled = swap.btc_observation.as_ref().is_some_and(|observation| {
+        matches!(
+            observation.state,
+            BtcSettlementState::Claimed | BtcSettlementState::Refunded
+        )
+    });
+    !(vtr_settled && btc_settled)
+}
+
 pub async fn get_swap_deadlines(
     State(state): State<Arc<AppState>>,
 ) -> RpcResult<Json<SwapDeadlinesResponse>> {
-    use vtorrent_node::atomic_swap::SwapStatus;
     let now = vtorrent_core::time::now_secs() as u32;
     let swaps = state.swaps.read().await;
     let mut deadlines: Vec<SwapDeadline> = swaps
         .iter()
         .map(|(order_id, swap)| {
-            let at_risk = !matches!(swap.status, SwapStatus::Claimed | SwapStatus::Refunded);
+            let at_risk = swap_at_risk(swap);
             SwapDeadline {
                 order_id: order_id.clone(),
                 status: format!("{:?}", swap.status),
@@ -413,4 +429,51 @@ pub async fn get_swap_deadlines(
     // Most urgent first.
     deadlines.sort_by_key(|d| d.seconds_remaining);
     Ok(Json(SwapDeadlinesResponse { now, deadlines }))
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::swap_at_risk;
+    use vtorrent_node::atomic_swap::{
+        BtcSettlementState, BtcSwapObservation, SwapState, SwapStatus, VtrSettlementState,
+        VtrSwapObservation,
+    };
+
+    fn vtr(state: VtrSettlementState) -> VtrSwapObservation {
+        VtrSwapObservation {
+            tip_hash: "00".into(),
+            tip_height: 1,
+            state,
+            funding: None,
+            spend: None,
+            pending_spend_txid: None,
+            reorg_count: 0,
+        }
+    }
+
+    fn btc(state: BtcSettlementState) -> BtcSwapObservation {
+        BtcSwapObservation {
+            network: "regtest".into(),
+            observed_at: 1,
+            tip_hash: "00".into(),
+            tip_height: 1,
+            scan_start: 0,
+            state,
+            funding: None,
+            spend: None,
+            reorg_count: 0,
+        }
+    }
+
+    #[test]
+    fn submitted_txids_alone_do_not_clear_risk() {
+        let mut swap = SwapState::new([1; 32], [2; 32]);
+        swap.status = SwapStatus::Claimed;
+        assert!(swap_at_risk(&swap));
+        swap.vtr_observation = Some(vtr(VtrSettlementState::Claimed));
+        swap.btc_observation = Some(btc(BtcSettlementState::ClaimConfirming));
+        assert!(swap_at_risk(&swap));
+        swap.btc_observation = Some(btc(BtcSettlementState::Claimed));
+        assert!(!swap_at_risk(&swap));
+    }
 }
