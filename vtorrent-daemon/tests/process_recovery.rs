@@ -19,14 +19,17 @@ fn daemon_executable() -> PathBuf {
     if let Some(path) = option_env!("CARGO_BIN_EXE_vtorrent-daemon") {
         return PathBuf::from(path);
     }
-    let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("target")
         .join(profile)
         .join("vtorrent-daemon")
 }
-
 
 #[cfg(all(target_os = "linux", feature = "test-util"))]
 mod btc_spv;
