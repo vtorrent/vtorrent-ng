@@ -28,7 +28,11 @@ dropping a possible output.
 - Scope is **live-process reorgs only**: the journal is discarded whenever the
   wallet clears its chain cache (which happens on every restart), so startup
   recovery is unchanged.
-- Remove the operator step for reorgs that the journal covers.
+- Remove the operator step for reorgs the journal covers. Coverage is strict
+  (the first journalled height above the fork must be exactly `fork + 1`), so a
+  shallow reorg whose replacement block did not touch the wallet still falls
+  back to the full rescan; the journal shortens the common case, it does not
+  eliminate rescans.
 - Keep the existing guarantee: a wallet that may hold funds below what it can
   reconstruct stays blocked, with its balance hidden and the critical alert up.
 - Change nothing on the wire, in consensus hashing, or in the chain store.
