@@ -117,6 +117,7 @@ export default function SwapWorkspace({ orders, onRefresh }: SwapWorkspaceProps)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [passphrase, setPassphrase] = useState('')
+  const [otpCode, setOtpCode] = useState('')
   const [preimage, setPreimage] = useState('')
   const [btcRefundAddress, setBtcRefundAddress] = useState('')
 
@@ -211,6 +212,14 @@ export default function SwapWorkspace({ orders, onRefresh }: SwapWorkspaceProps)
             onChange={event => setPassphrase(event.target.value)}
             disabled={busy}
           />
+          <input
+            type="text"
+            className="input-field"
+            placeholder="2FA code (if enabled)"
+            value={otpCode}
+            onChange={event => setOtpCode(event.target.value)}
+            disabled={busy}
+          />
           <button
             type="button"
             className="btn-primary w-full"
@@ -220,6 +229,7 @@ export default function SwapWorkspace({ orders, onRefresh }: SwapWorkspaceProps)
                 orderId: selected.id,
                 takerAddress: defaultAddress ?? '',
                 passphrase,
+                otpCode: otpCode || undefined,
               }),
               'Order matched. Fund the BTC side next.'
             )}
@@ -267,7 +277,7 @@ export default function SwapWorkspace({ orders, onRefresh }: SwapWorkspaceProps)
               className="btn-primary w-full"
               disabled={!effectiveBtcRefundAddress || !passphrase || busy}
               onClick={() => runAction(
-                () => btcFund({ orderId: selected.id, btcRefundAddress: effectiveBtcRefundAddress, passphrase }),
+                () => btcFund({ orderId: selected.id, btcRefundAddress: effectiveBtcRefundAddress, passphrase, otpCode: otpCode || undefined }),
                 'BTC funding submitted. Wait for confirmation.'
               )}
             >
@@ -305,7 +315,7 @@ export default function SwapWorkspace({ orders, onRefresh }: SwapWorkspaceProps)
               className="btn-primary w-full"
               disabled={!preimage || !passphrase || busy}
               onClick={() => runAction(
-                () => vtrClaim({ orderId: selected.id, preimage, passphrase }),
+                () => vtrClaim({ orderId: selected.id, preimage, passphrase, otpCode: otpCode || undefined }),
                 'VTR claim submitted.'
               )}
             >
@@ -331,7 +341,7 @@ export default function SwapWorkspace({ orders, onRefresh }: SwapWorkspaceProps)
               className="btn-primary w-full"
               disabled={!passphrase || busy}
               onClick={() => runAction(
-                () => btcClaim(selected.id, passphrase),
+                () => btcClaim(selected.id, passphrase, otpCode || undefined),
                 'BTC claim submitted.'
               )}
             >
@@ -352,29 +362,47 @@ export default function SwapWorkspace({ orders, onRefresh }: SwapWorkspaceProps)
       actionTitle = 'Swap expired'
       actionBody = 'The HTLC deadline passed. Refund the side you funded.'
       actionControls = (
-        <div className="flex gap-2">
-          <button
-            type="button"
-            className="flex-1 btn-secondary"
+        <div className="space-y-3">
+          <input
+            type="password"
+            className="input-field"
+            placeholder="Wallet passphrase"
+            value={passphrase}
+            onChange={event => setPassphrase(event.target.value)}
             disabled={busy}
-            onClick={() => runAction(
-              () => swapRefund(selected.id, 'vtr'),
-              'VTR refund submitted.'
-            )}
-          >
-            Refund VTR
-          </button>
-          <button
-            type="button"
-            className="flex-1 btn-secondary"
+          />
+          <input
+            type="text"
+            className="input-field"
+            placeholder="2FA code (if enabled)"
+            value={otpCode}
+            onChange={event => setOtpCode(event.target.value)}
             disabled={busy}
-            onClick={() => runAction(
-              () => swapRefund(selected.id, 'btc'),
-              'BTC refund submitted.'
-            )}
-          >
-            Refund BTC
-          </button>
+          />
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className="flex-1 btn-secondary"
+              disabled={busy || !passphrase}
+              onClick={() => runAction(
+                () => swapRefund(selected.id, 'vtr', passphrase, otpCode || undefined),
+                'VTR refund submitted.'
+              )}
+            >
+              Refund VTR
+            </button>
+            <button
+              type="button"
+              className="flex-1 btn-secondary"
+              disabled={busy || !passphrase}
+              onClick={() => runAction(
+                () => swapRefund(selected.id, 'btc', passphrase, otpCode || undefined),
+                'BTC refund submitted.'
+              )}
+            >
+              Refund BTC
+            </button>
+          </div>
         </div>
       )
     }

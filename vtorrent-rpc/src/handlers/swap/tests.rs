@@ -378,6 +378,8 @@ async fn reconciliation_does_not_infer_refund_from_expiry_and_detects_external_s
         SwapRefundRequest {
             order_id: id.clone(),
             leg: Some(SwapLeg::Vtr),
+            passphrase: Default::default(),
+            otp_code: None,
         },
     )
     .await
@@ -552,6 +554,8 @@ async fn vtr_claim_and_refund_retry_exact_signed_transactions_after_restart() {
                     SwapRefundRequest {
                         order_id: id.clone(),
                         leg: Some(SwapLeg::Vtr),
+                        passphrase: Default::default(),
+                        otp_code: None,
                     },
                 )
                 .await
@@ -582,6 +586,8 @@ async fn vtr_claim_and_refund_retry_exact_signed_transactions_after_restart() {
             SwapRefundRequest {
                 order_id: id.clone(),
                 leg: Some(SwapLeg::Vtr),
+                passphrase: Default::default(),
+                otp_code: None,
             },
         )
         .await;
@@ -1166,6 +1172,8 @@ async fn btc_refund_is_independent_and_retry_preserves_raw_transaction() {
         SwapRefundRequest {
             order_id: id.clone(),
             leg: Some(SwapLeg::Vtr),
+            passphrase: Default::default(),
+            otp_code: None,
         },
         async |_: &[u8]| panic!("VTR refund must not touch BTC"),
     )
@@ -1179,6 +1187,8 @@ async fn btc_refund_is_independent_and_retry_preserves_raw_transaction() {
         SwapRefundRequest {
             order_id: id.clone(),
             leg: Some(SwapLeg::Btc),
+            passphrase: Default::default(),
+            otp_code: None,
         },
         async |raw: &[u8]| {
             attempts.lock().unwrap().push(raw.to_vec());
@@ -1200,6 +1210,8 @@ async fn btc_refund_is_independent_and_retry_preserves_raw_transaction() {
         SwapRefundRequest {
             order_id: id.clone(),
             leg: Some(SwapLeg::Btc),
+            passphrase: Default::default(),
+            otp_code: None,
         },
         async |raw: &[u8]| {
             attempts.lock().unwrap().push(raw.to_vec());
@@ -1271,6 +1283,8 @@ async fn input_reservation_and_signed_funding_survive_wallet_reload() {
         SwapRefundRequest {
             order_id: id.clone(),
             leg: Some(SwapLeg::Btc),
+            passphrase: Default::default(),
+            otp_code: None,
         },
         async |raw: &[u8]| {
             *attempted_refund.lock().unwrap() = raw.to_vec();
@@ -1295,6 +1309,8 @@ async fn input_reservation_and_signed_funding_survive_wallet_reload() {
         SwapRefundRequest {
             order_id: id,
             leg: Some(SwapLeg::Btc),
+            passphrase: Default::default(),
+            otp_code: None,
         },
         async |raw: &[u8]| {
             assert_eq!(raw, attempted_refund.lock().unwrap().as_slice());

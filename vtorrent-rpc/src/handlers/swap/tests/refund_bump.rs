@@ -27,6 +27,8 @@ pub(super) async fn fixture(path: &std::path::Path) -> (AppState, String, [u8; 3
         SwapRefundRequest {
             order_id: id.clone(),
             leg: Some(SwapLeg::Vtr),
+            passphrase: Default::default(),
+            otp_code: None,
         },
     )
     .await
@@ -109,6 +111,8 @@ async fn refund_bump_preserves_lineage_and_retries_exact_bytes_after_restart() {
         SwapRefundRequest {
             order_id: id.clone(),
             leg: Some(SwapLeg::Vtr),
+            passphrase: Default::default(),
+            otp_code: None,
         },
     )
     .await
@@ -419,6 +423,8 @@ async fn refund_bump_observes_reorgs_and_the_original_winning() {
         SwapRefundRequest {
             order_id: id.clone(),
             leg: Some(SwapLeg::Vtr),
+            passphrase: Default::default(),
+            otp_code: None,
         },
     )
     .await

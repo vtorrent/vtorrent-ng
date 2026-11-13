@@ -428,6 +428,8 @@ pub async fn swap_refund(
     state: tauri::State<'_, AppState>,
     order_id: String,
     leg: Option<vtorrent_rpc::models::SwapLeg>,
+    passphrase: String,
+    otp_code: Option<String>,
 ) -> Result<SwapActionResult> {
     let guard = state.node.lock().await;
     let handle = guard
@@ -443,7 +445,12 @@ pub async fn swap_refund(
     }
     let result = vtorrent_rpc::handlers::swap_refund_with_state(
         &handle.rpc_state,
-        vtorrent_rpc::models::SwapRefundRequest { order_id, leg },
+        vtorrent_rpc::models::SwapRefundRequest {
+            order_id,
+            leg,
+            passphrase: passphrase.into(),
+            otp_code,
+        },
     )
     .await
     .map_err(TauriError::from)?;

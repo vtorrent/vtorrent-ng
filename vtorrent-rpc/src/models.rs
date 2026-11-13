@@ -708,6 +708,12 @@ pub struct SwapRefundRequest {
     pub order_id: String,
     #[serde(default)]
     pub leg: Option<SwapLeg>,
+    /// Wallet passphrase when the node holds an encrypted verifier.
+    #[serde(default)]
+    pub passphrase: zeroize::Zeroizing<String>,
+    /// Optional TOTP code when 2FA is enabled.
+    #[serde(default)]
+    pub otp_code: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

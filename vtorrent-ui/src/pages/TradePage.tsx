@@ -52,6 +52,7 @@ export default function TradePage() {
   const [swapOrderId, setSwapOrderId] = useState('')
   const [takerAddress, setTakerAddress] = useState('')
   const [takerPassphrase, setTakerPassphrase] = useState('')
+  const [takerOtp, setTakerOtp] = useState('')
   const [btcRefundAddress, setBtcRefundAddress] = useState('')
   const [preimage, setPreimage] = useState('')
   const [swapBusy, setSwapBusy] = useState(false)
@@ -407,6 +408,13 @@ export default function TradePage() {
                 value={takerPassphrase}
                 onChange={e => setTakerPassphrase(e.target.value)}
               />
+              <input
+                type="text"
+                className="input-field mt-2"
+                placeholder="2FA code (if enabled)"
+                value={takerOtp}
+                onChange={e => setTakerOtp(e.target.value)}
+              />
               <p className="text-xs text-slate-500 mt-1">
                 Signs with the imported wallet key — the private key never leaves the backend.
               </p>
@@ -510,9 +518,14 @@ export default function TradePage() {
 
             <div className="grid grid-cols-2 gap-2">
               <button
-                disabled={swapBusy || !swapOrderId || !takerAddress}
+                disabled={swapBusy || !swapOrderId || !takerAddress || !takerPassphrase}
                 onClick={() => runSwap(
-                  () => matchDexOrder({ orderId: swapOrderId, takerAddress, passphrase: '' }),
+                  () => matchDexOrder({
+                    orderId: swapOrderId,
+                    takerAddress,
+                    passphrase: takerPassphrase,
+                    otpCode: takerOtp || undefined,
+                  }),
                   'VTR funding submitted — confirmation pending'
                 )}
                 className="btn-primary text-xs disabled:opacity-50"
@@ -522,7 +535,7 @@ export default function TradePage() {
               <button
                 disabled={swapBusy || !swapOrderId || !btcRefundAddress || !takerPassphrase}
                 onClick={() => runSwap(
-                  () => btcFund({ orderId: swapOrderId, btcRefundAddress, passphrase: takerPassphrase }),
+                  () => btcFund({ orderId: swapOrderId, btcRefundAddress, passphrase: takerPassphrase, otpCode: takerOtp || undefined }),
                   'BTC funding broadcast attempted — verify confirmation'
                 )}
                 className="btn-primary text-xs disabled:opacity-50"
@@ -532,7 +545,7 @@ export default function TradePage() {
               <button
                 disabled={swapBusy || !swapOrderId || !preimage || !takerPassphrase}
                 onClick={() => runSwap(
-                  () => vtrClaim({ orderId: swapOrderId, preimage, passphrase: takerPassphrase }),
+                  () => vtrClaim({ orderId: swapOrderId, preimage, passphrase: takerPassphrase, otpCode: takerOtp || undefined }),
                   'VTR claim submitted — confirmation pending'
                 )}
                 className="btn-primary text-xs disabled:opacity-50"
@@ -542,7 +555,7 @@ export default function TradePage() {
               <button
                 disabled={swapBusy || !swapOrderId || !takerPassphrase}
                 onClick={() => runSwap(
-                  () => btcClaim(swapOrderId, takerPassphrase),
+                  () => btcClaim(swapOrderId, takerPassphrase, takerOtp || undefined),
                   'BTC claim broadcast attempted — verify confirmation'
                 )}
                 className="btn-primary text-xs disabled:opacity-50"
@@ -550,9 +563,9 @@ export default function TradePage() {
                 Claim BTC
               </button>
               <button
-                disabled={swapBusy || !swapOrderId}
+                disabled={swapBusy || !swapOrderId || !takerPassphrase}
                 onClick={() => runSwap(
-                  () => swapRefund(swapOrderId, 'vtr'),
+                  () => swapRefund(swapOrderId, 'vtr', takerPassphrase, takerOtp || undefined),
                   'VTR refund submitted'
                 )}
                 className="btn-secondary text-xs disabled:opacity-50"
@@ -560,9 +573,9 @@ export default function TradePage() {
                 Refund VTR
               </button>
               <button
-                disabled={swapBusy || !swapOrderId}
+                disabled={swapBusy || !swapOrderId || !takerPassphrase}
                 onClick={() => runSwap(
-                  () => swapRefund(swapOrderId, 'btc'),
+                  () => swapRefund(swapOrderId, 'btc', takerPassphrase, takerOtp || undefined),
                   'BTC refund submitted'
                 )}
                 className="btn-secondary text-xs disabled:opacity-50"

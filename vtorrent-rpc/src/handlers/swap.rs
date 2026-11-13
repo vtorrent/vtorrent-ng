@@ -805,6 +805,14 @@ async fn refund_with_broadcast(
     req: SwapRefundRequest,
     broadcast: impl AsyncFnOnce(&[u8]) -> RpcResult<[u8; 32]>,
 ) -> RpcResult<SwapActionResponse> {
+    if state.wallet_encrypted.read().await.is_some() {
+        crate::handlers::authorize_wallet_operation(
+            state,
+            req.passphrase.as_str(),
+            req.otp_code.as_deref(),
+        )
+        .await?;
+    }
     restore_btc_swap(state, &req.order_id).await?;
     let order = state
         .order_book
