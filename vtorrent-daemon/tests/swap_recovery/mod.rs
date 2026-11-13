@@ -163,7 +163,11 @@ async fn daemon_rpc_refund_bump_survives_restart_and_replaces_peer_mempool() {
     let id = historical_funding(&maker_dir, &peer_dir).await;
     let history_path = format!("/api/v1/swap/{id}/vtr-refund-history");
     let status_path = format!("/api/v1/swap/{id}/status");
-    let refund_request = json!({"order_id": id, "leg": "vtr"});
+    let refund_request = json!({
+        "order_id": id,
+        "leg": "vtr",
+        "passphrase": PASSPHRASE,
+    });
     let maker = Daemon::start(&maker_dir, "initial.log", None).await;
     let peer = Daemon::start(&peer_dir, "initial.log", Some(&maker.p2p)).await;
     let imported = post_ok(
