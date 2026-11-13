@@ -45,49 +45,26 @@ disk < 85%, no crash-looping units.
 | `StakingStopped` | wallet locked / UTXO spent / passphrase cleared | `POST /api/v1/staking/start` with address+passphrase after unlocking. |
 | `HostDiskFull` (<15%) | chain.db growth or journald bloat | `du -sh /var/lib/vtorrent/*`; `journalctl --vacuum-size=200M`. Do NOT delete chain.db (see *Chain-state recovery*). |
 | `HostOutOfMemory` | leak or co-tenant | `systemctl status vtorrent` for oom score; consider restarting the daemon during a quiet window. |
-| `BtcSpvNeverSynced` (>2h) | no compact-filter peer ever served headers; peer throttling or egress block | `curl -s localhost:22525/api/v1/btc/status`; check log for repeated `response timed out`/`early eof`. TCP to peers may succeed while requests fail — that is peer-side throttling. Let it retry; it self-cleared after 82 minutes in one observed case. If it persists past a few hours, check egress on 8333 and consider a different peer set. |
-| `BtcWalletHistoryUnavailable` | the wallet may hold funds below the retained header window; it is refusing to scan and hiding the balance | Do **not** clear the UTXO file. Read `birthday` vs `retained_floor` in the daemon log, then restart with `--btc-header-retention 0` and let the full rescan complete (see *BTC wallet recovery*). |
-| `BtcSpvScanStuck` / `BtcSpvScanStale` | a scan has run >30 min, or no successful scan in 10 min | Usually peer churn; confirm `vtorrent_btc_scan_in_progress` and that peers are connected. A long scan on a fresh node is suppressed until the chain is bootstrapped. If it persists with peers connected, capture the log line before restarting. |
+| `BtcSpvNeverSynced` (>2h) | headers have not synced; possible causes include peer or network failures | Check `/api/v1/btc/status`, daemon logs, peer connectivity, and outbound TCP port 8333. A TCP connection alone does not establish why requests failed. |
+| `BtcWalletHistoryUnavailable` | the wallet needs history older than retained headers | Preserve wallet state and follow *BTC wallet recovery*. Do not delete the UTXO file. |
+| `BtcSpvScanStuck` / `BtcSpvScanStale` | a scan has run >30 min, or no successful scan in 10 min | Check scan progress, peer connectivity, and logs. Header sync can complete before the initial wallet scan, so a long initial scan can trigger `BtcSpvScanStuck`. Preserve logs before any restart. |
 | `ProcessRssHigh` (>256 MiB, 10 min) | allocator retention or BTC scan peak | Confirm the container has `MALLOC_ARENA_MAX=2`, `MALLOC_MMAP_THRESHOLD_=131072`, `MALLOC_TRIM_THRESHOLD_=131072`; without them a BTC fleet peaks ~280 MiB. `scripts/soak-status.sh` warns when they are missing. |
 
 
 ## BTC wallet recovery
 
-The SPV wallet keeps chain-derived state and, since 2026-11, a per-height undo
-journal. The states below need different handling.
+If `balance_hidden` is true or `BtcWalletHistoryUnavailable` fires, preserve
+the daemon logs, configuration, and all BTC wallet state files. Escalate before
+restarting or changing retention. A covered reorg can hide the balance during
+recovery; unavailable history may require more header retention and a rescan.
+The correct recovery depends on the wallet history and swap state.
 
-**`balance_hidden: true` / `BtcWalletHistoryUnavailable`.** The wallet is
-refusing to report or spend a balance it cannot fully reconstruct. Two causes:
-
-- *Covered reorg* — the journal replayed to the fork and the wallet is rescanning
-  from there. This resolves by itself; do not restart. `balance_hidden` clears
-  when the scan finishes.
-- *History below the retained floor* — the alert is critical and will not clear
-  on its own. Restart with unbounded headers and rescan:
-
-  ```bash
-  systemctl stop vtorrent
-  # edit /etc/systemd/system/vtorrent.service: add --btc-header-retention 0
-  systemctl daemon-reload && systemctl start vtorrent
-  curl -s localhost:22525/api/v1/btc/status   # balance_hidden false, then balance returns
-  ```
-
-  Budget the rescan: a 100,000-block window took 13–40 minutes on the soak host.
-  Once the balance matches expectations, raise retention back to 100,000 and
-  restart to reclaim memory, or leave it unbounded if the host has headroom.
-
-**Journal recovery abandoned.** If the retained floor advances past the resumed
-cursor, the daemon clears the journal and falls back to a full rescan; the log
-says `BTC journal recovery abandoned`. No action unless the alert also fires.
-
-**Restored reservation for a swap input.** A reorg that undoes the spend of a
-swap funding input restores it as *reserved*, not spendable. That is intended. A
-contract persisted before `input_txid` tracking keeps such reservations
-indefinitely; if `release_swap_reservation` returns false and no contract exists,
-the input recovers only through a full rescan (`--btc-header-retention 0`).
-
-**Do not** delete or hand-edit `btc_utxos-<network>-<id>.json`: it carries swap
-contracts, signed refund transactions, and reservations, not just the balance.
+Do not delete, rename, or hand-edit either `btc_utxos-<network>.json` or
+`btc_utxos-<network>-<id>.json`. These files can contain reservations, swap
+contracts, and signed refunds as well as chain-derived state. The daemon does
+not automatically migrate the old network-only file to the seed-scoped path.
+Do not assume that a rescan restores swap metadata or releases a legacy
+reservation. A safe migration and recovery procedure still needs validation.
 
 ## Procedure: Rolling Daemon Upgrade (seeds)
 

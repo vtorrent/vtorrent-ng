@@ -1,5 +1,6 @@
 [package]
 name = "vtorrent-daemon"
+default-run = "vtorrent-daemon"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

@@ -202,6 +202,27 @@ async fn main() -> anyhow::Result<()> {
 
     std::fs::create_dir_all(&data_dir)?;
 
+    if cli.btc_seed.is_some() {
+        let label = if cli.btc_regtest {
+            "regtest"
+        } else {
+            "mainnet"
+        };
+        let legacy_path = data_dir.join(format!("btc_utxos-{label}.json"));
+        match std::fs::symlink_metadata(&legacy_path) {
+            Ok(_) => anyhow::bail!(
+                "legacy BTC wallet state exists at {}; preserve it and resolve its ownership before starting the BTC wallet",
+                legacy_path.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => anyhow::bail!(
+                "cannot inspect legacy BTC wallet state at {}: {}",
+                legacy_path.display(),
+                error
+            ),
+        }
+    }
+
     // ── Open (or create) the persistent block store ───────────────────────────
     let chain_db_path = data_dir.join("chain.db");
     let block_store = Arc::new(BlockStore::open(&chain_db_path).map_err(|e| {

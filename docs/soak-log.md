@@ -3179,15 +3179,19 @@ than shipping around them.
 - **Bootstrap paged as a stuck scan.** `BtcSpvScanStuck` fired twice during the
   first sync (13 and 8 minutes over its 30-minute `for:`) because a fresh node's
   initial 100,000-block BIP-158 scan legitimately runs that long. The rule now
-  requires `vtorrent_btc_synced == 1`, so it only reports a scan that stalls
-  after the chain is bootstrapped; `BtcSpvNeverSynced` still covers a bootstrap
-  that never finishes. A `promtool` case pins silence while `synced == 0`.
+  requires `vtorrent_btc_synced == 1`. That flag reflects header sync, which
+  can complete before the initial wallet scan. The existing `promtool` case
+  covers only `synced == 0` and does not establish suppression of a long
+  initial scan. `BtcSpvNeverSynced` covers missing header sync, not a stuck
+  wallet scan after headers sync.
 - **Two wallets shared one UTXO file.** The daemon used
   `btc_utxos-{network}.json`, so switching `--btc-seed` on one data directory
   adopted the previous wallet's cursor, reservations, contracts, `birthday`, and
   `seen_funds`. The filename now carries the same seed-derived id the desktop
   path already used (`sha256("vtorrent-btc-wallet-id-v1" || seed)[..8]`), with a
-  unit test that two seeds never collide and the same seed is stable.
+  unit test for two distinct seeds and a stable path for the same seed. The
+  daemon does not migrate the old network-only file; existing wallet state and
+  swap metadata require a safe migration procedure before upgrade.
 
 Because the image changes, the 168-hour window restarts on the next release
 candidate; the `d2e65a8` fleet's 21 hours remain evidence for that commit, not
@@ -3207,8 +3211,9 @@ that commit only.
 Installed `vtorrent-heartbeat.timer` on vtr-seed1 with
 `scripts/install-heartbeat.sh`, pointing at an external dead-man check
 (5-minute period, 5-minute grace). The ping URL exists only in
-`/etc/vtorrent/heartbeat.env` (0600) and is written via `scp`, so it never
-appears in a process list.
+`/etc/vtorrent/heartbeat.env` (0600) and was written via `scp`. Correction:
+the URL was also shared in chat and passed to the installer as an argument,
+where it could appear in a process list. Rotate it and reverify the replacement.
 
 Verification was destructive on purpose:
 

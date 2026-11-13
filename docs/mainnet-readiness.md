@@ -244,17 +244,28 @@ window ran on, and that commit must equal the release commit.
       restart, ban-list inspection, chain-state recovery, RPC key rotation,
       seed failover/DNS changes, reorg response, and alert triage. Formal
       on-call rotation (who carries the pager) is a launch-week decision.
-- [x] **Seed1 dead-man heartbeat** — live since 2026-11-13. Prometheus and
+- [~] **Seed1 dead-man heartbeat** — live since 2026-11-13. Prometheus and
       Alertmanager both run on seed1, so nothing on that host can report that
       seed1 itself is gone; `heartbeat.sh` on seed1 pings an external dead-man
       check (5-minute period, 5-minute grace) every five minutes, but only while
       `monitor-ready.sh` passes. Silence is the alarm. Verified end to end:
       stopping the timer at 05:27:03Z produced exactly one alert around 05:37Z,
       and restarting it at 05:39:32Z produced exactly one recovery
-      notification, both confirmed by the operator. Installed with
-      `scripts/install-heartbeat.sh`; the ping URL lives only in
-      `/etc/vtorrent/heartbeat.env` (0600) and is never in argv. The host-to-host
-      SSH alternative (`deadman.sh`) remains documented but unused.
+      notification, both confirmed by the operator. The ping URL was shared in
+      chat and passed as an installer argument. Rotate it, install its replacement
+      without exposing it in arguments, and verify alert and recovery again.
+      The host-to-host SSH alternative (`deadman.sh`) remains documented but unused.
+- [ ] **BTC daemon wallet migration** — the seed-scoped wallet path does not
+      load the former `btc_utxos-<network>.json` file. Establish a safe migration
+      and recovery procedure for existing state, including swap metadata, before
+      upgrading funded wallets. An unshipped startup guard refuses to open a BTC
+      wallet when the corresponding legacy path exists. An experimental
+      `btc-state-stage` binary can stage and archive exact bytes, but it does not
+      prove ownership or stop other writers and has not had real interruption
+      testing or independent review.
+- [ ] **BTC scan alert bootstrap behavior** — verify the alert against the real
+      header-sync and initial-scan sequence. Header sync can finish before the
+      wallet scan; `vtorrent_btc_synced` alone does not identify scan completion.
 - [~] **Incident comms channel** — templates, severity policy, and launch-day
       sequence drafted in `docs/incident-comms.md`. The status page, Telegram
       channel, and X account still need to be created or confirmed and
