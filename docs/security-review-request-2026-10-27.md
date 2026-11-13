@@ -10,9 +10,11 @@ already accepted so it is not re-litigated.
 
 ## Review target
 
-Review the candidate `70ea7b9dfb3c65dcfb30cb03ec8c168c5d3cbffd` plus the code
-deltas through `bae6291823be8f067158af6e4e3edfe6771b4a83`. The final code
-commit is the review head.
+Review the candidate `b729e364d9ea7701ba27e423d1248b96726aaf27`. The final code
+commit is the review head; it is the image in the 168-hour soak.
+
+The table below records the earlier deltas. Commits after `bae6291` are listed
+in the second table. The full sequence is `git log bae6291..b729e36`.
 
 The deltas added after `dd98176` are the reason this request was refreshed; the
 original 2026-10-27 scope predates them.
@@ -46,6 +48,16 @@ original 2026-10-27 scope predates them.
 | `f9f1b03` | `f9f1b038f973343695d726c8171d81cc5404b11b` | BTC SPV reorg resumes the rescan at the fork height; lag gauge omitted while the scan cursor is 0 |
 | `bae6291` | `bae6291823be8f067158af6e4e3edfe6771b4a83` | Ops: soak sign-off collector |
 
+Deltas after the earlier review head:
+
+| Commit | Purpose |
+|---|---|
+| `aec1a76` | Per-height BTC wallet undo journal |
+| `d6b2767` | Replay the undo journal on a covered reorg |
+| `d2e65a8` | Atomic, fallible send and reservation persistence |
+| `a66e4bc` | Alert when BTC SPV never completes a first sync |
+| `b729e36` | Seed-derived UTXO filename; quiet the bootstrap scan alert |
+
 Docs-only commits in the delta are evidence, not implementation changes. The
 `ff148fd` review findings are documented in
 `docs/2026-10-29_codebase-wide-review.md`.
@@ -55,7 +67,7 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout bae6291823be8f067158af6e4e3edfe6771b4a83
+git checkout b729e364d9ea7701ba27e423d1248b96726aaf27
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
@@ -63,13 +75,14 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 cargo test --workspace --all-features
 ```
 
-The last full local `--all-features` workspace run passed 49 groups, 1,135
-tests, zero failures, and eight ignored manual release-mode tests; CI repeats the
-`--all-features` suite on every push and is green through `f9f1b03`. The tree
-after `f9f1b03` changes only docs, scripts, and the soak tooling, so a reviewer
-can substitute its own run. Set `VTORRENT_TOTP_STATE_DIR` to a fresh directory
-before running the suite so the host-scoped TOTP replay state does not collide
-with an existing installation.
+The `b729e36` workspace run passed 49 groups, 1,218 tests, zero failures. CI
+repeats the `--all-features` suite on every push. Set `VTORRENT_TOTP_STATE_DIR`
+to a fresh directory before running the suite so the host-scoped TOTP replay
+state does not collide with an existing installation.
+
+The unshipped legacy-wallet guard and progress-based scan alert are not in this
+head and are out of scope. The legacy-file migration remains an open release
+risk; do not treat this review as covering it.
 
 ## Scope emphasis
 

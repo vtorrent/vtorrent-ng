@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `bae6291`
+Subject: Independent security review — vTorrent-NG mainnet candidate `b729e36`
 
 Hello,
 
@@ -18,8 +18,14 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `bae6291823be8f067158af6e4e3edfe6771b4a83`
+**Review head:** `b729e364d9ea7701ba27e423d1248b96726aaf27`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
+
+The code under review is `b729e36`, the release candidate in the 168-hour
+soak. Later commits on `main` are documentation and operations. Two later code
+changes are intentionally **out of scope**: a fail-closed guard for legacy BTC
+wallet files and a progress-based stuck-scan alert. They are unshipped and will
+need a follow-up review before they reach a release candidate.
 
 That document lists the exact hashes, the verification commands, and what we
 consider in scope. Nothing is required beyond a clone and a Rust toolchain; no
@@ -37,6 +43,15 @@ credentials or live infrastructure access are needed.
   and an authenticated dead-man script.
 - `f9f1b03` — a BTC SPV reorg now resumes the wallet rescan at the fork height
   instead of re-deriving the whole retained header window.
+- `aec1a76` through `d2e65a8` — a per-height BTC wallet undo journal, sends
+  tracked outside the height journal, hidden balances during recovery, and
+  fail-closed persistence for sends and reservation restores. Design and known
+  limits are in `docs/superpowers/specs/2026-11-09-btc-undo-journal-design.md`.
+- `a66e4bc` and `b729e36` — BTC health metrics for a first sync that never
+  completes, and a seed-derived UTXO filename so two wallets on one data
+  directory cannot adopt each other's cursor, reservations, or swap contracts.
+  The seed-scoped path does not migrate the former network-only file; that
+  migration remains open and is excluded from this review.
 
 **Where we would most value scepticism:**
 
@@ -53,9 +68,11 @@ credentials or live infrastructure access are needed.
 3. **The dead-man / heartbeat monitoring path**, not for its crypto but for its
    failure modes: whether silence-based alerting can be defeated by anything
    short of a compromised host.
-4. **BTC SPV reorg handling.** Reorg rollback was recently narrowed to the fork
-   height. We want a check that outputs above the fork are dropped without
-   losing reservations, swap contracts, or the pending-transaction map.
+4. **BTC SPV reorg handling and the undo journal.** Reorg rollback was narrowed
+   to the fork height, then extended with a live-process undo journal. We want a
+   check that outputs above the fork are dropped without losing reservations,
+   swap contracts, pending transactions, or a restored reservation's prior
+   state, and that an interrupted or uncovered replay fails closed.
 5. **The R1 cold-staking rule and wallet encryption**, with an explicit verdict
    either way.
 
@@ -67,8 +84,14 @@ credentials or live infrastructure access are needed.
 - The 256 MiB RSS budget assumes three pinned glibc allocator variables; without
   them a BTC-enabled fleet peaked at 279.7 MiB. That is a deployment
   requirement, not a code defect.
-- Two production operations remain outstanding and are not part of the code
-  review: installing the dead-man heartbeat timer on seed1, and exercising it.
+- The seed1 dead-man heartbeat was installed and exercised on 2026-11-13: a
+  stopped timer produced one alert and restoring it produced one recovery. Its
+  credential was exposed during installation and is being rotated; that is an
+  operational fix, not a code-review item.
+- The legacy BTC wallet file has no seed identity, and the seed-scoped path does
+  not migrate it. This is a known open risk for existing wallets, not accepted
+  for release without a reviewed migration. It is outside this review's code
+  head.
 
 **Deliverable.** Findings with severity, reproduction, and a concrete fix; an
 explicit verdict on the R1 rule and wallet encryption; and a residual-risk
@@ -84,7 +107,8 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `bae6291` or update it; the scope document and
-  this note must name the same commit.
+- Confirm the review head is still `b729e36` or update it; the scope document and
+  this note must name the same commit. Do not substitute a later local commit
+  without also updating both documents and the soak provenance.
 - Decide who receives it. Sending it is the step that actually opens the gate —
   drafting it does not.
