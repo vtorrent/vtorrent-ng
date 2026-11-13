@@ -61,6 +61,30 @@ pub(crate) fn wallet_btc_seed(wallet: &vtorrent_wallet::wallet::Wallet) -> Optio
         })
 }
 
+fn ensure_no_legacy_btc_wallet(wallet_path: Option<&std::path::Path>) -> crate::error::Result<()> {
+    let mut candidates = Vec::new();
+    if let Some(parent) = wallet_path.and_then(|path| path.parent()) {
+        candidates.push(parent.join("btc_utxos.json"));
+    } else {
+        candidates.push(std::env::temp_dir().join("vtorrent_btc_utxos.json"));
+    }
+    for path in candidates {
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => {
+                return Err(crate::error::TauriError::Wallet(format!(
+                    "legacy BTC wallet state exists at {}; preserve it and resolve its ownership before starting the BTC wallet",
+                    path.display()
+                )))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(crate::error::TauriError::Io(error.to_string()));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn btc_utxo_path(
     wallet_path: Option<&std::path::Path>,
     network: bitcoin::Network,
@@ -218,6 +242,7 @@ pub async fn start_node(
                 .wallet_path
                 .lock()
                 .map_err(|_| TauriError::WalletLocked)?;
+            ensure_no_legacy_btc_wallet(wp.as_deref())?;
             btc_utxo_path(wp.as_deref(), btc_network, &seed)
         };
         match vtorrent_btc::wallet::BtcWallet::with_persistence(
@@ -678,6 +703,20 @@ pub async fn get_transactions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_legacy_desktop_btc_state() {
+        let dir = std::env::temp_dir().join(format!("vtr-tauri-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let wallet = dir.join("wallet.vtr");
+        std::fs::write(&wallet, b"wallet").unwrap();
+        std::fs::write(dir.join("btc_utxos.json"), b"legacy").unwrap();
+        assert!(ensure_no_legacy_btc_wallet(Some(&wallet)).is_err());
+        std::fs::remove_file(dir.join("btc_utxos.json")).unwrap();
+        assert!(ensure_no_legacy_btc_wallet(Some(&wallet)).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn btc_utxo_path_is_scoped_by_wallet_seed() {

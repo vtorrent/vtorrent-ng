@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use tokio::sync::Mutex as TokioMutex;
 use vtorrent_rpc::state::AppState as RpcAppState;
-use vtorrent_wallet::wallet::Wallet;
+use vtorrent_wallet::wallet::{Wallet, WalletFile};
 
 /// A signed transaction prepared for a reviewed send quote.
 pub struct PreparedSend {
@@ -76,6 +76,18 @@ impl AppState {
                 .to_string();
             (wif, address)
         };
+        let wallet_path = self
+            .wallet_path
+            .lock()
+            .map_err(|_| crate::error::TauriError::WalletLocked)?
+            .clone()
+            .ok_or(crate::error::TauriError::WalletLocked)?;
+        let json = std::fs::read_to_string(&wallet_path)
+            .map_err(|error| crate::error::TauriError::Io(error.to_string()))?;
+        let file: WalletFile = serde_json::from_str(&json)
+            .map_err(|error| crate::error::TauriError::Wallet(error.to_string()))?;
+        *rpc.wallet_encrypted.write().await = Some(file.encrypted);
+
         let same_key = rpc
             .wallet_wif
             .read()

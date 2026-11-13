@@ -1064,6 +1064,7 @@ pub async fn send_btc(
     let handle = guard
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    state.sync_swap_wallet(&handle.rpc_state).await?;
 
     // Spending the node's BTC wallet requires an unlocked wallet, matching the
     // VTR path. The desktop command must enforce this too: it talks to the
