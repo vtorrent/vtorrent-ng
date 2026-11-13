@@ -400,7 +400,7 @@ async fn integration_dex_place_and_cancel_order() {
             "maker_address": "VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k",
             "offer_amount_satoshis": 1_000_000u64,
             "offer_asset": "VTR",
-            "request_amount_satoshis": 100u64,
+            "request_amount_satoshis": 100_000u64,
             "request_asset": "BTC",
             "expiry_secs": 3600u64,
             "passphrase": "test"
