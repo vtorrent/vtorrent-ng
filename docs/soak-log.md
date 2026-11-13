@@ -3242,3 +3242,20 @@ relay all live on that host, so previously nothing could report its loss. The
 check is a readiness heartbeat, not a delivery proof — a compromised but running
 seed1 can still ping, and notification delivery through Alertmanager → ntfy was
 verified separately on 2026-10-29.
+
+## 2026-11-13 — final candidate soak starts on 6a49727
+
+The `b729e36` fleet was retired at **19:19Z** after reaching height 2,503 with
+zero BTC scan errors, no active alerts, and zero restarts. Its deployment
+manifest, samples, and logs remain under `/tmp/opencode/release-b729e36/`.
+It is evidence for `b729e36` only and does not cover the fund-safety, send-auth,
+refund-auth, migration, P2P, or deadline changes.
+
+Final candidate: commit
+`6a49727` (the tree after the cold-key export fixture fix), image
+`vtorrent/node:release-candidate-6a49727`
+(`sha256:7116f0b639b54c461a1da5926b33c713bda0c639c4a81b7a02460546a584310b`),
+started **2026-11-13T19:20:15Z**; **window ends 2026-11-20T19:20:15Z**.
+Three nodes, BTC mainnet SPV, allocator pinned, RPC 25651–25653, Prometheus on
+`23973` with 16 healthy rules. Initial check: all nodes at height 3, two peers
+each, zero alerts.
