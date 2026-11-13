@@ -135,11 +135,11 @@ pub fn generate_cold_stake_keys(locktime: u32, label: Option<&str>) -> Result<Co
 fn generate_private_key() -> Result<PrivateKey> {
     use rand::RngCore;
     use secp256k1::SecretKey;
-    let mut bytes = [0u8; 32];
+    let mut bytes = zeroize::Zeroizing::new([0u8; 32]);
     for _ in 0..1000 {
-        rand::thread_rng().fill_bytes(&mut bytes);
-        if SecretKey::from_slice(&bytes).is_ok() {
-            return PrivateKey::from_bytes(bytes, true).map_err(WalletError::Core);
+        rand::thread_rng().fill_bytes(&mut *bytes);
+        if SecretKey::from_slice(&*bytes).is_ok() {
+            return PrivateKey::from_bytes(*bytes, true).map_err(WalletError::Core);
         }
     }
     Err(WalletError::KeyGeneration(
@@ -263,7 +263,8 @@ impl Wallet {
     /// cannot leave a truncated wallet and the key material is never
     /// world-readable — matches the RPC persistence path's guarantees.
     pub fn save(&self, path: &std::path::Path) -> Result<()> {
-        let mut plaintext = zeroize::Zeroizing::new(Vec::new());
+        let capacity = 1024 + self.data.keys.len().saturating_mul(512);
+        let mut plaintext = zeroize::Zeroizing::new(Vec::with_capacity(capacity));
         serde_json::to_writer(&mut *plaintext, &self.data)
             .map_err(|e| WalletError::Serialization(e.to_string()))?;
         let encrypted = encrypt_wallet(&plaintext, &self.passphrase)?;
@@ -325,11 +326,11 @@ impl Wallet {
         use rand::RngCore;
         use secp256k1::SecretKey;
 
-        let mut bytes = [0u8; 32];
+        let mut bytes = zeroize::Zeroizing::new([0u8; 32]);
         let mut attempts = 0u32;
         loop {
-            rand::thread_rng().fill_bytes(&mut bytes);
-            if SecretKey::from_slice(&bytes).is_ok() {
+            rand::thread_rng().fill_bytes(&mut *bytes);
+            if SecretKey::from_slice(&*bytes).is_ok() {
                 break;
             }
             attempts += 1;
@@ -340,7 +341,7 @@ impl Wallet {
             }
         }
 
-        let privkey = PrivateKey::from_bytes(bytes, true)?;
+        let privkey = PrivateKey::from_bytes(*bytes, true)?;
         let pubkey = privkey.public_key().map_err(WalletError::Core)?;
         let address = Address::from_pubkey(&pubkey, true, mainnet::PUBKEY_ADDRESS_PREFIX);
         let address_str = address.to_string();
@@ -632,7 +633,8 @@ impl Wallet {
 
     /// Serialize the wallet to an in-memory JSON string (for testing).
     pub fn to_json_file(&self, passphrase: &str) -> Result<String> {
-        let mut plaintext = zeroize::Zeroizing::new(Vec::new());
+        let capacity = 1024 + self.data.keys.len().saturating_mul(512);
+        let mut plaintext = zeroize::Zeroizing::new(Vec::with_capacity(capacity));
         serde_json::to_writer(&mut *plaintext, &self.data)
             .map_err(|e| WalletError::Serialization(e.to_string()))?;
         let encrypted = encrypt_wallet(&plaintext, passphrase)?;

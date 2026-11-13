@@ -1004,7 +1004,10 @@ async fn main() -> anyhow::Result<()> {
             })
             .await
             {
-                Ok(Ok(text)) => zeroize::Zeroizing::new(text.trim_end().to_string()),
+                Ok(Ok(text)) => {
+                    let text = zeroize::Zeroizing::new(text);
+                    zeroize::Zeroizing::new(text.trim_end().to_string())
+                }
                 Ok(Err(e)) => {
                     tracing::error!(
                         "Wallet auto-unlock failed: cannot read {}: {}",

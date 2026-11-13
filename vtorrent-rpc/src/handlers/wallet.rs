@@ -253,7 +253,7 @@ pub async fn import_wallet(
         otp_secret: req.otp_secret,
         last_totp_step: None,
     };
-    let mut plaintext = zeroize::Zeroizing::new(Vec::new());
+    let mut plaintext = zeroize::Zeroizing::new(Vec::with_capacity(4096));
     serde_json::to_writer(&mut *plaintext, &data)
         .map_err(|_| RpcError::Internal("Unable to serialize hot wallet".into()))?;
     let encrypted = vtorrent_wallet::encryption::encrypt_wallet(&plaintext, &req.passphrase)

@@ -237,6 +237,7 @@ pub async fn start_node(
         wallet_guard.as_ref().and_then(wallet_btc_seed)
     };
     if let Some(seed) = btc_seed {
+        let seed = zeroize::Zeroizing::new(seed);
         let utxo_path = {
             let wp = state
                 .wallet_path
@@ -246,7 +247,7 @@ pub async fn start_node(
             btc_utxo_path(wp.as_deref(), btc_network, &seed)
         };
         match vtorrent_btc::wallet::BtcWallet::with_persistence(
-            seed,
+            *seed,
             btc_network,
             utxo_path.clone(),
         ) {
