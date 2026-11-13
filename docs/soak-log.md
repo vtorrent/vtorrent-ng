@@ -3201,3 +3201,26 @@ started `2026-11-12T00:39:23Z`; **window ends `2026-11-19T00:39:23Z`**.
 Three nodes, BTC mainnet SPV, allocator pinned, RPC 25551–25553, Prometheus on
 23972 with 14 healthy rules. The `d2e65a8` fleet's 23 hours remain evidence for
 that commit only.
+
+## 2026-11-13 — seed1 dead-man heartbeat installed and verified
+
+Installed `vtorrent-heartbeat.timer` on vtr-seed1 with
+`scripts/install-heartbeat.sh`, pointing at an external dead-man check
+(5-minute period, 5-minute grace). The ping URL exists only in
+`/etc/vtorrent/heartbeat.env` (0600) and is written via `scp`, so it never
+appears in a process list.
+
+Verification was destructive on purpose:
+
+- First ping succeeded at 05:26:53Z (`systemctl show -p Result` → `success`).
+- Timer stopped at **05:27:03Z**; `journalctl` shows **no** service runs until
+  the restore, and the external check raised **exactly one alert** around
+  **05:37Z** (period + grace from the last ping).
+- Timer restarted and one ping sent at **05:39:32Z** → **exactly one recovery
+  notification**, both confirmed by the operator.
+
+This closes the "seed1 itself is gone" gap: Prometheus, Alertmanager and the
+relay all live on that host, so previously nothing could report its loss. The
+check is a readiness heartbeat, not a delivery proof — a compromised but running
+seed1 can still ping, and notification delivery through Alertmanager → ntfy was
+verified separately on 2026-10-29.

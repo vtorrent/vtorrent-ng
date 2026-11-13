@@ -244,16 +244,17 @@ window ran on, and that commit must equal the release commit.
       restart, ban-list inspection, chain-state recovery, RPC key rotation,
       seed failover/DNS changes, reorg response, and alert triage. Formal
       on-call rotation (who carries the pager) is a launch-week decision.
-- [ ] **Seed1 dead-man heartbeat** — Prometheus and Alertmanager both run on
-      seed1, so nothing on that host can report that seed1 itself is gone.
-      `deploy/seeds-monitoring/heartbeat.sh` pings an external dead-man service
-      every five minutes, but only while `monitor-ready.sh` passes; silence is
-      the alarm. Artifacts and a 5-minute timer are ready, and the hermetic
-      tests pass. Remaining: create the external check, install the timer on
-      seed1 with `/etc/vtorrent/heartbeat.env` at 0600, and confirm that
-      stopping the timer produces one alert and restoring it clears it. The
-      host-to-host SSH alternative (`deadman.sh`) is documented but not part of
-      the launch plan.
+- [x] **Seed1 dead-man heartbeat** — live since 2026-11-13. Prometheus and
+      Alertmanager both run on seed1, so nothing on that host can report that
+      seed1 itself is gone; `heartbeat.sh` on seed1 pings an external dead-man
+      check (5-minute period, 5-minute grace) every five minutes, but only while
+      `monitor-ready.sh` passes. Silence is the alarm. Verified end to end:
+      stopping the timer at 05:27:03Z produced exactly one alert around 05:37Z,
+      and restarting it at 05:39:32Z produced exactly one recovery
+      notification, both confirmed by the operator. Installed with
+      `scripts/install-heartbeat.sh`; the ping URL lives only in
+      `/etc/vtorrent/heartbeat.env` (0600) and is never in argv. The host-to-host
+      SSH alternative (`deadman.sh`) remains documented but unused.
 - [~] **Incident comms channel** — templates, severity policy, and launch-day
       sequence drafted in `docs/incident-comms.md`. The status page, Telegram
       channel, and X account still need to be created or confirmed and
