@@ -1621,6 +1621,32 @@ mod tests {
             submitted.try_recv().is_ok(),
             "the reviewed transaction must be relayed"
         );
+
+        // A 2FA wallet must not send without a code, even with the correct
+        // passphrase.
+        {
+            use vtorrent_wallet::otp::TotpSecret;
+            let mut guard = state.wallet.lock().unwrap();
+            let wallet = guard.as_mut().unwrap();
+            let config = wallet.enable_2fa().unwrap();
+            let secret = TotpSecret::from_base32(&config.secret_base32()).unwrap();
+            let code = secret.current_code().unwrap();
+            assert!(wallet.confirm_pending_2fa(&code).unwrap());
+        }
+        let second_quote = quote_vtr(state.clone(), recipient.clone(), COIN)
+            .await
+            .unwrap();
+        let missing_otp = send_vtr(
+            state.clone(),
+            recipient.clone(),
+            COIN,
+            Some(second_quote.quote_id),
+            "pw".into(),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(missing_otp, TauriError::TwoFAFailed));
     }
 
     #[test]
