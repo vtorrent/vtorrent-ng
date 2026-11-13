@@ -54,9 +54,11 @@ interface SendModalProps {
 }
 
 function SendModal({ onClose, onSent }: SendModalProps) {
-  const { sendVtr, quoteVtr } = useWallet()
+  const { sendVtr, quoteVtr, has2FA } = useWallet()
   const [toAddress, setToAddress] = useState('')
   const [amount, setAmount] = useState('')
+  const [passphrase, setPassphrase] = useState('')
+  const [otpCode, setOtpCode] = useState('')
   const [status, setStatus] = useState<SendStatus>('idle')
   const [txid, setTxid] = useState('')
   const [errorMsg, setErrorMsg] = useState('')
@@ -65,6 +67,7 @@ function SendModal({ onClose, onSent }: SendModalProps) {
 
   const amountSats = parseVtrAmount(amount)
   const isValid = toAddress.trim().length > 10 && amountSats > 0
+  const canSend = passphrase.length > 0 && (!has2FA || otpCode.trim().length > 0)
 
   const handleReview = async () => {
     if (!isValid) return
@@ -83,11 +86,17 @@ function SendModal({ onClose, onSent }: SendModalProps) {
   }
 
   const handleSend = async () => {
-    if (!isValid || !quote) return
+    if (!isValid || !quote || !canSend) return
     setStatus('sending')
     setErrorMsg('')
     try {
-      const result = await sendVtr(toAddress.trim(), amountSats, quote.quoteId)
+      const result = await sendVtr(
+        toAddress.trim(),
+        amountSats,
+        quote.quoteId,
+        passphrase,
+        has2FA ? otpCode.trim() : undefined
+      )
       setTxid(result)
       setStatus('success')
       onSent()
@@ -184,6 +193,39 @@ function SendModal({ onClose, onSent }: SendModalProps) {
                 </div>
               </div>
 
+              <div className="space-y-3 border-t border-navy-800 pt-3">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1.5">
+                    Wallet passphrase
+                  </label>
+                  <input
+                    type="password"
+                    value={passphrase}
+                    onChange={e => setPassphrase(e.target.value)}
+                    placeholder="Required for every send"
+                    className="w-full bg-navy-800 border border-navy-700 rounded-lg px-3 py-2.5 text-sm text-white placeholder-gray-700 focus:outline-none focus:border-vtorrent-600 transition-colors"
+                    disabled={status === 'sending'}
+                  />
+                </div>
+                {has2FA && (
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1.5">
+                      2FA code
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      value={otpCode}
+                      onChange={e => setOtpCode(e.target.value)}
+                      placeholder="6-digit code"
+                      className="w-full bg-navy-800 border border-navy-700 rounded-lg px-3 py-2.5 text-sm text-white font-mono placeholder-gray-700 focus:outline-none focus:border-vtorrent-600 transition-colors"
+                      disabled={status === 'sending'}
+                    />
+                  </div>
+                )}
+              </div>
+
               {status === 'error' && errorMsg && (
                 <div className="flex items-start gap-2 bg-red-900/20 border border-red-800/30 rounded-lg px-3 py-2.5">
                   <AlertCircle size={14} className="text-red-400 flex-shrink-0 mt-0.5" />
@@ -205,7 +247,7 @@ function SendModal({ onClose, onSent }: SendModalProps) {
                 </button>
                 <button
                   onClick={handleSend}
-                  disabled={status === 'sending'}
+                  disabled={status === 'sending' || !canSend}
                   className="flex-1 btn-primary flex items-center justify-center gap-2"
                 >
                   {status === 'sending' ? (

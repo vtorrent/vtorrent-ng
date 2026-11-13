@@ -76,7 +76,13 @@ interface WalletContextType extends WalletState {
   disable2FA: (otpCode: string) => Promise<void>
   generateAddress: (label?: string) => Promise<string>
   quoteVtr: (toAddress: string, amountSatoshis: number) => Promise<VtrQuote>
-  sendVtr: (toAddress: string, amountSatoshis: number, quoteId?: string) => Promise<string>
+  sendVtr: (
+    toAddress: string,
+    amountSatoshis: number,
+    quoteId: string | undefined,
+    passphrase: string,
+    otpCode?: string
+  ) => Promise<string>
   createBackup: (passphrase: string, otpCode?: string) => Promise<BackupInfo>
   verifyBackup: (backupBase64: string, passphrase: string, otpCode?: string) => Promise<BackupPreview>
   restoreBackup: (
@@ -440,12 +446,16 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const sendVtr = useCallback(async (
     toAddress: string,
     amountSatoshis: number,
-    quoteId?: string
+    quoteId: string | undefined,
+    passphrase: string,
+    otpCode?: string
   ): Promise<string> => {
     const txid = await invoke<string>('send_vtr', {
       toAddress,
       amountSatoshis,
       quoteId: quoteId ?? null,
+      passphrase,
+      otpCode: otpCode ?? null,
     })
     return txid
   }, [])

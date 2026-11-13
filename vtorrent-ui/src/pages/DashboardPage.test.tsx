@@ -22,6 +22,7 @@ vi.mock('../hooks/useWallet', () => ({
     defaultAddress: 'VTestAddress1234567890',
     totalBalance: 100_000_000,
     legacyImportCount: 0,
+    has2FA: false,
     generateAddress: vi.fn(),
     quoteVtr: wallet.quote,
     sendVtr: wallet.send,
@@ -97,11 +98,19 @@ describe('send review', () => {
     expect(screen.getByText('0.00001 VTR')).toBeInTheDocument()
     expect(screen.getByText('1.50001 VTR')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm & Send' }))
+    const confirm = screen.getByRole('button', { name: 'Confirm & Send' })
+    expect(confirm).toBeDisabled()
+    fireEvent.change(screen.getByPlaceholderText('Required for every send'), {
+      target: { value: 'test-pass' },
+    })
+    expect(confirm).not.toBeDisabled()
+    fireEvent.click(confirm)
     await waitFor(() => expect(wallet.send).toHaveBeenCalledWith(
       'VRecipient1234567890',
       150_000_000,
-      'quote-1'
+      'quote-1',
+      'test-pass',
+      undefined
     ))
     expect(await screen.findByText('Transaction Sent')).toBeInTheDocument()
     expect(screen.getByText('a'.repeat(64))).toBeInTheDocument()

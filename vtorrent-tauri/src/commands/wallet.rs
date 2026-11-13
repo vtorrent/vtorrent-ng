@@ -690,6 +690,8 @@ pub async fn send_vtr(
     to_address: String,
     amount_satoshis: u64,
     quote_id: Option<String>,
+    passphrase: String,
+    otp_code: Option<String>,
 ) -> Result<String> {
     if to_address.trim().is_empty() {
         return Err(TauriError::InvalidInput(
@@ -699,9 +701,26 @@ pub async fn send_vtr(
     if amount_satoshis == 0 {
         return Err(TauriError::InvalidInput("Amount must be non-zero".into()));
     }
+    let passphrase = zeroize::Zeroizing::new(passphrase);
+    let wallet_path = state.wallet_path.lock().unwrap().clone();
     let (wif, from_address) = {
-        let guard = state.wallet.lock().unwrap();
-        let wallet = guard.as_ref().ok_or(TauriError::WalletNotInitialized)?;
+        let mut guard = state.wallet.lock().unwrap();
+        let wallet = guard.as_mut().ok_or(TauriError::WalletNotInitialized)?;
+        if !wallet.verify_passphrase(&passphrase) {
+            return Err(TauriError::Unauthorized(
+                "Incorrect wallet passphrase".into(),
+            ));
+        }
+        if wallet.has_2fa() {
+            let code = otp_code.as_deref().ok_or(TauriError::TwoFAFailed)?;
+            let path = wallet_path.as_ref().ok_or(TauriError::WalletLocked)?;
+            let valid = wallet
+                .verify_2fa_once(code, path)
+                .map_err(|error| TauriError::Unauthorized(error.to_string()))?;
+            if !valid {
+                return Err(TauriError::TwoFAFailed);
+            }
+        }
         let wif = zeroize::Zeroizing::new(
             wallet
                 .get_default_wif()
@@ -1568,14 +1587,35 @@ mod tests {
             recipient.clone(),
             COIN,
             Some("missing-quote".into()),
+            "pw".into(),
+            None,
         )
         .await
         .unwrap_err();
         assert!(matches!(missing, TauriError::InvalidInput(_)));
 
-        let txid = send_vtr(state.clone(), recipient.clone(), COIN, Some(quote.quote_id))
-            .await
-            .unwrap();
+        let wrong = send_vtr(
+            state.clone(),
+            recipient.clone(),
+            COIN,
+            Some(quote.quote_id.clone()),
+            "wrong".into(),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(wrong, TauriError::Unauthorized(_)));
+
+        let txid = send_vtr(
+            state.clone(),
+            recipient.clone(),
+            COIN,
+            Some(quote.quote_id),
+            "pw".into(),
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(txid.len(), 64);
         assert!(
             submitted.try_recv().is_ok(),

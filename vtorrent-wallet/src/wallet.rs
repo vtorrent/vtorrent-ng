@@ -544,6 +544,11 @@ impl Wallet {
     }
 
     /// Check whether 2FA is enabled.
+    /// Compare a candidate passphrase with the one that unlocked this wallet.
+    pub fn verify_passphrase(&self, candidate: &str) -> bool {
+        self.passphrase.as_bytes() == candidate.as_bytes()
+    }
+
     pub fn has_2fa(&self) -> bool {
         self.data
             .otp_config
