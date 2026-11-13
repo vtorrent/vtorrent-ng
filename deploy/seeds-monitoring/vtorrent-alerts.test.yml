@@ -156,7 +156,23 @@ tests:
               severity: warning
             exp_annotations:
               summary: BTC SPV scan stuck on probe
-              description: A BTC SPV scan has been running for more than 30 minutes.
+              description: A BTC SPV scan has made no progress for more than 30 minutes.
+
+  - name: a scan that keeps succeeding does not alert as stuck
+    interval: 1m
+    input_series:
+      - series: 'vtorrent_btc_synced{instance="progress"}'
+        values: '1+0x50'
+      - series: 'vtorrent_btc_scan_in_progress{instance="progress"}'
+        values: '1+0x50'
+      - series: 'vtorrent_btc_last_scanned_height{instance="progress"}'
+        values: '0+1000x50'
+      - series: 'vtorrent_btc_last_scan_timestamp_seconds{instance="progress"}'
+        values: '0+60x50'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: BtcSpvScanStuck
+        exp_alerts: []
 
   - name: a first sync that runs long does not page as a stuck scan
     interval: 1m

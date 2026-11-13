@@ -263,9 +263,11 @@ window ran on, and that commit must equal the release commit.
       `btc-state-stage` binary can stage and archive exact bytes, but it does not
       prove ownership or stop other writers and has not had real interruption
       testing or independent review.
-- [ ] **BTC scan alert bootstrap behavior** — verify the alert against the real
-      header-sync and initial-scan sequence. Header sync can finish before the
-      wallet scan; `vtorrent_btc_synced` alone does not identify scan completion.
+- [~] **BTC scan alert bootstrap behavior** — the unshipped rule now reports a
+      scan with no successful batch for 30 minutes instead of elapsed time, so a
+      long initial scan that keeps progressing stays quiet. `promtool` covers
+      progress, no-progress, and unsynced cases. Still needs a live initial-scan
+      observation on a candidate carrying the rule.
 - [~] **Incident comms channel** — templates, severity policy, and launch-day
       sequence drafted in `docs/incident-comms.md`. The status page, Telegram
       channel, and X account still need to be created or confirmed and

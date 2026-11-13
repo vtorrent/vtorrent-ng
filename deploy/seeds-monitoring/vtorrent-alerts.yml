@@ -100,15 +100,15 @@ groups:
           description: "No successful BTC SPV scan in the last 10 minutes."
 
       - alert: BtcSpvScanStuck
-        # A fresh node's initial 100k-block scan legitimately exceeds 30 minutes;
-        # BtcSpvNeverSynced covers a bootstrap that never finishes.
-        expr: vtorrent_btc_scan_in_progress == 1 and vtorrent_btc_synced == 1
+        # Report lack of progress, not elapsed time: a fresh node's initial
+        # 100k-block scan legitimately runs long while each batch still succeeds.
+        expr: vtorrent_btc_scan_in_progress == 1 and vtorrent_btc_synced == 1 and (vtorrent_btc_last_scan_timestamp_seconds == 0 or time() - vtorrent_btc_last_scan_timestamp_seconds > 600)
         for: 30m
         labels:
           severity: warning
         annotations:
           summary: "BTC SPV scan stuck on {{ $labels.instance }}"
-          description: "A BTC SPV scan has been running for more than 30 minutes."
+          description: "A BTC SPV scan has made no progress for more than 30 minutes."
 
       - alert: HostDiskFull
         expr: (node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"}) < 0.15

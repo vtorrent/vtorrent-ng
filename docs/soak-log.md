@@ -3206,6 +3206,18 @@ Three nodes, BTC mainnet SPV, allocator pinned, RPC 25551–25553, Prometheus on
 23972 with 14 healthy rules. The `d2e65a8` fleet's 23 hours remain evidence for
 that commit only.
 
+## 2026-11-13 — scan alert corrected to report lack of progress
+
+The `b729e36` rule requires header sync before `BtcSpvScanStuck` can fire, but
+header sync can complete before the initial wallet scan. It still treated any
+30-minute scan as stuck, including one whose batches kept succeeding. The
+unshipped rule now requires `vtorrent_btc_scan_in_progress == 1`, header sync,
+and no successful scan batch for 10 minutes, held for 30 minutes. `promtool`
+covers a progressing scan, a no-progress scan, and an unsynced bootstrap.
+
+The running `b729e36` fleet keeps the old rule; this change reaches production
+only in a later candidate with its own soak.
+
 ## 2026-11-13 — seed1 dead-man heartbeat installed and verified
 
 Installed `vtorrent-heartbeat.timer` on vtr-seed1 with

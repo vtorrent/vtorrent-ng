@@ -47,7 +47,7 @@ disk < 85%, no crash-looping units.
 | `HostOutOfMemory` | leak or co-tenant | `systemctl status vtorrent` for oom score; consider restarting the daemon during a quiet window. |
 | `BtcSpvNeverSynced` (>2h) | headers have not synced; possible causes include peer or network failures | Check `/api/v1/btc/status`, daemon logs, peer connectivity, and outbound TCP port 8333. A TCP connection alone does not establish why requests failed. |
 | `BtcWalletHistoryUnavailable` | the wallet needs history older than retained headers | Preserve wallet state and follow *BTC wallet recovery*. Do not delete the UTXO file. |
-| `BtcSpvScanStuck` / `BtcSpvScanStale` | a scan has run >30 min, or no successful scan in 10 min | Check scan progress, peer connectivity, and logs. Header sync can complete before the initial wallet scan, so a long initial scan can trigger `BtcSpvScanStuck`. Preserve logs before any restart. |
+| `BtcSpvScanStuck` / `BtcSpvScanStale` | a scan has made no progress for 30 min, or no successful scan in 10 min | Check `vtorrent_btc_last_scanned_height`, peer connectivity, and logs. A long initial scan that keeps completing batches does not alert. Preserve logs before any restart. |
 | `ProcessRssHigh` (>256 MiB, 10 min) | allocator retention or BTC scan peak | Confirm the container has `MALLOC_ARENA_MAX=2`, `MALLOC_MMAP_THRESHOLD_=131072`, `MALLOC_TRIM_THRESHOLD_=131072`; without them a BTC fleet peaks ~280 MiB. `scripts/soak-status.sh` warns when they are missing. |
 
 
