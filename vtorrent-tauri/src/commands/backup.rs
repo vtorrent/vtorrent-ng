@@ -387,14 +387,13 @@ pub fn restore_backup(
         write_private(&temp_dir.join(safe), &bytes)?;
     }
     let temp_wallet = temp_dir.join(WALLET_ENTRY);
-    Wallet::load(
-        &temp_wallet,
-        passphrase.as_str(),
-        otp_code.as_ref().map(|code| code.as_str()),
-    )
-    .map_err(|error| {
+    // `decode_and_verify` already decrypted this wallet and consumed the OTP
+    // step. Re-loading it with the same code would hit replay protection.
+    // Save the verified wallet so the advanced step is embedded in the
+    // restored file.
+    wallet.save(&temp_wallet).map_err(|error| {
         let _ = std::fs::remove_dir_all(&temp_dir);
-        TauriError::InvalidInput(format!("Backup wallet could not be opened: {error}"))
+        TauriError::InvalidInput(format!("Backup wallet could not be saved: {error}"))
     })?;
 
     if target_wallet.exists() {

@@ -308,6 +308,11 @@ pub async fn lock_wallet(state: State<'_, AppState>) -> Result<()> {
     state.prepared_sends.lock().unwrap().clear();
     if let Some(handle) = state.node.lock().await.as_ref() {
         handle.rpc_state.lock_wallet().await;
+        if let Some(control) = &handle.rpc_state.staking_control {
+            let _ = control
+                .send(vtorrent_node::staking::StakingCommand::Stop)
+                .await;
+        }
     }
     Ok(())
 }
