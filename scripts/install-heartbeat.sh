@@ -50,6 +50,7 @@ umask 077
 } > "$tmp/heartbeat.env"
 
 echo "== install"
+ssh -o BatchMode=yes "$HOST" 'install -d -m 0700 /etc/vtorrent'
 scp -q "$REPO_ROOT/deploy/seeds-monitoring/heartbeat.sh" "$HOST:/usr/local/sbin/vtorrent-heartbeat"
 scp -q "$REPO_ROOT/deploy/seeds-monitoring/monitor-ready.sh" "$HOST:/usr/local/sbin/monitor-ready.sh"
 scp -q "$REPO_ROOT/deploy/seeds-monitoring/systemd/vtorrent-heartbeat.service" \
