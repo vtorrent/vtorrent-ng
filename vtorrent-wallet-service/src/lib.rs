@@ -429,6 +429,8 @@ pub fn build_vtr_htlc_claim(
     use vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS;
     use vtorrent_wallet::tx_builder::sign_input_over_subscript;
 
+    crate::swap_policy::validate_vtr_amount(vtr_amount)?;
+
     let htlc = vtorrent_node::atomic_swap::Htlc::with_expiry(
         hash_lock,
         taker_address.to_string(),

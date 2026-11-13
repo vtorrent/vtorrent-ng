@@ -133,18 +133,20 @@ impl BtcWallet {
     /// Create a wallet with a UTXO persistence path.  If the file exists,
     /// the UTXO set is loaded from disk on construction.
     ///
-    /// The undo journal is deliberately not restored. Its scope is one live
+    /// The height journal is deliberately not restored. Its scope is one live
     /// process: a crash can leave a journal beside an older cursor, and
     /// replaying it in a new process would undo changes this process never
-    /// made. The recorded tip goes with it, since it describes the journal's
-    /// lineage.
+    /// made. Wallet-local pending sends are retained because their
+    /// transactions may still be live; their inputs stay unselectable until a
+    /// scan observes the spend or an explicit recovery cancels it. The recorded
+    /// tip goes with the journal, since it describes the journal's lineage.
     pub fn with_persistence(
         seed: [u8; 64],
         network: Network,
         utxo_path: PathBuf,
     ) -> std::io::Result<Self> {
         let mut utxos = UtxoSet::load(&utxo_path)?;
-        utxos.clear_undo();
+        utxos.clear_journal();
         utxos.set_last_scanned_tip(None);
         let next_index = utxos.next_index();
         let last_scanned_height = utxos.last_scanned_height();
@@ -494,6 +496,7 @@ impl BtcWallet {
             return Ok(false);
         };
         let previous = set.clone();
+        let reserved = set.reserved_utxo(&txid, vout).cloned();
         let spent = set.was_reserved_spent(&txid, vout);
         let released = set.release(&txid, vout);
         set.remove_swap_contract(order_id);
@@ -502,6 +505,11 @@ impl BtcWallet {
         // rollback. With the contract gone nothing could release it again, so
         // keeping it would hide the outpoint on the next covered reorg.
         set.forget_reservation_spend(&txid, vout);
+        if released && !spent {
+            if let Some(utxo) = reserved {
+                set.add(utxo);
+            }
+        }
         if let Some(path) = &self.utxo_path {
             if let Err(error) = set.save(path) {
                 *set = previous;
@@ -1822,7 +1830,7 @@ mod tests {
     }
 
     #[test]
-    fn a_covered_reorg_restores_an_output_the_wallet_sent() {
+    fn a_covered_reorg_keeps_a_pending_send_hidden() {
         let mut w = BtcWallet::with_network([7u8; 64], bitcoin::Network::Regtest);
         let address = w.current_address().unwrap();
         let owned = Utxo {
@@ -1855,12 +1863,11 @@ mod tests {
             w.reset_for_reorg_at_for_tests(Some(60)),
             "the journal covers fork 60"
         );
-        assert_eq!(
-            w.utxo_for_tests(&owned.txid, owned.vout)
-                .map(|utxo| utxo.value),
-            Some(100_000),
-            "a wallet-originated spend must be tracked so a covered reorg restores it"
+        assert!(
+            w.utxo_for_tests(&owned.txid, owned.vout).is_none(),
+            "a reorg does not prove the send left the mempool; keep its input hidden"
         );
+        assert_eq!(w.pending_removal_count_for_tests(), 1);
     }
 
     #[test]
@@ -2224,7 +2231,7 @@ mod tests {
     }
 
     #[test]
-    fn a_send_whose_transaction_disappears_is_restored_once() {
+    fn a_covered_reorg_keeps_a_pending_send_hidden_until_observed() {
         let mut w = BtcWallet::with_network([7u8; 64], bitcoin::Network::Regtest);
         let owned = Utxo {
             txid: "ef".repeat(32),
@@ -2245,41 +2252,25 @@ mod tests {
         scan_confirmed_tx(&w, &incoming, 102);
 
         assert!(w.reset_for_reorg_at_for_tests(Some(101)));
-        assert_eq!(
-            w.utxo_for_tests(&owned.txid, owned.vout)
-                .map(|utxo| utxo.value),
-            Some(100_000),
-            "a send whose transaction disappeared must return its input"
+        assert!(
+            w.utxo_for_tests(&owned.txid, owned.vout).is_none(),
+            "a reorg alone must not make the sent input selectable"
         );
         assert_eq!(
-            w.utxos.lock().total(),
-            100_000,
-            "the restored input is counted once, not twice"
+            w.pending_removal_count_for_tests(),
+            1,
+            "the send remains pending until the scan observes it or a recovery cancels it"
         );
 
-        // The new branch has nothing of the wallet's in block 102, and the
-        // rescan must not double-count the restored outpoint.
         let unrelated = incoming_tx(
             &crate::keys::derive_address(&[9u8; 64], 9, bitcoin::Network::Regtest).unwrap(),
             1_000,
             8,
         );
         scan_confirmed_tx(&w, &unrelated, 102);
-        assert_eq!(w.utxos.lock().total(), 100_000);
-        assert_eq!(
-            w.utxos
-                .lock()
-                .list()
-                .iter()
-                .filter(|utxo| utxo.txid == owned.txid && utxo.vout == owned.vout)
-                .count(),
-            1,
-            "a restored send is not counted twice by the rescan"
-        );
-        assert_eq!(
-            w.pending_removal_count_for_tests(),
-            0,
-            "the rollback retired the pending record"
+        assert!(
+            w.utxo_for_tests(&owned.txid, owned.vout).is_none(),
+            "an unrelated rescan must not resurrect the pending send"
         );
     }
 
@@ -2548,6 +2539,44 @@ mod tests {
             input_txid: input.map(|(t, _)| t.to_string()),
             input_vout: input.map(|(_, v)| v),
         }
+    }
+
+    #[test]
+    fn test_release_swap_reservation_makes_an_unspent_input_spendable() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-release-spendable-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let w = BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
+            .unwrap();
+        w.add_utxo(Utxo {
+            txid: "ce".repeat(32),
+            vout: 0,
+            value: 50_000,
+            address: "bc1qtest".into(),
+            height: 1,
+        });
+        let mut set = w.utxos.lock();
+        set.reserve_utxo(Utxo {
+            txid: "ce".repeat(32),
+            vout: 0,
+            value: 50_000,
+            address: "bc1qtest".into(),
+            height: 1,
+        });
+        set.record_swap_contract(contract("order2", Some((&"ce".repeat(32), 0))));
+        set.save(&path).unwrap();
+        drop(set);
+
+        assert!(w.release_swap_reservation("order2").unwrap());
+        assert_eq!(w.list_utxos().len(), 1, "released input must be spendable");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

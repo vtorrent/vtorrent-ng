@@ -1496,6 +1496,39 @@ async fn btc_claim_bump_rejects_non_increasing_fee() {
 }
 
 #[tokio::test]
+async fn btc_claim_bump_persists_when_recovery_was_enabled_before_claim() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut state, id) = claim_fixture().await;
+    state.swap_recovery_dir = Some(directory.path().to_path_buf());
+    *state.wallet_wif.write().await = Some(vtr_identity(1).0);
+    *state.wallet_unlock_expiry.write().await = Some(0);
+    let funding = state.swaps.read().await[&id].btc_funding_txid.unwrap();
+    claim_btc_with_verification(
+        &state,
+        BtcClaimRequest {
+            passphrase: Default::default(),
+            otp_code: None,
+            order_id: id.clone(),
+        },
+        async |_: &vtorrent_btc::htlc::BtcHtlc, _| Ok(()),
+        async |raw: &[u8]| Ok(txid(raw)),
+    )
+    .await
+    .unwrap();
+    let claim = state.swaps.read().await[&id].btc_claim_txid.unwrap();
+    assert_ne!(claim, funding);
+
+    let response = crate::btc_claim_bump::bump_with_broadcast(
+        &state,
+        bump_request(&id, claim, 3_000),
+        async |raw: &[u8]| Ok(txid(raw)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.replaces_txid, hex::encode(claim));
+}
+
+#[tokio::test]
 async fn btc_claim_bump_replaces_with_higher_fee_and_signals_rbf() {
     let directory = tempfile::tempdir().unwrap();
     let (mut state, id, claim) = claim_bump_fixture().await;

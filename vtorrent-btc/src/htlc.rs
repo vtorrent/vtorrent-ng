@@ -173,7 +173,9 @@ impl BtcHtlc {
             script_pubkey: self.build_script()?.to_p2wsh(),
         }];
         let change_sats = input_value - self.amount - fee;
-        if change_sats > 0 {
+        // A sub-546-sat change output is non-standard and would make the whole
+        // funding transaction unrelayable. Leave the remainder in the fee.
+        if change_sats >= 546 {
             outputs.push(TxOut {
                 value: Amount::from_sat(change_sats),
                 script_pubkey: change.script_pubkey(),
@@ -484,6 +486,16 @@ mod tests {
         let htlc = make_htlc();
         let result = htlc.build_funding_tx([0u8; 32], 0, 50_000, 1000, ADDR);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_funding_tx_absorbs_dust_change_into_the_fee() {
+        let htlc = make_htlc();
+        let tx = htlc
+            .build_funding_tx([1u8; 32], 0, 100_000 + 10_000 + 1, 10_000, ADDR)
+            .unwrap();
+        assert_eq!(tx.output.len(), 1, "dust change must not create an output");
+        assert_eq!(tx.output[0].value, Amount::from_sat(100_000));
     }
 
     #[test]

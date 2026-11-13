@@ -56,21 +56,36 @@ pub fn verify_vtr_swap_funding(
     verify_output(order, utxo, chain.best_height(), now)
 }
 
+/// Both claim outputs must clear the 546-sat dust limit after the HTLC fee is
+/// subtracted, or the chain's mempool rejects the claim and the funded leg is
+/// stranded.
+pub fn validate_vtr_amount(vtr_amount: u64) -> Result<(), String> {
+    const DUST: u64 = 546;
+    if vtr_amount < vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS.saturating_add(DUST) {
+        return Err("VTR claim output would be below the dust limit".into());
+    }
+    Ok(())
+}
+
+pub fn validate_swap_amounts(vtr_amount: u64, target_amount: u64) -> Result<(), String> {
+    const DUST: u64 = 546;
+    validate_vtr_amount(vtr_amount)?;
+    if target_amount < vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS.saturating_add(DUST) {
+        return Err("BTC claim output would be below the dust limit".into());
+    }
+    Ok(())
+}
+
 fn verify_output(
     order: &SwapOrder,
     utxo: &Utxo,
     tip_height: u32,
     now: u64,
 ) -> Result<VerifiedSwapFunding, String> {
-    if order.target_asset != "BTC"
-        // The claim output is `target_amount - BTC_HTLC_FEE_SATOSHIS`, which
-        // must clear Bitcoin's 546-sat dust limit or the claim tx is
-        // policy-rejected and the maker can never take the preimage branch.
-        || order.target_amount
-            <= vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS + 546
-        || order.vtr_amount <= vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS
-    {
-        return Err("Swap amounts must exceed each chain's claim/refund fee".into());
+    if order.target_asset == "BTC" {
+        validate_swap_amounts(order.vtr_amount, order.target_amount)?;
+    } else {
+        validate_vtr_amount(order.vtr_amount)?;
     }
     let hash_lock = order.hash_lock.ok_or("Order has no hash lock")?;
     let taker = order
@@ -121,9 +136,13 @@ mod tests {
     const NOW: u32 = 1_800_000_000;
 
     fn funded_order() -> (SwapOrder, Utxo) {
+        funded_order_with_vtr(100_000_000)
+    }
+
+    fn funded_order_with_vtr(vtr_amount: u64) -> (SwapOrder, Utxo) {
         let mut order = SwapOrder::new(
             "VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k".into(),
-            100_000_000,
+            vtr_amount,
             "BTC".into(),
             100_000,
             48 * 3600,
@@ -201,6 +220,16 @@ mod tests {
         // Just above the fee floor but still leaving a sub-546-sat claim output.
         dust_order.target_amount = vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS + 1;
         assert!(verify_output(&dust_order, &utxo, 105, NOW.into()).is_err());
+    }
+
+    #[test]
+    fn rejects_a_vtr_claim_output_below_dust() {
+        let (order, utxo) =
+            funded_order_with_vtr(vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS + 1);
+        assert!(verify_output(&order, &utxo, 105, NOW.into()).is_err());
+        let (order, utxo) =
+            funded_order_with_vtr(vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS + 546);
+        assert!(verify_output(&order, &utxo, 105, NOW.into()).is_ok());
     }
 
     #[test]

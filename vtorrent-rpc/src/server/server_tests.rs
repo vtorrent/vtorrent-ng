@@ -702,7 +702,7 @@ async fn test_swap_btc_fund_requires_vtr_funded() {
             "offer_asset": "VTR",
             "offer_amount_satoshis": 1_000_000,
             "request_asset": "BTC",
-            "request_amount_satoshis": 1_000,
+            "request_amount_satoshis": 100_000,
             "expiry_secs": 3600,
             "passphrase": "testpassphrase",
             "maker_btc_address": "bcrt1q50rtrmj2f8vl9tem8qpfw36ylw5jg9j2dkku3w"
@@ -711,6 +711,27 @@ async fn test_swap_btc_fund_requires_vtr_funded() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let order_id = body["order_id"].as_str().unwrap().to_string();
+
+    let (status, _) = post_json(
+        app.clone(),
+        "/api/v1/dex/order",
+        serde_json::json!({
+            "maker_address": "VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k",
+            "offer_asset": "VTR",
+            "offer_amount_satoshis": 10_001,
+            "request_asset": "BTC",
+            "request_amount_satoshis": 100_000,
+            "expiry_secs": 3600,
+            "passphrase": "testpassphrase",
+            "maker_btc_address": "bcrt1q50rtrmj2f8vl9tem8qpfw36ylw5jg9j2dkku3w"
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "dust VTR claim must be rejected"
+    );
 
     // btc-fund without a prior match: swap state does not exist → 400.
     let (status, body) = post_json(
@@ -763,7 +784,7 @@ async fn test_dex_cancel_requires_unlocked_wallet() {
             "offer_asset": "VTR",
             "offer_amount_satoshis": 1_000_000,
             "request_asset": "BTC",
-            "request_amount_satoshis": 1_000,
+            "request_amount_satoshis": 100_000,
             "expiry_secs": 3600,
             "passphrase": "testpassphrase"
         }),

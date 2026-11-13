@@ -208,18 +208,23 @@ async fn main() -> anyhow::Result<()> {
         } else {
             "mainnet"
         };
-        let legacy_path = data_dir.join(format!("btc_utxos-{label}.json"));
-        match std::fs::symlink_metadata(&legacy_path) {
-            Ok(_) => anyhow::bail!(
-                "legacy BTC wallet state exists at {}; preserve it and resolve its ownership before starting the BTC wallet",
-                legacy_path.display()
-            ),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => anyhow::bail!(
-                "cannot inspect legacy BTC wallet state at {}: {}",
-                legacy_path.display(),
-                error
-            ),
+        for name in [
+            format!("btc_utxos-{label}.json"),
+            "btc_utxos.json".to_string(),
+        ] {
+            let legacy_path = data_dir.join(&name);
+            match std::fs::symlink_metadata(&legacy_path) {
+                Ok(_) => anyhow::bail!(
+                    "legacy BTC wallet state exists at {}; preserve it and resolve its ownership before starting the BTC wallet",
+                    legacy_path.display()
+                ),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => anyhow::bail!(
+                    "cannot inspect legacy BTC wallet state at {}: {}",
+                    legacy_path.display(),
+                    error
+                ),
+            }
         }
     }
 

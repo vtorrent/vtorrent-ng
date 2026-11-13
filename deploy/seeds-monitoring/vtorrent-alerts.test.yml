@@ -135,7 +135,7 @@ tests:
         alertname: BtcSpvScanStale
         exp_alerts: []
 
-  - name: a scan running for more than 30 minutes alerts
+  - name: a stale scan alerts after the hold
     interval: 1m
     input_series:
       - series: 'vtorrent_btc_synced{instance="probe"}'
@@ -143,12 +143,15 @@ tests:
       - series: 'vtorrent_btc_scan_in_progress{instance="probe"}'
         values: '1+0x50'
       - series: 'vtorrent_btc_last_scan_timestamp_seconds{instance="probe"}'
-        values: '0+0x50'
+        values: '1+0x50'
     alert_rule_test:
       - eval_time: 20m
         alertname: BtcSpvScanStuck
         exp_alerts: []
       - eval_time: 40m
+        alertname: BtcSpvScanStuck
+        exp_alerts: []
+      - eval_time: 42m
         alertname: BtcSpvScanStuck
         exp_alerts:
           - exp_labels:
@@ -156,7 +159,7 @@ tests:
               severity: warning
             exp_annotations:
               summary: BTC SPV scan stuck on probe
-              description: A BTC SPV scan has made no progress for more than 30 minutes.
+              description: A BTC SPV scan has made no progress for more than 40 minutes.
 
   - name: a scan that keeps succeeding does not alert as stuck
     interval: 1m
@@ -187,6 +190,60 @@ tests:
       - eval_time: 40m
         alertname: BtcSpvScanStuck
         exp_alerts: []
+
+  - name: an initial scan gets a full hour before it pages
+    interval: 1m
+    input_series:
+      - series: 'vtorrent_btc_synced{instance="first"}'
+        values: '1+0x70'
+      - series: 'vtorrent_btc_scan_in_progress{instance="first"}'
+        values: '1+0x70'
+      - series: 'vtorrent_btc_last_scan_timestamp_seconds{instance="first"}'
+        values: '0+0x70'
+      - series: 'vtorrent_btc_last_scanned_height{instance="first"}'
+        values: '0+0x70'
+      - series: 'vtorrent_btc_best_height{instance="first"}'
+        values: '0+0x70'
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: BtcSpvInitialScanSlow
+        exp_alerts: []
+      - eval_time: 61m
+        alertname: BtcSpvInitialScanSlow
+        exp_alerts:
+          - exp_labels:
+              instance: first
+              severity: warning
+            exp_annotations:
+              summary: BTC SPV initial scan has not completed on first
+              description: The first BTC SPV wallet scan has run for more than 60 minutes without completing a batch.
+
+  - name: a synced wallet that is behind and not scanning pages as idle
+    interval: 1m
+    input_series:
+      - series: 'vtorrent_btc_synced{instance="idle"}'
+        values: '1+0x40'
+      - series: 'vtorrent_btc_scan_in_progress{instance="idle"}'
+        values: '0+0x40'
+      - series: 'vtorrent_btc_last_scan_timestamp_seconds{instance="idle"}'
+        values: '0+0x40'
+      - series: 'vtorrent_btc_last_scanned_height{instance="idle"}'
+        values: '0+0x40'
+      - series: 'vtorrent_btc_best_height{instance="idle"}'
+        values: '100+0x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: BtcSpvScanIdle
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: BtcSpvScanIdle
+        exp_alerts:
+          - exp_labels:
+              instance: idle
+              severity: warning
+            exp_annotations:
+              summary: BTC SPV scan is idle behind the header tip on idle
+              description: BTC headers are synced but the wallet scan is not running and is behind the header tip.
 
   - name: expected BTC scan memory is suppressed from the steady-state RSS alert
     interval: 1m

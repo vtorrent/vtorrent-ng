@@ -190,7 +190,17 @@ impl UtxoSet {
     /// Returns true only when the output was newly recorded. An outpoint the
     /// set already holds — or one currently reserved — is left untouched.
     pub fn add(&mut self, utxo: Utxo) -> bool {
-        if self.reserved.contains(&(utxo.txid.clone(), utxo.vout)) {
+        let key = (utxo.txid.clone(), utxo.vout);
+        if self.spent_reserved.contains(&key)
+            || self.reserved.contains(&key)
+            || self.pending_removals.iter().any(|pending| {
+                pending.removed.utxo.txid == utxo.txid && pending.removed.utxo.vout == utxo.vout
+            })
+        {
+            return false;
+        }
+        if self.swap_holds_outpoint(&utxo.txid, utxo.vout) {
+            self.reserve_utxo(utxo);
             return false;
         }
         if !self
@@ -291,6 +301,15 @@ impl UtxoSet {
     pub fn clear_undo(&mut self) {
         self.undo.clear();
         self.pending_removals.clear();
+        self.observed_reservation_spends.clear();
+    }
+
+    /// Clear the height journal while retaining wallet-local sends whose
+    /// transactions may still be live. A restart cannot know whether an
+    /// unconfirmed send reached a peer, so its inputs must stay unselectable
+    /// until a scan observes the spend or an explicit recovery cancels it.
+    pub fn clear_journal(&mut self) {
+        self.undo.clear();
         self.observed_reservation_spends.clear();
     }
 
@@ -465,9 +484,9 @@ impl UtxoSet {
                 self.insert_direct(utxo);
             }
         }
-        for pending in std::mem::take(&mut self.pending_removals) {
-            self.restore_removed(pending.removed);
-        }
+        // Keep wallet-local sends in place. A reorg does not prove that the
+        // transaction left the mempool, so restoring its inputs here would let
+        // the wallet build a conflicting spend while the first one is live.
         while let Some(entry) = self.undo.last() {
             if entry.height <= fork {
                 break;
@@ -498,6 +517,9 @@ impl UtxoSet {
     fn forget_outpoint(&mut self, txid: &str, vout: u32) {
         let key = (txid.to_owned(), vout);
         self.utxos.retain(|u| !(u.txid == txid && u.vout == vout));
+        if self.swap_holds_outpoint(txid, vout) {
+            return;
+        }
         self.reserved.remove(&key);
         self.reserved_utxos
             .retain(|u| !(u.txid == txid && u.vout == vout));
@@ -521,6 +543,7 @@ impl UtxoSet {
     fn restore_removed(&mut self, removed: RemovedOutput) {
         let RemovedOutput { utxo, prior } = removed;
         let key = (utxo.txid.clone(), utxo.vout);
+        let restored = utxo.clone();
         self.insert_direct(utxo);
         match prior {
             PriorState::Free => {}
@@ -535,11 +558,16 @@ impl UtxoSet {
                 }
             }
             PriorState::SpentReserved => {
-                self.reserved.remove(&key);
-                self.reserved_utxos
-                    .retain(|u| !(u.txid == key.0 && u.vout == key.1));
-                self.utxos.retain(|u| !(u.txid == key.0 && u.vout == key.1));
-                self.spent_reserved.insert(key);
+                if self.swap_holds_outpoint(&key.0, key.1) {
+                    self.spent_reserved.remove(&key);
+                    self.reserve_utxo(restored);
+                } else {
+                    self.reserved.remove(&key);
+                    self.reserved_utxos
+                        .retain(|u| !(u.txid == key.0 && u.vout == key.1));
+                    self.utxos.retain(|u| !(u.txid == key.0 && u.vout == key.1));
+                    self.spent_reserved.insert(key);
+                }
             }
         }
     }
@@ -690,6 +718,7 @@ impl UtxoSet {
     /// whether the outpoint was spent.
     pub fn reserve_utxo(&mut self, utxo: Utxo) {
         self.reserve(&utxo.txid, utxo.vout);
+        self.spent_reserved.remove(&(utxo.txid.clone(), utxo.vout));
         self.reserved_utxos
             .retain(|existing| !(existing.txid == utxo.txid && existing.vout == utxo.vout));
         self.reserved_utxos.push(utxo);
@@ -1008,6 +1037,52 @@ mod tests {
         assert!(!set.note_spend("a", 0));
         set.clear_spent_reserved("a", 0);
         assert!(!set.was_reserved_spent("a", 0));
+    }
+
+    #[test]
+    fn add_does_not_revive_a_spent_reservation() {
+        let mut set = UtxoSet::new();
+        let output = utxo("a", 0, 5000);
+        set.reserve_utxo(output.clone());
+        assert!(set.note_spend("a", 0));
+        assert!(!set.add(output));
+        assert!(set.list().is_empty());
+        assert!(set.was_reserved_spent("a", 0));
+    }
+
+    #[test]
+    fn reserve_utxo_clears_a_stale_spent_marker() {
+        let mut set = UtxoSet::new();
+        set.reserve_utxo(utxo("a", 0, 5000));
+        assert!(set.note_spend("a", 0));
+        set.reserve_utxo(utxo("a", 0, 5000));
+        assert!(!set.was_reserved_spent("a", 0));
+        assert!(set.reserved_utxo("a", 0).is_some());
+    }
+
+    #[test]
+    fn rollback_of_a_spent_reservation_keeps_a_live_contract_reserved() {
+        let mut set = UtxoSet::new();
+        let output = utxo("a", 0, 5000);
+        set.reserve_utxo(output.clone());
+        set.record_swap_contract(swap_contract("order", Some(("a", 0))));
+        assert!(set.note_spend("a", 0));
+        set.restore_removed(RemovedOutput {
+            utxo: output,
+            prior: PriorState::SpentReserved,
+        });
+        assert!(set.list().is_empty());
+        assert!(set.reserved_utxo("a", 0).is_some());
+        assert!(!set.was_reserved_spent("a", 0));
+    }
+
+    #[test]
+    fn forgetting_a_creation_keeps_a_live_contract_reserved() {
+        let mut set = UtxoSet::new();
+        set.reserve_utxo(utxo("a", 0, 5000));
+        set.record_swap_contract(swap_contract("order", Some(("a", 0))));
+        set.forget_outpoint("a", 0);
+        assert!(set.reserved_utxo("a", 0).is_some());
     }
 
     #[test]
@@ -1943,14 +2018,12 @@ mod tests {
     }
 
     #[test]
-    fn undo_above_restores_a_pending_removal_built_at_the_fork() {
+    fn undo_above_keeps_a_pending_send_hidden() {
         let record = utxo("aa", 0, 500);
         let mut set = UtxoSet::new();
         set.add(record.clone());
         set.remove(&record.txid, record.vout);
         set.record_pending_removals(std::slice::from_ref(&record), "ff", 101);
-        // Coverage for a fork at 101: the first journalled height above it must
-        // be 102.
         set.push_undo(UndoEntry {
             height: 102,
             created: vec![],
@@ -1959,13 +2032,36 @@ mod tests {
 
         assert!(set.undo_above(101));
         assert!(
-            set.outpoint(&record.txid, record.vout).is_some(),
-            "a pending spend built at the fork cursor is reorged out and must return"
+            set.outpoint(&record.txid, record.vout).is_none(),
+            "a possibly live send must keep its input unselectable"
         );
-        assert!(
-            set.pending_removals().is_empty(),
-            "the post-fork scan re-observes the spend, so the record is retired"
+        assert_eq!(
+            set.pending_removals().len(),
+            1,
+            "the send stays pending until the scan observes it"
         );
+        assert!(!set.add(record));
+    }
+
+    #[test]
+    fn a_reloaded_pending_send_keeps_its_input_hidden() {
+        let dir =
+            std::env::temp_dir().join(format!("vtorrent_utxo_pending_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("utxos.json");
+        let record = utxo("ab", 0, 500);
+        let mut set = UtxoSet::new();
+        set.add(record.clone());
+        set.remove(&record.txid, record.vout);
+        set.record_pending_removals(std::slice::from_ref(&record), "ff", 101);
+        set.save(&path).unwrap();
+
+        let mut loaded = UtxoSet::load(&path).unwrap();
+        loaded.clear_journal();
+        assert!(!loaded.add(record));
+        assert!(loaded.list().is_empty());
+        assert_eq!(loaded.pending_removals().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1976,8 +2072,8 @@ mod tests {
         set.remove(&record.txid, record.vout);
         set.record_pending_removals(std::slice::from_ref(&record), "ff", 101);
 
-        assert!(set.add(record.clone()));
         set.cancel_local_removals(std::slice::from_ref(&record));
+        assert!(set.add(record.clone()));
 
         assert!(
             set.pending_removals().is_empty(),

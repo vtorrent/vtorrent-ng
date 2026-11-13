@@ -667,6 +667,9 @@ pub struct VtrRefundReplacement {
 pub struct BtcClaimReplacement {
     /// The claim transaction this replacement supersedes.
     pub replaces_txid: [u8; 32],
+    /// The replacement transaction's own txid.
+    #[serde(default)]
+    pub txid: [u8; 32],
     /// Total fee paid by the replacement (satoshis).
     pub total_fee_satoshis: u64,
     /// When the operator approved this fee.

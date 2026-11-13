@@ -22,6 +22,11 @@ fn mainnet_legacy_btc_wallet_blocks_startup() {
 }
 
 #[test]
+fn oldest_unlabelled_btc_wallet_blocks_startup() {
+    assert_legacy_guard_named(true, false, Some("btc_utxos.json"));
+}
+
+#[test]
 fn wallet_state_round_trip_preserves_swap_metadata_after_chain_reset() {
     use vtorrent_btc::utxo::{SwapContract, Utxo, UtxoSet};
 
@@ -66,11 +71,19 @@ fn wallet_state_round_trip_preserves_swap_metadata_after_chain_reset() {
 }
 
 fn assert_legacy_guard(regtest: bool, with_scoped: bool) {
+    assert_legacy_guard_named(regtest, with_scoped, None);
+}
+
+fn assert_legacy_guard_named(regtest: bool, with_scoped: bool, legacy_name: Option<&str>) {
     use sha2::{Digest, Sha256};
 
     let dir = tempfile::tempdir().unwrap();
     let label = if regtest { "regtest" } else { "mainnet" };
-    let legacy = dir.path().join(format!("btc_utxos-{label}.json"));
+    let legacy = dir.path().join(
+        legacy_name
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("btc_utxos-{label}.json")),
+    );
     let contents = b"legacy wallet state must be preserved";
     std::fs::write(&legacy, contents).unwrap();
     let mut hasher = Sha256::new();

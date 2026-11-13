@@ -100,15 +100,39 @@ groups:
           description: "No successful BTC SPV scan in the last 10 minutes."
 
       - alert: BtcSpvScanStuck
-        # Report lack of progress, not elapsed time: a fresh node's initial
-        # 100k-block scan legitimately runs long while each batch still succeeds.
-        expr: vtorrent_btc_scan_in_progress == 1 and vtorrent_btc_synced == 1 and (vtorrent_btc_last_scan_timestamp_seconds == 0 or time() - vtorrent_btc_last_scan_timestamp_seconds > 600)
+        # Report lack of progress after a completed pass. The 10-minute stale
+        # threshold plus the 30-minute hold pages at about 40 minutes.
+        expr: vtorrent_btc_scan_in_progress == 1 and vtorrent_btc_synced == 1 and vtorrent_btc_last_scan_timestamp_seconds > 0 and time() - vtorrent_btc_last_scan_timestamp_seconds > 600
         for: 30m
         labels:
           severity: warning
         annotations:
           summary: "BTC SPV scan stuck on {{ $labels.instance }}"
-          description: "A BTC SPV scan has made no progress for more than 30 minutes."
+          description: "A BTC SPV scan has made no progress for more than 40 minutes."
+
+      - alert: BtcSpvInitialScanSlow
+        # The first 100k-block scan legitimately takes 13-40 minutes. Give it a
+        # full hour before paging; a scan that never starts is covered by
+        # BtcSpvScanIdle.
+        expr: vtorrent_btc_scan_in_progress == 1 and vtorrent_btc_synced == 1 and vtorrent_btc_last_scan_timestamp_seconds == 0
+        for: 60m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BTC SPV initial scan has not completed on {{ $labels.instance }}"
+          description: "The first BTC SPV wallet scan has run for more than 60 minutes without completing a batch."
+
+      - alert: BtcSpvScanIdle
+        # Headers are synced but the wallet is behind and no scan is running.
+        # This is the insufficient-peer or scan-never-started case that the
+        # in-progress alerts cannot see.
+        expr: vtorrent_btc_synced == 1 and vtorrent_btc_scan_in_progress == 0 and vtorrent_btc_last_scanned_height <= vtorrent_btc_best_height
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BTC SPV scan is idle behind the header tip on {{ $labels.instance }}"
+          description: "BTC headers are synced but the wallet scan is not running and is behind the header tip."
 
       - alert: HostDiskFull
         expr: (node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"}) < 0.15

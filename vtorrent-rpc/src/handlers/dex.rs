@@ -70,6 +70,16 @@ pub async fn place_dex_order_with_state(
             "Requested asset is required — specify the target asset (e.g. \"BTC\")".into(),
         ));
     }
+    if req.request_asset.eq_ignore_ascii_case("BTC") {
+        vtorrent_wallet_service::swap_policy::validate_swap_amounts(
+            req.offer_amount_satoshis,
+            req.request_amount_satoshis,
+        )
+        .map_err(RpcError::BadRequest)?;
+    } else {
+        vtorrent_wallet_service::swap_policy::validate_vtr_amount(req.offer_amount_satoshis)
+            .map_err(RpcError::BadRequest)?;
+    }
     if vtorrent_core::address::validate_p2pkh(&req.maker_address).is_err() {
         return Err(RpcError::BadRequest(format!(
             "Invalid maker address: {}",

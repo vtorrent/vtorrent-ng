@@ -95,14 +95,15 @@ pub async fn bump_with_broadcast(
         .iter()
         .find(|r| r.replaces_txid == parent && r.total_fee_satoshis == req.total_fee_satoshis)
     {
-        if swap.latest_btc_claim().map(|r| r.replaces_txid) != Some(retry.replaces_txid) {
+        if swap.latest_btc_claim().map(|r| r.txid) != Some(retry.txid) {
             return Err(RpcError::BadRequest(
                 "This replacement has already been superseded".into(),
             ));
         }
+        let rebroadcast = broadcast(&retry.raw).await?;
         return Ok(BtcClaimBumpResponse {
             order_id: req.order_id,
-            txid: hex::encode(retry.replaces_txid),
+            txid: hex::encode(rebroadcast),
             replaces_txid: hex::encode(parent),
             total_fee_satoshis: retry.total_fee_satoshis,
             status: "BtcClaimReplaced".into(),
@@ -113,7 +114,7 @@ pub async fn bump_with_broadcast(
     let current_txid = swap
         .btc_claim_replacements
         .last()
-        .map(|r| r.replaces_txid)
+        .map(|r| r.txid)
         .or(swap.btc_claim_txid)
         .ok_or_else(|| RpcError::BadRequest("No BTC claim to replace".into()))?;
     if current_txid != parent {
@@ -180,13 +181,13 @@ pub async fn bump_with_broadcast(
     };
 
     swap.btc_claim_replacements.push(BtcClaimReplacement {
-        replaces_txid: txid,
+        replaces_txid: parent,
+        txid,
         total_fee_satoshis: req.total_fee_satoshis,
         approved_at: now,
         raw: raw.clone(),
     });
     swap.btc_claim_raw = Some(raw.clone());
-    swap.btc_claim_txid = Some(txid);
     swap.refresh_status();
     crate::swap_recovery::persist(state, &order, Some(swap)).await?;
 

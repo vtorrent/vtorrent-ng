@@ -151,18 +151,19 @@ the spend out while the entry survives the replay. Instead `send_to` appends a
 `PendingRemoval` carrying the record, the spending txid, and the broadcast
 height. The scan retires it when it sees that txid spend the outpoint, putting it
 into the confirming height's `removed` list so the fold stays complete. A
-covered rollback restores every pending removal unconditionally — a spend still
-valid on the new branch is re-removed by the post-fork scan, which is
-self-correcting — and a failed broadcast cancels the matching record rather than
-adding a second one. Pending records are cleared with the journal and pruned once
+covered rollback keeps pending removals in place: a reorg does not prove the
+send left the mempool, so restoring its inputs could build a conflicting spend.
+The scan retires the record when it observes the spend, and a failed broadcast
+cancels the matching record rather than adding a second one. Pending records
+survive a restart because the transaction may still be live; they are pruned once
 their broadcast height falls below `floor`.
 
 **Rollback** applies entries from the highest covered height down to `F+1` in
 reverse: re-add `removed` (inserting directly, bypassing `add`'s reserved-outpoint
 filter), drop `created`, and restore each outpoint's prior reservation state.
-Pending removals and reconciliation observations are put back **before** the
-replay, so an entry that undoes the creation of their outpoint still wins and no
-phantom record survives. `last_scanned_height` becomes `F + 1` and
+Reconciliation observations are put back **before** the replay, so an entry that
+undoes the creation of their outpoint still wins and no phantom record survives.
+Pending removals stay in place; their transactions may still be live. `last_scanned_height` becomes `F + 1` and
 `last_scanned_tip` is cleared.
 
 **Pruning.** Entries below `floor` are dropped whenever the scan cursor is saved
