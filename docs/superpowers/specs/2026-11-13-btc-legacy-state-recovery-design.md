@@ -2,21 +2,24 @@
 
 Status: proposed. This is not an approved production recovery procedure.
 
-An experimental `btc-state-stage` binary now has two subcommands. `stage`
-copies exact bytes from an operator-isolated source to a seed-scoped path.
-`archive` refuses unless that destination already holds identical bytes, then
-copies the legacy file to a new archive, verifies both copies, and only then
-removes the active legacy filename. Neither subcommand verifies wallet ownership
-or stops writers; their confirmation flags are operator assertions. The tool is
+An experimental `btc-state-stage` binary now has two subcommands. Both require a
+0600 seed file and derive the seed-scoped wallet id, so a mistyped destination
+is rejected. `stage` copies exact bytes from an operator-isolated source to that
+path. It accepts `btc_utxos-mainnet.json`, `btc_utxos-regtest.json`, and the
+unlabelled `btc_utxos.json` when `--network` is supplied. `archive` refuses
+unless the destination already holds identical bytes, then makes an independent
+copy, verifies both files, and only then removes the active legacy filename.
+Neither subcommand proves that the legacy file belongs to the seed or stops
+writers; their confirmation flags are operator assertions. The tool is
 Linux-oriented and unshipped. Do not use it with production state until real
 process-interruption tests and independent review are complete. It does not
 start a wallet or finish recovery by itself.
 
 ## Goal and boundary
 
-Recover a daemon wallet previously stored as `btc_utxos-<network>.json`
-without silently associating it with the wrong seed or losing swap recovery
-state. Do not change genesis or consensus. Do not operate on a running wallet.
+Recover a daemon wallet previously stored as `btc_utxos.json` or
+`btc_utxos-<network>.json` without silently associating it with the wrong seed
+or losing swap recovery state. Do not change genesis or consensus. Do not operate on a running wallet.
 The daemon's unshipped legacy-file guard is a stop, not a migration.
 
 ## Evidence and limitations
@@ -89,15 +92,19 @@ The retained-history guard and its operational limitations still apply.
 
 Covered by current focused tests: exact-byte staging, refusal to overwrite a
 destination, malformed input, a pre-existing interrupted stage file, wrong
-network names, symlink sources, paths outside `--data-dir`, missing confirmations,
-archive refusal without a matching staged copy, and archive of a matching copy.
-An end-to-end test stages,
+network names, symlink sources, paths outside `--data-dir`, a destination id
+that does not match the seed, the unlabelled `btc_utxos.json` source with an
+explicit network, missing confirmations, archive refusal without a matching
+staged copy, and archive of a matching copy. An end-to-end test stages,
 archives, starts the daemon, and confirms the loaded wallet's address comes from
 the staged index. These are simulated filesystem states, not real process kills.
 Archive must run after `stage` and before the wallet starts; a wallet that has
-modified its output afterward no longer matches and will not archive. The archive
-is a hard link to the source, so both paths must be on the same filesystem; a
-cross-filesystem archive fails without changing either file.
+modified its output afterward no longer matches and will not archive. The
+archive is an independent copy, so it can live on another filesystem.
+
+The seed check proves only that the destination filename matches the supplied
+seed. It does not prove that the legacy file belongs to that seed; the operator
+still has to verify that independently.
 
 Remaining before any production use: real interruption and power-loss testing,
 crash-state inspection at each publication and archival step, full workspace

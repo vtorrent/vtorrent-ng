@@ -2,7 +2,14 @@
 
 use std::process::Command;
 
+fn write_seed(dir: &std::path::Path) -> std::path::PathBuf {
+    let path = dir.join("btc-seed.hex");
+    std::fs::write(&path, format!("{}\n", "01".repeat(64))).unwrap();
+    path
+}
+
 fn run(source: &std::path::Path, output: &std::path::Path) -> std::process::Output {
+    let seed = write_seed(source.parent().unwrap());
     Command::new(env!("CARGO_BIN_EXE_btc-state-stage"))
         .args([
             "stage",
@@ -12,6 +19,10 @@ fn run(source: &std::path::Path, output: &std::path::Path) -> std::process::Outp
             source.to_str().unwrap(),
             "--output",
             output.to_str().unwrap(),
+            "--seed-file",
+            seed.to_str().unwrap(),
+            "--network",
+            "regtest",
         ])
         .args(["--confirm-isolated", "--confirm-owner"])
         .output()
@@ -22,7 +33,7 @@ fn run(source: &std::path::Path, output: &std::path::Path) -> std::process::Outp
 fn stages_exact_bytes_and_never_overwrites_existing_output() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("btc_utxos-regtest.json");
-    let output = dir.path().join("btc_utxos-regtest-0123456789abcdef.json");
+    let output = dir.path().join("btc_utxos-regtest-62d04ad2793b8849.json");
     let original = b"{\"utxos\":[],\"next_index\":7}\n";
     std::fs::write(&source, original).unwrap();
     let result = run(&source, &output);
@@ -43,8 +54,9 @@ fn rejects_wallet_paths_outside_the_data_directory() {
     let data_dir = tempfile::tempdir().unwrap();
     let other = tempfile::tempdir().unwrap();
     let source = data_dir.path().join("btc_utxos-regtest.json");
-    let output = other.path().join("btc_utxos-regtest-0123456789abcdef.json");
+    let output = other.path().join("btc_utxos-regtest-62d04ad2793b8849.json");
     std::fs::write(&source, b"{\"utxos\":[]}").unwrap();
+    let seed = write_seed(data_dir.path());
     let result = Command::new(env!("CARGO_BIN_EXE_btc-state-stage"))
         .args([
             "stage",
@@ -54,6 +66,10 @@ fn rejects_wallet_paths_outside_the_data_directory() {
             source.to_str().unwrap(),
             "--output",
             output.to_str().unwrap(),
+            "--seed-file",
+            seed.to_str().unwrap(),
+            "--network",
+            "regtest",
         ])
         .args(["--confirm-isolated", "--confirm-owner"])
         .output()
@@ -63,10 +79,52 @@ fn rejects_wallet_paths_outside_the_data_directory() {
 }
 
 #[test]
-fn malformed_input_does_not_create_output() {
+fn stages_the_unlabelled_wallet_when_the_network_is_given() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("btc_utxos.json");
+    let output = dir.path().join("btc_utxos-regtest-62d04ad2793b8849.json");
+    let seed = write_seed(dir.path());
+    std::fs::write(&source, b"{\"utxos\":[]}").unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_btc-state-stage"))
+        .args([
+            "stage",
+            "--data-dir",
+            dir.path().to_str().unwrap(),
+            "--source",
+            source.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+            "--seed-file",
+            seed.to_str().unwrap(),
+            "--network",
+            "regtest",
+        ])
+        .args(["--confirm-isolated", "--confirm-owner"])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(std::fs::read(&output).unwrap(), b"{\"utxos\":[]}");
+}
+
+#[test]
+fn rejects_an_output_id_not_derived_from_the_seed() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("btc_utxos-regtest.json");
     let output = dir.path().join("btc_utxos-regtest-0123456789abcdef.json");
+    std::fs::write(&source, b"{\"utxos\":[]}").unwrap();
+    assert!(!run(&source, &output).status.success());
+    assert!(!output.exists());
+}
+
+#[test]
+fn malformed_input_does_not_create_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("btc_utxos-regtest.json");
+    let output = dir.path().join("btc_utxos-regtest-62d04ad2793b8849.json");
     std::fs::write(&source, b"{ invalid").unwrap();
     assert!(!run(&source, &output).status.success());
     assert!(!output.exists());
@@ -77,7 +135,7 @@ fn malformed_input_does_not_create_output() {
 fn interrupted_stage_blocks_retry_without_modifying_any_file() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("btc_utxos-regtest.json");
-    let output = dir.path().join("btc_utxos-regtest-0123456789abcdef.json");
+    let output = dir.path().join("btc_utxos-regtest-62d04ad2793b8849.json");
     let stage = output.with_extension("json.recovery-stage");
     std::fs::write(&source, b"{\"utxos\":[]}").unwrap();
     std::fs::write(&stage, b"partial interrupted write").unwrap();
@@ -93,11 +151,11 @@ fn rejects_wrong_network_and_symbolic_link_sources() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("btc_utxos-regtest.json");
     let real = dir.path().join("actual.json");
-    let output = dir.path().join("btc_utxos-mainnet-0123456789abcdef.json");
+    let output = dir.path().join("btc_utxos-mainnet-62d04ad2793b8849.json");
     std::fs::write(&real, b"{\"utxos\":[]}").unwrap();
     symlink(&real, &source).unwrap();
     assert!(!run(&source, &output).status.success());
-    let correct_network = dir.path().join("btc_utxos-regtest-0123456789abcdef.json");
+    let correct_network = dir.path().join("btc_utxos-regtest-62d04ad2793b8849.json");
     assert!(!run(&source, &correct_network).status.success());
     assert!(!output.exists());
     assert!(!correct_network.exists());
@@ -107,8 +165,9 @@ fn rejects_wrong_network_and_symbolic_link_sources() {
 fn requires_explicit_confirmations() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("btc_utxos-regtest.json");
-    let output = dir.path().join("btc_utxos-regtest-0123456789abcdef.json");
+    let output = dir.path().join("btc_utxos-regtest-62d04ad2793b8849.json");
     std::fs::write(&source, b"{\"utxos\":[]}").unwrap();
+    let seed = write_seed(dir.path());
     let result = Command::new(env!("CARGO_BIN_EXE_btc-state-stage"))
         .args([
             "stage",
@@ -118,6 +177,10 @@ fn requires_explicit_confirmations() {
             source.to_str().unwrap(),
             "--output",
             output.to_str().unwrap(),
+            "--seed-file",
+            seed.to_str().unwrap(),
+            "--network",
+            "regtest",
         ])
         .output()
         .unwrap();
@@ -139,6 +202,7 @@ async fn daemon_starts_after_archive_with_the_seed_scoped_file() {
     let id = hex::encode(&hasher.finalize()[..8]);
     let output = dir.path().join(format!("btc_utxos-regtest-{id}.json"));
     let archive = dir.path().join("legacy-btc-state.json");
+    let seed = write_seed(dir.path());
     std::fs::write(&source, b"{\"utxos\":[],\"next_index\":7}").unwrap();
     assert!(run(&source, &output).status.success());
     let result = Command::new(env!("CARGO_BIN_EXE_btc-state-stage"))
@@ -152,8 +216,12 @@ async fn daemon_starts_after_archive_with_the_seed_scoped_file() {
             archive.to_str().unwrap(),
             "--output",
             output.to_str().unwrap(),
+            "--seed-file",
+            seed.to_str().unwrap(),
+            "--network",
+            "regtest",
         ])
-        .arg("--confirm-isolated")
+        .args(["--confirm-isolated", "--confirm-owner"])
         .output()
         .unwrap();
     assert!(
@@ -234,8 +302,9 @@ async fn daemon_starts_after_archive_with_the_seed_scoped_file() {
 fn refuses_to_archive_without_a_matching_staged_copy() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("btc_utxos-regtest.json");
-    let output = dir.path().join("btc_utxos-regtest-0123456789abcdef.json");
+    let output = dir.path().join("btc_utxos-regtest-62d04ad2793b8849.json");
     let archive = dir.path().join("legacy-btc-state-20261113.json");
+    let seed = write_seed(dir.path());
     std::fs::write(&source, b"{\"utxos\":[]}").unwrap();
     let result = Command::new(env!("CARGO_BIN_EXE_btc-state-stage"))
         .args([
@@ -248,8 +317,12 @@ fn refuses_to_archive_without_a_matching_staged_copy() {
             archive.to_str().unwrap(),
             "--output",
             output.to_str().unwrap(),
+            "--seed-file",
+            seed.to_str().unwrap(),
+            "--network",
+            "regtest",
         ])
-        .arg("--confirm-isolated")
+        .args(["--confirm-isolated", "--confirm-owner"])
         .output()
         .unwrap();
     assert!(!result.status.success());
@@ -267,8 +340,12 @@ fn refuses_to_archive_without_a_matching_staged_copy() {
             archive.to_str().unwrap(),
             "--output",
             output.to_str().unwrap(),
+            "--seed-file",
+            seed.to_str().unwrap(),
+            "--network",
+            "regtest",
         ])
-        .arg("--confirm-isolated")
+        .args(["--confirm-isolated", "--confirm-owner"])
         .output()
         .unwrap();
     assert!(!mismatch.status.success());
@@ -280,8 +357,9 @@ fn refuses_to_archive_without_a_matching_staged_copy() {
 fn archives_exact_original_and_removes_only_the_active_legacy_name() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("btc_utxos-regtest.json");
-    let output = dir.path().join("btc_utxos-regtest-0123456789abcdef.json");
+    let output = dir.path().join("btc_utxos-regtest-62d04ad2793b8849.json");
     let archive = dir.path().join("legacy-btc-state-20261113.json");
+    let seed = write_seed(dir.path());
     std::fs::write(&source, b"{\"utxos\":[],\"swap_contracts\":{}}").unwrap();
     assert!(run(&source, &output).status.success());
     let result = Command::new(env!("CARGO_BIN_EXE_btc-state-stage"))
@@ -295,8 +373,12 @@ fn archives_exact_original_and_removes_only_the_active_legacy_name() {
             archive.to_str().unwrap(),
             "--output",
             output.to_str().unwrap(),
+            "--seed-file",
+            seed.to_str().unwrap(),
+            "--network",
+            "regtest",
         ])
-        .arg("--confirm-isolated")
+        .args(["--confirm-isolated", "--confirm-owner"])
         .output()
         .unwrap();
     assert!(
@@ -320,8 +402,12 @@ fn archives_exact_original_and_removes_only_the_active_legacy_name() {
             archive.to_str().unwrap(),
             "--output",
             output.to_str().unwrap(),
+            "--seed-file",
+            seed.to_str().unwrap(),
+            "--network",
+            "regtest",
         ])
-        .arg("--confirm-isolated")
+        .args(["--confirm-isolated", "--confirm-owner"])
         .output()
         .unwrap();
     assert!(!retry.status.success());

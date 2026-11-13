@@ -259,11 +259,11 @@ window ran on, and that commit must equal the release commit.
 - [ ] **BTC daemon wallet migration** — the seed-scoped wallet path does not
       load the former `btc_utxos-<network>.json` file. Establish a safe migration
       and recovery procedure for existing state, including swap metadata, before
-      upgrading funded wallets. An unshipped startup guard refuses to open a BTC
-      wallet when the corresponding legacy path exists. An experimental
-      `btc-state-stage` binary can stage and archive exact bytes, but it does not
-      prove ownership or stop other writers and has not had real interruption
-      testing or independent review.
+      upgrading funded wallets. Startup guards refuse to open a BTC wallet when
+      `btc_utxos.json` or `btc_utxos-<network>.json` exists. An experimental
+      `btc-state-stage` binary stages and archives both names with a
+      seed-derived destination, but it does not prove ownership or stop other
+      writers and has not had real interruption testing or independent review.
 - [~] **BTC scan alert bootstrap behavior** — the unshipped rule now reports a
       scan with no successful batch for 30 minutes instead of elapsed time, so a
       long initial scan that keeps progressing stays quiet. `promtool` covers

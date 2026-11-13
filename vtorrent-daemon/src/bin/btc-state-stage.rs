@@ -24,6 +24,12 @@ enum Command {
         source: PathBuf,
         #[arg(long)]
         output: PathBuf,
+        /// 0600 file containing the 128-hex-character BTC seed.
+        #[arg(long)]
+        seed_file: PathBuf,
+        /// Required when the source is the unlabelled btc_utxos.json.
+        #[arg(long)]
+        network: Option<String>,
         /// Assert all wallet writers are stopped and both directories are isolated.
         #[arg(long, required = true)]
         confirm_isolated: bool,
@@ -43,18 +49,61 @@ enum Command {
         /// The seed-scoped destination that must already hold identical bytes.
         #[arg(long)]
         output: PathBuf,
+        /// 0600 file containing the 128-hex-character BTC seed.
+        #[arg(long)]
+        seed_file: PathBuf,
+        /// Required when the source is the unlabelled btc_utxos.json.
+        #[arg(long)]
+        network: Option<String>,
         /// Assert all wallet writers are stopped and both directories are isolated.
         #[arg(long, required = true)]
         confirm_isolated: bool,
+        /// Assert seed ownership, network, and outstanding swaps were verified independently.
+        #[arg(long, required = true)]
+        confirm_owner: bool,
     },
 }
 
-fn source_label(source: &std::path::Path) -> anyhow::Result<&'static str> {
-    match source.file_name().and_then(|s| s.to_str()).unwrap_or("") {
-        "btc_utxos-mainnet.json" => Ok("mainnet"),
-        "btc_utxos-regtest.json" => Ok("regtest"),
-        _ => anyhow::bail!("source must be a network-only BTC wallet filename"),
+fn source_label(source: &Path, network: Option<&str>) -> anyhow::Result<&'static str> {
+    let label = match source.file_name().and_then(|s| s.to_str()).unwrap_or("") {
+        "btc_utxos-mainnet.json" => "mainnet",
+        "btc_utxos-regtest.json" => "regtest",
+        "btc_utxos.json" => match network {
+            Some("mainnet") => "mainnet",
+            Some("regtest") => "regtest",
+            _ => anyhow::bail!(
+                "btc_utxos.json is unlabelled; pass --network mainnet or --network regtest"
+            ),
+        },
+        _ => anyhow::bail!("source must be a legacy BTC wallet filename"),
+    };
+    if let Some(requested) = network {
+        if requested != label {
+            anyhow::bail!(
+                "--network {} does not match the source label {}",
+                requested,
+                label
+            );
+        }
     }
+    Ok(label)
+}
+
+fn read_seed(path: &Path) -> anyhow::Result<[u8; 64]> {
+    require_regular_file(path)?;
+    let text = fs::read_to_string(path)?;
+    let bytes = hex::decode(text.trim())?;
+    bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("seed file must contain exactly 128 hex characters"))
+}
+
+fn wallet_id(seed: &[u8; 64]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"vtorrent-btc-wallet-id-v1");
+    hasher.update(seed);
+    hex::encode(&hasher.finalize()[..8])
 }
 
 fn require_regular_file(path: &Path) -> anyhow::Result<()> {
@@ -99,34 +148,42 @@ fn fsync_parent(path: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn validate_scoped_output(path: &std::path::Path, label: &str) -> anyhow::Result<()> {
+fn validate_scoped_output(
+    path: &std::path::Path,
+    label: &str,
+    expected_id: &str,
+) -> anyhow::Result<()> {
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
     let prefix = format!("btc_utxos-{label}-");
     let id = name
         .strip_prefix(&prefix)
         .and_then(|s| s.strip_suffix(".json"));
-    if !id.is_some_and(|id| {
-        id.len() == 16
-            && id
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-    }) {
-        anyhow::bail!("output must be the verified seed-scoped filename for the same network");
+    if id != Some(expected_id) {
+        anyhow::bail!(
+            "output must be btc_utxos-{}-{}.json for this seed",
+            label,
+            expected_id
+        );
     }
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stage(
     data_dir: PathBuf,
     source: PathBuf,
     output: PathBuf,
+    seed_file: PathBuf,
+    network: Option<String>,
     _isolated: bool,
     _owner: bool,
 ) -> anyhow::Result<()> {
-    let label = source_label(&source)?;
+    let seed = zeroize::Zeroizing::new(read_seed(&seed_file)?);
+    let expected_id = wallet_id(&seed);
+    let label = source_label(&source, network.as_deref())?;
     validate_in_data_dir(&data_dir, &source)?;
     validate_in_data_dir(&data_dir, &output)?;
-    validate_scoped_output(&output, label)?;
+    validate_scoped_output(&output, label, &expected_id)?;
     require_regular_file(&source)?;
     let original = fs::read(&source)?;
     let _: vtorrent_btc::utxo::UtxoSet = serde_json::from_slice(&original)?;
@@ -148,25 +205,38 @@ fn stage(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn archive_legacy(
     data_dir: PathBuf,
     source: PathBuf,
     archive: PathBuf,
     output: PathBuf,
+    seed_file: PathBuf,
+    network: Option<String>,
     _isolated: bool,
+    _owner: bool,
 ) -> anyhow::Result<()> {
-    let label = source_label(&source)?;
+    let seed = zeroize::Zeroizing::new(read_seed(&seed_file)?);
+    let expected_id = wallet_id(&seed);
+    let label = source_label(&source, network.as_deref())?;
     validate_in_data_dir(&data_dir, &source)?;
     validate_in_data_dir(&data_dir, &output)?;
     require_regular_file(&source)?;
     let original = fs::read(&source)?;
     let _: vtorrent_btc::utxo::UtxoSet = serde_json::from_slice(&original)?;
-    validate_scoped_output(&output, label)?;
+    validate_scoped_output(&output, label, &expected_id)?;
     require_regular_file(&output)?;
     if fs::read(&output)? != original {
         anyhow::bail!("staged output does not match the legacy bytes; re-stage before archiving");
     }
-    fs::hard_link(&source, &archive)?;
+    let stage_path = archive.with_extension("json.archive-stage");
+    let mut file = open_private_new(&stage_path)?;
+    file.write_all(&original)?;
+    file.sync_all()?;
+    if fs::read(&stage_path)? != original {
+        anyhow::bail!("archived copy changed before publication; inspect the stage file");
+    }
+    fs::hard_link(&stage_path, &archive)?;
     fsync_parent(&archive)?;
     if fs::read(&archive)? != original || fs::read(&output)? != original {
         anyhow::bail!(
@@ -180,6 +250,8 @@ fn archive_legacy(
     }
     fs::remove_file(&source)?;
     fsync_parent(&source)?;
+    fs::remove_file(&stage_path)?;
+    fsync_parent(&archive)?;
     eprintln!("Archived exact legacy bytes. The active legacy filename is gone; verify the archive before starting the wallet.");
     Ok(())
 }
@@ -190,15 +262,37 @@ fn main() -> anyhow::Result<()> {
             data_dir,
             source,
             output,
+            seed_file,
+            network,
             confirm_isolated,
             confirm_owner,
-        } => stage(data_dir, source, output, confirm_isolated, confirm_owner),
+        } => stage(
+            data_dir,
+            source,
+            output,
+            seed_file,
+            network,
+            confirm_isolated,
+            confirm_owner,
+        ),
         Command::Archive {
             data_dir,
             source,
             archive,
             output,
+            seed_file,
+            network,
             confirm_isolated,
-        } => archive_legacy(data_dir, source, archive, output, confirm_isolated),
+            confirm_owner,
+        } => archive_legacy(
+            data_dir,
+            source,
+            archive,
+            output,
+            seed_file,
+            network,
+            confirm_isolated,
+            confirm_owner,
+        ),
     }
 }
