@@ -102,7 +102,7 @@ async fn integration_wallet_import_unlock_flow() {
         "/api/v1/wallet/import",
         serde_json::json!({
             "wif": "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS",
-            "passphrase": "hunter2"
+            "passphrase": "hunter22"
         }),
     )
     .await;
@@ -121,7 +121,7 @@ async fn integration_wallet_import_unlock_flow() {
     let (status, body) = post_json(
         router,
         "/api/v1/wallet/unlock",
-        serde_json::json!({ "passphrase": "hunter2", "timeout_secs": 60 }),
+        serde_json::json!({ "passphrase": "hunter22", "timeout_secs": 60 }),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -137,7 +137,7 @@ async fn integration_send_requires_unlock() {
         serde_json::json!({
             "to_address": "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT",
             "amount_satoshis": 1_000_000u64,
-            "passphrase": "hunter2"
+            "passphrase": "hunter22"
         }),
     )
     .await;
@@ -179,7 +179,7 @@ async fn integration_staking_start_stop_roundtrip() {
         "/api/v1/wallet/import",
         serde_json::json!({
             "wif": "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS",
-            "passphrase": "test"
+            "passphrase": "test-pass"
         }),
     )
     .await;
@@ -187,7 +187,7 @@ async fn integration_staking_start_stop_roundtrip() {
     let (status, _) = post_json(
         router.clone(),
         "/api/v1/wallet/unlock",
-        serde_json::json!({ "passphrase": "test", "timeout_secs": 300 }),
+        serde_json::json!({ "passphrase": "test-pass", "timeout_secs": 300 }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "wallet unlock should succeed");
@@ -198,7 +198,7 @@ async fn integration_staking_start_stop_roundtrip() {
         "/api/v1/staking/start",
         serde_json::json!({
             "address": "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT",
-            "passphrase": "test"
+            "passphrase": "test-pass"
         }),
     )
     .await;
@@ -375,7 +375,7 @@ async fn integration_dex_place_and_cancel_order() {
             "/api/v1/wallet/import",
             serde_json::json!({
                 "wif": "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS",
-                "passphrase": "test"
+                "passphrase": "test-pass"
             }),
         )
         .await;
@@ -383,7 +383,7 @@ async fn integration_dex_place_and_cancel_order() {
         let (status, _) = post_json(
             build_router(state.clone()),
             "/api/v1/wallet/unlock",
-            serde_json::json!({ "passphrase": "test", "timeout_secs": 300 }),
+            serde_json::json!({ "passphrase": "test-pass", "timeout_secs": 300 }),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "wallet unlock should succeed");
@@ -403,7 +403,7 @@ async fn integration_dex_place_and_cancel_order() {
             "request_amount_satoshis": 100_000u64,
             "request_asset": "BTC",
             "expiry_secs": 3600u64,
-            "passphrase": "test"
+            "passphrase": "test-pass"
         }),
     )
     .await;
