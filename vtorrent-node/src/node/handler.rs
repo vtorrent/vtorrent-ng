@@ -1770,6 +1770,34 @@ mod tests {
 /// Extracted from `Node::handle_message` so the routing table is testable
 /// independently of the connection loop. `MAX_MSGS_PER_WINDOW` and
 /// `MSG_WINDOW_SECS` are re-exported from `super`.
+/// Validate an unauthenticated DEX order announcement before it reaches the
+/// order book. Bounds the fields that gossip can otherwise grow without limit.
+fn valid_dex_announcement(ann: &crate::atomic_swap::OrderAnnouncement, now: u32) -> bool {
+    use crate::atomic_swap::{MAX_HTLC_LOCKTIME, MIN_HTLC_LOCKTIME};
+
+    let maker_ok = vtorrent_core::address::validate_p2pkh(&ann.maker_address).is_ok()
+        && ann.maker_address.len() <= 128;
+    let btc_ok = match &ann.maker_btc_address {
+        None => true,
+        Some(address) => {
+            address.len() <= 100
+                && address
+                    .parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>()
+                    .is_ok()
+        }
+    };
+    let expiry_ok = ann.expiry >= now.saturating_add(MIN_HTLC_LOCKTIME)
+        && ann.expiry <= now.saturating_add(MAX_HTLC_LOCKTIME);
+    maker_ok
+        && btc_ok
+        && expiry_ok
+        && ann.target_asset.len() <= 64
+        && ann.vtr_amount > 0
+        && ann.target_amount > 0
+        && ann.vtr_amount <= crate::consensus::MAX_MONEY
+        && ann.target_amount <= crate::consensus::MAX_MONEY
+}
+
 pub(crate) async fn dispatch_message(
     node: &mut Node,
     peer_addr: SocketAddr,
@@ -2128,14 +2156,7 @@ pub(crate) async fn dispatch_message(
                 // any error-message formatting: orders arrive unauthenticated,
                 // and an unvalidated `maker_address` was previously echoed
                 // through a byte-slice truncation (panic) on cancel.
-                let valid = vtorrent_core::address::validate_p2pkh(&ann.maker_address).is_ok()
-                    && ann.maker_address.len() <= 128
-                    && ann.target_asset.len() <= 64
-                    && ann.vtr_amount > 0
-                    && ann.target_amount > 0
-                    && ann.vtr_amount <= crate::consensus::MAX_MONEY
-                    && ann.target_amount <= crate::consensus::MAX_MONEY;
-                if !valid {
+                if !valid_dex_announcement(&ann, now as u32) {
                     node.peer_manager
                         .record_misbehaviour(peer_addr, Misbehaviour::MalformedMessage)
                         .await;
@@ -2463,5 +2484,36 @@ mod ping_liveness_tests {
             !node.peer_ping_nonces.contains_key(&addr),
             "protocol data from a peer must reset ping liveness"
         );
+    }
+
+    fn announcement(now: u32) -> crate::atomic_swap::OrderAnnouncement {
+        crate::atomic_swap::OrderAnnouncement {
+            order_id: [7; 32],
+            maker_address: "VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k".into(),
+            maker_btc_address: Some("bcrt1q50rtrmj2f8vl9tem8qpfw36ylw5jg9j2dkku3w".into()),
+            vtr_amount: 1_000_000,
+            target_asset: "BTC".into(),
+            target_amount: 100_000,
+            hash_lock: Some([1; 32]),
+            expiry: now + 3600,
+        }
+    }
+
+    #[test]
+    fn dex_announcement_validation_bounds_untrusted_fields() {
+        let now = 1_800_000_000u32;
+        assert!(super::valid_dex_announcement(&announcement(now), now));
+        let mut oversized = announcement(now);
+        oversized.maker_btc_address = Some("b".repeat(101));
+        assert!(!super::valid_dex_announcement(&oversized, now));
+        let mut invalid = announcement(now);
+        invalid.maker_btc_address = Some("not-a-bitcoin-address".into());
+        assert!(!super::valid_dex_announcement(&invalid, now));
+        let mut too_soon = announcement(now);
+        too_soon.expiry = now + 60;
+        assert!(!super::valid_dex_announcement(&too_soon, now));
+        let mut too_far = announcement(now);
+        too_far.expiry = now + 8 * 24 * 3600;
+        assert!(!super::valid_dex_announcement(&too_far, now));
     }
 }

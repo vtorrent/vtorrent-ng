@@ -825,6 +825,9 @@ impl SwapOrderBook {
     /// Add a new order to the book. Evicts expired/cancelled orders if the
     /// book exceeds `MAX_ORDERS`.
     pub fn add_order(&mut self, order: SwapOrder) {
+        if self.orders.iter().any(|o| o.order_id == order.order_id) {
+            return;
+        }
         if self.orders.len() >= MAX_ORDERS {
             self.evict();
         }

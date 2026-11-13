@@ -140,6 +140,21 @@ fn test_eviction_preserves_funded_orders() {
 }
 
 #[test]
+fn duplicate_order_ids_are_ignored() {
+    let mut book = SwapOrderBook::new();
+    let order = SwapOrder::new(
+        "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string(),
+        1_000_000,
+        "BTC".to_string(),
+        100_000,
+        DEFAULT_HTLC_LOCKTIME,
+    );
+    book.add_order(order.clone());
+    book.add_order(order);
+    assert_eq!(book.list_orders().len(), 1);
+}
+
+#[test]
 fn test_funding_reservation_records_htlc_transaction() {
     let mut book = SwapOrderBook::new();
     let order = SwapOrder::new(
