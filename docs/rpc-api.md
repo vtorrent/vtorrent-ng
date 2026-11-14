@@ -549,11 +549,39 @@ Send BTC to an address.
 **Request:**
 ```json
 {
-  "to_address": "tb1...",
-  "amount_sat": 500000,
-  "target_blocks": 6
+  "to_address": "bc1...",
+  "amount_satoshis": 500000,
+  "fee_satoshis": 1000,
+  "passphrase": "…",
+  "otp_code": "123456"
 }
 ```
+
+If the broadcast result is uncertain, the response is an error that names the
+transaction id. The signed transaction is retained and its inputs stay
+unavailable; retry with `/api/v1/btc/rebroadcast`.
+
+### GET /api/v1/btc/pending-sends
+
+Lists sends whose confirming spend has not been observed. Each entry reports
+the transaction id, whether the signed bytes are retained, and the inputs held
+unavailable.
+
+### POST /api/v1/btc/rebroadcast
+
+Retries a retained send. Requires an unlocked wallet.
+
+**Request:**
+```json
+{
+  "txid": "…",
+  "passphrase": "…",
+  "otp_code": "123456"
+}
+```
+
+A successful response means a peer accepted the transaction, not that it
+confirmed. The pending record is retired only when a scan observes the spend.
 
 ---
 

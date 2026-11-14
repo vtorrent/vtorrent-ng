@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { Bitcoin, RefreshCw, Send } from 'lucide-react'
-import { useBtcStatus, useBtcAddress, useSendBtc } from '../hooks/useBtc'
+import { useBtcStatus, useBtcAddress, useSendBtc, usePendingBtcSends } from '../hooks/useBtc'
 
 export default function BtcWalletPage() {
   const { status } = useBtcStatus()
   const { address, generate, loading } = useBtcAddress()
-  const { send, loading: sending, error: sendError } = useSendBtc()
+  const { send, rebroadcast, loading: sending, error: sendError } = useSendBtc()
+  const pending = usePendingBtcSends()
   const [toAddress, setToAddress] = useState('')
   const [amount, setAmount] = useState('')
   const [passphrase, setPassphrase] = useState('')
@@ -106,6 +107,28 @@ export default function BtcWalletPage() {
         {sendError && <p className="text-sm text-red-400">{sendError}</p>}
         {sent && <p className="text-sm text-green-400">Sent! TXID: {sent}</p>}
       </div>
+
+      {pending.length > 0 && (
+        <div className="bg-navy-800 rounded-lg p-4 space-y-3">
+          <h2 className="font-semibold">Unconfirmed sends</h2>
+          <p className="text-xs text-gray-400">
+            These transactions may still reach the network. Their inputs stay unavailable
+            until a scan observes the spend or you retry the broadcast.
+          </p>
+          {pending.map((entry) => (
+            <div key={entry.txid} className="flex items-center gap-2">
+              <code className="flex-1 bg-navy-900 p-2 rounded text-xs break-all">{entry.txid}</code>
+              <button
+                onClick={() => rebroadcast(entry.txid, passphrase, otpCode || null)}
+                disabled={sending || !entry.hasRawTx}
+                className="px-3 py-2 bg-vtorrent-600 rounded hover:bg-vtorrent-500 disabled:opacity-50 text-sm"
+              >
+                Retry
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

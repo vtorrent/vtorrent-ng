@@ -609,6 +609,29 @@ pub struct BtcSendResponse {
     pub raw_tx: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BtcPendingInput {
+    pub txid: String,
+    pub vout: u32,
+    pub value_satoshis: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BtcPendingSendResponse {
+    pub txid: String,
+    pub has_raw_tx: bool,
+    pub inputs: Vec<BtcPendingInput>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BtcRebroadcastRequest {
+    pub txid: String,
+    #[serde(default)]
+    pub passphrase: zeroize::Zeroizing<String>,
+    #[serde(default)]
+    pub otp_code: Option<String>,
+}
+
 // ─── Swap Orchestration ───────────────────────────────────────────────────────
 
 /// Request body for `POST /api/v1/swap/btc-fund`.

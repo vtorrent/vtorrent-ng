@@ -64,6 +64,9 @@ pub struct PendingRemoval {
     pub txid: String,
     /// Scan cursor when the send was built.
     pub height: u32,
+    /// Signed transaction to rebroadcast when delivery is uncertain.
+    #[serde(default)]
+    pub raw: Option<Vec<u8>>,
 }
 
 /// Public contract terms needed to recover the BTC refund after restart.
@@ -318,6 +321,21 @@ impl UtxoSet {
         &self.pending_removals
     }
 
+    pub(crate) fn pending_sends(&self) -> Vec<crate::wallet::PendingSend> {
+        let mut sends: Vec<crate::wallet::PendingSend> = Vec::new();
+        for pending in &self.pending_removals {
+            match sends.iter_mut().find(|send| send.txid == pending.txid) {
+                Some(send) => send.inputs.push(pending.removed.utxo.clone()),
+                None => sends.push(crate::wallet::PendingSend {
+                    txid: pending.txid.clone(),
+                    raw: pending.raw.clone(),
+                    inputs: vec![pending.removed.utxo.clone()],
+                }),
+            }
+        }
+        sends
+    }
+
     #[cfg(test)]
     pub(crate) fn fill_pending_for_test(&mut self, count: usize, utxo: Utxo) {
         self.record_pending_removals(&[utxo], "test", 0);
@@ -351,7 +369,17 @@ impl UtxoSet {
                 },
                 txid: txid.to_owned(),
                 height,
+                raw: None,
             });
+        }
+    }
+
+    /// Attach the signed transaction to the records of one send.
+    pub fn record_pending_send_raw(&mut self, txid: &str, raw: &[u8]) {
+        for pending in &mut self.pending_removals {
+            if pending.txid == txid {
+                pending.raw = Some(raw.to_vec());
+            }
         }
     }
 
@@ -846,11 +874,9 @@ impl UtxoSet {
     /// Load the UTXO set from a JSON file.  Returns an empty set if the
     /// file does not exist.
     ///
-    /// The undo journal, its pending removals, and its tip are wallet-local
-    /// recovery aids, so a corrupt one is discarded rather than failing the
-    /// wallet: the journal loads empty and the wallet falls back to case 2 or 3.
-    /// The settled balance is not recovery data, so a corrupt `utxos` field
-    /// still fails the load.
+    /// A corrupt undo journal or tip is discarded so the wallet can rescan.
+    /// Corrupt pending removals fail the load because they protect inputs of
+    /// transactions that may still be live.
     pub fn load(path: &Path) -> std::io::Result<Self> {
         let json = match std::fs::read_to_string(path) {
             Ok(json) => json,
@@ -872,8 +898,7 @@ impl UtxoSet {
 }
 
 /// Discard a journalled field that does not parse, leaving the rest of the set
-/// intact. Only the undo journal, its pending removals, and its tip are
-/// tolerated this way.
+/// intact. Only the undo journal and its tip are tolerated this way.
 fn sanitize_journal_fields(value: &mut serde_json::Value) {
     let Some(object) = value.as_object_mut() else {
         return;
@@ -882,15 +907,6 @@ fn sanitize_journal_fields(value: &mut serde_json::Value) {
         && serde_json::from_value::<Vec<UndoEntry>>(object["undo"].clone()).is_err()
     {
         object.insert("undo".into(), serde_json::Value::Array(Vec::new()));
-    }
-    if object.contains_key("pending_removals")
-        && serde_json::from_value::<Vec<PendingRemoval>>(object["pending_removals"].clone())
-            .is_err()
-    {
-        object.insert(
-            "pending_removals".into(),
-            serde_json::Value::Array(Vec::new()),
-        );
     }
     if object.contains_key("last_scanned_tip")
         && serde_json::from_value::<Option<[u8; 32]>>(object["last_scanned_tip"].clone()).is_err()
@@ -902,6 +918,31 @@ fn sanitize_journal_fields(value: &mut serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn corrupt_pending_removals_fail_closed() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-corrupt-pending-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let mut json = serde_json::to_value(UtxoSet::new()).unwrap();
+        json["pending_removals"] = serde_json::json!([{"txid": "broken"}]);
+        std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+        assert!(UtxoSet::load(&path).is_err());
+        assert!(crate::wallet::BtcWallet::with_persistence(
+            [7; 64],
+            bitcoin::Network::Regtest,
+            path
+        )
+        .is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn utxo(txid: &str, vout: u32, value: u64) -> Utxo {
         Utxo {

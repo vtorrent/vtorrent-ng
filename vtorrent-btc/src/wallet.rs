@@ -55,6 +55,14 @@ fn find_fork(chain: &HeaderChain, old_best: [u8; 32]) -> Option<u32> {
     }
 }
 
+/// A wallet-local send whose delivery has not been confirmed.
+#[derive(Debug, Clone)]
+pub struct PendingSend {
+    pub txid: String,
+    pub raw: Option<Vec<u8>>,
+    pub inputs: Vec<Utxo>,
+}
+
 /// A Bitcoin SPV wallet.
 pub struct BtcWallet {
     seed: [u8; 64],
@@ -397,6 +405,26 @@ impl BtcWallet {
     /// Signed swap transactions retained for reconciliation after restart.
     pub fn pending_swap_transactions(&self) -> std::collections::BTreeMap<String, Vec<u8>> {
         self.utxos.lock().pending_swap_transactions().clone()
+    }
+
+    /// Sent transactions whose confirming spend has not been observed.
+    ///
+    /// A retained raw transaction can be rebroadcast after a restart instead
+    /// of releasing inputs whose delivery is uncertain.
+    pub fn pending_sends(&self) -> Vec<PendingSend> {
+        self.utxos.lock().pending_sends()
+    }
+
+    /// The signed bytes retained for a pending send, if recorded.
+    pub fn pending_send_raw(&self, txid: &str) -> Option<Vec<u8>> {
+        self.pending_send(txid).and_then(|send| send.raw)
+    }
+
+    /// The pending record for `txid`, including records without signed bytes.
+    pub fn pending_send(&self, txid: &str) -> Option<PendingSend> {
+        self.pending_sends()
+            .into_iter()
+            .find(|send| send.txid == txid)
     }
 
     pub fn swap_contract(&self, order_id: &str) -> Option<crate::utxo::SwapContract> {
@@ -1225,6 +1253,7 @@ impl BtcWallet {
                 set.remove(&u.txid, u.vout);
             }
             set.record_pending_removals(&removed, &txid_hex, cursor);
+            set.record_pending_send_raw(&txid_hex, &raw);
             if let Some(path) = &self.utxo_path {
                 if let Err(error) = set.save(path) {
                     // The removal only protects the inputs once it is on disk:
@@ -1912,6 +1941,73 @@ mod tests {
         assert!(error.to_string().contains("pending-send capacity"));
         assert!(w.utxo_for_tests(&owned.txid, owned.vout).is_some());
         assert_eq!(w.pending_removal_count_for_tests(), MAX_UNDO_ENTRIES);
+    }
+
+    #[test]
+    fn a_pending_send_keeps_its_raw_transaction_across_restart() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-pending-raw-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let mut w = BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
+            .unwrap();
+        let owned = Utxo {
+            txid: "ae".repeat(32),
+            vout: 0,
+            value: 100_000,
+            address: w.current_address().unwrap(),
+            height: 100,
+        };
+        w.add_utxo(owned.clone());
+        let recipient =
+            crate::keys::derive_address(&[9u8; 64], 0, bitcoin::Network::Regtest).unwrap();
+        let (txid, raw, _) = w.send_to(&recipient, 50_000, 1_000).unwrap();
+        drop(w);
+
+        let reopened =
+            BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path).unwrap();
+        let recovered = reopened
+            .pending_send_raw(&txid)
+            .expect("the signed transaction must survive restart");
+        assert_eq!(recovered, raw);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_scan_observed_spend_retires_the_pending_record() {
+        let mut w = BtcWallet::with_network([7u8; 64], bitcoin::Network::Regtest);
+        let owned = Utxo {
+            txid: "af".repeat(32),
+            vout: 0,
+            value: 100_000,
+            address: w.current_address().unwrap(),
+            height: 100,
+        };
+        w.add_utxo(owned);
+        let recipient =
+            crate::keys::derive_address(&[9u8; 64], 0, bitcoin::Network::Regtest).unwrap();
+        let (txid, _, selected) = w.send_to(&recipient, 50_000, 1_000).unwrap();
+        assert!(w.pending_send_raw(&txid).is_some());
+
+        {
+            let mut set = w.utxos.lock();
+            for input in &selected {
+                set.take_pending_removal(&txid, &input.txid, input.vout);
+            }
+        }
+
+        assert!(
+            w.pending_send(&txid).is_none(),
+            "a confirmed spend must leave no retryable record"
+        );
+        assert!(w.pending_send_raw(&txid).is_none());
+        assert_eq!(w.pending_removal_count_for_tests(), 0);
     }
 
     #[test]

@@ -1244,4 +1244,96 @@ mod tests {
             .unwrap();
         assert!(matched, "watched script should match its own block filter");
     }
+
+    async fn read_mock_message(
+        stream: &mut tokio::net::TcpStream,
+    ) -> bitcoin::p2p::message::NetworkMessage {
+        use tokio::io::AsyncReadExt;
+        let mut header = [0u8; 24];
+        stream.read_exact(&mut header).await.unwrap();
+        let len = u32::from_le_bytes([header[16], header[17], header[18], header[19]]) as usize;
+        let mut payload = vec![0u8; len];
+        stream.read_exact(&mut payload).await.unwrap();
+        let mut full = header.to_vec();
+        full.extend_from_slice(&payload);
+        let raw: bitcoin::p2p::message::RawNetworkMessage =
+            bitcoin::consensus::encode::deserialize(&full).unwrap();
+        raw.payload().clone()
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_receives_a_transaction_then_disconnects_reports_an_error() {
+        use bitcoin::p2p::message::RawNetworkMessage;
+        use bitcoin::p2p::message_network::VersionMessage;
+        use bitcoin::p2p::Address as BtcAddress;
+        use bitcoin::p2p::ServiceFlags;
+        use tokio::io::AsyncWriteExt;
+
+        let network = bitcoin::Network::Regtest;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            assert!(matches!(
+                read_mock_message(&mut stream).await,
+                NetworkMessage::Version(_)
+            ));
+            let version = VersionMessage {
+                version: 70016,
+                services: ServiceFlags::NONE,
+                timestamp: 0,
+                receiver: BtcAddress::new(&addr, ServiceFlags::NONE),
+                sender: BtcAddress::new(&addr, ServiceFlags::NONE),
+                nonce: 0,
+                user_agent: "/mock:1.0/".to_string(),
+                start_height: 0,
+                relay: true,
+            };
+            stream
+                .write_all(&serialize(&RawNetworkMessage::new(
+                    network.magic(),
+                    NetworkMessage::Version(version),
+                )))
+                .await
+                .unwrap();
+            stream
+                .write_all(&serialize(&RawNetworkMessage::new(
+                    network.magic(),
+                    NetworkMessage::Verack,
+                )))
+                .await
+                .unwrap();
+            loop {
+                if let NetworkMessage::Tx(tx) = read_mock_message(&mut stream).await {
+                    seen_tx.send(tx.compute_txid()).unwrap();
+                    break;
+                }
+            }
+            drop(stream);
+        });
+
+        let tx = bitcoin::Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![],
+            output: vec![bitcoin::TxOut {
+                value: bitcoin::Amount::from_sat(1_000),
+                script_pubkey: bitcoin::ScriptBuf::new(),
+            }],
+        };
+        let raw = serialize(&tx);
+        let result = broadcast_tx_to(&raw, network, &[addr]).await;
+
+        assert!(
+            result.is_err(),
+            "a disconnect without a reject must be reported as an error"
+        );
+        server.await.unwrap();
+        assert_eq!(
+            seen_rx.await.unwrap(),
+            tx.compute_txid(),
+            "the peer received the transaction before the error"
+        );
+    }
 }

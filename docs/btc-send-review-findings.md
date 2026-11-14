@@ -3,28 +3,39 @@
 These findings require resolution and independent review before mainnet. They
 are based on source inspection, not an end-to-end reproduction.
 
-## Ambiguous broadcast and restore
+## Ambiguous broadcast
 
-The RPC and desktop BTC send handlers call `restore_utxos` on any broadcast
-error (`vtorrent-rpc/src/handlers/btc.rs`, `vtorrent-tauri/src/commands/wallet.rs`).
-A peer can receive a transaction before the connection fails. An error is not
-proof that the transaction was not propagated. Conversely, the broadcast code
-treats a timeout without a reject as success; this is not proof of acceptance or
-confirmation (`vtorrent-btc/src/p2p.rs`).
+A peer can receive a transaction before the connection fails, so an error is
+not proof that the transaction did not propagate. The broadcast code also
+treats a timeout without a reject as success, which is not proof of acceptance
+or confirmation (`vtorrent-btc/src/p2p.rs`).
 
-The current restore implementation first calls `UtxoSet::add`, which refuses an
-outpoint with a pending removal, and cancels pending removals only for outputs
-actually added (`vtorrent-btc/src/wallet.rs`, `vtorrent-btc/src/utxo.rs`). Thus
-an ordinary failed broadcast can report an error while leaving its inputs
-hidden. If a scan has already retired the pending removal, the restore path may
-instead re-add an input the chain has observed spent; this interleaving needs a
-reproducible test.
+The working-tree change stops restoring inputs after a broadcast error. The
+signed transaction is persisted with the pending removal, the response reports
+uncertain status, and `GET /api/v1/btc/pending-sends` plus
+`POST /api/v1/btc/rebroadcast` (and the desktop equivalents) let the operator
+retry. A test covers retaining the raw transaction across restart.
 
-Do not treat broadcast failure as proof that inputs are safe to reuse. A fix
-needs durable transaction recovery and rebroadcast, explicit uncertain status,
-and tests covering peer disconnect after receipt, scan interleaving, restart,
-and eventual confirmation or safe operator recovery. Simply keeping inputs
-hidden without retaining a recoverable transaction can strand funds.
+Tests now cover the ambiguous paths:
+
+- a mock peer completes the handshake, receives the transaction, then
+  disconnects without a reject (`sync::tests`);
+- a lost rebroadcast response keeps the signed bytes and inputs
+  (`handlers::btc::tests`);
+- a successful rebroadcast does not retire the record; only a scan does;
+- a scan-observed spend retires the record and its raw transaction
+  (`wallet::tests`).
+
+Not covered: a daemon-level run against a real peer that accepts then drops,
+and a rebroadcast racing a confirmation that lands between the wallet lookup
+and the network write. The second is benign because the record is only retired
+by a scan, but it is not directly exercised.
+
+A pending record written by an older build has no raw transaction and cannot be
+rebroadcast. The list endpoint reports `has_raw_tx: false` and the UI disables
+retry for it; the rebroadcast endpoint returns a specific error. No production
+wallet exists yet; if one did, that record would need an operator-led recovery
+path before its inputs could be used again.
 
 ## Pending-removal capacity
 

@@ -12,6 +12,12 @@ export interface BtcStatus {
   balanceHidden: boolean
 }
 
+export interface BtcPendingSend {
+  txid: string
+  hasRawTx: boolean
+  inputs: { txid: string; vout: number; valueSatoshis: number }[]
+}
+
 // ─── Fetch functions ──────────────────────────────────────────────────────────
 
 async function fetchBtcStatus(): Promise<BtcStatus> {
@@ -27,6 +33,13 @@ async function fetchBtcAddress(): Promise<string> {
   }
   const data = (await rpcGet<{ address: string }>('/api/v1/btc/address')) as { address: string }
   return data.address
+}
+
+async function fetchPendingBtcSends(): Promise<BtcPendingSend[]> {
+  if (isTauri()) {
+    return camel(await tauriInvoke<unknown>('list_btc_pending_sends')) as BtcPendingSend[]
+  }
+  return camel(await rpcGet<unknown>('/api/v1/btc/pending-sends')) as BtcPendingSend[]
 }
 
 // ─── Hooks ────────────────────────────────────────────────────────────────────
@@ -106,5 +119,53 @@ export function useSendBtc() {
     }
   }, [])
 
-  return { send, loading, error }
+  const rebroadcast = useCallback(
+    async (txid: string, passphrase = '', otpCode: string | null = null): Promise<string | null> => {
+      setLoading(true)
+      setError(null)
+      try {
+        if (isTauri()) {
+          return await tauriInvoke<string>('rebroadcast_btc', { txid, passphrase, otpCode })
+        }
+        const data = (await rpcPost<{ txid: string }>('/api/v1/btc/rebroadcast', {
+          txid,
+          passphrase,
+          otp_code: otpCode,
+        })) as { txid: string }
+        return data.txid
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+        return null
+      } finally {
+        setLoading(false)
+      }
+    },
+    []
+  )
+
+  return { send, rebroadcast, loading, error }
+}
+
+export function usePendingBtcSends(intervalMs = 15_000) {
+  const [pending, setPending] = useState<BtcPendingSend[]>([])
+
+  useEffect(() => {
+    let active = true
+    const poll = async () => {
+      try {
+        const data = await fetchPendingBtcSends()
+        if (active) setPending(data)
+      } catch {
+        // A transient read failure must not clear a known pending send.
+      }
+    }
+    poll()
+    const id = setInterval(poll, intervalMs)
+    return () => {
+      active = false
+      clearInterval(id)
+    }
+  }, [intervalMs])
+
+  return pending
 }

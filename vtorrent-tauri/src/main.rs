@@ -75,6 +75,8 @@ fn main() {
             commands::get_btc_status,
             commands::get_btc_address,
             commands::send_btc,
+            commands::rebroadcast_btc,
+            commands::list_btc_pending_sends,
             // Legacy claims
             commands::check_legacy_claim,
             commands::submit_legacy_claim,

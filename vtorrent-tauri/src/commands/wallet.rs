@@ -1117,7 +1117,7 @@ pub async fn send_btc(
     .await
     .map_err(|error| TauriError::InvalidInput(error.to_string()))?;
 
-    let (txid_hex, raw, spent_utxos) = {
+    let (txid_hex, raw, _) = {
         let mut btc = handle.rpc_state.btc_wallet.write().await;
         let wallet = btc
             .as_mut()
@@ -1128,18 +1128,77 @@ pub async fn send_btc(
     };
 
     if let Err(e) = broadcast_btc_tx(&handle.rpc_state, &raw).await {
-        if let Some(wallet) = handle.rpc_state.btc_wallet.write().await.as_mut() {
-            if let Err(restore) = wallet.restore_utxos(&spent_utxos) {
-                return Err(TauriError::NodeError(format!(
-                    "{e}; additionally failed to restore spent BTC inputs: {restore}"
-                )));
-            }
-        }
-        return Err(TauriError::NodeError(e));
+        return Err(TauriError::NodeError(format!(
+            "BTC broadcast status is uncertain for {txid_hex}: {e}. The signed transaction is retained and its inputs are unavailable; retry with the rebroadcast action."
+        )));
     }
 
     tracing::info!("BTC tx broadcast: {}", txid_hex);
     Ok(txid_hex)
+}
+
+#[tauri::command]
+pub async fn rebroadcast_btc(
+    state: State<'_, AppState>,
+    txid: String,
+    passphrase: String,
+    otp_code: Option<String>,
+) -> Result<String> {
+    let guard = state.node.lock().await;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    vtorrent_rpc::handlers::authorize_wallet_operation(
+        &handle.rpc_state,
+        &passphrase,
+        otp_code.as_deref(),
+    )
+    .await
+    .map_err(|error| TauriError::InvalidInput(error.to_string()))?;
+    let raw = {
+        let btc = handle.rpc_state.btc_wallet.read().await;
+        let wallet = btc
+            .as_ref()
+            .ok_or_else(|| TauriError::NodeError("BTC wallet not initialized".into()))?;
+        wallet
+            .pending_send_raw(&txid)
+            .ok_or_else(|| TauriError::InvalidInput(format!("No retained BTC send {txid}")))?
+    };
+    broadcast_btc_tx(&handle.rpc_state, &raw)
+        .await
+        .map_err(TauriError::NodeError)?;
+    Ok(txid)
+}
+
+#[tauri::command]
+pub async fn list_btc_pending_sends(
+    state: State<'_, AppState>,
+) -> Result<Vec<vtorrent_rpc::models::BtcPendingSendResponse>> {
+    let guard = state.node.lock().await;
+    let Some(handle) = guard.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let btc = handle.rpc_state.btc_wallet.read().await;
+    let Some(wallet) = btc.as_ref() else {
+        return Ok(Vec::new());
+    };
+    Ok(wallet
+        .pending_sends()
+        .into_iter()
+        .map(|send| vtorrent_rpc::models::BtcPendingSendResponse {
+            txid: send.txid,
+            has_raw_tx: send.raw.is_some(),
+            inputs: send
+                .inputs
+                .into_iter()
+                .map(|input| vtorrent_rpc::models::BtcPendingInput {
+                    txid: input.txid,
+                    vout: input.vout,
+                    value_satoshis: input.value,
+                })
+                .collect(),
+        })
+        .collect())
 }
 
 // ─── Legacy claim commands ──────────────────────────────────────────────────

@@ -1442,6 +1442,60 @@ async fn btc_send_requires_passphrase_even_when_unlocked() {
 }
 
 #[tokio::test]
+async fn btc_pending_sends_reports_a_retained_send() {
+    let state = AppState::new();
+    let mut wallet =
+        vtorrent_btc::wallet::BtcWallet::with_network([7u8; 64], bitcoin::Network::Regtest);
+    let owned = vtorrent_btc::utxo::Utxo {
+        txid: "ab".repeat(32),
+        vout: 0,
+        value: 100_000,
+        address: wallet.current_address().unwrap(),
+        height: 100,
+    };
+    wallet.add_utxo(owned);
+    let recipient =
+        vtorrent_btc::keys::derive_address(&[9u8; 64], 0, bitcoin::Network::Regtest).unwrap();
+    let (txid, _, _) = wallet.send_to(&recipient, 50_000, 1_000).unwrap();
+    *state.btc_wallet.write().await = Some(wallet);
+    let app = build_router(state);
+    let (status, body) = get(app, "/api/v1/btc/pending-sends").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body[0]["txid"], txid);
+    assert_eq!(body[0]["has_raw_tx"], true);
+}
+
+#[tokio::test]
+async fn btc_rebroadcast_requires_an_unlocked_wallet() {
+    let app = build_router(AppState::new());
+    let (status, _) = post_json(
+        app,
+        "/api/v1/btc/rebroadcast",
+        serde_json::json!({ "txid": "00".repeat(32) }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn btc_rebroadcast_rejects_an_unknown_transaction() {
+    let state = AppState::new();
+    *state.wallet_unlock_expiry.write().await = Some(0);
+    *state.btc_wallet.write().await = Some(vtorrent_btc::wallet::BtcWallet::with_network(
+        [7u8; 64],
+        bitcoin::Network::Regtest,
+    ));
+    let app = build_router(state);
+    let (status, _) = post_json(
+        app,
+        "/api/v1/btc/rebroadcast",
+        serde_json::json!({ "txid": "00".repeat(32) }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn btc_fund_requires_an_unlocked_wallet() {
     let app = build_router(AppState::new());
     let (status, _) = post_json(
