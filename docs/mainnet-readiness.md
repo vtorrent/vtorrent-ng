@@ -155,12 +155,20 @@ window ran on, and that commit must equal the release commit.
       `:23973` with 16 healthy rules. In progress. The prior `b729e36` fleet was
       retired at height 2,503 with zero BTC scan errors and no alerts; its
       evidence remains at `/tmp/opencode/release-b729e36/` but does not cover
-      this candidate. Sign-off requires manual evidence review.
+      this candidate. Sign-off requires manual evidence review. Later commits
+      are not covered by this window; the shipping image needs its own full
+      window under the soak provenance policy.
 - [x] **Staking soak**: at least one node staked continuously and produced
       blocks at the expected ~60s average over the full 7-day window
       (`2026-09-29T13:36:22Z` → `2026-10-06T13:36:22Z`): node1 staked 1441
       blocks this run, median block interval 61s, 0 errors/restarts. See
       `docs/soak-log.md` 2026-10-06 sign-off.
+- [x] **Cold-stake spend recovery**: the two-daemon test funds a P2CS output,
+      confirms it, signs a spend offline from the encrypted spending-key
+      export, broadcasts it, mines it, and verifies both nodes agree on the
+      withdrawal. The offline CLI path is in
+      `docs/cold-staking-p2cs-design.md`. Independent review of the workflow
+      remains part of the review gate.
 - [x] **Atomic swap E2E on testnet**: 2026-08-24 via compose stack — full
       VTR↔BTC cycle against BTC regtest: VTR HTLC funded (match), BTC HTLC
       funded and confirmed (P2WSH, block 127), taker claimed VTR revealing

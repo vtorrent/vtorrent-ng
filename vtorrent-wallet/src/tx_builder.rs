@@ -506,6 +506,145 @@ pub fn sign_input_over_subscript(
     Ok((signature, pubkey))
 }
 
+/// A P2CS output being spent by the cold key.
+pub struct P2csSpendInput {
+    pub txid: [u8; 32],
+    pub vout: u32,
+    pub value_satoshis: u64,
+    /// The raw P2CS scriptPubKey being spent.
+    pub script_pubkey: Vec<u8>,
+}
+
+/// Build and sign a P2CS spend with the spending key.
+///
+/// The staking key cannot spend; only the key committed in the script's
+/// spending branch can. When `change_address` is omitted, `amount_satoshis +
+/// fee_satoshis` must equal the input value exactly.
+pub fn build_p2cs_spend(
+    input: &P2csSpendInput,
+    spending_wif: &str,
+    recipient: &str,
+    amount_satoshis: u64,
+    fee_satoshis: u64,
+    change_address: Option<&str>,
+    tx_lock_time: u32,
+) -> Result<Transaction> {
+    let script = vtorrent_script::Script::from_bytes(input.script_pubkey.clone())
+        .map_err(|e| WalletError::BuildError(format!("invalid P2CS script: {e}")))?;
+    let spending_hash = match vtorrent_script::standard::classify_script(&script) {
+        vtorrent_script::ScriptType::P2CS {
+            spending_hash,
+            locktime,
+            ..
+        } => {
+            if locktime != 0 && tx_lock_time < locktime {
+                return Err(WalletError::BuildError(format!(
+                    "transaction locktime {tx_lock_time} is below the P2CS script locktime {locktime}"
+                )));
+            }
+            spending_hash
+        }
+        _ => {
+            return Err(WalletError::BuildError(
+                "input script is not a P2CS cold-stake script".into(),
+            ))
+        }
+    };
+
+    let key = vtorrent_core::keys::PrivateKey::from_wif(spending_wif)
+        .map_err(|e| WalletError::Signing(e.to_string()))?;
+    let secret_key =
+        SecretKey::from_slice(key.as_bytes()).map_err(|e| WalletError::Signing(e.to_string()))?;
+    let secp = Secp256k1::new();
+    let pubkey = secp256k1::PublicKey::from_secret_key(&secp, &secret_key).serialize();
+    if vtorrent_core::crypto::hash160(&pubkey) != spending_hash {
+        return Err(WalletError::BuildError(
+            "the supplied spending key does not match the P2CS script".into(),
+        ));
+    }
+
+    if amount_satoshis < DUST_SATOSHIS {
+        return Err(WalletError::BuildError(format!(
+            "Recipient amount {amount_satoshis} sat is below the dust threshold {DUST_SATOSHIS} sat"
+        )));
+    }
+    if fee_satoshis < MIN_ABSOLUTE_FEE_SATS {
+        return Err(WalletError::BuildError(format!(
+            "Fee {fee_satoshis} sat is below the minimum {MIN_ABSOLUTE_FEE_SATS} sat"
+        )));
+    }
+
+    let mut outputs = vec![TxOutput {
+        value: amount_satoshis,
+        script_pubkey: p2pkh_script_pubkey(recipient)?,
+    }];
+    match change_address {
+        Some(address) => {
+            let spent = amount_satoshis
+                .checked_add(fee_satoshis)
+                .ok_or_else(|| WalletError::BuildError("amount plus fee overflows".into()))?;
+            let change = input.value_satoshis.checked_sub(spent).ok_or_else(|| {
+                WalletError::BuildError(format!(
+                    "Input value {} sat cannot cover amount {} plus fee {}",
+                    input.value_satoshis, amount_satoshis, fee_satoshis
+                ))
+            })?;
+            if change >= DUST_SATOSHIS {
+                outputs.push(TxOutput {
+                    value: change,
+                    script_pubkey: p2pkh_script_pubkey(address)?,
+                });
+            } else if change > 0 {
+                return Err(WalletError::BuildError(format!(
+                    "Change {change} sat is below the dust threshold; adjust amount or fee"
+                )));
+            }
+        }
+        None => {
+            if amount_satoshis.checked_add(fee_satoshis) != Some(input.value_satoshis) {
+                return Err(WalletError::BuildError(
+                    "Without a change address, amount plus fee must equal the input value exactly"
+                        .into(),
+                ));
+            }
+        }
+    }
+
+    let mut tx = Transaction {
+        version: 1,
+        tx_type: TxType::Standard,
+        inputs: vec![TxInput {
+            prev_txid: input.txid,
+            prev_vout: input.vout,
+            script_sig: Vec::new(),
+            // CLTV requires a non-final sequence even when the script's
+            // locktime is zero.
+            sequence: 0xffff_fffe,
+        }],
+        outputs,
+        lock_time: tx_lock_time,
+        claim_address: None,
+        claim_signature: None,
+    };
+
+    let (signature, pubkey) =
+        sign_input_over_subscript(&tx, 0, &input.script_pubkey, spending_wif)?;
+    if signature.len() > 0xfc || pubkey.len() > 0xfc {
+        return Err(WalletError::BuildError(
+            "signature or public key is too large for a push".into(),
+        ));
+    }
+    let mut script_sig = Vec::with_capacity(2 + signature.len() + pubkey.len());
+    script_sig.push(signature.len() as u8);
+    script_sig.extend_from_slice(&signature);
+    script_sig.push(pubkey.len() as u8);
+    script_sig.extend_from_slice(&pubkey);
+    script_sig.push(0x00); // OP_FALSE selects the spending branch.
+    tx.inputs[0].script_sig = script_sig;
+
+    Ok(tx)
+}
+
 impl Default for TxBuilder {
     fn default() -> Self {
         Self::new()
@@ -694,6 +833,124 @@ mod tests {
             .outputs
             .iter()
             .any(|o| o.value == 5_000_000 && o.script_pubkey == p2cs.as_bytes()));
+    }
+
+    fn p2cs_script_for(wif: &str, locktime: u32) -> Vec<u8> {
+        let key = PrivateKey::from_wif(wif).unwrap();
+        let secp = Secp256k1::new();
+        let sk = SecretKey::from_slice(key.as_bytes()).unwrap();
+        let pk = secp256k1::PublicKey::from_secret_key(&secp, &sk);
+        let spending = vtorrent_core::crypto::hash160(&pk.serialize());
+        vtorrent_script::standard::build_p2cs(&[3u8; 20], &spending, locktime)
+            .unwrap()
+            .as_bytes()
+            .to_vec()
+    }
+
+    #[test]
+    fn p2cs_spend_signs_with_the_cold_key_and_verifies() {
+        let (spending_wif, _) = random_wif();
+        let (_, recipient) = random_wif();
+        let (_, change) = random_wif();
+        let locktime = 1_700_000_000u32;
+        let script = p2cs_script_for(&spending_wif, locktime);
+        let input = P2csSpendInput {
+            txid: [0x11; 32],
+            vout: 2,
+            value_satoshis: 10_000_000,
+            script_pubkey: script.clone(),
+        };
+        let tx = build_p2cs_spend(
+            &input,
+            &spending_wif,
+            &recipient,
+            4_000_000,
+            10_000,
+            Some(&change),
+            locktime,
+        )
+        .unwrap();
+
+        assert_eq!(tx.lock_time, locktime);
+        assert_eq!(tx.inputs[0].sequence, 0xffff_fffe);
+        assert_eq!(tx.outputs[0].value, 4_000_000);
+        assert_eq!(tx.outputs[1].value, 10_000_000 - 4_000_000 - 10_000);
+        assert_eq!(tx.inputs[0].script_sig.last(), Some(&0x00));
+
+        let env = vtorrent_script::ScriptEnv {
+            tx_hash: tx.sighash(0, &script),
+            tx_lock_time: tx.lock_time,
+            input_sequence: tx.inputs[0].sequence,
+            block_time: locktime,
+            ..Default::default()
+        };
+        vtorrent_script::Engine::new(env)
+            .execute(
+                &vtorrent_script::Script::from_bytes(tx.inputs[0].script_sig.clone()).unwrap(),
+                &vtorrent_script::Script::from_bytes(script.clone()).unwrap(),
+            )
+            .expect("the cold-key spend must satisfy the P2CS script");
+    }
+
+    #[test]
+    fn p2cs_spend_rejects_a_key_that_does_not_match_the_script() {
+        let (spending_wif, _) = random_wif();
+        let (other_wif, _) = random_wif();
+        let (_, recipient) = random_wif();
+        let script = p2cs_script_for(&spending_wif, 0);
+        let input = P2csSpendInput {
+            txid: [0x22; 32],
+            vout: 0,
+            value_satoshis: 2_000_000,
+            script_pubkey: script,
+        };
+        let error = build_p2cs_spend(&input, &other_wif, &recipient, 1_000_000, 10_000, None, 0)
+            .unwrap_err();
+        assert!(error.to_string().contains("spending key"), "{error}");
+    }
+
+    #[test]
+    fn p2cs_spend_without_change_requires_an_exact_sum() {
+        let (spending_wif, _) = random_wif();
+        let (_, recipient) = random_wif();
+        let script = p2cs_script_for(&spending_wif, 0);
+        let input = P2csSpendInput {
+            txid: [0x33; 32],
+            vout: 1,
+            value_satoshis: 1_000_000,
+            script_pubkey: script.clone(),
+        };
+        let exact =
+            build_p2cs_spend(&input, &spending_wif, &recipient, 990_000, 10_000, None, 0).unwrap();
+        assert_eq!(exact.outputs.len(), 1);
+
+        let error = build_p2cs_spend(&input, &spending_wif, &recipient, 980_000, 10_000, None, 0)
+            .unwrap_err();
+        assert!(error.to_string().contains("exact"), "{error}");
+    }
+
+    #[test]
+    fn p2cs_spend_rejects_a_transaction_locktime_below_the_script() {
+        let (spending_wif, _) = random_wif();
+        let (_, recipient) = random_wif();
+        let script = p2cs_script_for(&spending_wif, 1_700_000_000);
+        let input = P2csSpendInput {
+            txid: [0x44; 32],
+            vout: 0,
+            value_satoshis: 2_000_000,
+            script_pubkey: script,
+        };
+        let error = build_p2cs_spend(
+            &input,
+            &spending_wif,
+            &recipient,
+            1_000_000,
+            10_000,
+            None,
+            1_600_000_000,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("locktime"), "{error}");
     }
 
     #[test]

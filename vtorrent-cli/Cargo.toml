@@ -23,11 +23,14 @@ zeroize = { workspace = true }
 
 # Serialization
 serde_json = "1"
+bincode = { workspace = true }
+hex = { workspace = true }
 
 # Offline store operations (reindex)
 vtorrent-store = { path = "../vtorrent-store" }
 vtorrent-node = { path = "../vtorrent-node" }
 vtorrent-script = { path = "../vtorrent-script" }
+vtorrent-wallet = { path = "../vtorrent-wallet" }
 
 # Terminal output
 colored = "2"

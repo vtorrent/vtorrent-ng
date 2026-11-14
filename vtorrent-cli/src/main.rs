@@ -134,6 +134,11 @@ enum Commands {
         #[command(subcommand)]
         action: BtcCommands,
     },
+    /// Cold-staking (P2CS) commands.
+    ColdStake {
+        #[command(subcommand)]
+        action: ColdStakeCommands,
+    },
     /// Show Prometheus metrics summary.
     Metrics,
     /// List connected P2P peers.
@@ -178,6 +183,47 @@ enum BtcCommands {
         address: String,
         /// Amount in BTC (e.g. 0.001).
         amount: f64,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ColdStakeCommands {
+    /// Build and sign an offline P2CS spend with an exported spending key.
+    ///
+    /// Runs without a node. The spending key is read from the encrypted export
+    /// and never leaves this process. Broadcast the printed raw transaction
+    /// with the node's `/api/v1/blockchain/broadcast` endpoint.
+    Spend {
+        /// Encrypted spending-key file from the cold-stake flow.
+        #[arg(long)]
+        key_file: String,
+        /// P2CS scriptPubKey (64 hex characters).
+        #[arg(long)]
+        script: String,
+        /// Funding transaction id (64 hex characters).
+        #[arg(long)]
+        funding_txid: String,
+        /// Funding output index.
+        #[arg(long)]
+        vout: u32,
+        /// Funding output value in satoshis.
+        #[arg(long)]
+        value_sat: u64,
+        /// Destination address.
+        #[arg(long)]
+        to: String,
+        /// Amount to send in satoshis.
+        #[arg(long)]
+        amount_sat: u64,
+        /// Fee in satoshis.
+        #[arg(long)]
+        fee_sat: u64,
+        /// Change address. Omit only when amount plus fee equals the input value.
+        #[arg(long)]
+        change: Option<String>,
+        /// Transaction locktime; must be at least the script's locktime.
+        #[arg(long, default_value = "0")]
+        lock_time: u32,
     },
 }
 
@@ -620,6 +666,79 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                     println!("{}", serde_json::to_string_pretty(&data)?);
                 } else {
                     println!("BTC txid: {}", data["txid"].as_str().unwrap_or("?"));
+                }
+            }
+        },
+        Commands::ColdStake { action } => match action {
+            ColdStakeCommands::Spend {
+                key_file,
+                script,
+                funding_txid,
+                vout,
+                value_sat,
+                to,
+                amount_sat,
+                fee_sat,
+                change,
+                lock_time,
+            } => {
+                let script_pubkey = hex::decode(script)
+                    .map_err(|_| anyhow::anyhow!("script must be hexadecimal"))?;
+                let txid_bytes = hex::decode(funding_txid)
+                    .map_err(|_| anyhow::anyhow!("funding_txid must be hexadecimal"))?;
+                let funding_txid: [u8; 32] = txid_bytes
+                    .try_into()
+                    .map_err(|_| anyhow::anyhow!("funding_txid must be exactly 32 bytes"))?;
+
+                let mut passphrase = rpassword::prompt_password("Spending-key file passphrase: ")
+                    .unwrap_or_default();
+                let (wif, _address) = vtorrent_wallet::cold_stake_export::load_spending_key(
+                    std::path::Path::new(key_file),
+                    &passphrase,
+                )?;
+                passphrase.zeroize();
+
+                let input = vtorrent_wallet::tx_builder::P2csSpendInput {
+                    txid: funding_txid,
+                    vout: *vout,
+                    value_satoshis: *value_sat,
+                    script_pubkey,
+                };
+                let tx = vtorrent_wallet::tx_builder::build_p2cs_spend(
+                    &input,
+                    wif.as_str(),
+                    to,
+                    *amount_sat,
+                    *fee_sat,
+                    change.as_deref(),
+                    *lock_time,
+                )?;
+                let raw = bincode::serialize(&tx)?;
+                if cli.json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "txid": hex::encode(tx.txid()),
+                            "raw_tx": hex::encode(&raw),
+                            "lock_time": tx.lock_time,
+                        }))?
+                    );
+                } else {
+                    println!(
+                        "{} {}",
+                        "Cold-stake spend txid:".cyan().bold(),
+                        hex::encode(tx.txid())
+                    );
+                    println!("raw_tx: {}", hex::encode(&raw));
+                    if tx.lock_time != 0 {
+                        println!(
+                            "The transaction is valid once the chain reaches locktime {}.",
+                            tx.lock_time
+                        );
+                    }
+                    println!(
+                        "Broadcast with POST /api/v1/blockchain/broadcast using the raw_tx field."
+                    );
                 }
             }
         },

@@ -112,17 +112,69 @@ async fn cold_stake_funding_propagates_and_confirms_on_two_daemons() {
     sender.wait_tip(&confirmation_tip).await;
     sender.persisted(2).await;
     receiver.persisted(2).await;
+
+    // Spend the confirmed P2CS output offline, using only the encrypted
+    // spending-key export, then submit the signed transaction to the node.
+    let (spending_wif, _) = vtorrent_wallet::cold_stake_export::load_spending_key(
+        std::path::Path::new(keys["spending_key_file"].as_str().unwrap()),
+        "test-pass",
+    )
+    .unwrap();
+    let funding_txid: [u8; 32] = hex::decode(&txid).unwrap().try_into().unwrap();
+    let spend = vtorrent_wallet::tx_builder::build_p2cs_spend(
+        &vtorrent_wallet::tx_builder::P2csSpendInput {
+            txid: funding_txid,
+            vout: 0,
+            value_satoshis: COIN,
+            script_pubkey: script.clone(),
+        },
+        spending_wif.as_str(),
+        ADDRESS,
+        COIN / 2,
+        10_000,
+        Some(ADDRESS),
+        0,
+    )
+    .unwrap();
+    let spend_txid = spend.txid();
+    receiver
+        .post(
+            "/api/v1/blockchain/broadcast",
+            json!({"raw_tx": hex::encode(bincode::serialize(&spend).unwrap())}),
+        )
+        .await;
+    receiver
+        .post(
+            "/api/v1/blockchain/mine",
+            json!({"address": ADDRESS, "amount_satoshis": COIN}),
+        )
+        .await;
+    let spend_tip = receiver.get("/api/v1/info").await["best_block_hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    sender.wait_tip(&spend_tip).await;
+    sender.persisted(3).await;
+    receiver.persisted(3).await;
     sender.stop(false).await;
     receiver.stop(false).await;
 
-    let txid: [u8; 32] = hex::decode(&txid).unwrap().try_into().unwrap();
     for path in [&sender_dir, &receiver_dir] {
         let store = BlockStore::open(path.join("chain.db")).unwrap();
         let chain = store.load_into_regtest_chain().unwrap();
-        assert_eq!(hex::encode(chain.best_hash().unwrap()), confirmation_tip);
-        let output = chain.get_utxo(&txid, 0).expect("confirmed P2CS output");
-        assert_eq!(output.height, 2);
-        assert_eq!(output.value, COIN);
-        assert_eq!(output.script_pubkey, script);
+        assert_eq!(hex::encode(chain.best_hash().unwrap()), spend_tip);
+        assert!(
+            chain.get_transaction_owned(&spend_txid).is_some(),
+            "the cold-key spend must be confirmed on both nodes"
+        );
+        assert!(
+            chain.get_utxo(&funding_txid, 0).is_none(),
+            "the P2CS output is spent after the cold-key withdrawal"
+        );
+        let withdrawn = chain
+            .get_utxo(&spend_txid, 0)
+            .expect("recipient output from the cold-key spend");
+        assert_eq!(withdrawn.value, COIN / 2);
+        assert_eq!(withdrawn.script_pubkey.len(), 25);
     }
 }

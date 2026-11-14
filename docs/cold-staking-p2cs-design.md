@@ -61,11 +61,16 @@ in `standard.rs` and a `build_p2cs(...)` constructor.
 
 ## 4. Wallet / UX
 
-**Release blocker:** The encrypted spending-key export currently has a library
-decryption function, but no verified user-facing offline recovery and P2CS
-spending workflow. Do not fund a cold-stake output until recovery and spending
-have been demonstrated end to end with the exported file and its corresponding
-script. An encrypted backup alone does not prove that funds can be recovered.
+**Offline spending.** `vtorrent-cli cold-stake spend` decrypts the exported
+file, verifies that its key matches the script's spending hash, builds the
+P2CS spend, and prints the txid and raw transaction. It runs without a node and
+never sends the key over IPC or HTTP. Broadcast the raw transaction with
+`POST /api/v1/blockchain/broadcast` after the chain reaches the script's
+locktime.
+
+The two-daemon test now funds a P2CS output, confirms it, spends it with the
+exported key, broadcasts the signed transaction, mines it, and verifies both
+nodes agree on the withdrawal.
 
 - **Key roles**: the wallet generates a **staking keypair** and a **spending
   keypair**, derives the raw P2CS script (plus a P2SH label address), and can
