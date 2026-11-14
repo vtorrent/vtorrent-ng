@@ -10,7 +10,7 @@ already accepted so it is not re-litigated.
 
 ## Review target
 
-Review the candidate `72960bb3aaaa06444ab02655967ca824a71e8261`. This is the
+Review the candidate `ab57acf7c868c97dff7cce145a45e9fe0200a197`. This is the
 current review head. It is **not** the image in the active 168-hour soak: that
 fleet runs `6a49727`, which predates the fund-safety and recovery changes below.
 Under the soak provenance policy, the shipping image needs its own full window
@@ -18,8 +18,8 @@ after this review and its fixes settle.
 
 The tables below record the earlier deltas; the last table covers the range
 from `b729e36` to the review head. Check out the latest `main`: commits after
-`72960bb` are documentation only. Confirm that with
-`git diff --name-only 72960bb..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`
+`ab57acf` are documentation only. Confirm that with
+`git diff --name-only ab57acf..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`
 returning nothing.
 
 The deltas added after `dd98176` are the reason this request was refreshed; the
@@ -89,9 +89,10 @@ Deltas added after `b729e36`:
 | `3ae1b87` | Enforce private seed files in legacy BTC staging |
 | `41641f8` | Validate BTC claim replacement lineage |
 | `72960bb` | Keep local DEX orders through gossip pressure |
+| `ab57acf` | Test-only isolation for the cold-stake desktop fixtures |
 
 Other commits in the range are tests, formatting, and documentation. The full
-sequence is `git log b729e36..72960bb`.
+sequence is `git log b729e36..ab57acf`.
 
 Docs-only commits in the delta are evidence, not implementation changes. The
 `ff148fd` review findings are documented in
@@ -102,7 +103,7 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout 72960bb3aaaa06444ab02655967ca824a71e8261
+git checkout ab57acf7c868c97dff7cce145a45e9fe0200a197
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
@@ -110,7 +111,7 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 cargo test --workspace --all-features
 ```
 
-The `72960bb` workspace run passed 52 groups, 1,282 tests, zero failures. CI
+The `ab57acf` workspace run passed 52 groups, 1,282 tests, zero failures. CI
 repeats the `--all-features` suite on every push. Set `VTORRENT_TOTP_STATE_DIR`
 to a fresh directory before running the suite so the host-scoped TOTP replay
 state does not collide with an existing installation.
