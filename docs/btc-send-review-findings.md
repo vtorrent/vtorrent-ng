@@ -51,12 +51,17 @@ the full-reset guard and reopens a persisted wallet after reset. Real rescans
 and abandoned-recovery behavior still need coverage before this can be
 considered safe.
 
-## Claim-replacement recovery requires further verification
+## Claim-replacement recovery
 
-`swap_recovery::restore` checks VTR refund lineage compatibility, but selects
-the longer BTC claim-replacement list without an analogous prefix check. It
-also fills `btc_claim_raw` only when absent, even when it takes a longer saved
-replacement list. Investigate whether two conflicting lineages or a stale raw
-claim can arise through supported persistence and restart flows, and test the
-resulting fee calculation and retry behavior. Source inspection alone does not
-establish that such a state is reachable or exploitable.
+`swap_recovery` now validates the BTC claim chain when loading and persisting,
+refuses to replace or shorten it, and adopts the saved raw transaction when it
+takes a longer chain. The merge also rejects conflicting in-memory and saved
+claim txids. Tests cover a broken parent link, a stale raw claim, a shortened
+persist, and the restore adoption path; each guard was verified red without the
+fix.
+
+The validator is structural: it checks the parent chain, txids, funding
+outpoint, fee monotonicity, and that `btc_claim_raw` matches the last
+replacement. It does not re-derive the signed transaction from the HTLC terms.
+Independent review should confirm that the structural checks are sufficient and
+that no supported flow can persist a divergent chain.

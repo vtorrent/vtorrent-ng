@@ -116,6 +116,7 @@ fn read_record(path: &Path, password: &str) -> RpcResult<Option<Record>> {
             }
         }
         crate::refund_lineage::validate(&record.order, swap)?;
+        crate::btc_claim_lineage::validate(swap)?;
     }
     Ok(Some(record))
 }
@@ -137,6 +138,7 @@ pub(crate) async fn persist_for_wallet(
 ) -> RpcResult<()> {
     if let Some(swap) = swap {
         crate::refund_lineage::validate(order, swap)?;
+        crate::btc_claim_lineage::validate(swap)?;
     }
     if state.swap_recovery_dir.is_none() {
         return Ok(());
@@ -202,6 +204,12 @@ pub(crate) async fn persist_for_wallet(
                     &new.vtr_refund_replacements,
                 ) {
                     return Err(failure("refusing to replace or discard refund lineage"));
+                }
+                if !crate::btc_claim_lineage::is_prefix(
+                    &old.btc_claim_replacements,
+                    &new.btc_claim_replacements,
+                ) {
+                    return Err(failure("refusing to replace or discard claim lineage"));
                 }
                 for (old_id, new_id) in [
                     (old.vtr_funding_txid, new.vtr_funding_txid),
@@ -287,6 +295,15 @@ pub async fn restore_with_wif(state: &AppState, wif: &str) -> RpcResult<()> {
             ) {
                 return Err(failure("recovered refund lineage conflicts with memory"));
             }
+            if !crate::btc_claim_lineage::is_prefix(
+                &current.btc_claim_replacements,
+                &saved.btc_claim_replacements,
+            ) && !crate::btc_claim_lineage::is_prefix(
+                &saved.btc_claim_replacements,
+                &current.btc_claim_replacements,
+            ) {
+                return Err(failure("recovered claim lineage conflicts with memory"));
+            }
             if current.hash_lock != saved.hash_lock
                 || (current.vtr_refund_txid.is_some()
                     && saved.vtr_refund_txid.is_some()
@@ -297,6 +314,9 @@ pub async fn restore_with_wif(state: &AppState, wif: &str) -> RpcResult<()> {
                 || (current.btc_funding_txid.is_some()
                     && saved.btc_funding_txid.is_some()
                     && current.btc_funding_txid != saved.btc_funding_txid)
+                || (current.btc_claim_txid.is_some()
+                    && saved.btc_claim_txid.is_some()
+                    && current.btc_claim_txid != saved.btc_claim_txid)
             {
                 return Err(failure(
                     "recovered contract conflicts with in-memory funding",
@@ -316,10 +336,24 @@ pub async fn restore_with_wif(state: &AppState, wif: &str) -> RpcResult<()> {
                     if current.vtr_refund_replacements.len() < swap.vtr_refund_replacements.len() {
                         current.vtr_refund_replacements = swap.vtr_refund_replacements.clone();
                     }
-                    // Claim replacements are append-only, so keep the longer
-                    // chain (same rule as the VTR refund replacements).
+                    // Claim replacements are append-only, so adopt a longer
+                    // chain only when it extends the one in memory, and take
+                    // its raw transaction so the next fee calculation prices
+                    // the latest replacement.
                     if current.btc_claim_replacements.len() < swap.btc_claim_replacements.len() {
+                        if !crate::btc_claim_lineage::is_prefix(
+                            &current.btc_claim_replacements,
+                            &swap.btc_claim_replacements,
+                        ) {
+                            return Err(failure("recovered claim lineage conflicts with memory"));
+                        }
                         current.btc_claim_replacements = swap.btc_claim_replacements.clone();
+                        current.btc_claim_raw = swap.btc_claim_raw.clone();
+                    } else if !crate::btc_claim_lineage::is_prefix(
+                        &swap.btc_claim_replacements,
+                        &current.btc_claim_replacements,
+                    ) {
+                        return Err(failure("recovered claim lineage conflicts with memory"));
                     }
                     let pending_btc = current.status
                         == vtorrent_node::atomic_swap::SwapStatus::BtcFunding

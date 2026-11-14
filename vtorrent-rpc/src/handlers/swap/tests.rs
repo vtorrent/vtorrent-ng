@@ -1590,6 +1590,76 @@ async fn btc_claim_bump_rejects_stale_parent() {
     assert!(err.to_string().contains("Stale"));
 }
 
+#[tokio::test]
+async fn btc_claim_persist_refuses_a_shorter_lineage() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut state, id, claim) = claim_bump_fixture().await;
+    state.swap_recovery_dir = Some(directory.path().to_path_buf());
+    crate::btc_claim_bump::bump_with_broadcast(
+        &state,
+        bump_request(&id, claim, 3_000),
+        async |raw: &[u8]| Ok(txid(raw)),
+    )
+    .await
+    .unwrap();
+    let order = state
+        .order_book
+        .read()
+        .await
+        .get_order(&id)
+        .unwrap()
+        .clone();
+    let mut shortened = state.swaps.read().await[&id].clone();
+    shortened.btc_claim_replacements.pop();
+    assert!(
+        crate::swap_recovery::persist(&state, &order, Some(&shortened))
+            .await
+            .is_err(),
+        "a persisted claim chain must not be discarded or replaced"
+    );
+}
+
+#[tokio::test]
+async fn restore_adopts_the_latest_signed_claim_raw() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut state, id, claim) = claim_bump_fixture().await;
+    state.swap_recovery_dir = Some(directory.path().to_path_buf());
+    let first = crate::btc_claim_bump::bump_with_broadcast(
+        &state,
+        bump_request(&id, claim, 3_000),
+        async |raw: &[u8]| Ok(txid(raw)),
+    )
+    .await
+    .unwrap();
+    let first_txid: [u8; 32] = hex::decode(&first.txid).unwrap().try_into().unwrap();
+    crate::btc_claim_bump::bump_with_broadcast(
+        &state,
+        bump_request(&id, first_txid, 4_000),
+        async |raw: &[u8]| Ok(txid(raw)),
+    )
+    .await
+    .unwrap();
+    let saved_raw = state.swaps.read().await[&id].btc_claim_raw.clone().unwrap();
+
+    // Simulate memory holding the first replacement while the record holds
+    // both. Restore must take the longer chain and its raw transaction.
+    let mut shortened = state.swaps.read().await[&id].clone();
+    shortened.btc_claim_replacements.truncate(1);
+    shortened.btc_claim_raw = shortened.btc_claim_replacements[0].raw.clone().into();
+    state.swaps.write().await.insert(id.clone(), shortened);
+
+    crate::swap_recovery::restore_with_wif(&state, &vtr_identity(1).0)
+        .await
+        .unwrap();
+    let merged = &state.swaps.read().await[&id];
+    assert_eq!(merged.btc_claim_replacements.len(), 2);
+    assert_eq!(
+        merged.btc_claim_raw.as_deref(),
+        Some(saved_raw.as_slice()),
+        "the restored raw must price the latest replacement"
+    );
+}
+
 // ─── Cross-node preimage handoff (S5) ───────────────────────────────────────
 
 /// A funded swap whose taker is `vtr_identity(2)`, so its WIF signs the claim.
