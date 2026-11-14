@@ -1347,6 +1347,17 @@ mod tests {
     use super::*;
     use tauri::Manager;
 
+    fn unique_wallet_dir(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "vtr-tauri-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
     #[tokio::test]
     async fn fund_cold_stake_builds_a_p2cs_output() {
         use crate::state::NodeHandle;
@@ -1439,8 +1450,7 @@ mod tests {
             mempool_path: None,
         });
 
-        let registry_dir =
-            std::env::temp_dir().join(format!("vtr-tauri-cold-stake-{}", std::process::id()));
+        let registry_dir = unique_wallet_dir("cold-stake-fund");
         std::fs::create_dir_all(&registry_dir).unwrap();
         let wallet_path = registry_dir.join("wallet.vtr");
         *state.wallet_path.lock().unwrap() = Some(wallet_path.clone());
@@ -1546,7 +1556,7 @@ mod tests {
             .unwrap();
         app.manage(AppState::new());
         let state = app.state::<AppState>();
-        let dir = std::env::temp_dir().join(format!("vtr-tauri-cold-stake-{}", std::process::id()));
+        let dir = unique_wallet_dir("cold-stake-records");
         std::fs::create_dir_all(&dir).unwrap();
         *state.wallet_path.lock().unwrap() = Some(dir.join("wallet.vtr"));
         *state.wallet.lock().unwrap() = Some(Wallet::create("pw").unwrap());
