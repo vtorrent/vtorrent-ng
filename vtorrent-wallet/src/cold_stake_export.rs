@@ -29,6 +29,12 @@ struct SpendingKeyPlaintext {
     address: String,
 }
 
+#[derive(Serialize)]
+struct SpendingKeyPlaintextRef<'a> {
+    wif: &'a str,
+    address: &'a str,
+}
+
 fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -45,9 +51,9 @@ pub fn export_spending_key(
 ) -> Result<()> {
     validate_new_passphrase(passphrase)?;
     let plaintext = Zeroizing::new(
-        serde_json::to_vec(&SpendingKeyPlaintext {
-            wif: spending_wif.to_string(),
-            address: spending_address.to_string(),
+        serde_json::to_vec(&SpendingKeyPlaintextRef {
+            wif: spending_wif,
+            address: spending_address,
         })
         .map_err(|error| WalletError::Serialization(error.to_string()))?,
     );
@@ -108,9 +114,10 @@ pub fn load_spending_key(path: &Path, passphrase: &str) -> Result<(Zeroizing<Str
         ));
     }
     let plaintext = decrypt_wallet(&file.encrypted, passphrase)?;
-    let key: SpendingKeyPlaintext = serde_json::from_slice(&plaintext)
+    let mut key: SpendingKeyPlaintext = serde_json::from_slice(&plaintext)
         .map_err(|error| WalletError::Serialization(error.to_string()))?;
-    Ok((Zeroizing::new(key.wif), key.address))
+    let wif = Zeroizing::new(std::mem::take(&mut key.wif));
+    Ok((wif, key.address))
 }
 
 #[cfg(test)]

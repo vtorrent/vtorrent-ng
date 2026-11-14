@@ -80,7 +80,10 @@ impl PrivateKey {
 
     /// Encode the private key to WIF format using the given version byte.
     pub fn to_wif(&self, version_byte: u8) -> String {
-        let mut payload = Vec::with_capacity(34);
+        use zeroize::Zeroizing;
+        // The payload contains the raw scalar; zeroize it after encoding. The
+        // returned WIF string is the caller's responsibility to wrap.
+        let mut payload = Zeroizing::new(Vec::with_capacity(34));
         payload.push(version_byte);
         payload.extend_from_slice(&self.inner);
         if self.compressed {
@@ -88,7 +91,7 @@ impl PrivateKey {
         }
         let check = checksum(&payload);
         payload.extend_from_slice(&check);
-        bs58::encode(payload).into_string()
+        bs58::encode(payload.as_slice()).into_string()
     }
 
     /// Get the raw 32-byte private key scalar.

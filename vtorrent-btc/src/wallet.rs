@@ -1189,7 +1189,7 @@ impl BtcWallet {
         let change_address = self.current_address()?;
 
         // Find the WIF whose derived address matches the selected UTXOs.
-        let mut wif = None;
+        let mut wif: Option<zeroize::Zeroizing<String>> = None;
         for idx in 0..=self.next_index {
             let addr = derive_address(&self.seed, idx, self.network)?;
             if selected.iter().any(|u| u.address == addr) {
@@ -1198,7 +1198,11 @@ impl BtcWallet {
                         "send_to requires all UTXOs to belong to the same address index".into(),
                     ));
                 }
-                wif = Some(derive_wif(&self.seed, idx, self.network)?);
+                wif = Some(zeroize::Zeroizing::new(derive_wif(
+                    &self.seed,
+                    idx,
+                    self.network,
+                )?));
             }
         }
         let wif = wif.ok_or_else(|| {
@@ -1211,7 +1215,7 @@ impl BtcWallet {
             amount_sats,
             fee_sats,
             &change_address,
-            &wif,
+            wif.as_str(),
             self.network,
             self.rbf_enabled,
         )?;
