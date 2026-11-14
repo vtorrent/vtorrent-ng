@@ -90,12 +90,46 @@ fn source_label(source: &Path, network: Option<&str>) -> anyhow::Result<&'static
 }
 
 fn read_seed(path: &Path) -> anyhow::Result<[u8; 64]> {
+    require_private_file(path)?;
+    let raw = zeroize::Zeroizing::new(fs::read(path)?);
+    let text = trim_ascii(&raw);
+    if text.len() != 128 {
+        anyhow::bail!("seed file must contain exactly 128 hex characters");
+    }
+    let mut seed = [0u8; 64];
+    hex::decode_to_slice(text, &mut seed)
+        .map_err(|_| anyhow::anyhow!("seed file must contain exactly 128 hex characters"))?;
+    Ok(seed)
+}
+
+fn trim_ascii(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|byte| !byte.is_ascii_whitespace())
+        .map(|index| index + 1)
+        .unwrap_or(start);
+    &bytes[start..end]
+}
+
+fn require_private_file(path: &Path) -> anyhow::Result<()> {
     require_regular_file(path)?;
-    let text = fs::read_to_string(path)?;
-    let bytes = hex::decode(text.trim())?;
-    bytes
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("seed file must contain exactly 128 hex characters"))
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::symlink_metadata(path)?.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            anyhow::bail!(
+                "{} must not be accessible by group or others (expected 0600, found {:04o})",
+                path.display(),
+                mode
+            );
+        }
+    }
+    Ok(())
 }
 
 fn wallet_id(seed: &[u8; 64]) -> String {

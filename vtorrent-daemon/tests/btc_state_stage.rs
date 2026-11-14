@@ -3,8 +3,10 @@
 use std::process::Command;
 
 fn write_seed(dir: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
     let path = dir.join("btc-seed.hex");
     std::fs::write(&path, format!("{}\n", "01".repeat(64))).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     path
 }
 
@@ -146,6 +148,22 @@ fn interrupted_stage_blocks_retry_without_modifying_any_file() {
 }
 
 #[test]
+fn interrupted_publication_leaves_output_and_stage_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("btc_utxos-regtest.json");
+    let output = dir.path().join("btc_utxos-regtest-62d04ad2793b8849.json");
+    let stage = output.with_extension("json.recovery-stage");
+    let original = b"{\"utxos\":[]}";
+    std::fs::write(&source, original).unwrap();
+    std::fs::write(&output, original).unwrap();
+    std::fs::write(&stage, original).unwrap();
+    assert!(!run(&source, &output).status.success());
+    assert_eq!(std::fs::read(&source).unwrap(), original);
+    assert_eq!(std::fs::read(&output).unwrap(), original);
+    assert_eq!(std::fs::read(&stage).unwrap(), original);
+}
+
+#[test]
 fn rejects_wrong_network_and_symbolic_link_sources() {
     use std::os::unix::fs::symlink;
     let dir = tempfile::tempdir().unwrap();
@@ -186,6 +204,42 @@ fn requires_explicit_confirmations() {
         .unwrap();
     assert!(!result.status.success());
     assert!(!output.exists());
+}
+
+#[test]
+fn rejects_a_seed_file_readable_by_group_or_others() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("btc_utxos-regtest.json");
+    let output = dir.path().join("btc_utxos-regtest-62d04ad2793b8849.json");
+    let seed = dir.path().join("btc-seed.hex");
+    std::fs::write(&source, b"{\"utxos\":[]}").unwrap();
+    std::fs::write(&seed, format!("{}\n", "01".repeat(64))).unwrap();
+    std::fs::set_permissions(&seed, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_btc-state-stage"))
+        .args([
+            "stage",
+            "--data-dir",
+            dir.path().to_str().unwrap(),
+            "--source",
+            source.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+            "--seed-file",
+            seed.to_str().unwrap(),
+            "--network",
+            "regtest",
+        ])
+        .args(["--confirm-isolated", "--confirm-owner"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(!output.exists());
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("0600"),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
 }
 
 #[tokio::test]
@@ -415,4 +469,84 @@ fn archives_exact_original_and_removes_only_the_active_legacy_name() {
         std::fs::read(&archive).unwrap(),
         b"{\"utxos\":[],\"swap_contracts\":{}}"
     );
+}
+
+#[test]
+fn interrupted_archive_stage_blocks_retry_without_modifying_any_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("btc_utxos-regtest.json");
+    let output = dir.path().join("btc_utxos-regtest-62d04ad2793b8849.json");
+    let archive = dir.path().join("legacy-btc-state-20261113.json");
+    let stage = archive.with_extension("json.archive-stage");
+    let seed = write_seed(dir.path());
+    let original = b"{\"utxos\":[],\"swap_contracts\":{}}";
+    std::fs::write(&source, original).unwrap();
+    assert!(run(&source, &output).status.success());
+    std::fs::write(&stage, b"partial interrupted archive").unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_btc-state-stage"))
+        .args([
+            "archive",
+            "--data-dir",
+            dir.path().to_str().unwrap(),
+            "--source",
+            source.to_str().unwrap(),
+            "--archive",
+            archive.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+            "--seed-file",
+            seed.to_str().unwrap(),
+            "--network",
+            "regtest",
+        ])
+        .args(["--confirm-isolated", "--confirm-owner"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert_eq!(std::fs::read(&source).unwrap(), original);
+    assert_eq!(std::fs::read(&output).unwrap(), original);
+    assert!(!archive.exists());
+    assert_eq!(
+        std::fs::read(&stage).unwrap(),
+        b"partial interrupted archive"
+    );
+}
+
+#[test]
+fn interrupted_archive_publication_keeps_the_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("btc_utxos-regtest.json");
+    let output = dir.path().join("btc_utxos-regtest-62d04ad2793b8849.json");
+    let archive = dir.path().join("legacy-btc-state-20261113.json");
+    let stage = archive.with_extension("json.archive-stage");
+    let seed = write_seed(dir.path());
+    let original = b"{\"utxos\":[],\"swap_contracts\":{}}";
+    std::fs::write(&source, original).unwrap();
+    assert!(run(&source, &output).status.success());
+    std::fs::write(&archive, original).unwrap();
+    std::fs::write(&stage, original).unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_btc-state-stage"))
+        .args([
+            "archive",
+            "--data-dir",
+            dir.path().to_str().unwrap(),
+            "--source",
+            source.to_str().unwrap(),
+            "--archive",
+            archive.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+            "--seed-file",
+            seed.to_str().unwrap(),
+            "--network",
+            "regtest",
+        ])
+        .args(["--confirm-isolated", "--confirm-owner"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert_eq!(std::fs::read(&source).unwrap(), original);
+    assert_eq!(std::fs::read(&output).unwrap(), original);
+    assert_eq!(std::fs::read(&archive).unwrap(), original);
+    assert_eq!(std::fs::read(&stage).unwrap(), original);
 }

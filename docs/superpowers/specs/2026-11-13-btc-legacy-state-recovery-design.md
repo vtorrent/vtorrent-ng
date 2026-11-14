@@ -2,9 +2,10 @@
 
 Status: proposed. This is not an approved production recovery procedure.
 
-An experimental `btc-state-stage` binary now has two subcommands. Both require a
-0600 seed file and derive the seed-scoped wallet id, so a mistyped destination
-is rejected. `stage` copies exact bytes from an operator-isolated source to that
+An experimental `btc-state-stage` binary now has two subcommands. Both require
+and enforce a 0600 seed file and derive the seed-scoped wallet id, so a
+mistyped destination is rejected. `stage` copies exact bytes from an
+operator-isolated source to that
 path. It accepts `btc_utxos-mainnet.json`, `btc_utxos-regtest.json`, and the
 unlabelled `btc_utxos.json` when `--network` is supplied. `archive` refuses
 unless the destination already holds identical bytes, then makes an independent
@@ -95,7 +96,10 @@ destination, malformed input, a pre-existing interrupted stage file, wrong
 network names, symlink sources, paths outside `--data-dir`, a destination id
 that does not match the seed, the unlabelled `btc_utxos.json` source with an
 explicit network, missing confirmations, archive refusal without a matching
-staged copy, and archive of a matching copy. An end-to-end test stages,
+staged copy, archive of a matching copy, a group-readable seed file, and a
+pre-existing interrupted archive-stage file. Simulated publication windows
+cover both output-plus-stage and archive-plus-stage states, verifying that a
+retry leaves every file untouched. An end-to-end test stages,
 archives, starts the daemon, and confirms the loaded wallet's address comes from
 the staged index. These are simulated filesystem states, not real process kills.
 Archive must run after `stage` and before the wallet starts; a wallet that has
