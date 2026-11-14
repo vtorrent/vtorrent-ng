@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `ab57acf`
+Subject: Independent security review — vTorrent-NG mainnet candidate `f8e0162`
 
 Hello,
 
@@ -18,16 +18,16 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `ab57acf7c868c97dff7cce145a45e9fe0200a197`
+**Review head:** `f8e016246434c1f8764a88c82438c4b199f973ea`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `ab57acf`. It is not the image in the active 168-hour
+The code under review is `f8e0162`. It is not the image in the active 168-hour
 soak: that fleet runs `6a49727` and predates the fund-safety and recovery
 changes below. The eventual shipping image needs its own full window after this
 review and its fixes settle.
 
-Check out the latest `main`; commits after `ab57acf` are documentation only.
-`git diff --name-only ab57acf..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'` must
+Check out the latest `main`; commits after `f8e0162` are documentation only.
+`git diff --name-only f8e0162..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'` must
 return nothing.
 
 That document lists the exact hashes, the verification commands, and what we
@@ -137,7 +137,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `ab57acf` or update it; the scope document and
+- Confirm the review head is still `f8e0162` or update it; the scope document and
   this note must name the same commit. Do not substitute a later local commit
   without also updating both documents and the soak provenance.
 - Do not describe the active `6a49727` fleet as covering this head. The shipping
