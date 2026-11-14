@@ -78,17 +78,17 @@ pub fn export_spending_key(
     let mut output = options
         .open(&temp)
         .map_err(|error| WalletError::Io(error.to_string()))?;
-    output
-        .write_all(&bytes)
-        .map_err(|error| WalletError::Io(error.to_string()))?;
-    output
-        .sync_all()
-        .map_err(|error| WalletError::Io(error.to_string()))?;
-    drop(output);
-    if let Err(error) = std::fs::rename(&temp, path) {
+    if let Err(error) = output.write_all(&bytes).and_then(|()| output.sync_all()) {
+        drop(output);
         let _ = std::fs::remove_file(&temp);
         return Err(WalletError::Io(error.to_string()));
     }
+    drop(output);
+    if let Err(error) = std::fs::hard_link(&temp, path) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(WalletError::Io(error.to_string()));
+    }
+    std::fs::remove_file(&temp).map_err(|error| WalletError::Io(error.to_string()))?;
     if let Some(parent) = path.parent() {
         if let Ok(directory) = std::fs::File::open(parent) {
             let _ = directory.sync_all();
@@ -116,6 +116,56 @@ pub fn load_spending_key(path: &Path, passphrase: &str) -> Result<(Zeroizing<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_does_not_replace_existing_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-cold-collision-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("key");
+        export_spending_key(&path, "first", "address", "strong-pass").unwrap();
+        let original = std::fs::read(&path).unwrap();
+        assert!(export_spending_key(&path, "second", "address", "strong-pass").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(
+            load_spending_key(&path, "strong-pass").unwrap().0.as_str(),
+            "first"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_exports_do_not_replace_each_other() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-cold-race-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("key");
+        let results = std::thread::scope(|scope| {
+            let a = scope.spawn(|| export_spending_key(&path, "first", "a", "strong-pass"));
+            let b = scope.spawn(|| export_spending_key(&path, "second", "b", "strong-pass"));
+            (a.join().unwrap(), b.join().unwrap())
+        });
+        assert_ne!(results.0.is_ok(), results.1.is_ok());
+        let (wif, address) = load_spending_key(&path, "strong-pass").unwrap();
+        if results.0.is_ok() {
+            assert_eq!((wif.as_str(), address.as_str()), ("first", "a"));
+        } else {
+            assert_eq!((wif.as_str(), address.as_str()), ("second", "b"));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn export_round_trips_and_rejects_a_wrong_passphrase() {

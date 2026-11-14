@@ -3260,11 +3260,13 @@ Three nodes, BTC mainnet SPV, allocator pinned, RPC 25651–25653, Prometheus on
 `23973` with 16 healthy rules. Initial check: all nodes at height 3, two peers
 each, zero alerts.
 
-## 2026-11-14 — host restart pauses the sampler
+## 2026-11-14 — sampler interruption
 
-The host restarted at about 00:39Z. All three `release-6a49727` containers and
-Prometheus survived with `RestartCount=0` and their original start times; the
-nodes stayed at the same height and no alert fired. The fleet sampler was
-killed with the host and restarted at 00:42:40Z. The sample stream has a
-192-second gap from 00:39:27Z to 00:42:40Z. Chain, peer, and alerting state did
-not gap; only the sampler did. Manual sign-off should account for this gap.
+The agent server restarted at about 00:39Z; a host restart was not established.
+All three `release-6a49727` containers and Prometheus were subsequently
+observed with `RestartCount=0` and their original start times. The fleet
+sampler stopped and was restarted at 00:42:40Z. The sample stream has a
+192-second gap from 00:39:27Z to 00:42:40Z. Container start times and restart
+counts alone do not establish continuous chain, peer, or alerting coverage.
+Manual sign-off must inspect independent monitoring evidence and account for
+this gap.

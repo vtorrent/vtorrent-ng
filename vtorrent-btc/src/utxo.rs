@@ -318,6 +318,13 @@ impl UtxoSet {
         &self.pending_removals
     }
 
+    #[cfg(test)]
+    pub(crate) fn fill_pending_for_test(&mut self, count: usize, utxo: Utxo) {
+        self.record_pending_removals(&[utxo], "test", 0);
+        self.pending_removals
+            .resize(count, self.pending_removals[0].clone());
+    }
+
     /// Record the outpoints a wallet-local send removed.
     ///
     /// Each record carries the spending transaction and the cursor the send was
@@ -345,10 +352,6 @@ impl UtxoSet {
                 txid: txid.to_owned(),
                 height,
             });
-        }
-        if self.pending_removals.len() > MAX_UNDO_ENTRIES {
-            self.pending_removals
-                .drain(..self.pending_removals.len() - MAX_UNDO_ENTRIES);
         }
     }
 
@@ -427,18 +430,11 @@ impl UtxoSet {
     /// Drop journal entries below `floor`, then keep at most `max_entries`
     /// of the newest ones.
     ///
-    /// Pending removals are never pruned by height: a record is self-contained
-    /// and may be the only copy of a send whose confirming spend has not been
-    /// seen. Dropping it by broadcast height would leave a covered rollback
-    /// unable to restore the input. Only the count cap bounds them.
+    /// Pending removals are retained independently of journal pruning.
     pub fn prune_undo(&mut self, floor: u32, max_entries: usize) {
         self.undo.retain(|entry| entry.height >= floor);
         if self.undo.len() > max_entries {
             self.undo.drain(..self.undo.len() - max_entries);
-        }
-        if self.pending_removals.len() > max_entries {
-            self.pending_removals
-                .drain(..self.pending_removals.len() - max_entries);
         }
     }
 
@@ -2132,7 +2128,7 @@ mod tests {
     }
 
     #[test]
-    fn prune_undo_caps_pending_removals() {
+    fn prune_undo_retains_pending_removals_over_journal_cap() {
         let mut set = UtxoSet::new();
         for vout in 0..3u32 {
             set.record_pending_removals(&[utxo("aa", vout, 500)], "ff", 5);
@@ -2140,11 +2136,38 @@ mod tests {
 
         set.prune_undo(0, 2);
 
-        assert_eq!(set.pending_removals().len(), 2);
+        assert_eq!(set.pending_removals().len(), 3);
         assert_eq!(
-            set.pending_removals()[1].removed.utxo.vout,
+            set.pending_removals()[2].removed.utxo.vout,
             2,
-            "the newest records are kept"
+            "all pending records are kept"
+        );
+    }
+
+    #[test]
+    fn pending_input_remains_unselectable_after_undo_pruning() {
+        let mut set = UtxoSet::new();
+        let input = utxo("aa", 0, 500);
+        set.record_pending_removals(std::slice::from_ref(&input), "ff", 5);
+        set.prune_undo(0, 0);
+        assert!(!set.add(input), "a pending input must not become spendable");
+    }
+
+    #[test]
+    fn recording_at_capacity_does_not_evict_an_existing_pending_input() {
+        let mut set = UtxoSet::new();
+        let first = utxo("aa", 0, 500);
+        set.record_pending_removals(std::slice::from_ref(&first), "ff", 5);
+        let pending = set.pending_removals[0].clone();
+        set.pending_removals.resize(MAX_UNDO_ENTRIES, pending);
+        set.record_pending_removals(&[utxo("bb", 0, 500)], "ee", 6);
+        assert_eq!(
+            set.pending_removals
+                .iter()
+                .filter(|entry| entry.removed.utxo.txid == first.txid)
+                .count(),
+            MAX_UNDO_ENTRIES,
+            "existing pending records must not be silently evicted"
         );
     }
 

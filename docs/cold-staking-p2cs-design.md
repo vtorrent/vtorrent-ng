@@ -61,6 +61,12 @@ in `standard.rs` and a `build_p2cs(...)` constructor.
 
 ## 4. Wallet / UX
 
+**Release blocker:** The encrypted spending-key export currently has a library
+decryption function, but no verified user-facing offline recovery and P2CS
+spending workflow. Do not fund a cold-stake output until recovery and spending
+have been demonstrated end to end with the exported file and its corresponding
+script. An encrypted backup alone does not prove that funds can be recovered.
+
 - **Key roles**: the wallet generates a **staking keypair** and a **spending
   keypair**, derives the raw P2CS script (plus a P2SH label address), and can
   **export the staking key (WIF)** for the hot node. The spending key is

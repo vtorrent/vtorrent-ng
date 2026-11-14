@@ -1382,9 +1382,8 @@ pub struct ColdStakeResp {
 
 /// POST /api/v1/wallet/cold-stake — generate a P2CS key pair.
 ///
-/// Stateless: the pair is generated and returned; the spending key is **not**
-/// persisted by the node (keep it offline). The staking key is hot. See
-/// `docs/cold-staking-p2cs-design.md`.
+/// The spending key is saved in a separate encrypted export; keep it offline.
+/// The staking key is hot. See `docs/cold-staking-p2cs-design.md`.
 pub async fn create_cold_stake(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ColdStakeReq>,
@@ -1401,21 +1400,20 @@ pub async fn create_cold_stake(
     let keys =
         vtorrent_wallet::wallet::generate_cold_stake_keys(req.locktime, req.label.as_deref())
             .map_err(|e| RpcError::Internal(format!("cold-stake key generation failed: {e}")))?;
-    let export_path = req
-        .export_path
-        .as_ref()
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            state
-                .wallet_path
-                .as_ref()
-                .map(|path| path.with_extension("spending-key"))
-        })
-        .ok_or_else(|| {
-            RpcError::BadRequest(
-                "export_path is required when the node has no wallet file path".into(),
-            )
-        })?;
+    let export_path =
+        req.export_path
+            .as_ref()
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                state.wallet_path.as_ref().map(|path| {
+                    path.with_extension(format!("{}.spending-key", keys.spending_address))
+                })
+            })
+            .ok_or_else(|| {
+                RpcError::BadRequest(
+                    "export_path is required when the node has no wallet file path".into(),
+                )
+            })?;
     vtorrent_wallet::cold_stake_export::export_spending_key(
         &export_path,
         keys.spending_wif.as_str(),

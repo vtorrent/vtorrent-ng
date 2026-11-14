@@ -51,6 +51,22 @@ async fn cold_stake_funding_propagates_and_confirms_on_two_daemons() {
         "the spending key must not cross the RPC boundary"
     );
     assert!(std::path::Path::new(keys["spending_key_file"].as_str().unwrap()).exists());
+    let second = sender
+        .post(
+            "/api/v1/wallet/cold-stake",
+            json!({"locktime": 0, "spending_key_passphrase": "test-pass"}),
+        )
+        .await;
+    let first_path = keys["spending_key_file"].as_str().unwrap();
+    let second_path = second["spending_key_file"].as_str().unwrap();
+    assert_ne!(first_path, second_path);
+    for path in [first_path, second_path] {
+        vtorrent_wallet::cold_stake_export::load_spending_key(
+            std::path::Path::new(path),
+            "test-pass",
+        )
+        .unwrap();
+    }
     let script_hex = keys["script_pubkey"].as_str().unwrap();
     let script = hex::decode(script_hex).unwrap();
     let funded = sender

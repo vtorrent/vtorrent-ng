@@ -832,8 +832,7 @@ pub struct ColdStakeKeys {
     pub locktime: u32,
 }
 
-/// Generate a P2CS key pair. The raw script is the only stakeable form; the
-/// spending key is returned once and is not persisted.
+/// Generate a P2CS key pair and export the spending key to an encrypted file.
 #[tauri::command]
 pub async fn create_cold_stake(
     state: State<'_, AppState>,
@@ -859,7 +858,7 @@ pub async fn create_cold_stake(
         .or_else(|| {
             wallet_path
                 .as_ref()
-                .map(|path| path.with_extension("spending-key"))
+                .map(|path| path.with_extension(format!("{}.spending-key", keys.spending_address)))
         })
         .ok_or_else(|| {
             TauriError::InvalidInput(
@@ -1496,6 +1495,18 @@ mod tests {
             .await
             .unwrap();
         assert!(std::path::Path::new(&keys.spending_key_file).exists());
+        let second = create_cold_stake(state.clone(), 0, None, "test-pass".into(), None)
+            .await
+            .unwrap();
+        assert_ne!(keys.spending_key_file, second.spending_key_file);
+        for entry in [&keys, &second] {
+            let (_, address) = vtorrent_wallet::cold_stake_export::load_spending_key(
+                std::path::Path::new(&entry.spending_key_file),
+                "test-pass",
+            )
+            .unwrap();
+            assert_eq!(address, entry.spending_address);
+        }
         assert_eq!(keys.script_pubkey.len(), 120);
         assert_eq!(keys.script_hash.len(), 40);
         let script = hex::decode(&keys.script_pubkey).unwrap();

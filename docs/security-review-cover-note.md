@@ -1,5 +1,9 @@
 # Security review — cover note
 
+> **Not ready to send:** this draft targets `b729e36`, not the current
+> candidate. Retarget the request and its scope to the final verified commit
+> before commissioning the review. Subsequent changes are not covered here.
+
 A ready-to-send message for the reviewer. The technical scope lives in
 `docs/security-review-request-2026-10-27.md`; this note is the ask, the context,
 and the specific questions.

@@ -210,7 +210,7 @@ impl BtcWallet {
             utxos.clear_chain_utxos();
             // A full reset abandons the whole journal: keeping entries from the
             // old branch would let a later journal claim coverage it lost.
-            utxos.clear_undo();
+            utxos.clear_journal();
             utxos.set_last_scanned_tip(None);
             utxos.set_last_scanned_height(0);
             utxos.set_rescan_required(true);
@@ -991,7 +991,7 @@ impl BtcWallet {
         }
         {
             let mut utxos = self.utxos.lock();
-            utxos.clear_undo();
+            utxos.clear_journal();
             utxos.set_last_scanned_tip(None);
             utxos.set_rescan_required(true);
         }
@@ -1216,6 +1216,11 @@ impl BtcWallet {
                 .filter(|utxo| set.outpoint(&utxo.txid, utxo.vout).is_some())
                 .cloned()
                 .collect();
+            if set.pending_removals().len().saturating_add(removed.len()) > MAX_UNDO_ENTRIES {
+                return Err(crate::error::BtcError::Bitcoin(
+                    "BTC pending-send capacity reached; reconcile existing sends before sending again".into(),
+                ));
+            }
             for u in &selected {
                 set.remove(&u.txid, u.vout);
             }
@@ -1827,6 +1832,86 @@ mod tests {
             1_000,
             "finishing the recovery must stop hiding the balance"
         );
+    }
+
+    #[test]
+    fn a_full_reset_keeps_a_pending_send_hidden_during_rescan() {
+        let mut w = BtcWallet::with_network([7u8; 64], bitcoin::Network::Regtest);
+        let owned = Utxo {
+            txid: "ab".repeat(32),
+            vout: 0,
+            value: 100_000,
+            address: w.current_address().unwrap(),
+            height: 100,
+        };
+        w.add_utxo(owned.clone());
+        let recipient =
+            crate::keys::derive_address(&[9u8; 64], 0, bitcoin::Network::Regtest).unwrap();
+        w.send_to(&recipient, 50_000, 1_000).unwrap();
+        w.reset_chain_cache();
+        assert!(!w.utxos.lock().add(owned.clone()));
+        assert!(w.utxo_for_tests(&owned.txid, owned.vout).is_none());
+        assert_eq!(w.pending_removal_count_for_tests(), 1);
+    }
+
+    #[test]
+    fn a_full_reset_preserves_pending_send_across_restart() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-reset-pending-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let mut w = BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
+            .unwrap();
+        let owned = Utxo {
+            txid: "ac".repeat(32),
+            vout: 0,
+            value: 100_000,
+            address: w.current_address().unwrap(),
+            height: 100,
+        };
+        w.add_utxo(owned.clone());
+        let recipient =
+            crate::keys::derive_address(&[9u8; 64], 0, bitcoin::Network::Regtest).unwrap();
+        w.send_to(&recipient, 50_000, 1_000).unwrap();
+        w.reset_chain_cache();
+        drop(w);
+        let reopened =
+            BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path).unwrap();
+        assert_eq!(reopened.pending_removal_count_for_tests(), 1);
+        assert!(!reopened.utxos.lock().add(owned));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn send_at_pending_capacity_keeps_the_input_spendable() {
+        let mut w = BtcWallet::with_network([7u8; 64], bitcoin::Network::Regtest);
+        let owned = Utxo {
+            txid: "ab".repeat(32),
+            vout: 0,
+            value: 100_000,
+            address: w.current_address().unwrap(),
+            height: 100,
+        };
+        w.add_utxo(owned.clone());
+        let other = Utxo {
+            txid: "cd".repeat(32),
+            ..owned.clone()
+        };
+        w.utxos
+            .lock()
+            .fill_pending_for_test(MAX_UNDO_ENTRIES, other);
+        let recipient =
+            crate::keys::derive_address(&[9u8; 64], 0, bitcoin::Network::Regtest).unwrap();
+        let error = w.send_to(&recipient, 50_000, 1_000).unwrap_err();
+        assert!(error.to_string().contains("pending-send capacity"));
+        assert!(w.utxo_for_tests(&owned.txid, owned.vout).is_some());
+        assert_eq!(w.pending_removal_count_for_tests(), MAX_UNDO_ENTRIES);
     }
 
     #[test]
