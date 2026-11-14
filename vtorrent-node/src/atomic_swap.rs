@@ -851,15 +851,27 @@ impl SwapOrderBook {
         if excess == 0 {
             return;
         }
-        let mut open: Vec<usize> = self
+        let open: Vec<usize> = self
             .orders
             .iter()
             .enumerate()
             .filter(|(_, o)| o.status == OrderStatus::Open)
             .map(|(i, _)| i)
             .collect();
-        open.sort_by_key(|&i| self.orders[i].expiry);
-        let remove: std::collections::HashSet<usize> = open.into_iter().take(excess).collect();
+        // Local orders carry the preimage that their announcement withholds.
+        // Evict remote open orders first so gossip pressure cannot push out a
+        // user's own order; fall back to local orders only to keep the book
+        // bounded when it is entirely local.
+        let (mut remote, mut local): (Vec<usize>, Vec<usize>) = open
+            .into_iter()
+            .partition(|&i| self.orders[i].preimage.is_none());
+        remote.sort_by_key(|&i| self.orders[i].expiry);
+        local.sort_by_key(|&i| self.orders[i].expiry);
+        let mut remove: std::collections::HashSet<usize> =
+            remote.into_iter().take(excess).collect();
+        if remove.len() < excess {
+            remove.extend(local.into_iter().take(excess - remove.len()));
+        }
         let mut index = 0;
         self.orders.retain(|_| {
             let keep = !remove.contains(&index);

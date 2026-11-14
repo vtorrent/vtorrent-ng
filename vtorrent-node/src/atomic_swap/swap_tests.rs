@@ -139,6 +139,56 @@ fn test_eviction_preserves_funded_orders() {
     );
 }
 
+fn remote_open_order(tag: u64, expiry: u32) -> SwapOrder {
+    let mut order = SwapOrder::new(
+        "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string(),
+        1_000_000 + tag,
+        "BTC".to_string(),
+        100_000,
+        DEFAULT_HTLC_LOCKTIME,
+    );
+    order.expiry = expiry;
+    order
+}
+
+#[test]
+fn eviction_removes_remote_open_orders_before_local_orders() {
+    let mut book = SwapOrderBook::new();
+    let mut local = remote_open_order(MAX_ORDERS as u64, 1_800_000_000);
+    local.preimage = Some([7u8; 32]);
+    let local_id = hex::encode(local.order_id);
+    book.add_order(local);
+    for n in 0..MAX_ORDERS {
+        book.add_order(remote_open_order(n as u64, u32::MAX - 1));
+    }
+
+    assert!(
+        book.get_order(&local_id).is_some(),
+        "a local open order must survive gossip pressure"
+    );
+    assert!(
+        book.orders.len() <= MAX_ORDERS,
+        "the book must stay bounded"
+    );
+}
+
+#[test]
+fn eviction_still_bounds_an_all_local_book() {
+    let mut book = SwapOrderBook::new();
+    for n in 0..MAX_ORDERS {
+        let mut order = remote_open_order(n as u64, u32::MAX - 1);
+        order.preimage = Some([7u8; 32]);
+        book.add_order(order);
+    }
+    let mut trigger = remote_open_order(MAX_ORDERS as u64, u32::MAX - 1);
+    trigger.preimage = Some([7u8; 32]);
+    book.add_order(trigger);
+    assert!(
+        book.orders.len() <= MAX_ORDERS,
+        "local-only pressure must still respect the cap"
+    );
+}
+
 #[test]
 fn duplicate_order_ids_are_ignored() {
     let mut book = SwapOrderBook::new();

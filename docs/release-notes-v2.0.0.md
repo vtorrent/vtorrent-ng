@@ -90,8 +90,9 @@ paths.
 - Desktop sends now relay through the P2P broadcast channel instead of stopping
   at the local mempool.
 - BTC amounts and fees are capped at `MAX_MONEY` and use checked arithmetic.
-- DEX eviction only removes open orders; funded and in-progress swaps survive
-  gossip pressure.
+- DEX eviction removes remote open orders before local ones; funded and
+  in-progress swaps survive gossip pressure, and an all-local book still stays
+  bounded.
 - `getblocktxn` caps and deduplicates indexes and serializes outside the chain
   lock. The torrent assembler rejects overlapping blocks and caps buffered
   blocks per piece.
