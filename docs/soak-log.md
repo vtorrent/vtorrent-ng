@@ -3270,3 +3270,17 @@ sampler stopped and was restarted at 00:42:40Z. The sample stream has a
 counts alone do not establish continuous chain, peer, or alerting coverage.
 Manual sign-off must inspect independent monitoring evidence and account for
 this gap.
+
+## 2026-11-14 — daily observation (`6a49727`)
+
+Observation at **10:06Z**, 14 h 46 m into the window. Heights 868/868/868.
+BTC synced on all three nodes with scan lag 0. Scan-error counters unchanged
+from the initial sync (1/3/1) and no alert fired. RSS current 118/123/138 MiB;
+peaks 186.8/192.2/185.8 MiB with zero samples over 256 MiB. Blocks staked
+0/566/580 (two nodes staking). All containers show `RestartCount=0` and their
+original start times. Prometheus reports zero active alerts. The sampler has
+859 samples with the single recorded 192-second gap at 00:39–00:42Z.
+
+This fleet is evidence for `6a49727` only. It does not cover the fund-safety,
+send-recovery, cold-stake spending, claim-lineage, migration, or eviction
+changes after that commit.
