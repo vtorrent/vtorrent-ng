@@ -1,9 +1,5 @@
 # Security review — cover note
 
-> **Not ready to send:** this draft targets `b729e36`, not the current
-> candidate. Retarget the request and its scope to the final verified commit
-> before commissioning the review. Subsequent changes are not covered here.
-
 A ready-to-send message for the reviewer. The technical scope lives in
 `docs/security-review-request-2026-10-27.md`; this note is the ask, the context,
 and the specific questions.
@@ -12,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `b729e36`
+Subject: Independent security review — vTorrent-NG mainnet candidate `72960bb`
 
 Hello,
 
@@ -22,21 +18,24 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `b729e364d9ea7701ba27e423d1248b96726aaf27`
+**Review head:** `72960bb3aaaa06444ab02655967ca824a71e8261`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `b729e36`, the release candidate in the 168-hour
-soak. Later commits on `main` are documentation and operations. Two later code
-changes are intentionally **out of scope**: a fail-closed guard for legacy BTC
-wallet files and a progress-based stuck-scan alert. They are unshipped and will
-need a follow-up review before they reach a release candidate.
+The code under review is `72960bb`. It is not the image in the active 168-hour
+soak: that fleet runs `6a49727` and predates the fund-safety and recovery
+changes below. The eventual shipping image needs its own full window after this
+review and its fixes settle.
+
+Check out the latest `main`; commits after `72960bb` are documentation only.
+`git diff --name-only 72960bb..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'` must
+return nothing.
 
 That document lists the exact hashes, the verification commands, and what we
 consider in scope. Nothing is required beyond a clone and a Rust toolchain; no
 credentials or live infrastructure access are needed.
 
 **What changed since the last review round.** The earlier review covered up to
-`dd98176`. Since then:
+`dd98176`, and an earlier package covered `b729e36`. Since `b729e36`:
 
 - `ff148fd` — a codebase-wide remediation pass (consensus, overlay, P2P, RPC,
   swap, torrent, UI). Findings and fixes are written up in
@@ -51,11 +50,23 @@ credentials or live infrastructure access are needed.
   tracked outside the height journal, hidden balances during recovery, and
   fail-closed persistence for sends and reservation restores. Design and known
   limits are in `docs/superpowers/specs/2026-11-09-btc-undo-journal-design.md`.
-- `a66e4bc` and `b729e36` — BTC health metrics for a first sync that never
-  completes, and a seed-derived UTXO filename so two wallets on one data
-  directory cannot adopt each other's cursor, reservations, or swap contracts.
-  The seed-scoped path does not migrate the former network-only file; that
-  migration remains open and is excluded from this review.
+- Fund-safety and authentication: authenticated VTR sends with passphrase and
+  TOTP, authenticated swap refunds, DEX terms bound to verified order data,
+  bounded order gossip, risk cleared only on confirmed settlement, legacy BTC
+  state failing closed, and transient key/passphrase buffers zeroized.
+- BTC send recovery: a broadcast error no longer releases inputs. The signed
+  transaction is retained, listed, and can be rebroadcast; corrupt pending state
+  fails the wallet load.
+- Cold staking: the spending key is written to a separate encrypted file with a
+  dedicated passphrase and never crosses IPC or HTTP. Exports cannot overwrite
+  an existing file. `vtorrent-cli cold-stake spend` builds and signs a P2CS
+  spend offline; the two-daemon test withdraws a confirmed cold-stake output.
+- BTC claim replacement lineage is validated on load, persist, and restore; a
+  longer recovered chain adopts its latest signed raw transaction.
+- Legacy BTC staging enforces a private seed file and has simulated crash-state
+  coverage for both publication windows.
+- Local DEX orders survive gossip pressure; a remote flood cannot evict them,
+  and an all-local book still stays bounded.
 
 **Where we would most value scepticism:**
 
@@ -79,6 +90,20 @@ credentials or live infrastructure access are needed.
    state, and that an interrupted or uncovered replay fails closed.
 5. **The R1 cold-staking rule and wallet encryption**, with an explicit verdict
    either way.
+6. **BTC send recovery.** Check that an ambiguous broadcast cannot release
+   inputs a peer may have accepted, that rebroadcast authorization is
+   sufficient, and that corrupt or legacy pending records fail closed rather
+   than becoming spendable.
+7. **Cold-staking key custody and spending.** Verify the encrypted export
+   format, passphrase handling, script/key matching, locktime enforcement, and
+   that the offline CLI cannot be induced to sign for the wrong script or
+   destination.
+8. **Claim replacement lineage.** Confirm the structural validator covers every
+   supported recovery path and that no state can price a fee bump from a stale
+   raw transaction.
+9. **Legacy migration tooling.** Review `btc-state-stage` parsing, permission
+   checks, publication and archival ordering, and the crash states it refuses.
+   Ownership and writer isolation are still operator assertions.
 
 **Known and accepted, so it does not need re-litigating:**
 
@@ -93,10 +118,10 @@ credentials or live infrastructure access are needed.
   operator accepted the ping URL's exposure during installation because it only
   permits pinging this check. That is an operational risk decision, not a
   code-review item.
-- The legacy BTC wallet file has no seed identity, and the seed-scoped path does
-  not migrate it. This is a known open risk for existing wallets, not accepted
-  for release without a reviewed migration. It is outside this review's code
-  head.
+- The legacy BTC wallet file has no seed identity. `btc-state-stage` can stage
+  and archive it, but cannot prove ownership or stop other writers. This is a
+  known open risk for existing wallets, not accepted for release without the
+  operator procedure and real power-loss testing.
 
 **Deliverable.** Findings with severity, reproduction, and a concrete fix; an
 explicit verdict on the R1 rule and wallet encryption; and a residual-risk
@@ -112,8 +137,10 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `b729e36` or update it; the scope document and
+- Confirm the review head is still `72960bb` or update it; the scope document and
   this note must name the same commit. Do not substitute a later local commit
   without also updating both documents and the soak provenance.
+- Do not describe the active `6a49727` fleet as covering this head. The shipping
+  image needs its own 168-hour window after the review and its fixes settle.
 - Decide who receives it. Sending it is the step that actually opens the gate —
   drafting it does not.

@@ -1,6 +1,6 @@
 # Independent security review request
 
-Updated 2026-11-02. This package requests an independent human security review.
+Updated 2026-11-14. This package requests an independent human security review.
 The prior internal model review in `docs/2026-10-26_security-vtorrent-report.md`
 does not satisfy the independence gate.
 
@@ -10,11 +10,17 @@ already accepted so it is not re-litigated.
 
 ## Review target
 
-Review the candidate `b729e364d9ea7701ba27e423d1248b96726aaf27`. The final code
-commit is the review head; it is the image in the 168-hour soak.
+Review the candidate `72960bb3aaaa06444ab02655967ca824a71e8261`. This is the
+current review head. It is **not** the image in the active 168-hour soak: that
+fleet runs `6a49727`, which predates the fund-safety and recovery changes below.
+Under the soak provenance policy, the shipping image needs its own full window
+after this review and its fixes settle.
 
-The table below records the earlier deltas. Commits after `bae6291` are listed
-in the second table. The full sequence is `git log bae6291..b729e36`.
+The tables below record the earlier deltas; the last table covers the range
+from `b729e36` to the review head. Check out the latest `main`: commits after
+`72960bb` are documentation only. Confirm that with
+`git diff --name-only 72960bb..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`
+returning nothing.
 
 The deltas added after `dd98176` are the reason this request was refreshed; the
 original 2026-10-27 scope predates them.
@@ -58,6 +64,35 @@ Deltas after the earlier review head:
 | `a66e4bc` | Alert when BTC SPV never completes a first sync |
 | `b729e36` | Seed-derived UTXO filename; quiet the bootstrap scan alert |
 
+Deltas added after `b729e36`:
+
+| Commit | Purpose |
+|---|---|
+| `4ca704f` | Close confirmed swap and wallet fund-loss paths |
+| `4413c9e` | Desktop claim and wallet persistence gaps |
+| `ff164bf` | Authenticate desktop BTC spends; fail closed on legacy state |
+| `9aa3604` | Restore 2FA backups; stop staking on lock |
+| `440e44a` | Bind DEX orders and matches to verified terms |
+| `a46b029` | Require a passphrase and TOTP for VTR sends |
+| `39273e0` | Authenticate swap refunds |
+| `53e75c2` | Bound untrusted DEX order gossip |
+| `f406d79` | Clear swap risk only on confirmed settlement |
+| `f096b30` | Enforce a minimum new-wallet passphrase length |
+| `990d66e` | Verify legacy wallet migration against the seed |
+| `89d2338` | Fail closed on legacy BTC wallet state |
+| `b6b1b71` | Alert when the BTC scan stops making progress |
+| `69b6f8b` | Zeroize transient wallet key and passphrase buffers |
+| `b2a5fb5` | Encrypted cold-staking spending-key export |
+| `7684033` | Prevent export overwrite; retain pending BTC inputs |
+| `71be577` | Retain and rebroadcast uncertain BTC sends |
+| `747fbae` | Offline cold-stake spending builder and CLI |
+| `3ae1b87` | Enforce private seed files in legacy BTC staging |
+| `41641f8` | Validate BTC claim replacement lineage |
+| `72960bb` | Keep local DEX orders through gossip pressure |
+
+Other commits in the range are tests, formatting, and documentation. The full
+sequence is `git log b729e36..72960bb`.
+
 Docs-only commits in the delta are evidence, not implementation changes. The
 `ff148fd` review findings are documented in
 `docs/2026-10-29_codebase-wide-review.md`.
@@ -67,7 +102,7 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout b729e364d9ea7701ba27e423d1248b96726aaf27
+git checkout 72960bb3aaaa06444ab02655967ca824a71e8261
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
@@ -75,14 +110,17 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 cargo test --workspace --all-features
 ```
 
-The `b729e36` workspace run passed 49 groups, 1,218 tests, zero failures. CI
+The `72960bb` workspace run passed 52 groups, 1,282 tests, zero failures. CI
 repeats the `--all-features` suite on every push. Set `VTORRENT_TOTP_STATE_DIR`
 to a fresh directory before running the suite so the host-scoped TOTP replay
 state does not collide with an existing installation.
 
-The unshipped legacy-wallet guard and progress-based scan alert are not in this
-head and are out of scope. The legacy-file migration remains an open release
-risk; do not treat this review as covering it.
+The legacy-wallet guard and progress-based scan alert are in this head. The
+`btc-state-stage` migration tool is experimental and not approved for production
+use. Review its parsing, permissions, and publication logic, but its ownership
+and writer-isolation confirmations remain operator assertions. Real
+power-loss testing and the operator procedure are still open; do not treat this
+review as approving migration of production wallets.
 
 ## Scope emphasis
 
@@ -91,6 +129,12 @@ risk; do not treat this review as covering it.
 - Mainnet swap claim verification and settlement observation.
 - RPC authorization on sensitive routes.
 - The R1 cold-staking rule and wallet encryption, with explicit verdicts.
+- BTC send recovery when a broadcast result is uncertain, including retained raw
+  transactions, rebroadcast authorization, and input-release rules.
+- Cold-staking key export and the offline P2CS spend path, including key
+  custody, script/key matching, locktime enforcement, and the encrypted file
+  format.
+- BTC claim replacement lineage and fee-bump recovery.
 
 Added with `ff148fd` and `35ea52e`:
 
@@ -147,10 +191,9 @@ Added with `ff148fd` and `35ea52e`:
   Bitcoin Core regtest: BTC funding discovery, six VTR funding confirmations,
   swap preserved across a maker restart, BTC claim with six confirmations, and
   a separate taker node broadcasting the VTR claim.
-- CI runs the workspace suite with `--all-features` on every push and is green
-  through `f9f1b03`. The last counted local run was 49 groups, 1,135 tests, zero
-  failures, eight ignored; `f9f1b03` adds three reorg tests on top. The
-  whole-tree review remediation is documented in
+- CI runs the workspace suite with `--all-features` on every push. The last
+  counted local run on the review head was 52 groups, 1,282 tests, zero
+  failures. The whole-tree review remediation is documented in
   `docs/2026-10-29_codebase-wide-review.md`.
 - The four BTC SPV release-mode tests run against real Bitcoin Core regtest now
   run nightly in CI rather than only by hand; they were silently stale for three
@@ -164,7 +207,8 @@ Added with `ff148fd` and `35ea52e`:
   launched without the pinned allocator settings peaked at 279.7 MiB and broke
   the 256 MiB budget; a matched comparison measured 162–213 MiB default versus
   116–128 MiB tuned. See `docs/soak-log.md` 2026-11-01.
-- A tuned `35ea52e` fleet is soaking toward 168 h, and a second fleet on
-  `f9f1b03` covers the reorg change. Production dead-man provisioning and
-  independent human review remain open.
+- The active release-candidate fleet runs `6a49727` toward 2026-11-20T19:20Z.
+  It does not cover the deltas after that commit. Production dead-man
+  provisioning is complete; an independent human review and a full window for
+  the eventual shipping image remain open.
 - Please confirm scope, timeline, and access needs before starting.
