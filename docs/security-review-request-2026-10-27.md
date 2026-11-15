@@ -1,5 +1,8 @@
 # Independent security review request
 
+> **Draft is stale:** fund-safety remediation is underway after the target below.
+> Update this request and its verification evidence before commissioning review.
+
 Updated 2026-11-14. This package requests an independent human security review.
 The prior internal model review in `docs/2026-10-26_security-vtorrent-report.md`
 does not satisfy the independence gate.
