@@ -7,6 +7,7 @@
 /// - Transaction and UTXO types
 /// - Network constants
 pub mod address;
+pub mod attestation;
 pub mod crypto;
 pub mod error;
 pub mod keys;
