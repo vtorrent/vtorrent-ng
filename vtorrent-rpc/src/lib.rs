@@ -28,6 +28,7 @@ mod btc_claim_lineage;
 mod btc_peers;
 pub mod btc_reconciliation;
 pub mod btc_sync;
+pub mod cold_stake_attestation;
 pub mod error;
 pub mod handlers;
 pub mod metrics;

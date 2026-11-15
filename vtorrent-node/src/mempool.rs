@@ -455,6 +455,15 @@ impl Mempool {
         self.entries.get(txid).map(|e| &e.tx)
     }
 
+    /// The mempool transaction that spends `txid:vout`, if any.
+    ///
+    /// A caller must check this before trusting an outpoint: the chain has no
+    /// record of a mempool spend yet, so an unspent check against the UTXO set
+    /// alone would pass.
+    pub fn spender_of(&self, txid: &[u8; 32], vout: u32) -> Option<[u8; 32]> {
+        self.spent_inputs.get(&(*txid, vout)).copied()
+    }
+
     /// Get all transactions sorted by fee rate (highest first) — used by staker.
     ///
     /// Transactions are returned in dependency order: a parent always precedes
