@@ -175,6 +175,34 @@ Unlock the wallet with passphrase.
 
 Lock the wallet immediately.
 
+### POST /api/v1/cold-stake/funding-attestation
+
+Return a node-signed statement that a funding outpoint is confirmed, unspent,
+and free of mempool spends. Used by the offline cold-stake signer.
+
+**Request:**
+```json
+{ "txid": "<64 hex>", "vout": 0 }
+```
+
+The response is the attestation JSON, which the offline signer verifies. The
+node refuses with 400 and a reason when the transaction is unknown, only in the
+mempool, has no such output, is not in the active unspent set, is spent by a
+mempool transaction, or has fewer than 6 confirmations. The endpoint requires
+the API key and does not require an unlocked wallet.
+
+The signing key lives at `<data-dir>/cold-stake-attestor.key` with mode 0600. It
+only signs attestations and cannot move funds. A valid attestation proves what
+this node saw at its issue time. It does not prove the node is honest, and a
+reorg after signing is not covered.
+
+### GET /api/v1/cold-stake/funding-attestation/pubkey
+
+Return the compressed hex public key to pin on the offline machine.
+```json
+{ "pubkey": "02…" }
+```
+
 ---
 
 ## Staking
@@ -567,6 +595,12 @@ Lists sends whose confirming spend has not been observed. Each entry reports
 the transaction id, whether the signed bytes are retained, and the inputs held
 unavailable.
 
+An entry whose `txid` is all zeros comes from a wallet file written before
+schema version 2. That version did not record which confirmed removal was a
+local send, so the loader holds those inputs and marks them unknown. Such an
+entry has `has_raw_tx: false` and cannot be rebroadcast. A scan retires it when
+it observes a spend of the outpoint.
+
 ### POST /api/v1/btc/rebroadcast
 
 Retries a retained send. Requires an unlocked wallet.
@@ -580,8 +614,9 @@ Retries a retained send. Requires an unlocked wallet.
 }
 ```
 
-A successful response means a peer accepted the transaction, not that it
-confirmed. The pending record is retired only when a scan observes the spend.
+A successful response means the transaction was submitted without an observed
+rejection. It does not prove acceptance, relay, or confirmation. The pending
+record is retired only when a scan observes the spend.
 
 ---
 

@@ -68,9 +68,38 @@ never sends the key over IPC or HTTP. Broadcast the raw transaction with
 `POST /api/v1/blockchain/broadcast` after the chain reaches the script's
 locktime.
 
-The two-daemon test now funds a P2CS output, confirms it, spends it with the
+The CLI requires a hex-encoded serialized funding transaction and derives the
+output value after verifying its transaction ID, output index, and script. It
+shows the amount, fee, and change, requires an approved maximum fee and an
+interactive confirmation, and refuses a fee above 10% of the output.
+
+Confirmation and unspent status come from a signed attestation. Generate one on
+a node the operator trusts:
+
+```bash
+curl -s -X POST http://127.0.0.1:22525/api/v1/cold-stake/funding-attestation \
+  -H "X-API-Key: $KEY" -H 'content-type: application/json' \
+  -d '{"txid":"<funding txid>","vout":0}' > attestation.json
+curl -s http://127.0.0.1:22525/api/v1/cold-stake/funding-attestation/pubkey
+```
+
+Copy `attestation.json` and the printed public key to the offline machine. The
+signer refuses unless the attestation verifies against that pinned key, matches
+the funding transaction, names the expected `--network`, reports at least
+`--min-confirmations` (default 6), records no mempool spend, and has not
+expired. It prints the attested height, confirmations, block hash, tip height,
+and issue time before asking for confirmation.
+
+The attestation proves what one node saw at its issue time. A compromised node
+can lie, a node behind the tip reports a stale view, and a reorg after signing
+is not covered.
+
+The two-daemon test funds a P2CS output, confirms it, spends it with the
 exported key, broadcasts the signed transaction, mines it, and verifies both
-nodes agree on the withdrawal.
+nodes agree on the withdrawal. A separate Linux pseudo-terminal test exercises
+the interactive CLI with a matching attestation, validates the output signature
+and fee, and checks that an incorrect funding txid, an excessive fee, and an
+attestation whose value disagrees with the funding output are rejected.
 
 - **Key roles**: the wallet generates a **staking keypair** and a **spending
   keypair**, derives the raw P2CS script (plus a P2SH label address), and can
