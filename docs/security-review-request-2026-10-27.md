@@ -129,8 +129,8 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 cargo test --workspace --all-features
 ```
 
-The `6c5417d` workspace run passed 53 groups, 1,337 tests, 0 failures, with 10
-tests ignored by default. CI repeats the `--all-features` suite on every push.
+The `6c5417d` workspace run passed 53 test groups and 1,337 tests with 0
+failures and 11 ignored. CI repeats the `--all-features` suite on every push.
 Set `VTORRENT_TOTP_STATE_DIR` to a fresh directory before running the suite so
 the host-scoped TOTP replay state does not collide with an existing
 installation. The ignored Bitcoin Core reorg tests are documented in
@@ -214,9 +214,10 @@ Added with `ff148fd` and `35ea52e`:
   swap preserved across a maker restart, BTC claim with six confirmations, and
   a separate taker node broadcasting the VTR claim.
 - CI runs the workspace suite with `--all-features` on every push. The last
-  counted local run on the review head was 53 groups, 1,337 tests, zero
-  failures, plus 10 tests ignored by default (five need a disposable Bitcoin
-  Core regtest container). The whole-tree review remediation is documented in
+  counted local run on the review head was 53 groups and 1,337 tests, zero
+  failures, with 11 ignored: seven need a Bitcoin Core container, two are manual
+  release-mode governance experiments, one is a mainnet-scale header-retention
+  test, and one is a doctest. The whole-tree review remediation is documented in
   `docs/2026-10-29_codebase-wide-review.md`.
 - The four BTC SPV release-mode tests run against real Bitcoin Core regtest now
   run nightly in CI rather than only by hand; they were silently stale for three
