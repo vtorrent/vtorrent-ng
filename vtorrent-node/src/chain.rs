@@ -702,10 +702,13 @@ impl Chain {
         self.block_body_cache = cache;
     }
 
-    /// Shrink the reorg-journal window. Test-only: lets body-pruning tests run
-    /// with a small cache (journal-referenced bodies are always pinned).
-    #[cfg(test)]
-    pub(crate) fn set_max_reorg_depth(&mut self, depth: u32) {
+    /// Shrink the reorg-journal window.
+    ///
+    /// Lets a test build a tiny chain whose old bodies are actually pruned,
+    /// because journal-referenced bodies are always pinned. Exposed through the
+    /// `test-util` feature so dependent crates' tests can use it.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_max_reorg_depth(&mut self, depth: u32) {
         self.max_reorg_depth = depth;
     }
 

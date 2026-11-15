@@ -371,6 +371,53 @@ mod tests {
         );
     }
 
+    fn scalar_negate_mod_order(value: &[u8; 32]) -> [u8; 32] {
+        let order = &secp256k1::constants::CURVE_ORDER;
+        let mut out = [0u8; 32];
+        let mut borrow = 0i16;
+        for i in (0..32).rev() {
+            let mut difference = order[i] as i16 - value[i] as i16 - borrow;
+            if difference < 0 {
+                difference += 256;
+                borrow = 1;
+            } else {
+                borrow = 0;
+            }
+            out[i] = difference as u8;
+        }
+        out
+    }
+
+    #[test]
+    fn a_high_s_signature_is_rejected() {
+        let signer = key(7);
+        let pinned = pubkey_hex(&signer);
+        let mut attestation = sample();
+        attestation.sign(&signer).unwrap();
+        attestation.verify_signature(&pinned).unwrap();
+
+        let der = hex::decode(&attestation.signature).unwrap();
+        let signature = secp256k1::ecdsa::Signature::from_der(&der).unwrap();
+        let compact = signature.serialize_compact();
+        let mut s = [0u8; 32];
+        s.copy_from_slice(&compact[32..]);
+        let mut high_bytes = compact;
+        high_bytes[32..].copy_from_slice(&scalar_negate_mod_order(&s));
+        let high = secp256k1::ecdsa::Signature::from_compact(&high_bytes).unwrap();
+        // Signing produces a low S value, so its negation is above n/2.
+        assert_ne!(
+            high.serialize_compact(),
+            compact,
+            "the constructed signature must differ from the low-S form"
+        );
+
+        attestation.signature = hex::encode(high.serialize_der());
+        assert_eq!(
+            attestation.verify_signature(&pinned),
+            Err(AttestationError::BadSignature)
+        );
+    }
+
     #[test]
     fn funding_mismatches_name_the_field() {
         let attestation = sample();

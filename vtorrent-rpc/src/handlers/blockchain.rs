@@ -257,3 +257,59 @@ pub async fn get_fee_estimate(
         targets,
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use vtorrent_node::chain::{BlockBodySource, Chain};
+
+    const ADDRESS: &str = "VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k";
+
+    struct Source(Vec<(u32, vtorrent_node::block::Block)>);
+
+    impl BlockBodySource for Source {
+        fn block_body(&self, hash: &[u8; 32]) -> Option<vtorrent_node::block::Block> {
+            self.0
+                .iter()
+                .find(|(_, block)| block.hash() == *hash)
+                .map(|(_, block)| block.clone())
+        }
+
+        fn block_body_at_height(&self, height: u32) -> Option<vtorrent_node::block::Block> {
+            self.0
+                .iter()
+                .find(|(h, _)| *h == height)
+                .map(|(_, block)| block.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn transaction_lookup_reads_a_pruned_body_from_the_source() {
+        let mut chain = Chain::new_regtest().unwrap();
+        // A two-block reorg window lets the small cache actually prune height 2.
+        chain.set_max_reorg_depth(2);
+        chain.set_block_body_cache(2);
+        chain.mint_to_address(ADDRESS, 1).unwrap();
+        let txid = chain.mint_to_address(ADDRESS, 100).unwrap();
+        let bodies = vec![
+            (1, chain.get_block_at_height(1).unwrap().clone()),
+            (2, chain.get_block_at_height(2).unwrap().clone()),
+        ];
+        for _ in 0..2 {
+            chain.mint_to_address(ADDRESS, 1).unwrap();
+        }
+        assert!(
+            chain.get_transaction(&txid).is_none(),
+            "precondition: the funding body must be pruned from memory"
+        );
+        chain.set_body_source(Arc::new(Source(bodies)));
+
+        let state = AppState::new();
+        *state.chain.try_lock().unwrap() = chain;
+        let Json(found) = get_transaction_by_id(State(Arc::new(state)), Path(hex::encode(txid)))
+            .await
+            .expect("a pruned body must resolve through the body source");
+        assert_eq!(found.block_height, Some(2));
+    }
+}

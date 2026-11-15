@@ -154,6 +154,57 @@ mod tests {
     }
 
     #[test]
+    fn refuses_a_spent_outpoint() {
+        use vtorrent_node::chain::Utxo as ChainUtxo;
+
+        let keys = vtorrent_wallet::wallet::generate_cold_stake_keys(0, None).unwrap();
+        let mut base = Chain::new_regtest().unwrap();
+        let funding_txid = base
+            .mint_to_address(&keys.spending_address, 100_000_000)
+            .unwrap();
+        let block_one = base.get_block_at_height(1).unwrap().clone();
+        base.mint_to_address(&keys.spending_address, 1).unwrap();
+        let mut block_two = base.get_block_at_height(2).unwrap().clone();
+
+        let coinbase = &block_one.transactions[0].outputs[0];
+        let spend = vtorrent_wallet::tx_builder::TxBuilder::new()
+            .recipient(&keys.spending_address, 99_000_000)
+            .fee_rate(10)
+            .sign_with_wif(&keys.spending_wif)
+            .build(&[ChainUtxo {
+                txid: funding_txid,
+                vout: 0,
+                value: coinbase.value,
+                script_pubkey: coinbase.script_pubkey.clone(),
+                height: 1,
+                timestamp: 0,
+            }])
+            .unwrap();
+        let mut chain = Chain::new_regtest().unwrap();
+        chain.add_block(block_one).unwrap();
+        block_two.transactions.push(spend);
+        block_two.header.merkle_root = block_two.compute_merkle_root();
+        chain
+            .add_block(block_two)
+            .expect("the spend must be accepted into the chain");
+
+        assert!(chain.get_utxo(&funding_txid, 0).is_none());
+        assert!(chain.get_transaction(&funding_txid).is_some());
+        assert_eq!(
+            build_attestation(
+                &chain,
+                &Mempool::new(1_000),
+                funding_txid,
+                0,
+                "vtorrent-regtest",
+                10,
+                0
+            ),
+            Err(AttestationRefusal::NotUnspent)
+        );
+    }
+
+    #[test]
     fn refuses_a_mempool_spend_of_the_outpoint() {
         let (chain, mut mempool, txid, _) = funded_chain();
         let spend = Transaction {
