@@ -16,9 +16,12 @@ the fund-safety and recovery changes below.
 Under the soak provenance policy, the shipping image needs its own full window
 after this review and its fixes settle.
 
-Check out `6c5417d` and confirm it with `git rev-parse HEAD`. The tables below
-record the earlier deltas. The last table covers the range from `f8e0162` to
-the review head.
+Read this document from the tip of `main`. Confirm that no code changed after
+the candidate with
+`git diff --name-only 6c5417d..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+must return nothing. Check out `6c5417d` itself when running the verification
+commands. The tables below record the earlier deltas. The last table covers the
+range from `f8e0162` to the candidate.
 
 The deltas added after `dd98176` are the reason this request was refreshed; the
 original 2026-10-27 scope predates them.

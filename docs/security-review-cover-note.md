@@ -25,9 +25,12 @@ The code under review is `6c5417d`. It is not the image in the active 168-hour
 soak: that fleet runs `6a49727` and predates every change below. The eventual
 shipping image needs its own full window after this review and its fixes settle.
 
-Check out `6c5417d` and confirm it with
-`git rev-parse HEAD`. The tree is the settled candidate; no later commits carry
-code or tests.
+The code under review is `6c5417d`. Read this note and the scope document from
+the tip of `main`; commits after the candidate carry documentation only. Confirm
+that with
+`git diff --name-only 6c5417d..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+must return nothing. Check out the candidate itself when running the
+verification commands.
 
 That document lists the exact hashes, the verification commands, and what we
 consider in scope. Nothing is required beyond a clone and a Rust toolchain; no
