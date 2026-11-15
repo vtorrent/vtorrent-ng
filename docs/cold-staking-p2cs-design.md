@@ -68,10 +68,11 @@ never sends the key over IPC or HTTP. Broadcast the raw transaction with
 `POST /api/v1/blockchain/broadcast` after the chain reaches the script's
 locktime.
 
-The CLI requires a hex-encoded serialized funding transaction and derives the
-output value after verifying its transaction ID, output index, and script. It
-shows the amount, fee, and change, requires an approved maximum fee and an
-interactive confirmation, and refuses a fee above 10% of the output.
+The CLI can take the funding output value and script from the signed
+attestation. When `--funding-tx` is supplied as well, it cross-checks the
+attestation against that transaction's ID, output index, and script. It shows
+the amount, fee, and change, requires an approved maximum fee and an interactive
+confirmation, and refuses a fee above 10% of the output.
 
 Confirmation and unspent status come from a signed attestation. Generate one on
 a node the operator trusts:
@@ -80,12 +81,17 @@ a node the operator trusts:
 curl -s -X POST http://127.0.0.1:22525/api/v1/cold-stake/funding-attestation \
   -H "X-API-Key: $KEY" -H 'content-type: application/json' \
   -d '{"txid":"<funding txid>","vout":0}' > attestation.json
-curl -s http://127.0.0.1:22525/api/v1/cold-stake/funding-attestation/pubkey
 ```
 
-Copy `attestation.json` and the printed public key to the offline machine. The
+The node logs `Cold-stake attestor public key: <hex>` at startup. That log line
+is the better source for the pin: fetching the key from the same connection
+that returned the attestation gives a machine in the middle the chance to
+substitute both. Use the `pubkey` endpoint only over loopback, and compare the
+result with the startup log.
+
+Copy `attestation.json` and the pinned public key to the offline machine. The
 signer refuses unless the attestation verifies against that pinned key, matches
-the funding transaction, names the expected `--network`, reports at least
+the attested terms, names the expected `--network`, reports at least
 `--min-confirmations` (default 6), records no mempool spend, and has not
 expired. It prints the attested height, confirmations, block hash, tip height,
 and issue time before asking for confirmation.

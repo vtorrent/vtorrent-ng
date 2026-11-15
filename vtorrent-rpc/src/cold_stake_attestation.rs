@@ -26,7 +26,7 @@ pub fn build_attestation(
     now: u64,
     min_confirmations: u32,
 ) -> Result<FundingAttestation, AttestationRefusal> {
-    let (tx, block_hash, height) = chain.get_transaction(&txid).ok_or_else(|| {
+    let (tx, block_hash, height) = chain.get_transaction_owned(&txid).ok_or_else(|| {
         if mempool.get_transaction(&txid).is_some() {
             AttestationRefusal::NotConfirmed
         } else {

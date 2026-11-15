@@ -4,6 +4,13 @@ use secp256k1::SecretKey;
 use std::io::Write;
 use std::path::Path;
 
+/// Serializes first-use key creation inside one process.
+///
+/// Two concurrent requests that both see a missing file would otherwise
+/// generate different keys and race on the same temporary file, leaving a
+/// response signed by a key that is not on disk.
+static ATTESTOR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The public key, compressed hex, that operators pin on the offline machine.
 pub fn attestor_pubkey_hex(key: &SecretKey) -> String {
     let secp = secp256k1::Secp256k1::new();
@@ -15,6 +22,9 @@ pub fn attestor_pubkey_hex(key: &SecretKey) -> String {
 /// The key is written atomically with mode 0600 and the parent directory is
 /// synced, so a crash cannot leave a truncated key that later fails to parse.
 pub fn load_or_create_attestor_key(path: &Path) -> std::io::Result<SecretKey> {
+    let _guard = ATTESTOR_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     match std::fs::read_to_string(path) {
         Ok(text) => return parse_key(text.trim()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -38,7 +48,9 @@ pub fn load_or_create_attestor_key(path: &Path) -> std::io::Result<SecretKey> {
     if let Some(parent) = path.parent() {
         std::fs::File::open(parent)?.sync_all()?;
     }
-    Ok(key)
+    // Another process may have won the create. Return the key that is actually
+    // on disk so every caller signs with the key the operator can pin.
+    parse_key(std::fs::read_to_string(path)?.trim())
 }
 
 fn parse_key(text: &str) -> std::io::Result<SecretKey> {
@@ -95,6 +107,31 @@ mod tests {
         let second = load_or_create_attestor_key(&path).unwrap();
         assert_eq!(attestor_pubkey_hex(&first), attestor_pubkey_hex(&second));
         assert_eq!(attestor_pubkey_hex(&first).len(), 66);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_first_use_converges_on_one_key() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-cold-stake-attestor-race-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cold-stake-attestor.key");
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    attestor_pubkey_hex(&load_or_create_attestor_key(&path).unwrap())
+                })
+            })
+            .collect();
+        let keys: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert!(keys.windows(2).all(|pair| pair[0] == pair[1]));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

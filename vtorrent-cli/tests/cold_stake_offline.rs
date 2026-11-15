@@ -119,6 +119,34 @@ fn interactive_offline_spend_uses_the_actual_funding_output() {
         )
         .unwrap();
 
+    let without_funding_tx = format!(
+        "{} cold-stake spend --key-file {} --script {} --funding-txid {} --vout 0 --attestation {} --attestor-pubkey {} --network vtorrent-regtest --to {} --amount-sat 99000 --fee-sat 1000 --max-fee-sat 1000",
+        env!("CARGO_BIN_EXE_vtorrent-cli"), key_path.display(), hex::encode(&keys.script_pubkey),
+        hex::encode(funding.txid()), attestation_path.display(), pinned, keys.spending_address,
+    );
+    let mut child = Command::new("script")
+        .args(["-q", "-e", "-c", &without_funding_tx, "/dev/null"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"YES\ntest-passphrase\n")
+        .unwrap();
+    let result = child.wait_with_output().unwrap();
+    let output = String::from_utf8_lossy(&result.stdout);
+    assert!(
+        result.status.success(),
+        "attestation-only run failed: {output} {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(output.contains("Funding output:"));
+    assert!(output.contains("raw_tx: "));
+
     let rejected = Command::new(env!("CARGO_BIN_EXE_vtorrent-cli"))
         .args([
             "cold-stake",

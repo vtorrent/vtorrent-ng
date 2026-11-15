@@ -411,7 +411,20 @@ async fn main() -> anyhow::Result<()> {
     rpc_state.wallet_path = Some(wallet_path.clone());
     rpc_state.swap_recovery_dir = Some(data_dir.join("swaps"));
     rpc_state.staking_state_path = Some(data_dir.join("staking.json"));
-    rpc_state.cold_stake_attestor_key_path = Some(data_dir.join("cold-stake-attestor.key"));
+    let cold_stake_attestor_path = data_dir.join("cold-stake-attestor.key");
+    rpc_state.cold_stake_attestor_key_path = Some(cold_stake_attestor_path.clone());
+    match vtorrent_rpc::cold_stake_attestor::load_or_create_attestor_key(&cold_stake_attestor_path)
+    {
+        Ok(key) => tracing::info!(
+            "Cold-stake attestor public key: {}",
+            vtorrent_rpc::cold_stake_attestor::attestor_pubkey_hex(&key)
+        ),
+        Err(error) => tracing::warn!(
+            "Cold-stake attestor key unavailable at {}: {}",
+            cold_stake_attestor_path.display(),
+            error
+        ),
+    }
     if wallet_path.exists() {
         match std::fs::read(&wallet_path)
             .map_err(|e| anyhow::anyhow!("read failed: {}", e))

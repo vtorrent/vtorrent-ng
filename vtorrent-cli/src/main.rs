@@ -432,9 +432,10 @@ enum ColdStakeCommands {
         /// Funding output index.
         #[arg(long)]
         vout: u32,
-        /// Hex-encoded serialized funding transaction from a trusted source.
+        /// Hex-encoded serialized funding transaction. Omit to take the output
+        /// value and script from the signed attestation instead.
         #[arg(long)]
-        funding_tx: String,
+        funding_tx: Option<String>,
         /// Signed funding attestation JSON from the node.
         #[arg(long)]
         attestation: String,
@@ -936,25 +937,44 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                     .try_into()
                     .map_err(|_| anyhow::anyhow!("funding_txid must be exactly 32 bytes"))?;
 
-                anyhow::ensure!(
-                    funding_tx.len() <= 2_000_000,
-                    "funding transaction exceeds 1 MB"
-                );
-                let funding_bytes = hex::decode(funding_tx)
-                    .map_err(|_| anyhow::anyhow!("funding transaction must be hexadecimal"))?;
-                use bincode::Options;
-                let funding: vtorrent_node::block::Transaction = bincode::DefaultOptions::new()
-                    .with_fixint_encoding()
-                    .with_limit(1_000_000)
-                    .reject_trailing_bytes()
-                    .deserialize(&funding_bytes)?;
-                let input =
-                    checked_cold_stake_funding(&funding, funding_txid, *vout, &script_pubkey)?;
                 let attestation_bytes = std::fs::read(attestation)
                     .map_err(|error| anyhow::anyhow!("cannot read attestation: {error}"))?;
                 let attestation =
                     vtorrent_core::attestation::FundingAttestation::parse(&attestation_bytes)
                         .map_err(|error| anyhow::anyhow!("invalid attestation: {error}"))?;
+                let input = match funding_tx {
+                    Some(funding_tx) => {
+                        anyhow::ensure!(
+                            funding_tx.len() <= 2_000_000,
+                            "funding transaction exceeds 1 MB"
+                        );
+                        let funding_bytes = hex::decode(funding_tx).map_err(|_| {
+                            anyhow::anyhow!("funding transaction must be hexadecimal")
+                        })?;
+                        use bincode::Options;
+                        let funding: vtorrent_node::block::Transaction =
+                            bincode::DefaultOptions::new()
+                                .with_fixint_encoding()
+                                .with_limit(1_000_000)
+                                .reject_trailing_bytes()
+                                .deserialize(&funding_bytes)?;
+                        checked_cold_stake_funding(&funding, funding_txid, *vout, &script_pubkey)?
+                    }
+                    None => {
+                        anyhow::ensure!(
+                            attestation
+                                .script_pubkey
+                                .eq_ignore_ascii_case(&hex::encode(&script_pubkey)),
+                            "attestation script does not match --script"
+                        );
+                        vtorrent_wallet::tx_builder::P2csSpendInput {
+                            txid: funding_txid,
+                            vout: *vout,
+                            value_satoshis: attestation.value_satoshis,
+                            script_pubkey: script_pubkey.clone(),
+                        }
+                    }
+                };
                 check_attestation(
                     &attestation,
                     attestor_pubkey,
