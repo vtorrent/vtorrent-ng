@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `6c5417d`
+Subject: Independent security review — vTorrent-NG mainnet candidate `be34747`
 
 Hello,
 
@@ -18,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `6c5417d104e768733289f024218ad6365fa78f8b`
+**Review head:** `be347478aff533a75ce5155943917ee869c5ce88`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `6c5417d`. It is not the image in the active 168-hour
+The code under review is `be34747`. It is not the image in the active 168-hour
 soak: that fleet runs `6a49727` and predates every change below. The eventual
 shipping image needs its own full window after this review and its fixes settle.
 
-The code under review is `6c5417d`. Read this note and the scope document from
+The code under review is `be34747`. Read this note and the scope document from
 the tip of `main`; commits after the candidate carry documentation only. Confirm
 that with
-`git diff --name-only 6c5417d..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only be34747..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -157,7 +157,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `6c5417d104e768733289f024218ad6365fa78f8b`
+- Confirm the review head is still `be347478aff533a75ce5155943917ee869c5ce88`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.
