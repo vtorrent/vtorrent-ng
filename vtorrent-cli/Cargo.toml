@@ -31,6 +31,7 @@ vtorrent-store = { path = "../vtorrent-store" }
 vtorrent-node = { path = "../vtorrent-node" }
 vtorrent-script = { path = "../vtorrent-script" }
 vtorrent-wallet = { path = "../vtorrent-wallet" }
+vtorrent-core = { path = "../vtorrent-core" }
 
 # Terminal output
 colored = "2"
@@ -38,3 +39,6 @@ rpassword = "7"
 
 # Error handling
 anyhow = "1"
+
+[dev-dependencies]
+secp256k1 = { workspace = true }

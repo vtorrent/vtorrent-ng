@@ -47,6 +47,232 @@ mod format;
 
 use client::RpcClient;
 
+fn checked_cold_stake_funding(
+    funding: &vtorrent_node::block::Transaction,
+    expected_txid: [u8; 32],
+    vout: u32,
+    expected_script: &[u8],
+) -> Result<vtorrent_wallet::tx_builder::P2csSpendInput> {
+    anyhow::ensure!(
+        funding.txid() == expected_txid,
+        "funding transaction ID does not match"
+    );
+    let output = funding
+        .outputs
+        .get(vout as usize)
+        .ok_or_else(|| anyhow::anyhow!("funding output index does not exist"))?;
+    anyhow::ensure!(
+        output.script_pubkey == expected_script,
+        "funding output script does not match"
+    );
+    Ok(vtorrent_wallet::tx_builder::P2csSpendInput {
+        txid: expected_txid,
+        vout,
+        value_satoshis: output.value,
+        script_pubkey: output.script_pubkey.clone(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_attestation(
+    attestation: &vtorrent_core::attestation::FundingAttestation,
+    pinned_pubkey_hex: &str,
+    network: &str,
+    funding_txid_hex: &str,
+    vout: u32,
+    value_satoshis: u64,
+    script_pubkey_hex: &str,
+    min_confirmations: u32,
+    now: u64,
+) -> anyhow::Result<()> {
+    attestation
+        .verify_signature(pinned_pubkey_hex)
+        .map_err(|error| anyhow::anyhow!("attestation signature check failed: {error}"))?;
+    attestation
+        .check_funding(funding_txid_hex, vout, value_satoshis, script_pubkey_hex)
+        .map_err(|error| {
+            anyhow::anyhow!("attestation does not match the funding transaction: {error}")
+        })?;
+    attestation
+        .check_policy(network, min_confirmations, now)
+        .map_err(|error| anyhow::anyhow!("attestation policy check failed: {error}"))?;
+    Ok(())
+}
+
+fn attestation_summary(attestation: &vtorrent_core::attestation::FundingAttestation) -> String {
+    format!(
+        "Attested by {}: block height {}, {} confirmations, block {}, chain tip height {}, issued {}, expires {}",
+        attestation.attestor_pubkey,
+        attestation.block_height,
+        attestation.confirmations,
+        attestation.block_hash,
+        attestation.tip_height,
+        attestation.issued_at,
+        attestation.expires_at
+    )
+}
+
+#[cfg(test)]
+mod cold_stake_review_tests {
+    use super::*;
+    use vtorrent_core::attestation::{FundingAttestation, ATTESTATION_VERSION};
+    use vtorrent_node::block::{Transaction, TxOutput, TxType};
+
+    fn funding() -> Transaction {
+        Transaction {
+            version: 1,
+            tx_type: TxType::Standard,
+            inputs: vec![],
+            outputs: vec![TxOutput {
+                value: 100_000,
+                script_pubkey: vec![0x76, 0xa9],
+            }],
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        }
+    }
+
+    fn signed(funding: &Transaction, now: u64) -> (FundingAttestation, String) {
+        signed_with(funding, funding.outputs[0].value, 6, now + 3_600, now)
+    }
+
+    fn signed_with(
+        funding: &Transaction,
+        value_satoshis: u64,
+        confirmations: u32,
+        expires_at: u64,
+        now: u64,
+    ) -> (FundingAttestation, String) {
+        let key = secp256k1::SecretKey::from_slice(&[7u8; 32]).unwrap();
+        let secp = secp256k1::Secp256k1::new();
+        let pinned = hex::encode(secp256k1::PublicKey::from_secret_key(&secp, &key).serialize());
+        let mut attestation = FundingAttestation {
+            version: ATTESTATION_VERSION,
+            network: "vtorrent-regtest".into(),
+            txid: hex::encode(funding.txid()),
+            vout: 0,
+            value_satoshis,
+            script_pubkey: hex::encode(&funding.outputs[0].script_pubkey),
+            block_hash: "33".repeat(32),
+            block_height: 100,
+            confirmations,
+            tip_hash: "44".repeat(32),
+            tip_height: 105,
+            mempool_spend: false,
+            issued_at: now,
+            expires_at,
+            attestor_pubkey: String::new(),
+            signature: String::new(),
+        };
+        attestation.sign(&key).unwrap();
+        (attestation, pinned)
+    }
+
+    fn check(
+        attestation: &FundingAttestation,
+        pinned: &str,
+        funding: &Transaction,
+        now: u64,
+    ) -> anyhow::Result<()> {
+        check_attestation(
+            attestation,
+            pinned,
+            "vtorrent-regtest",
+            &hex::encode(funding.txid()),
+            0,
+            funding.outputs[0].value,
+            &hex::encode(&funding.outputs[0].script_pubkey),
+            6,
+            now,
+        )
+    }
+
+    #[test]
+    fn a_valid_attestation_passes_every_check() {
+        let funding = funding();
+        let (attestation, pinned) = signed(&funding, 1_000);
+        check(&attestation, &pinned, &funding, 1_000).unwrap();
+    }
+
+    #[test]
+    fn a_tampered_funding_value_is_rejected() {
+        let funding = funding();
+        let (attestation, pinned) =
+            signed_with(&funding, funding.outputs[0].value + 1, 6, 4_600, 1_000);
+        let error = check(&attestation, &pinned, &funding, 1_000).unwrap_err();
+        assert!(error.to_string().contains("value_satoshis"), "{error}");
+    }
+
+    #[test]
+    fn an_expired_or_shallow_attestation_is_rejected() {
+        let funding = funding();
+        let (attestation, pinned) = signed(&funding, 1_000);
+        let error = check(&attestation, &pinned, &funding, 4_601).unwrap_err();
+        assert!(error.to_string().contains("expired"), "{error}");
+
+        let (shallow, pinned) = signed_with(&funding, funding.outputs[0].value, 2, 4_600, 1_000);
+        let error = check(&shallow, &pinned, &funding, 1_000).unwrap_err();
+        assert!(
+            error.to_string().contains("2 blocks; 6 required"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_wrong_pinned_key_or_network_is_rejected() {
+        let funding = funding();
+        let (attestation, pinned) = signed(&funding, 1_000);
+        let other = "02".to_string() + &"11".repeat(32);
+        let error = check(&attestation, &other, &funding, 1_000).unwrap_err();
+        assert!(error.to_string().contains("signature"), "{error}");
+        let error = check_attestation(
+            &attestation,
+            &pinned,
+            "vtorrent-mainnet",
+            &hex::encode(funding.txid()),
+            0,
+            funding.outputs[0].value,
+            &hex::encode(&funding.outputs[0].script_pubkey),
+            6,
+            1_000,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("network"), "{error}");
+    }
+
+    #[test]
+    fn the_summary_shows_height_confirmations_and_tip() {
+        let funding = funding();
+        let (attestation, _) = signed(&funding, 1_000);
+        let summary = attestation_summary(&attestation);
+        assert!(summary.contains("block height 100"), "{summary}");
+        assert!(summary.contains("6 confirmations"), "{summary}");
+        assert!(summary.contains("tip height 105"), "{summary}");
+    }
+
+    #[test]
+    fn funding_input_uses_transaction_value_and_rejects_wrong_outpoint() {
+        let funding = Transaction {
+            version: 1,
+            tx_type: TxType::Standard,
+            inputs: vec![],
+            outputs: vec![TxOutput {
+                value: 50_000,
+                script_pubkey: vec![1, 2],
+            }],
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        };
+        let input = checked_cold_stake_funding(&funding, funding.txid(), 0, &[1, 2]).unwrap();
+        assert_eq!(input.value_satoshis, 50_000);
+        assert!(checked_cold_stake_funding(&funding, [0; 32], 0, &[1, 2]).is_err());
+        assert!(checked_cold_stake_funding(&funding, funding.txid(), 1, &[1, 2]).is_err());
+        assert!(checked_cold_stake_funding(&funding, funding.txid(), 0, &[9]).is_err());
+    }
+}
+
 /// vTorrent command-line wallet and node control tool.
 #[derive(Parser, Debug)]
 #[command(
@@ -197,7 +423,7 @@ enum ColdStakeCommands {
         /// Encrypted spending-key file from the cold-stake flow.
         #[arg(long)]
         key_file: String,
-        /// P2CS scriptPubKey (64 hex characters).
+        /// P2CS scriptPubKey (120 hex characters).
         #[arg(long)]
         script: String,
         /// Funding transaction id (64 hex characters).
@@ -206,9 +432,21 @@ enum ColdStakeCommands {
         /// Funding output index.
         #[arg(long)]
         vout: u32,
-        /// Funding output value in satoshis.
+        /// Hex-encoded serialized funding transaction from a trusted source.
         #[arg(long)]
-        value_sat: u64,
+        funding_tx: String,
+        /// Signed funding attestation JSON from the node.
+        #[arg(long)]
+        attestation: String,
+        /// Public key of the attestor node, compressed hex.
+        #[arg(long)]
+        attestor_pubkey: String,
+        /// Node network the attestation must name.
+        #[arg(long, default_value = "vtorrent-mainnet")]
+        network: String,
+        /// Confirmations the attestation must report.
+        #[arg(long, default_value_t = 6)]
+        min_confirmations: u32,
         /// Destination address.
         #[arg(long)]
         to: String,
@@ -218,6 +456,9 @@ enum ColdStakeCommands {
         /// Fee in satoshis.
         #[arg(long)]
         fee_sat: u64,
+        /// Maximum fee the operator authorizes, in satoshis.
+        #[arg(long)]
+        max_fee_sat: u64,
         /// Change address. Omit only when amount plus fee equals the input value.
         #[arg(long)]
         change: Option<String>,
@@ -675,10 +916,15 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                 script,
                 funding_txid,
                 vout,
-                value_sat,
+                funding_tx,
+                attestation,
+                attestor_pubkey,
+                network,
+                min_confirmations,
                 to,
                 amount_sat,
                 fee_sat,
+                max_fee_sat,
                 change,
                 lock_time,
             } => {
@@ -690,6 +936,68 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                     .try_into()
                     .map_err(|_| anyhow::anyhow!("funding_txid must be exactly 32 bytes"))?;
 
+                anyhow::ensure!(
+                    funding_tx.len() <= 2_000_000,
+                    "funding transaction exceeds 1 MB"
+                );
+                let funding_bytes = hex::decode(funding_tx)
+                    .map_err(|_| anyhow::anyhow!("funding transaction must be hexadecimal"))?;
+                use bincode::Options;
+                let funding: vtorrent_node::block::Transaction = bincode::DefaultOptions::new()
+                    .with_fixint_encoding()
+                    .with_limit(1_000_000)
+                    .reject_trailing_bytes()
+                    .deserialize(&funding_bytes)?;
+                let input =
+                    checked_cold_stake_funding(&funding, funding_txid, *vout, &script_pubkey)?;
+                let attestation_bytes = std::fs::read(attestation)
+                    .map_err(|error| anyhow::anyhow!("cannot read attestation: {error}"))?;
+                let attestation =
+                    vtorrent_core::attestation::FundingAttestation::parse(&attestation_bytes)
+                        .map_err(|error| anyhow::anyhow!("invalid attestation: {error}"))?;
+                check_attestation(
+                    &attestation,
+                    attestor_pubkey,
+                    network,
+                    &hex::encode(funding_txid),
+                    *vout,
+                    input.value_satoshis,
+                    &hex::encode(&input.script_pubkey),
+                    *min_confirmations,
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or_default(),
+                )?;
+                eprintln!("{}", attestation_summary(&attestation));
+                anyhow::ensure!(*fee_sat <= *max_fee_sat, "fee exceeds the approved maximum");
+                anyhow::ensure!(
+                    *fee_sat <= input.value_satoshis / 10,
+                    "fee exceeds 10% of the funding output"
+                );
+                let change_value = input
+                    .value_satoshis
+                    .checked_sub(
+                        amount_sat
+                            .checked_add(*fee_sat)
+                            .ok_or_else(|| anyhow::anyhow!("amount plus fee overflows"))?,
+                    )
+                    .ok_or_else(|| anyhow::anyhow!("amount and fee exceed funding output"))?;
+                eprintln!(
+                    "Funding output: {}:{} ({} sat)",
+                    hex::encode(funding_txid),
+                    vout,
+                    input.value_satoshis
+                );
+                eprintln!("Destination: {to}; amount: {amount_sat} sat; fee: {fee_sat} sat; change: {change_value} sat to {}", change.as_deref().unwrap_or("none"));
+                eprintln!("Funding transaction identity is verified. The attestation covers confirmation and unspent status as of its issue time.");
+                eprint!("Type YES to sign: ");
+                use std::io::Write;
+                std::io::stderr().flush()?;
+                let mut confirmation = String::new();
+                std::io::stdin().read_line(&mut confirmation)?;
+                anyhow::ensure!(confirmation.trim() == "YES", "signing not confirmed");
+
                 let mut passphrase = rpassword::prompt_password("Spending-key file passphrase: ")
                     .unwrap_or_default();
                 let (wif, _address) = vtorrent_wallet::cold_stake_export::load_spending_key(
@@ -698,12 +1006,6 @@ fn run_command(cli: &Cli, client: &RpcClient) -> Result<()> {
                 )?;
                 passphrase.zeroize();
 
-                let input = vtorrent_wallet::tx_builder::P2csSpendInput {
-                    txid: funding_txid,
-                    vout: *vout,
-                    value_satoshis: *value_sat,
-                    script_pubkey,
-                };
                 let tx = vtorrent_wallet::tx_builder::build_p2cs_spend(
                     &input,
                     wif.as_str(),
