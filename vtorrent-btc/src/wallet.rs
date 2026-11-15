@@ -181,9 +181,14 @@ impl BtcWallet {
 
     /// Set or change the UTXO persistence path.  The current in-memory set
     /// is immediately saved to the new path.
+    ///
+    /// The new path is adopted only after that save succeeds. Otherwise the
+    /// wallet would keep a path it never wrote, and every later background save
+    /// would fail silently while the wallet appeared to persist.
     pub fn set_utxo_path(&mut self, path: PathBuf) -> std::io::Result<()> {
-        self.utxo_path = Some(path.clone());
-        self.utxos.lock().save(&path)
+        self.utxos.lock().save(&path)?;
+        self.utxo_path = Some(path);
+        Ok(())
     }
 
     /// Save the current UTXO set to disk (if a persistence path is set).
@@ -284,7 +289,11 @@ impl BtcWallet {
             set.set_next_index(next_index);
             if let Some(path) = &self.utxo_path {
                 if let Err(error) = set.save(path) {
-                    *set = previous;
+                    if crate::utxo::save_may_have_committed(&error) {
+                        self.next_index = next_index;
+                    } else {
+                        *set = previous;
+                    }
                     return Err(crate::error::BtcError::Bitcoin(format!(
                         "Could not persist BTC address index: {error}"
                     )));
@@ -393,7 +402,9 @@ impl BtcWallet {
         });
         if let Some(path) = &self.utxo_path {
             if let Err(error) = set.save(path) {
-                *set = previous;
+                if !crate::utxo::save_may_have_committed(&error) {
+                    *set = previous;
+                }
                 return Err(crate::error::BtcError::Bitcoin(format!(
                     "Could not persist BTC input reservation: {error}"
                 )));
@@ -540,7 +551,9 @@ impl BtcWallet {
         }
         if let Some(path) = &self.utxo_path {
             if let Err(error) = set.save(path) {
-                *set = previous;
+                if !crate::utxo::save_may_have_committed(&error) {
+                    *set = previous;
+                }
                 return Err(crate::error::BtcError::Bitcoin(format!(
                     "Could not persist BTC reservation release: {error}"
                 )));
@@ -559,7 +572,9 @@ impl BtcWallet {
         set.record_swap_contract(contract);
         if let Some(path) = &self.utxo_path {
             if let Err(error) = set.save(path) {
-                *set = previous;
+                if !crate::utxo::save_may_have_committed(&error) {
+                    *set = previous;
+                }
                 return Err(crate::error::BtcError::Bitcoin(format!(
                     "Could not persist BTC refund: {error}"
                 )));
@@ -1222,11 +1237,9 @@ impl BtcWallet {
 
         let txid_hex = txid_of(&raw)?.to_string();
 
-        // Remove spent UTXOs from the in-memory set immediately (prevents
-        // double-spending within this session) and persist. If broadcasting
-        // later fails, the caller must roll back via [`BtcWallet::restore_utxos`]
-        // using the returned selection — otherwise the wallet would forget
-        // spendable outputs for a tx that never made it onto the network.
+        // Hold the selected inputs and persist the signed send before any
+        // broadcast. A broadcast error does not prove the transaction failed
+        // to propagate, so it must not release the inputs.
         //
         // The removal is tracked as a pending removal, not as a journal entry at
         // the scan cursor: the spend can only confirm at or after that cursor,
@@ -1265,7 +1278,9 @@ impl BtcWallet {
                     // Building a send on top of an unpersisted removal would
                     // license spending the same outpoints twice, so undo it and
                     // report the failure instead.
-                    *set = previous;
+                    if !crate::utxo::save_may_have_committed(&error) {
+                        *set = previous;
+                    }
                     return Err(crate::error::BtcError::Bitcoin(format!(
                         "Could not persist BTC send: {error}"
                     )));
@@ -1295,6 +1310,10 @@ impl BtcWallet {
     /// The restore is only useful if it reaches disk — otherwise a restart
     /// rescan would still see the send's removal and hide the funds — so a
     /// failed write rolls the in-memory set back and reports the error.
+    ///
+    /// If the rename completed but the directory sync failed, the disk may hold
+    /// either version. The restored inputs stay in memory and the error reports
+    /// the uncertainty instead of claiming the rollback took effect.
     pub fn restore_utxos(&self, utxos: &[Utxo]) -> Result<()> {
         let mut set = self.utxos.lock();
         let previous = set.clone();
@@ -1307,7 +1326,9 @@ impl BtcWallet {
         set.cancel_local_removals(&added);
         if let Some(path) = &self.utxo_path {
             if let Err(error) = set.save(path) {
-                *set = previous;
+                if !crate::utxo::save_may_have_committed(&error) {
+                    *set = previous;
+                }
                 return Err(crate::error::BtcError::Bitcoin(format!(
                     "Could not persist restored BTC inputs: {error}"
                 )));
@@ -2110,6 +2131,329 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn failed_send_write_keeps_committed_inputs_after_restart() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-send-write-restart-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let mut wallet =
+            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
+        let owned = Utxo {
+            txid: "ab".repeat(32),
+            vout: 0,
+            value: 100_000,
+            address: wallet.current_address().unwrap(),
+            height: 100,
+        };
+        wallet.add_utxo(owned.clone());
+        let before = std::fs::read(&path).unwrap();
+        std::fs::create_dir(path.with_extension("tmp")).unwrap();
+        let recipient =
+            crate::keys::derive_address(&[9; 64], 0, bitcoin::Network::Regtest).unwrap();
+        assert!(wallet.send_to(&recipient, 50_000, 1_000).is_err());
+        drop(wallet);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let reopened =
+            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path).unwrap();
+        assert_eq!(
+            reopened
+                .utxo_for_tests(&owned.txid, owned.vout)
+                .map(|u| u.value),
+            Some(owned.value)
+        );
+        assert!(reopened.pending_sends().is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn orphaned_partial_temp_file_does_not_release_committed_send_after_restart() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-partial-send-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let mut wallet =
+            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
+        let owned = Utxo {
+            txid: "cd".repeat(32),
+            vout: 0,
+            value: 100_000,
+            address: wallet.current_address().unwrap(),
+            height: 100,
+        };
+        wallet.add_utxo(owned.clone());
+        let recipient =
+            crate::keys::derive_address(&[9; 64], 0, bitcoin::Network::Regtest).unwrap();
+        let (txid, raw, _) = wallet.send_to(&recipient, 50_000, 1_000).unwrap();
+        drop(wallet);
+        std::fs::write(path.with_extension("tmp"), b"{\"pending_removals\": [").unwrap();
+        let reopened =
+            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path).unwrap();
+        assert_eq!(reopened.pending_send_raw(&txid), Some(raw));
+        assert!(!reopened.utxos.lock().add(owned));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn send_with_uncertain_directory_sync_keeps_inputs_held_after_restart() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-uncertain-sync-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let mut wallet =
+            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
+        let owned = Utxo {
+            txid: "da".repeat(32),
+            vout: 0,
+            value: 100_000,
+            address: wallet.current_address().unwrap(),
+            height: 100,
+        };
+        wallet.add_utxo(owned.clone());
+        let recipient =
+            crate::keys::derive_address(&[9; 64], 0, bitcoin::Network::Regtest).unwrap();
+        crate::utxo::fail_next_parent_sync_for_test();
+        assert!(
+            wallet.send_to(&recipient, 50_000, 1_000).is_err(),
+            "send must not return signed bytes when durability is uncertain"
+        );
+        assert!(
+            !wallet.utxos.lock().add(owned.clone()),
+            "uncertain save must keep input held in memory"
+        );
+        drop(wallet);
+        let reopened =
+            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path).unwrap();
+        assert!(
+            !reopened.utxos.lock().add(owned),
+            "visible renamed record must keep input held after restart"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uncertain_address_index_save_does_not_reuse_index_in_process() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-address-sync-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let mut wallet =
+            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
+        let initial = wallet.current_address().unwrap();
+        crate::utxo::fail_next_parent_sync_for_test();
+        assert!(wallet.next_address().is_err());
+        assert_ne!(wallet.current_address().unwrap(), initial);
+        drop(wallet);
+        let reopened =
+            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path).unwrap();
+        assert_ne!(reopened.current_address().unwrap(), initial);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uncertain_reservation_release_keeps_the_input_reserved() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-release-sync-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let wallet =
+            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
+        let owned = Utxo {
+            txid: "ea".repeat(32),
+            vout: 0,
+            value: 100_000,
+            address: wallet.current_address().unwrap(),
+            height: 100,
+        };
+        wallet.add_utxo(owned.clone());
+        let htlc = crate::htlc::BtcHtlc {
+            hash_lock: [3; 32],
+            recipient: owned.address.clone(),
+            refund_address: owned.address.clone(),
+            expiry: 1_900_000_000,
+            amount: 90_000,
+            network: bitcoin::Network::Regtest,
+        };
+        let funding = htlc
+            .build_funding_tx([1; 32], 0, 100_000, 1_000, &owned.address)
+            .unwrap();
+        wallet
+            .reserve_swap_input(
+                &owned,
+                &bitcoin::consensus::serialize(&funding),
+                "order".into(),
+                &htlc,
+            )
+            .unwrap();
+        crate::utxo::fail_next_parent_sync_for_test();
+        assert!(wallet.release_swap_reservation("order").is_err());
+        assert!(
+            wallet.utxos.lock().swap_contract("order").is_none(),
+            "the released version must remain in memory"
+        );
+        drop(wallet);
+        let reopened =
+            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path).unwrap();
+        let released_on_disk = reopened.utxos.lock().swap_contract("order").is_none()
+            && reopened.utxo_for_tests(&owned.txid, owned.vout).is_some();
+        assert!(
+            released_on_disk,
+            "the visible renamed record must be the released version"
+        );
+        assert!(
+            reopened.utxo_for_tests(&owned.txid, owned.vout).is_some(),
+            "released input remains spendable after restart"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_persistence_path_change_keeps_the_working_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-path-change-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = dir.join("utxos.json");
+        let mut wallet =
+            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, good.clone()).unwrap();
+        let owned = Utxo {
+            txid: "fa".repeat(32),
+            vout: 0,
+            value: 100_000,
+            address: wallet.current_address().unwrap(),
+            height: 100,
+        };
+        wallet.add_utxo(owned.clone());
+        let good_before = std::fs::read(&good).unwrap();
+
+        let bad = dir.join("missing").join("utxos.json");
+        assert!(wallet.set_utxo_path(bad.clone()).is_err());
+        assert_eq!(
+            wallet.utxo_path,
+            Some(good.clone()),
+            "a failed path change must not keep the unwritable path"
+        );
+        assert_eq!(
+            std::fs::read(&good).unwrap(),
+            good_before,
+            "the good file must be unchanged"
+        );
+
+        wallet.next_address().unwrap();
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&good).unwrap()).unwrap();
+        assert_ne!(
+            persisted["next_index"].as_u64(),
+            Some(0),
+            "later saves must still reach the working path"
+        );
+        assert!(!bad.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn legacy_wallet_file_keeps_a_confirmed_send_held_after_upgrade() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-legacy-upgrade-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let spent = Utxo {
+            txid: "ab".repeat(32),
+            vout: 0,
+            value: 100_000,
+            address: crate::keys::derive_address(&[7; 64], 0, bitcoin::Network::Regtest).unwrap(),
+            height: 100,
+        };
+        // A file written by a build that did not record the sending transaction.
+        let legacy = serde_json::json!({
+            "utxos": [],
+            "next_index": 0,
+            "last_scanned_height": 107,
+            "undo": [{
+                "height": 106,
+                "created": [],
+                "removed": [{"utxo": spent, "prior": "Free"}],
+            }],
+        });
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+
+        let wallet =
+            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
+        let sends = wallet.pending_sends();
+        assert_eq!(
+            sends.len(),
+            1,
+            "the upgrade must keep the legacy removal as a visible hold"
+        );
+        assert!(
+            sends[0].raw.is_none(),
+            "a legacy hold cannot be rebroadcast automatically"
+        );
+        assert!(
+            !wallet.utxos.lock().add(spent.clone()),
+            "the input must stay unselectable"
+        );
+        wallet.try_save_utxos().unwrap();
+        drop(wallet);
+
+        let reopened =
+            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path).unwrap();
+        assert_eq!(
+            reopened.pending_sends().len(),
+            1,
+            "the hold must survive the first save in the new format"
+        );
+        assert!(
+            !reopened.utxos.lock().add(spent),
+            "the input must stay unselectable after restart"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// A send must hold the one `utxos` guard from mutation through persist, so
     /// a concurrent writer cannot slip an insertion under the rollback that
     /// would then discard it.
@@ -2347,12 +2691,11 @@ mod tests {
         // One-block reorg to the cursor the send was built at: below the confirm
         // height, so the spend is reorged out.
         assert!(w.reset_for_reorg_at_for_tests(Some(101)));
-        assert_eq!(
-            w.utxo_for_tests(&owned.txid, owned.vout)
-                .map(|utxo| utxo.value),
-            Some(100_000),
-            "a spend confirmed above the fork must return its input, even when the fork is the send cursor"
+        assert!(
+            w.utxo_for_tests(&owned.txid, owned.vout).is_none(),
+            "an orphaned local send may still be in mempools"
         );
+        assert_eq!(w.pending_send_raw(&txid), Some(raw));
         assert!(
             w.utxo_for_tests(&txid, 1).is_none(),
             "the change created above the fork is dropped"
@@ -2365,7 +2708,7 @@ mod tests {
     }
 
     #[test]
-    fn a_reorg_below_the_confirm_height_restores_a_confirmed_send() {
+    fn a_reorg_below_the_confirm_height_keeps_a_confirmed_send_reserved() {
         let mut w = BtcWallet::with_network([7u8; 64], bitcoin::Network::Regtest);
         let owned = Utxo {
             txid: "cd".repeat(32),
@@ -2403,16 +2746,108 @@ mod tests {
         );
 
         assert!(w.reset_for_reorg_at_for_tests(Some(103)));
-        assert_eq!(
-            w.utxo_for_tests(&owned.txid, owned.vout)
-                .map(|utxo| utxo.value),
-            Some(80_000),
-            "a send that reorgs below its confirm height must be restored"
+        assert!(
+            w.utxo_for_tests(&owned.txid, owned.vout).is_none(),
+            "a reorg does not prove the original transaction left mempools"
         );
+        assert_eq!(w.pending_send_raw(&txid), Some(raw));
         assert!(
             w.utxo_for_tests(&txid, 1).is_none(),
             "the change from the abandoned block is dropped"
         );
+    }
+
+    #[test]
+    fn confirmed_local_send_is_retained_after_restart() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-confirmed-restart-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let mut w = BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
+            .unwrap();
+        let owned = Utxo {
+            txid: "cc".repeat(32),
+            vout: 0,
+            value: 80_000,
+            address: w.current_address().unwrap(),
+            height: 100,
+        };
+        w.add_utxo(owned.clone());
+        let recipient =
+            crate::keys::derive_address(&[9u8; 64], 0, bitcoin::Network::Regtest).unwrap();
+        let (txid, raw, _) = w.send_to(&recipient, 40_000, 1_000).unwrap();
+        let tx: bitcoin::Transaction = bitcoin::consensus::deserialize(&raw).unwrap();
+        scan_confirmed_tx(&w, &tx, 106);
+        w.try_save_utxos().unwrap();
+        drop(w);
+
+        let reopened =
+            BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path).unwrap();
+        assert_eq!(reopened.pending_send_raw(&txid), Some(raw));
+        assert!(!reopened.utxos.lock().add(owned));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn competing_confirmation_and_reorg_keep_multi_input_send_held_after_restart() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-competing-send-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let mut wallet =
+            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
+        let address = wallet.current_address().unwrap();
+        let inputs: Vec<_> = ["aa", "bb"]
+            .into_iter()
+            .map(|id| Utxo {
+                txid: id.repeat(32),
+                vout: 0,
+                value: 50_000,
+                address: address.clone(),
+                height: 100,
+            })
+            .collect();
+        for input in &inputs {
+            wallet.add_utxo(input.clone());
+        }
+        wallet.set_last_scanned_height(101);
+        let recipient =
+            crate::keys::derive_address(&[9; 64], 0, bitcoin::Network::Regtest).unwrap();
+        let (txid, raw, _) = wallet.send_to(&recipient, 90_000, 1_000).unwrap();
+        let original: bitcoin::Transaction = bitcoin::consensus::deserialize(&raw).unwrap();
+        assert_eq!(original.input.len(), 2);
+        let mut competing = original.clone();
+        competing.input.truncate(1);
+        competing.output.truncate(1);
+        competing.output[0].value = bitcoin::Amount::from_sat(49_000);
+        assert_ne!(competing.compute_txid(), original.compute_txid());
+        scan_confirmed_tx(&wallet, &competing, 102);
+        assert_eq!(wallet.pending_send_raw(&txid), Some(raw.clone()));
+        assert!(wallet.reset_for_reorg_at_for_tests(Some(101)));
+        wallet.try_save_utxos().unwrap();
+        drop(wallet);
+        let reopened =
+            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path).unwrap();
+        assert_eq!(reopened.pending_send_raw(&txid), Some(raw));
+        for input in inputs {
+            assert!(
+                !reopened.utxos.lock().add(input),
+                "a potentially live send must hold every input"
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

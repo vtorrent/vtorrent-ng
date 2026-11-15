@@ -2,15 +2,276 @@ use super::*;
 use bitcoin::Network;
 use std::process::Command;
 
-const CONTAINER: &str = "vtr-btc-regtest";
-const BTC_PEER: &str = "127.0.0.1:18448";
+fn container() -> String {
+    std::env::var("VTORRENT_TEST_BTC_CONTAINER").unwrap_or_else(|_| "vtr-btc-regtest".into())
+}
+
+fn btc_peer() -> String {
+    std::env::var("VTORRENT_TEST_BTC_PEER").unwrap_or_else(|_| "127.0.0.1:18448".into())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires a disposable Bitcoin Core container selected explicitly by environment"]
+async fn competing_btc_spend_reorg_preserves_multi_input_send() {
+    let selected = std::env::var("VTORRENT_TEST_BTC_CONTAINER")
+        .expect("set VTORRENT_TEST_BTC_CONTAINER to a disposable container");
+    assert!(selected.starts_with("vtr-fundsafety-regtest-"));
+    std::env::var("VTORRENT_TEST_BTC_PEER").expect("set the disposable Bitcoin peer");
+    let _scenario = RECOVERY_SCENARIO.lock().await;
+    ensure_wallet();
+    let mut seed = [0x72; 64];
+    seed[..16].copy_from_slice(
+        &std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .to_le_bytes(),
+    );
+    let address = vtorrent_btc::keys::derive_address(&seed, 0, Network::Regtest).unwrap();
+    for _ in 0..2 {
+        bitcoin_cli(&["-rpcwallet=multinode", "sendtoaddress", &address, "1.0"]);
+    }
+    mine(1);
+    wait_filters();
+    let directory = tempfile::tempdir().unwrap();
+    let node_dir = directory.path().join("node");
+    let mut daemon = Daemon::start_with_btc(
+        &node_dir,
+        "btc-multi-send.log",
+        None,
+        None,
+        &hex::encode(seed),
+        &btc_peer(),
+    )
+    .await;
+    wait_btc(&mut daemon, height(), 200_000_000).await;
+    daemon.post("/api/v1/wallet/import", json!({"wif":"WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS", "passphrase":"testpass", "overwrite":false})).await;
+    daemon
+        .post(
+            "/api/v1/wallet/unlock",
+            json!({"passphrase":"testpass", "timeout_secs":0}),
+        )
+        .await;
+    let recipient = bitcoin_cli(&["-rpcwallet=multinode", "getnewaddress"]);
+    let sent = daemon.post("/api/v1/btc/send", json!({"to_address":recipient, "amount_satoshis":150_000_000, "fee_satoshis":1000, "passphrase":"testpass"})).await;
+    let original_txid = sent["txid"].as_str().unwrap().to_owned();
+    let original_hex = bitcoin_cli(&["getrawtransaction", &original_txid]);
+    let original: bitcoin::Transaction =
+        bitcoin::consensus::deserialize(&hex::decode(original_hex).unwrap()).unwrap();
+    assert_eq!(original.input.len(), 2);
+    let input = &original.input[0].previous_output;
+    let source = vtorrent_btc::utxo::Utxo {
+        txid: input.txid.to_string(),
+        vout: input.vout,
+        value: 100_000_000,
+        address: address.clone(),
+        height: 0,
+    };
+    let wif = vtorrent_btc::keys::derive_wif(&seed, 0, Network::Regtest).unwrap();
+    let conflict_raw = vtorrent_btc::tx::build_and_sign(
+        &[source],
+        &recipient,
+        99_900_000,
+        100_000,
+        &address,
+        &wif,
+        Network::Regtest,
+        true,
+    )
+    .unwrap();
+    let conflict = bitcoin_cli(&["sendrawtransaction", &hex::encode(conflict_raw)]);
+    bitcoin_cli(&["getmempoolentry", &conflict]);
+    let block = mine(1).remove(0);
+    let block_data: Value = serde_json::from_str(&bitcoin_cli(&["getblock", &block])).unwrap();
+    assert!(block_data["tx"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|id| id == &conflict));
+    assert!(!block_data["tx"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|id| id == &original_txid));
+    wait_filters();
+    daemon.stop(false).await;
+    let mut confirmed = Daemon::start_with_btc(
+        &node_dir,
+        "btc-conflict-confirmed.log",
+        None,
+        None,
+        &hex::encode(seed),
+        &btc_peer(),
+    )
+    .await;
+    wait_btc(&mut confirmed, height(), 0).await;
+    confirmed.stop(false).await;
+    bitcoin_cli(&["invalidateblock", &block]);
+    bitcoin_cli(&["prioritisetransaction", &conflict, "0", "-1000000"]);
+    bitcoin_cli(&["prioritisetransaction", &original_txid, "0", "-1000000"]);
+    for block in mine(2) {
+        let data: Value = serde_json::from_str(&bitcoin_cli(&["getblock", &block])).unwrap();
+        assert!(!data["tx"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|id| id == &conflict || id == &original_txid));
+    }
+    wait_filters();
+    let mut restarted = Daemon::start_with_btc(
+        &node_dir,
+        "btc-conflict-reorg.log",
+        None,
+        None,
+        &hex::encode(seed),
+        &btc_peer(),
+    )
+    .await;
+    wait_btc(&mut restarted, height(), 0).await;
+    let pending = restarted.get("/api/v1/btc/pending-sends").await;
+    assert!(
+        pending
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["txid"] == original_txid && entry["has_raw_tx"] == true),
+        "original send must remain recoverable: {pending}"
+    );
+    restarted.stop(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires a disposable Bitcoin Core container selected explicitly by environment"]
+async fn local_btc_send_reorg_after_restart_keeps_input_held() {
+    let selected = std::env::var("VTORRENT_TEST_BTC_CONTAINER")
+        .expect("set VTORRENT_TEST_BTC_CONTAINER to a disposable container");
+    assert!(selected.starts_with("vtr-fundsafety-regtest-"));
+    std::env::var("VTORRENT_TEST_BTC_PEER").expect("set the disposable Bitcoin peer");
+    let _scenario = RECOVERY_SCENARIO.lock().await;
+    ensure_wallet();
+    let mut seed = [0x71u8; 64];
+    seed[..16].copy_from_slice(
+        &std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .to_le_bytes(),
+    );
+    let address = vtorrent_btc::keys::derive_address(&seed, 0, Network::Regtest).unwrap();
+    bitcoin_cli(&["-rpcwallet=multinode", "sendtoaddress", &address, "1.0"]);
+    mine(1);
+    wait_filters();
+    let directory = tempfile::tempdir().unwrap();
+    let node_dir = directory.path().join("node");
+    let mut daemon = Daemon::start_with_btc(
+        &node_dir,
+        "btc-send.log",
+        None,
+        None,
+        &hex::encode(seed),
+        &btc_peer(),
+    )
+    .await;
+    wait_btc(&mut daemon, height(), 100_000_000).await;
+    daemon
+        .post(
+            "/api/v1/wallet/import",
+            json!({
+                "wif": "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS",
+                "passphrase": "testpass", "overwrite": false
+            }),
+        )
+        .await;
+    daemon
+        .post(
+            "/api/v1/wallet/unlock",
+            json!({"passphrase":"testpass", "timeout_secs":0}),
+        )
+        .await;
+    let recipient = bitcoin_cli(&["-rpcwallet=multinode", "getnewaddress"]);
+    let sent = daemon
+        .post(
+            "/api/v1/btc/send",
+            json!({
+                "to_address": recipient, "amount_satoshis": 40_000_000,
+                "fee_satoshis": 1000, "passphrase":"testpass"
+            }),
+        )
+        .await;
+    let txid = sent["txid"].as_str().unwrap().to_owned();
+    let block = mine(1).remove(0);
+    wait_filters();
+    let block_data: Value = serde_json::from_str(&bitcoin_cli(&["getblock", &block])).unwrap();
+    assert!(block_data["tx"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|id| id == &txid));
+    let confirmed_tip = height();
+    daemon.stop(false).await;
+    let mut confirmed = Daemon::start_with_btc(
+        &node_dir,
+        "btc-confirmed.log",
+        None,
+        None,
+        &hex::encode(seed),
+        &btc_peer(),
+    )
+    .await;
+    wait_btc(&mut confirmed, confirmed_tip, 59_999_000).await;
+    confirmed.stop(false).await;
+
+    bitcoin_cli(&["invalidateblock", &block]);
+    bitcoin_cli(&["prioritisetransaction", &txid, "0", "-1000000"]);
+    let replacement = mine(2);
+    for block in replacement {
+        let data: Value = serde_json::from_str(&bitcoin_cli(&["getblock", &block])).unwrap();
+        assert!(!data["tx"].as_array().unwrap().iter().any(|id| id == &txid));
+    }
+    wait_filters();
+    let restarted = Daemon::start_with_btc(
+        &node_dir,
+        "btc-reorg.log",
+        None,
+        None,
+        &hex::encode(seed),
+        &btc_peer(),
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            let status = restarted.get("/api/v1/btc/status").await;
+            if status["best_height"].as_u64() == Some(height()) && status["synced"] == true {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("restarted wallet must finish reorg rescan");
+    let pending = restarted.get("/api/v1/btc/pending-sends").await;
+    assert!(
+        pending
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["txid"] == txid && entry["has_raw_tx"] == true),
+        "original signed send must remain recoverable: {pending}"
+    );
+    let status = restarted.get("/api/v1/btc/status").await;
+    assert_eq!(
+        status["balance_satoshis"], 0,
+        "original input must not be spendable"
+    );
+    restarted.stop(false).await;
+}
 const WALLET: &str = "multinode";
 
 fn bitcoin_cli(args: &[&str]) -> String {
     let output = Command::new("docker")
         .args([
             "exec",
-            CONTAINER,
+            &container(),
             "bitcoin-cli",
             "-regtest",
             "-rpcuser=vtr",
@@ -18,7 +279,7 @@ fn bitcoin_cli(args: &[&str]) -> String {
         ])
         .args(args)
         .output()
-        .unwrap_or_else(|error| panic!("docker exec {CONTAINER} failed: {error}"));
+        .unwrap_or_else(|error| panic!("docker exec {} failed: {error}", container()));
     assert!(
         output.status.success(),
         "bitcoin-cli {args:?} failed: {}",
@@ -33,7 +294,7 @@ fn ensure_wallet() {
         let loaded = Command::new("docker")
             .args([
                 "exec",
-                CONTAINER,
+                &container(),
                 "bitcoin-cli",
                 "-regtest",
                 "-rpcuser=vtr",
@@ -77,7 +338,7 @@ fn wait_filters() {
         let output = Command::new("docker")
             .args([
                 "exec",
-                CONTAINER,
+                &container(),
                 "bitcoin-cli",
                 "-regtest",
                 "-rpcuser=vtr",
@@ -166,7 +427,7 @@ async fn independent_daemons_agree_on_btc_spv_tip_and_reorg() {
             None,
             None,
             &seed,
-            BTC_PEER,
+            &btc_peer(),
         )
         .await;
         wait_btc(&mut daemon, funded_tip, 100_000_000).await;
@@ -187,7 +448,7 @@ async fn independent_daemons_agree_on_btc_spv_tip_and_reorg() {
             None,
             None,
             &seed,
-            BTC_PEER,
+            &btc_peer(),
         )
         .await;
         wait_btc(&mut daemon, funded_tip, 100_000_000).await;
@@ -210,7 +471,7 @@ async fn independent_daemons_agree_on_btc_spv_tip_and_reorg() {
             None,
             None,
             &seed,
-            BTC_PEER,
+            &btc_peer(),
         )
         .await;
         wait_btc(&mut daemon, reorged_tip, 100_000_000).await;
@@ -306,7 +567,7 @@ async fn multi_node_htlc_swap_settles_across_real_btc_spv() {
         None,
         None,
         &hex::encode(seed),
-        BTC_PEER,
+        &btc_peer(),
     )
     .await;
     wait_btc(&mut maker, height(), 100_000_000).await;
@@ -465,7 +726,7 @@ async fn taker_claims_vtr_on_a_separate_node() {
         None,
         None,
         &hex::encode(seed),
-        BTC_PEER,
+        &btc_peer(),
     )
     .await;
     wait_btc(&mut maker, height(), 100_000_000).await;
@@ -646,7 +907,7 @@ async fn btc_spv_drops_a_reorged_out_funding_output() {
         None,
         None,
         &hex::encode(seed),
-        BTC_PEER,
+        &btc_peer(),
     )
     .await;
     wait_btc(&mut daemon, funded_tip, 99_998_000).await;
@@ -682,7 +943,7 @@ async fn btc_spv_drops_a_reorged_out_funding_output() {
         None,
         None,
         &hex::encode(seed),
-        BTC_PEER,
+        &btc_peer(),
     )
     .await;
     wait_btc(&mut daemon, height(), 0).await;

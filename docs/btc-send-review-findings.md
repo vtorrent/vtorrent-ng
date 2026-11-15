@@ -1,9 +1,57 @@
 # BTC send review findings
 
 These findings require resolution and independent review before mainnet. They
-are based on source inspection, not an end-to-end reproduction.
+include findings from source inspection and targeted tests.
 
 ## Ambiguous broadcast
+
+**2026-11-14 remediation in progress:** Confirmed local sends now carry
+their pending-send metadata in new undo entries, and journal clearing or
+pruning preserves those holds. Corrupt undo data fails wallet loading. Existing
+undo entries written before this change have no such metadata, so they cannot
+reconstruct an already-retired local send. A production-safe legacy recovery
+policy, broader reorg and rescan coverage, and independent review remain open.
+
+The ignored `local_btc_send_reorg_after_restart_keeps_input_held` integration
+test passed against an isolated Bitcoin Core 26 regtest node with compact
+filters enabled. It confirms a local send, restarts the daemon, replaces the
+confirming block with blocks that exclude the send, and restarts again. The
+test checks that the input is unavailable and the signed transaction remains
+recoverable. It does not cover old wallet records, competing spends, or deep
+reorgs.
+
+On Unix, `UtxoSet::save` now syncs the temporary file, renames it, and syncs
+the parent directory. A directory-sync failure after rename is reported as an
+uncertain save. Send, address index, swap refund, reservation release, and
+restore callers retain the visible committed state on such a failure. Tests
+inject the failure and reopen the renamed record. They do not simulate power
+loss. Directory sync on non-Unix platforms, failure injection for the remaining
+background save paths, and actual power-loss testing remain open.
+
+Before the fix, `strace` of
+`wallet::tests::orphaned_partial_temp_file_does_not_release_committed_send_after_restart`
+showed `fsync` on `utxos.tmp` followed by `rename`, with no parent-directory
+`fsync`. After the fix, the same trace shows `fsync` of the parent directory
+after the rename. The before trace is `/tmp/opencode/btc-durability-before.log`
+and the after trace is `/tmp/opencode/btc-durability-after.log`.
+
+The same review found that `BtcWallet::set_utxo_path` adopted the new path
+before saving it. A failed save left the wallet pointed at a path it never
+wrote, so every later background save failed silently while the wallet
+appeared to persist. The wallet now adopts a path only after the save
+succeeds. The regression
+`failed_persistence_path_change_keeps_the_working_path` failed before the
+change and passes after it.
+
+Legacy wallet files are now handled explicitly. A set written before schema
+version 2 did not record which confirmed removal came from a local send, so a
+reorg could restore an input whose transaction was still live in a mempool. On
+load, `UtxoSet::adopt_legacy_journal_removals` turns each such removal into a
+hold with no signed bytes and a zero transaction id. The hold keeps the input
+unselectable until a scan observes a spend of that outpoint, which retires it,
+so an ordinary external spend is hidden for at most one scan. A file written by
+the current code is never converted. Tests cover the conversion, the absence of
+conversion for current files, and the upgrade path across a wallet restart.
 
 A peer can receive a transaction before the connection fails, so an error is
 not proof that the transaction did not propagate. The broadcast code also

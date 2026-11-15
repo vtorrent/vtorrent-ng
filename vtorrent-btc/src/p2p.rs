@@ -139,15 +139,15 @@ impl BtcPeer {
     ///
     /// Bitcoin Core does not send an `inv` back to the peer that submitted a
     /// transaction (it only relays to *other* peers), so we cannot wait for an
-    /// acknowledgement. Instead, wait briefly for a `reject` message: if none
-    /// arrives before the timeout, the transaction was accepted and relayed.
+    /// acknowledgement. A timeout without a `reject` means only that the
+    /// transaction was submitted; acceptance and relay remain unconfirmed.
     pub async fn broadcast_tx(&mut self, tx: &bitcoin::Transaction) -> Result<()> {
         let deadline = Instant::now() + RESPONSE_TIMEOUT;
         self.send_until(NetworkMessage::Tx(tx.clone()), deadline)
             .await?;
         loop {
             match timeout_at(deadline, self.recv()).await {
-                // No message (and no reject) before the timeout: accepted.
+                // No reject was observed; this is not proof of acceptance.
                 Err(_) => return Ok(()),
                 Ok(Err(e)) => return Err(e),
                 Ok(Ok(NetworkMessage::Reject(rej))) => {

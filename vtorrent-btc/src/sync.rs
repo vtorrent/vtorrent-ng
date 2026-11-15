@@ -100,7 +100,10 @@ pub async fn broadcast_tx_to(
     for handle in handles {
         match handle.await {
             Ok(Ok(addr)) => {
-                tracing::info!("BTC broadcast accepted by peer {}", addr);
+                tracing::info!(
+                    "BTC transaction submitted to peer {}; acceptance unconfirmed",
+                    addr
+                );
                 return Ok(txid);
             }
             Ok(Err(e)) => last_err = Some(e),
@@ -1335,5 +1338,157 @@ mod tests {
             tx.compute_txid(),
             "the peer received the transaction before the error"
         );
+    }
+
+    #[tokio::test]
+    async fn an_explicit_reject_reports_the_peer_reason() {
+        use bitcoin::p2p::message::RawNetworkMessage;
+        use bitcoin::p2p::message_network::{Reject, RejectReason, VersionMessage};
+        use bitcoin::p2p::Address as BtcAddress;
+        use bitcoin::p2p::ServiceFlags;
+        use tokio::io::AsyncWriteExt;
+
+        let network = bitcoin::Network::Regtest;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            assert!(matches!(
+                read_mock_message(&mut stream).await,
+                NetworkMessage::Version(_)
+            ));
+            let version = VersionMessage {
+                version: 70016,
+                services: ServiceFlags::NONE,
+                timestamp: 0,
+                receiver: BtcAddress::new(&addr, ServiceFlags::NONE),
+                sender: BtcAddress::new(&addr, ServiceFlags::NONE),
+                nonce: 0,
+                user_agent: "/mock:1.0/".to_string(),
+                start_height: 0,
+                relay: true,
+            };
+            stream
+                .write_all(&serialize(&RawNetworkMessage::new(
+                    network.magic(),
+                    NetworkMessage::Version(version),
+                )))
+                .await
+                .unwrap();
+            stream
+                .write_all(&serialize(&RawNetworkMessage::new(
+                    network.magic(),
+                    NetworkMessage::Verack,
+                )))
+                .await
+                .unwrap();
+            loop {
+                if let NetworkMessage::Tx(tx) = read_mock_message(&mut stream).await {
+                    stream
+                        .write_all(&serialize(&RawNetworkMessage::new(
+                            network.magic(),
+                            NetworkMessage::Reject(Reject {
+                                message: "tx".into(),
+                                ccode: RejectReason::Fee,
+                                reason: "min relay fee not met".into(),
+                                hash: tx.compute_txid().into(),
+                            }),
+                        )))
+                        .await
+                        .unwrap();
+                    break;
+                }
+            }
+            drop(stream);
+        });
+
+        let tx = bitcoin::Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![],
+            output: vec![bitcoin::TxOut {
+                value: bitcoin::Amount::from_sat(1_000),
+                script_pubkey: bitcoin::ScriptBuf::new(),
+            }],
+        };
+        let result = broadcast_tx_to(&serialize(&tx), network, &[addr]).await;
+
+        let error = result.expect_err("an explicit reject must be reported as an error");
+        assert!(
+            error.to_string().contains("min relay fee not met"),
+            "the error must carry the peer reason, got: {error}"
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_silent_peer_reports_submission_not_acceptance() {
+        use bitcoin::p2p::message::RawNetworkMessage;
+        use bitcoin::p2p::message_network::VersionMessage;
+        use bitcoin::p2p::Address as BtcAddress;
+        use bitcoin::p2p::ServiceFlags;
+        use tokio::io::AsyncWriteExt;
+
+        let network = bitcoin::Network::Regtest;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            assert!(matches!(
+                read_mock_message(&mut stream).await,
+                NetworkMessage::Version(_)
+            ));
+            let version = VersionMessage {
+                version: 70016,
+                services: ServiceFlags::NONE,
+                timestamp: 0,
+                receiver: BtcAddress::new(&addr, ServiceFlags::NONE),
+                sender: BtcAddress::new(&addr, ServiceFlags::NONE),
+                nonce: 0,
+                user_agent: "/mock:1.0/".to_string(),
+                start_height: 0,
+                relay: true,
+            };
+            stream
+                .write_all(&serialize(&RawNetworkMessage::new(
+                    network.magic(),
+                    NetworkMessage::Version(version),
+                )))
+                .await
+                .unwrap();
+            stream
+                .write_all(&serialize(&RawNetworkMessage::new(
+                    network.magic(),
+                    NetworkMessage::Verack,
+                )))
+                .await
+                .unwrap();
+            loop {
+                if let NetworkMessage::Tx(_) = read_mock_message(&mut stream).await {
+                    // Hold the connection open and send nothing. Bitcoin Core
+                    // does not acknowledge a transaction to the peer that
+                    // submitted it, so silence is the normal case.
+                    tokio::time::sleep(crate::p2p::RESPONSE_TIMEOUT * 2).await;
+                    break;
+                }
+            }
+        });
+
+        let tx = bitcoin::Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![],
+            output: vec![bitcoin::TxOut {
+                value: bitcoin::Amount::from_sat(1_000),
+                script_pubkey: bitcoin::ScriptBuf::new(),
+            }],
+        };
+        let result = broadcast_tx_to(&serialize(&tx), network, &[addr]).await;
+
+        assert!(
+            result.is_ok(),
+            "silence without a reject is a submission, not a failure"
+        );
+        server.abort();
     }
 }

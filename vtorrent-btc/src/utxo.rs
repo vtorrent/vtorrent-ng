@@ -3,9 +3,36 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+#[derive(Debug)]
+struct UncertainSave(std::io::Error);
+
+impl std::fmt::Display for UncertainSave {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "rename completed but directory sync failed: {}", self.0)
+    }
+}
+
+impl std::error::Error for UncertainSave {}
+
+pub(crate) fn save_may_have_committed(error: &std::io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|source| source.is::<UncertainSave>())
+}
+
 /// Hard cap on journalled heights. Independent of `--btc-header-retention`, so
 /// an unbounded header chain cannot produce an unbounded journal.
 pub(crate) const MAX_UNDO_ENTRIES: usize = 200_000;
+
+/// Schema version of the persisted set. Version 2 records a confirmed local
+/// send's transaction inside its journal entry, so a reorg can restore the hold.
+/// Anything older cannot say whether a removal was a local send.
+pub(crate) const JOURNAL_VERSION: u8 = 2;
+
+/// Stand-in transaction id for a legacy removal whose spending transaction was
+/// never recorded. The scan retires a hold by outpoint, so the value only has to
+/// stay stable and impossible to confuse with a real transaction id.
+const UNKNOWN_SEND_TXID: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 /// A spendable output owned by the wallet.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +58,12 @@ pub enum PriorState {
     Reserved(Utxo),
     /// The outpoint had already been spent while reserved.
     SpentReserved,
+    /// A local send may return to a mempool if its confirmation is reorged out.
+    PendingSend {
+        txid: String,
+        height: u32,
+        raw: Option<Vec<u8>>,
+    },
 }
 
 /// An output a block removed from the set, with the state to restore.
@@ -126,6 +159,9 @@ pub struct UtxoSet {
     /// cursor can confirm at or above it.
     #[serde(default)]
     pending_removals: Vec<PendingRemoval>,
+    /// Schema version of the file this set was read from.
+    #[serde(default)]
+    journal_version: u8,
     /// Reservation spends observed by this process's reconciliation scan,
     /// mapped to the reserved record they replaced and the chain height the
     /// observation was made at. Live-process only: a covered rollback restores
@@ -287,12 +323,17 @@ impl UtxoSet {
                 return;
             }
             if last.height > entry.height {
+                self.preserve_local_sends(vec![entry]);
                 return;
             }
         }
         self.undo.push(entry);
         if self.undo.len() > MAX_UNDO_ENTRIES {
-            self.undo.drain(..self.undo.len() - MAX_UNDO_ENTRIES);
+            let removed: Vec<_> = self
+                .undo
+                .drain(..self.undo.len() - MAX_UNDO_ENTRIES)
+                .collect();
+            self.preserve_local_sends(removed);
         }
     }
 
@@ -312,13 +353,77 @@ impl UtxoSet {
     /// unconfirmed send reached a peer, so its inputs must stay unselectable
     /// until a scan observes the spend or an explicit recovery cancels it.
     pub fn clear_journal(&mut self) {
-        self.undo.clear();
+        let entries = std::mem::take(&mut self.undo);
+        self.preserve_local_sends(entries);
         self.observed_reservation_spends.clear();
+    }
+
+    fn preserve_local_sends(&mut self, entries: Vec<UndoEntry>) {
+        for entry in entries {
+            for removed in entry.removed {
+                if let PriorState::PendingSend { txid, height, raw } = removed.prior {
+                    if !self.pending_removals.iter().any(|pending| {
+                        pending.removed.utxo.txid == removed.utxo.txid
+                            && pending.removed.utxo.vout == removed.utxo.vout
+                    }) {
+                        self.pending_removals.push(PendingRemoval {
+                            removed: RemovedOutput {
+                                utxo: removed.utxo,
+                                prior: PriorState::Free,
+                            },
+                            txid,
+                            height,
+                            raw,
+                        });
+                    }
+                }
+            }
+        }
     }
 
     /// The wallet-local spends the scan has not observed yet.
     pub fn pending_removals(&self) -> &[PendingRemoval] {
         &self.pending_removals
+    }
+
+    /// Turn a legacy journal's plain removals into fail-closed holds.
+    ///
+    /// Before [`JOURNAL_VERSION`] 2 the journal did not record whether a
+    /// removal came from a local send, so a reorg could restore an input whose
+    /// transaction was still live in a mempool. Each such removal now replays
+    /// as a hold with no signed bytes. The scan retires it when it observes any
+    /// spend of the outpoint, so a genuine external spend is not hidden for
+    /// longer than the next scan.
+    fn adopt_legacy_journal_removals(&mut self) {
+        let mut adopted = Vec::new();
+        for entry in &mut self.undo {
+            let height = entry.height;
+            for removed in &mut entry.removed {
+                if matches!(removed.prior, PriorState::Free) {
+                    removed.prior = PriorState::PendingSend {
+                        txid: UNKNOWN_SEND_TXID.into(),
+                        height,
+                        raw: None,
+                    };
+                    adopted.push((removed.utxo.clone(), height));
+                }
+            }
+        }
+        for (utxo, height) in adopted {
+            if !self.pending_removals.iter().any(|pending| {
+                pending.removed.utxo.txid == utxo.txid && pending.removed.utxo.vout == utxo.vout
+            }) {
+                self.pending_removals.push(PendingRemoval {
+                    removed: RemovedOutput {
+                        utxo,
+                        prior: PriorState::Free,
+                    },
+                    txid: UNKNOWN_SEND_TXID.into(),
+                    height,
+                    raw: None,
+                });
+            }
+        }
     }
 
     pub(crate) fn pending_sends(&self) -> Vec<crate::wallet::PendingSend> {
@@ -404,7 +509,15 @@ impl UtxoSet {
             .iter()
             .position(|pending| matches(pending) && pending.txid == spending_txid)
             .or_else(|| self.pending_removals.iter().position(matches))?;
-        Some(self.pending_removals.remove(index).removed)
+        let pending = self.pending_removals.remove(index);
+        Some(RemovedOutput {
+            utxo: pending.removed.utxo,
+            prior: PriorState::PendingSend {
+                txid: pending.txid,
+                height: pending.height,
+                raw: pending.raw,
+            },
+        })
     }
 
     /// Cancel the removal state a failed broadcast must not leave behind.
@@ -460,9 +573,14 @@ impl UtxoSet {
     ///
     /// Pending removals are retained independently of journal pruning.
     pub fn prune_undo(&mut self, floor: u32, max_entries: usize) {
-        self.undo.retain(|entry| entry.height >= floor);
+        let (keep, removed): (Vec<_>, Vec<_>) = std::mem::take(&mut self.undo)
+            .into_iter()
+            .partition(|entry| entry.height >= floor);
+        self.undo = keep;
+        self.preserve_local_sends(removed);
         if self.undo.len() > max_entries {
-            self.undo.drain(..self.undo.len() - max_entries);
+            let removed: Vec<_> = self.undo.drain(..self.undo.len() - max_entries).collect();
+            self.preserve_local_sends(removed);
         }
     }
 
@@ -566,6 +684,25 @@ impl UtxoSet {
 
     fn restore_removed(&mut self, removed: RemovedOutput) {
         let RemovedOutput { utxo, prior } = removed;
+        if let PriorState::PendingSend { txid, height, raw } = prior {
+            // Replay can meet a hold that `clear_journal` already preserved, so
+            // a second copy for the same outpoint would never be retired and
+            // would hide the input for good.
+            if !self.pending_removals.iter().any(|pending| {
+                pending.removed.utxo.txid == utxo.txid && pending.removed.utxo.vout == utxo.vout
+            }) {
+                self.pending_removals.push(PendingRemoval {
+                    removed: RemovedOutput {
+                        utxo,
+                        prior: PriorState::Free,
+                    },
+                    txid,
+                    height,
+                    raw,
+                });
+            }
+            return;
+        }
         let key = (utxo.txid.clone(), utxo.vout);
         let restored = utxo.clone();
         self.insert_direct(utxo);
@@ -593,6 +730,7 @@ impl UtxoSet {
                     self.spent_reserved.insert(key);
                 }
             }
+            PriorState::PendingSend { .. } => unreachable!(),
         }
     }
 
@@ -848,7 +986,9 @@ impl UtxoSet {
 
     /// Persist the UTXO set to a JSON file.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
+        let mut value = serde_json::to_value(self).map_err(std::io::Error::other)?;
+        value["journal_version"] = serde_json::json!(JOURNAL_VERSION);
+        let json = serde_json::to_string_pretty(&value).map_err(std::io::Error::other)?;
         // Write atomically via a temp file + rename.
         let tmp = path.with_extension("tmp");
         let mut options = std::fs::OpenOptions::new();
@@ -863,6 +1003,23 @@ impl UtxoSet {
         file.sync_all()?;
         drop(file);
         std::fs::rename(&tmp, path)?;
+        #[cfg(unix)]
+        {
+            #[cfg(test)]
+            let injected = FAIL_PARENT_SYNC.with(|flag| flag.replace(false));
+            #[cfg(not(test))]
+            let injected = false;
+            let result = if injected {
+                Err(std::io::Error::other("injected parent sync failure"))
+            } else {
+                let parent = path
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new("."));
+                std::fs::File::open(parent).and_then(|directory| directory.sync_all())
+            };
+            result.map_err(|error| std::io::Error::other(UncertainSave(error)))?;
+        }
         tracing::debug!(
             "UTXO set saved: {} entries → {}",
             self.utxos.len(),
@@ -874,9 +1031,8 @@ impl UtxoSet {
     /// Load the UTXO set from a JSON file.  Returns an empty set if the
     /// file does not exist.
     ///
-    /// A corrupt undo journal or tip is discarded so the wallet can rescan.
-    /// Corrupt pending removals fail the load because they protect inputs of
-    /// transactions that may still be live.
+    /// A corrupt tip is discarded. Corrupt undo or pending records fail the
+    /// load because they can contain local sends that may still be live.
     pub fn load(path: &Path) -> std::io::Result<Self> {
         let json = match std::fs::read_to_string(path) {
             Ok(json) => json,
@@ -888,6 +1044,11 @@ impl UtxoSet {
         sanitize_journal_fields(&mut value);
         let set: UtxoSet = serde_json::from_value(value)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let mut set = set;
+        if set.journal_version < JOURNAL_VERSION {
+            set.adopt_legacy_journal_removals();
+            set.journal_version = JOURNAL_VERSION;
+        }
         tracing::debug!(
             "UTXO set loaded: {} entries from {}",
             set.utxos.len(),
@@ -898,16 +1059,11 @@ impl UtxoSet {
 }
 
 /// Discard a journalled field that does not parse, leaving the rest of the set
-/// intact. Only the undo journal and its tip are tolerated this way.
+/// intact. Only the stored tip is tolerated this way.
 fn sanitize_journal_fields(value: &mut serde_json::Value) {
     let Some(object) = value.as_object_mut() else {
         return;
     };
-    if object.contains_key("undo")
-        && serde_json::from_value::<Vec<UndoEntry>>(object["undo"].clone()).is_err()
-    {
-        object.insert("undo".into(), serde_json::Value::Array(Vec::new()));
-    }
     if object.contains_key("last_scanned_tip")
         && serde_json::from_value::<Option<[u8; 32]>>(object["last_scanned_tip"].clone()).is_err()
     {
@@ -942,6 +1098,144 @@ mod tests {
         )
         .is_err());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn corrupt_undo_cannot_silently_discard_confirmed_send_history() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-corrupt-confirmed-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let mut json = serde_json::to_value(UtxoSet::new()).unwrap();
+        json["undo"] = serde_json::json!([{"height": 1, "removed": "corrupt"}]);
+        std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+        assert!(UtxoSet::load(&path).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn legacy_journal_removals_become_fail_closed_holds() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-legacy-journal-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let spent = utxo("ba", 0, 100_000);
+        let json = serde_json::json!({
+            "utxos": [utxo("bb", 0, 5_000)],
+            "undo": [{
+                "height": 106,
+                "created": [],
+                "removed": [{"utxo": spent, "prior": "Free"}],
+            }],
+        });
+        std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+
+        let loaded = UtxoSet::load(&path).unwrap();
+        assert_eq!(
+            loaded.pending_removals().len(),
+            1,
+            "a legacy confirmed removal must become a hold"
+        );
+        assert_eq!(loaded.pending_removals()[0].removed.utxo.txid, spent.txid);
+        assert!(
+            loaded.pending_removals()[0].raw.is_none(),
+            "a legacy hold has no signed bytes to retry"
+        );
+        let mut loaded = loaded;
+        assert!(
+            !loaded.add(spent),
+            "a legacy hold must keep the input unselectable"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn current_format_journal_never_creates_holds() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-current-journal-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let mut set = UtxoSet::new();
+        set.push_undo(UndoEntry {
+            height: 106,
+            created: vec![],
+            removed: vec![RemovedOutput {
+                utxo: utxo("bc", 0, 100_000),
+                prior: PriorState::Free,
+            }],
+        });
+        set.save(&path).unwrap();
+
+        let loaded = UtxoSet::load(&path).unwrap();
+        assert!(
+            loaded.pending_removals().is_empty(),
+            "a spend recorded by current code is not an unknown local send"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_out_of_order_journal_entry_cannot_discard_a_local_send() {
+        let mut set = UtxoSet::new();
+        let input = utxo("aa", 0, 500);
+        set.record_pending_removals(std::slice::from_ref(&input), "ff", 5);
+        set.record_pending_send_raw("ff", &[1, 2, 3]);
+        let removed = set.take_pending_removal("ff", "aa", 0).unwrap();
+        set.push_undo(UndoEntry {
+            height: 10,
+            created: vec![],
+            removed: vec![],
+        });
+        set.push_undo(UndoEntry {
+            height: 9,
+            created: vec![],
+            removed: vec![removed],
+        });
+        assert_eq!(set.pending_removals().len(), 1);
+        assert!(!set.add(input));
+        assert_eq!(
+            set.pending_removals()[0].raw.as_deref(),
+            Some(&[1, 2, 3][..])
+        );
+    }
+
+    #[test]
+    fn pruning_a_confirmed_local_send_retains_its_hold() {
+        let mut set = UtxoSet::new();
+        let input = utxo("aa", 0, 500);
+        set.record_pending_removals(std::slice::from_ref(&input), "ff", 5);
+        set.record_pending_send_raw("ff", &[1, 2, 3]);
+        let removed = set.take_pending_removal("ff", "aa", 0).unwrap();
+        set.push_undo(UndoEntry {
+            height: 10,
+            created: vec![],
+            removed: vec![removed],
+        });
+        set.prune_undo(11, MAX_UNDO_ENTRIES);
+        assert_eq!(set.pending_removals().len(), 1);
+        assert!(!set.add(input));
+        assert_eq!(
+            set.pending_removals()[0].raw.as_deref(),
+            Some(&[1, 2, 3][..])
+        );
     }
 
     fn utxo(txid: &str, vout: u32, value: u64) -> Utxo {
@@ -1961,7 +2255,7 @@ mod tests {
     }
 
     #[test]
-    fn a_corrupt_journal_is_discarded_without_losing_the_utxo_set() {
+    fn a_corrupt_journal_fails_closed() {
         let dir =
             std::env::temp_dir().join(format!("vtorrent_utxo_corrupt_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
@@ -1974,11 +2268,7 @@ mod tests {
         value["last_scanned_tip"] = serde_json::json!("not-a-tip");
         std::fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
 
-        let loaded = UtxoSet::load(&path).expect("a corrupt journal must not fail the load");
-        assert_eq!(loaded.total(), 5000);
-        assert_eq!(loaded.list().len(), 1);
-        assert!(loaded.undo_entries().is_empty());
-        assert_eq!(loaded.last_scanned_tip(), None);
+        assert!(UtxoSet::load(&path).is_err());
 
         // The settled balance is not recovery data: corrupting it still fails.
         value["utxos"] = serde_json::json!("not-a-balance");
@@ -2254,4 +2544,13 @@ mod tests {
             "pending tx must be dropped with the contract"
         );
     }
+}
+#[cfg(all(test, unix))]
+thread_local! {
+    static FAIL_PARENT_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn fail_next_parent_sync_for_test() {
+    FAIL_PARENT_SYNC.with(|flag| flag.set(true));
 }
