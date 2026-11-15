@@ -1,8 +1,5 @@
 # Security review — cover note
 
-> **Draft is stale:** fund-safety remediation is underway after this target.
-> Retarget the review to the settled commit and update its scope before sending.
-
 A ready-to-send message for the reviewer. The technical scope lives in
 `docs/security-review-request-2026-10-27.md`; this note is the ask, the context,
 and the specific questions.
@@ -11,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `f8e0162`
+Subject: Independent security review — vTorrent-NG mainnet candidate `6c5417d`
 
 Hello,
 
@@ -21,17 +18,16 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `f8e016246434c1f8764a88c82438c4b199f973ea`
+**Review head:** `6c5417d104e768733289f024218ad6365fa78f8b`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `f8e0162`. It is not the image in the active 168-hour
-soak: that fleet runs `6a49727` and predates the fund-safety and recovery
-changes below. The eventual shipping image needs its own full window after this
-review and its fixes settle.
+The code under review is `6c5417d`. It is not the image in the active 168-hour
+soak: that fleet runs `6a49727` and predates every change below. The eventual
+shipping image needs its own full window after this review and its fixes settle.
 
-Check out the latest `main`; commits after `f8e0162` are documentation only.
-`git diff --name-only f8e0162..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'` must
-return nothing.
+Check out `6c5417d` and confirm it with
+`git rev-parse HEAD`. The tree is the settled candidate; no later commits carry
+code or tests.
 
 That document lists the exact hashes, the verification commands, and what we
 consider in scope. Nothing is required beyond a clone and a Rust toolchain; no
@@ -57,6 +53,24 @@ credentials or live infrastructure access are needed.
   TOTP, authenticated swap refunds, DEX terms bound to verified order data,
   bounded order gossip, risk cleared only on confirmed settlement, legacy BTC
   state failing closed, and transient key/passphrase buffers zeroized.
+- Cold-stake funding attestation: the offline signer now refuses to sign unless a
+  pinned node key attests that the funding outpoint is confirmed, unspent, and
+  free of mempool spends. Design in
+  `docs/superpowers/specs/2026-11-15-cold-stake-funding-attestation-design.md`.
+- BTC send recovery after `f8e0162`: confirmed sends carry their signed bytes
+  into the journal so a covered reorg keeps the input held; corrupt journals
+  fail closed; schema-2 wallet files convert unlabelled legacy removals into
+  holds; saves sync the parent directory and treat a post-rename failure as
+  uncertain; `set_utxo_path` adopts a path only after a successful write.
+- BTC claim replacement validation now checks the raw copy, witness, preimage,
+  fee, destination, and the order's amount and expiry.
+- Broadcast status: a timeout without a reject is reported as submission, with
+  tests for a silent peer, an explicit reject, and a disconnect.
+- RPC transaction lookup resolves through the body source, so a pruned block
+  body no longer returns 404.
+
+Changes already described in the earlier package, up to `f8e0162`:
+
 - BTC send recovery: a broadcast error no longer releases inputs. The signed
   transaction is retained, listed, and can be rebroadcast; corrupt pending state
   fails the wallet load.
@@ -140,9 +154,10 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `f8e0162` or update it; the scope document and
-  this note must name the same commit. Do not substitute a later local commit
-  without also updating both documents and the soak provenance.
+- Confirm the review head is still `6c5417d104e768733289f024218ad6365fa78f8b`
+  or update it; the scope document and this note must name the same commit. Do
+  not substitute a later local commit without updating both documents and the
+  soak provenance.
 - Do not describe the active `6a49727` fleet as covering this head. The shipping
   image needs its own 168-hour window after the review and its fixes settle.
 - Decide who receives it. Sending it is the step that actually opens the gate —

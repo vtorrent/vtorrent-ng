@@ -1,9 +1,6 @@
 # Independent security review request
 
-> **Draft is stale:** fund-safety remediation is underway after the target below.
-> Update this request and its verification evidence before commissioning review.
-
-Updated 2026-11-14. This package requests an independent human security review.
+Updated 2026-11-15. This package requests an independent human security review.
 The prior internal model review in `docs/2026-10-26_security-vtorrent-report.md`
 does not satisfy the independence gate.
 
@@ -13,17 +10,15 @@ already accepted so it is not re-litigated.
 
 ## Review target
 
-Review the candidate `f8e016246434c1f8764a88c82438c4b199f973ea`. This is the
-current review head. It is **not** the image in the active 168-hour soak: that
-fleet runs `6a49727`, which predates the fund-safety and recovery changes below.
+Review the candidate `6c5417d104e768733289f024218ad6365fa78f8b`. This is the current review head. It is **not**
+the image in the active 168-hour soak: that fleet runs `6a49727`, which predates
+the fund-safety and recovery changes below.
 Under the soak provenance policy, the shipping image needs its own full window
 after this review and its fixes settle.
 
-The tables below record the earlier deltas; the last table covers the range
-from `b729e36` to the review head. Check out the latest `main`: commits after
-`f8e0162` are documentation only. Confirm that with
-`git diff --name-only f8e0162..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`
-returning nothing.
+Check out `6c5417d` and confirm it with `git rev-parse HEAD`. The tables below
+record the earlier deltas. The last table covers the range from `f8e0162` to
+the review head.
 
 The deltas added after `dd98176` are the reason this request was refreshed; the
 original 2026-10-27 scope predates them.
@@ -56,6 +51,22 @@ original 2026-10-27 scope predates them.
 | `86344c5` | `86344c59e7d7231bcc14c768350416274bd99ec5` | External dead-man heartbeat for seed1, with hermetic tests |
 | `f9f1b03` | `f9f1b038f973343695d726c8171d81cc5404b11b` | BTC SPV reorg resumes the rescan at the fork height; lag gauge omitted while the scan cursor is 0 |
 | `bae6291` | `bae6291823be8f067158af6e4e3edfe6771b4a83` | Ops: soak sign-off collector |
+
+Deltas after `f8e0162`:
+
+| Commit | Purpose |
+|---|---|
+| `cc6b708` | Attestation encoding, secp256k1 signatures, funding binding and policy |
+| `4b932e6` | Build attestations from chain and mempool state, with refusal reasons |
+| `1f41c27` | Attestor key storage and the two HTTP endpoints |
+| `0ce87ec` | Offline signer verification and CLI wiring |
+| `cad1410` | Endpoint and workflow documentation |
+| `8e9d401` | Review fixes: pruned-body lookup, strict field encoding, version and clock-skew checks, optional funding transaction, startup pin, creation race |
+| `58f86b5` | BTC send holds across reorgs, restart, legacy files, and write failures |
+| `a18edf9` | BTC claim replacement validation against the HTLC terms |
+| `8e45a7e` | UI reports BTC submission as unconfirmed |
+| `0a71f71` | RPC transaction lookups resolve through the body source |
+| `6c5417d` | Real-node test for an uncovered BTC reorg across restart |
 
 Deltas after the earlier review head:
 
@@ -107,7 +118,7 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout f8e016246434c1f8764a88c82438c4b199f973ea
+git checkout 6c5417d104e768733289f024218ad6365fa78f8b
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
@@ -115,10 +126,13 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 cargo test --workspace --all-features
 ```
 
-The `f8e0162` workspace run passed 52 groups, 1,282 tests, zero failures. CI
-repeats the `--all-features` suite on every push. Set `VTORRENT_TOTP_STATE_DIR`
-to a fresh directory before running the suite so the host-scoped TOTP replay
-state does not collide with an existing installation.
+The `6c5417d` workspace run passed 53 groups, 1,337 tests, 0 failures, with 10
+tests ignored by default. CI repeats the `--all-features` suite on every push.
+Set `VTORRENT_TOTP_STATE_DIR` to a fresh directory before running the suite so
+the host-scoped TOTP replay state does not collide with an existing
+installation. The ignored Bitcoin Core reorg tests are documented in
+`vtorrent-daemon/tests/btc_spv/mod.rs` and run against a disposable regtest
+container.
 
 The legacy-wallet guard and progress-based scan alert are in this head. The
 `btc-state-stage` migration tool is experimental and not approved for production
@@ -197,8 +211,9 @@ Added with `ff148fd` and `35ea52e`:
   swap preserved across a maker restart, BTC claim with six confirmations, and
   a separate taker node broadcasting the VTR claim.
 - CI runs the workspace suite with `--all-features` on every push. The last
-  counted local run on the review head was 52 groups, 1,282 tests, zero
-  failures. The whole-tree review remediation is documented in
+  counted local run on the review head was 53 groups, 1,337 tests, zero
+  failures, plus 10 tests ignored by default (five need a disposable Bitcoin
+  Core regtest container). The whole-tree review remediation is documented in
   `docs/2026-10-29_codebase-wide-review.md`.
 - The four BTC SPV release-mode tests run against real Bitcoin Core regtest now
   run nightly in CI rather than only by hand; they were silently stale for three
