@@ -12,6 +12,119 @@ fn btc_peer() -> String {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires a disposable Bitcoin Core container selected explicitly by environment"]
+async fn uncovered_btc_reorg_across_restart_keeps_a_confirmed_send_held() {
+    let selected = std::env::var("VTORRENT_TEST_BTC_CONTAINER")
+        .expect("set VTORRENT_TEST_BTC_CONTAINER to a disposable container");
+    assert!(selected.starts_with("vtr-fundsafety-regtest-"));
+    std::env::var("VTORRENT_TEST_BTC_PEER").expect("set the disposable Bitcoin peer");
+    let _scenario = RECOVERY_SCENARIO.lock().await;
+    ensure_wallet();
+    let mut seed = [0x74; 64];
+    seed[..16].copy_from_slice(
+        &std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .to_le_bytes(),
+    );
+    let address = vtorrent_btc::keys::derive_address(&seed, 0, Network::Regtest).unwrap();
+    bitcoin_cli(&["-rpcwallet=multinode", "sendtoaddress", &address, "1.0"]);
+    // The funding block must survive: leave empty blocks between it and the send.
+    mine(3);
+    wait_filters();
+    let directory = tempfile::tempdir().unwrap();
+    let node_dir = directory.path().join("node");
+    let mut daemon = Daemon::start_with_btc(
+        &node_dir,
+        "btc-uncovered-send.log",
+        None,
+        None,
+        &hex::encode(seed),
+        &btc_peer(),
+    )
+    .await;
+    wait_btc(&mut daemon, height(), 100_000_000).await;
+    daemon
+        .post(
+            "/api/v1/wallet/import",
+            json!({
+                "wif": "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS",
+                "passphrase": "testpass", "overwrite": false
+            }),
+        )
+        .await;
+    daemon
+        .post(
+            "/api/v1/wallet/unlock",
+            json!({"passphrase":"testpass", "timeout_secs":0}),
+        )
+        .await;
+    let recipient = bitcoin_cli(&["-rpcwallet=multinode", "getnewaddress"]);
+    let sent = daemon
+        .post(
+            "/api/v1/btc/send",
+            json!({
+                "to_address": recipient, "amount_satoshis": 40_000_000,
+                "fee_satoshis": 1000, "passphrase":"testpass"
+            }),
+        )
+        .await;
+    let txid = sent["txid"].as_str().unwrap().to_owned();
+    let confirmed_block = mine(1).remove(0);
+    wait_filters();
+    let confirmed_tip = height();
+    daemon.stop(false).await;
+    let mut confirmed = Daemon::start_with_btc(
+        &node_dir,
+        "btc-uncovered-confirmed.log",
+        None,
+        None,
+        &hex::encode(seed),
+        &btc_peer(),
+    )
+    .await;
+    wait_btc(&mut confirmed, confirmed_tip, 59_999_000).await;
+    confirmed.stop(false).await;
+
+    // Remove the send's block and the empty block below it. The fork now sits
+    // below the wallet's journal coverage, which forces a full reset.
+    bitcoin_cli(&["invalidateblock", &confirmed_block]);
+    let confirmed_height = confirmed_tip;
+    let block_below = bitcoin_cli(&["getblockhash", &(confirmed_height - 1).to_string()]);
+    bitcoin_cli(&["invalidateblock", &block_below]);
+    bitcoin_cli(&["prioritisetransaction", &txid, "0", "-1000000"]);
+    mine(3);
+    wait_filters();
+
+    let mut restarted = Daemon::start_with_btc(
+        &node_dir,
+        "btc-uncovered-reorg.log",
+        None,
+        None,
+        &hex::encode(seed),
+        &btc_peer(),
+    )
+    .await;
+    wait_btc(&mut restarted, height(), 0).await;
+    let pending = restarted.get("/api/v1/btc/pending-sends").await;
+    assert!(
+        pending
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["txid"] == txid && entry["has_raw_tx"] == true),
+        "the send must remain recoverable after an uncovered reorg: {pending}"
+    );
+    let status = restarted.get("/api/v1/btc/status").await;
+    assert_eq!(
+        status["balance_satoshis"], 0,
+        "the reorg-returned input must stay unselectable"
+    );
+    restarted.stop(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires a disposable Bitcoin Core container selected explicitly by environment"]
 async fn competing_btc_spend_reorg_preserves_multi_input_send() {
     let selected = std::env::var("VTORRENT_TEST_BTC_CONTAINER")
         .expect("set VTORRENT_TEST_BTC_CONTAINER to a disposable container");

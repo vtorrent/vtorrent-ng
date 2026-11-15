@@ -17,8 +17,14 @@ test passed against an isolated Bitcoin Core 26 regtest node with compact
 filters enabled. It confirms a local send, restarts the daemon, replaces the
 confirming block with blocks that exclude the send, and restarts again. The
 test checks that the input is unavailable and the signed transaction remains
-recoverable. It does not cover old wallet records, competing spends, or deep
-reorgs.
+recoverable. A second test mines an empty block between funding and the send,
+confirms the send, restarts, then invalidates both the send's block and the
+empty block below it. That leaves no journal coverage across the fork, so the
+daemon takes the full-reset path, and the test still requires a zero spendable
+balance and a recoverable signed send. A third test has a valid competing
+transaction spend one input of a two-input send and confirms it, then reorgs it
+out. Old wallet records are covered only by the schema-2 conversion described
+below.
 
 On Unix, `UtxoSet::save` now syncs the temporary file, renames it, and syncs
 the parent directory. A directory-sync failure after rename is reported as an
