@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import BtcWalletPage from './BtcWalletPage'
 
 const backend = vi.hoisted(() => ({
+  send: vi.fn<() => Promise<string | null>>(),
   rebroadcast: vi.fn<(txid: string, passphrase?: string, otp?: string | null) => Promise<string | null>>(),
 }))
 
@@ -22,7 +23,7 @@ vi.mock('../hooks/useBtc', () => ({
   }),
   useBtcAddress: () => ({ address: null, generate: vi.fn(), loading: false, error: null }),
   useSendBtc: () => ({
-    send: vi.fn(),
+    send: backend.send,
     rebroadcast: backend.rebroadcast,
     loading: false,
     error: null,
@@ -35,6 +36,14 @@ vi.mock('../hooks/useBtc', () => ({
 afterEach(cleanup)
 
 describe('BTC pending sends', () => {
+  it('does not claim that submission proves acceptance or confirmation', async () => {
+    backend.send.mockResolvedValue('ef'.repeat(32))
+    render(<BtcWalletPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect(await screen.findByText(/submitted.*unconfirmed/i)).toBeInTheDocument()
+    expect(screen.queryByText(/Sent!/)).not.toBeInTheDocument()
+  })
+
   it('retries a retained send with the wallet passphrase', async () => {
     backend.rebroadcast.mockResolvedValue('ab'.repeat(32))
     render(<BtcWalletPage />)

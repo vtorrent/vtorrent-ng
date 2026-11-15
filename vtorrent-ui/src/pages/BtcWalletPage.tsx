@@ -105,7 +105,7 @@ export default function BtcWalletPage() {
           <Send size={16} /> {sending ? 'Sending...' : 'Send'}
         </button>
         {sendError && <p className="text-sm text-red-400">{sendError}</p>}
-        {sent && <p className="text-sm text-green-400">Sent! TXID: {sent}</p>}
+        {sent && <p className="text-sm text-amber-400">Submitted; acceptance and confirmation are unconfirmed. TXID: {sent}</p>}
       </div>
 
       {pending.length > 0 && (
@@ -113,7 +113,7 @@ export default function BtcWalletPage() {
           <h2 className="font-semibold">Unconfirmed sends</h2>
           <p className="text-xs text-gray-400">
             These transactions may still reach the network. Their inputs stay unavailable
-            until a scan observes the spend or you retry the broadcast.
+            until a scan observes the spend. Retrying does not release them.
           </p>
           {pending.map((entry) => (
             <div key={entry.txid} className="flex items-center gap-2">
