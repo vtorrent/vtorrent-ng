@@ -136,10 +136,10 @@ pub async fn get_transaction_by_id(
 
     {
         let chain = state.chain.lock().await;
-        if let Some((tx, block_hash, height)) = chain.get_transaction(&txid) {
+        if let Some((tx, block_hash, height)) = chain.get_transaction_owned(&txid) {
             return Ok(Json(transaction_lookup_response(
                 txid,
-                tx,
+                &tx,
                 Some(block_hash),
                 Some(height),
             )));

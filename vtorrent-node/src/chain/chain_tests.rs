@@ -1950,6 +1950,24 @@ fn test_body_pruning_keeps_headers_and_falls_back() {
 }
 
 #[test]
+fn test_get_transaction_owned_falls_back_for_a_pruned_transaction() {
+    let mut chain = Chain::new().unwrap();
+    chain.set_max_reorg_depth(4);
+    chain.set_block_body_cache(8);
+    let (hashes, blocks) = build_coinbase_chain(&mut chain, 30);
+    let txid = blocks.get(&hashes[5]).unwrap().transactions[0].txid();
+    assert!(
+        chain.get_transaction(&txid).is_none(),
+        "a pruned body hides the transaction from the memory-only lookup"
+    );
+    chain.set_body_source(Arc::new(MapBodySource { blocks }));
+    assert!(
+        chain.get_transaction_owned(&txid).is_some(),
+        "the owned lookup must resolve through the body source"
+    );
+}
+
+#[test]
 fn test_duplicate_after_prune_is_still_duplicate() {
     let mut chain = Chain::new().unwrap();
     // Cache must exceed max_reorg_depth (100), which pins journals.
