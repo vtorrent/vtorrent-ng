@@ -1381,24 +1381,19 @@ async fn competing_orders_cannot_reuse_reserved_btc_input() {
 #[tokio::test]
 async fn persistence_failure_never_broadcasts_or_consumes_input() {
     let (state, id, refund_address) = fixture().await;
-    let missing = std::env::temp_dir()
-        .join(format!(
-            "vtr-missing-swap-dir-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ))
-        .join("utxos.json");
-    assert!(state
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("utxos.json");
+    state
         .btc_wallet
         .write()
         .await
         .as_mut()
         .unwrap()
-        .set_utxo_path(missing)
-        .is_err());
+        .set_utxo_path(path.clone())
+        .unwrap();
+    // A directory in place of the save's temporary file makes the write fail
+    // with a real filesystem error, without relying on a rejected path change.
+    std::fs::create_dir(path.with_extension("tmp")).unwrap();
     let result = fund_btc_with_broadcast(
         &state,
         BtcFundRequest {
@@ -1467,6 +1462,57 @@ fn bump_request(id: &str, parent: [u8; 32], fee: u64) -> crate::models::BtcClaim
         approve: true,
         passphrase: Default::default(),
         otp_code: None,
+    }
+}
+
+#[tokio::test]
+async fn btc_claim_bump_rejects_changed_order_amount_before_broadcast() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut state, id, claim) = claim_bump_fixture().await;
+    state.swap_recovery_dir = Some(directory.path().to_path_buf());
+    state.swaps.write().await.get_mut(&id).unwrap().btc_amount -= 100;
+    let called = std::sync::atomic::AtomicBool::new(false);
+    let result = crate::btc_claim_bump::bump_with_broadcast(
+        &state,
+        bump_request(&id, claim, 3_000),
+        async |raw: &[u8]| {
+            called.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(txid(raw))
+        },
+    )
+    .await;
+    assert!(result.is_err(), "changed amount must not be signed");
+    assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(state.swaps.read().await[&id]
+        .btc_claim_replacements
+        .is_empty());
+}
+
+#[tokio::test]
+async fn btc_claim_bump_rejects_changed_destination_or_unsafe_expiry() {
+    for change_destination in [true, false] {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut state, id, claim) = claim_bump_fixture().await;
+        state.swap_recovery_dir = Some(directory.path().to_path_buf());
+        {
+            let mut swaps = state.swaps.write().await;
+            let swap = swaps.get_mut(&id).unwrap();
+            if change_destination {
+                swap.maker_btc_address = swap.taker_btc_refund_address.clone();
+            } else {
+                swap.btc_expiry = u32::MAX;
+            }
+        }
+        let result = crate::btc_claim_bump::bump_with_broadcast(
+            &state,
+            bump_request(&id, claim, 3_000),
+            async |_: &[u8]| panic!("changed terms must not be broadcast"),
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(state.swaps.read().await[&id]
+            .btc_claim_replacements
+            .is_empty());
     }
 }
 

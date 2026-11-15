@@ -74,6 +74,13 @@ pub async fn bump_with_broadcast(
         || swap.btc_refund_txid.is_some()
         || swap.vtr_refund_txid.is_some()
         || order.hash_lock != Some(swap.hash_lock)
+        || order.target_amount != swap.btc_amount
+        || order.maker_btc_address != swap.maker_btc_address
+        || swap.btc_expiry < 500_000_000
+        || swap
+            .btc_expiry
+            .checked_add(vtorrent_wallet_service::swap_policy::SWAP_CLAIM_SAFETY_MARGIN)
+            .is_none_or(|expiry| expiry > order.expiry)
     {
         return Err(RpcError::BadRequest(
             "BTC claim is ineligible for replacement".into(),
