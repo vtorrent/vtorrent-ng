@@ -190,6 +190,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/btc/status", get(get_btc_status))
         .route("/api/v1/btc/address", get(get_btc_address))
         .route("/api/v1/btc/pending-sends", get(list_btc_pending_sends))
+        .route(
+            "/api/v1/cold-stake/funding-attestation",
+            post(cold_stake::get_funding_attestation),
+        )
+        .route(
+            "/api/v1/cold-stake/funding-attestation/pubkey",
+            get(cold_stake::get_funding_attestation_pubkey),
+        )
         .route("/api/v1/btc/rebroadcast", post(rebroadcast_btc))
         .route("/api/v1/torrent/sessions", get(list_torrent_sessions))
         .route(

@@ -8,6 +8,7 @@ use vtorrent_core::time::now_secs;
 
 pub mod blockchain;
 pub mod btc;
+pub mod cold_stake;
 pub mod deployments;
 pub mod dex;
 pub mod diagnostics;

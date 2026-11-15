@@ -170,6 +170,9 @@ pub struct AppState {
     /// Optional RPC API key. When set, sensitive endpoints require the
     /// `X-API-Key` header to match (constant-time compared).
     pub rpc_api_key: Option<String>,
+    /// Path to the secp256k1 key that signs cold-stake funding attestations.
+    /// `None` disables the endpoint.
+    pub cold_stake_attestor_key_path: Option<PathBuf>,
     /// Regtest mode: enables the faucet endpoint and relaxed staking.
     pub regtest: bool,
     /// Human-readable network label (e.g. "vtorrent-mainnet", "vtorrent-testnet",
@@ -244,6 +247,7 @@ impl AppState {
             swap_recovery_lock: Arc::new(Mutex::new(())),
             staking_state_path: None,
             rpc_api_key: None,
+            cold_stake_attestor_key_path: None,
             regtest: false,
             network: "vtorrent-mainnet".to_string(),
             mock_time: Arc::new(RwLock::new(None)),
@@ -310,6 +314,7 @@ impl AppState {
             swap_recovery_lock: Arc::new(Mutex::new(())),
             staking_state_path: None,
             rpc_api_key: None,
+            cold_stake_attestor_key_path: None,
             regtest: false,
             network: "vtorrent-mainnet".to_string(),
             mock_time: Arc::new(RwLock::new(None)),

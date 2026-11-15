@@ -593,6 +593,12 @@ pub struct BtcStatusResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct FundingAttestationRequest {
+    pub txid: String,
+    pub vout: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct BtcSendRequest {
     pub to_address: String,
     pub amount_satoshis: u64,
