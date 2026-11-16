@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `83d157a`
+Subject: Independent security review — vTorrent-NG mainnet candidate `a4724d5`
 
 Hello,
 
@@ -18,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `83d157a013a0c09d70a84165499b4fcc47d4a506`
+**Review head:** `a4724d5ece7d2b86abc7aa6f650a8ec53a15c77a`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `83d157a`. It is not the image in the active 168-hour
+The code under review is `a4724d5`. It is not the image in the active 168-hour
 soak: that fleet runs `6a49727` and predates every change below. The eventual
 shipping image needs its own full window after this review and its fixes settle.
 
-The code under review is `83d157a`. Read this note and the scope document from
+The code under review is `a4724d5`. Read this note and the scope document from
 the tip of `main`; commits after the candidate carry documentation only. Confirm
 that with
-`git diff --name-only 83d157a..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only a4724d5..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -68,8 +68,9 @@ credentials or live infrastructure access are needed.
   The daemon creates first state only under `--btc-attest-new-seed`; the desktop
   only for a session-created wallet, with a persisted authorization bound to
   the exact wallet bytes and consumed once state exists. `btc-state-stage
-  promote` requires exact archived bytes and explicit recovery preconditions.
-  Saves, promotion, and the peer cache use unique exclusive temporaries.
+  promote` requires exact archived bytes, the reviewed archive SHA-256, and
+  explicit recovery preconditions; it remains experimental. Saves, promotion,
+  and the peer cache use unique exclusive temporaries.
 - BTC claim replacement validation now checks the raw copy, witness, preimage,
   fee, destination, and the order's amount and expiry.
 - Broadcast status: a timeout without a reject is reported as submission, with
@@ -162,7 +163,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `83d157a013a0c09d70a84165499b4fcc47d4a506`
+- Confirm the review head is still `a4724d5ece7d2b86abc7aa6f650a8ec53a15c77a`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.
