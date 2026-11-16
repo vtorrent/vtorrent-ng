@@ -11,6 +11,20 @@ use std::path::Path;
 /// response signed by a key that is not on disk.
 static ATTESTOR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[cfg(all(test, unix))]
+thread_local! {
+    static FAIL_DIRECTORY_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if FAIL_DIRECTORY_SYNC.with(|flag| flag.replace(false)) {
+        return Err(std::io::Error::other("injected directory sync failure"));
+    }
+    std::fs::File::open(path)?.sync_all()
+}
+
 /// The public key, compressed hex, that operators pin on the offline machine.
 pub fn attestor_pubkey_hex(key: &SecretKey) -> String {
     let secp = secp256k1::Secp256k1::new();
@@ -25,31 +39,31 @@ pub fn load_or_create_attestor_key(path: &Path) -> std::io::Result<SecretKey> {
     let _guard = ATTESTOR_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     match std::fs::read_to_string(path) {
-        Ok(text) => return parse_key(text.trim()),
+        Ok(text) => {
+            let key = parse_key(text.trim())?;
+            #[cfg(unix)]
+            sync_directory(parent)?;
+            return Ok(key);
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
     let key = generate_key();
-    let temporary = path.with_extension("tmp");
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(hex::encode(key.secret_bytes()).as_bytes())?;
+    temporary.as_file().sync_all()?;
+    match temporary.persist_noclobber(path) {
+        Ok(_) => {}
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.error),
     }
-    let mut file = options.open(&temporary)?;
-    file.write_all(hex::encode(key.secret_bytes()).as_bytes())?;
-    file.sync_all()?;
-    drop(file);
-    std::fs::rename(&temporary, path)?;
     #[cfg(unix)]
-    if let Some(parent) = path.parent() {
-        std::fs::File::open(parent)?.sync_all()?;
-    }
-    // Another process may have won the create. Return the key that is actually
-    // on disk so every caller signs with the key the operator can pin.
+    sync_directory(parent)?;
     parse_key(std::fs::read_to_string(path)?.trim())
 }
 
@@ -135,6 +149,66 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn preexisting_temporary_file_cannot_weaken_key_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cold-stake-attestor.key");
+        let temporary = path.with_extension("tmp");
+        std::fs::write(&temporary, b"stale").unwrap();
+        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        load_or_create_attestor_key(&path).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn separate_processes_agree_on_first_use() {
+        const CHILD: &str = "VTR_ATTESTOR_RACE_CHILD";
+        if let Some(dir) = std::env::var_os(CHILD) {
+            let dir = std::path::PathBuf::from(dir);
+            let key = load_or_create_attestor_key(&dir.join("attestor.key")).unwrap();
+            std::fs::write(
+                dir.join(format!("result-{}", std::process::id())),
+                attestor_pubkey_hex(&key),
+            )
+            .unwrap();
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut children: Vec<_> = (0..16)
+            .map(|_| {
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .arg("--exact")
+                    .arg("cold_stake_attestor::tests::separate_processes_agree_on_first_use")
+                    .env(CHILD, dir.path())
+                    .stdout(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap()
+            })
+            .collect();
+        for child in &mut children {
+            assert!(child.wait().unwrap().success());
+        }
+        let expected = attestor_pubkey_hex(
+            &load_or_create_attestor_key(&dir.path().join("attestor.key")).unwrap(),
+        );
+        let results: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(Result::unwrap)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("result-"))
+            .collect();
+        assert_eq!(results.len(), 16);
+        for result in results {
+            assert_eq!(std::fs::read_to_string(result.path()).unwrap(), expected);
+        }
+    }
+
     #[test]
     fn a_corrupt_key_file_is_reported_not_replaced() {
         let dir = std::env::temp_dir().join(format!(
@@ -152,5 +226,16 @@ mod tests {
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         assert_eq!(std::fs::read(&path).unwrap(), b"not-a-key");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_key_is_not_returned_if_directory_sync_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("attestor.key");
+        let original = load_or_create_attestor_key(&path).unwrap();
+        FAIL_DIRECTORY_SYNC.with(|flag| flag.set(true));
+        assert!(load_or_create_attestor_key(&path).is_err());
+        assert_eq!(load_or_create_attestor_key(&path).unwrap(), original);
     }
 }

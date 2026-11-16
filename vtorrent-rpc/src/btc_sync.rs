@@ -259,7 +259,11 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                 if start > tip {
                     // A covered reorg can land here with nothing above the fork
                     // to scan; that finishes the journal recovery.
-                    wallet.finish_recovered_scan();
+                    if !wallet.finish_recovered_scan() {
+                        health.scan_errors.fetch_add(1, Ordering::Relaxed);
+                        update_wallet_metrics(&health, wallet);
+                        break;
+                    }
                     update_wallet_metrics(&health, wallet);
                     health
                         .last_success_unix
@@ -302,7 +306,11 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                 match result {
                     Ok(0) => {
                         // No blocks to scan finishes a journal recovery too.
-                        wallet.finish_recovered_scan();
+                        if !wallet.finish_recovered_scan() {
+                            health.scan_errors.fetch_add(1, Ordering::Relaxed);
+                            update_wallet_metrics(&health, wallet);
+                            break;
+                        }
                         update_wallet_metrics(&health, wallet);
                         health
                             .last_success_unix
@@ -310,11 +318,18 @@ pub async fn run_sync_loop(state: Arc<AppState>) {
                         break;
                     }
                     Ok(n) => {
+                        let done = start.saturating_add(n as u32);
+                        if !wallet.set_scan_progress(done, tip_hash) {
+                            health.scan_errors.fetch_add(1, Ordering::Relaxed);
+                            update_wallet_metrics(&health, wallet);
+                            tracing::warn!(
+                                "BTC scan progress could not be saved; scan will be retried"
+                            );
+                            break;
+                        }
                         health
                             .last_success_unix
                             .store(unix_now(), Ordering::Relaxed);
-                        let done = start.saturating_add(n as u32);
-                        wallet.set_scan_progress(done, tip_hash);
                         update_wallet_metrics(&health, wallet);
                         tracing::info!(
                             "BTC UTXO scan (BIP-158): {} blocks (through height {})",
@@ -403,7 +418,7 @@ mod tests {
         ));
         std::fs::write(
             &path,
-            r#"{"utxos":[],"birthday":0,"seen_funds":true,"rescan_required":true}"#,
+            r#"{"journal_version":3,"utxos":[],"birthday":0,"seen_funds":true,"rescan_required":true}"#,
         )
         .unwrap();
         let wallet =

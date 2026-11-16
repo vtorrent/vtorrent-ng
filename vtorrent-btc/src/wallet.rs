@@ -138,8 +138,8 @@ impl BtcWallet {
         self.filter_headers.lock().prune(&chain);
     }
 
-    /// Create a wallet with a UTXO persistence path.  If the file exists,
-    /// the UTXO set is loaded from disk on construction.
+    /// Open a wallet from an existing UTXO persistence file.
+    /// Missing or pre-v3 files are rejected because seed history is unknown.
     ///
     /// The height journal is deliberately not restored. Its scope is one live
     /// process: a crash can leave a journal beside an older cursor, and
@@ -153,7 +153,22 @@ impl BtcWallet {
         network: Network,
         utxo_path: PathBuf,
     ) -> std::io::Result<Self> {
-        let mut utxos = UtxoSet::load(&utxo_path)?;
+        Self::with_persistence_attested_seed(seed, network, utxo_path, false)
+    }
+
+    /// Only for a startup path where the operator independently established the
+    /// seed has no prior BTC history or outstanding spends. It does not weaken
+    /// the pre-v3 or future-version guards.
+    pub fn with_persistence_attested_seed(
+        seed: [u8; 64],
+        network: Network,
+        utxo_path: PathBuf,
+        attested_new_seed: bool,
+    ) -> std::io::Result<Self> {
+        let mut utxos = UtxoSet::load_for_wallet_with(&utxo_path, attested_new_seed)?;
+        if attested_new_seed && !utxo_path.exists() {
+            utxos.create_new(&utxo_path)?;
+        }
         utxos.clear_journal();
         utxos.set_last_scanned_tip(None);
         let next_index = utxos.next_index();
@@ -878,10 +893,7 @@ impl BtcWallet {
         );
         let tip = self.headers.lock().best_hash();
         let scanned = sync.scan_utxos_bip158(peer, start_height).await?;
-        self.note_completed_scan(start_height, scanned, tip);
-        if scanned > 0 {
-            self.save_utxos();
-        }
+        self.finish_scan_batch(start_height, scanned, tip)?;
         Ok(scanned)
     }
 
@@ -900,11 +912,18 @@ impl BtcWallet {
         );
         let tip = self.headers.lock().best_hash();
         let scanned = sync.scan_utxos_bip158_multi(peers, start_height).await?;
-        self.note_completed_scan(start_height, scanned, tip);
-        if scanned > 0 {
-            self.save_utxos();
-        }
+        self.finish_scan_batch(start_height, scanned, tip)?;
         Ok(scanned)
+    }
+
+    fn finish_scan_batch(&self, start: u32, scanned: usize, tip: Option<[u8; 32]>) -> Result<()> {
+        if scanned > 0 {
+            self.try_save_utxos().map_err(|error| {
+                BtcError::Sync(format!("BTC scan state could not be saved: {error}"))
+            })?;
+        }
+        self.note_completed_scan(start, scanned, tip);
+        Ok(())
     }
 
     fn require_retained_wallet_history(&self) -> Result<()> {
@@ -968,9 +987,35 @@ impl BtcWallet {
     }
 
     /// Record the earliest height this wallet intends to cover.
-    pub fn set_birthday(&mut self, birthday: u32) {
-        self.utxos.lock().set_birthday(Some(birthday));
-        self.save_utxos();
+    pub fn set_birthday(&mut self, birthday: u32) -> bool {
+        let mut utxos = self.utxos.lock();
+        let previous = utxos.birthday();
+        utxos.set_birthday(Some(birthday));
+        if let Some(path) = &self.utxo_path {
+            if let Err(error) = utxos.save(path) {
+                utxos.set_birthday(previous);
+                tracing::warn!("Failed to save BTC birthday: {}", error);
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn set_initial_birthday(&mut self, birthday: u32) -> bool {
+        let mut utxos = self.utxos.lock();
+        let previous = utxos.clone();
+        utxos.set_birthday(Some(birthday));
+        utxos.set_last_scanned_height(birthday);
+        utxos.set_last_scanned_tip(None);
+        if let Some(path) = &self.utxo_path {
+            if let Err(error) = utxos.save(path) {
+                *utxos = previous;
+                tracing::warn!("Failed to save BTC initial birthday: {}", error);
+                return false;
+            }
+        }
+        self.last_scanned_height = birthday;
+        true
     }
 
     /// True when a required rescan would start below the retained header floor.
@@ -1077,27 +1122,24 @@ impl BtcWallet {
     ///
     /// Clears the recorded header tip: the tip belongs to the journal pair, and
     /// a cursor written without one must not claim a lineage it cannot prove.
-    pub fn set_last_scanned_height(&mut self, height: u32) {
-        self.persist_scan_progress(height, None);
+    pub fn set_last_scanned_height(&mut self, height: u32) -> bool {
+        self.persist_scan_progress(height, None)
     }
 
     /// Set the next block height and the header tip it was scanned against,
     /// persisted together with the UTXO set in a single save.
-    pub fn set_scan_progress(&mut self, next_height: u32, tip: Option<[u8; 32]>) {
-        self.persist_scan_progress(next_height, tip);
+    pub fn set_scan_progress(&mut self, next_height: u32, tip: Option<[u8; 32]>) -> bool {
+        self.persist_scan_progress(next_height, tip)
     }
 
-    fn persist_scan_progress(&mut self, height: u32, tip: Option<[u8; 32]>) {
-        self.last_scanned_height = height;
+    fn persist_scan_progress(&mut self, height: u32, tip: Option<[u8; 32]>) -> bool {
         let chain = self.headers.lock();
-        let completed = self
-            .completed_scan
-            .lock()
-            .take()
-            .is_some_and(|(end, tip_hash)| {
-                end == height && chain.best_hash() == Some(tip_hash) && height > chain.best_height()
-            });
+        let completed_scan = self.completed_scan.lock().take();
+        let completed = completed_scan.is_some_and(|(end, tip_hash)| {
+            end == height && chain.best_hash() == Some(tip_hash) && height > chain.best_height()
+        });
         let mut utxos = self.utxos.lock();
+        let previous = utxos.clone();
         utxos.set_last_scanned_height(height);
         utxos.set_last_scanned_tip(tip);
         utxos.prune_undo(chain.retained_floor(), MAX_UNDO_ENTRIES);
@@ -1110,15 +1152,18 @@ impl BtcWallet {
                 Ok(()) => true,
                 Err(error) => {
                     tracing::warn!("Failed to save UTXO set: {}", error);
-                    if completed && !rescan_still_owed {
-                        utxos.set_rescan_required(true);
-                    }
+                    *utxos = previous;
+                    *self.completed_scan.lock() = completed_scan;
                     false
                 }
             },
             None => true,
         };
         drop(utxos);
+        if !persisted {
+            return false;
+        }
+        self.last_scanned_height = height;
         if completed && persisted {
             // A rescan the wallet owed before the rollback is not satisfied by
             // re-deriving the abandoned branch: keep the balance hidden and the
@@ -1128,6 +1173,7 @@ impl BtcWallet {
             }
             self.journal_recovered.store(false, Ordering::Release);
         }
+        true
     }
 
     /// Complete a journal-recovered rescan that has nothing left to scan.
@@ -1139,18 +1185,29 @@ impl BtcWallet {
     /// everything at or below the fork, so recovery ends here: the exemption is
     /// dropped, the balance becomes visible, and the rescan requirement clears.
     /// A no-op for any wallet that is not journal-recovered.
-    pub fn finish_recovered_scan(&mut self) {
+    pub fn finish_recovered_scan(&mut self) -> bool {
         if !self.journal_recovered.load(Ordering::Acquire) {
-            return;
+            return true;
         }
+        let rescan_owed = self.recovery_rescan_required.load(Ordering::Acquire);
+        let mut utxos = self.utxos.lock();
+        let previous = utxos.rescan_required();
+        if !rescan_owed {
+            utxos.set_rescan_required(false);
+        }
+        if let Some(path) = &self.utxo_path {
+            if let Err(error) = utxos.save(path) {
+                utxos.set_rescan_required(previous);
+                tracing::warn!("Failed to save BTC recovery completion: {}", error);
+                return false;
+            }
+        }
+        drop(utxos);
         self.journal_recovered.store(false, Ordering::Release);
-        // A rescan the wallet already owed before the rollback is still owed:
-        // recovery only covers the range above the fork.
-        if !self.recovery_rescan_required.load(Ordering::Acquire) {
+        if !rescan_owed {
             self.rescan_on_sync.store(false, Ordering::Release);
-            self.utxos.lock().set_rescan_required(false);
         }
-        self.save_utxos();
+        true
     }
 
     /// Whether new transactions signal RBF.
@@ -1381,6 +1438,17 @@ impl BtcWallet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn open_fixture(
+        seed: [u8; 64],
+        network: bitcoin::Network,
+        path: PathBuf,
+    ) -> std::io::Result<BtcWallet> {
+        if !path.exists() {
+            UtxoSet::new().save(&path)?;
+        }
+        BtcWallet::with_persistence(seed, network, path)
+    }
 
     #[test]
     fn reorg_fork_point_is_common_ancestor() {
@@ -1693,8 +1761,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let mut w = BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
-            .unwrap();
+        let mut w = open_fixture([7u8; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
         w.push_undo_for_tests(crate::utxo::UndoEntry {
             height: 4,
             created: vec![],
@@ -1708,9 +1775,7 @@ mod tests {
         );
         drop(w);
 
-        let loaded =
-            BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
-                .unwrap();
+        let loaded = open_fixture([7u8; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
 
         assert!(
             loaded.undo_entries_for_tests().is_empty(),
@@ -1920,8 +1985,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("utxos.json");
-        let mut w = BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
-            .unwrap();
+        let mut w = open_fixture([7u8; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
         let owned = Utxo {
             txid: "ac".repeat(32),
             vout: 0,
@@ -1935,8 +1999,7 @@ mod tests {
         w.send_to(&recipient, 50_000, 1_000).unwrap();
         w.reset_chain_cache();
         drop(w);
-        let reopened =
-            BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path).unwrap();
+        let reopened = open_fixture([7u8; 64], bitcoin::Network::Regtest, path).unwrap();
         assert_eq!(reopened.pending_removal_count_for_tests(), 1);
         assert!(!reopened.utxos.lock().add(owned));
         std::fs::remove_dir_all(dir).unwrap();
@@ -1980,8 +2043,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("utxos.json");
-        let mut w = BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
-            .unwrap();
+        let mut w = open_fixture([7u8; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
         let owned = Utxo {
             txid: "ae".repeat(32),
             vout: 0,
@@ -1995,8 +2057,7 @@ mod tests {
         let (txid, raw, _) = w.send_to(&recipient, 50_000, 1_000).unwrap();
         drop(w);
 
-        let reopened =
-            BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path).unwrap();
+        let reopened = open_fixture([7u8; 64], bitcoin::Network::Regtest, path).unwrap();
         let recovered = reopened
             .pending_send_raw(&txid)
             .expect("the signed transaction must survive restart");
@@ -2033,6 +2094,197 @@ mod tests {
         );
         assert!(w.pending_send_raw(&txid).is_none());
         assert_eq!(w.pending_removal_count_for_tests(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_save_failure_preserves_pending_send_on_restart() {
+        use crate::utxo::UndoEntry;
+
+        for after_rename in [false, true] {
+            let dir = std::env::temp_dir().join(format!(
+                "vtr-btc-scan-failed-save-{}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+                after_rename
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("utxos.json");
+            let mut wallet =
+                open_fixture([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
+            let owned = Utxo {
+                txid: "ab".repeat(32),
+                vout: 0,
+                value: 100_000,
+                address: wallet.current_address().unwrap(),
+                height: 100,
+            };
+            wallet.add_utxo(owned.clone());
+            let recipient =
+                crate::keys::derive_address(&[9; 64], 0, bitcoin::Network::Regtest).unwrap();
+            let (txid, raw, _) = wallet.send_to(&recipient, 50_000, 1_000).unwrap();
+            {
+                let mut set = wallet.utxos.lock();
+                let removed = set
+                    .take_pending_removal(&txid, &owned.txid, owned.vout)
+                    .unwrap();
+                set.push_undo(UndoEntry {
+                    height: 101,
+                    created: vec![],
+                    removed: vec![removed],
+                });
+            }
+            if after_rename {
+                crate::utxo::fail_next_parent_sync_for_test();
+            } else {
+                crate::utxo::fail_next_rename_for_test();
+            }
+            assert!(wallet.try_save_utxos().is_err());
+            drop(wallet);
+            let reopened = open_fixture([7; 64], bitcoin::Network::Regtest, path).unwrap();
+            assert_eq!(reopened.pending_send_raw(&txid), Some(raw));
+            assert!(!reopened.utxos.lock().add(owned));
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn failed_scan_batch_save_is_reported_to_the_caller() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-scan-report-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let wallet = open_fixture([7; 64], bitcoin::Network::Regtest, path).unwrap();
+        crate::utxo::fail_next_rename_for_test();
+        let error = wallet.finish_scan_batch(1, 1, None).unwrap_err();
+        assert!(error.to_string().contains("injected pre-rename failure"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_scan_progress_save_does_not_advance_cursor() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-progress-failure-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let mut wallet = open_fixture([7; 64], bitcoin::Network::Regtest, path).unwrap();
+        crate::utxo::fail_next_rename_for_test();
+        assert!(!wallet.set_scan_progress(100, None));
+        assert_eq!(wallet.last_scanned_height(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_birthday_save_does_not_change_birthday() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-birthday-save-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let mut wallet = open_fixture([7; 64], bitcoin::Network::Regtest, path).unwrap();
+        crate::utxo::fail_next_rename_for_test();
+        wallet.set_birthday(100);
+        assert_eq!(wallet.birthday(), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn initial_birthday_and_cursor_are_saved_together() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-initial-birthday-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let mut wallet = open_fixture([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        crate::utxo::fail_next_rename_for_test();
+        assert!(!wallet.set_initial_birthday(100));
+        assert_eq!(wallet.birthday(), None);
+        assert_eq!(wallet.last_scanned_height(), 0);
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(wallet.set_initial_birthday(100));
+        drop(wallet);
+        let reopened = open_fixture([7; 64], bitcoin::Network::Regtest, path).unwrap();
+        assert_eq!(reopened.birthday(), Some(100));
+        assert_eq!(reopened.last_scanned_height(), 100);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uncertain_scan_progress_save_keeps_cursor_retryable() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-progress-uncertain-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let mut wallet = open_fixture([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
+        crate::utxo::fail_next_parent_sync_for_test();
+        assert!(!wallet.set_scan_progress(100, None));
+        assert_eq!(wallet.last_scanned_height(), 0);
+        assert!(wallet.set_scan_progress(100, None));
+        assert_eq!(wallet.last_scanned_height(), 100);
+        drop(wallet);
+        let reopened = open_fixture([7; 64], bitcoin::Network::Regtest, path).unwrap();
+        assert_eq!(reopened.last_scanned_height(), 100);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_recovery_completion_keeps_the_wallet_hidden() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-recovery-save-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let mut wallet = open_fixture([7; 64], bitcoin::Network::Regtest, path).unwrap();
+        wallet.rescan_on_sync.store(true, Ordering::Release);
+        wallet.journal_recovered.store(true, Ordering::Release);
+        wallet.utxos.lock().set_rescan_required(true);
+        crate::utxo::fail_next_rename_for_test();
+        assert!(!wallet.finish_recovered_scan());
+        assert!(wallet.rescan_on_sync.load(Ordering::Acquire));
+        assert!(wallet.journal_recovered.load(Ordering::Acquire));
+        assert!(wallet.utxos.lock().rescan_required());
+        assert!(wallet.finish_recovered_scan());
+        assert!(!wallet.rescan_on_sync.load(Ordering::Acquire));
+        assert!(!wallet.journal_recovered.load(Ordering::Acquire));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -2084,12 +2336,8 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let mut w = BtcWallet::with_persistence(
-            [7u8; 64],
-            bitcoin::Network::Regtest,
-            dir.join("utxos.json"),
-        )
-        .unwrap();
+        let mut w =
+            open_fixture([7u8; 64], bitcoin::Network::Regtest, dir.join("utxos.json")).unwrap();
         let owned = Utxo {
             txid: "ba".repeat(32),
             vout: 0,
@@ -2143,8 +2391,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("utxos.json");
-        let mut wallet =
-            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
+        let mut wallet = open_fixture([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
         let owned = Utxo {
             txid: "ab".repeat(32),
             vout: 0,
@@ -2160,8 +2407,7 @@ mod tests {
         assert!(wallet.send_to(&recipient, 50_000, 1_000).is_err());
         drop(wallet);
         assert_eq!(std::fs::read(&path).unwrap(), before);
-        let reopened =
-            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path).unwrap();
+        let reopened = open_fixture([7; 64], bitcoin::Network::Regtest, path).unwrap();
         assert_eq!(
             reopened
                 .utxo_for_tests(&owned.txid, owned.vout)
@@ -2184,8 +2430,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("utxos.json");
-        let mut wallet =
-            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
+        let mut wallet = open_fixture([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
         let owned = Utxo {
             txid: "cd".repeat(32),
             vout: 0,
@@ -2199,8 +2444,7 @@ mod tests {
         let (txid, raw, _) = wallet.send_to(&recipient, 50_000, 1_000).unwrap();
         drop(wallet);
         std::fs::write(path.with_extension("tmp"), b"{\"pending_removals\": [").unwrap();
-        let reopened =
-            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path).unwrap();
+        let reopened = open_fixture([7; 64], bitcoin::Network::Regtest, path).unwrap();
         assert_eq!(reopened.pending_send_raw(&txid), Some(raw));
         assert!(!reopened.utxos.lock().add(owned));
         std::fs::remove_dir_all(dir).unwrap();
@@ -2219,8 +2463,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("utxos.json");
-        let mut wallet =
-            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
+        let mut wallet = open_fixture([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
         let owned = Utxo {
             txid: "da".repeat(32),
             vout: 0,
@@ -2241,8 +2484,7 @@ mod tests {
             "uncertain save must keep input held in memory"
         );
         drop(wallet);
-        let reopened =
-            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path).unwrap();
+        let reopened = open_fixture([7; 64], bitcoin::Network::Regtest, path).unwrap();
         assert!(
             !reopened.utxos.lock().add(owned),
             "visible renamed record must keep input held after restart"
@@ -2263,15 +2505,13 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("utxos.json");
-        let mut wallet =
-            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
+        let mut wallet = open_fixture([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
         let initial = wallet.current_address().unwrap();
         crate::utxo::fail_next_parent_sync_for_test();
         assert!(wallet.next_address().is_err());
         assert_ne!(wallet.current_address().unwrap(), initial);
         drop(wallet);
-        let reopened =
-            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path).unwrap();
+        let reopened = open_fixture([7; 64], bitcoin::Network::Regtest, path).unwrap();
         assert_ne!(reopened.current_address().unwrap(), initial);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -2289,8 +2529,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("utxos.json");
-        let wallet =
-            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
+        let wallet = open_fixture([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
         let owned = Utxo {
             txid: "ea".repeat(32),
             vout: 0,
@@ -2325,8 +2564,7 @@ mod tests {
             "the released version must remain in memory"
         );
         drop(wallet);
-        let reopened =
-            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path).unwrap();
+        let reopened = open_fixture([7; 64], bitcoin::Network::Regtest, path).unwrap();
         let released_on_disk = reopened.utxos.lock().swap_contract("order").is_none()
             && reopened.utxo_for_tests(&owned.txid, owned.vout).is_some();
         assert!(
@@ -2352,8 +2590,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let good = dir.join("utxos.json");
-        let mut wallet =
-            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, good.clone()).unwrap();
+        let mut wallet = open_fixture([7; 64], bitcoin::Network::Regtest, good.clone()).unwrap();
         let owned = Utxo {
             txid: "fa".repeat(32),
             vout: 0,
@@ -2390,7 +2627,158 @@ mod tests {
     }
 
     #[test]
-    fn legacy_wallet_file_keeps_a_confirmed_send_held_after_upgrade() {
+    fn legacy_wallet_with_pruned_history_is_not_opened_or_modified() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-pruned-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let original = br#"{"utxos":[],"last_scanned_height":100,"undo":[]}"#;
+        std::fs::write(&path, original).unwrap();
+        let error = open_fixture([7; 64], bitcoin::Network::Regtest, path.clone())
+            .err()
+            .expect("legacy history must not be silently upgraded");
+        assert!(error.to_string().contains("legacy"));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(BtcWallet::with_persistence_attested_seed(
+            [7; 64],
+            bitcoin::Network::Regtest,
+            path.clone(),
+            true
+        )
+        .is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn missing_wallet_state_is_not_treated_as_new() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-missing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let error = BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path.clone())
+            .err()
+            .expect("missing state cannot prove a seed is new");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(!path.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn explicit_new_seed_attestation_creates_one_v3_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-new-seed-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let wallet = BtcWallet::with_persistence_attested_seed(
+            [7; 64],
+            bitcoin::Network::Regtest,
+            path.clone(),
+            true,
+        )
+        .unwrap();
+        assert!(path.exists());
+        drop(wallet);
+        let reopened =
+            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path).unwrap();
+        assert_eq!(reopened.birthday(), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attested_creation_does_not_follow_a_stale_temporary_symlink() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-new-seed-symlink-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, b"must not be overwritten").unwrap();
+        std::os::unix::fs::symlink(&victim, path.with_extension("tmp")).unwrap();
+
+        assert!(BtcWallet::with_persistence_attested_seed(
+            [7; 64],
+            bitcoin::Network::Regtest,
+            path.clone(),
+            true
+        )
+        .is_err());
+        assert_eq!(std::fs::read(&victim).unwrap(), b"must not be overwritten");
+        assert!(!path.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn version_two_wallet_with_unknown_provenance_is_not_opened() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-v2-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let original = br#"{"utxos":[],"journal_version":2,"undo":[]}"#;
+        std::fs::write(&path, original).unwrap();
+        let error = open_fixture([7; 64], bitcoin::Network::Regtest, path.clone())
+            .err()
+            .expect("version 2 does not prove that the wallet was never upgraded");
+        assert!(error.to_string().contains("legacy"));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        UtxoSet::load(&path).unwrap().save(&path).unwrap();
+        let after: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(after["journal_version"], 2);
+        assert!(open_fixture([7; 64], bitcoin::Network::Regtest, path).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unknown_future_wallet_version_is_not_opened() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-future-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let original = br#"{"utxos":[],"journal_version":255}"#;
+        std::fs::write(&path, original).unwrap();
+        assert!(open_fixture([7; 64], bitcoin::Network::Regtest, path.clone()).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), original);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn legacy_wallet_with_retained_history_is_also_refused() {
         let dir = std::env::temp_dir().join(format!(
             "vtr-btc-legacy-upgrade-{}-{}",
             std::process::id(),
@@ -2421,36 +2809,12 @@ mod tests {
         });
         std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
 
-        let wallet =
-            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
-        let sends = wallet.pending_sends();
-        assert_eq!(
-            sends.len(),
-            1,
-            "the upgrade must keep the legacy removal as a visible hold"
-        );
-        assert!(
-            sends[0].raw.is_none(),
-            "a legacy hold cannot be rebroadcast automatically"
-        );
-        assert!(
-            !wallet.utxos.lock().add(spent.clone()),
-            "the input must stay unselectable"
-        );
-        wallet.try_save_utxos().unwrap();
-        drop(wallet);
-
-        let reopened =
-            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path).unwrap();
-        assert_eq!(
-            reopened.pending_sends().len(),
-            1,
-            "the hold must survive the first save in the new format"
-        );
-        assert!(
-            !reopened.utxos.lock().add(spent),
-            "the input must stay unselectable after restart"
-        );
+        let before = std::fs::read(&path).unwrap();
+        let error = open_fixture([7; 64], bitcoin::Network::Regtest, path.clone())
+            .err()
+            .expect("retained entries do not prove complete history");
+        assert!(error.to_string().contains("legacy"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -2467,8 +2831,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("utxos.json");
-        let mut w = BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
-            .unwrap();
+        let mut w = open_fixture([7u8; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
         let owned = Utxo {
             txid: "bc".repeat(32),
             vout: 0,
@@ -2562,8 +2925,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("utxos.json");
-        let mut w = BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
-            .unwrap();
+        let mut w = open_fixture([7u8; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
         let owned = Utxo {
             txid: "bd".repeat(32),
             vout: 0,
@@ -2590,8 +2952,7 @@ mod tests {
             w.utxo_for_tests(&owned.txid, owned.vout).is_none(),
             "a restore whose write failed must not claim an input the file does not hold"
         );
-        let reloaded =
-            BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path).unwrap();
+        let reloaded = open_fixture([7u8; 64], bitcoin::Network::Regtest, path).unwrap();
         assert!(
             reloaded.utxo_for_tests(&owned.txid, owned.vout).is_none(),
             "the failed restore must leave the persisted set unchanged"
@@ -2769,8 +3130,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("utxos.json");
-        let mut w = BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
-            .unwrap();
+        let mut w = open_fixture([7u8; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
         let owned = Utxo {
             txid: "cc".repeat(32),
             vout: 0,
@@ -2787,8 +3147,7 @@ mod tests {
         w.try_save_utxos().unwrap();
         drop(w);
 
-        let reopened =
-            BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path).unwrap();
+        let reopened = open_fixture([7u8; 64], bitcoin::Network::Regtest, path).unwrap();
         assert_eq!(reopened.pending_send_raw(&txid), Some(raw));
         assert!(!reopened.utxos.lock().add(owned));
         std::fs::remove_dir_all(dir).unwrap();
@@ -2806,8 +3165,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("utxos.json");
-        let mut wallet =
-            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
+        let mut wallet = open_fixture([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
         let address = wallet.current_address().unwrap();
         let inputs: Vec<_> = ["aa", "bb"]
             .into_iter()
@@ -2838,8 +3196,7 @@ mod tests {
         assert!(wallet.reset_for_reorg_at_for_tests(Some(101)));
         wallet.try_save_utxos().unwrap();
         drop(wallet);
-        let reopened =
-            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path).unwrap();
+        let reopened = open_fixture([7; 64], bitcoin::Network::Regtest, path).unwrap();
         assert_eq!(reopened.pending_send_raw(&txid), Some(raw));
         for input in inputs {
             assert!(
@@ -3118,13 +3475,10 @@ mod tests {
     #[test]
     fn scan_progress_persists_the_cursor_without_a_previous_processs_tip() {
         let path = std::env::temp_dir().join(format!("btc-progress-{}.json", std::process::id()));
-        let mut w = BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
-            .unwrap();
+        let mut w = open_fixture([7u8; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
         w.set_scan_progress(42, Some([9u8; 32]));
 
-        let loaded =
-            BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
-                .unwrap();
+        let loaded = open_fixture([7u8; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
         assert_eq!(loaded.last_scanned_height(), 42);
         assert_eq!(
             loaded.last_scanned_tip(),
@@ -3173,8 +3527,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("utxos.json");
-        let w = BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
-            .unwrap();
+        let w = open_fixture([7u8; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
         w.add_utxo(Utxo {
             txid: "ce".repeat(32),
             vout: 0,
@@ -3212,8 +3565,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("utxos.json");
 
-        let w = BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
-            .unwrap();
+        let w = open_fixture([7u8; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
         w.add_utxo(Utxo {
             txid: "cd".repeat(32),
             vout: 0,
@@ -3242,9 +3594,7 @@ mod tests {
         assert_eq!(w.list_utxos().len(), 1);
 
         // The release persisted: a fresh wallet sees no reservation.
-        let reloaded =
-            BtcWallet::with_persistence([7u8; 64], bitcoin::Network::Regtest, path.clone())
-                .unwrap();
+        let reloaded = open_fixture([7u8; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
         reloaded.add_utxo(Utxo {
             txid: "cd".repeat(32),
             vout: 0,

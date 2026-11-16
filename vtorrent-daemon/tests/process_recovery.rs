@@ -80,6 +80,17 @@ impl Daemon {
         btc_seed: &str,
         btc_peer: &str,
     ) -> Self {
+        use sha2::{Digest, Sha256};
+
+        if !directory.exists() {
+            std::fs::create_dir_all(directory).unwrap();
+            let mut hasher = Sha256::new();
+            hasher.update(b"vtorrent-btc-wallet-id-v1");
+            hasher.update(hex::decode(btc_seed).unwrap());
+            let id = hex::encode(&hasher.finalize()[..8]);
+            let path = directory.join(format!("btc_utxos-regtest-{id}.json"));
+            vtorrent_btc::utxo::UtxoSet::new().save(&path).unwrap();
+        }
         Self::start_configured(
             directory,
             log_name,

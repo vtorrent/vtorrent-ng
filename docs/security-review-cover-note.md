@@ -1,5 +1,8 @@
 # Security review — cover note
 
+> **Stale draft:** further fund-safety remediation is in progress after the
+> candidate named below. Do not send until the target and evidence are refreshed.
+
 A ready-to-send message for the reviewer. The technical scope lives in
 `docs/security-review-request-2026-10-27.md`; this note is the ask, the context,
 and the specific questions.

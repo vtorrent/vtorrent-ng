@@ -479,17 +479,19 @@ async fn main() -> anyhow::Result<()> {
         };
         rpc_state.btc_peer_cache_path =
             Some(data_dir.join(format!("btc_peers-{network_label}.json")));
-        let mut btc_wallet = vtorrent_btc::wallet::BtcWallet::with_persistence(
+        let mut btc_wallet = vtorrent_btc::wallet::BtcWallet::with_persistence_attested_seed(
             seed,
             network,
             btc_utxo_path(&data_dir, network_label, &seed),
+            cli.btc_attest_new_seed,
         )
         .map_err(|e| anyhow::anyhow!("Could not load persistent BTC wallet state: {}", e))?;
         // Bound the in-memory SPV header chain (mainnet ~870k headers).
         btc_wallet.set_header_retention(cli.btc_header_retention);
         if let Some(birthday) = cli.btc_birthday {
-            btc_wallet.set_last_scanned_height(birthday);
-            btc_wallet.set_birthday(birthday);
+            if !btc_wallet.set_initial_birthday(birthday) {
+                anyhow::bail!("Could not persist BTC wallet birthday and scan cursor");
+            }
         }
         // Zeroize the local seed material; the wallet holds its own copy
         // (zeroized on drop) and the CLI string is process-lifetime anyway.

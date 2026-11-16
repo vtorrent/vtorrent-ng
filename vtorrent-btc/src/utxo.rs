@@ -28,6 +28,7 @@ pub(crate) const MAX_UNDO_ENTRIES: usize = 200_000;
 /// send's transaction inside its journal entry, so a reorg can restore the hold.
 /// Anything older cannot say whether a removal was a local send.
 pub(crate) const JOURNAL_VERSION: u8 = 2;
+const WALLET_FORMAT_VERSION: u8 = 3;
 
 /// Stand-in transaction id for a legacy removal whose spending transaction was
 /// never recorded. The scan retires a hold by outpoint, so the value only has to
@@ -181,7 +182,10 @@ pub struct UtxoSet {
 
 impl UtxoSet {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            journal_version: WALLET_FORMAT_VERSION,
+            ..Self::default()
+        }
     }
 
     pub fn next_index(&self) -> u32 {
@@ -987,7 +991,7 @@ impl UtxoSet {
     /// Persist the UTXO set to a JSON file.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let mut value = serde_json::to_value(self).map_err(std::io::Error::other)?;
-        value["journal_version"] = serde_json::json!(JOURNAL_VERSION);
+        value["journal_version"] = serde_json::json!(self.journal_version);
         let json = serde_json::to_string_pretty(&value).map_err(std::io::Error::other)?;
         // Write atomically via a temp file + rename.
         let tmp = path.with_extension("tmp");
@@ -1002,6 +1006,10 @@ impl UtxoSet {
         std::io::Write::write_all(&mut file, json.as_bytes())?;
         file.sync_all()?;
         drop(file);
+        #[cfg(test)]
+        if FAIL_BEFORE_RENAME.with(|flag| flag.replace(false)) {
+            return Err(std::io::Error::other("injected pre-rename failure"));
+        }
         std::fs::rename(&tmp, path)?;
         #[cfg(unix)]
         {
@@ -1028,14 +1036,72 @@ impl UtxoSet {
         Ok(())
     }
 
+    /// Create a new state file without replacing an existing one or following a
+    /// stale temporary path.
+    ///
+    /// Used only for first-time attested initialization: an existing file or
+    /// temporary path is a hard error, and the no-clobber link makes the final
+    /// publication atomic without truncating anything already there.
+    pub(crate) fn create_new(&self, path: &Path) -> std::io::Result<()> {
+        let mut value = serde_json::to_value(self).map_err(std::io::Error::other)?;
+        value["journal_version"] = serde_json::json!(self.journal_version);
+        let json = serde_json::to_string_pretty(&value).map_err(std::io::Error::other)?;
+        let tmp = path.with_extension("tmp");
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp)?;
+        std::io::Write::write_all(&mut file, json.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        if let Err(error) = std::fs::hard_link(&tmp, path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(error);
+        }
+        std::fs::remove_file(&tmp)?;
+        #[cfg(unix)]
+        {
+            let parent = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            std::fs::File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|error| std::io::Error::other(UncertainSave(error)))?;
+        }
+        Ok(())
+    }
+
     /// Load the UTXO set from a JSON file.  Returns an empty set if the
     /// file does not exist.
     ///
     /// A corrupt tip is discarded. Corrupt undo or pending records fail the
     /// load because they can contain local sends that may still be live.
     pub fn load(path: &Path) -> std::io::Result<Self> {
+        Self::load_inner(path, false, false)
+    }
+
+    pub(crate) fn load_for_wallet_with(path: &Path, attested_new: bool) -> std::io::Result<Self> {
+        Self::load_inner(path, true, attested_new)
+    }
+
+    fn load_inner(path: &Path, reject_legacy: bool, attested_new: bool) -> std::io::Result<Self> {
         let json = match std::fs::read_to_string(path) {
             Ok(json) => json,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && reject_legacy
+                    && !attested_new =>
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "BTC wallet state is missing; seed history is unknown and initialization is disabled",
+                ));
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Self::new()),
             Err(error) => return Err(error),
         };
@@ -1045,6 +1111,18 @@ impl UtxoSet {
         let set: UtxoSet = serde_json::from_value(value)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         let mut set = set;
+        if reject_legacy && set.journal_version < WALLET_FORMAT_VERSION {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "legacy BTC wallet history is incomplete or unverifiable; preserve the file for recovery",
+            ));
+        }
+        if reject_legacy && set.journal_version > WALLET_FORMAT_VERSION {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unsupported BTC wallet format version; preserve the file and use compatible software",
+            ));
+        }
         if set.journal_version < JOURNAL_VERSION {
             set.adopt_legacy_journal_removals();
             set.journal_version = JOURNAL_VERSION;
@@ -2545,9 +2623,16 @@ mod tests {
         );
     }
 }
-#[cfg(all(test, unix))]
+#[cfg(test)]
 thread_local! {
+    static FAIL_BEFORE_RENAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    #[cfg(unix)]
     static FAIL_PARENT_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_rename_for_test() {
+    FAIL_BEFORE_RENAME.with(|flag| flag.set(true));
 }
 
 #[cfg(all(test, unix))]

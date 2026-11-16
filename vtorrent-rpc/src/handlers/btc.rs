@@ -221,7 +221,7 @@ mod tests {
     async fn btc_status_reports_a_hidden_balance() {
         let path = wallet_file(
             "hidden",
-            r#"{"utxos":[],"birthday":0,"seen_funds":true,"rescan_required":true}"#,
+            r#"{"journal_version":3,"utxos":[],"birthday":0,"seen_funds":true,"rescan_required":true}"#,
         );
         let hidden = vtorrent_btc::wallet::BtcWallet::with_persistence(
             [1u8; 64],
@@ -318,7 +318,7 @@ mod tests {
     async fn a_record_without_signed_bytes_cannot_be_rebroadcast() {
         let path = wallet_file(
             "legacy-pending",
-            r#"{"utxos":[],"last_scanned_height":100,"pending_removals":[{"removed":{"utxo":{"txid":"abababababababababababababababababababababababababababababababab","vout":0,"value":1000,"address":"bcrt1qtest","height":100},"prior":"Free"},"txid":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","height":100}]}"#,
+            r#"{"journal_version":3,"utxos":[],"last_scanned_height":100,"pending_removals":[{"removed":{"utxo":{"txid":"abababababababababababababababababababababababababababababababab","vout":0,"value":1000,"address":"bcrt1qtest","height":100},"prior":"Free"},"txid":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","height":100}]}"#,
         );
         let wallet = vtorrent_btc::wallet::BtcWallet::with_persistence(
             [8u8; 64],

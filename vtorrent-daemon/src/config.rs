@@ -165,6 +165,11 @@ pub struct Cli {
     /// checkpoint. Without this flag, the scan starts at the retained floor.
     #[arg(long)]
     pub btc_birthday: Option<u32>,
+
+    /// Operator assertion that this seed has no prior BTC history and no
+    /// outstanding sends or swaps; permits first creation of its state file.
+    #[arg(long, default_value_t = false)]
+    pub btc_attest_new_seed: bool,
 }
 
 /// Load secrets from 0600 files, rejecting ambiguous or exposed inputs.

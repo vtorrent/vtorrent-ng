@@ -3,6 +3,16 @@
 These findings require resolution and independent review before mainnet. They
 include findings from source inspection and targeted tests.
 
+> **Working-tree remediation:** `BtcWallet::with_persistence` now refuses
+> pre-v3 state rather than automatically opening it. This includes v2 files,
+> whose prior migration history cannot be determined from the file. The source
+> remains untouched; no recovery override is provided. A v3 file does not prove
+> a seed has no earlier history. Missing wallet-state files are now rejected;
+> this also blocks genuinely new BTC wallets until a safe initialization flow
+> exists. Legacy recovery and missing-state provenance remain launch gates.
+> Earlier upgrade descriptions below are historical and do not describe the
+> new wallet-opening policy.
+
 ## Ambiguous broadcast
 
 **2026-11-14 remediation in progress:** Confirmed local sends now carry

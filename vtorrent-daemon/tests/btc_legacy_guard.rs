@@ -27,6 +27,111 @@ fn oldest_unlabelled_btc_wallet_blocks_startup() {
 }
 
 #[test]
+fn missing_seed_scoped_btc_state_blocks_startup() {
+    let dir = tempfile::tempdir().unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let rpc = listener.local_addr().unwrap().to_string();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_vtorrent-daemon"))
+        .args([
+            "--regtest",
+            "--testnet",
+            "--isolated",
+            "--no-dht",
+            "--btc-regtest",
+            "--rpc-addr",
+            &rpc,
+            "--listen",
+            "127.0.0.1:0",
+        ])
+        .arg("--data-dir")
+        .arg(dir.path())
+        .env("VTORRENT_BTC_SEED", "01".repeat(64))
+        .env_remove("VTORRENT_RPC_API_KEY")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("daemon failed to reject missing BTC state");
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("BTC wallet state is missing"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(std::fs::read_dir(dir.path()).unwrap().all(|entry| !entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .starts_with("btc_utxos-")));
+}
+
+#[test]
+fn operator_new_seed_attestation_creates_seed_scoped_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let rpc = listener.local_addr().unwrap().to_string();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_vtorrent-daemon"))
+        .args([
+            "--regtest",
+            "--testnet",
+            "--isolated",
+            "--no-dht",
+            "--btc-regtest",
+            "--btc-attest-new-seed",
+            "--rpc-addr",
+            &rpc,
+            "--listen",
+            "127.0.0.1:0",
+        ])
+        .arg("--data-dir")
+        .arg(dir.path())
+        .env("VTORRENT_BTC_SEED", "01".repeat(64))
+        .env_remove("VTORRENT_RPC_API_KEY")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("daemon exited with {status}");
+        }
+        if std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(Result::unwrap)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("btc_utxos-regtest-")
+            })
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("daemon did not create attested BTC state");
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
+
+#[test]
 fn wallet_state_round_trip_preserves_swap_metadata_after_chain_reset() {
     use vtorrent_btc::utxo::{SwapContract, Utxo, UtxoSet};
 

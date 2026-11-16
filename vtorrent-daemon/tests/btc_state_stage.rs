@@ -243,9 +243,9 @@ fn rejects_a_seed_file_readable_by_group_or_others() {
 }
 
 #[tokio::test]
-async fn daemon_starts_after_archive_with_the_seed_scoped_file() {
+async fn staged_legacy_state_still_blocks_daemon_startup() {
     use sha2::{Digest, Sha256};
-    use std::net::{TcpListener, TcpStream};
+    use std::net::TcpListener;
     use std::time::{Duration, Instant};
 
     let dir = tempfile::tempdir().unwrap();
@@ -306,50 +306,27 @@ async fn daemon_starts_after_archive_with_the_seed_scoped_file() {
         .env("VTORRENT_BTC_SEED", "01".repeat(64))
         .env_remove("VTORRENT_RPC_API_KEY")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(60);
-    let ready = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            panic!("daemon exited with {status} after archive");
-        }
-        if TcpStream::connect(&rpc).is_ok() {
-            break true;
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
         }
         if Instant::now() >= deadline {
-            break false;
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("daemon did not reject staged legacy state");
         }
         std::thread::sleep(Duration::from_millis(100));
-    };
-    let address = if ready {
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap();
-        let body: serde_json::Value = client
-            .get(format!("http://{rpc}/api/v1/btc/address"))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        Some(body["address"].as_str().unwrap().to_string())
-    } else {
-        None
-    };
-    child.kill().unwrap();
-    child.wait().unwrap();
-    assert!(ready, "daemon did not open RPC after archive");
-    let expected =
-        vtorrent_btc::keys::derive_address(&[1u8; 64], 7, bitcoin::Network::Regtest).unwrap();
-    assert_eq!(
-        address.as_deref(),
-        Some(expected.as_str()),
-        "the daemon did not load the staged wallet index"
-    );
+    }
+    let result = child.wait_with_output().unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("legacy BTC wallet history"));
+    let original = b"{\"utxos\":[],\"next_index\":7}";
+    assert_eq!(std::fs::read(&output).unwrap(), original);
+    assert_eq!(std::fs::read(&archive).unwrap(), original);
 }
 
 #[test]

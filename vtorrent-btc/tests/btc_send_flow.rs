@@ -243,6 +243,7 @@ fn utxo_persistence_hides_restored_outputs_until_rescan() {
     let dir = std::env::temp_dir().join(format!("vtorrent_btc_test_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("utxos.json");
+    UtxoSet::new().save(&path).unwrap();
 
     let addr0 = derive_address(&SEED, 0, NETWORK).unwrap();
 
