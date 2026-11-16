@@ -901,6 +901,8 @@ pub async fn fund_cold_stake(
     state: State<'_, AppState>,
     script_pubkey: String,
     amount_satoshis: u64,
+    passphrase: String,
+    otp_code: Option<String>,
 ) -> Result<String> {
     if amount_satoshis == 0 {
         return Err(TauriError::InvalidInput("Amount must be non-zero".into()));
@@ -921,6 +923,34 @@ pub async fn fund_cold_stake(
         return Err(TauriError::InvalidInput(format!(
             "P2CS locktime {locktime} exceeds the maximum 2100000000"
         )));
+    }
+    let guard = state.node.lock().await;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    let passphrase = zeroize::Zeroizing::new(passphrase);
+    let otp_code = otp_code.map(zeroize::Zeroizing::new);
+    let wallet_path = state.wallet_path.lock().unwrap().clone();
+    {
+        let mut wallet_guard = state.wallet.lock().unwrap();
+        let wallet = wallet_guard
+            .as_mut()
+            .ok_or(TauriError::WalletNotInitialized)?;
+        if !wallet.verify_passphrase(&passphrase) {
+            return Err(TauriError::Unauthorized(
+                "Incorrect wallet passphrase".into(),
+            ));
+        }
+        if wallet.has_2fa() {
+            let code = otp_code.as_deref().ok_or(TauriError::TwoFAFailed)?;
+            let path = wallet_path.as_ref().ok_or(TauriError::WalletLocked)?;
+            if !wallet
+                .verify_2fa_once(code, path)
+                .map_err(|error| TauriError::Unauthorized(error.to_string()))?
+            {
+                return Err(TauriError::TwoFAFailed);
+            }
+        }
     }
     let script_hash = hex::encode(vtorrent_core::crypto::hash160(&script));
     let durable = state
@@ -959,10 +989,6 @@ pub async fn fund_cold_stake(
         (wif, from)
     };
 
-    let guard = state.node.lock().await;
-    let handle = guard
-        .as_ref()
-        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
     let utxos = {
         let chain = handle.rpc_state.chain.lock().await;
         chain.get_utxos_for_address(&from_address)
@@ -1456,9 +1482,15 @@ mod tests {
         *state.wallet_path.lock().unwrap() = Some(wallet_path.clone());
 
         let foreign = vtorrent_wallet::wallet::generate_cold_stake_keys(0, None).unwrap();
-        let error = fund_cold_stake(state.clone(), hex::encode(foreign.script_pubkey), COIN)
-            .await
-            .unwrap_err();
+        let error = fund_cold_stake(
+            state.clone(),
+            hex::encode(foreign.script_pubkey),
+            COIN,
+            "pw".into(),
+            None,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(error, TauriError::InvalidInput(_)));
         assert!(submitted.try_recv().is_err());
 
@@ -1479,13 +1511,82 @@ mod tests {
         ));
         state.cold_stake_scripts.lock().unwrap().clear();
         let script_hex = keys["script_pubkey"].as_str().unwrap();
+        assert!(
+            invoke(
+                "fund_cold_stake",
+                serde_json::json!({ "scriptPubkey": script_hex, "amountSatoshis": COIN }),
+            )
+            .is_err(),
+            "cold-stake funding must require a wallet passphrase"
+        );
+        assert!(invoke(
+            "fund_cold_stake",
+            serde_json::json!({ "scriptPubkey": script_hex, "amountSatoshis": COIN, "passphrase": "wrong" }),
+        ).is_err(), "cold-stake funding must reject an incorrect wallet passphrase");
+        assert!(submitted.try_recv().is_err());
+        let otp = {
+            use vtorrent_wallet::otp::TotpSecret;
+            let mut guard = state.wallet.lock().unwrap();
+            let wallet = guard.as_mut().unwrap();
+            let config = wallet.enable_2fa().unwrap();
+            let secret = TotpSecret::from_base32(&config.secret_base32()).unwrap();
+            assert!(wallet
+                .confirm_pending_2fa(&secret.current_code().unwrap())
+                .unwrap());
+            let totp = totp_rs::TOTP::new(
+                totp_rs::Algorithm::SHA1,
+                6,
+                1,
+                30,
+                secret.as_bytes().to_vec(),
+                Some("vTorrent".into()),
+                "test".into(),
+            )
+            .unwrap();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            totp.generate(now + 30)
+        };
+        let missing = fund_cold_stake(state.clone(), script_hex.into(), COIN, "pw".into(), None)
+            .await
+            .unwrap_err();
+        assert!(matches!(missing, TauriError::TwoFAFailed));
+        let invalid = fund_cold_stake(
+            state.clone(),
+            script_hex.into(),
+            COIN,
+            "pw".into(),
+            Some("invalid".into()),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            invalid,
+            TauriError::TwoFAFailed | TauriError::Unauthorized(_)
+        ));
+        assert!(submitted.try_recv().is_err());
         let txid = invoke(
             "fund_cold_stake",
-            serde_json::json!({ "scriptPubkey": script_hex, "amountSatoshis": COIN }),
+            serde_json::json!({ "scriptPubkey": script_hex, "amountSatoshis": COIN, "passphrase": "pw", "otpCode": otp }),
         )
         .expect("fund command accepts frontend camelCase arguments")
         .deserialize::<String>()
         .unwrap();
+        let replay = fund_cold_stake(
+            state.clone(),
+            script_hex.into(),
+            COIN,
+            "pw".into(),
+            Some(otp),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            replay,
+            TauriError::TwoFAFailed | TauriError::Unauthorized(_)
+        ));
 
         let node = state.node.lock().await;
         let handle = node.as_ref().unwrap();
@@ -1886,6 +1987,30 @@ mod tests {
             state.node.try_lock().is_err(),
             "wallet lifecycle must retain exclusive node access"
         );
+    }
+
+    #[tokio::test]
+    async fn lock_wallet_waits_for_node_startup_before_clearing_wallet() {
+        use tauri::Manager;
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+        *state.wallet.lock().unwrap() = Some(Wallet::create("password").unwrap());
+        let startup_guard = state.node.lock().await;
+        let operation = lock_wallet(state.clone());
+        tokio::pin!(operation);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut operation)
+                .await
+                .is_err()
+        );
+        assert!(state.wallet.lock().unwrap().is_some());
+        drop(startup_guard);
+        operation.await.unwrap();
+        assert!(state.wallet.lock().unwrap().is_none());
     }
 
     #[test]

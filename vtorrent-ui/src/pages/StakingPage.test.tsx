@@ -7,7 +7,7 @@ import StakingPage from './StakingPage'
 
 const backend = vi.hoisted(() => ({
   create: vi.fn<(locktime?: number) => Promise<ColdStakeKeys>>(),
-  fund: vi.fn<(script: string, amount: number, passphrase?: string) => Promise<string>>(),
+  fund: vi.fn<(script: string, amount: number, passphrase?: string, otp?: string) => Promise<string>>(),
   desktop: vi.fn<() => boolean>(),
 }))
 
@@ -74,19 +74,20 @@ describe('cold-stake panel', () => {
     fireEvent.change(screen.getByPlaceholderText('Wallet passphrase'), { target: { value: 'test-passphrase' } })
     fireEvent.click(screen.getByRole('button', { name: 'Fund cold stake' }))
 
-    await waitFor(() => expect(backend.fund).toHaveBeenCalledWith(keys.scriptPubkey, 125_000_000, 'test-passphrase'))
+    await waitFor(() => expect(backend.fund).toHaveBeenCalledWith(keys.scriptPubkey, 125_000_000, 'test-passphrase', undefined))
     expect(await screen.findByText('Funding txid: test-funding-txid')).toBeInTheDocument()
   })
 
-  it('funds in desktop mode without collecting a browser passphrase', async () => {
+  it('passes desktop wallet authentication when funding', async () => {
     backend.desktop.mockReturnValue(true)
     render(<StakingPage />)
     await generate()
     saveSpendingKey()
-    expect(screen.queryByPlaceholderText('Wallet passphrase')).not.toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('Wallet passphrase'), { target: { value: 'wallet-pass' } })
+    fireEvent.change(screen.getByPlaceholderText('2FA code (if enabled)'), { target: { value: '123456' } })
     fireEvent.change(screen.getByPlaceholderText('Amount (VTR)'), { target: { value: '1' } })
     fireEvent.click(screen.getByRole('button', { name: 'Fund cold stake' }))
-    await waitFor(() => expect(backend.fund).toHaveBeenCalledWith(keys.scriptPubkey, 100_000_000, ''))
+    await waitFor(() => expect(backend.fund).toHaveBeenCalledWith(keys.scriptPubkey, 100_000_000, 'wallet-pass', '123456'))
     expect(await screen.findByText('Funding txid: test-funding-txid')).toBeInTheDocument()
   })
 

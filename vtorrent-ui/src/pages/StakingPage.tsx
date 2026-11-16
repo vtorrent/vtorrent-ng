@@ -5,7 +5,6 @@ import {
 } from 'lucide-react'
 import { formatVTR, useWallet } from '../hooks/useWallet'
 import { useStakingStatus, startStaking, stopStaking, useNodeInfo, createColdStake, fundColdStake, getTransaction, type ColdStakeKeys } from '../hooks/useNode'
-import { isTauri } from '../api'
 import { stakingStartError } from '../utils/stakingOps'
 import HealthStrip from '../components/staking/HealthStrip'
 import ReadinessCard from '../components/staking/ReadinessCard'
@@ -329,6 +328,7 @@ function ColdStakePanel() {
   const [error, setError] = useState<string | null>(null)
   const [amount, setAmount] = useState('')
   const [passphrase, setPassphrase] = useState('')
+  const [otpCode, setOtpCode] = useState('')
   const [funding, setFunding] = useState(false)
   const [txid, setTxid] = useState<string | null>(null)
   const [fundedSats, setFundedSats] = useState(0)
@@ -374,12 +374,14 @@ function ColdStakePanel() {
     setTxid(null)
     setVerifyMsg(null)
     try {
-      const nextTxid = await fundColdStake(keys.scriptPubkey, sats, passphrase)
+      const nextTxid = await fundColdStake(keys.scriptPubkey, sats, passphrase, otpCode || undefined)
       setTxid(nextTxid)
       setFundedSats(sats)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
+      setPassphrase('')
+      setOtpCode('')
       setFunding(false)
     }
   }
@@ -573,16 +575,24 @@ function ColdStakePanel() {
                   placeholder="Amount (VTR)"
                   className="input-field text-xs"
                 />
-                {!isTauri() && (
-                  <input
+                <input
                     data-testid="cold-stake-passphrase"
                     type="password"
                     value={passphrase}
                     onChange={e => setPassphrase(e.target.value)}
                     placeholder="Wallet passphrase"
                     className="input-field text-xs"
-                  />
-                )}
+                />
+                <input
+                  data-testid="cold-stake-otp"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  value={otpCode}
+                  onChange={e => setOtpCode(e.target.value)}
+                  placeholder="2FA code (if enabled)"
+                  className="input-field text-xs"
+                />
                 <button
                   data-testid="cold-stake-fund"
                   onClick={fund}

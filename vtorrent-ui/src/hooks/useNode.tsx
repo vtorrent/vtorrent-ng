@@ -850,14 +850,16 @@ export async function fundColdStake(
   scriptPubkey: string,
   amountSatoshis: number,
   passphrase = '',
+  otpCode?: string,
 ): Promise<string> {
   if (isTauri()) {
-    return tauriInvoke<string>('fund_cold_stake', { scriptPubkey, amountSatoshis })
+    return tauriInvoke<string>('fund_cold_stake', { scriptPubkey, amountSatoshis, passphrase, otpCode: otpCode || null })
   }
   const result = await rpcPost<{ txid: string }>('/api/v1/wallet/fund-cold-stake', {
     script_pubkey: scriptPubkey,
     amount_satoshis: amountSatoshis,
     passphrase,
+    otp_code: otpCode || null,
   })
   return result.txid
 }
