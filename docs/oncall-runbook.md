@@ -65,6 +65,8 @@ contracts, and signed refunds as well as chain-derived state. The daemon does
 not automatically migrate the old network-only file to the seed-scoped path.
 Do not assume that a rescan restores swap metadata or releases a legacy
 reservation. A safe migration and recovery procedure still needs validation.
+For a desktop data directory, use `docs/desktop-recovery-runbook.md`; the app
+deliberately refuses to restore BTC, swap, or cold-stake records automatically.
 
 ## Procedure: Rolling Daemon Upgrade (seeds)
 

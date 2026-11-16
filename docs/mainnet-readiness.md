@@ -42,6 +42,10 @@ remain restorable to a destination without those records. These locks are
 advisory and do not protect against non-cooperating writers or state copies on
 other hosts.
 
+Manual recovery of those records follows `docs/desktop-recovery-runbook.md`.
+There is no in-app override: the runbook requires a stopped node, a full
+snapshot, two-person review, and an explicit decision for each record.
+
 - [x] **Genesis block verification**: hash `36ca792aa45ca7850f2789ff2e62ec13e91bd5f2770d6fea8df81bc2da1da8f8`
       (`utxo_root 65185f8a5c055c17bf7053c6b6c42993565bb5586689a8508017005b842f9105`)
       verified via RPC + `test_snapshot_sum_matches_documented_supply` + `test_snapshot_binary_roundtrip`.
