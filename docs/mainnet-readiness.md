@@ -6,6 +6,18 @@
 
 ## 1. Code & Consensus Verification
 
+**BTC wallet-state gate:** A missing BTC state file, a pre-v3 file, or an
+unknown future version is refused. The daemon can create a first v3 file only
+with the explicit `--btc-attest-new-seed` operator assertion, which states that
+the seed has no prior BTC history and no outstanding sends or swaps. Legacy
+recovery uses `btc-state-stage stage` → `archive` → `promote`, where `promote`
+requires the archive to match byte-for-byte and the operator to confirm
+isolation, ownership, that no sends or swaps are outstanding, and that the
+archived copy is complete. Neither command can verify those assertions. The desktop may create a first BTC state only for a wallet it
+generated. The authorization is bound to the exact wallet bytes, survives a
+restart, is consumed once the BTC state exists, and is removed when a different
+wallet is opened or any wallet is imported.
+
 - [x] **Genesis block verification**: hash `36ca792aa45ca7850f2789ff2e62ec13e91bd5f2770d6fea8df81bc2da1da8f8`
       (`utxo_root 65185f8a5c055c17bf7053c6b6c42993565bb5586689a8508017005b842f9105`)
       verified via RPC + `test_snapshot_sum_matches_documented_supply` + `test_snapshot_binary_roundtrip`.

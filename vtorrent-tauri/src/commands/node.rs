@@ -246,12 +246,17 @@ pub async fn start_node(
             ensure_no_legacy_btc_wallet(wp.as_deref())?;
             btc_utxo_path(wp.as_deref(), btc_network, &seed)
         };
-        match vtorrent_btc::wallet::BtcWallet::with_persistence(
+        let attested_new_seed = state.may_attest_new_btc_seed();
+        match vtorrent_btc::wallet::BtcWallet::with_persistence_attested_seed(
             *seed,
             btc_network,
             utxo_path.clone(),
+            attested_new_seed,
         ) {
             Ok(wallet) => {
+                if attested_new_seed {
+                    state.consume_new_seed_attestation();
+                }
                 *rpc_state.btc_wallet.write().await = Some(wallet);
                 tracing::info!(
                     "BTC wallet loaded with UTXO persistence: {}",

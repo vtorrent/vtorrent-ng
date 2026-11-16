@@ -168,6 +168,11 @@ impl BtcWallet {
         let mut utxos = UtxoSet::load_for_wallet_with(&utxo_path, attested_new_seed)?;
         if attested_new_seed && !utxo_path.exists() {
             utxos.create_new(&utxo_path)?;
+            tracing::warn!(
+                path = %utxo_path.display(),
+                ?network,
+                "Created the first BTC wallet state under an operator new-seed assertion; this process did not verify that the seed has no prior history or outstanding sends"
+            );
         }
         utxos.clear_journal();
         utxos.set_last_scanned_tip(None);
@@ -2401,7 +2406,7 @@ mod tests {
         };
         wallet.add_utxo(owned.clone());
         let before = std::fs::read(&path).unwrap();
-        std::fs::create_dir(path.with_extension("tmp")).unwrap();
+        crate::utxo::fail_next_rename_for_test();
         let recipient =
             crate::keys::derive_address(&[9; 64], 0, bitcoin::Network::Regtest).unwrap();
         assert!(wallet.send_to(&recipient, 50_000, 1_000).is_err());
@@ -2704,7 +2709,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn attested_creation_does_not_follow_a_stale_temporary_symlink() {
+    fn attested_creation_ignores_a_stale_temporary_symlink() {
         let dir = std::env::temp_dir().join(format!(
             "vtr-btc-new-seed-symlink-{}-{}",
             std::process::id(),
@@ -2719,15 +2724,15 @@ mod tests {
         std::fs::write(&victim, b"must not be overwritten").unwrap();
         std::os::unix::fs::symlink(&victim, path.with_extension("tmp")).unwrap();
 
-        assert!(BtcWallet::with_persistence_attested_seed(
+        BtcWallet::with_persistence_attested_seed(
             [7; 64],
             bitcoin::Network::Regtest,
             path.clone(),
-            true
+            true,
         )
-        .is_err());
+        .unwrap();
         assert_eq!(std::fs::read(&victim).unwrap(), b"must not be overwritten");
-        assert!(!path.exists());
+        assert!(path.exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -2840,17 +2845,7 @@ mod tests {
             height: 100,
         };
         w.add_utxo(owned.clone());
-        // The atomic save writes through `<path>.tmp`. A FIFO there blocks the
-        // write after the set has been mutated, holding the window open long
-        // enough for a second handle to try to observe it.
-        let tmp = path.with_extension("tmp");
-        let _ = std::fs::remove_file(&tmp);
-        assert!(std::process::Command::new("mkfifo")
-            .arg(&tmp)
-            .status()
-            .unwrap()
-            .success());
-
+        let (release_send, release_receive) = std::sync::mpsc::channel();
         let shared = w.utxos.clone();
         let marker = Utxo {
             txid: "0d".repeat(32),
@@ -2863,42 +2858,39 @@ mod tests {
         let observer = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(50));
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut saw_lock_held = false;
             loop {
                 match shared.try_lock() {
                     Some(mut set) => {
                         set.add(observer_marker.clone());
-                        return true;
+                        return saw_lock_held;
                     }
                     None if std::time::Instant::now() < deadline => {
+                        if !saw_lock_held {
+                            saw_lock_held = true;
+                            let _ = release_send.send(());
+                        }
                         std::thread::sleep(std::time::Duration::from_millis(5));
                     }
                     None => return false,
                 }
             }
         });
-        let reader_tmp = tmp.clone();
-        let reader = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            // Pairs with the blocked writer, then closes immediately so the
-            // write fails instead of completing.
-            if let Ok(file) = std::fs::File::open(&reader_tmp) {
-                drop(file);
-            }
-        });
         let recipient =
             crate::keys::derive_address(&[9u8; 64], 0, bitcoin::Network::Regtest).unwrap();
         let (w, result) = std::thread::spawn(move || {
+            crate::utxo::pause_next_save_before_rename_for_test(release_receive);
+            crate::utxo::fail_next_rename_for_test();
             let result = w.send_to(&recipient, 50_000, 1_000);
             (w, result)
         })
         .join()
         .unwrap();
-        reader.join().unwrap();
         let observed = observer.join().unwrap();
 
         assert!(
             observed,
-            "the observer must be able to take the set guard at some point"
+            "the observer must see the set guard held across the paused save"
         );
         let error = result.unwrap_err();
         assert!(

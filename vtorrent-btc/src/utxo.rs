@@ -20,6 +20,43 @@ pub(crate) fn save_may_have_committed(error: &std::io::Error) -> bool {
         .is_some_and(|source| source.is::<UncertainSave>())
 }
 
+/// A per-process unique temporary beside `path`.
+///
+/// Unlike a fixed `<path>.tmp`, `create_new` on this name cannot follow a
+/// planted symlink or overwrite another writer's file.
+fn unique_temp_path(path: &Path) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "utxos.json".to_owned());
+    path.with_file_name(format!(".{name}.tmp.{}.{sequence}", std::process::id()))
+}
+
+fn open_unique_temp(path: &Path) -> std::io::Result<(std::path::PathBuf, std::fs::File)> {
+    let tmp = unique_temp_path(path);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(&tmp)?;
+    Ok((tmp, file))
+}
+
+#[cfg(unix)]
+fn sync_parent(path: &Path) -> std::io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::File::open(parent)?.sync_all()
+}
+
 /// Hard cap on journalled heights. Independent of `--btc-header-retention`, so
 /// an unbounded header chain cannot produce an unbounded journal.
 pub(crate) const MAX_UNDO_ENTRIES: usize = 200_000;
@@ -988,29 +1025,38 @@ impl UtxoSet {
         None
     }
 
-    /// Persist the UTXO set to a JSON file.
-    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+    fn serialized(&self) -> std::io::Result<Vec<u8>> {
         let mut value = serde_json::to_value(self).map_err(std::io::Error::other)?;
         value["journal_version"] = serde_json::json!(self.journal_version);
-        let json = serde_json::to_string_pretty(&value).map_err(std::io::Error::other)?;
-        // Write atomically via a temp file + rename.
-        let tmp = path.with_extension("tmp");
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
+        Ok(serde_json::to_string_pretty(&value)
+            .map_err(std::io::Error::other)?
+            .into_bytes())
+    }
+
+    /// Persist the UTXO set to a JSON file.
+    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        let json = self.serialized()?;
+        let (tmp, mut file) = open_unique_temp(path)?;
+        if let Err(error) = std::io::Write::write_all(&mut file, &json) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(error);
         }
-        let mut file = options.open(&tmp)?;
-        std::io::Write::write_all(&mut file, json.as_bytes())?;
-        file.sync_all()?;
+        if let Err(error) = file.sync_all() {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(error);
+        }
         drop(file);
         #[cfg(test)]
+        pause_before_rename();
+        #[cfg(test)]
         if FAIL_BEFORE_RENAME.with(|flag| flag.replace(false)) {
+            let _ = std::fs::remove_file(&tmp);
             return Err(std::io::Error::other("injected pre-rename failure"));
         }
-        std::fs::rename(&tmp, path)?;
+        if let Err(error) = std::fs::rename(&tmp, path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(error);
+        }
         #[cfg(unix)]
         {
             #[cfg(test)]
@@ -1020,11 +1066,7 @@ impl UtxoSet {
             let result = if injected {
                 Err(std::io::Error::other("injected parent sync failure"))
             } else {
-                let parent = path
-                    .parent()
-                    .filter(|p| !p.as_os_str().is_empty())
-                    .unwrap_or_else(|| Path::new("."));
-                std::fs::File::open(parent).and_then(|directory| directory.sync_all())
+                sync_parent(path)
             };
             result.map_err(|error| std::io::Error::other(UncertainSave(error)))?;
         }
@@ -1039,41 +1081,72 @@ impl UtxoSet {
     /// Create a new state file without replacing an existing one or following a
     /// stale temporary path.
     ///
-    /// Used only for first-time attested initialization: an existing file or
-    /// temporary path is a hard error, and the no-clobber link makes the final
-    /// publication atomic without truncating anything already there.
+    /// Used only for first-time attested initialization: an existing target is
+    /// a hard error, and the no-clobber link makes the final publication atomic.
     pub(crate) fn create_new(&self, path: &Path) -> std::io::Result<()> {
-        let mut value = serde_json::to_value(self).map_err(std::io::Error::other)?;
-        value["journal_version"] = serde_json::json!(self.journal_version);
-        let json = serde_json::to_string_pretty(&value).map_err(std::io::Error::other)?;
-        let tmp = path.with_extension("tmp");
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&tmp)?;
-        std::io::Write::write_all(&mut file, json.as_bytes())?;
-        file.sync_all()?;
+        let json = self.serialized()?;
+        let (tmp, mut file) = open_unique_temp(path)?;
+        let result = std::io::Write::write_all(&mut file, &json).and_then(|()| file.sync_all());
         drop(file);
+        if let Err(error) = result {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(error);
+        }
         if let Err(error) = std::fs::hard_link(&tmp, path) {
             let _ = std::fs::remove_file(&tmp);
             return Err(error);
         }
         std::fs::remove_file(&tmp)?;
         #[cfg(unix)]
-        {
-            let parent = path
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .unwrap_or_else(|| Path::new("."));
-            std::fs::File::open(parent)
-                .and_then(|directory| directory.sync_all())
-                .map_err(|error| std::io::Error::other(UncertainSave(error)))?;
-        }
+        sync_parent(path).map_err(|error| std::io::Error::other(UncertainSave(error)))?;
         Ok(())
+    }
+
+    /// Publish this set over an existing state file after an explicit,
+    /// separately confirmed legacy promotion.
+    ///
+    /// Only `btc-state-stage promote` calls this. The temporary name is
+    /// exclusive and unpredictable, so a planted file or symlink cannot redirect
+    /// the write.
+    pub fn replace_for_confirmed_promotion(&self, path: &Path) -> std::io::Result<()> {
+        let json = self.serialized()?;
+        let (tmp, mut file) = open_unique_temp(path)?;
+        let result = std::io::Write::write_all(&mut file, &json).and_then(|()| file.sync_all());
+        drop(file);
+        if let Err(error) = result {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(error);
+        }
+        if let Err(error) = std::fs::rename(&tmp, path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(error);
+        }
+        #[cfg(unix)]
+        sync_parent(path).map_err(|error| std::io::Error::other(UncertainSave(error)))?;
+        Ok(())
+    }
+
+    /// Convert the exact bytes of an operator-verified legacy copy.
+    ///
+    /// The caller passes bytes it has already compared against the retained
+    /// archive, so promotion cannot be redirected by replacing the staged file
+    /// between verification and conversion. The caller must have independently
+    /// established that the seed has no outstanding BTC sends or swaps.
+    pub fn from_verified_legacy_bytes(bytes: &[u8]) -> std::io::Result<Self> {
+        let mut value: serde_json::Value = serde_json::from_slice(bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        sanitize_journal_fields(&mut value);
+        let mut set: Self = serde_json::from_value(value)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        if set.journal_version >= WALLET_FORMAT_VERSION {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "copy is already in wallet format; nothing to promote",
+            ));
+        }
+        set.adopt_legacy_journal_removals();
+        set.journal_version = WALLET_FORMAT_VERSION;
+        Ok(set)
     }
 
     /// Load the UTXO set from a JSON file.  Returns an empty set if the
@@ -1399,6 +1472,28 @@ mod tests {
         assert_eq!(loaded.list().len(), 2);
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_ignores_a_stale_fixed_temporary_symlink() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-utxo-symlink-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, b"must not be overwritten").unwrap();
+        std::os::unix::fs::symlink(&victim, path.with_extension("tmp")).unwrap();
+        UtxoSet::new().save(&path).unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"must not be overwritten");
+        assert!(path.exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -2626,6 +2721,8 @@ mod tests {
 #[cfg(test)]
 thread_local! {
     static FAIL_BEFORE_RENAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static PAUSE_BEFORE_RENAME: std::cell::RefCell<Option<std::sync::mpsc::Receiver<()>>> =
+        const { std::cell::RefCell::new(None) };
     #[cfg(unix)]
     static FAIL_PARENT_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -2633,6 +2730,19 @@ thread_local! {
 #[cfg(test)]
 pub(crate) fn fail_next_rename_for_test() {
     FAIL_BEFORE_RENAME.with(|flag| flag.set(true));
+}
+
+#[cfg(test)]
+pub(crate) fn pause_next_save_before_rename_for_test(receiver: std::sync::mpsc::Receiver<()>) {
+    PAUSE_BEFORE_RENAME.with(|slot| *slot.borrow_mut() = Some(receiver));
+}
+
+#[cfg(test)]
+fn pause_before_rename() {
+    let receiver = PAUSE_BEFORE_RENAME.with(|slot| slot.borrow_mut().take());
+    if let Some(receiver) = receiver {
+        let _ = receiver.recv();
+    }
 }
 
 #[cfg(all(test, unix))]

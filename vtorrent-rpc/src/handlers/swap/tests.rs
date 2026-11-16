@@ -1382,7 +1382,9 @@ async fn competing_orders_cannot_reuse_reserved_btc_input() {
 async fn persistence_failure_never_broadcasts_or_consumes_input() {
     let (state, id, refund_address) = fixture().await;
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("utxos.json");
+    let parent = directory.path().join("state");
+    std::fs::create_dir(&parent).unwrap();
+    let path = parent.join("utxos.json");
     state
         .btc_wallet
         .write()
@@ -1391,9 +1393,10 @@ async fn persistence_failure_never_broadcasts_or_consumes_input() {
         .unwrap()
         .set_utxo_path(path.clone())
         .unwrap();
-    // A directory in place of the save's temporary file makes the write fail
-    // with a real filesystem error, without relying on a rejected path change.
-    std::fs::create_dir(path.with_extension("tmp")).unwrap();
+    // Removing the parent after the path is adopted makes the next save fail
+    // with a real filesystem error for every user, including root.
+    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_dir(&parent).unwrap();
     let result = fund_btc_with_broadcast(
         &state,
         BtcFundRequest {

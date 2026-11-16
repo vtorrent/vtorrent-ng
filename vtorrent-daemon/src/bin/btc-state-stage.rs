@@ -62,6 +62,32 @@ enum Command {
         #[arg(long, required = true)]
         confirm_owner: bool,
     },
+    /// Mark an archived, operator-verified legacy copy as openable by the
+    /// wallet. This does not verify the operator's assertions.
+    Promote {
+        #[arg(long)]
+        data_dir: PathBuf,
+        /// The archive that must still contain the exact legacy bytes.
+        #[arg(long)]
+        archive: PathBuf,
+        /// The seed-scoped destination to convert in place.
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        seed_file: PathBuf,
+        #[arg(long)]
+        network: String,
+        /// Assert all wallet writers are stopped and both directories are isolated.
+        #[arg(long, required = true)]
+        confirm_isolated: bool,
+        /// Assert seed ownership and outstanding swaps were verified independently.
+        #[arg(long, required = true)]
+        confirm_owner: bool,
+        /// Assert you verified ownership, that no BTC sends or swaps are
+        /// outstanding, and that this archived copy is complete.
+        #[arg(long, required = true)]
+        confirm_recovery_preconditions: bool,
+    },
 }
 
 fn source_label(source: &Path, network: Option<&str>) -> anyhow::Result<&'static str> {
@@ -290,6 +316,56 @@ fn archive_legacy(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn promote(
+    data_dir: PathBuf,
+    archive: PathBuf,
+    output: PathBuf,
+    seed_file: PathBuf,
+    network: String,
+    _isolated: bool,
+    _owner: bool,
+    _recovery_preconditions: bool,
+) -> anyhow::Result<()> {
+    let seed = zeroize::Zeroizing::new(read_seed(&seed_file)?);
+    let expected_id = wallet_id(&seed);
+    let label = match network.as_str() {
+        "mainnet" => "mainnet",
+        "regtest" => "regtest",
+        _ => anyhow::bail!("--network must be mainnet or regtest"),
+    };
+    validate_in_data_dir(&data_dir, &archive)?;
+    validate_in_data_dir(&data_dir, &output)?;
+    validate_scoped_output(&output, label, &expected_id)?;
+    require_regular_file(&archive)?;
+    require_regular_file(&output)?;
+    let original = fs::read(&output)?;
+    if fs::read(&archive)? != original {
+        anyhow::bail!("archive does not match the staged copy; do not promote either file");
+    }
+    let version = serde_json::from_slice::<serde_json::Value>(&original)?
+        .get("journal_version")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    if version >= 3 {
+        anyhow::bail!("staged copy is already in wallet format {version}; nothing to promote");
+    }
+    let set = vtorrent_btc::utxo::UtxoSet::from_verified_legacy_bytes(&original)?;
+    set.replace_for_confirmed_promotion(&output)?;
+    let bitcoin_network = if label == "regtest" {
+        bitcoin::Network::Regtest
+    } else {
+        bitcoin::Network::Bitcoin
+    };
+    vtorrent_btc::wallet::BtcWallet::with_persistence(*seed, bitcoin_network, output.clone())
+        .map_err(|error| anyhow::anyhow!("promoted copy did not pass the wallet guard: {error}"))?;
+    if fs::read(&archive)? != original {
+        anyhow::bail!("archive changed during promotion; inspect both files before use");
+    }
+    eprintln!("Promoted the staged copy to wallet format. The archive still holds the exact legacy bytes. The operator assertions were not verified by this tool; independent review of the wallet and swaps is still required.");
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     match Args::parse().command {
         Command::Stage {
@@ -327,6 +403,25 @@ fn main() -> anyhow::Result<()> {
             network,
             confirm_isolated,
             confirm_owner,
+        ),
+        Command::Promote {
+            data_dir,
+            archive,
+            output,
+            seed_file,
+            network,
+            confirm_isolated,
+            confirm_owner,
+            confirm_recovery_preconditions,
+        } => promote(
+            data_dir,
+            archive,
+            output,
+            seed_file,
+            network,
+            confirm_isolated,
+            confirm_owner,
+            confirm_recovery_preconditions,
         ),
     }
 }

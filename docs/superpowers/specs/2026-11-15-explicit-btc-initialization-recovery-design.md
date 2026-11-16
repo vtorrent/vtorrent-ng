@@ -44,9 +44,12 @@ BTC availability without weakening that guard.
 
 ## Selected design
 
-`BtcWallet::with_persistence` gains an `allow_missing_state` parameter. Daemon,
-Tauri and ordinary test fixture paths pass `false`; only the startup option
-`--btc-attest-new-seed` passes true. When the state file does not exist and this
+`BtcWallet::with_persistence` keeps the failing default and a separate
+attested constructor carries the capability. The daemon passes it only for
+`--btc-attest-new-seed`. The desktop writes an authorization bound to the exact
+wallet-file digest when it generates a wallet; it survives a restart, is
+consumed once the BTC state exists, and is removed when a different wallet is
+opened or any wallet is imported. When the state file does not exist and this
 capability is absent, initialization fails closed. When the capability is
 present, one atomic v3 save creates the file before any scan, send or swap is
 performed.
@@ -58,12 +61,14 @@ existing file.
 
 ## Legacy recovery
 
-`btc-state-stage` remains experimental and does not authorize opening legacy
-state. Extend it with a deliberately separate, locally explicit promote or
-migrate command that validates byte equality, seed-scoped destination, network,
-permission and staged-copy provenance before marking a file v3. The promote
-command is the only place allowed to convert a pre-v3 copy; it must still keep
-the original archive intact and publish the result atomically.
+`btc-state-stage` now has a separate `promote` command. It requires the archive
+to match the staged copy byte-for-byte, the seed-scoped destination and network
+to match, and explicit isolation, ownership, and recovery-precondition
+assertions (no outstanding sends or swaps, complete archived copy). It
+loads the archived copy, marks it operator-verified, writes a v3 file through an
+exclusive promotion temporary, publishes it atomically, reopens it through the
+wallet guard, and rechecks the archive. The original archive is never modified.
+The tool cannot verify the operator's assertions.
 
 No production use is authorized by this design. A reviewer must examine the
 exact command and its tests before it is enabled for real wallets.

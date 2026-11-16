@@ -151,7 +151,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn preexisting_temporary_file_cannot_weaken_key_permissions() {
+    fn created_key_is_private_even_with_a_stale_temp_file() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();

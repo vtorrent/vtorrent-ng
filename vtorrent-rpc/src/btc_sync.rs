@@ -129,6 +129,8 @@ async fn load_peer_cache(path: Option<&Path>) -> Vec<SocketAddr> {
 }
 
 async fn persist_peer_cache(path: &Path, peers: &[SocketAddr]) -> std::io::Result<()> {
+    use tokio::io::AsyncWriteExt;
+
     let text = serde_json::to_string_pretty(
         &peers
             .iter()
@@ -136,9 +138,32 @@ async fn persist_peer_cache(path: &Path, peers: &[SocketAddr]) -> std::io::Resul
             .collect::<Vec<String>>(),
     )
     .map_err(std::io::Error::other)?;
-    let temporary = path.with_extension("tmp");
-    tokio::fs::write(&temporary, text).await?;
-    tokio::fs::rename(&temporary, path).await
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "btc-peers.json".to_owned());
+    let temporary = path.with_file_name(format!(
+        ".{name}.tmp.{}.{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default()
+    ));
+    let result = async {
+        let mut options = tokio::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        let mut file = options.open(&temporary).await?;
+        file.write_all(text.as_bytes()).await?;
+        file.sync_all().await?;
+        drop(file);
+        tokio::fs::rename(&temporary, path).await
+    }
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&temporary).await;
+    }
+    result
 }
 
 async fn remember_connected_peers(
