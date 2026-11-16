@@ -225,6 +225,8 @@ Added with `ff148fd` and `35ea52e`:
   their fixes.
 - `docs/totp-replay.md` and `docs/torrent-adoption.md` for the new paths'
   intended guarantees and known limits.
+- `docs/desktop-recovery-runbook.md` for the manual procedure that replaces
+  automatic restore of BTC, swap, and cold-stake recovery records.
 
 ## Status
 
