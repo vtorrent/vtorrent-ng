@@ -175,15 +175,15 @@ fn collect_entries(wallet_path: &Path, wallet: &Wallet) -> Result<Vec<BackupEntr
         ] {
             let path = crate::commands::node::btc_utxo_path(Some(wallet_path), network, &seed);
             let marker = path.with_extension("initialized");
+            btc_locks.push(
+                vtorrent_btc::utxo::lock_state_path(&path)
+                    .map_err(|error| TauriError::Io(error.to_string()))?,
+            );
             let state_exists = path_entry_exists(&path)?;
             let marker_exists = path_entry_exists(&marker)?;
             if !state_exists && !marker_exists {
                 continue;
             }
-            btc_locks.push(
-                vtorrent_btc::utxo::lock_state_path(&path)
-                    .map_err(|error| TauriError::Io(error.to_string()))?,
-            );
             if !state_exists {
                 return Err(TauriError::InvalidInput(format!(
                     "BTC state is missing for {}; preserve its initialization record for recovery",
@@ -940,6 +940,36 @@ mod tests {
         assert!(child.wait().unwrap().success());
         let error = result.expect_err("backup must fail while another process holds the lock");
         assert!(error.to_string().contains("in use"), "{error}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn backup_refuses_btc_initialization_in_progress() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-backup-initializing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wallet = Wallet::create("password").unwrap();
+        let wallet_path = dir.join(WALLET_ENTRY);
+        wallet.save(&wallet_path).unwrap();
+        let seed = crate::commands::node::wallet_btc_seed(&wallet).unwrap();
+        let path = crate::commands::node::btc_utxo_path(
+            Some(&wallet_path),
+            bitcoin::Network::Regtest,
+            &seed,
+        );
+        let lock = vtorrent_btc::utxo::lock_state_path(&path).unwrap();
+        assert!(!path.exists());
+        assert!(!path.with_extension("initialized").exists());
+        let error = collect_entries(&wallet_path, &wallet)
+            .expect_err("backup must not omit BTC state while initialization holds its lock");
+        assert!(error.to_string().contains("in use"), "{error}");
+        drop(lock);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
