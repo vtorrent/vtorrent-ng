@@ -233,6 +233,14 @@ pub fn create_wallet(
     ensure_wallet_parent(&path)?;
     let wallet = Wallet::create(&passphrase).map_err(TauriError::from)?;
 
+    {
+        use zeroize::Zeroizing;
+        let seed = Zeroizing::new(
+            crate::commands::node::wallet_btc_seed(&wallet)
+                .ok_or_else(|| TauriError::Wallet("Created wallet has no BTC seed".into()))?,
+        );
+        crate::commands::node::create_initial_btc_states(&path, &seed)?;
+    }
     wallet.save(&path).map_err(TauriError::from)?;
 
     let default_address = wallet.default_address().map(|a| a.to_string());
@@ -240,8 +248,7 @@ pub fn create_wallet(
     let has_2fa = wallet.has_2fa();
 
     *state.wallet.lock().unwrap() = Some(wallet);
-    *state.wallet_path.lock().unwrap() = Some(path.clone());
-    state.record_created_wallet(path);
+    *state.wallet_path.lock().unwrap() = Some(path);
 
     Ok(WalletInfo {
         is_unlocked: true,
@@ -279,7 +286,6 @@ pub async fn open_wallet(
 
     *state.wallet.lock().unwrap() = Some(wallet);
     *state.wallet_path.lock().unwrap() = Some(path);
-    state.forget_unmatched_wallet_attestation();
 
     {
         let node = state.node.lock().await;
@@ -349,7 +355,6 @@ pub fn import_legacy_wallet(
     new_wallet_path: String,
 ) -> Result<ImportResult> {
     ensure_node_stopped(state.inner())?;
-    state.forget_created_wallet();
     state.cold_stake_scripts.lock().unwrap().clear();
     state.prepared_sends.lock().unwrap().clear();
     let wallet_dat_base64 = zeroize::Zeroizing::new(wallet_dat_base64);

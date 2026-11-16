@@ -1257,6 +1257,7 @@ async fn input_reservation_and_signed_funding_survive_wallet_reload() {
     )
     .await
     .unwrap();
+    state.btc_wallet.write().await.take();
     let reloaded = vtorrent_btc::wallet::BtcWallet::with_persistence(
         [2; 64],
         bitcoin::Network::Regtest,
@@ -1294,6 +1295,7 @@ async fn input_reservation_and_signed_funding_survive_wallet_reload() {
     .await;
     assert!(result.is_err());
     assert!(!attempted_refund.lock().unwrap().is_empty());
+    restarted.btc_wallet.write().await.take();
     let restarted_again = AppState::new();
     *restarted_again.btc_wallet.write().await = Some(
         vtorrent_btc::wallet::BtcWallet::with_persistence(
@@ -1395,8 +1397,7 @@ async fn persistence_failure_never_broadcasts_or_consumes_input() {
         .unwrap();
     // Removing the parent after the path is adopted makes the next save fail
     // with a real filesystem error for every user, including root.
-    std::fs::remove_file(&path).unwrap();
-    std::fs::remove_dir(&parent).unwrap();
+    std::fs::remove_dir_all(&parent).unwrap();
     let result = fund_btc_with_broadcast(
         &state,
         BtcFundRequest {

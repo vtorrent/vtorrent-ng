@@ -74,7 +74,7 @@ fn missing_seed_scoped_btc_state_blocks_startup() {
         .unwrap()
         .file_name()
         .to_string_lossy()
-        .starts_with("btc_utxos-")));
+        .ends_with(".json")));
 }
 
 #[test]

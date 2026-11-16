@@ -42,3 +42,9 @@
 - High: attested initialization could load a missing file and then skip creation if another writer won, returning an empty set. Initialization now tries an exclusive create first; a loser loads the winning file and never returns an empty set. A test covers the no-clobber decision.
 - High: marker deletion was not durable, so a failed deletion or crash could leave a reusable authorization. Consumption now rewrites the marker as consumed and syncs it before deletion; a failed deletion is safe. A test forces deletion failure and verifies the marker no longer authorizes.
 - High: promotion relied on blanket assertions. It now also requires the exact SHA-256 of the reviewed archive, records it, and remains explicitly experimental and unapproved for production. A wrong digest is rejected. Ownership, writer isolation, and send/swap history still require independent human review.
+
+## Second review findings and fixes
+
+- High: marker consumption was not atomic with state creation. The marker mechanism was removed; desktop wallet creation now writes both empty BTC state files before publishing the wallet, so there is no authorization to consume and no crash window.
+- High: ordinary saves were not serialized. Wallets now hold an OS-level exclusive lock on their state path; a second writer fails. Promotion acquires the same lock and therefore cannot overwrite a running wallet.
+- High: mainnet legacy promotion remained executable without review. It is now hard-disabled until the procedure and writer isolation are independently reviewed; regtest promotion remains for testing.

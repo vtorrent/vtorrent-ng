@@ -72,6 +72,9 @@ pub struct BtcWallet {
     filter_headers: Arc<Mutex<FilterHeaderStore>>,
     /// Optional path for persisting the UTXO set to disk.
     utxo_path: Option<PathBuf>,
+    /// Held for the lifetime of a persistent wallet so two writers cannot
+    /// overwrite each other's state.
+    state_lock: Option<std::fs::File>,
     next_index: u32,
     synced: bool,
     /// Next block height to scan (incremental checkpoint).
@@ -116,6 +119,7 @@ impl BtcWallet {
             utxos: Arc::new(Mutex::new(UtxoSet::new())),
             filter_headers: Arc::new(Mutex::new(FilterHeaderStore::default())),
             utxo_path: None,
+            state_lock: None,
             next_index: 0,
             synced: false,
             last_scanned_height: 0,
@@ -165,6 +169,7 @@ impl BtcWallet {
         utxo_path: PathBuf,
         attested_new_seed: bool,
     ) -> std::io::Result<Self> {
+        let state_lock = Some(crate::utxo::lock_state_path(&utxo_path)?);
         let mut created = false;
         if attested_new_seed && !utxo_path.exists() {
             match UtxoSet::new().create_new(&utxo_path) {
@@ -194,6 +199,7 @@ impl BtcWallet {
             utxos: Arc::new(Mutex::new(utxos)),
             filter_headers: Arc::new(Mutex::new(FilterHeaderStore::default())),
             utxo_path: Some(utxo_path),
+            state_lock,
             next_index,
             synced: false,
             last_scanned_height,
@@ -213,8 +219,16 @@ impl BtcWallet {
     /// wallet would keep a path it never wrote, and every later background save
     /// would fail silently while the wallet appeared to persist.
     pub fn set_utxo_path(&mut self, path: PathBuf) -> std::io::Result<()> {
+        let new_lock = if self.utxo_path.as_deref() == Some(path.as_path()) {
+            None
+        } else {
+            Some(crate::utxo::lock_state_path(&path)?)
+        };
         self.utxos.lock().save(&path)?;
         self.utxo_path = Some(path);
+        if let Some(lock) = new_lock {
+            self.state_lock = Some(lock);
+        }
         Ok(())
     }
 
@@ -2078,6 +2092,30 @@ mod tests {
     }
 
     #[test]
+    fn a_second_writer_cannot_open_the_same_state() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-single-writer-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        UtxoSet::new().save(&path).unwrap();
+        let first =
+            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
+        let error = BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path.clone())
+            .err()
+            .expect("a second writer must be refused");
+        assert!(error.to_string().contains("in use"), "{error}");
+        drop(first);
+        BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn a_scan_observed_spend_retires_the_pending_record() {
         let mut w = BtcWallet::with_network([7u8; 64], bitcoin::Network::Regtest);
         let owned = Utxo {
@@ -2951,6 +2989,7 @@ mod tests {
             w.utxo_for_tests(&owned.txid, owned.vout).is_none(),
             "a restore whose write failed must not claim an input the file does not hold"
         );
+        drop(w);
         let reloaded = open_fixture([7u8; 64], bitcoin::Network::Regtest, path).unwrap();
         assert!(
             reloaded.utxo_for_tests(&owned.txid, owned.vout).is_none(),
@@ -3476,6 +3515,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("btc-progress-{}.json", std::process::id()));
         let mut w = open_fixture([7u8; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
         w.set_scan_progress(42, Some([9u8; 32]));
+        drop(w);
 
         let loaded = open_fixture([7u8; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
         assert_eq!(loaded.last_scanned_height(), 42);
@@ -3593,6 +3633,7 @@ mod tests {
         assert_eq!(w.list_utxos().len(), 1);
 
         // The release persisted: a fresh wallet sees no reservation.
+        drop(w);
         let reloaded = open_fixture([7u8; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
         reloaded.add_utxo(Utxo {
             txid: "cd".repeat(32),

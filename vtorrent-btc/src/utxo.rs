@@ -57,6 +57,34 @@ fn sync_parent(path: &Path) -> std::io::Result<()> {
     std::fs::File::open(parent)?.sync_all()
 }
 
+/// Acquire the single-writer lock for a wallet-state path.
+///
+/// The OS releases the lock when the file is dropped or the process exits, so a
+/// crash cannot leave a stale lock.
+pub fn lock_state_path(path: &Path) -> std::io::Result<std::fs::File> {
+    use fs2::FileExt;
+
+    let lock_path = path.with_extension("lock");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(&lock_path)?;
+    file.try_lock_exclusive().map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!(
+                "BTC wallet state {} is in use by another process: {error}",
+                path.display()
+            ),
+        )
+    })?;
+    Ok(file)
+}
+
 /// Hard cap on journalled heights. Independent of `--btc-header-retention`, so
 /// an unbounded header chain cannot produce an unbounded journal.
 pub(crate) const MAX_UNDO_ENTRIES: usize = 200_000;
@@ -1160,6 +1188,12 @@ impl UtxoSet {
 
     pub(crate) fn load_for_wallet(path: &Path) -> std::io::Result<Self> {
         Self::load_inner(path, true)
+    }
+
+    /// Validate a state file against the wallet-openability guard without
+    /// taking the writer lock. Callers that hold [`lock_state_path`] use this.
+    pub fn validate_wallet_state(path: &Path) -> std::io::Result<()> {
+        Self::load_inner(path, true).map(|_| ())
     }
 
     fn load_inner(path: &Path, reject_legacy: bool) -> std::io::Result<Self> {

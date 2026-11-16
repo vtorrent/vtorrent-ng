@@ -347,6 +347,45 @@ fn promote_refuses_a_different_reviewed_digest() {
 }
 
 #[test]
+fn mainnet_promotion_is_disabled_pending_review() {
+    use sha2::{Digest, Sha256};
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("btc_utxos-mainnet-62d04ad2793b8849.json");
+    let archive = dir.path().join("legacy-btc-state.json");
+    let original = b"{\"utxos\":[],\"next_index\":7}";
+    std::fs::write(&output, original).unwrap();
+    std::fs::write(&archive, original).unwrap();
+    let seed = write_seed(dir.path());
+    let digest = hex::encode(Sha256::digest(original));
+    let result = Command::new(env!("CARGO_BIN_EXE_btc-state-stage"))
+        .args([
+            "promote",
+            "--data-dir",
+            dir.path().to_str().unwrap(),
+            "--archive",
+            archive.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+            "--seed-file",
+            seed.to_str().unwrap(),
+            "--network",
+            "mainnet",
+            "--confirm-isolated",
+            "--confirm-owner",
+            "--confirm-recovery-preconditions",
+            "--confirm-archive-sha256",
+            &digest,
+        ])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("mainnet legacy promotion is disabled")
+    );
+    assert_eq!(std::fs::read(&output).unwrap(), original);
+}
+
+#[test]
 fn rejects_a_seed_file_readable_by_group_or_others() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();

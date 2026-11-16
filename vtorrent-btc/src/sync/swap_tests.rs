@@ -450,6 +450,7 @@ async fn restored_chain_cache_is_rebuilt_after_first_header_sync() {
     assert_eq!(wallet.last_scanned_height(), 0);
     assert_eq!(UtxoSet::load(&path).unwrap().next_index(), 1);
     assert_eq!(UtxoSet::load(&path).unwrap().last_scanned_height(), 0);
+    drop(wallet);
     let pending = crate::wallet::BtcWallet::with_persistence(
         [1; 64],
         bitcoin::Network::Regtest,
@@ -468,6 +469,12 @@ async fn restored_chain_cache_is_rebuilt_after_first_header_sync() {
         "a restart immediately after header sync must not unlock the wallet"
     );
     drop(pending);
+    let mut wallet = crate::wallet::BtcWallet::with_persistence(
+        [1; 64],
+        bitcoin::Network::Regtest,
+        path.clone(),
+    )
+    .unwrap();
     wallet.set_last_scanned_height(2);
     wallet.add_utxo(Utxo {
         txid: hex::encode([10; 32]),
@@ -572,6 +579,7 @@ async fn restored_wallet_refuses_scan_when_history_predates_retained_floor() {
     );
     assert!(wallet.list_utxos().is_empty());
     assert!(UtxoSet::load(&path).unwrap().rescan_required());
+    drop(wallet);
     let reopened = crate::wallet::BtcWallet::with_persistence(
         [1; 64],
         bitcoin::Network::Regtest,
@@ -582,7 +590,6 @@ async fn restored_wallet_refuses_scan_when_history_predates_retained_floor() {
     drop(peer);
     server.await.unwrap();
     drop(reopened);
-    drop(wallet);
     let mut wallet = crate::wallet::BtcWallet::with_persistence(
         [1; 64],
         bitcoin::Network::Regtest,

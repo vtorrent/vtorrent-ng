@@ -338,11 +338,18 @@ fn promote(
         "regtest" => "regtest",
         _ => anyhow::bail!("--network must be mainnet or regtest"),
     };
+    if label == "mainnet" {
+        anyhow::bail!(
+            "mainnet legacy promotion is disabled until the recovery procedure and writer isolation are independently reviewed; use the archived copy for manual recovery"
+        );
+    }
     validate_in_data_dir(&data_dir, &archive)?;
     validate_in_data_dir(&data_dir, &output)?;
     validate_scoped_output(&output, label, &expected_id)?;
     require_regular_file(&archive)?;
     require_regular_file(&output)?;
+    let _lock = vtorrent_btc::utxo::lock_state_path(&output)
+        .map_err(|error| anyhow::anyhow!("wallet state is in use: {error}"))?;
     let original = fs::read(&output)?;
     if fs::read(&archive)? != original {
         anyhow::bail!("archive does not match the staged copy; do not promote either file");
@@ -363,12 +370,7 @@ fn promote(
     }
     let set = vtorrent_btc::utxo::UtxoSet::from_verified_legacy_bytes(&original)?;
     set.replace_for_confirmed_promotion(&output)?;
-    let bitcoin_network = if label == "regtest" {
-        bitcoin::Network::Regtest
-    } else {
-        bitcoin::Network::Bitcoin
-    };
-    vtorrent_btc::wallet::BtcWallet::with_persistence(*seed, bitcoin_network, output.clone())
+    vtorrent_btc::utxo::UtxoSet::validate_wallet_state(&output)
         .map_err(|error| anyhow::anyhow!("promoted copy did not pass the wallet guard: {error}"))?;
     if fs::read(&archive)? != original {
         anyhow::bail!("archive changed during promotion; inspect both files before use");

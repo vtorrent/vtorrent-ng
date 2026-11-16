@@ -109,6 +109,24 @@ pub(crate) fn btc_utxo_path(
         })
 }
 
+/// Create the first BTC state for both supported networks before the wallet
+/// file is published. The seed was just generated, so no prior history exists.
+pub(crate) fn create_initial_btc_states(
+    wallet_path: &std::path::Path,
+    seed: &[u8; 64],
+) -> crate::error::Result<()> {
+    for network in [bitcoin::Network::Bitcoin, bitcoin::Network::Regtest] {
+        let path = btc_utxo_path(Some(wallet_path), network, seed);
+        vtorrent_btc::wallet::BtcWallet::with_persistence_attested_seed(*seed, network, path, true)
+            .map_err(|error| {
+                crate::error::TauriError::Io(format!(
+                    "Could not create the initial BTC wallet state: {error}"
+                ))
+            })?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn start_node(
     state: tauri::State<'_, AppState>,
@@ -246,21 +264,12 @@ pub async fn start_node(
             ensure_no_legacy_btc_wallet(wp.as_deref())?;
             btc_utxo_path(wp.as_deref(), btc_network, &seed)
         };
-        let attested_new_seed = state.may_attest_new_btc_seed();
-        match vtorrent_btc::wallet::BtcWallet::with_persistence_attested_seed(
+        match vtorrent_btc::wallet::BtcWallet::with_persistence(
             *seed,
             btc_network,
             utxo_path.clone(),
-            attested_new_seed,
         ) {
             Ok(wallet) => {
-                if attested_new_seed {
-                    state.consume_new_seed_attestation().map_err(|error| {
-                        TauriError::Io(format!(
-                            "BTC wallet state was loaded, but its new-seed authorization could not be retired: {error}. Remove btc-new-seed-attestation.json from the app data directory before continuing."
-                        ))
-                    })?;
-                }
                 *rpc_state.btc_wallet.write().await = Some(wallet);
                 tracing::info!(
                     "BTC wallet loaded with UTXO persistence: {}",
@@ -742,6 +751,30 @@ mod tests {
             Some(std::path::Path::new("/tmp")),
             "the scoped file must stay next to the wallet"
         );
+    }
+
+    #[test]
+    fn created_wallet_gets_openable_state_for_both_networks() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-tauri-initial-btc-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wallet = dir.join("wallet.vtr");
+        let seed = [5u8; 64];
+        create_initial_btc_states(&wallet, &seed).unwrap();
+        for network in [bitcoin::Network::Bitcoin, bitcoin::Network::Regtest] {
+            let path = btc_utxo_path(Some(&wallet), network, &seed);
+            assert!(path.exists());
+            let opened =
+                vtorrent_btc::wallet::BtcWallet::with_persistence(seed, network, path).unwrap();
+            drop(opened);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
