@@ -1,9 +1,6 @@
 # Independent security review request
 
-> **Stale draft:** new fund-safety changes are underway after the candidate
-> below. Retarget and revalidate the package before commissioning review.
-
-Updated 2026-11-16. This package requests an independent human security review.
+Updated 2026-11-17. This package requests an independent human security review.
 The prior internal model review in `docs/2026-10-26_security-vtorrent-report.md`
 does not satisfy the independence gate.
 
@@ -13,18 +10,18 @@ already accepted so it is not re-litigated.
 
 ## Review target
 
-Review the candidate `ba46fd647c85ee584037b562dca3430f6cec43a3`. This is the current review head. It is **not**
-the image in the active 168-hour soak: that fleet runs `6a49727`, which predates
-the fund-safety and recovery changes below.
+Review the candidate `611d56bba6bc982b5c2b6166897261da4fc8b935`. This is the current review head. It is **not**
+covered by any prior soak: the `6a49727` fleet predates the fund-safety and
+recovery changes below and was interrupted by a host restart on 2026-11-16.
 Under the soak provenance policy, the shipping image needs its own full window
 after this review and its fixes settle.
 
 Read this document from the tip of `main`. Confirm that no code changed after
 the candidate with
-`git diff --name-only ba46fd6..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
-must return nothing. Check out `ba46fd6` itself when running the verification
-commands. The tables below record the earlier deltas. The last table covers the
-range from `f8e0162` to the candidate.
+`git diff --name-only 611d56b..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+must return nothing. Check out `611d56b` itself when running the verification
+commands. The tables below record the earlier deltas. The table after the
+`f8e0162` deltas covers the range from `ba46fd6` to the candidate.
 
 The deltas added after `dd98176` are the reason this request was refreshed; the
 original 2026-10-27 scope predates them.
@@ -79,6 +76,17 @@ Deltas after `f8e0162`:
 | `a4724d5` | Review fixes: atomic attested create, durable consumed marker, archive-digest-bound promotion |
 | `ba46fd6` | Single-writer state lock, immediate dual-network desktop state, mainnet promotion disabled |
 
+Deltas after `ba46fd6`:
+
+| Commit | Purpose |
+|---|---|
+| `91dd05b` | BTC initialization record, symlink/hard-link rejection, separate-process lock test |
+| `30f7224` | Backup takes BTC locks; automatic restore of BTC, swap, or cold-stake records refused |
+| `1008166` | Backup locks before checking state existence; cross-process BTC test isolated |
+| `6c833cf` | Desktop node startup and wallet lifecycle serialized under the node guard |
+| `060bedf` | Cold-stake funding requires the wallet passphrase and a fresh TOTP code |
+| `611d56b` | Send quotes bound to the signing wallet; wallet switch clears pending quotes |
+
 Deltas after the earlier review head:
 
 | Commit | Purpose |
@@ -129,7 +137,7 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout ba46fd647c85ee584037b562dca3430f6cec43a3
+git checkout 611d56bba6bc982b5c2b6166897261da4fc8b935
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
@@ -137,7 +145,7 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 cargo test --workspace --all-features
 ```
 
-The `ba46fd6` workspace run passed 53 test groups and 1,367 tests with 0
+The `611d56b` workspace run passed 54 test groups and 1,379 tests with 0
 failures and 11 ignored. CI repeats the `--all-features` suite on every push.
 Set `VTORRENT_TOTP_STATE_DIR` to a fresh directory before running the suite so
 the host-scoped TOTP replay state does not collide with an existing
@@ -165,6 +173,12 @@ review as approving migration of production wallets.
   custody, script/key matching, locktime enforcement, and the encrypted file
   format.
 - BTC claim replacement lineage and fee-bump recovery.
+- **Desktop wallet lifecycle and backup containment.** Node startup and wallet
+  switching serialize under one guard; cold-stake funding requires the wallet
+  passphrase and a fresh TOTP code; send quotes are bound to the signing wallet.
+  Desktop restore deliberately refuses BTC, swap, and cold-stake recovery data
+  because a backup cannot prove it is current. Review whether those guards can
+  be bypassed and whether fail-closed recovery is the right trade-off.
 
 Added with `ff148fd` and `35ea52e`:
 
@@ -222,7 +236,7 @@ Added with `ff148fd` and `35ea52e`:
   swap preserved across a maker restart, BTC claim with six confirmations, and
   a separate taker node broadcasting the VTR claim.
 - CI runs the workspace suite with `--all-features` on every push. The last
-  counted local run on the review head was 53 groups and 1,367 tests, zero
+  counted local run on the review head was 54 groups and 1,379 tests, zero
   failures, with 11 ignored: seven need a Bitcoin Core container, two are manual
   release-mode governance experiments, one is a mainnet-scale header-retention
   test, and one is a doctest. The whole-tree review remediation is documented in
@@ -239,8 +253,9 @@ Added with `ff148fd` and `35ea52e`:
   launched without the pinned allocator settings peaked at 279.7 MiB and broke
   the 256 MiB budget; a matched comparison measured 162–213 MiB default versus
   116–128 MiB tuned. See `docs/soak-log.md` 2026-11-01.
-- The active release-candidate fleet runs `6a49727` toward 2026-11-20T19:20Z.
-  It does not cover the deltas after that commit. Production dead-man
-  provisioning is complete; an independent human review and a full window for
-  the eventual shipping image remain open.
+- The `6a49727` release-candidate fleet was interrupted by a host restart on
+  2026-11-16 and cannot be counted as a continuous window. It predates every
+  delta after that commit. Production dead-man provisioning is complete; an
+  independent human review and a fresh full window for the eventual shipping
+  image remain open.
 - Please confirm scope, timeline, and access needs before starting.

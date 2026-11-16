@@ -1,8 +1,5 @@
 # Security review — cover note
 
-> **Stale draft:** new fund-safety changes are underway after the candidate
-> below. Retarget and revalidate the package before commissioning review.
-
 A ready-to-send message for the reviewer. The technical scope lives in
 `docs/security-review-request-2026-10-27.md`; this note is the ask, the context,
 and the specific questions.
@@ -11,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `ba46fd6`
+Subject: Independent security review — vTorrent-NG mainnet candidate `611d56b`
 
 Hello,
 
@@ -21,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `ba46fd647c85ee584037b562dca3430f6cec43a3`
+**Review head:** `611d56bba6bc982b5c2b6166897261da4fc8b935`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `ba46fd6`. It is not the image in the active 168-hour
-soak: that fleet runs `6a49727` and predates every change below. The eventual
-shipping image needs its own full window after this review and its fixes settle.
+The code under review is `611d56b`. It is not covered by any prior soak: the
+`6a49727` fleet predates every change below and was interrupted by a host
+restart on 2026-11-16. The eventual shipping image needs its own full window
+after this review and its fixes settle.
 
-The code under review is `ba46fd6`. Read this note and the scope document from
-the tip of `main`; commits after the candidate carry documentation only. Confirm
-that with
-`git diff --name-only ba46fd6..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+Read this note and the scope document from the tip of `main`. Confirm that no
+code changed after the candidate with
+`git diff --name-only 611d56b..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -40,7 +37,30 @@ consider in scope. Nothing is required beyond a clone and a Rust toolchain; no
 credentials or live infrastructure access are needed.
 
 **What changed since the last review round.** The earlier review covered up to
-`dd98176`, and an earlier package covered `b729e36`. Since `b729e36`:
+`dd98176`, and an earlier package covered `b729e36`. Since the previous
+candidate `ba46fd6`:
+
+- `91dd05b` — BTC state initialization is recorded separately from the state
+  file, symlinked and hard-linked state paths are rejected, and a
+  separate-process lock test covers a state with a pending send.
+- `30f7224` — desktop backup takes the BTC state lock, includes the
+  initialization record, and refuses to restore BTC, swap, or cold-stake
+  recovery data automatically: a backup cannot prove those records are current.
+  Wallet-only bundles remain restorable.
+- `1008166` — backup takes the BTC lock before checking whether state exists,
+  closing an initialization race, and the cross-process BTC writer test now
+  runs in its own test binary instead of racing other unit tests.
+- `6c833cf` — desktop node startup holds the node mutex through initialization,
+  and wallet create/open/import/restore hold the stopped-node guard for the
+  whole operation. Wallet locking takes the node guard before clearing wallet
+  state.
+- `060bedf` — desktop cold-stake funding now requires the wallet passphrase and
+  a fresh TOTP code when 2FA is enabled; the UI collects and forwards both.
+- `611d56b` — desktop send quotes are bound to the address that signed them; a
+  quote prepared by one wallet cannot be broadcast with another wallet's
+  passphrase, and wallet switches or restores clear pending quotes.
+
+Earlier in this round, from `b729e36` through `ba46fd6`:
 
 - `ff148fd` — a codebase-wide remediation pass (consensus, overlay, P2P, RPC,
   swap, torrent, UI). Findings and fixes are written up in
@@ -134,6 +154,12 @@ Changes already described in the earlier package, up to `f8e0162`:
 9. **Legacy migration tooling.** Review `btc-state-stage` parsing, permission
    checks, publication and archival ordering, and the crash states it refuses.
    Ownership and writer isolation are still operator assertions.
+10. **Desktop wallet lifecycle and backup containment.** Check that the
+    stopped-node guard cannot be bypassed by a concurrent startup, that a quote
+    or pending send cannot cross a wallet switch, and that the fail-closed
+    backup/restore rules preserve recovery data rather than silently replacing
+    it. Note the deliberate consequence: BTC, swap, and cold-stake records
+    cannot currently be restored automatically by the desktop app.
 
 **Known and accepted, so it does not need re-litigating:**
 
@@ -167,11 +193,12 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `ba46fd647c85ee584037b562dca3430f6cec43a3`
+- Confirm the review head is still `611d56bba6bc982b5c2b6166897261da4fc8b935`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.
-- Do not describe the active `6a49727` fleet as covering this head. The shipping
-  image needs its own 168-hour window after the review and its fixes settle.
+- Do not describe the interrupted `6a49727` fleet as covering this head. The
+  shipping image needs its own 168-hour window after the review and its fixes
+  settle.
 - Decide who receives it. Sending it is the step that actually opens the gate —
   drafting it does not.
