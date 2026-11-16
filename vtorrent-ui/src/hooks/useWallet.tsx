@@ -71,8 +71,8 @@ interface WalletContextType extends WalletState {
   lock: () => void
   createWallet: (passphrase: string, net?: { network?: string, seeds?: string[] }) => Promise<void>
   importLegacyWallet: (walletDatBase64: string, legacyPassphrase: string | undefined, newPassphrase: string) => Promise<ImportResult>
-  enable2FA: () => Promise<{ uri: string; secret: string }>
-  verify2FA: (code: string) => Promise<boolean>
+  enable2FA: (passphrase: string) => Promise<{ uri: string; secret: string }>
+  verify2FA: (code: string, passphrase: string) => Promise<boolean>
   disable2FA: (otpCode: string) => Promise<void>
   generateAddress: (label?: string) => Promise<string>
   quoteVtr: (toAddress: string, amountSatoshis: number) => Promise<VtrQuote>
@@ -406,13 +406,13 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
-  const enable2FA = useCallback(async () => {
-    const result = await invoke<TauriEnable2FAResult>('enable_2fa')
+  const enable2FA = useCallback(async (passphrase: string) => {
+    const result = await invoke<TauriEnable2FAResult>('enable_2fa', { passphrase })
     return { uri: result.uri, secret: result.secret }
   }, [])
 
-  const verify2FA = useCallback(async (code: string) => {
-    const valid = await invoke<boolean>('verify_2fa', { code })
+  const verify2FA = useCallback(async (code: string, passphrase: string) => {
+    const valid = await invoke<boolean>('verify_2fa', { code, passphrase })
     if (valid) setState(prev => ({ ...prev, has2FA: true }))
     return valid
   }, [])

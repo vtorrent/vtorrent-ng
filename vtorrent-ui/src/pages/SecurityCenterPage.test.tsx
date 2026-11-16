@@ -6,8 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import SecurityCenterPage from './SecurityCenterPage'
 
 const wallet = vi.hoisted(() => ({
-  enable: vi.fn<() => Promise<{ uri: string; secret: string }>>(),
-  verify: vi.fn<(code: string) => Promise<boolean>>(),
+  enable: vi.fn<(passphrase: string) => Promise<{ uri: string; secret: string }>>(),
+  verify: vi.fn<(code: string, passphrase: string) => Promise<boolean>>(),
   disable: vi.fn<(code: string) => Promise<void>>(),
 }))
 
@@ -42,20 +42,22 @@ describe('2FA enrollment', () => {
     wallet.verify.mockResolvedValueOnce(false).mockResolvedValueOnce(true)
     render(<MemoryRouter><SecurityCenterPage /></MemoryRouter>)
 
+    fireEvent.change(screen.getByTestId('totp-passphrase'), { target: { value: 'pw' } })
     fireEvent.click(screen.getByRole('button', { name: 'Enable 2FA' }))
     expect(await screen.findByText('JBSWY3DPEHPK3PXP')).toBeInTheDocument()
+    expect(wallet.enable).toHaveBeenCalledWith('pw')
 
     fireEvent.change(screen.getByTestId('totp-verify'), { target: { value: '123456' } })
     fireEvent.click(screen.getByRole('button', { name: 'Confirm & Enable 2FA' }))
 
     expect(await screen.findByText(/Invalid code/)).toBeInTheDocument()
-    expect(wallet.verify).toHaveBeenCalledWith('123456')
+    expect(wallet.verify).toHaveBeenCalledWith('123456', 'pw')
     expect(screen.queryByText('2FA Successfully Enabled')).not.toBeInTheDocument()
 
     fireEvent.change(screen.getByTestId('totp-verify'), { target: { value: '654321' } })
     fireEvent.click(screen.getByRole('button', { name: 'Confirm & Enable 2FA' }))
 
     await waitFor(() => expect(screen.getByText('2FA Successfully Enabled')).toBeInTheDocument())
-    expect(wallet.verify).toHaveBeenLastCalledWith('654321')
+    expect(wallet.verify).toHaveBeenLastCalledWith('654321', 'pw')
   })
 })

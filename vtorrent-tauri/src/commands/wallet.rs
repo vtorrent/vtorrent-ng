@@ -504,9 +504,15 @@ pub async fn get_addresses(state: tauri::State<'_, AppState>) -> Result<Vec<Addr
 // ─── 2FA commands ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn enable_2fa(state: State<AppState>) -> Result<Enable2FAResult> {
+pub fn enable_2fa(state: State<AppState>, passphrase: String) -> Result<Enable2FAResult> {
+    let passphrase = zeroize::Zeroizing::new(passphrase);
     let mut guard = state.wallet.lock().unwrap();
     let wallet = guard.as_mut().ok_or(TauriError::WalletNotInitialized)?;
+    if !wallet.verify_passphrase(&passphrase) {
+        return Err(TauriError::Unauthorized(
+            "Incorrect wallet passphrase".into(),
+        ));
+    }
 
     let config = wallet.enable_2fa().map_err(TauriError::from)?;
 
@@ -518,9 +524,15 @@ pub fn enable_2fa(state: State<AppState>) -> Result<Enable2FAResult> {
 }
 
 #[tauri::command]
-pub fn verify_2fa(state: State<AppState>, code: String) -> Result<bool> {
+pub fn verify_2fa(state: State<AppState>, code: String, passphrase: String) -> Result<bool> {
+    let passphrase = zeroize::Zeroizing::new(passphrase);
     let mut guard = state.wallet.lock().unwrap();
     let wallet = guard.as_mut().ok_or(TauriError::WalletNotInitialized)?;
+    if !wallet.verify_passphrase(&passphrase) {
+        return Err(TauriError::Unauthorized(
+            "Incorrect wallet passphrase".into(),
+        ));
+    }
 
     if wallet.has_pending_2fa() {
         let pending = wallet.pending_2fa_config();
@@ -2046,7 +2058,9 @@ mod tests {
         *state.wallet.lock().unwrap() = Some(Wallet::create("password").unwrap());
         *state.wallet_path.lock().unwrap() = Some(path.clone());
 
-        let result = enable_2fa(state.clone()).unwrap();
+        let error = enable_2fa(state.clone(), "wrong".into()).unwrap_err();
+        assert!(matches!(error, TauriError::Unauthorized(_)));
+        let result = enable_2fa(state.clone(), "password".into()).unwrap();
         assert!(!state.wallet.lock().unwrap().as_ref().unwrap().has_2fa());
         assert!(
             !path.exists(),
@@ -2055,12 +2069,13 @@ mod tests {
 
         let secret = vtorrent_wallet::otp::TotpSecret::from_base32(&result.secret).unwrap();
         let code = secret.current_code().unwrap();
-        assert!(verify_2fa(state.clone(), code.clone()).unwrap());
+        assert!(verify_2fa(state.clone(), code.clone(), "wrong".into()).is_err());
+        assert!(verify_2fa(state.clone(), code.clone(), "password".into()).unwrap());
         assert!(state.wallet.lock().unwrap().as_ref().unwrap().has_2fa());
         assert!(path.exists(), "confirmation must persist the active config");
 
         assert!(
-            verify_2fa(state.clone(), code.clone()).is_err(),
+            verify_2fa(state.clone(), code.clone(), "password".into()).is_err(),
             "enrollment code must not be accepted twice"
         );
         assert!(

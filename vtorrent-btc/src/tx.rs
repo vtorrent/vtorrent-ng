@@ -15,6 +15,8 @@ use std::str::FromStr;
 
 /// BIP69: sequence value that signals RBF (Replace-By-Fee).
 const RBF_SEQUENCE: Sequence = Sequence(0xFFFFFFFD);
+/// Standard dust threshold; below this, peers will not relay the output.
+const DUST_LIMIT_SATS: u64 = 546;
 
 /// Build and sign a P2WPKH transaction spending `inputs` to `destination`,
 /// returning the change to `change_address`.
@@ -90,6 +92,11 @@ pub fn build_and_sign_multi(
         .map_err(|e| BtcError::InvalidAddress(e.to_string()))?
         .require_network(network)
         .map_err(|e| BtcError::InvalidAddress(e.to_string()))?;
+    if amount_sats < DUST_LIMIT_SATS {
+        return Err(BtcError::DustAmount {
+            amount: amount_sats,
+        });
+    }
 
     let change = Address::from_str(change_address)
         .map_err(|e| BtcError::InvalidAddress(e.to_string()))?
@@ -132,7 +139,10 @@ pub fn build_and_sign_multi(
         value: Amount::from_sat(amount_sats),
         script_pubkey: dest.script_pubkey(),
     }];
-    if change_sats > 0 {
+    // A sub-546-sat change output is non-standard and would make the whole
+    // transaction unrelayable. Leave the remainder in the fee, as the HTLC
+    // funding builder does.
+    if change_sats >= DUST_LIMIT_SATS {
         outputs.push(TxOut {
             value: Amount::from_sat(change_sats),
             script_pubkey: change.script_pubkey(),
@@ -484,6 +494,52 @@ mod tests {
             false,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn dust_change_is_absorbed_into_the_fee() {
+        let wif = test_wif(0);
+        let addr = test_addr(0);
+        let inputs = vec![test_utxo(&"44".repeat(32), 0, 100_000, 0)];
+        let raw = build_and_sign(
+            &inputs,
+            &addr,
+            50_000,
+            49_999,
+            &addr,
+            &wif,
+            bitcoin::Network::Bitcoin,
+            false,
+        )
+        .unwrap();
+        let tx: Transaction = bitcoin::consensus::encode::deserialize(&raw).unwrap();
+        assert_eq!(
+            tx.output.len(),
+            1,
+            "sub-dust change must be absorbed instead of creating a non-standard output"
+        );
+        assert_eq!(tx.output[0].value.to_sat(), 50_000);
+    }
+
+    #[test]
+    fn dust_recipient_is_rejected() {
+        let wif = test_wif(0);
+        let addr = test_addr(0);
+        let inputs = vec![test_utxo(&"55".repeat(32), 0, 100_000, 0)];
+        let result = build_and_sign(
+            &inputs,
+            &addr,
+            100,
+            1_000,
+            &addr,
+            &wif,
+            bitcoin::Network::Bitcoin,
+            false,
+        );
+        assert!(
+            result.is_err(),
+            "a dust recipient would create a transaction peers never relay"
+        );
     }
 
     #[test]

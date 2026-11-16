@@ -14,6 +14,9 @@ pub enum BtcError {
     #[error("Insufficient funds: available {available} sats, required {required} sats")]
     InsufficientFunds { available: u64, required: u64 },
 
+    #[error("Amount {amount} sats is below the dust threshold")]
+    DustAmount { amount: u64 },
+
     #[error("Not synced")]
     NotSynced,
 

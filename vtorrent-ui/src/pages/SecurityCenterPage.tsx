@@ -18,12 +18,14 @@ export default function SecurityCenterPage() {
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
   const [showDisable, setShowDisable] = useState(false)
+  const [twoFAPassphrase, setTwoFAPassphrase] = useState('')
 
   const handleEnable2FA = async () => {
     setLoading(true)
     setError('')
     try {
-      const { uri, secret } = await enable2FA()
+      if (!twoFAPassphrase) throw new Error('Enter your wallet passphrase')
+      const { uri, secret } = await enable2FA(twoFAPassphrase)
       setTotpUri(uri)
       setTotpSecret(secret)
       setTwoFAStep('setup')
@@ -40,12 +42,13 @@ export default function SecurityCenterPage() {
     setError('')
     try {
       if (verifyCode.length !== 6) throw new Error('Enter a 6-digit code')
-      const valid = await verify2FA(verifyCode)
+      const valid = await verify2FA(verifyCode, twoFAPassphrase)
       if (!valid) {
         setError('Invalid code. Check your authenticator app and try again.')
         return
       }
       setTwoFAStep('done')
+      setTwoFAPassphrase('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Verification failed')
     } finally {
@@ -134,6 +137,14 @@ export default function SecurityCenterPage() {
                 Enable 2FA to add a second layer of protection.
               </p>
             </div>
+            <input
+              data-testid="totp-passphrase"
+              type="password"
+              className="input-field mb-3"
+              placeholder="Wallet passphrase"
+              value={twoFAPassphrase}
+              onChange={e => setTwoFAPassphrase(e.target.value)}
+            />
             <button onClick={handleEnable2FA} disabled={loading} className="btn-primary">
               {loading ? 'Setting up...' : 'Enable 2FA'}
             </button>
