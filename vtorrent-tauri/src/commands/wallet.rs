@@ -41,6 +41,41 @@ pub(crate) fn ensure_node_stopped(
     }
 }
 
+/// Verify the desktop wallet's passphrase and, when enrolled, a fresh TOTP code.
+///
+/// The desktop wallet is a seed-based `WalletData` file, which the RPC
+/// `verify_wallet_auth` helper cannot parse (it expects an imported hot-wallet
+/// payload). Desktop commands must authorize against the wallet they actually
+/// hold and pass the resulting key explicitly.
+pub(crate) fn authorize_wallet(
+    state: &AppState,
+    passphrase: &str,
+    otp_code: Option<&str>,
+) -> Result<zeroize::Zeroizing<String>> {
+    let wallet_path = state.wallet_path.lock().unwrap().clone();
+    let mut guard = state.wallet.lock().unwrap();
+    let wallet = guard.as_mut().ok_or(TauriError::WalletNotInitialized)?;
+    if !wallet.verify_passphrase(passphrase) {
+        return Err(TauriError::Unauthorized(
+            "Incorrect wallet passphrase".into(),
+        ));
+    }
+    if wallet.has_2fa() {
+        let code = otp_code.ok_or(TauriError::TwoFAFailed)?;
+        let path = wallet_path.as_ref().ok_or(TauriError::WalletLocked)?;
+        let valid = wallet
+            .verify_2fa_once(code, path)
+            .map_err(|error| TauriError::Unauthorized(error.to_string()))?;
+        if !valid {
+            return Err(TauriError::TwoFAFailed);
+        }
+    }
+    let wif = wallet
+        .get_default_wif()
+        .ok_or(TauriError::WalletNotInitialized)?;
+    Ok(zeroize::Zeroizing::new(wif.to_string()))
+}
+
 fn ensure_wallet_path_allowed(state: &AppState, path: &std::path::Path) -> Result<()> {
     if path
         .components()
@@ -1150,13 +1185,7 @@ pub async fn send_btc(
     // Spending the node's BTC wallet requires an unlocked wallet, matching the
     // VTR path. The desktop command must enforce this too: it talks to the
     // wallet directly and would otherwise bypass the RPC handler's check.
-    vtorrent_rpc::handlers::authorize_wallet_operation(
-        &handle.rpc_state,
-        &passphrase,
-        otp_code.as_deref(),
-    )
-    .await
-    .map_err(|error| TauriError::InvalidInput(error.to_string()))?;
+    authorize_wallet(state.inner(), &passphrase, otp_code.as_deref())?;
 
     let (txid_hex, raw, _) = {
         let mut btc = handle.rpc_state.btc_wallet.write().await;
@@ -1189,13 +1218,7 @@ pub async fn rebroadcast_btc(
     let handle = guard
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
-    vtorrent_rpc::handlers::authorize_wallet_operation(
-        &handle.rpc_state,
-        &passphrase,
-        otp_code.as_deref(),
-    )
-    .await
-    .map_err(|error| TauriError::InvalidInput(error.to_string()))?;
+    authorize_wallet(state.inner(), &passphrase, otp_code.as_deref())?;
     let raw = {
         let btc = handle.rpc_state.btc_wallet.read().await;
         let wallet = btc
@@ -1712,6 +1735,119 @@ mod tests {
         *rpc.btc_network.write().await = bitcoin::Network::Regtest;
         let error = broadcast_btc_tx(&rpc, &[]).await.unwrap_err();
         assert!(error.contains("peer required"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn dex_and_swap_commands_require_desktop_wallet_auth() {
+        use crate::state::NodeHandle;
+        use vtorrent_rpc::state::AppState as RpcAppState;
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+        let dir = unique_wallet_dir("desktop-swap-auth");
+        std::fs::create_dir_all(&dir).unwrap();
+        let wallet = Wallet::create("pw").unwrap();
+        let address = wallet.default_address().unwrap().to_string();
+        let wallet_path = dir.join("wallet.vtr");
+        wallet.save(&wallet_path).unwrap();
+        *state.wallet.lock().unwrap() = Some(wallet);
+        *state.wallet_path.lock().unwrap() = Some(wallet_path);
+        *state.node.lock().await = Some(NodeHandle {
+            rpc_state: RpcAppState::new(),
+            network: "vtorrent-regtest".to_string(),
+            start_time: std::time::Instant::now(),
+            mempool_path: None,
+        });
+
+        let error = crate::commands::dex::match_dex_order(
+            state.clone(),
+            "00".repeat(32),
+            address.clone(),
+            "wrong".into(),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, TauriError::Unauthorized(_)), "{error:?}");
+
+        let error = crate::commands::dex::vtr_claim(
+            state.clone(),
+            "00".repeat(32),
+            "00".repeat(32),
+            "wrong".into(),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, TauriError::Unauthorized(_)), "{error:?}");
+
+        let error = crate::commands::dex::btc_fund(
+            state.clone(),
+            "00".repeat(32),
+            "bcrt1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".into(),
+            "wrong".into(),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, TauriError::Unauthorized(_)), "{error:?}");
+
+        let foreign = Wallet::create("other")
+            .unwrap()
+            .default_address()
+            .unwrap()
+            .to_string();
+        let error = crate::commands::dex::place_dex_order(
+            state.clone(),
+            foreign,
+            None,
+            100_000_000,
+            "BTC".into(),
+            100_000_000,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, TauriError::Unauthorized(_)), "{error:?}");
+
+        // Correct credentials must pass authorization; the missing order is the
+        // next failure, proving the guard is not a blanket refusal.
+        let error = crate::commands::dex::match_dex_order(
+            state.clone(),
+            "00".repeat(32),
+            address.clone(),
+            "pw".into(),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, TauriError::NotFound(_)), "{error:?}");
+
+        // A 2FA wallet must reject a swap action without a code.
+        {
+            use vtorrent_wallet::otp::TotpSecret;
+            let mut guard = state.wallet.lock().unwrap();
+            let wallet = guard.as_mut().unwrap();
+            let config = wallet.enable_2fa().unwrap();
+            let secret = TotpSecret::from_base32(&config.secret_base32()).unwrap();
+            assert!(wallet
+                .confirm_pending_2fa(&secret.current_code().unwrap())
+                .unwrap());
+        }
+        let error = crate::commands::dex::match_dex_order(
+            state.clone(),
+            "00".repeat(32),
+            address,
+            "pw".into(),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, TauriError::TwoFAFailed), "{error:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

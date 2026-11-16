@@ -261,6 +261,16 @@ pub async fn btc_fund_with_state(
     state: &AppState,
     req: BtcFundRequest,
 ) -> RpcResult<BtcFundResponse> {
+    crate::handlers::authorize_wallet_operation(state, &req.passphrase, req.otp_code.as_deref())
+        .await?;
+    btc_fund_authorized(state, req).await
+}
+
+/// Fund the BTC leg after the caller has already authorized the wallet.
+pub async fn btc_fund_authorized(
+    state: &AppState,
+    req: BtcFundRequest,
+) -> RpcResult<BtcFundResponse> {
     fund_btc_with_broadcast(state, req, async |raw: &[u8]| {
         broadcast_btc(state, raw).await
     })
@@ -272,8 +282,6 @@ async fn fund_btc_with_broadcast(
     req: BtcFundRequest,
     broadcast: impl AsyncFnOnce(&[u8]) -> RpcResult<[u8; 32]>,
 ) -> RpcResult<BtcFundResponse> {
-    crate::handlers::authorize_wallet_operation(state, &req.passphrase, req.otp_code.as_deref())
-        .await?;
     let order = state
         .order_book
         .read()
@@ -384,8 +392,12 @@ async fn fund_btc_with_broadcast(
 /// The taker claims VTR by revealing the preimage.
 pub async fn vtr_claim(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<VtrClaimRequest>,
+    Json(mut req): Json<VtrClaimRequest>,
 ) -> RpcResult<Json<SwapActionResponse>> {
+    // HTTP callers must authorize with a passphrase and fresh TOTP. A
+    // caller-supplied signing key is accepted only from the desktop bridge,
+    // which authorizes against its own wallet before calling the shared path.
+    req.taker_wif.clear();
     vtr_claim_with_state(&state, req).await.map(Json)
 }
 
@@ -613,6 +625,14 @@ pub async fn btc_claim_with_state(
 ) -> RpcResult<SwapActionResponse> {
     crate::handlers::authorize_wallet_operation(state, &req.passphrase, req.otp_code.as_deref())
         .await?;
+    btc_claim_authorized(state, req).await
+}
+
+/// Claim the BTC leg after the caller has already authorized the wallet.
+pub async fn btc_claim_authorized(
+    state: &AppState,
+    req: BtcClaimRequest,
+) -> RpcResult<SwapActionResponse> {
     claim_btc_with_verification(
         state,
         req,
@@ -794,6 +814,22 @@ pub async fn swap_refund_with_state(
     state: &AppState,
     req: SwapRefundRequest,
 ) -> RpcResult<SwapActionResponse> {
+    if state.wallet_encrypted.read().await.is_some() {
+        crate::handlers::authorize_wallet_operation(
+            state,
+            req.passphrase.as_str(),
+            req.otp_code.as_deref(),
+        )
+        .await?;
+    }
+    swap_refund_authorized(state, req).await
+}
+
+/// Refund after the caller has already authorized the wallet.
+pub async fn swap_refund_authorized(
+    state: &AppState,
+    req: SwapRefundRequest,
+) -> RpcResult<SwapActionResponse> {
     refund_with_broadcast(state, req, async |raw: &[u8]| {
         broadcast_btc(state, raw).await
     })
@@ -805,14 +841,6 @@ async fn refund_with_broadcast(
     req: SwapRefundRequest,
     broadcast: impl AsyncFnOnce(&[u8]) -> RpcResult<[u8; 32]>,
 ) -> RpcResult<SwapActionResponse> {
-    if state.wallet_encrypted.read().await.is_some() {
-        crate::handlers::authorize_wallet_operation(
-            state,
-            req.passphrase.as_str(),
-            req.otp_code.as_deref(),
-        )
-        .await?;
-    }
     restore_btc_swap(state, &req.order_id).await?;
     let order = state
         .order_book
