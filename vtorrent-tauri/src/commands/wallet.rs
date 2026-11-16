@@ -27,12 +27,14 @@ fn ensure_wallet_parent(path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn ensure_node_stopped(state: &AppState) -> Result<()> {
+pub(crate) fn ensure_node_stopped(
+    state: &AppState,
+) -> Result<tokio::sync::MutexGuard<'_, Option<crate::state::NodeHandle>>> {
     match state.node.try_lock() {
         Ok(guard) if guard.is_some() => Err(TauriError::NodeError(
             "Stop the node before switching wallets".into(),
         )),
-        Ok(_) => Ok(()),
+        Ok(guard) => Ok(guard),
         Err(_) => Err(TauriError::NodeError(
             "Node is busy; stop it before switching wallets".into(),
         )),
@@ -215,7 +217,7 @@ pub fn create_wallet(
     passphrase: String,
     wallet_path: String,
 ) -> Result<WalletInfo> {
-    ensure_node_stopped(state.inner())?;
+    let _node_guard = ensure_node_stopped(state.inner())?;
     state.cold_stake_scripts.lock().unwrap().clear();
     state.prepared_sends.lock().unwrap().clear();
     let passphrase = zeroize::Zeroizing::new(passphrase);
@@ -266,7 +268,7 @@ pub async fn open_wallet(
     passphrase: String,
     otp_code: Option<String>,
 ) -> Result<WalletInfo> {
-    ensure_node_stopped(state.inner())?;
+    let _node_guard = ensure_node_stopped(state.inner())?;
     state.cold_stake_scripts.lock().unwrap().clear();
     let passphrase = zeroize::Zeroizing::new(passphrase);
     let otp_code = otp_code.map(zeroize::Zeroizing::new);
@@ -287,17 +289,6 @@ pub async fn open_wallet(
     *state.wallet.lock().unwrap() = Some(wallet);
     *state.wallet_path.lock().unwrap() = Some(path);
 
-    {
-        let node = state.node.lock().await;
-        if let Some(handle) = node.as_ref() {
-            if let Err(error) = state.sync_swap_wallet(&handle.rpc_state).await {
-                *state.wallet.lock().unwrap() = None;
-                return Err(error);
-            }
-            vtorrent_rpc::handlers::wallet::resume_staking_if_requested(&handle.rpc_state).await;
-        }
-    }
-
     Ok(WalletInfo {
         is_unlocked: true,
         has_2fa,
@@ -309,10 +300,11 @@ pub async fn open_wallet(
 
 #[tauri::command]
 pub async fn lock_wallet(state: State<'_, AppState>) -> Result<()> {
+    let node = state.node.lock().await;
     *state.wallet.lock().unwrap() = None;
     state.cold_stake_scripts.lock().unwrap().clear();
     state.prepared_sends.lock().unwrap().clear();
-    if let Some(handle) = state.node.lock().await.as_ref() {
+    if let Some(handle) = node.as_ref() {
         handle.rpc_state.lock_wallet().await;
         if let Some(control) = &handle.rpc_state.staking_control {
             let _ = control
@@ -354,7 +346,7 @@ pub fn import_legacy_wallet(
     new_wallet_passphrase: String,
     new_wallet_path: String,
 ) -> Result<ImportResult> {
-    ensure_node_stopped(state.inner())?;
+    let _node_guard = ensure_node_stopped(state.inner())?;
     state.cold_stake_scripts.lock().unwrap().clear();
     state.prepared_sends.lock().unwrap().clear();
     let wallet_dat_base64 = zeroize::Zeroizing::new(wallet_dat_base64);
@@ -1884,6 +1876,16 @@ mod tests {
         assert!(matches!(error, TauriError::InvalidInput(_)));
         assert!(!outside.exists(), "rejected path must not create parents");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stopped_node_guard_excludes_concurrent_startup() {
+        let state = AppState::new();
+        let _guard = ensure_node_stopped(&state).unwrap();
+        assert!(
+            state.node.try_lock().is_err(),
+            "wallet lifecycle must retain exclusive node access"
+        );
     }
 
     #[test]

@@ -139,16 +139,16 @@ pub async fn start_node(
 
     let network_name = resolve_network(network.as_deref());
 
+    let mut node_guard = state.node.lock().await;
     {
-        let guard = state.node.lock().await;
-        if let Some(handle) = guard.as_ref() {
+        if let Some(handle) = node_guard.as_ref() {
             if handle.network != network_name {
                 return Err(TauriError::NodeError(format!(
                     "node running on {}; restart the app to switch networks",
                     handle.network
                 )));
             }
-            drop(guard);
+            drop(node_guard);
             return get_node_info(state).await;
         }
     }
@@ -310,7 +310,7 @@ pub async fn start_node(
         start_time: std::time::Instant::now(),
         mempool_path: Some(mempool_path.clone()),
     };
-    *state.node.lock().await = Some(handle);
+    *node_guard = Some(handle);
     tokio::spawn(vtorrent_rpc::swap_reconciliation::run_reconciler(
         rpc_state.clone(),
     ));
@@ -482,6 +482,7 @@ pub async fn start_node(
     });
 
     tracing::info!("vTorrent node started in background");
+    drop(node_guard);
     get_node_info(state).await
 }
 
