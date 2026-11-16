@@ -1,8 +1,5 @@
 # Security review — cover note
 
-> **Stale draft:** further fund-safety remediation is in progress after the
-> candidate named below. Do not send until the target and evidence are refreshed.
-
 A ready-to-send message for the reviewer. The technical scope lives in
 `docs/security-review-request-2026-10-27.md`; this note is the ask, the context,
 and the specific questions.
@@ -11,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `be34747`
+Subject: Independent security review — vTorrent-NG mainnet candidate `83d157a`
 
 Hello,
 
@@ -21,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `be347478aff533a75ce5155943917ee869c5ce88`
+**Review head:** `83d157a013a0c09d70a84165499b4fcc47d4a506`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `be34747`. It is not the image in the active 168-hour
+The code under review is `83d157a`. It is not the image in the active 168-hour
 soak: that fleet runs `6a49727` and predates every change below. The eventual
 shipping image needs its own full window after this review and its fixes settle.
 
-The code under review is `be34747`. Read this note and the scope document from
+The code under review is `83d157a`. Read this note and the scope document from
 the tip of `main`; commits after the candidate carry documentation only. Confirm
 that with
-`git diff --name-only be34747..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only 83d157a..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -65,9 +62,14 @@ credentials or live infrastructure access are needed.
   `docs/superpowers/specs/2026-11-15-cold-stake-funding-attestation-design.md`.
 - BTC send recovery after `f8e0162`: confirmed sends carry their signed bytes
   into the journal so a covered reorg keeps the input held; corrupt journals
-  fail closed; schema-2 wallet files convert unlabelled legacy removals into
-  holds; saves sync the parent directory and treat a post-rename failure as
-  uncertain; `set_utxo_path` adopts a path only after a successful write.
+  fail closed; saves sync the parent directory and treat a post-rename failure
+  as uncertain; `set_utxo_path` adopts a path only after a successful write.
+- BTC wallet state fails closed when missing or from a pre-v3/future version.
+  The daemon creates first state only under `--btc-attest-new-seed`; the desktop
+  only for a session-created wallet, with a persisted authorization bound to
+  the exact wallet bytes and consumed once state exists. `btc-state-stage
+  promote` requires exact archived bytes and explicit recovery preconditions.
+  Saves, promotion, and the peer cache use unique exclusive temporaries.
 - BTC claim replacement validation now checks the raw copy, witness, preimage,
   fee, destination, and the order's amount and expiry.
 - Broadcast status: a timeout without a reject is reported as submission, with
@@ -160,7 +162,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `be347478aff533a75ce5155943917ee869c5ce88`
+- Confirm the review head is still `83d157a013a0c09d70a84165499b4fcc47d4a506`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.

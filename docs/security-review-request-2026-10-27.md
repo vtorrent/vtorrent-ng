@@ -1,9 +1,6 @@
 # Independent security review request
 
-> **Stale draft:** further fund-safety remediation is in progress after the
-> candidate named below. Retarget and verify this package before commissioning.
-
-Updated 2026-11-15. This package requests an independent human security review.
+Updated 2026-11-16. This package requests an independent human security review.
 The prior internal model review in `docs/2026-10-26_security-vtorrent-report.md`
 does not satisfy the independence gate.
 
@@ -13,7 +10,7 @@ already accepted so it is not re-litigated.
 
 ## Review target
 
-Review the candidate `be347478aff533a75ce5155943917ee869c5ce88`. This is the current review head. It is **not**
+Review the candidate `83d157a013a0c09d70a84165499b4fcc47d4a506`. This is the current review head. It is **not**
 the image in the active 168-hour soak: that fleet runs `6a49727`, which predates
 the fund-safety and recovery changes below.
 Under the soak provenance policy, the shipping image needs its own full window
@@ -21,8 +18,8 @@ after this review and its fixes settle.
 
 Read this document from the tip of `main`. Confirm that no code changed after
 the candidate with
-`git diff --name-only be34747..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
-must return nothing. Check out `be34747` itself when running the verification
+`git diff --name-only 83d157a..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+must return nothing. Check out `83d157a` itself when running the verification
 commands. The tables below record the earlier deltas. The last table covers the
 range from `f8e0162` to the candidate.
 
@@ -74,6 +71,8 @@ Deltas after `f8e0162`:
 | `0a71f71` | RPC transaction lookups resolve through the body source |
 | `6c5417d` | Real-node test for an uncovered BTC reorg across restart |
 | `be34747` | Coverage limits closed: pruned-body lookup test, high-S signature, spent outpoint |
+| `1077a02` | Fail closed on missing, pre-v3, and future-version BTC state; explicit new-seed attestation |
+| `83d157a` | Legacy promotion, desktop authorization, unique exclusive save temporaries, scan-save failures |
 
 Deltas after the earlier review head:
 
@@ -125,7 +124,7 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout be347478aff533a75ce5155943917ee869c5ce88
+git checkout 83d157a013a0c09d70a84165499b4fcc47d4a506
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
@@ -133,7 +132,7 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 cargo test --workspace --all-features
 ```
 
-The `be34747` workspace run passed 53 test groups and 1,340 tests with 0
+The `83d157a` workspace run passed 53 test groups and 1,364 tests with 0
 failures and 11 ignored. CI repeats the `--all-features` suite on every push.
 Set `VTORRENT_TOTP_STATE_DIR` to a fresh directory before running the suite so
 the host-scoped TOTP replay state does not collide with an existing
@@ -218,7 +217,7 @@ Added with `ff148fd` and `35ea52e`:
   swap preserved across a maker restart, BTC claim with six confirmations, and
   a separate taker node broadcasting the VTR claim.
 - CI runs the workspace suite with `--all-features` on every push. The last
-  counted local run on the review head was 53 groups and 1,340 tests, zero
+  counted local run on the review head was 53 groups and 1,364 tests, zero
   failures, with 11 ignored: seven need a Bitcoin Core container, two are manual
   release-mode governance experiments, one is a mainnet-scale header-retention
   test, and one is a doctest. The whole-tree review remediation is documented in
