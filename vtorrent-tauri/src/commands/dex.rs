@@ -78,7 +78,6 @@ pub async fn place_dex_order(
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
     let rpc = &handle.rpc_state;
-    state.sync_swap_wallet(rpc).await?;
     let wallet_address = state
         .wallet
         .lock()
@@ -95,9 +94,6 @@ pub async fn place_dex_order(
     // Validation mirrors the RPC handler (previously the desktop app accepted
     // zero-amount orders, invalid maker addresses, and unbounded expiry —
     // producing orders that could never be funded or matched).
-    if !rpc.is_wallet_unlocked().await {
-        return Err(TauriError::WalletLocked);
-    }
     if vtr_amount == 0 || target_amount == 0 {
         return Err(TauriError::InvalidInput(format!(
             "DEX order amounts must be greater than zero (offer: {} sats, request: {} sats)",
@@ -302,8 +298,13 @@ pub async fn bump_vtr_refund(
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?
         .rpc_state
         .clone();
+    let wif = crate::commands::wallet::authorize_wallet(
+        state.inner(),
+        &req.passphrase,
+        req.otp_code.as_deref(),
+    )?;
     state.sync_swap_wallet(&rpc).await?;
-    vtorrent_rpc::refund_bump::bump(&rpc, req)
+    vtorrent_rpc::refund_bump::bump_with_wif(&rpc, req, wif.as_str())
         .await
         .map_err(TauriError::from)
 }
@@ -321,9 +322,9 @@ pub async fn match_dex_order(
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
     let rpc = &handle.rpc_state;
-    state.sync_swap_wallet(rpc).await?;
     let wif =
         crate::commands::wallet::authorize_wallet(state.inner(), &passphrase, otp_code.as_deref())?;
+    state.sync_swap_wallet(rpc).await?;
     vtorrent_rpc::handlers::match_dex_order_with_wif(
         rpc,
         vtorrent_rpc::models::MatchOrderRequest {
@@ -350,8 +351,8 @@ pub async fn btc_fund(
     let handle = guard
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
-    state.sync_swap_wallet(&handle.rpc_state).await?;
     crate::commands::wallet::authorize_wallet(state.inner(), &passphrase, otp_code.as_deref())?;
+    state.sync_swap_wallet(&handle.rpc_state).await?;
     let result = vtorrent_rpc::handlers::btc_fund_authorized(
         &handle.rpc_state,
         vtorrent_rpc::models::BtcFundRequest {
@@ -382,9 +383,9 @@ pub async fn vtr_claim(
     let handle = guard
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
-    state.sync_swap_wallet(&handle.rpc_state).await?;
     let taker_wif =
         crate::commands::wallet::authorize_wallet(state.inner(), &passphrase, otp_code.as_deref())?;
+    state.sync_swap_wallet(&handle.rpc_state).await?;
     let result = vtorrent_rpc::handlers::vtr_claim_with_state(
         &handle.rpc_state,
         vtorrent_rpc::models::VtrClaimRequest {
@@ -416,8 +417,8 @@ pub async fn btc_claim(
     let handle = guard
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
-    state.sync_swap_wallet(&handle.rpc_state).await?;
     crate::commands::wallet::authorize_wallet(state.inner(), &passphrase, otp_code.as_deref())?;
+    state.sync_swap_wallet(&handle.rpc_state).await?;
     let result = vtorrent_rpc::handlers::btc_claim_authorized(
         &handle.rpc_state,
         vtorrent_rpc::models::BtcClaimRequest {
@@ -447,8 +448,8 @@ pub async fn swap_refund(
     let handle = guard
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
-    state.sync_swap_wallet(&handle.rpc_state).await?;
     crate::commands::wallet::authorize_wallet(state.inner(), &passphrase, otp_code.as_deref())?;
+    state.sync_swap_wallet(&handle.rpc_state).await?;
     let result = vtorrent_rpc::handlers::swap_refund_authorized(
         &handle.rpc_state,
         vtorrent_rpc::models::SwapRefundRequest {

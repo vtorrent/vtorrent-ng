@@ -392,12 +392,16 @@ async fn fund_btc_with_broadcast(
 /// The taker claims VTR by revealing the preimage.
 pub async fn vtr_claim(
     State(state): State<Arc<AppState>>,
-    Json(mut req): Json<VtrClaimRequest>,
+    Json(req): Json<VtrClaimRequest>,
 ) -> RpcResult<Json<SwapActionResponse>> {
-    // HTTP callers must authorize with a passphrase and fresh TOTP. A
-    // caller-supplied signing key is accepted only from the desktop bridge,
-    // which authorizes against its own wallet before calling the shared path.
-    req.taker_wif.clear();
+    // HTTP callers must authorize with a passphrase and fresh TOTP. The
+    // desktop bridge authorizes its own wallet and calls the shared path
+    // directly; a raw key over HTTP is only tolerated by the regtest tests.
+    if !req.taker_wif.is_empty() && !state.regtest {
+        return Err(RpcError::BadRequest(
+            "taker_wif is only accepted on regtest; use passphrase and otp_code".into(),
+        ));
+    }
     vtr_claim_with_state(&state, req).await.map(Json)
 }
 

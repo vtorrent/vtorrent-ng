@@ -148,6 +148,7 @@ export default function SecurityCenterPage() {
             <button onClick={handleEnable2FA} disabled={loading} className="btn-primary">
               {loading ? 'Setting up...' : 'Enable 2FA'}
             </button>
+            {error && <p className="text-red-400 text-sm mt-2">{error}</p>}
           </div>
         )}
 
@@ -196,7 +197,15 @@ export default function SecurityCenterPage() {
               </div>
               {error && <p className="text-red-400 text-sm">{error}</p>}
               <div className="flex gap-3">
-                <button type="button" onClick={() => setTwoFAStep('idle')} className="btn-secondary flex-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTwoFAStep('idle')
+                    setTwoFAPassphrase('')
+                    setError('')
+                  }}
+                  className="btn-secondary flex-1"
+                >
                   Cancel
                 </button>
                 <button type="submit" disabled={loading || verifyCode.length !== 6} className="btn-primary flex-1">

@@ -52,8 +52,12 @@ pub(crate) fn authorize_wallet(
     passphrase: &str,
     otp_code: Option<&str>,
 ) -> Result<zeroize::Zeroizing<String>> {
-    let wallet_path = state.wallet_path.lock().unwrap().clone();
-    let mut guard = state.wallet.lock().unwrap();
+    let wallet_path = state
+        .wallet_path
+        .lock()
+        .map_err(|_| TauriError::WalletLocked)?
+        .clone();
+    let mut guard = state.wallet.lock().map_err(|_| TauriError::WalletLocked)?;
     let wallet = guard.as_mut().ok_or(TauriError::WalletNotInitialized)?;
     if !wallet.verify_passphrase(passphrase) {
         return Err(TauriError::Unauthorized(

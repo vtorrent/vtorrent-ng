@@ -179,6 +179,23 @@ async fn preflight(
 
 /// Append a fee-approved VTR refund replacement before local admission or relay.
 pub async fn bump(state: &AppState, req: VtrRefundBumpRequest) -> RpcResult<VtrRefundBumpResponse> {
+    crate::handlers::authorize_wallet_operation(state, &req.passphrase, req.otp_code.as_deref())
+        .await?;
+    let maker_wif = state
+        .wallet_wif
+        .read()
+        .await
+        .clone()
+        .ok_or(RpcError::WalletLocked)?;
+    bump_with_wif(state, req, &maker_wif).await
+}
+
+/// Build and admit a refund replacement with an already-authorized signing key.
+pub async fn bump_with_wif(
+    state: &AppState,
+    req: VtrRefundBumpRequest,
+    maker_wif: &str,
+) -> RpcResult<VtrRefundBumpResponse> {
     if !req.approve {
         return Err(RpcError::BadRequest(
             "Explicit approval of the total fee is required".into(),
@@ -189,14 +206,6 @@ pub async fn bump(state: &AppState, req: VtrRefundBumpRequest) -> RpcResult<VtrR
             "Durable encrypted swap recovery must be enabled".into(),
         ));
     }
-    crate::handlers::authorize_wallet_operation(state, &req.passphrase, req.otp_code.as_deref())
-        .await?;
-    let maker_wif = state
-        .wallet_wif
-        .read()
-        .await
-        .clone()
-        .ok_or(RpcError::WalletLocked)?;
     let parent = crate::handlers::parse_hash32(&req.replaces_txid, "replaces_txid")?;
     let order = state
         .order_book
@@ -273,7 +282,7 @@ pub async fn bump(state: &AppState, req: VtrRefundBumpRequest) -> RpcResult<VtrR
                 funding_txid: swap
                     .vtr_funding_txid
                     .ok_or_else(|| RpcError::BadRequest("Missing funding".into()))?,
-                maker_wif: &maker_wif,
+                maker_wif,
             },
             req.total_fee_satoshis,
         )
@@ -286,7 +295,7 @@ pub async fn bump(state: &AppState, req: VtrRefundBumpRequest) -> RpcResult<VtrR
             approved_at: now,
             transaction: tx,
         });
-        crate::swap_recovery::persist_for_wallet(state, &order, Some(&updated), Some(&maker_wif))
+        crate::swap_recovery::persist_for_wallet(state, &order, Some(&updated), Some(maker_wif))
             .await?;
         *swap = updated;
     }
