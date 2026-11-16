@@ -16,6 +16,22 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
+
+/// Claim a piece for credit at most once. A peer replaying a piece we already
+/// hold must not earn another payout.
+fn claim_piece(scheduler: &mut SchedulerState, index: u32) -> bool {
+    if scheduler.has_piece(index) {
+        return false;
+    }
+    scheduler.mark_have(index);
+    true
+}
+
+/// Tracker-supplied peers must pass the same address policy as magnet metadata
+/// peers: no loopback, link-local, private, or zero-port targets.
+fn peer_target_allowed(peer: &crate::tracker::TrackerPeer) -> bool {
+    peer.port != 0 && peer.ip.parse().map(tracker_target_allowed).unwrap_or(false)
+}
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -333,13 +349,7 @@ pub async fn run_engine(
     let mut metainfo = metainfo;
     if metainfo.pieces.is_empty() {
         for peer in &peers {
-            if peer.port == 0
-                || peer
-                    .ip
-                    .parse()
-                    .map(|ip| !tracker_target_allowed(ip))
-                    .unwrap_or(true)
-            {
+            if !peer_target_allowed(peer) {
                 continue;
             }
             let addr: SocketAddr = match format!("{}:{}", peer.ip, peer.port).parse() {
@@ -415,6 +425,9 @@ pub async fn run_engine(
     for peer in peers {
         if peer_tasks.len() >= MAX_PEERS {
             break;
+        }
+        if !peer_target_allowed(&peer) {
+            continue;
         }
         let addr: SocketAddr = match format!("{}:{}", peer.ip, peer.port).parse() {
             Ok(a) => a,
@@ -811,6 +824,17 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     if let Some(expected) = metainfo.pieces.get(index as usize) {
                         if asm.verify(expected) {
                             if let Some(piece_data) = asm.assemble() {
+                                let claimed = {
+                                    let mut sched =
+                                        scheduler.lock().unwrap_or_else(|e| e.into_inner());
+                                    claim_piece(&mut sched, index)
+                                };
+                                if !claimed {
+                                    // A replayed piece we already hold must not
+                                    // earn another payout.
+                                    assemblers.remove(&index);
+                                    continue;
+                                }
                                 let written = write_piece_to_disk(
                                     &metainfo,
                                     &download_dir,
@@ -818,9 +842,8 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                                     &piece_data,
                                 )
                                 .await;
-                                // Only mark the piece had (and credit the
-                                // download) when it is durably on disk.
-                                // Otherwise leave its blocks leased; they
+                                // Credit only when the piece is durably on
+                                // disk. Otherwise undo the claim; the blocks
                                 // expire and the piece is re-requested.
                                 if written {
                                     // Deterministic progress: verified_bytes is sum of
@@ -828,9 +851,8 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                                     // raw received bytes. Prevents progress inflation
                                     // from unverified/corrupt blocks or duplicates.
                                     let verified_bytes = {
-                                        let mut sched =
+                                        let sched =
                                             scheduler.lock().unwrap_or_else(|e| e.into_inner());
-                                        sched.mark_have(index);
                                         sched
                                             .tracker
                                             .have_bytes(&|idx| piece_length(&metainfo, idx))
@@ -856,6 +878,11 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                                     limits
                                         .consume_download(piece_data.len() as u64, &cancel)
                                         .await;
+                                } else {
+                                    scheduler
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .mark_not_have(index);
                                 }
                             }
                         }
@@ -1131,6 +1158,33 @@ mod tests {
         // Empty and `.` components are rejected.
         assert!(sanitize_path(base, &["".to_string()]).is_none());
         assert!(sanitize_path(base, &[".".to_string()]).is_none());
+    }
+
+    #[test]
+    fn replayed_pieces_cannot_be_credited_twice() {
+        let mut scheduler = SchedulerState::new(4);
+        assert!(claim_piece(&mut scheduler, 0));
+        assert!(!claim_piece(&mut scheduler, 0));
+        assert!(scheduler.has_piece(0));
+    }
+
+    #[test]
+    fn tracker_peers_must_pass_the_target_filter() {
+        use crate::tracker::TrackerPeer;
+
+        let mut peer = TrackerPeer {
+            ip: "8.8.8.8".to_string(),
+            port: 6881,
+            peer_id: None,
+        };
+        assert!(peer_target_allowed(&peer));
+        peer.ip = "127.0.0.1".to_string();
+        assert!(!peer_target_allowed(&peer));
+        peer.ip = "169.254.169.254".to_string();
+        assert!(!peer_target_allowed(&peer));
+        peer.ip = "8.8.8.8".to_string();
+        peer.port = 0;
+        assert!(!peer_target_allowed(&peer));
     }
 
     #[test]

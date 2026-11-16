@@ -264,6 +264,16 @@ impl SchedulerState {
         self.tracker.mark_have(index);
         self.requested_blocks.remove(&index);
     }
+
+    /// Whether the piece is already on disk.
+    pub fn has_piece(&self, index: u32) -> bool {
+        self.tracker.has_piece(index)
+    }
+
+    /// Undo a provisional `mark_have` when the disk write fails.
+    pub fn mark_not_have(&mut self, index: u32) {
+        self.tracker.mark_not_have(index);
+    }
 }
 
 #[cfg(test)]
