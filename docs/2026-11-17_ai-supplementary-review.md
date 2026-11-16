@@ -20,11 +20,13 @@ test-first, and each regression test was observed to fail before the fix.
 | High | Desktop `vtr_claim` always injected the wallet WIF, so `vtr_claim_with_state` skipped passphrase/TOTP verification. | Fixed in `a202519`; the HTTP route also clears a caller-supplied `taker_wif`. |
 | High | Desktop `send_btc`, `rebroadcast_btc`, `btc_fund`, `btc_claim`, and `swap_refund` authorized through the RPC helper, which parses the desktop seed wallet as a hot-wallet payload and fails. BTC spends and swap refunds could not succeed. | Fixed in `a202519`: desktop commands authorize against their own wallet and call already-authorized shared functions. |
 | Medium | A crash between creating the TOTP replay file and writing it left an empty file that made every later verification fail permanently. | Fixed in `713fcc5`; empty state is treated as uninitialized, legacy per-wallet state included. |
+| Medium-high | Desktop 2FA enrollment (`enable_2fa`, `verify_2fa`) accepted a TOTP secret without the wallet passphrase, allowing a compromised webview to enroll its own secret and lock the owner out. | Fixed in `aace0e5`; both commands require the passphrase, and the UI collects it before enrollment. |
+| High | BTC sends with sub-dust change or a sub-dust recipient produced a non-standard transaction that peers never relay, while the inputs were already marked pending. | Fixed in `aace0e5`; sub-546-sat change is absorbed into the fee and dust recipients are rejected. |
 
 Verification for the fixed items: `cargo test -p vtorrent-tauri --all-features`
 (31 passed), `cargo test -p vtorrent-rpc --all-features` (204 passed),
 `cargo test -p vtorrent-wallet otp::tests` (11 passed), and Clippy `-D warnings`
-on both crates. The full workspace suite on `713fcc5` then passed **1,381 tests,
+on both crates. The full workspace suite on `aace0e5` then passed **1,383 tests,
 0 failures, 11 ignored**.
 
 ## Open findings (verified, not yet fixed)
@@ -39,11 +41,8 @@ on both crates. The full workspace suite on `713fcc5` then passed **1,381 tests,
    accepts passphrase-only unlock after a restart. Fail closed on the legacy
    format with an instruction to re-import the WIF and TOTP secret, or migrate
    atomically after a fresh code. This is a product decision.
-2. **Medium-high — 2FA enrollment is unauthenticated on desktop.**
-   `vtorrent-tauri/src/commands/wallet.rs` (`enable_2fa`, `verify_2fa`) accepts a
-   new TOTP secret and persists it without the wallet passphrase. Any webview
-   caller can enroll its own secret and lock the owner out; require the
-   passphrase for both steps and update the UI flow.
+2. **Medium-high — 2FA enrollment is unauthenticated on desktop.** Fixed in
+   `aace0e5`; see the fixed table.
 3. **Medium — TOTP replay is per environment, not per host.**
    The store path depends on `VTORRENT_TOTP_STATE_DIR`/`XDG_STATE_HOME`/`HOME`,
    and the key is only the secret hash. A daemon under systemd and a desktop
@@ -151,15 +150,9 @@ on both crates. The full workspace suite on `713fcc5` then passed **1,381 tests,
     a `reserved_utxos` record. A blanket clear trades the permanent hide for a
     possible double-spend window and should not be applied casually.
 23. **High — sub-dust change or a sub-dust recipient creates a permanently
-    pending transaction and locks the inputs.**
-    `vtorrent-btc/src/tx.rs` emits any `change_sats > 0` and does not check the
-    destination amount; `wallet.rs` persists the pending removal before
-    broadcast; a timeout is reported as submission. Bitcoin Core rejects the
-    non-standard output, no scan ever observes a spend, and the only exposed
-    recovery re-broadcasts the same invalid raw. Reject dust recipients, absorb
-    below-threshold change into the fee (as the HTLC builder already does), and
-    provide a cancel path that releases inputs only after the original raw is
-    provably dead.
+    pending transaction and locks the inputs.** Fixed in `aace0e5` for new
+    builds; a transaction already stuck this way still needs the cancel path
+    described above, which remains open.
 24. **Medium/high — a dead swap-funding transaction can never release its
     reservation, while an old live one can lose its contract.**
     `vtorrent-wallet-service` reserves before broadcast and retains on error;

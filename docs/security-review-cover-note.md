@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `713fcc5`
+Subject: Independent security review — vTorrent-NG mainnet candidate `aace0e5`
 
 Hello,
 
@@ -18,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `713fcc59b47651c4f4322043f53d4c93a555aa77`
+**Review head:** `aace0e523c8384e8dd19029119bca3c933dbb229`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `713fcc5`. It is not covered by any prior soak: the
+The code under review is `aace0e5`. It is not covered by any prior soak: the
 `6a49727` fleet predates every change below and was interrupted by a host
 restart on 2026-11-16. The eventual shipping image needs its own full window
 after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 code changed after the candidate with
-`git diff --name-only 713fcc5..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only aace0e5..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -65,6 +65,9 @@ candidate `ba46fd6`:
   longer accepts a caller-supplied signing key.
 - `713fcc5` — an empty TOTP replay-state file left by a crash is treated as
   uninitialized instead of permanently rejecting every verification.
+- `aace0e5` — BTC sends reject sub-dust recipients and absorb sub-dust change
+  into the fee, so they cannot build an unrelayable transaction while holding
+  the inputs; desktop 2FA enrollment now requires the wallet passphrase.
 
 An internal AI-assisted supplementary review of `611d56b` is recorded in
 `docs/2026-11-17_ai-supplementary-review.md`. It found and fixed the desktop
@@ -204,7 +207,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `713fcc59b47651c4f4322043f53d4c93a555aa77`
+- Confirm the review head is still `aace0e523c8384e8dd19029119bca3c933dbb229`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.

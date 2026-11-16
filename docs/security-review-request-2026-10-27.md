@@ -10,7 +10,7 @@ already accepted so it is not re-litigated.
 
 ## Review target
 
-Review the candidate `713fcc59b47651c4f4322043f53d4c93a555aa77`. This is the current review head. It is **not**
+Review the candidate `aace0e523c8384e8dd19029119bca3c933dbb229`. This is the current review head. It is **not**
 covered by any prior soak: the `6a49727` fleet predates the fund-safety and
 recovery changes below and was interrupted by a host restart on 2026-11-16.
 Under the soak provenance policy, the shipping image needs its own full window
@@ -18,8 +18,8 @@ after this review and its fixes settle.
 
 Read this document from the tip of `main`. Confirm that no code changed after
 the candidate with
-`git diff --name-only 713fcc5..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
-must return nothing. Check out `713fcc5` itself when running the verification
+`git diff --name-only aace0e5..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+must return nothing. Check out `aace0e5` itself when running the verification
 commands. The tables below record the earlier deltas. The table after the
 `f8e0162` deltas covers the range from `ba46fd6` to the candidate.
 
@@ -88,6 +88,7 @@ Deltas after `ba46fd6`:
 | `611d56b` | Send quotes bound to the signing wallet; wallet switch clears pending quotes |
 | `a202519` | Desktop DEX/swap/BTC actions authorize against the desktop wallet; maker address bound |
 | `713fcc5` | Empty TOTP replay state recovers instead of permanently blocking verification |
+| `aace0e5` | Dust BTC outputs rejected or absorbed; desktop 2FA enrollment requires the passphrase |
 
 Deltas after the earlier review head:
 
@@ -139,7 +140,7 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout 713fcc59b47651c4f4322043f53d4c93a555aa77
+git checkout aace0e523c8384e8dd19029119bca3c933dbb229
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
@@ -147,7 +148,7 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 cargo test --workspace --all-features
 ```
 
-The `713fcc5` workspace run passed 54 test groups and 1,381 tests with 0
+The `aace0e5` workspace run passed 54 test groups and 1,383 tests with 0
 failures and 11 ignored. CI repeats the `--all-features` suite on every push.
 Set `VTORRENT_TOTP_STATE_DIR` to a fresh directory before running the suite so
 the host-scoped TOTP replay state does not collide with an existing
@@ -230,8 +231,9 @@ Added with `ff148fd` and `35ea52e`:
 - `docs/desktop-recovery-runbook.md` for the manual procedure that replaces
   automatic restore of BTC, swap, and cold-stake recovery records.
 - `docs/2026-11-17_ai-supplementary-review.md` for an internal AI-assisted
-  review pass. It found and fixed desktop authorization defects in `a202519`
-  and `713fcc5`. It is **not** independent human review.
+  review pass. It found and fixed desktop authorization defects in `a202519`,
+  TOTP replay recovery in `713fcc5`, and dust/2FA enrollment issues in
+  `aace0e5`. It is **not** independent human review.
 
 ## Status
 
@@ -243,7 +245,7 @@ Added with `ff148fd` and `35ea52e`:
   swap preserved across a maker restart, BTC claim with six confirmations, and
   a separate taker node broadcasting the VTR claim.
 - CI runs the workspace suite with `--all-features` on every push. The last
-  counted local run on the review head was 54 groups and 1,381 tests, zero
+  counted local run on the review head was 54 groups and 1,383 tests, zero
   failures, with 11 ignored: seven need a Bitcoin Core container, two are manual
   release-mode governance experiments, one is a mainnet-scale header-retention
   test, and one is a doctest. The whole-tree review remediation is documented in
