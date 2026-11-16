@@ -30,6 +30,18 @@ state disappears while the record remains, even `--btc-attest-new-seed` refuses
 to recreate it. Losing or restoring both files from an old backup can still erase
 that evidence and requires operator-led recovery; do not re-attest a used seed.
 
+**Desktop backup restriction:** Backup collection takes the BTC state lock and
+includes the initialization record when present. If that record exists but its
+state file is missing, backup fails instead of omitting the state. Automatic
+restore refuses a bundle containing BTC state, swap recovery records, or a
+cold-stake registry even into an empty destination: the bundle cannot prove
+that its recovery data is current. Restore also refuses a destination with an
+existing swap directory or cold-stake registry, to avoid pairing it with a
+different wallet. Preserve such data for reviewed recovery. Wallet-only bundles
+remain restorable to a destination without those records. These locks are
+advisory and do not protect against non-cooperating writers or state copies on
+other hosts.
+
 - [x] **Genesis block verification**: hash `36ca792aa45ca7850f2789ff2e62ec13e91bd5f2770d6fea8df81bc2da1da8f8`
       (`utxo_root 65185f8a5c055c17bf7053c6b6c42993565bb5586689a8508017005b842f9105`)
       verified via RPC + `test_snapshot_sum_matches_documented_supply` + `test_snapshot_binary_roundtrip`.

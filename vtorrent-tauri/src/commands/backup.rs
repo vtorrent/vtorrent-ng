@@ -134,8 +134,17 @@ fn add_entry(entries: &mut Vec<BackupEntry>, name: &str, path: &Path) -> Result<
     Ok(())
 }
 
+fn path_entry_exists(path: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(TauriError::Io(error.to_string())),
+    }
+}
+
 fn collect_entries(wallet_path: &Path, wallet: &Wallet) -> Result<Vec<BackupEntry>> {
     let mut entries = Vec::new();
+    let mut btc_locks = Vec::new();
     add_entry(&mut entries, WALLET_ENTRY, wallet_path)?;
 
     let cold_stake = wallet_path.with_extension("cold_stake.json");
@@ -165,13 +174,46 @@ fn collect_entries(wallet_path: &Path, wallet: &Wallet) -> Result<Vec<BackupEntr
             bitcoin::Network::Regtest,
         ] {
             let path = crate::commands::node::btc_utxo_path(Some(wallet_path), network, &seed);
-            if !path.exists() {
+            let marker = path.with_extension("initialized");
+            let state_exists = path_entry_exists(&path)?;
+            let marker_exists = path_entry_exists(&marker)?;
+            if !state_exists && !marker_exists {
                 continue;
+            }
+            btc_locks.push(
+                vtorrent_btc::utxo::lock_state_path(&path)
+                    .map_err(|error| TauriError::Io(error.to_string()))?,
+            );
+            if !state_exists {
+                return Err(TauriError::InvalidInput(format!(
+                    "BTC state is missing for {}; preserve its initialization record for recovery",
+                    path.display()
+                )));
             }
             let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
                 continue;
             };
             add_entry(&mut entries, file_name, &path)?;
+            if marker_exists {
+                if !std::fs::symlink_metadata(&marker)
+                    .map_err(|error| TauriError::Io(error.to_string()))?
+                    .file_type()
+                    .is_file()
+                {
+                    return Err(TauriError::InvalidInput(
+                        "BTC initialization record must be a regular file".into(),
+                    ));
+                }
+                let marker_name = marker
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .ok_or_else(|| {
+                        TauriError::InvalidInput(
+                            "BTC initialization record has an invalid name".into(),
+                        )
+                    })?;
+                add_entry(&mut entries, marker_name, &marker)?;
+            }
         }
     }
 
@@ -376,6 +418,94 @@ pub fn restore_backup(
         ));
     }
 
+    let backup_names: std::collections::HashSet<&str> = bundle
+        .files
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect();
+    for entry in &bundle.files {
+        let safe = safe_relative_path(&entry.name)?;
+        if safe.components().count() == 1
+            && entry.name.starts_with("btc_utxos-")
+            && safe
+                .extension()
+                .is_some_and(|extension| extension == "initialized")
+        {
+            let state_name = safe.with_extension("json");
+            if !state_name
+                .to_str()
+                .is_some_and(|name| backup_names.contains(name))
+            {
+                return Err(TauriError::InvalidInput(format!(
+                    "BTC initialization record {} has no matching state in the backup",
+                    entry.name
+                )));
+            }
+        }
+    }
+    let mut btc_locks = Vec::new();
+    for entry in &bundle.files {
+        let safe = safe_relative_path(&entry.name)?;
+        if safe.components().count() == 1
+            && entry.name.starts_with("btc_utxos-")
+            && safe
+                .extension()
+                .is_some_and(|extension| extension == "json")
+        {
+            let target = app_data_dir.join(&safe);
+            btc_locks.push(
+                vtorrent_btc::utxo::lock_state_path(&target)
+                    .map_err(|error| TauriError::Io(error.to_string()))?,
+            );
+            if path_entry_exists(&target.with_extension("initialized"))? {
+                return Err(TauriError::InvalidInput(format!("BTC initialization record already exists for {}; preserve it for reviewed recovery", entry.name)));
+            }
+            match std::fs::symlink_metadata(target) {
+                Ok(_) => return Err(TauriError::InvalidInput(format!(
+                    "BTC state already exists: {}; preserve it for reviewed recovery rather than overwriting it with a backup",
+                    entry.name
+                ))),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(TauriError::InvalidInput(format!(
+                    "BTC state {} cannot be restored automatically: backup freshness and outstanding sends cannot be established; preserve the backup for reviewed recovery",
+                    entry.name
+                ))),
+                Err(error) => return Err(TauriError::Io(error.to_string())),
+            }
+        }
+    }
+
+    for entry in &bundle.files {
+        let safe = safe_relative_path(&entry.name)?;
+        if safe.starts_with("wallet.swaps") {
+            return Err(TauriError::InvalidInput(
+                "Swap recovery records cannot be restored automatically: backup freshness cannot be established; preserve the backup for reviewed recovery".into(),
+            ));
+        }
+        if safe == Path::new("wallet.cold_stake.json") {
+            return Err(TauriError::InvalidInput(
+                "Cold-stake registry cannot be restored automatically: backup freshness cannot be established; preserve the backup for reviewed recovery".into(),
+            ));
+        }
+        if safe != Path::new(WALLET_ENTRY) {
+            return Err(TauriError::InvalidInput(format!(
+                "Backup contains an unrecognized entry: {}",
+                entry.name
+            )));
+        }
+    }
+    if path_entry_exists(&app_data_dir.join("wallet.cold_stake.json"))? {
+        return Err(TauriError::InvalidInput(
+            "An existing cold-stake registry requires reviewed recovery before restoring a wallet"
+                .into(),
+        ));
+    }
+    if path_entry_exists(&app_data_dir.join("wallet.swaps"))? {
+        return Err(TauriError::InvalidInput(
+            "Existing swap recovery state requires reviewed recovery before restoring a wallet"
+                .into(),
+        ));
+    }
+
     let temp_dir = app_data_dir.join(format!(".restore-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).map_err(|e| TauriError::Io(e.to_string()))?;
@@ -437,7 +567,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn backup_round_trip_restores_wallet_and_recovery_state() {
+    fn backup_with_btc_state_requires_reviewed_recovery_on_restore() {
         use base64::Engine;
         use tauri::Manager;
 
@@ -465,6 +595,8 @@ mod tests {
             &seed,
         );
         std::fs::write(&btc_path, b"{}").unwrap();
+        let marker = btc_path.with_extension("initialized");
+        std::fs::write(&marker, b"vtorrent-btc-initialized-v1\n").unwrap();
         std::fs::write(source.join("wallet.cold_stake.json"), b"[]").unwrap();
         std::fs::create_dir_all(source.join("wallet.swaps")).unwrap();
         std::fs::write(source.join("wallet.swaps/order.json"), b"{}").unwrap();
@@ -473,8 +605,21 @@ mod tests {
         *state.wallet_path.lock().unwrap() = Some(wallet_path);
         state.set_app_data_dir(source.clone());
 
+        std::fs::remove_file(&btc_path).unwrap();
+        let error = create_backup(state.clone(), "password".into(), None)
+            .expect_err("backup must not silently omit missing BTC state");
+        assert!(
+            error.to_string().contains("BTC state is missing"),
+            "{error}"
+        );
+        std::fs::write(&btc_path, b"{}").unwrap();
+        let btc_lock = vtorrent_btc::utxo::lock_state_path(&btc_path).unwrap();
+        let error = create_backup(state.clone(), "password".into(), None)
+            .expect_err("backup must not read state held by another writer");
+        assert!(error.to_string().contains("in use"), "{error}");
+        drop(btc_lock);
         let info = create_backup(state.clone(), "password".into(), None).unwrap();
-        assert_eq!(info.file_count, 4);
+        assert_eq!(info.file_count, 5);
         let backup = std::fs::read(&info.path).unwrap();
         let backup_base64 = base64::engine::general_purpose::STANDARD.encode(&backup);
 
@@ -486,28 +631,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(preview.wallet_address, address);
-        assert_eq!(preview.file_count, 4);
+        assert_eq!(preview.file_count, 5);
         assert!(preview
             .files
             .contains(&"wallet.swaps/order.json".to_string()));
 
         state.set_app_data_dir(target.clone());
-        let restored = restore_backup(
-            state.clone(),
-            backup_base64.clone(),
-            "password".into(),
-            None,
-            false,
-        )
-        .unwrap();
-        assert_eq!(restored.wallet_address, address);
-        assert!(target.join(WALLET_ENTRY).exists());
-        assert!(target.join("wallet.cold_stake.json").exists());
-        assert!(target.join("wallet.swaps/order.json").exists());
-        assert!(target.join(btc_path.file_name().unwrap()).exists());
-        let loaded = Wallet::load(&target.join(WALLET_ENTRY), "password", None).unwrap();
-        assert_eq!(loaded.default_address().unwrap().to_string(), address);
-
         let error = restore_backup(
             state.clone(),
             backup_base64.clone(),
@@ -515,9 +644,30 @@ mod tests {
             None,
             false,
         )
-        .unwrap_err();
-        assert!(matches!(error, TauriError::InvalidInput(_)));
-        restore_backup(state.clone(), backup_base64, "password".into(), None, true).unwrap();
+        .expect_err("a backup cannot establish BTC state freshness even on an empty destination");
+        assert!(error.to_string().contains("freshness"), "{error}");
+        assert!(!target.join(WALLET_ENTRY).exists());
+        let target_btc = target.join(btc_path.file_name().unwrap());
+        let restore_lock = vtorrent_btc::utxo::lock_state_path(&target_btc).unwrap();
+        let error = restore_backup(
+            state.clone(),
+            backup_base64.clone(),
+            "password".into(),
+            None,
+            true,
+        )
+        .expect_err("restore must honor another BTC writer's lock");
+        assert!(error.to_string().contains("in use"), "{error}");
+        drop(restore_lock);
+        std::fs::write(&target_btc, b"newer pending send state").unwrap();
+        let error = restore_backup(state.clone(), backup_base64, "password".into(), None, true)
+            .expect_err("a backup must not overwrite newer BTC state");
+        assert!(error.to_string().contains("BTC"), "{error}");
+        assert_eq!(
+            std::fs::read(&target_btc).unwrap(),
+            b"newer pending send state"
+        );
+        assert!(!target.join(WALLET_ENTRY).exists());
 
         let wrong = verify_backup(
             state.clone(),
@@ -530,6 +680,267 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&source);
         let _ = std::fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn wallet_only_backup_can_still_be_restored() {
+        use tauri::Manager;
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-wallet-only-backup-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source = dir.join("source");
+        let target = dir.join("target");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        let wallet = Wallet::create("password").unwrap();
+        let address = wallet.default_address().unwrap().to_string();
+        let wallet_path = source.join(WALLET_ENTRY);
+        wallet.save(&wallet_path).unwrap();
+        *state.wallet.lock().unwrap() = Some(wallet);
+        *state.wallet_path.lock().unwrap() = Some(wallet_path);
+        state.set_app_data_dir(source);
+        let info = create_backup(state.clone(), "password".into(), None).unwrap();
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode(std::fs::read(info.path).unwrap());
+        state.set_app_data_dir(target.clone());
+        let existing_registry = target.join("wallet.cold_stake.json");
+        std::fs::write(&existing_registry, b"[\"existing\"]").unwrap();
+        restore_backup(
+            state.clone(),
+            encoded.clone(),
+            "password".into(),
+            None,
+            false,
+        )
+        .expect_err("a wallet restore must not inherit another registry");
+        assert!(!target.join(WALLET_ENTRY).exists());
+        std::fs::remove_file(existing_registry).unwrap();
+        let existing_swaps = target.join("wallet.swaps");
+        std::fs::create_dir(&existing_swaps).unwrap();
+        std::fs::write(existing_swaps.join("order.json"), b"existing swap").unwrap();
+        restore_backup(
+            state.clone(),
+            encoded.clone(),
+            "password".into(),
+            None,
+            false,
+        )
+        .expect_err("a wallet restore must not inherit existing swap state");
+        assert!(!target.join(WALLET_ENTRY).exists());
+        std::fs::remove_file(existing_swaps.join("order.json")).unwrap();
+        std::fs::remove_dir(existing_swaps).unwrap();
+        let restored =
+            restore_backup(state.clone(), encoded, "password".into(), None, false).unwrap();
+        assert_eq!(restored.wallet_address, address);
+        assert!(target.join(WALLET_ENTRY).exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn restore_does_not_replace_newer_swap_recovery_records() {
+        use tauri::Manager;
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-backup-stale-swap-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source = dir.join("source");
+        let target = dir.join("target");
+        std::fs::create_dir_all(source.join("wallet.swaps")).unwrap();
+        std::fs::create_dir_all(target.join("wallet.swaps")).unwrap();
+        let wallet = Wallet::create("password").unwrap();
+        let wallet_path = source.join(WALLET_ENTRY);
+        wallet.save(&wallet_path).unwrap();
+        std::fs::write(source.join("wallet.swaps/order.json"), b"old swap").unwrap();
+        std::fs::write(target.join("wallet.swaps/order.json"), b"new swap").unwrap();
+        *state.wallet_path.lock().unwrap() = Some(wallet_path);
+        state.set_app_data_dir(source);
+        let info = create_backup(state.clone(), "password".into(), None).unwrap();
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode(std::fs::read(info.path).unwrap());
+        state.set_app_data_dir(target.clone());
+        restore_backup(state, encoded, "password".into(), None, false)
+            .expect_err("older recovery records must not replace newer swap state");
+        assert_eq!(
+            std::fs::read(target.join("wallet.swaps/order.json")).unwrap(),
+            b"new swap"
+        );
+        assert!(!target.join(WALLET_ENTRY).exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn restore_rejects_unrecognized_backup_entries() {
+        use tauri::Manager;
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-backup-unknown-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source = dir.join("source");
+        let target = dir.join("target");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        let wallet = Wallet::create("password").unwrap();
+        let wallet_path = source.join(WALLET_ENTRY);
+        wallet.save(&wallet_path).unwrap();
+        *state.wallet_path.lock().unwrap() = Some(wallet_path);
+        state.set_app_data_dir(source);
+        let info = create_backup(state.clone(), "password".into(), None).unwrap();
+        let mut backup: BackupFile =
+            serde_json::from_slice(&std::fs::read(info.path).unwrap()).unwrap();
+        let plaintext = decrypt_wallet(&backup.encrypted, "password").unwrap();
+        let mut bundle: BackupBundle = serde_json::from_slice(&plaintext).unwrap();
+        let data = b"replacement";
+        bundle.files.push(BackupEntry {
+            name: "other-state.json".into(),
+            sha256: hex::encode(Sha256::digest(data)),
+            data_base64: base64::engine::general_purpose::STANDARD.encode(data),
+        });
+        backup.encrypted =
+            encrypt_wallet(&serde_json::to_vec(&bundle).unwrap(), "password").unwrap();
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode(serde_json::to_vec(&backup).unwrap());
+        std::fs::write(target.join("other-state.json"), b"existing").unwrap();
+        state.set_app_data_dir(target.clone());
+        restore_backup(state, encoded, "password".into(), None, true)
+            .expect_err("unknown backup entries must not write arbitrary files");
+        assert_eq!(
+            std::fs::read(target.join("other-state.json")).unwrap(),
+            b"existing"
+        );
+        assert!(!target.join(WALLET_ENTRY).exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn restore_does_not_replace_newer_cold_stake_registry() {
+        use tauri::Manager;
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-backup-stale-cold-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source = dir.join("source");
+        let target = dir.join("target");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        let wallet = Wallet::create("password").unwrap();
+        let wallet_path = source.join(WALLET_ENTRY);
+        wallet.save(&wallet_path).unwrap();
+        std::fs::write(source.join("wallet.cold_stake.json"), b"[\"old\"]").unwrap();
+        std::fs::write(target.join("wallet.cold_stake.json"), b"[\"new\"]").unwrap();
+        *state.wallet_path.lock().unwrap() = Some(wallet_path);
+        state.set_app_data_dir(source);
+        let info = create_backup(state.clone(), "password".into(), None).unwrap();
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode(std::fs::read(info.path).unwrap());
+        state.set_app_data_dir(target.clone());
+        restore_backup(state, encoded, "password".into(), None, true)
+            .expect_err("older backup must not overwrite the cold-stake registry");
+        assert_eq!(
+            std::fs::read(target.join("wallet.cold_stake.json")).unwrap(),
+            b"[\"new\"]"
+        );
+        assert!(!target.join(WALLET_ENTRY).exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_refuses_a_btc_lock_held_by_another_process() {
+        use std::io::{Read, Write};
+        const CHILD_PATH: &str = "VTR_BACKUP_LOCK_TEST_PATH";
+        if let Some(path) = std::env::var_os(CHILD_PATH) {
+            let path = PathBuf::from(path);
+            let _lock = vtorrent_btc::utxo::lock_state_path(&path).unwrap();
+            std::fs::write(path.with_extension("ready"), b"ready").unwrap();
+            let mut byte = [0];
+            std::io::stdin().read_exact(&mut byte).unwrap();
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-backup-process-lock-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wallet = Wallet::create("password").unwrap();
+        let wallet_path = dir.join(WALLET_ENTRY);
+        wallet.save(&wallet_path).unwrap();
+        let seed = crate::commands::node::wallet_btc_seed(&wallet).unwrap();
+        let path = crate::commands::node::btc_utxo_path(
+            Some(&wallet_path),
+            bitcoin::Network::Regtest,
+            &seed,
+        );
+        vtorrent_btc::utxo::UtxoSet::new().save(&path).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "commands::backup::tests::backup_refuses_a_btc_lock_held_by_another_process",
+            ])
+            .env(CHILD_PATH, &path)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !path.with_extension("ready").exists() {
+            if std::time::Instant::now() >= deadline || child.try_wait().unwrap().is_some() {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("child did not acquire BTC state lock");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let result = collect_entries(&wallet_path, &wallet);
+        child.stdin.take().unwrap().write_all(&[1]).unwrap();
+        assert!(child.wait().unwrap().success());
+        let error = result.expect_err("backup must fail while another process holds the lock");
+        assert!(error.to_string().contains("in use"), "{error}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
