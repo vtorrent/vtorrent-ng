@@ -270,6 +270,7 @@ pub async fn open_wallet(
 ) -> Result<WalletInfo> {
     let _node_guard = ensure_node_stopped(state.inner())?;
     state.cold_stake_scripts.lock().unwrap().clear();
+    state.prepared_sends.lock().unwrap().clear();
     let passphrase = zeroize::Zeroizing::new(passphrase);
     let otp_code = otp_code.map(zeroize::Zeroizing::new);
     let path = std::path::PathBuf::from(&wallet_path);
@@ -662,6 +663,7 @@ pub async fn quote_vtr(
             crate::state::PreparedSend {
                 tx,
                 created_at: std::time::Instant::now(),
+                from_address: from_address.clone(),
             },
         );
     }
@@ -748,6 +750,19 @@ pub async fn send_vtr(
         let mut prepared = state.prepared_sends.lock().unwrap();
         prepared
             .retain(|_, entry| entry.created_at.elapsed() < std::time::Duration::from_secs(300));
+        let authorized = prepared
+            .get(&quote_id)
+            .map(|entry| entry.from_address == from_address)
+            .ok_or_else(|| {
+                TauriError::InvalidInput(
+                    "Send quote expired or not found; review the transaction again".into(),
+                )
+            })?;
+        if !authorized {
+            return Err(TauriError::Unauthorized(
+                "Send quote was prepared by a different wallet".into(),
+            ));
+        }
         prepared
             .remove(&quote_id)
             .ok_or_else(|| {
@@ -1812,6 +1827,32 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(wrong, TauriError::Unauthorized(_)));
+
+        let original_wallet = state.wallet.lock().unwrap().take().unwrap();
+        *state.wallet.lock().unwrap() = Some(Wallet::create("other-pass").unwrap());
+        let cross_wallet = send_vtr(
+            state.clone(),
+            recipient.clone(),
+            COIN,
+            Some(quote.quote_id.clone()),
+            "other-pass".into(),
+            None,
+        )
+        .await;
+        *state.wallet.lock().unwrap() = Some(original_wallet);
+        let cross_wallet =
+            cross_wallet.expect_err("a quote prepared by another wallet must not be broadcast");
+        assert!(
+            matches!(
+                cross_wallet,
+                TauriError::InvalidInput(_) | TauriError::Unauthorized(_)
+            ),
+            "{cross_wallet:?}"
+        );
+        assert!(
+            submitted.try_recv().is_err(),
+            "a quote prepared by another wallet must not be relayed"
+        );
 
         let txid = send_vtr(
             state.clone(),

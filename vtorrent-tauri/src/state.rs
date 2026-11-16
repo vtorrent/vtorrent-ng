@@ -14,6 +14,9 @@ use vtorrent_wallet::wallet::{Wallet, WalletFile};
 pub struct PreparedSend {
     pub tx: vtorrent_node::block::Transaction,
     pub created_at: std::time::Instant,
+    /// Wallet that signed this transaction. A quote must never be broadcast
+    /// with another wallet's passphrase.
+    pub from_address: String,
 }
 
 /// Shared handle to the running node's RPC state.

@@ -558,6 +558,7 @@ pub fn restore_backup(
     *state.wallet.lock().unwrap() = None;
     *state.wallet_path.lock().unwrap() = None;
     state.cold_stake_scripts.lock().unwrap().clear();
+    state.prepared_sends.lock().unwrap().clear();
 
     Ok(preview(&bundle, &wallet, files))
 }
