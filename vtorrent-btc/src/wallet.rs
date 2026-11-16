@@ -172,6 +172,7 @@ impl BtcWallet {
         let state_lock = Some(crate::utxo::lock_state_path(&utxo_path)?);
         let mut created = false;
         if attested_new_seed && !utxo_path.exists() {
+            crate::utxo::record_wallet_initialization(&utxo_path, true)?;
             match UtxoSet::new().create_new(&utxo_path) {
                 Ok(()) => created = true,
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -179,6 +180,7 @@ impl BtcWallet {
             }
         }
         let mut utxos = UtxoSet::load_for_wallet(&utxo_path)?;
+        crate::utxo::record_wallet_initialization(&utxo_path, false)?;
         if created {
             tracing::warn!(
                 path = %utxo_path.display(),
@@ -2115,6 +2117,107 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_state_path_cannot_bypass_the_writer_lock() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-symlink-lock-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        let alias = dir.join("alias.json");
+        UtxoSet::new().save(&path).unwrap();
+        std::os::unix::fs::symlink(&path, &alias).unwrap();
+        let first = BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path).unwrap();
+        assert!(BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, alias).is_err());
+        drop(first);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardlinked_state_path_cannot_bypass_the_writer_lock() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-hardlink-lock-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        let alias = dir.join("alias.json");
+        UtxoSet::new().save(&path).unwrap();
+        let first =
+            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
+        std::fs::hard_link(&path, &alias).unwrap();
+        assert!(BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, alias).is_err());
+        drop(first);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn another_process_cannot_open_state_with_pending_send() {
+        const CHILD_PATH: &str = "VTR_BTC_LOCK_TEST_CHILD_PATH";
+        if let Some(path) = std::env::var_os(CHILD_PATH) {
+            let error =
+                BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path.into())
+                    .err()
+                    .expect("another process must not open the state");
+            assert!(error.to_string().contains("in use"));
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-process-lock-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let mut wallet = open_fixture([7; 64], bitcoin::Network::Regtest, path.clone()).unwrap();
+        let owned = Utxo {
+            txid: "ab".repeat(32),
+            vout: 0,
+            value: 100_000,
+            address: wallet.current_address().unwrap(),
+            height: 100,
+        };
+        wallet.add_utxo(owned.clone());
+        let recipient =
+            crate::keys::derive_address(&[9; 64], 0, bitcoin::Network::Regtest).unwrap();
+        let (txid, raw, _) = wallet.send_to(&recipient, 50_000, 1_000).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "wallet::tests::another_process_cannot_open_state_with_pending_send",
+            ])
+            .env(CHILD_PATH, &path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        drop(wallet);
+        let reopened =
+            BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path).unwrap();
+        assert_eq!(reopened.pending_send_raw(&txid), Some(raw));
+        assert!(!reopened.utxos.lock().add(owned));
+        drop(reopened);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn a_scan_observed_spend_retires_the_pending_record() {
         let mut w = BtcWallet::with_network([7u8; 64], bitcoin::Network::Regtest);
@@ -2749,6 +2852,41 @@ mod tests {
         let reopened =
             BtcWallet::with_persistence([7; 64], bitcoin::Network::Regtest, path).unwrap();
         assert_eq!(reopened.birthday(), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn repeated_attestation_cannot_recreate_lost_wallet_state() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-repeat-attestation-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let wallet = BtcWallet::with_persistence_attested_seed(
+            [7; 64],
+            bitcoin::Network::Regtest,
+            path.clone(),
+            true,
+        )
+        .unwrap();
+        drop(wallet);
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            BtcWallet::with_persistence_attested_seed(
+                [7; 64],
+                bitcoin::Network::Regtest,
+                path.clone(),
+                true,
+            )
+            .is_err(),
+            "repeated attestation must not recreate lost state"
+        );
+        assert!(!path.exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

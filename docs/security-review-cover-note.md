@@ -1,5 +1,8 @@
 # Security review — cover note
 
+> **Stale draft:** new fund-safety changes are underway after the candidate
+> below. Retarget and revalidate the package before commissioning review.
+
 A ready-to-send message for the reviewer. The technical scope lives in
 `docs/security-review-request-2026-10-27.md`; this note is the ask, the context,
 and the specific questions.

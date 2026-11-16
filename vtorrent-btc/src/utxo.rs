@@ -64,7 +64,42 @@ fn sync_parent(path: &Path) -> std::io::Result<()> {
 pub fn lock_state_path(path: &Path) -> std::io::Result<std::fs::File> {
     use fs2::FileExt;
 
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.file_type().is_file() => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "BTC state path must be a regular file, not a symlink",
+            ));
+        }
+        Ok(metadata) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if metadata.nlink() != 1 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "BTC state file must not have hard-link aliases",
+                    ));
+                }
+            }
+            #[cfg(not(unix))]
+            let _ = metadata;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
     let lock_path = path.with_extension("lock");
+    match std::fs::symlink_metadata(&lock_path) {
+        Ok(metadata) if !metadata.file_type().is_file() => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "BTC lock path must be a regular file, not a symlink",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true);
     #[cfg(unix)]
@@ -83,6 +118,43 @@ pub fn lock_state_path(path: &Path) -> std::io::Result<std::fs::File> {
         )
     })?;
     Ok(file)
+}
+
+pub(crate) fn record_wallet_initialization(path: &Path, must_be_new: bool) -> std::io::Result<()> {
+    let marker = path.with_extension("initialized");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = match options.open(&marker) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && !must_be_new => {
+            if !std::fs::symlink_metadata(&marker)?.file_type().is_file()
+                || std::fs::read(&marker)? != b"vtorrent-btc-initialized-v1\n"
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "BTC initialization record is invalid",
+                ));
+            }
+            std::fs::File::open(&marker)?.sync_all()?;
+            #[cfg(unix)]
+            sync_parent(&marker)?;
+            return Ok(());
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "BTC state is missing but an initialization record exists; preserve it for recovery"));
+        }
+        Err(error) => return Err(error),
+    };
+    std::io::Write::write_all(&mut file, b"vtorrent-btc-initialized-v1\n")?;
+    file.sync_all()?;
+    #[cfg(unix)]
+    sync_parent(&marker)?;
+    Ok(())
 }
 
 /// Hard cap on journalled heights. Independent of `--btc-header-retention`, so

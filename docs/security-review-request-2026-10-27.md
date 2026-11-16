@@ -1,5 +1,8 @@
 # Independent security review request
 
+> **Stale draft:** new fund-safety changes are underway after the candidate
+> below. Retarget and revalidate the package before commissioning review.
+
 Updated 2026-11-16. This package requests an independent human security review.
 The prior internal model review in `docs/2026-10-26_security-vtorrent-report.md`
 does not satisfy the independence gate.

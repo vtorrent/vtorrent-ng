@@ -19,7 +19,16 @@ pending independent review; regtest promotion remains for testing. The desktop
 creates both network state files when it generates a wallet, before publishing
 the wallet file, so no separate authorization or consumption step exists.
 Wallet state is protected by an OS-level single-writer lock; a second writer is
-refused.
+refused when it cooperates with the same lock path. This is an advisory local
+lock: it does not coordinate copied seeds or state on other hosts, direct file
+writes, or a process with permission to replace the lock file. Restrict write
+access to the data directory, never remove a lock file while a wallet may be
+running, and do not run multiple copies of the same BTC seed independently.
+
+BTC state opening records initialization separately from the state file. If the
+state disappears while the record remains, even `--btc-attest-new-seed` refuses
+to recreate it. Losing or restoring both files from an old backup can still erase
+that evidence and requires operator-led recovery; do not re-attest a used seed.
 
 - [x] **Genesis block verification**: hash `36ca792aa45ca7850f2789ff2e62ec13e91bd5f2770d6fea8df81bc2da1da8f8`
       (`utxo_root 65185f8a5c055c17bf7053c6b6c42993565bb5586689a8508017005b842f9105`)
