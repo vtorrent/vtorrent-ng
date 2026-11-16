@@ -165,9 +165,16 @@ impl BtcWallet {
         utxo_path: PathBuf,
         attested_new_seed: bool,
     ) -> std::io::Result<Self> {
-        let mut utxos = UtxoSet::load_for_wallet_with(&utxo_path, attested_new_seed)?;
+        let mut created = false;
         if attested_new_seed && !utxo_path.exists() {
-            utxos.create_new(&utxo_path)?;
+            match UtxoSet::new().create_new(&utxo_path) {
+                Ok(()) => created = true,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+        }
+        let mut utxos = UtxoSet::load_for_wallet(&utxo_path)?;
+        if created {
             tracing::warn!(
                 path = %utxo_path.display(),
                 ?network,

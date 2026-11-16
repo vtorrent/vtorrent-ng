@@ -49,10 +49,12 @@ attested constructor carries the capability. The daemon passes it only for
 `--btc-attest-new-seed`. The desktop writes an authorization bound to the exact
 wallet-file digest when it generates a wallet; it survives a restart, is
 consumed once the BTC state exists, and is removed when a different wallet is
-opened or any wallet is imported. When the state file does not exist and this
-capability is absent, initialization fails closed. When the capability is
-present, one atomic v3 save creates the file before any scan, send or swap is
-performed.
+opened or any wallet is imported. Consumption atomically rewrites the marker as
+consumed before deleting it, so a failed deletion or crash cannot leave a live
+authorization. When the state file does not exist and this capability is absent,
+initialization fails closed. When the capability is present, an exclusive
+create decides whether this process initializes the file; a process that loses
+that race loads the winning file instead of returning an empty set.
 
 The option is an assertion that the operator has independently established the
 conditions above. The code must not pretend to verify them. In an already
@@ -65,10 +67,12 @@ existing file.
 to match the staged copy byte-for-byte, the seed-scoped destination and network
 to match, and explicit isolation, ownership, and recovery-precondition
 assertions (no outstanding sends or swaps, complete archived copy). It
-loads the archived copy, marks it operator-verified, writes a v3 file through an
-exclusive promotion temporary, publishes it atomically, reopens it through the
-wallet guard, and rechecks the archive. The original archive is never modified.
-The tool cannot verify the operator's assertions.
+loads the archived copy, requires the operator to name its exact SHA-256, marks
+it operator-verified, writes a v3 file through an exclusive promotion temporary,
+publishes it atomically, reopens it through the wallet guard, and rechecks the
+archive. The original archive is never modified. The tool cannot verify the
+operator's assertions, so promotion stays experimental and disabled for
+production until independent review.
 
 No production use is authorized by this design. A reviewer must examine the
 exact command and its tests before it is enabled for real wallets.

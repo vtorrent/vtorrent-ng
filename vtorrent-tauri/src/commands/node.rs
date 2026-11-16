@@ -255,7 +255,11 @@ pub async fn start_node(
         ) {
             Ok(wallet) => {
                 if attested_new_seed {
-                    state.consume_new_seed_attestation();
+                    state.consume_new_seed_attestation().map_err(|error| {
+                        TauriError::Io(format!(
+                            "BTC wallet state was loaded, but its new-seed authorization could not be retired: {error}. Remove btc-new-seed-attestation.json from the app data directory before continuing."
+                        ))
+                    })?;
                 }
                 *rpc_state.btc_wallet.write().await = Some(wallet);
                 tracing::info!(

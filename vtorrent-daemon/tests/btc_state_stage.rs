@@ -211,7 +211,9 @@ fn promote_command(
     archive: &std::path::Path,
     output: &std::path::Path,
 ) -> std::process::Command {
+    use sha2::{Digest, Sha256};
     let seed = write_seed(dir);
+    let digest = hex::encode(Sha256::digest(std::fs::read(archive).unwrap()));
     let mut command = Command::new(env!("CARGO_BIN_EXE_btc-state-stage"));
     command.args([
         "promote",
@@ -228,6 +230,8 @@ fn promote_command(
         "--confirm-isolated",
         "--confirm-owner",
         "--confirm-recovery-preconditions",
+        "--confirm-archive-sha256",
+        &digest,
     ]);
     command
 }
@@ -302,6 +306,40 @@ fn promote_refuses_when_the_archive_differs() {
     std::fs::write(&output, original).unwrap();
     std::fs::write(&archive, b"{\"utxos\":[],\"next_index\":8}").unwrap();
     let result = promote_command(dir.path(), &archive, &output)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert_eq!(std::fs::read(&output).unwrap(), original);
+}
+
+#[test]
+fn promote_refuses_a_different_reviewed_digest() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("btc_utxos-regtest-62d04ad2793b8849.json");
+    let archive = dir.path().join("legacy-btc-state.json");
+    let original = b"{\"utxos\":[],\"next_index\":7}";
+    std::fs::write(&output, original).unwrap();
+    std::fs::write(&archive, original).unwrap();
+    let seed = write_seed(dir.path());
+    let result = Command::new(env!("CARGO_BIN_EXE_btc-state-stage"))
+        .args([
+            "promote",
+            "--data-dir",
+            dir.path().to_str().unwrap(),
+            "--archive",
+            archive.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+            "--seed-file",
+            seed.to_str().unwrap(),
+            "--network",
+            "regtest",
+            "--confirm-isolated",
+            "--confirm-owner",
+            "--confirm-recovery-preconditions",
+            "--confirm-archive-sha256",
+            &"00".repeat(32),
+        ])
         .output()
         .unwrap();
     assert!(!result.status.success());

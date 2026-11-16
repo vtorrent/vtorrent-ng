@@ -11,9 +11,11 @@ unknown future version is refused. The daemon can create a first v3 file only
 with the explicit `--btc-attest-new-seed` operator assertion, which states that
 the seed has no prior BTC history and no outstanding sends or swaps. Legacy
 recovery uses `btc-state-stage stage` → `archive` → `promote`, where `promote`
-requires the archive to match byte-for-byte and the operator to confirm
-isolation, ownership, that no sends or swaps are outstanding, and that the
-archived copy is complete. Neither command can verify those assertions. The desktop may create a first BTC state only for a wallet it
+requires the archive to match the staged copy byte-for-byte, the operator to
+confirm isolation, ownership, that no sends or swaps are outstanding, and that
+the archived copy is complete, and the SHA-256 of the exact archive reviewed.
+Neither command can verify those assertions; promotion remains experimental and
+is not approved for production until independent review. The desktop may create a first BTC state only for a wallet it
 generated. The authorization is bound to the exact wallet bytes, survives a
 restart, is consumed once the BTC state exists, and is removed when a different
 wallet is opened or any wallet is imported.

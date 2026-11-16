@@ -36,3 +36,9 @@
 - Daemon startup now writes a configured BTC birthday and cursor together and fails startup on save failure. A test verifies pre-rename failure preserves the prior values and a successful save reopens with both values; real power-loss behavior is unproven.
 - The original full-suite run with the v3 guard failed `daemon_starts_after_archive_with_the_seed_scoped_file`, whose expected behavior contradicted the new policy. The test now asserts rejection plus exact preservation of both staged and archived bytes; all 15 staging tests passed.
 - On 2026-11-15, `git ls-remote --heads origin main` reported `b51db24ad3a8583699e9ba0b118de7bf804af9cf`, which does not include the locally named review candidate. Do not send the current clone-and-checkout instructions as though the candidate were published.
+
+## Review findings and fixes
+
+- High: attested initialization could load a missing file and then skip creation if another writer won, returning an empty set. Initialization now tries an exclusive create first; a loser loads the winning file and never returns an empty set. A test covers the no-clobber decision.
+- High: marker deletion was not durable, so a failed deletion or crash could leave a reusable authorization. Consumption now rewrites the marker as consumed and syncs it before deletion; a failed deletion is safe. A test forces deletion failure and verifies the marker no longer authorizes.
+- High: promotion relied on blanket assertions. It now also requires the exact SHA-256 of the reviewed archive, records it, and remains explicitly experimental and unapproved for production. A wrong digest is rejected. Ownership, writer isolation, and send/swap history still require independent human review.

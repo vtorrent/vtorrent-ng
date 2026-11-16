@@ -87,6 +87,9 @@ enum Command {
         /// outstanding, and that this archived copy is complete.
         #[arg(long, required = true)]
         confirm_recovery_preconditions: bool,
+        /// SHA-256 of the exact archived file you reviewed.
+        #[arg(long)]
+        confirm_archive_sha256: String,
     },
 }
 
@@ -326,6 +329,7 @@ fn promote(
     _isolated: bool,
     _owner: bool,
     _recovery_preconditions: bool,
+    confirm_archive_sha256: String,
 ) -> anyhow::Result<()> {
     let seed = zeroize::Zeroizing::new(read_seed(&seed_file)?);
     let expected_id = wallet_id(&seed);
@@ -342,6 +346,13 @@ fn promote(
     let original = fs::read(&output)?;
     if fs::read(&archive)? != original {
         anyhow::bail!("archive does not match the staged copy; do not promote either file");
+    }
+    use sha2::{Digest, Sha256};
+    let digest = hex::encode(Sha256::digest(&original));
+    if !digest.eq_ignore_ascii_case(&confirm_archive_sha256) {
+        anyhow::bail!(
+            "archive digest {digest} does not match --confirm-archive-sha256; review the exact archive before promoting"
+        );
     }
     let version = serde_json::from_slice::<serde_json::Value>(&original)?
         .get("journal_version")
@@ -362,7 +373,7 @@ fn promote(
     if fs::read(&archive)? != original {
         anyhow::bail!("archive changed during promotion; inspect both files before use");
     }
-    eprintln!("Promoted the staged copy to wallet format. The archive still holds the exact legacy bytes. The operator assertions were not verified by this tool; independent review of the wallet and swaps is still required.");
+    eprintln!("Promoted the staged copy to wallet format (sha256 {digest}). The archive still holds the exact legacy bytes. The operator assertions were not verified by this tool; independent review of the wallet and swaps is still required.");
     Ok(())
 }
 
@@ -413,6 +424,7 @@ fn main() -> anyhow::Result<()> {
             confirm_isolated,
             confirm_owner,
             confirm_recovery_preconditions,
+            confirm_archive_sha256,
         } => promote(
             data_dir,
             archive,
@@ -422,6 +434,7 @@ fn main() -> anyhow::Result<()> {
             confirm_isolated,
             confirm_owner,
             confirm_recovery_preconditions,
+            confirm_archive_sha256,
         ),
     }
 }

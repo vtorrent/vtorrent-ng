@@ -1155,21 +1155,17 @@ impl UtxoSet {
     /// A corrupt tip is discarded. Corrupt undo or pending records fail the
     /// load because they can contain local sends that may still be live.
     pub fn load(path: &Path) -> std::io::Result<Self> {
-        Self::load_inner(path, false, false)
+        Self::load_inner(path, false)
     }
 
-    pub(crate) fn load_for_wallet_with(path: &Path, attested_new: bool) -> std::io::Result<Self> {
-        Self::load_inner(path, true, attested_new)
+    pub(crate) fn load_for_wallet(path: &Path) -> std::io::Result<Self> {
+        Self::load_inner(path, true)
     }
 
-    fn load_inner(path: &Path, reject_legacy: bool, attested_new: bool) -> std::io::Result<Self> {
+    fn load_inner(path: &Path, reject_legacy: bool) -> std::io::Result<Self> {
         let json = match std::fs::read_to_string(path) {
             Ok(json) => json,
-            Err(error)
-                if error.kind() == std::io::ErrorKind::NotFound
-                    && reject_legacy
-                    && !attested_new =>
-            {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && reject_legacy => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     "BTC wallet state is missing; seed history is unknown and initialization is disabled",
@@ -1493,6 +1489,26 @@ mod tests {
         UtxoSet::new().save(&path).unwrap();
         assert_eq!(std::fs::read(&victim).unwrap(), b"must not be overwritten");
         assert!(path.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn create_new_never_replaces_an_existing_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-utxo-create-new-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let existing = b"{\"journal_version\":3,\"utxos\":[]}";
+        std::fs::write(&path, existing).unwrap();
+        let error = UtxoSet::new().create_new(&path).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&path).unwrap(), existing);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

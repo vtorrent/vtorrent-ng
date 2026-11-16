@@ -163,10 +163,45 @@ impl AppState {
         self.persisted_new_seed_marker_matches()
     }
 
-    /// Consume the authorization once the BTC state exists. A later deletion of
-    /// that state must not re-authorize creating a fresh one.
-    pub fn consume_new_seed_attestation(&self) {
-        self.forget_created_wallet();
+    /// Consume the authorization once the BTC state exists. The marker is first
+    /// atomically rewritten as consumed, so even a failed deletion or a crash
+    /// cannot leave a live authorization behind.
+    pub fn consume_new_seed_attestation(&self) -> std::io::Result<()> {
+        *self.created_wallet_path.lock().unwrap() = None;
+        let Some(marker) = self.marker_path() else {
+            return Ok(());
+        };
+        if !marker.exists() {
+            return Ok(());
+        }
+        self.write_marker_body(&marker, &serde_json::json!({ "consumed": true }))?;
+        #[cfg(test)]
+        if FAIL_MARKER_DELETE.with(|flag| flag.replace(false)) {
+            return Ok(());
+        }
+        match std::fs::remove_file(&marker) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                tracing::warn!(
+                    "Could not remove consumed BTC new-seed authorization at {}: {}",
+                    marker.display(),
+                    error
+                );
+                return Ok(());
+            }
+        }
+        #[cfg(unix)]
+        if let Some(parent) = marker.parent() {
+            if let Err(error) = std::fs::File::open(parent).and_then(|dir| dir.sync_all()) {
+                tracing::warn!(
+                    "Could not sync the removal of the BTC new-seed authorization at {}: {}",
+                    marker.display(),
+                    error
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Drop an authorization that does not match the wallet just opened. A
@@ -193,19 +228,36 @@ impl AppState {
     }
 
     fn write_new_seed_marker(&self, wallet_path: &std::path::Path) -> std::io::Result<()> {
-        use std::io::Write;
         let Some(marker) = self.marker_path() else {
             return Ok(());
         };
         let digest = Self::wallet_digest(wallet_path).ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::NotFound, "wallet file is unreadable")
         })?;
+        self.write_marker_body(
+            &marker,
+            &serde_json::json!({
+                "wallet_path": wallet_path.to_string_lossy(),
+                "wallet_sha256": digest,
+            }),
+        )
+    }
+
+    fn write_marker_body(
+        &self,
+        marker: &std::path::Path,
+        body: &serde_json::Value,
+    ) -> std::io::Result<()> {
+        use std::io::Write;
         let parent = marker.parent().unwrap_or_else(|| std::path::Path::new("."));
         let tmp = parent.join(format!(
-            ".btc-new-seed-attestation.{}.tmp",
-            std::process::id()
+            ".btc-new-seed-attestation.{}.{}.tmp",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or_default()
         ));
-        let _ = std::fs::remove_file(&tmp);
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -213,15 +265,20 @@ impl AppState {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
+        let body = serde_json::to_string(body).map_err(std::io::Error::other)?;
         let mut file = options.open(&tmp)?;
-        let body = serde_json::json!({
-            "wallet_path": wallet_path.to_string_lossy(),
-            "wallet_sha256": digest,
-        });
-        file.write_all(serde_json::to_string(&body)?.as_bytes())?;
-        file.sync_all()?;
+        if let Err(error) = file
+            .write_all(body.as_bytes())
+            .and_then(|()| file.sync_all())
+        {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(error);
+        }
         drop(file);
-        std::fs::rename(&tmp, &marker)?;
+        if let Err(error) = std::fs::rename(&tmp, marker) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(error);
+        }
         #[cfg(unix)]
         std::fs::File::open(parent)?.sync_all()?;
         Ok(())
@@ -240,11 +297,24 @@ impl AppState {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
             return false;
         };
+        if value["consumed"].as_bool() == Some(true) {
+            return false;
+        }
         let stored_path = value["wallet_path"].as_str().unwrap_or_default();
         let stored_digest = value["wallet_sha256"].as_str().unwrap_or_default();
         stored_path == active.to_string_lossy()
             && Self::wallet_digest(&active).is_some_and(|digest| digest == stored_digest)
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_MARKER_DELETE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn fail_marker_delete_for_test() {
+    FAIL_MARKER_DELETE.with(|flag| flag.set(true));
 }
 
 impl Default for AppState {
@@ -312,9 +382,66 @@ mod tests {
         restarted.forget_unmatched_wallet_attestation();
         assert!(!dir.join("btc-new-seed-attestation.json").exists());
 
-        first.consume_new_seed_attestation();
+        first.consume_new_seed_attestation().unwrap();
         assert!(!first.may_attest_new_btc_seed());
         assert!(!dir.join("btc-new-seed-attestation.json").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_consumed_marker_never_authorizes() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-tauri-consumed-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wallet = dir.join("wallet.vwallet");
+        std::fs::write(&wallet, b"wallet").unwrap();
+        std::fs::write(
+            dir.join("btc-new-seed-attestation.json"),
+            br#"{"consumed":true}"#,
+        )
+        .unwrap();
+        let state = AppState::new();
+        state.set_app_data_dir(dir.clone());
+        *state.wallet_path.lock().unwrap() = Some(wallet);
+        assert!(!state.may_attest_new_btc_seed());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn consume_stays_safe_when_marker_deletion_fails() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-tauri-consume-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wallet = dir.join("wallet.vwallet");
+        std::fs::write(&wallet, b"wallet").unwrap();
+        let state = AppState::new();
+        state.set_app_data_dir(dir.clone());
+        *state.wallet_path.lock().unwrap() = Some(wallet.clone());
+        state.record_created_wallet(wallet);
+        assert!(state.may_attest_new_btc_seed());
+
+        fail_marker_delete_for_test();
+        state.consume_new_seed_attestation().unwrap();
+        assert!(!state.may_attest_new_btc_seed());
+        let marker = dir.join("btc-new-seed-attestation.json");
+        let body: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&marker).unwrap()).unwrap();
+        assert_eq!(body["consumed"], true);
+
+        state.consume_new_seed_attestation().unwrap();
+        assert!(!marker.exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
