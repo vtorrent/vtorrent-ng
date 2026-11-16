@@ -251,8 +251,8 @@ fn consume_totp_step_locked(wallet_path: &std::path::Path, step: u64) -> Result<
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
-    let (mut file, created) = match options.create_new(true).open(&path) {
-        Ok(file) => (file, true),
+    let mut file = match options.create_new(true).open(&path) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             let mut options = std::fs::OpenOptions::new();
             options.read(true).write(true);
@@ -261,12 +261,9 @@ fn consume_totp_step_locked(wallet_path: &std::path::Path, step: u64) -> Result<
                 use std::os::unix::fs::OpenOptionsExt;
                 options.custom_flags(libc::O_NOFOLLOW);
             }
-            (
-                options
-                    .open(&path)
-                    .map_err(|error| WalletError::Io(error.to_string()))?,
-                false,
-            )
+            options
+                .open(&path)
+                .map_err(|error| WalletError::Io(error.to_string()))?
         }
         Err(error) => return Err(WalletError::Io(error.to_string())),
     };
@@ -283,7 +280,10 @@ fn consume_totp_step_locked(wallet_path: &std::path::Path, step: u64) -> Result<
     let mut previous = String::new();
     file.read_to_string(&mut previous)
         .map_err(|error| WalletError::Io(error.to_string()))?;
-    let last = if created && previous.is_empty() {
+    let last = if previous.trim().is_empty() {
+        // A crash between `create_new` and the first write leaves an empty
+        // file. Treat it as uninitialized rather than bricking every later
+        // verification.
         None
     } else {
         Some(
@@ -402,12 +402,14 @@ fn consume_account_step_in_store(
                 if value.len() > 128 {
                     return Err(WalletError::Io("invalid legacy TOTP replay state".into()));
                 }
-                let last = value
-                    .trim()
-                    .parse::<u64>()
-                    .map_err(|_| WalletError::Io("invalid legacy TOTP replay state".into()))?;
-                if step <= last {
-                    return Err(WalletError::OtpReplay);
+                let value = value.trim();
+                if !value.is_empty() {
+                    let last = value
+                        .parse::<u64>()
+                        .map_err(|_| WalletError::Io("invalid legacy TOTP replay state".into()))?;
+                    if step <= last {
+                        return Err(WalletError::OtpReplay);
+                    }
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -535,6 +537,31 @@ mod tests {
         std::os::unix::fs::symlink(&victim, path.with_extension("totp-step")).unwrap();
         assert!(consume_totp_step(&path, 12345).is_err());
         assert_eq!(std::fs::read(&victim).unwrap(), b"safe");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn empty_replay_file_is_treated_as_uninitialized() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-totp-empty-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wallet.vtr");
+        std::fs::write(path.with_extension("totp-step"), b"").unwrap();
+        consume_totp_step(&path, 12_345).expect("an empty state file must be recoverable");
+        assert_eq!(
+            std::fs::read_to_string(path.with_extension("totp-step")).unwrap(),
+            "12345"
+        );
+        assert!(matches!(
+            consume_totp_step(&path, 12_345),
+            Err(WalletError::OtpReplay)
+        ));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
