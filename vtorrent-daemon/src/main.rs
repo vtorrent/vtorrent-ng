@@ -1156,7 +1156,19 @@ fn print_banner() {
 /// regular file.
 fn validate_passphrase_file(path: &std::path::Path) -> anyhow::Result<()> {
     match std::fs::metadata(path) {
-        Ok(meta) if meta.is_file() => Ok(()),
+        Ok(meta) if meta.is_file() => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if meta.permissions().mode() & 0o077 != 0 {
+                    anyhow::bail!(
+                        "--wallet-passphrase-file {} is group/world accessible; require mode 0600",
+                        path.display()
+                    );
+                }
+            }
+            Ok(())
+        }
         Ok(_) => anyhow::bail!(
             "--wallet-passphrase-file {} is not a regular file (a missing \
              bind-mount source becomes a directory; check that the host path \
@@ -1180,7 +1192,25 @@ mod passphrase_file_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("passphrase");
         std::fs::write(&path, "secret\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         assert!(validate_passphrase_file(&path).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_group_or_world_readable_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("passphrase");
+        std::fs::write(&path, "secret\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let err = validate_passphrase_file(&path).unwrap_err();
+        assert!(err.to_string().contains("0600"), "got: {err}");
     }
 
     #[test]
