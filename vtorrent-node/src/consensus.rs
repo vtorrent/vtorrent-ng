@@ -21,6 +21,11 @@ pub const MAX_BLOCK_SIZE: usize = 1_000_000; // 1 MB
 /// Legacy block sigop limit: `MAX_BLOCK_SIZE / 50`, matching the legacy client.
 pub const MAX_BLOCK_SIGOPS: usize = 20_000;
 
+/// Maximum producer clock drift for a new block. Keeping this small bounds
+/// timestamp grinding: a staker can try only a few slots ahead of wall time,
+/// not the old two-hour window.
+pub const MAX_FUTURE_BLOCK_DRIFT: u32 = 5;
+
 /// Count a block's signature operations, optionally resolving prevout scripts
 /// for the P2SH redeem-script contribution. Mirrors the legacy `CheckBlock`
 /// (no prevouts) and `ConnectBlock` (P2SH included) checks.
@@ -278,6 +283,10 @@ pub fn is_stakeable_with(params: &ConsensusParams, utxo: &Utxo) -> bool {
 /// a staker's block share equals its stake share — no stake size can ever
 /// reach probability 1 unless it is the entire staked supply.
 ///
+/// The kernel nonce is the header timestamp, but validation bounds it to
+/// `MAX_FUTURE_BLOCK_DRIFT` seconds ahead of wall time. A producer can try only
+/// a few slots, not the old 7,200-second window.
+///
 /// Implemented as an exact integer comparison to avoid floating point:
 /// `kernel_val / 2^32 <= value / total_staked`
 /// `<=> kernel_val * total_staked <= value * 2^32`
@@ -425,17 +434,18 @@ pub(crate) fn validate_block_inner(
         }
     }
 
-    // Check block timestamp is not too far in the future (2 hours tolerance)
+    // Bound producer clock drift tightly: the stake kernel hashes this
+    // timestamp, so a large future window would allow grinding.
     let now = now_timestamp_u32();
 
-    if block.header.timestamp > now.saturating_add(7200) {
+    if block.header.timestamp > now.saturating_add(MAX_FUTURE_BLOCK_DRIFT) {
         return Err(NodeError::InvalidBlock(format!(
             "Block timestamp {} is too far in the future (now: {})",
             block.header.timestamp, now
         )));
     }
 
-    // Check block timestamp is greater than previous block
+    // Timestamp monotonicity still bounds age and CLTV semantics.
     if block.header.timestamp <= prev_timestamp {
         return Err(NodeError::InvalidBlock(
             "Block timestamp must be greater than previous block".into(),

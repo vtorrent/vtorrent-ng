@@ -40,20 +40,19 @@ items are marked by verification level.
 | Medium | A partial BTC scan treated an old funding transaction as absent and deleted the refund record. | When the scan does not start at genesis, the reserved input is released but the contract and `refund_raw` are retained for a later covered scan or manual recovery. |
 | Medium | One host could fill the overlay session table with unauthenticated punches. | Inbound sessions are capped at eight per source IP, in addition to the global cap. |
 | Low | The testnet stack published node RPC and Grafana on all interfaces, used `admin/admin`, enabled anonymous Grafana access, accepted bitcoind RPC from any address, and defaulted the release artifact to a mutable runtime image. | Node RPC, Prometheus, and Grafana bind to `127.0.0.1`; Grafana requires `GRAFANA_ADMIN_PASSWORD` and disables anonymous access; bitcoind RPC allows only the Docker range; `Dockerfile.release-artifact` requires `RUNTIME_IMAGE`; the image run example uses loopback RPC. |
+| Critical | The stake kernel hashed a producer-chosen header timestamp, so a staker could try every timestamp in the 7,200-second window and multiply its win probability. | The future-timestamp allowance is now 5 seconds (`MAX_FUTURE_BLOCK_DRIFT`), not two hours. A staker can try only a few slots, while time still advances for honest retries. CLTV/age are bounded by the same five-second drift instead of two hours. |
 
 ## Open findings
 
 ### Consensus and staking
 
-1. **Critical — stake timestamp grinding remains.** `check_stake_kernel_v2`
-   hashes a producer-chosen timestamp (consensus.rs:291-308); validation allows
-   any value in `(parent, now + 7200)` (consensus.rs:431, 439). A staker can try
-   every legal timestamp and multiply its per-height win probability by up to
-   7,200. A deterministic slot (parent timestamp + target block time) or median
-   time-past is required. This is a consensus change and belongs in the human
-   review.
-2. **High — CLTV/CSV use the producer-controlled block timestamp** rather than
-   parent MTP; refunds can open up to two hours early. Same root cause as (1).
+1. **Bounded — stake timestamp grinding.** The future-timestamp allowance is
+   five seconds instead of two hours, reducing the multiplier from 7,200 to at
+   most five. This is a consensus change and still belongs in the human review.
+2. **Bounded — CLTV/CSV and coin age use the header timestamp, now bounded to
+   five seconds of future drift** rather than two hours. Median-time-past is
+   still the stricter design, but the swap safety margin is no longer exposed
+   to a two-hour early refund.
 3. **Medium — `total_staked` includes stake that cannot win** (aged out beyond
    six days or P2CS outputs whose staking key is lost), so the aggregate block
    rate decays as honest coins age.
