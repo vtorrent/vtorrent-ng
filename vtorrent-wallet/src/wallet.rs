@@ -75,7 +75,7 @@ pub struct WalletData {
 }
 
 /// A cold-staking key pair and its raw P2CS script.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ColdStakeKeys {
     /// The hot staking key (WIF) — export to the staking node.
     pub staking_wif: zeroize::Zeroizing<String>,
@@ -92,6 +92,21 @@ pub struct ColdStakeKeys {
     pub locktime: u32,
     pub label: Option<String>,
     pub created_at: u64,
+}
+
+impl std::fmt::Debug for ColdStakeKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ColdStakeKeys")
+            .field("staking_wif", &"[REDACTED]")
+            .field("spending_wif", &"[REDACTED]")
+            .field("staking_address", &self.staking_address)
+            .field("spending_address", &self.spending_address)
+            .field("script_pubkey", &self.script_pubkey)
+            .field("locktime", &self.locktime)
+            .field("label", &self.label)
+            .field("created_at", &self.created_at)
+            .finish()
+    }
 }
 
 /// Generate a cold-staking key pair and the P2CS script/address, **without**
@@ -277,32 +292,40 @@ impl Wallet {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| WalletError::Io(e.to_string()))?;
         }
-        // Unique temp name created with O_EXCL: a deterministic
-        // `wallet.json.tmp` could be pre-created as a symlink by a local
-        // attacker to redirect the write, and concurrent saves would race.
-        let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
-        #[cfg(unix)]
-        {
-            use std::io::Write as _;
-            use std::os::unix::fs::OpenOptionsExt;
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
+        // A unique temp name plus O_EXCL: a predictable name could be
+        // pre-created as a symlink by a local attacker, and a stale temp from
+        // one failed save must not block every later save in this process.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let tmp = path.with_extension(format!("json.tmp.{}.{}", std::process::id(), nanos));
+        let write_result = (|| -> Result<()> {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options
                 .open(&tmp)
                 .map_err(|e| WalletError::Io(e.to_string()))?;
+            use std::io::Write as _;
             file.write_all(json.as_bytes())
                 .map_err(|e| WalletError::Io(e.to_string()))?;
             // Flush to disk before the rename so a crash cannot leave an empty
             // or truncated wallet despite the "atomic" rename.
             file.sync_all()
                 .map_err(|e| WalletError::Io(e.to_string()))?;
+            drop(file);
+            std::fs::rename(&tmp, path).map_err(|e| WalletError::Io(e.to_string()))?;
+            Ok(())
+        })();
+        if write_result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+            write_result?;
         }
-        #[cfg(not(unix))]
-        {
-            std::fs::write(&tmp, &json).map_err(|e| WalletError::Io(e.to_string()))?;
-        }
-        std::fs::rename(&tmp, path).map_err(|e| WalletError::Io(e.to_string()))?;
         // Re-assert 0600 on Unix: rename preserves the source mode, but
         // pre-existing files keep their old permissions.
         #[cfg(unix)]
@@ -694,6 +717,15 @@ mod tests {
         let debug = format!("{:?}", wallet.data);
         assert!(!debug.contains(&secret));
         assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn cold_stake_debug_redacts_wifs() {
+        let keys = generate_cold_stake_keys(0, None).unwrap();
+        let text = format!("{keys:?}");
+        assert!(!text.contains(keys.staking_wif.as_str()));
+        assert!(!text.contains(keys.spending_wif.as_str()));
+        assert!(text.contains("REDACTED"));
     }
 
     #[test]

@@ -981,6 +981,13 @@ impl Engine {
             return Err(ScriptError::InvalidScriptNumber);
         }
         let n_sigs = n_sigs as usize;
+        // Bitcoin's consensus limit. Without it a hand-built script can carry
+        // hundreds of keys and force m×n ECDSA verifications inside one
+        // execution step, making block validation an easy DoS target.
+        const MAX_MULTISIG_KEYS: usize = 20;
+        if n_keys > MAX_MULTISIG_KEYS || n_sigs > MAX_MULTISIG_KEYS {
+            return Err(ScriptError::MultisigKeyCount(n_sigs, n_keys));
+        }
         let mut sigs = Vec::with_capacity(n_sigs);
         for _ in 0..n_sigs {
             sigs.push(self.stack.pop().ok_or(ScriptError::EmptyStack)?);

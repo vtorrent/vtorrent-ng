@@ -1076,6 +1076,37 @@ fn test_2of3_multisig() {
 }
 
 #[test]
+fn test_multisig_rejects_more_than_twenty_keys() {
+    let keys: Vec<Vec<u8>> = (1..=21)
+        .map(|index| make_keypair_seed(index).1.serialize().to_vec())
+        .collect();
+    let mut script_pubkey = Script::new();
+    script_pubkey.push_data(&[1]).unwrap();
+    for key in &keys {
+        script_pubkey.push_data(key).unwrap();
+    }
+    script_pubkey.push_data(&[21]).unwrap();
+    script_pubkey.push_opcode(0xae); // OP_CHECKMULTISIG
+
+    let tx_hash = [0xee_u8; 32];
+    let sig = sign_tx(&make_keypair_seed(1).0, &tx_hash);
+    let mut script_sig = Script::new();
+    script_sig.push_opcode(0x00);
+    script_sig.push_data(&sig).unwrap();
+
+    let env = ScriptEnv {
+        tx_hash,
+        ..Default::default()
+    };
+    let mut engine = Engine::new(env);
+    let error = engine.execute(&script_sig, &script_pubkey).unwrap_err();
+    assert!(
+        matches!(error, ScriptError::MultisigKeyCount(_, 21)),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn test_1of2_multisig() {
     let (_, pk1) = make_keypair_seed(10);
     let (_, pk2) = make_keypair_seed(20);

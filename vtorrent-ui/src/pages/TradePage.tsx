@@ -400,7 +400,7 @@ export default function TradePage() {
             </div>
 
             <div>
-              <label className="label">Wallet passphrase (for VTR claim)</label>
+              <label className="label">Wallet passphrase (VTR claim and refund replacement)</label>
               <input
                 type="password"
                 className="input-field"
@@ -476,7 +476,7 @@ export default function TradePage() {
                   I approve a total fee of {validRefundFee ? parsedRefundFee : '…'} satoshis, reducing my refund by {validRefundFee ? parsedRefundFee - latestRefund.totalFeeSatoshis : '…'} more satoshis.
                 </label>
                 <button disabled={swapBusy || !validRefundFee || !refundFeeApproved}
-                  onClick={() => runSwap(() => bumpVtrRefund(swapOrderId, latestRefund.txid, parsedRefundFee), 'VTR refund replacement recorded/submitted — check chain state')}
+                  onClick={() => runSwap(() => bumpVtrRefund(swapOrderId, latestRefund.txid, parsedRefundFee, takerPassphrase, takerOtp || undefined), 'VTR refund replacement recorded/submitted — check chain state')}
                   className="btn-secondary text-xs disabled:opacity-50">Approve and submit VTR refund replacement</button>
                 <p className="text-amber-400">VTR refunds only. History is not confirmation evidence. Original and replacement transactions remain saved. After an uncertain result, use Refund VTR to retry the latest saved version.</p>
               </div>

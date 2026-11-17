@@ -662,8 +662,21 @@ export async function getVtrRefundHistory(orderId: string): Promise<VtrRefundHis
     : await rpcGet<unknown>(`/api/v1/swap/${encodeURIComponent(orderId)}/vtr-refund-history`)) as VtrRefundHistory
 }
 
-export async function bumpVtrRefund(orderId: string, replacesTxid: string, totalFeeSatoshis: number): Promise<SwapActionResult> {
-  const req = { order_id: orderId, replaces_txid: replacesTxid, total_fee_satoshis: totalFeeSatoshis, approve: true }
+export async function bumpVtrRefund(
+  orderId: string,
+  replacesTxid: string,
+  totalFeeSatoshis: number,
+  passphrase: string,
+  otpCode?: string,
+): Promise<SwapActionResult> {
+  const req = {
+    order_id: orderId,
+    replaces_txid: replacesTxid,
+    total_fee_satoshis: totalFeeSatoshis,
+    approve: true,
+    passphrase,
+    otp_code: otpCode || null,
+  }
   return camel(isTauri()
     ? await tauriInvoke<unknown>('bump_vtr_refund', { req })
     : await rpcPost<unknown>('/api/v1/swap/vtr-refund-bump', req)) as SwapActionResult
