@@ -10,7 +10,7 @@ already accepted so it is not re-litigated.
 
 ## Review target
 
-Review the candidate `b02dd3308924434ff5600b462d83159b5952c626`. This is the current review head. It is **not**
+Review the candidate `3d32e8c8002a1f5690d7dd3865230a6280ea97e9`. This is the current review head. It is **not**
 covered by any prior soak: the `6a49727` fleet predates the fund-safety and
 recovery changes below and was interrupted by a host restart on 2026-11-16.
 Under the soak provenance policy, the shipping image needs its own full window
@@ -18,8 +18,8 @@ after this review and its fixes settle.
 
 Read this document from the tip of `main`. Confirm that no code changed after
 the candidate with
-`git diff --name-only b02dd33..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
-must return nothing. Check out `b02dd33` itself when running the verification
+`git diff --name-only 3d32e8c..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+must return nothing. Check out `3d32e8c` itself when running the verification
 commands. The tables below record the earlier deltas. The table after the
 `f8e0162` deltas covers the range from `ba46fd6` to the candidate.
 
@@ -101,6 +101,7 @@ Deltas after `ba46fd6`:
 | `9f3d4e9` | Cold-stake exports in backups; wallet version/unknown-field rejection; snapshot integrity checks; BTC staging confirmations and provenance; mainnet RPC key requirement; release CORS narrowing; CSP and font cleanup; real-wallet check harness |
 | `f0013bb` | Clear AEAD error; worst-case fee estimate; single-key fallback removed; 2FA migration warning; TOTP seed clearing and clipboard timeout; HTLC classification; minimal `push_int`; backup cron and benchmark gate hardening; dead-man path; mkey cap, dump re-read, varint overflow |
 | `b02dd33` | Incentive payouts disabled pending receipts; `ut_vtr` validation; uncompressed-key signing; P2SH push-only; template framing; cold-stake export round-trip; staking-intent atomic write; RPC bind failure exit; query rate limits; 2038 HTLC guard; torrent piece caps |
+| `3d32e8c` | Store append monotonicity and rebuild metadata; backup verify-only TOTP; best-effort wallet TOTP re-save; unsolicited torrent piece rejection |
 
 Deltas after the earlier review head:
 
@@ -152,7 +153,7 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout b02dd3308924434ff5600b462d83159b5952c626
+git checkout 3d32e8c8002a1f5690d7dd3865230a6280ea97e9
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
@@ -160,7 +161,7 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 cargo test --workspace --all-features
 ```
 
-The `b02dd33` workspace run passed 54 test groups and 1,432 tests with 0
+The `3d32e8c` workspace run passed 54 test groups and 1,433 tests with 0
 failures and 11 ignored. CI repeats the `--all-features` suite on every push.
 Set `VTORRENT_TOTP_STATE_DIR` to a fresh directory before running the suite so
 the host-scoped TOTP replay state does not collide with an existing
@@ -263,7 +264,8 @@ Added with `ff148fd` and `35ea52e`:
   pass covering consensus/staking, wallet signing, torrents/incentives,
   P2P/SPV, RPC/daemon/store, and BTC swaps. It fixed the incentive payout
   default, uncompressed-key signing, P2SH push-only, template framing, and
-  related findings in `b02dd33`. It is **not** independent review.
+  related findings in `b02dd33`, with store/backup/torrent hardening in
+  `3d32e8c`. It is **not** independent review.
 
 ## Status
 
@@ -275,7 +277,7 @@ Added with `ff148fd` and `35ea52e`:
   swap preserved across a maker restart, BTC claim with six confirmations, and
   a separate taker node broadcasting the VTR claim.
 - CI runs the workspace suite with `--all-features` on every push. The last
-  counted local run on the review head was 54 groups and 1,432 tests, zero
+  counted local run on the review head was 54 groups and 1,433 tests, zero
   failures, with 11 ignored: seven need a Bitcoin Core container, two are manual
   release-mode governance experiments, one is a mainnet-scale header-retention
   test, and one is a doctest. The whole-tree review remediation is documented in
