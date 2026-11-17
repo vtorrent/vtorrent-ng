@@ -41,6 +41,7 @@ items are marked by verification level.
 | Medium | One host could fill the overlay session table with unauthenticated punches. | Inbound sessions are capped at eight per source IP, in addition to the global cap. |
 | Low | The testnet stack published node RPC and Grafana on all interfaces, used `admin/admin`, enabled anonymous Grafana access, accepted bitcoind RPC from any address, and defaulted the release artifact to a mutable runtime image. | Node RPC, Prometheus, and Grafana bind to `127.0.0.1`; Grafana requires `GRAFANA_ADMIN_PASSWORD` and disables anonymous access; bitcoind RPC allows only the Docker range; `Dockerfile.release-artifact` requires `RUNTIME_IMAGE`; the image run example uses loopback RPC. |
 | Critical | The stake kernel hashed a producer-chosen header timestamp, so a staker could try every timestamp in the 7,200-second window and multiply its win probability. | The future-timestamp allowance is now 5 seconds (`MAX_FUTURE_BLOCK_DRIFT`), not two hours. A staker can try only a few slots, while time still advances for honest retries. CLTV/age are bounded by the same five-second drift instead of two hours. |
+| Medium | `total_staked` included coins younger than the minimum age or older than the maximum, lowering the aggregate block rate. | The kernel denominator is now the eligible stake at the block timestamp: stakeable value inside `min_stake_age..=max_stake_age`. Validation adds back the removed stake input and excludes the coinstake's own outputs; the height-2 bootstrap path keeps the previous total. Lost-key stake cannot be detected and remains counted. |
 
 ## Open findings
 
@@ -53,9 +54,9 @@ items are marked by verification level.
    five seconds of future drift** rather than two hours. Median-time-past is
    still the stricter design, but the swap safety margin is no longer exposed
    to a two-hour early refund.
-3. **Medium — `total_staked` includes stake that cannot win** (aged out beyond
-   six days or P2CS outputs whose staking key is lost), so the aggregate block
-   rate decays as honest coins age.
+3. **Partially fixed — eligible stake now excludes young and aged-out coins.**
+   A P2CS output whose staking key is lost still counts; that cannot be
+   detected without an explicit retirement marker.
 
 ### P2P, overlay, and SPV
 
@@ -102,10 +103,10 @@ items are marked by verification level.
 
 ## Verification
 
-Focused verification: 97 script tests, 247 node tests, 116 torrent tests, 73
+Focused verification: 97 script tests, 248 node tests, 116 torrent tests, 73
 wallet tests, 203 RPC tests, 33 Tauri tests, 10 wallet-service tests, 16 store
 tests, 44 SPV tests, 224 BTC tests, 33 overlay tests, and `cargo fmt`/Clippy on
-the changed crates. The full workspace suite passed **1,436 tests, 0 failures,
+the changed crates. The full workspace suite passed **1,437 tests, 0 failures,
 11 ignored**.
 
 ## Verdict

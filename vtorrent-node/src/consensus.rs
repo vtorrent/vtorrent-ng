@@ -275,6 +275,28 @@ pub fn is_stakeable_with(params: &ConsensusParams, utxo: &Utxo) -> bool {
     )
 }
 
+/// Whether a UTXO is inside the staking age window at `timestamp`.
+pub fn stake_age_eligible(params: &ConsensusParams, utxo: &Utxo, timestamp: u32) -> bool {
+    let age = u64::from(timestamp.saturating_sub(utxo.timestamp));
+    age >= params.min_stake_age && age <= params.max_stake_age
+}
+
+/// Sum the stakeable value that can actually win a kernel at `timestamp`.
+///
+/// `chain.total_staked` includes coins that have aged out or whose staking key
+/// is lost; using it as the kernel denominator lowers the aggregate block rate.
+pub fn eligible_stake_value<'a>(
+    utxos: impl Iterator<Item = &'a Utxo>,
+    params: &ConsensusParams,
+    timestamp: u32,
+) -> u64 {
+    utxos
+        .filter(|utxo| {
+            is_stakeable_with(params, utxo) && stake_age_eligible(params, utxo, timestamp)
+        })
+        .fold(0u64, |total, utxo| total.saturating_add(utxo.value))
+}
+
 /// Check whether a UTXO satisfies the v2 stake kernel.
 ///
 /// The per-attempt probability is the staker's share of the total staked
@@ -842,6 +864,31 @@ mod tests {
         // Oversized output scripts cannot execute, but the legacy counter still
         // charges them so they cannot bypass the block limit.
         assert_eq!(outputs(1, vec![0xac; 20_001]).legacy_sigop_count(), 20_001);
+    }
+
+    #[test]
+    fn eligible_stake_excludes_young_and_aged_out_coins() {
+        let params = ConsensusParams::default();
+        let now = 1_700_000_000u32;
+        let mut utxo = stake_utxo(1_000 * COIN);
+
+        utxo.timestamp = now;
+        assert_eq!(
+            eligible_stake_value(std::iter::once(&utxo), &params, now),
+            0
+        );
+
+        utxo.timestamp = now - params.min_stake_age as u32;
+        assert_eq!(
+            eligible_stake_value(std::iter::once(&utxo), &params, now),
+            1_000 * COIN
+        );
+
+        utxo.timestamp = now - params.max_stake_age as u32 - 1;
+        assert_eq!(
+            eligible_stake_value(std::iter::once(&utxo), &params, now),
+            0
+        );
     }
 
     #[test]

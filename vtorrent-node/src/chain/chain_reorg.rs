@@ -788,7 +788,24 @@ fn apply_transaction_journaled(
         // updated after this loop, so it still holds the pre-state value).
         // This caps a whale's block share at its stake share instead of
         // letting any UTXO >= 42,949.67 VTR win unconditionally.
-        if !check_stake_kernel_v2(parent_stake_modifier, staked, timestamp, chain.total_staked) {
+        let eligible_stake = if is_bootstrap_utxo {
+            chain.total_staked
+        } else {
+            let coinstake_txid = tx.txid();
+            let mut total = crate::consensus::eligible_stake_value(
+                chain
+                    .utxo_set
+                    .values()
+                    .filter(|utxo| utxo.txid != coinstake_txid),
+                &chain.params,
+                timestamp,
+            );
+            if crate::consensus::stake_age_eligible(&chain.params, staked, timestamp) {
+                total = total.saturating_add(staked.value);
+            }
+            total
+        };
+        if !check_stake_kernel_v2(parent_stake_modifier, staked, timestamp, eligible_stake) {
             return Err(NodeError::InvalidTransaction(
                 "Coinstake kernel hash does not meet the stake target".into(),
             ));

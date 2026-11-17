@@ -34,16 +34,6 @@ impl Node {
         ) = {
             let chain = self.chain.lock().await;
             let params = chain.next_block_params(now);
-            let total_staked = if params.min_stake_amount != chain.params().min_stake_amount {
-                chain
-                    .get_utxo_set()
-                    .values()
-                    .filter(|u| crate::consensus::is_stakeable_with(&params, u))
-                    .map(|u| u.value)
-                    .sum()
-            } else {
-                chain.total_staked()
-            };
             let best_height = chain.best_height();
             let best_hash = chain.best_hash().unwrap_or([0u8; 32]);
             let best_block = chain.get_block_at_height(best_height);
@@ -62,6 +52,11 @@ impl Node {
                     .and_then(|b| b.transactions.first())
                     .map(|tx| tx.is_legacy_claim())
                     .unwrap_or(false);
+            let total_staked = if tip_is_bootstrap {
+                chain.total_staked()
+            } else {
+                crate::consensus::eligible_stake_value(chain.get_utxo_set().values(), &params, now)
+            };
             (
                 best_height,
                 best_hash,
