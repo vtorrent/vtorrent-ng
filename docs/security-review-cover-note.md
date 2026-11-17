@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `3d32e8c`
+Subject: Independent security review — vTorrent-NG mainnet candidate `6c2193b`
 
 Hello,
 
@@ -18,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `3d32e8c8002a1f5690d7dd3865230a6280ea97e9`
+**Review head:** `6c2193b258e6fe18b558000cdaf12695dcfe707a`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `3d32e8c`. It is not covered by any prior soak: the
+The code under review is `6c2193b`. It is not covered by any prior soak: the
 `6a49727` fleet predates every change below and was interrupted by a host
 restart on 2026-11-16. The eventual shipping image needs its own full window
 after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 code changed after the candidate with
-`git diff --name-only 3d32e8c..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only 6c2193b..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -112,6 +112,10 @@ candidate `ba46fd6`:
 - `3d32e8c` — the store rejects non-contiguous appends and resets metadata
   during rebuild; backup previews no longer consume the TOTP step; a failed 2FA
   re-save is non-fatal; unsolicited torrent pieces are rejected.
+- `6c2193b` — SPV pins its genesis and requires best-chain ancestry for
+  inclusion; peer dials are bounded; torrent receives have a deadline and
+  bitfields are capped; `/ws` requires an allowed Origin; seed probes reject
+  non-public targets; VTR funding selection is serialized and mempool-aware.
 
 Four internal AI-assisted supplementary reviews are recorded in
 `docs/2026-11-17_ai-supplementary-review.md`,
@@ -122,8 +126,9 @@ desktop authorization defects above, the torrent credit replay, the multisig
 DoS cap, release/seed hardening, the recovery fixes in `20e3fe6`, the block
 sigop limit in `089e7c1`, and the remaining wallet, snapshot, staging, RPC, and
 CSP fixes in `9f3d4e9`, the wallet, script, and operations batch in `f0013bb`,
-the fourth-pass fixes in `b02dd33`, and the store/backup/torrent hardening in
-`3d32e8c`. They are not independent review and do not count for this gate.
+the fourth-pass fixes in `b02dd33`, the store/backup/torrent hardening in
+`3d32e8c`, and the SPV/P2P/WS/funding hardening in `6c2193b`. They are not
+independent review and do not count for this gate.
 
 Earlier in this round, from `b729e36` through `ba46fd6`:
 
@@ -258,7 +263,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `3d32e8c8002a1f5690d7dd3865230a6280ea97e9`
+- Confirm the review head is still `6c2193b258e6fe18b558000cdaf12695dcfe707a`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.
