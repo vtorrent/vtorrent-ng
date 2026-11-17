@@ -136,10 +136,8 @@ impl super::Node {
     /// Maintain peer connections — reconnect if below target using PEX address book.
     /// Lock order `chain → mempool` not needed here (no chain/mempool locks).
     pub(crate) async fn maintain_peers(&mut self) {
-        // Dials run inside the node event loop, so bound each attempt and the
-        // number of attempts per tick. Otherwise a poisoned PEX list of
-        // blackholed addresses stalls block/stake processing for minutes.
-        const DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+        // Dials are bounded and run in parallel, so a poisoned PEX list cannot
+        // stall block/stake processing for one timeout per candidate.
         const MAX_DIALS_PER_TICK: usize = 4;
         let count = self.peer_manager.peer_count();
         if count < TARGET_OUTBOUND {
@@ -152,26 +150,14 @@ impl super::Node {
             );
 
             // First try PEX address book candidates
-            let candidates = self.peer_manager.get_peer_candidates(needed * 2);
-            let mut connected = 0;
-            for addr in candidates.into_iter().take(MAX_DIALS_PER_TICK) {
-                if connected >= needed {
-                    break;
-                }
-                if let Err(e) =
-                    tokio::time::timeout(DIAL_TIMEOUT, self.peer_manager.connect_addr(addr))
-                        .await
-                        .unwrap_or_else(|_| {
-                            Err(vtorrent_p2p::error::P2pError::Transport(
-                                "dial timed out".into(),
-                            ))
-                        })
-                {
-                    tracing::debug!("Could not connect to PEX candidate {}: {}", addr, e);
-                } else {
-                    connected += 1;
-                }
-            }
+            let candidates: Vec<String> = self
+                .peer_manager
+                .get_peer_candidates(needed * 2)
+                .into_iter()
+                .take(MAX_DIALS_PER_TICK)
+                .map(|addr| addr.to_string())
+                .collect();
+            let mut connected = self.peer_manager.connect_many(candidates).await;
 
             // If still not enough, re-dial explicitly configured seeds
             if connected < needed && !self.config.extra_seeds.is_empty() {
@@ -179,30 +165,14 @@ impl super::Node {
                     "PEX insufficient, re-dialing {} explicit seeds",
                     self.config.extra_seeds.len()
                 );
-                for seed in self
+                let seeds: Vec<String> = self
                     .config
                     .extra_seeds
-                    .clone()
-                    .into_iter()
+                    .iter()
                     .take(MAX_DIALS_PER_TICK)
-                {
-                    if connected >= needed {
-                        break;
-                    }
-                    if let Err(e) =
-                        tokio::time::timeout(DIAL_TIMEOUT, self.peer_manager.connect(&seed))
-                            .await
-                            .unwrap_or_else(|_| {
-                                Err(vtorrent_p2p::error::P2pError::Transport(
-                                    "dial timed out".into(),
-                                ))
-                            })
-                    {
-                        tracing::debug!("Could not connect to seed {}: {}", seed, e);
-                    } else {
-                        connected += 1;
-                    }
-                }
+                    .cloned()
+                    .collect();
+                connected += self.peer_manager.connect_many(seeds).await;
             }
 
             // If still not enough, try DHT again

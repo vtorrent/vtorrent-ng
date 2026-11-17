@@ -337,6 +337,16 @@ impl PeerManager {
                 return Err(P2pError::Transport(e.to_string()));
             }
         };
+        self.register_connected(addr, stream, transport_mode)
+    }
+
+    /// Register an already-connected transport stream and start its peer task.
+    fn register_connected(
+        &mut self,
+        addr: &str,
+        stream: tokio::net::TcpStream,
+        transport_mode: TransportMode,
+    ) -> Result<()> {
         // SOCKS5 and I2P streams report their local proxy endpoint as `peer_addr`.
         // Retain a deterministic synthetic socket key for anonymous destinations so
         // the existing peer lifecycle map remains usable without leaking a proxy IP.
@@ -384,6 +394,63 @@ impl PeerManager {
 
         tracing::info!(target = %addr, peer = %peer_addr, transport = ?transport_mode, "Connecting to peer");
         Ok(())
+    }
+
+    /// Dial up to `MAX_PEERS` candidates in parallel and register the successes.
+    ///
+    /// A sequential dial loop lets a poisoned PEX list stall the node event loop
+    /// for minutes. Each attempt is independently bounded here.
+    pub async fn connect_many(&mut self, addrs: Vec<String>) -> usize {
+        const DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+        let mut dials = Vec::new();
+        for addr in addrs {
+            if self.peers.len() >= MAX_PEERS {
+                break;
+            }
+            let is_anonymous = is_anonymous_address(&addr);
+            let sock_addr = if is_anonymous {
+                anonymous_peer_key(&addr)
+            } else {
+                match tokio::time::timeout(DIAL_TIMEOUT, tokio::net::lookup_host(&addr)).await {
+                    Ok(Ok(mut hosts)) => match hosts.next() {
+                        Some(sa) => sa,
+                        None => continue,
+                    },
+                    _ => continue,
+                }
+            };
+            if self.peers.contains_key(&sock_addr)
+                || self.ban_manager.read().await.is_banned(sock_addr.ip())
+            {
+                continue;
+            }
+            self.addr_book.record_attempt(sock_addr);
+            let transport = self.transport.clone();
+            dials.push(async move {
+                let result = tokio::time::timeout(DIAL_TIMEOUT, transport.connect(&addr)).await;
+                (addr, sock_addr, is_anonymous, result)
+            });
+        }
+
+        let mut connected = 0usize;
+        for (addr, sock_addr, is_anonymous, result) in futures::future::join_all(dials).await {
+            match result {
+                Ok(Ok((stream, mode))) => {
+                    if self.register_connected(&addr, stream, mode).is_ok() {
+                        connected += 1;
+                    }
+                }
+                _ => {
+                    if !is_bootstrap_seed(&addr, sock_addr.ip()) && !is_anonymous {
+                        self.ban_manager
+                            .write()
+                            .await
+                            .record_connection_failure(sock_addr.ip());
+                    }
+                }
+            }
+        }
+        connected
     }
 
     /// Process pending peer events (call this in the main loop).

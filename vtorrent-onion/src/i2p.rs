@@ -21,6 +21,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
 /// I2P SAM transport.
+#[derive(Clone)]
 pub struct I2pTransport {
     config: TransportConfig,
 }

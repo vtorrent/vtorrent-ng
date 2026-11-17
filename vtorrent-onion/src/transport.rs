@@ -28,6 +28,7 @@ pub enum TransportMode {
 }
 
 /// The main transport abstraction — routes connections to the right backend.
+#[derive(Clone)]
 pub struct OnionTransport {
     config: TransportConfig,
     tor: TorTransport,

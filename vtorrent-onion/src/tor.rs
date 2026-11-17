@@ -18,6 +18,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 /// Tor transport — wraps SOCKS5 and control port interactions.
+#[derive(Clone)]
 pub struct TorTransport {
     config: TransportConfig,
 }
