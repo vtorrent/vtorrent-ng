@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `aace0e5`
+Subject: Independent security review — vTorrent-NG mainnet candidate `49d56d2`
 
 Hello,
 
@@ -18,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `aace0e523c8384e8dd19029119bca3c933dbb229`
+**Review head:** `49d56d23b1fc0ac5197f2b6df284b76e648a5919`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `aace0e5`. It is not covered by any prior soak: the
+The code under review is `49d56d2`. It is not covered by any prior soak: the
 `6a49727` fleet predates every change below and was interrupted by a host
 restart on 2026-11-16. The eventual shipping image needs its own full window
 after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 code changed after the candidate with
-`git diff --name-only aace0e5..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only 49d56d2..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -68,11 +68,31 @@ candidate `ba46fd6`:
 - `aace0e5` — BTC sends reject sub-dust recipients and absorb sub-dust change
   into the fee, so they cannot build an unrelayable transaction while holding
   the inputs; desktop 2FA enrollment now requires the wallet passphrase.
+- `71b025f` — torrent incentive credit is granted for a piece at most once
+  (replay no longer pays), and every tracker-supplied peer passes the same
+  SSRF address filter as magnet metadata peers.
+- `ee62976` — `--wallet-passphrase-file` must be owner-only (`0600`).
+- `d76669f` — desktop refund replacement authorizes against its own wallet;
+  swap commands authorize before populating the RPC signing key; the HTTP claim
+  route rejects a raw key outside regtest; 2FA enrollment errors are visible.
+- `b9b05e3` — test-only: the tracker address policy is passed explicitly so a
+  parallel test override cannot race the new peer-filter test.
+- `8f7fe14` — release workflow actions are SHA-pinned, top-level token is
+  read-only, the release build is `--locked`, and the release notes no longer
+  claim unsigned builds are signed. Seed provisioning verifies a published
+  daemon digest and creates an owner-only RPC key; the alert topic moved to
+  `VTR_NTFY_TOPIC`.
+- `49d56d2` — multisig is capped at 20 keys; wallet saves use unique temps and
+  clean up on failure; cold-stake WIFs are redacted from `Debug`; the desktop
+  refund-fee form sends the passphrase and 2FA code.
 
-An internal AI-assisted supplementary review of `611d56b` is recorded in
-`docs/2026-11-17_ai-supplementary-review.md`. It found and fixed the desktop
-authorization defects above. It is not independent review and does not count
-for this gate.
+Three internal AI-assisted supplementary reviews are recorded in
+`docs/2026-11-17_ai-supplementary-review.md` and
+`docs/2026-11-17_ai-supplementary-review-pass2.md` and
+`docs/2026-11-17_ai-supplementary-review-pass3.md`. They found and fixed the
+desktop authorization defects above, the torrent credit replay, the multisig
+DoS cap, and release/seed hardening. They are not independent review and do not
+count for this gate.
 
 Earlier in this round, from `b729e36` through `ba46fd6`:
 
@@ -207,7 +227,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `aace0e523c8384e8dd19029119bca3c933dbb229`
+- Confirm the review head is still `49d56d23b1fc0ac5197f2b6df284b76e648a5919`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.

@@ -1,5 +1,13 @@
 # AI supplementary security review — 2026-11-17
 
+A second pass covering consensus, P2P, RPC/storage, torrents, and a regression
+review of this pass is recorded in
+`docs/2026-11-17_ai-supplementary-review-pass2.md`.
+
+A third pass covering parsers, wallet internals, core/script, the frontend
+boundary, and release/ops is recorded in
+`docs/2026-11-17_ai-supplementary-review-pass3.md`.
+
 > **This is an AI-generated supplementary review. It does not satisfy the
 > independent human security-review gate.** No code was shared with an external
 > party. Treat it as an additional defect-finding pass, not as sign-off, and do
