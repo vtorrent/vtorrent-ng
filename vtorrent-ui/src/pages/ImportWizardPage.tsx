@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Upload, CheckCircle, AlertCircle, ArrowRight, ArrowLeft,
+  Upload, CheckCircle, AlertCircle, AlertTriangle, ArrowRight, ArrowLeft,
   Key, Shield, Coins, FileText
 } from 'lucide-react'
 import { useWallet, formatVTR, type ImportResult } from '../hooks/useWallet'
@@ -209,7 +209,7 @@ export default function ImportWizardPage() {
 
               <div className="bg-navy-800/60 rounded-lg p-3 text-xs text-gray-500 space-y-1">
                 <p className="text-gray-400 font-medium">What about 2FA?</p>
-                <p>If your old wallet had 2FA enabled, the migration tool will detect the OTP secret and ask you to confirm with your authenticator app.</p>
+                <p>If your old wallet had 2FA enabled, the tool detects the OTP secret but does not migrate it. Enable 2FA again in Security Center after import.</p>
               </div>
 
               <div className="flex gap-3">
@@ -285,10 +285,20 @@ export default function ImportWizardPage() {
                 <span className="badge-green"><Shield size={10} /> Encrypted wallet decrypted</span>
               )}
               {result.had2FA && (
-                <span className="badge-green"><Shield size={10} /> 2FA verified</span>
+                <span className="badge-yellow"><Shield size={10} /> 2FA not migrated</span>
               )}
               <span className="badge-green"><Coins size={10} /> Snapshot lookup complete</span>
             </div>
+
+            {result.had2FA && (
+              <div className="bg-amber-900/15 border border-amber-800/30 rounded-lg p-3 mb-5 flex gap-3">
+                <AlertTriangle size={16} className="text-amber-400 flex-shrink-0 mt-0.5" />
+                <p className="text-amber-300/80 text-xs">
+                  The legacy OTP secret was detected but is not active on this wallet.
+                  Enable 2FA again in Security Center before moving funds.
+                </p>
+              </div>
+            )}
 
             {/* Addresses */}
             <div className="space-y-2 mb-5">

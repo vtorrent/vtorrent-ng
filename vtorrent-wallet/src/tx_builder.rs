@@ -38,32 +38,22 @@ pub const DUST_SATOSHIS: u64 = 546;
 /// Default fee rate in satoshis per byte.
 pub const DEFAULT_FEE_RATE: u64 = 10;
 
-/// Approximate size of a P2PKH input in bytes (32 txid + 4 vout + 107 scriptsig + 4 seq).
+/// Maximum serialized P2PKH input size: txid (32) + vout (4) + bincode Vec
+/// length (8) + scriptSig (108) + sequence (4).
 /// Absolute minimum transaction fee accepted by the node's relay policy.
 /// Must stay in sync with `vtorrent_node::mempool::MIN_RELAY_FEE` (a unit
 /// test in the node crate asserts equality).
 pub const MIN_ABSOLUTE_FEE_SATS: u64 = 1_000;
 
-const P2PKH_INPUT_SIZE: usize = 147;
+const P2PKH_INPUT_SIZE: usize = 156;
 
-/// Approximate size of a P2PKH output in bytes (8 value + 25 scriptpubkey).
-const P2PKH_OUTPUT_SIZE: usize = 33;
+/// Maximum serialized P2PKH output: value (8) + bincode Vec length (8) +
+/// scriptpubkey (25).
+const P2PKH_OUTPUT_SIZE: usize = 41;
 
-/// Serialized CompactSize length for an output script.
-fn varint_len(n: usize) -> usize {
-    if n < 0xfd {
-        1
-    } else if n <= 0xffff {
-        3
-    } else if n <= 0xffff_ffff {
-        5
-    } else {
-        9
-    }
-}
-
-/// Fixed transaction overhead in bytes (version + locktime + input/output count varints).
-const TX_OVERHEAD: usize = 10;
+/// Fixed transaction overhead in bytes (version, tx_type, input/output count
+/// varints, locktime, and the two optional claim fields).
+const TX_OVERHEAD: usize = 32;
 
 // ─── Coin selection ───────────────────────────────────────────────────────────
 
@@ -317,15 +307,15 @@ impl TxBuilder {
         let output_bytes = self
             .recipients
             .iter()
-            .map(|_| 8 + varint_len(25) + 25)
+            .map(|_| 8 + 8 + 25)
             .chain(
                 self.recipient_scripts
                     .iter()
-                    .map(|(script, _)| 8 + varint_len(script.len()) + script.len()),
+                    .map(|(script, _)| 8 + 8 + script.len()),
             )
             .sum::<usize>()
             + 8
-            + varint_len(25)
+            + 8
             + 25; // change output
 
         // Coin selection.
@@ -414,13 +404,11 @@ impl TxBuilder {
             // Compute sighash.
             let sighash = tx.sighash(input_index, &subscript);
 
-            // Match the signing key to this UTXO's P2PKH script. Fall back to
-            // the sole key for single-key wallets; error when a UTXO cannot be
-            // matched (signing with the wrong key would produce an invalid
-            // signature rejected by the chain).
+            // Match the signing key to this UTXO's P2PKH script. Never fall
+            // back to a lone key: signing a foreign UTXO produces an invalid
+            // transaction instead of a clear error.
             let (secret_bytes, pubkey_bytes) = match find_key_for_script(&key_pairs, &subscript) {
                 Some(kp) => kp,
-                None if key_pairs.len() == 1 => &key_pairs[0],
                 None => {
                     return Err(WalletError::BuildError(format!(
                         "No signing key matches UTXO {}",
@@ -815,6 +803,40 @@ mod tests {
         let total_out: u64 = tx.outputs.iter().map(|o| o.value).sum();
         assert!(total_out < 10_000_000);
         assert!(total_out > 9_000_000); // fee should be < 1_000_000 for a small tx
+    }
+
+    #[test]
+    fn fee_covers_the_actual_serialized_size() {
+        let (wif, sender_addr) = random_wif();
+        let (_, recipient_addr) = random_wif();
+        let script = p2pkh_script_pubkey(&sender_addr).unwrap();
+        let utxos = vec![make_utxo(7, 0, 1_000_000, script)];
+
+        let tx = TxBuilder::new()
+            .recipient(&recipient_addr, 500_000)
+            .fee_rate(10)
+            .sign_with_wif(&wif)
+            .build(&utxos)
+            .unwrap();
+        let fee = 1_000_000 - tx.outputs.iter().map(|output| output.value).sum::<u64>();
+        let required = 10 * tx.serialized_size() as u64;
+        assert!(fee >= required, "fee {fee} is below {required}");
+    }
+
+    #[test]
+    fn a_single_key_does_not_sign_a_foreign_utxo() {
+        let (wif, _) = random_wif();
+        let (_, foreign_addr) = random_wif();
+        let script = p2pkh_script_pubkey(&foreign_addr).unwrap();
+        let utxos = vec![make_utxo(8, 0, 1_000_000, script)];
+
+        let error = TxBuilder::new()
+            .recipient(&foreign_addr, 500_000)
+            .fee_rate(10)
+            .sign_with_wif(&wif)
+            .build(&utxos)
+            .unwrap_err();
+        assert!(matches!(error, WalletError::BuildError(_)), "{error}");
     }
 
     #[test]

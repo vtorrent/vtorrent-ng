@@ -84,12 +84,13 @@ impl Script {
             1..=16 => self.0.push(0x50 + n),
             _ => {
                 // Bitcoin canonical encoding: push the value as a single byte.
-                // Values 0x01..0x7F are pushed directly (minimal).
-                // Values 0x80..0xFF require a trailing 0x00 to avoid being
-                // interpreted as negative (sign-magnitude).
+                // Values 0x11..0x7F use a one-byte push; 0x80..0xFF need a
+                // trailing 0x00 so they are not read as negative.
                 if n < 0x80 {
+                    self.0.push(0x01);
                     self.0.push(n);
                 } else {
+                    self.0.push(0x02);
                     self.0.push(n);
                     self.0.push(0x00);
                 }
@@ -256,5 +257,25 @@ impl<'a> Iterator for ScriptIter<'a> {
             }
             _ => Some(ScriptItem::Opcode(byte)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn push_int_encodes_above_sixteen_minimally() {
+        let mut script = Script::new();
+        script.push_int(16);
+        assert_eq!(script.as_bytes(), &[0x60]);
+
+        let mut script = Script::new();
+        script.push_int(17);
+        assert_eq!(script.as_bytes(), &[0x01, 0x11]);
+
+        let mut script = Script::new();
+        script.push_int(0x80);
+        assert_eq!(script.as_bytes(), &[0x02, 0x80, 0x00]);
     }
 }

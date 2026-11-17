@@ -23,6 +23,9 @@ pub enum WalletError {
     #[error("Incorrect passphrase")]
     IncorrectPassphrase,
 
+    #[error("Incorrect passphrase or damaged wallet file")]
+    IncorrectPassphraseOrCorrupted,
+
     #[error("Passphrase must be at least 8 characters")]
     WeakPassphrase,
 

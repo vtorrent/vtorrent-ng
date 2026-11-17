@@ -73,6 +73,9 @@ impl From<vtorrent_wallet::error::WalletError> for RpcError {
             vtorrent_wallet::error::WalletError::IncorrectPassphrase => {
                 RpcError::Unauthorized("Incorrect passphrase — wallet decryption failed".into())
             }
+            vtorrent_wallet::error::WalletError::IncorrectPassphraseOrCorrupted => {
+                RpcError::Unauthorized("Incorrect passphrase or damaged wallet file".into())
+            }
             other => {
                 tracing::error!("Wallet error: {}", other);
                 RpcError::Internal(format!("Wallet operation failed: {}", other))

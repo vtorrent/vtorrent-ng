@@ -135,11 +135,20 @@ mod tests {
     use vtorrent_node::chain::Utxo;
 
     fn utxo(value: u64) -> Utxo {
+        let wif = "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS";
+        let key = vtorrent_core::keys::PrivateKey::from_wif(wif).unwrap();
+        let pubkey = key.public_key().unwrap();
+        let address = vtorrent_core::address::Address::from_pubkey(
+            &pubkey,
+            true,
+            vtorrent_core::network::legacy::PUBKEY_ADDRESS_PREFIX,
+        );
         Utxo {
             txid: [9u8; 32],
             vout: 0,
             value,
-            script_pubkey: vec![0x51],
+            script_pubkey: vtorrent_wallet::tx_builder::p2pkh_script_pubkey(&address.to_string())
+                .unwrap(),
             height: 1,
             timestamp: 0,
         }

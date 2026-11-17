@@ -119,7 +119,7 @@ pub fn decrypt_wallet(encrypted: &EncryptedWallet, passphrase: &str) -> Result<Z
     cipher
         .decrypt(nonce, ciphertext_bytes.as_ref())
         .map(Zeroizing::new)
-        .map_err(|_| WalletError::IncorrectPassphrase)
+        .map_err(|_| WalletError::IncorrectPassphraseOrCorrupted)
 }
 
 #[cfg(test)]
@@ -148,7 +148,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            WalletError::IncorrectPassphrase
+            WalletError::IncorrectPassphraseOrCorrupted
         ));
     }
 

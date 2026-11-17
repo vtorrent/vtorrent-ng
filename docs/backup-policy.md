@@ -9,11 +9,33 @@ Each seed's `/var/lib/vtorrent/` (see `docs/dns-seeds.md`) is snapshotted daily:
 ```bash
 # /etc/cron.daily/vtorrent-backup (on each seed)
 #!/bin/sh
-set -e
+set -eu
+umask 077
 STAMP=$(date -u +%Y%m%d)
-tar -czf "/backups/vtorrent-$STAMP.tar.gz" -C /var/lib/vtorrent chain.db wallet.json staking.json
+DEST="/backups/vtorrent-$STAMP.tar.gz"
+STAGE=$(mktemp -d /backups/.vtorrent-stage.XXXXXX)
+restart() { systemctl start vtorrent >/dev/null 2>&1 || true; }
+trap 'restart; rm -rf "$STAGE"' EXIT
+
+# Stop writers so redb is not copied mid-transaction. The seed rejoins after
+# the copy; keep this window short.
+systemctl stop vtorrent || true
+for file in chain.db wallet.json staking.json; do
+  if [ -f "/var/lib/vtorrent/$file" ]; then
+    cp -a "/var/lib/vtorrent/$file" "$STAGE/"
+  fi
+done
+restart
+trap 'rm -rf "$STAGE"' EXIT
+
+tar -czf "$DEST" -C "$STAGE" .
+tar -tzf "$DEST" >/dev/null
 find /backups -name 'vtorrent-*.tar.gz' -mtime +14 -delete
 ```
+
+The archive is created with `umask 077` because it may contain `wallet.json`.
+Restore drills must extract a recent archive and open the wallet on a staging
+host; an untested archive is not a backup.
 
 - `chain.db` is the only irreplaceable file pre-launch; post-launch it can be
   rebuilt by resyncing from peers, but a daily snapshot makes recovery instant.

@@ -55,7 +55,7 @@ if [[ "${1:-}" == "--compare-ref" ]]; then
     }
     trap cleanup EXIT
 
-    cargo generate-lockfile
+    cp "$REPO_ROOT/release/Cargo.lock" "$REPO_ROOT/Cargo.lock"
     git -C "$REPO_ROOT" worktree add --detach "$BASELINE_WORKTREE" "$2"
     cp "$REPO_ROOT/Cargo.lock" "$BASELINE_WORKTREE/Cargo.lock"
     rm -rf "$CRITERION_DIR"
@@ -75,8 +75,9 @@ echo "── Running benchmarks for gate comparison ──"
 CARGO_TARGET_DIR="$TARGET_DIR" cargo bench -p vtorrent-node --bench consensus_hotpath
 
 if [[ ! -d "$BASELINE_DIR" ]]; then
-    echo "No committed baseline at $BASELINE_DIR — skipping gate (first run)."
-    exit 0
+    echo "No committed baseline at $BASELINE_DIR — refusing to pass without a comparison."
+    echo "Run scripts/bench-gate.sh --save on a quiet machine to create one."
+    exit 2
 fi
 
 compare_results() {
@@ -112,6 +113,9 @@ for est in sorted(baseline_dir.rglob("estimates.json")):
         regressions.append((name, ratio))
 
 print(f"\nCompared {compared} benchmarks (tolerance {tolerance:.2f}x)")
+if compared == 0:
+    print("FAIL: no benchmarks were compared")
+    sys.exit(2)
 if missing:
     for name in missing:
         print(f"FAIL: {name} has no fresh benchmark result")

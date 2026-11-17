@@ -15,7 +15,7 @@ if [ -n "${SEED1_SSH_TARGET:-}" ]; then
     case "$SEED1_SSH_TARGET" in -*) echo 'Invalid SSH target' >&2; exit 2;; esac
     if ssh -T -i "$SEED1_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes \
         -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SEED1_KNOWN_HOSTS" \
-        -o ConnectTimeout=5 "$SEED1_SSH_TARGET" /usr/local/libexec/vtorrent-monitor-ready; then
+        -o ConnectTimeout=5 "$SEED1_SSH_TARGET" /usr/local/sbin/vtorrent-monitor-ready; then
         healthy=1
     else
         healthy=0

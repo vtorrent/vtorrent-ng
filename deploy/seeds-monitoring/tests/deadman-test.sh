@@ -7,7 +7,7 @@ touch "$root/key" "$root/known_hosts"
 cat > "$root/bin/ssh" <<'EOF'
 #!/bin/sh
 for last do :; done
-[ "$last" = /usr/local/libexec/vtorrent-monitor-ready ] || exit 64
+[ "$last" = /usr/local/sbin/vtorrent-monitor-ready ] || exit 64
 [ "$(cat "$MOCK_STATUS")" = up ]
 EOF
 cat > "$root/bin/curl" <<'EOF'

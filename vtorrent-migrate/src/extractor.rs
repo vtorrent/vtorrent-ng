@@ -139,7 +139,7 @@ pub(crate) fn extract_from_records(
         if master_keys.is_empty() {
             return Err(MigrateError::EncryptedWalletNoPassphrase);
         }
-        if master_keys.len() > 8 {
+        if master_keys.len() > 64 {
             return Err(MigrateError::ExcessiveMasterKeys(master_keys.len()));
         }
         let mut ordered_ids: Vec<u32> = master_keys.keys().copied().collect();

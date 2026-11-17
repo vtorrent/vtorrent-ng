@@ -144,7 +144,10 @@ pub fn decode_varint_base128(data: &[u8]) -> Option<(u64, usize)> {
     loop {
         let byte = *data.get(consumed)?;
         consumed += 1;
-        n = n.checked_shl(7)?.checked_add((byte & 0x7F) as u64)?;
+        if consumed > 10 {
+            return None;
+        }
+        n = n.checked_mul(128)?.checked_add((byte & 0x7F) as u64)?;
         if byte & 0x80 != 0 {
             n = n.checked_add(1)?;
         } else {
@@ -209,6 +212,14 @@ mod tests {
         // Truncated input rejected
         assert_eq!(decode_varint_base128(&[0x81]), None);
         assert_eq!(decode_varint_base128(&[]), None);
+    }
+
+    #[test]
+    fn test_decode_varint_base128_rejects_overflow() {
+        assert_eq!(decode_varint_base128(&[0xff; 11]), None);
+        let mut ten_continuations = vec![0xff; 10];
+        ten_continuations.push(0x00);
+        assert_eq!(decode_varint_base128(&ten_continuations), None);
     }
 
     #[test]

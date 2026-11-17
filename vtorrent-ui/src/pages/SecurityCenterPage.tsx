@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Shield, Smartphone, Key, CheckCircle, AlertTriangle, Copy } from 'lucide-react'
 import { useWallet } from '../hooks/useWallet'
 import BackupRestorePanel from '../components/BackupRestorePanel'
@@ -19,6 +19,23 @@ export default function SecurityCenterPage() {
   const [copied, setCopied] = useState(false)
   const [showDisable, setShowDisable] = useState(false)
   const [twoFAPassphrase, setTwoFAPassphrase] = useState('')
+  const clipboardTimer = useRef<number | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (clipboardTimer.current !== null) {
+        window.clearTimeout(clipboardTimer.current)
+      }
+    }
+  }, [])
+
+  const clearTotpSetup = () => {
+    setTotpUri('')
+    setTotpSecret('')
+    setVerifyCode('')
+    setTwoFAPassphrase('')
+    setError('')
+  }
 
   const handleEnable2FA = async () => {
     setLoading(true)
@@ -48,7 +65,7 @@ export default function SecurityCenterPage() {
         return
       }
       setTwoFAStep('done')
-      setTwoFAPassphrase('')
+      clearTotpSetup()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Verification failed')
     } finally {
@@ -72,8 +89,15 @@ export default function SecurityCenterPage() {
   }
 
   const copySecret = () => {
-    navigator.clipboard.writeText(totpSecret)
+    void navigator.clipboard.writeText(totpSecret).catch(() => {})
     setCopied(true)
+    if (clipboardTimer.current !== null) {
+      window.clearTimeout(clipboardTimer.current)
+    }
+    clipboardTimer.current = window.setTimeout(() => {
+      void navigator.clipboard.writeText('').catch(() => {})
+      clipboardTimer.current = null
+    }, 30_000)
     setTimeout(() => setCopied(false), 2000)
   }
 
@@ -201,8 +225,7 @@ export default function SecurityCenterPage() {
                   type="button"
                   onClick={() => {
                     setTwoFAStep('idle')
-                    setTwoFAPassphrase('')
-                    setError('')
+                    clearTotpSetup()
                   }}
                   className="btn-secondary flex-1"
                 >

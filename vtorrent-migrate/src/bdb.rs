@@ -334,7 +334,16 @@ fn parse_wallet_via_dbdump_path(
                 .unwrap_or_else(|_| path.to_str().unwrap_or_default().to_string());
 
             match run_dbdump(&["-r", &abs_path]) {
-                Ok(output) => return parse_dbdump_output(&output),
+                Ok(output) => {
+                    let current = std::fs::read(path)
+                        .map_err(|e| MigrateError::Other(format!("re-read failed: {e}")))?;
+                    if current != data {
+                        return Err(MigrateError::Other(
+                            "wallet changed while db5.3_dump was reading it".into(),
+                        ));
+                    }
+                    return parse_dbdump_output(&output);
+                }
                 Err(e) => {
                     eprintln!("db5.3_dump on original file failed: {e}");
                 }

@@ -97,8 +97,21 @@ pub fn classify_script(script: &Script) -> ScriptType {
         };
     }
 
-    // HTLC: starts with OP_IF OP_SHA256 (simplified detection)
-    if b.len() > 5 && b[0] == 0x63 && b[1] == 0xa8 {
+    // HTLC: OP_IF OP_SHA256 <32-byte hash> OP_EQUALVERIFY ... (standard
+    // builder) or OP_IF OP_SIZE <32> OP_EQUALVERIFY OP_SHA256 <32> ...
+    // (atomic-swap builder). Match the prefix and the hash push, not just the
+    // first two opcodes.
+    let direct = b.len() >= 36 && b[0] == 0x63 && b[1] == 0xa8 && b[2] == 0x20 && b[35] == 0x88;
+    let sized = b.len() >= 40
+        && b[0] == 0x63
+        && b[1] == 0x82
+        && b[2] == 0x01
+        && b[3] == 0x20
+        && b[4] == 0x88
+        && b[5] == 0xa8
+        && b[6] == 0x20
+        && b[39] == 0x88;
+    if direct || sized {
         return ScriptType::Htlc;
     }
 
@@ -502,6 +515,22 @@ mod tests {
         // An HTLC (OP_IF OP_SHA256 ...) must still classify as Htlc, not P2CS.
         let htlc = build_htlc(&[0u8; 32], &[1u8; 20], &[2u8; 20], 100).unwrap();
         assert_eq!(classify_script(&htlc), ScriptType::Htlc);
+    }
+
+    #[test]
+    fn classifies_the_atomic_swap_htlc_shape() {
+        let mut bytes = vec![0x63, 0x82, 0x01, 0x20, 0x88, 0xa8, 0x20];
+        bytes.extend([0u8; 32]);
+        bytes.push(0x88);
+        bytes.extend([0x76, 0xa9, 0x14]);
+        bytes.extend([0u8; 20]);
+        bytes.extend([
+            0x88, 0xac, 0x67, 0x04, 0, 0, 0, 0, 0xb1, 0x75, 0x76, 0xa9, 0x14,
+        ]);
+        bytes.extend([0u8; 20]);
+        bytes.extend([0x88, 0xac, 0x68]);
+        let script = Script::from_bytes(bytes).unwrap();
+        assert_eq!(classify_script(&script), ScriptType::Htlc);
     }
 
     #[test]

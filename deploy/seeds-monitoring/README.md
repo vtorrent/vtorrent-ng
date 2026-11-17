@@ -114,6 +114,7 @@ Install on seed1:
 |---|---|---|
 | `heartbeat.sh` | `/usr/local/sbin/vtorrent-heartbeat` | 0755 |
 | `monitor-ready.sh` | `/usr/local/sbin/monitor-ready.sh` | 0755 |
+| `vtorrent-monitor-ready` | `/usr/local/sbin/vtorrent-monitor-ready` | 0755 |
 | `systemd/vtorrent-heartbeat.service` | `/etc/systemd/system/` | 0644 |
 | `systemd/vtorrent-heartbeat.timer` | `/etc/systemd/system/` | 0644 |
 | `heartbeat.env.example` | `/etc/vtorrent/heartbeat.env` | 0600 root |

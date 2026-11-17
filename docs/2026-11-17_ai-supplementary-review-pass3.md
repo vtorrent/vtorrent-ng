@@ -49,15 +49,16 @@ varying levels of verification; do not treat the report as independent review.
 | Medium | Loopback RPC was unauthenticated by default and release CORS allowed a localhost web origin. | Mainnet now refuses to start without `--rpc-api-key-file` (or the env key); regtest/testnet keep local development. Release CORS allows only Tauri origins; the Vite origin is debug-only. |
 | Low/medium | CSP allowed any loopback port, the theme bootstrap was inline, and browser mode loaded Google Fonts. | CSP now names `127.0.0.1:22525` (HTTP/WS) and Tauri IPC, adds `object-src`/`base-uri`/`frame-ancestors`/`form-action` `'none'`, and `font-src 'self'`. The theme bootstrap moved to `src/themeInit.ts`; Google Fonts links were removed. |
 | Medium | Parser coverage was example-based with no malformed corpus; no procedure compared a real wallet with `db5.3_dump`. | Added a deterministic mutation test (300 mutated fixtures, no panics) and `scripts/wallet-import-check.sh`, which runs the tool with and without `db5.3_dump` and checks one extracted key per `key`/`ckey` record. Procedure: `docs/wallet-import-verification.md`. Real wallet files are still required. |
+| Low/medium | Batch: AEAD errors were reported as a wrong passphrase; fee estimates undercounted bincode overhead; a lone key could sign a foreign UTXO; the migration UI claimed 2FA was verified; the TOTP seed stayed in state/clipboard; `classify_script` missed the swap HTLC shape; `push_int` mis-encoded values above 16; the backup cron and benchmark gate could silently do nothing; the dead-man path was inconsistent; the mkey cap was eight; the dump fallback trusted a re-openable path; varint decoding could wrap. | Addressed in the latest follow-up commit: clearer decryption error; worst-case serialized fee estimate plus a coverage test; fallback removed; 2FA warning; TOTP state cleared and clipboard timed; both HTLC prefixes; minimal `push_int`; backup script quiesces, verifies, and limits permissions; benchmark gate fails closed; sbin path unified; mkey cap raised to 64; post-dump byte comparison; overflow-safe varint. |
 | Medium | The desktop legacy import decoded base64 with no size cap. | Fixed in `aacf371`: payloads above 32 MiB are rejected before decoding. |
 
 Verified in the follow-up: 29 migration tests (including a real BDB fixture
 that is parsed natively and through `db5.3_dump`, plus mutation coverage),
-93 script tests, 245 node tests, 70 wallet tests, 112 torrent tests, 16
+95 script tests, 245 node tests, 72 wallet tests, 112 torrent tests, 17
 snapshot tests, Clippy on the changed crates, the UI test/lint/build, and
 `deploy/test-provision-seed.sh` in `ubuntu:22.04`. The full workspace suite on
 `49d56d2` passed **1,388 tests, 0 failures, 11 ignored**; the follow-up suite
-passed **1,420 tests, 0 failures, 11 ignored**.
+passed **1,425 tests, 0 failures, 11 ignored**.
 
 ## Findings and status
 
@@ -78,12 +79,13 @@ passed **1,420 tests, 0 failures, 11 ignored**.
    fixed table. Filename-derived provenance is still an operator assertion; the
    sidecar prevents relabelling after staging.
 6. **Fixed — archive destination confinement.** See the fixed table.
-7. **Low/medium — mkey handling** rejects wallets with more than eight keys and
-   permits a multi-second KDF burn per crafted key.
-8. **Low — the dump fallback dumps and reopens by path**, allowing a same-user
-    swap between read and dump.
-9. **Low — unchecked balance sums and wide varints** in the snapshot/leveldb
-    readers can panic under `overflow-checks` or wrap silently.
+7. **Partially fixed — mkey handling.** The arbitrary eight-key cap is raised to
+   64; a crafted wallet can still spend time on KDF attempts, bounded by that
+   cap.
+8. **Fixed — dump path swap.** The fallback re-reads the wallet after the dump
+   and rejects the result if the bytes changed.
+9. **Fixed — unchecked sums and wide varints.** Snapshot balances use checked
+   addition; the base-128 decoder rejects overflow instead of wrapping.
 
 ### Wallet internals
 
@@ -91,31 +93,32 @@ passed **1,420 tests, 0 failures, 11 ignored**.
     export; restore requires manual recovery. Funding still relies on the user
     confirming the file is saved; there is no persisted backed-up flag.
 11. **Fixed — wallet format-version gating.** See the fixed table.
-12. **Medium — AEAD failures are reported as “incorrect passphrase”.** Bit rot
-    or tampering is indistinguishable from a typo, inviting a restore from an old
-    backup that loses later keys.
+12. **Fixed — AEAD failure wording.** Decryption failures now say “incorrect
+    passphrase or damaged wallet file” so bit rot is not mistaken for a typo.
 13. **Medium — KDF parameters are compile-time constants not stored in the
     file.** Changing them makes every existing wallet undecryptable with no
     migration branch.
-14. **Low — the fee estimate undercounts serialization** (missing varint,
-    `tx_type`, option markers), so fees are ~3% below the requested rate.
-15. **Low — the single-key fallback in the P2PKH signer defeats the key/UTXO
-    match guard**; every production caller passes one key.
+14. **Fixed — fee estimate.** Inputs, outputs, and bincode length prefixes are
+    charged at their worst-case serialized size; a test asserts the fee covers
+    the signed transaction's actual size.
+15. **Fixed — single-key fallback removed.** A UTXO that does not match the
+    supplied key is now a build error; the fee-floor test was updated to use a
+    matching P2PKH script.
 16. **Low — the HD mnemonic controls no keys** and has no restore path; delete it
     or implement derivation before exposing it.
 
 ### Frontend and IPC boundary
 
-17. **Medium — the migration UI claims 2FA was verified while it is dropped.**
-    Import creates a fresh wallet and hardcodes `has2FA: false`, but the wizard
-    shows a green “2FA verified” badge when the legacy file had 2FA.
+17. **Fixed — migration 2FA messaging.** The wizard now says 2FA is not
+    migrated and warns the user to re-enable it after import.
 18. **Partially fixed — RPC authorization.** Mainnet refuses to start without a
     key and release CORS is Tauri-only; regtest/testnet still allow
     unauthenticated loopback RPC for local development, and browser mode keeps
     its key in `localStorage`.
 19. **Fixed — CSP and external font loading.** See the fixed table.
-20. **Low/medium — TOTP seed and staking WIF remain in React state/DOM/clipboard**
-    without clearing or reveal gating.
+20. **Partially fixed — TOTP seed handling.** The seed and URI are cleared on
+    success/cancel, and a copied seed is removed from the clipboard after 30
+    seconds. The staking WIF still renders without a reveal gate.
 21. **Low — the legacy claim page says the key is “never transmitted”**, while
     browser mode posts it to the loopback RPC.
 22. **Low — locking the wallet leaves addresses/balances in the webview.**
@@ -126,17 +129,18 @@ passed **1,420 tests, 0 failures, 11 ignored**.
 24. **High — releases are still unsigned**, and there is no published checksum
     file. The false “all releases are signed” claim is fixed, but signing and a
     published digest remain release work.
-25. **Medium — the backup cron is fragile**: `set -e` with missing files skips
-    retention, `tar` of a live redb is torn, no restore verification, and no
-    `umask 077` around a wallet-bearing archive.
-26. **Medium — the benchmark gate can no-op**: it regenerates a lockfile instead
-    of using `release/Cargo.lock` and exits 0 when the baseline is empty.
+25. **Fixed — backup cron.** The policy now uses `umask 077`, skips missing
+    files per-file, stops the daemon around the redb copy, verifies the tar
+    listing, and keeps retention. A restore drill is required.
+26. **Fixed — benchmark gate.** The comparison uses `release/Cargo.lock` and
+    fails when the baseline is absent or nothing was compared.
 27. **Low — the testnet stack runs root with `NET_ADMIN`/`NET_RAW` and
     `apparmor=unconfined`, Grafana is `admin/admin` on a LAN port, and bitcoind
     allows RPC from any address.**
 28. **Low — image defaults invite exposure** (`0.0.0.0` RPC without a key,
     mutable default runtime image, root daemon).
-29. **Low — the dead-man wrapper path does not match the installer.**
+29. **Fixed — dead-man wrapper path.** The service, installer table, and test
+    now all use `/usr/local/sbin/vtorrent-monitor-ready`.
 
 ### Core and script
 
@@ -145,13 +149,13 @@ passed **1,420 tests, 0 failures, 11 ignored**.
     A staker can timestamp a refund block up to two hours early; the 6-hour swap
     margin absorbs it, but two hours of taker protection is spendable. CSV also
     does not require tx version 2.
-31. **Medium/low — `classify_script` cannot recognize a real HTLC** (it matches
-    a two-byte prefix that real scripts do not start with) and can mislabel an
-    arbitrary script as one. No consumer today, but future fee/explorer rules
-    keyed on it would be wrong.
+31. **Fixed — HTLC classification.** The classifier matches both the standard
+    builder and the atomic-swap `OP_IF OP_SIZE <32> ...` shape, including the
+    32-byte hash push.
 32. **Low — `Address::parse` accepts any version byte** outside the payment
     builder; the payload hash is the same, so this is confusion, not loss.
-33. **Low — `Script::push_int` mis-encodes values ≥ 0x80.**
+33. **Fixed — `Script::push_int`.** Values above 16 now use minimal push
+    encodings, including the two-byte form for 0x80 and above.
 34. **Info — interpreter leniencies** (codeseparator NOP, ELSE/ENDIF outside a
     conditional accepted, empty CHECKMULTISIG dummy accepted).
 
@@ -160,15 +164,15 @@ passed **1,420 tests, 0 failures, 11 ignored**.
 - **Do not advertise legacy `wallet.dat` recovery until real wallets are
   tested.** Overflow parsing is fixed and fixtures pass, but the committed
   databases are synthetic.
-- **Cold-stake funding should require a proven spending-key backup** (finding
-  12); otherwise a wallet-only restore can lock new cold-stake funds forever.
+- **Cold-stake funding should require a proven spending-key backup** (item 10);
+  otherwise a wallet-only restore can lock new cold-stake funds forever.
 - **The multisig cap matches the legacy client's 20-key limit, and the
   block-level sigop limit matches its `MAX_BLOCK_SIZE / 50` rule.** Templates
   skip transactions that would exceed the limit.
-- **Unsigned releases (finding 26) mean the download channel is not
+- **Unsigned releases (item 24) mean the download channel is not
   tamper-evident.** Publishing a signed `SHA256SUMS` is release work, not a code
   fix.
-- The consensus timestamp/CLTV items (pass 2 findings 1–2, pass 3 finding 32)
+- The consensus timestamp/CLTV items (pass 2 findings 1–2, pass 3 item 30)
   remain the highest-risk open class and belong explicitly in the human review.
 
 ## Verdict
