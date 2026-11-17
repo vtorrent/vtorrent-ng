@@ -18,7 +18,7 @@
 > operations/release safety.
 
 **Reviewed tree:** `b9b05e3`, plus the fixes below (`8f7fe14`, `49d56d2`,
-`aacf371`, `20e3fe6`, `089e7c1`, and `9f3d4e9`).
+`aacf371`, `20e3fe6`, `089e7c1`, `9f3d4e9`, and `f0013bb`).
 **Method:** five parallel AI-assisted read-only passes. Findings and fixes have
 varying levels of verification; do not treat the report as independent review.
 

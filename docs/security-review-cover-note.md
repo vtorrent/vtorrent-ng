@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `9f3d4e9`
+Subject: Independent security review — vTorrent-NG mainnet candidate `f0013bb`
 
 Hello,
 
@@ -18,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `9f3d4e9eb9e9f6c591a84e3f47a9c61b005f1358`
+**Review head:** `f0013bb14d1f8e3518240c9227c78c24870611ba`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `9f3d4e9`. It is not covered by any prior soak: the
+The code under review is `f0013bb`. It is not covered by any prior soak: the
 `6a49727` fleet predates every change below and was interrupted by a host
 restart on 2026-11-16. The eventual shipping image needs its own full window
 after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 code changed after the candidate with
-`git diff --name-only 9f3d4e9..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only f0013bb..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -100,6 +100,10 @@ candidate `ba46fd6`:
   provenance sidecar; mainnet requires an RPC key and release CORS is
   Tauri-only; CSP is narrowed; `scripts/wallet-import-check.sh` compares real
   wallets with `db5.3_dump`.
+- `f0013bb` — clearer wallet decryption errors, worst-case fee estimates,
+  removal of the single-key signing fallback, honest 2FA migration messaging,
+  TOTP secret clearing, correct HTLC classification and `push_int` encoding,
+  fail-closed benchmark and backup procedures, and the dead-man path fix.
 
 Three internal AI-assisted supplementary reviews are recorded in
 `docs/2026-11-17_ai-supplementary-review.md`,
@@ -108,8 +112,8 @@ Three internal AI-assisted supplementary reviews are recorded in
 desktop authorization defects above, the torrent credit replay, the multisig
 DoS cap, release/seed hardening, the recovery fixes in `20e3fe6`, the block
 sigop limit in `089e7c1`, and the remaining wallet, snapshot, staging, RPC, and
-CSP fixes in `9f3d4e9`. They are not independent review and do not count for
-this gate.
+CSP fixes in `9f3d4e9`, plus the wallet, script, and operations batch in
+`f0013bb`. They are not independent review and do not count for this gate.
 
 Earlier in this round, from `b729e36` through `ba46fd6`:
 
@@ -244,7 +248,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `9f3d4e9eb9e9f6c591a84e3f47a9c61b005f1358`
+- Confirm the review head is still `f0013bb14d1f8e3518240c9227c78c24870611ba`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.
