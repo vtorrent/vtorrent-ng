@@ -5,11 +5,14 @@ Receives Alertmanager webhook payloads on 127.0.0.1:9094 and republishes
 them to an ntfy topic as human-readable push messages.
 """
 import json
+import os
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 NTFY_URL = "https://ntfy.sh"
-TOPIC = "vtorrent-seeds-4254e0588837"
+TOPIC = os.environ.get("VTR_NTFY_TOPIC", "")
+if not TOPIC:
+    raise SystemExit("VTR_NTFY_TOPIC must be set to the private alert topic")
 
 
 def publish(alerts, firing):

@@ -53,9 +53,10 @@ operations. On 2026-10-29 a controlled `DeliveryTest` alert was submitted to the
 production Alertmanager and received on the ntfy topic; see `docs/soak-log.md`.
 Resolved-notification timing was not part of that check.
 
-Notifications are pushed to ntfy topic `vtorrent-seeds-4254e0588837`
-(topic name acts as the secret). Subscribe at https://ntfy.sh/ or in the
-mobile app. `ntfy-relay.py` (systemd unit `ntfy-relay`, listens on
+Notifications are pushed to the private ntfy topic supplied in
+`VTR_NTFY_TOPIC` (the topic name acts as the secret; it is not committed).
+Subscribe at https://ntfy.sh/ or in the mobile app. `ntfy-relay.py` (systemd
+unit `ntfy-relay`, listens on
 127.0.0.1:9094) formats Alertmanager's JSON envelope into readable push
 titles like `🔥 FIRING: DaemonDown` / `✅ RESOLVED: …`.
 

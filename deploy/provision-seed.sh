@@ -22,18 +22,30 @@ cat <<EOF
 This script expects to run ON the target node as root, with the daemon
 binary already at /tmp/vtorrent-daemon:
 
+  export VTR_DAEMON_SHA256=$(sha256sum target/release/vtorrent-daemon | cut -d' ' -f1)
   scp target/release/vtorrent-daemon root@NODE:/tmp/vtorrent-daemon
   scp deploy/provision-seed.sh root@NODE:/tmp/
-  ssh root@NODE '/tmp/provision-seed.sh SEED_PEER_IP'
+  ssh root@NODE "VTR_DAEMON_SHA256=$VTR_DAEMON_SHA256 /tmp/provision-seed.sh SEED_PEER_IP"
 
 ────────────────────────────────────────────────────────────────────────────
 EOF
 
 [[ -f /tmp/vtorrent-daemon ]] || { echo "missing /tmp/vtorrent-daemon" >&2; exit 1; }
+expected="${VTR_DAEMON_SHA256:?set VTR_DAEMON_SHA256 to the published daemon digest}"
+actual=$(sha256sum /tmp/vtorrent-daemon | cut -d' ' -f1)
+[[ "$actual" == "$expected" ]] || {
+  echo "daemon checksum mismatch: got $actual, expected $expected" >&2
+  exit 1
+}
 
 id -u vtorrent &>/dev/null || useradd --system --home-dir /var/lib/vtorrent --create-home --shell /usr/sbin/nologin vtorrent
 
 install -m 0755 /tmp/vtorrent-daemon /usr/local/bin/vtorrent-daemon
+
+install -d -m 0700 /etc/vtorrent
+if [[ ! -f /etc/vtorrent/rpc-api-key ]]; then
+  (umask 077; head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > /etc/vtorrent/rpc-api-key)
+fi
 
 cat > /etc/systemd/system/vtorrent.service <<EOF
 [Unit]
@@ -44,7 +56,7 @@ Wants=network-online.target
 [Service]
 User=vtorrent
 Group=vtorrent
-ExecStart=/usr/local/bin/vtorrent-daemon --listen 0.0.0.0:22526 --rpc-addr 127.0.0.1:22525 --data-dir /var/lib/vtorrent --seed ${SEED_PEER}:22526
+ExecStart=/usr/local/bin/vtorrent-daemon --listen 0.0.0.0:22526 --rpc-addr 127.0.0.1:22525 --rpc-api-key-file /etc/vtorrent/rpc-api-key --data-dir /var/lib/vtorrent --seed ${SEED_PEER}:22526
 Restart=on-failure
 RestartSec=10
 LimitNOFILE=65536
