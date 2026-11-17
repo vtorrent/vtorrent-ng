@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `f897f5c`
+Subject: Independent security review — vTorrent-NG mainnet candidate `db0902c`
 
 Hello,
 
@@ -18,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `f897f5cac2e2c33d32c09eb01e6e5dbbcc920dca`
+**Review head:** `db0902c2b862bbc94e804811ece62eb6a5611084`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `f897f5c`. It is not covered by any prior soak: the
+The code under review is `db0902c`. It is not covered by any prior soak: the
 `6a49727` fleet predates every change below and was interrupted by a host
 restart on 2026-11-16. The eventual shipping image needs its own full window
 after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 code changed after the candidate with
-`git diff --name-only f897f5c..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only db0902c..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -119,6 +119,9 @@ candidate `ba46fd6`:
 - `f897f5c` — torrent block leases are owned per peer; a partial BTC scan
   releases the input but keeps the refund contract; overlay sessions are capped
   per source IP.
+- `db0902c` — testnet RPC and monitoring bind to loopback; Grafana requires a
+  password and disables anonymous access; bitcoind RPC is scoped to the Docker
+  network; the release artifact requires an explicit runtime image.
 
 Four internal AI-assisted supplementary reviews are recorded in
 `docs/2026-11-17_ai-supplementary-review.md`,
@@ -130,9 +133,9 @@ DoS cap, release/seed hardening, the recovery fixes in `20e3fe6`, the block
 sigop limit in `089e7c1`, and the remaining wallet, snapshot, staging, RPC, and
 CSP fixes in `9f3d4e9`, the wallet, script, and operations batch in `f0013bb`,
 the fourth-pass fixes in `b02dd33`, the store/backup/torrent hardening in
-`3d32e8c`, the SPV/P2P/WS/funding hardening in `6c2193b`, and the torrent/BTC/
-overlay fixes in `f897f5c`. They are not independent review and do not count
-for this gate.
+`3d32e8c`, the SPV/P2P/WS/funding hardening in `6c2193b`, the torrent/BTC/
+overlay fixes in `f897f5c`, and the container hardening in `db0902c`. They are
+not independent review and do not count for this gate.
 
 Earlier in this round, from `b729e36` through `ba46fd6`:
 
@@ -267,7 +270,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `f897f5cac2e2c33d32c09eb01e6e5dbbcc920dca`
+- Confirm the review head is still `db0902c2b862bbc94e804811ece62eb6a5611084`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.

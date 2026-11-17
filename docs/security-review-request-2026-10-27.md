@@ -10,7 +10,7 @@ already accepted so it is not re-litigated.
 
 ## Review target
 
-Review the candidate `f897f5cac2e2c33d32c09eb01e6e5dbbcc920dca`. This is the current review head. It is **not**
+Review the candidate `db0902c2b862bbc94e804811ece62eb6a5611084`. This is the current review head. It is **not**
 covered by any prior soak: the `6a49727` fleet predates the fund-safety and
 recovery changes below and was interrupted by a host restart on 2026-11-16.
 Under the soak provenance policy, the shipping image needs its own full window
@@ -18,8 +18,8 @@ after this review and its fixes settle.
 
 Read this document from the tip of `main`. Confirm that no code changed after
 the candidate with
-`git diff --name-only f897f5c..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
-must return nothing. Check out `f897f5c` itself when running the verification
+`git diff --name-only db0902c..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+must return nothing. Check out `db0902c` itself when running the verification
 commands. The tables below record the earlier deltas. The table after the
 `f8e0162` deltas covers the range from `ba46fd6` to the candidate.
 
@@ -104,6 +104,7 @@ Deltas after `ba46fd6`:
 | `3d32e8c` | Store append monotonicity and rebuild metadata; backup verify-only TOTP; best-effort wallet TOTP re-save; unsolicited torrent piece rejection |
 | `6c2193b` | SPV genesis pin and best-chain inclusion; bounded peer dials; torrent receive deadline and bitfield cap; `/ws` origin required; non-public seed probe; VTR funding selection lock and mempool filter |
 | `f897f5c` | Per-peer torrent lease ownership; partial-scan BTC reservation keeps contract; per-IP overlay session cap |
+| `db0902c` | Testnet RPC/monitoring loopback binding; Grafana password required and anonymous off; bitcoind RPC scoped to Docker network; release image requires explicit runtime base |
 
 Deltas after the earlier review head:
 
@@ -155,7 +156,7 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout f897f5cac2e2c33d32c09eb01e6e5dbbcc920dca
+git checkout db0902c2b862bbc94e804811ece62eb6a5611084
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
@@ -163,7 +164,7 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 cargo test --workspace --all-features
 ```
 
-The `f897f5c` workspace run passed 54 test groups and 1,436 tests with 0
+The `db0902c` workspace run passed 54 test groups and 1,436 tests with 0
 failures and 11 ignored. CI repeats the `--all-features` suite on every push.
 Set `VTORRENT_TOTP_STATE_DIR` to a fresh directory before running the suite so
 the host-scoped TOTP replay state does not collide with an existing
@@ -267,8 +268,9 @@ Added with `ff148fd` and `35ea52e`:
   P2P/SPV, RPC/daemon/store, and BTC swaps. It fixed the incentive payout
   default, uncompressed-key signing, P2SH push-only, template framing, and
   related findings in `b02dd33`, with store/backup/torrent hardening in
-  `3d32e8c`, SPV/P2P/WS/funding hardening in `6c2193b`, and torrent/BTC/overlay
-  fixes in `f897f5c`. It is **not** independent review.
+  `3d32e8c`, SPV/P2P/WS/funding hardening in `6c2193b`, torrent/BTC/overlay
+  fixes in `f897f5c`, and container hardening in `db0902c`. It is **not**
+  independent review.
 
 ## Status
 
