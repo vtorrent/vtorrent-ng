@@ -9,7 +9,7 @@
 #   node3  P2P 22628 RPC 22629 (seeds from node1)
 #   btc    Bitcoin Core regtest, RPC 18443/18448
 #   prometheus  :9090   scrapes all three nodes' /metrics
-#   grafana     :3300   dashboards (admin/admin)
+#   grafana     :3300   dashboards (set GRAFANA_ADMIN_PASSWORD in .env)
 
 name: vtorrent-testnet
 
@@ -68,7 +68,7 @@ services:
       - --log-level
       - debug
     ports:
-      - "22625:22525"
+      - "127.0.0.1:22625:22525"
     expose:
       - "22526"
       - "22525"
@@ -146,7 +146,7 @@ services:
     depends_on:
       - node1
     ports:
-      - "22627:22525"
+      - "127.0.0.1:22627:22525"
     volumes:
       - vtr-data2:/data/node2
     networks:
@@ -206,7 +206,7 @@ services:
     depends_on:
       - node1
     ports:
-      - "22629:22525"
+      - "127.0.0.1:22629:22525"
     volumes:
       - vtr-data3:/data/node3
     networks:
@@ -228,7 +228,7 @@ services:
       - -printtoconsole=1
       - -regtest=1
       - -rpcbind=0.0.0.0
-      - -rpcallowip=0.0.0.0/0
+      - -rpcallowip=172.16.0.0/12
       - -rpcport=18443
       - -port=18448
       - -txindex=1
@@ -254,7 +254,7 @@ services:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prom-data:/prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     networks:
       - vtrnet
     restart: unless-stopped
@@ -265,16 +265,15 @@ services:
       - apparmor=unconfined
     container_name: vtr-grafana
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-      - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in docker/testnet/.env}
+      - GF_AUTH_ANONYMOUS_ENABLED=false
     volumes:
       - ../grafana/provisioning:/etc/grafana/provisioning:ro
       - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports:
-      - "3300:3000"
+      - "127.0.0.1:3300:3000"
     depends_on:
       - prometheus
     networks:

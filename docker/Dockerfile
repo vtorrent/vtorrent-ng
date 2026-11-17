@@ -1,6 +1,6 @@
 # vTorrent daemon — multi-stage build
 # Build:  docker build -t vtorrent/node -f docker/Dockerfile .
-# Run:    docker run vtorrent/node --listen 0.0.0.0:22526 --rpc-addr 0.0.0.0:22525
+# Run:    docker run vtorrent/node --listen 0.0.0.0:22526 --rpc-addr 127.0.0.1:22525
 
 # Base images are pinned by digest for reproducible builds (see
 # docs/mainnet-readiness.md §4). Update the digest deliberately (security

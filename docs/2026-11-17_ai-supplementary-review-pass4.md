@@ -39,6 +39,7 @@ items are marked by verification level.
 | Medium | A `Cancel` from one peer cleared another peer's in-flight block lease. | Leases now record the owning peer id; `clear_block` removes only the caller's lease. A test covers owner versus non-owner cancellation. |
 | Medium | A partial BTC scan treated an old funding transaction as absent and deleted the refund record. | When the scan does not start at genesis, the reserved input is released but the contract and `refund_raw` are retained for a later covered scan or manual recovery. |
 | Medium | One host could fill the overlay session table with unauthenticated punches. | Inbound sessions are capped at eight per source IP, in addition to the global cap. |
+| Low | The testnet stack published node RPC and Grafana on all interfaces, used `admin/admin`, enabled anonymous Grafana access, accepted bitcoind RPC from any address, and defaulted the release artifact to a mutable runtime image. | Node RPC, Prometheus, and Grafana bind to `127.0.0.1`; Grafana requires `GRAFANA_ADMIN_PASSWORD` and disables anonymous access; bitcoind RPC allows only the Docker range; `Dockerfile.release-artifact` requires `RUNTIME_IMAGE`; the image run example uses loopback RPC. |
 
 ## Open findings
 

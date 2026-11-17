@@ -133,7 +133,8 @@ memory and scan cost, so this stays a launch concern rather than a resolved gate
 > nodes, node1 staking 500 VTR with 60s fast-regtest maturity). The previous
 > run used pre-v3 persisted blocks and does not count toward this window; its
 > volumes are retained with the `pre-v3-58b256c` suffix. Check daily with
-> `scripts/soak-status.sh`; Grafana at http://localhost:3300 (admin/admin).
+> `scripts/soak-status.sh`; Grafana at http://localhost:3300 with the
+> `GRAFANA_ADMIN_PASSWORD` from `docker/testnet/.env`.
 
 The 2026-09-08 node3-only canary restart and its availability interruption are
 recorded in [the soak operations log](soak-log.md). The three-node continuous
