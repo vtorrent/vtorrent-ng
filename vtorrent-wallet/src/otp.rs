@@ -241,70 +241,93 @@ impl Drop for TotpStepGuard {
 }
 
 fn consume_totp_step_locked(wallet_path: &std::path::Path, step: u64) -> Result<TotpStepGuard> {
-    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::io::{Read, Write};
 
     let path = wallet_path.with_extension("totp-step");
+    // Lock a separate file so the state itself can be replaced atomically. A
+    // crash between truncation and write would otherwise erase the last
+    // accepted step and allow a stale code to be replayed.
+    let lock_path = wallet_path.with_extension("totp-step.lock");
+    let lock = open_no_follow(&lock_path, true)?;
+    lock.lock()
+        .map_err(|error| WalletError::Io(error.to_string()))?;
+
+    let last = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || metadata.len() > 128 {
+                return Err(WalletError::Io("invalid TOTP replay state".into()));
+            }
+            let mut file = open_no_follow(&path, false)?;
+            let mut previous = String::new();
+            file.read_to_string(&mut previous)
+                .map_err(|error| WalletError::Io(error.to_string()))?;
+            if previous.trim().is_empty() {
+                // Only a damaged or externally truncated state file reaches
+                // here; a newly created file is written by rename below.
+                return Err(WalletError::Io("empty TOTP replay state".into()));
+            }
+            Some(
+                previous
+                    .trim()
+                    .parse::<u64>()
+                    .map_err(|_| WalletError::Io("invalid TOTP replay state".into()))?,
+            )
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(WalletError::Io(error.to_string())),
+    };
+    if last.is_some_and(|last| step <= last) {
+        return Err(WalletError::OtpReplay);
+    }
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let tmp = wallet_path.with_extension(format!("totp-step.tmp.{}.{}", std::process::id(), nanos));
+    let write_result = (|| -> Result<()> {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        let mut file = options
+            .open(&tmp)
+            .map_err(|error| WalletError::Io(error.to_string()))?;
+        file.write_all(step.to_string().as_bytes())
+            .map_err(|error| WalletError::Io(error.to_string()))?;
+        file.sync_all()
+            .map_err(|error| WalletError::Io(error.to_string()))?;
+        drop(file);
+        std::fs::rename(&tmp, &path).map_err(|error| WalletError::Io(error.to_string()))?;
+        #[cfg(unix)]
+        if let Some(parent) = path.parent() {
+            if let Ok(dir) = std::fs::File::open(parent) {
+                let _ = dir.sync_all();
+            }
+        }
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        write_result?;
+    }
+    Ok(TotpStepGuard(lock))
+}
+
+fn open_no_follow(path: &std::path::Path, create: bool) -> Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
-    options.read(true).write(true);
+    options.read(true).write(true).create(create);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
-    let mut file = match options.create_new(true).open(&path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let mut options = std::fs::OpenOptions::new();
-            options.read(true).write(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.custom_flags(libc::O_NOFOLLOW);
-            }
-            options
-                .open(&path)
-                .map_err(|error| WalletError::Io(error.to_string()))?
-        }
-        Err(error) => return Err(WalletError::Io(error.to_string())),
-    };
-    file.lock()
-        .map_err(|error| WalletError::Io(error.to_string()))?;
-    if file
-        .metadata()
-        .map_err(|error| WalletError::Io(error.to_string()))?
-        .len()
-        > 128
-    {
-        return Err(WalletError::Io("TOTP replay state is too large".into()));
-    }
-    let mut previous = String::new();
-    file.read_to_string(&mut previous)
-        .map_err(|error| WalletError::Io(error.to_string()))?;
-    let last = if previous.trim().is_empty() {
-        // A crash between `create_new` and the first write leaves an empty
-        // file. Treat it as uninitialized rather than bricking every later
-        // verification.
-        None
-    } else {
-        Some(
-            previous
-                .trim()
-                .parse::<u64>()
-                .map_err(|_| WalletError::Io("invalid TOTP replay state".into()))?,
-        )
-    };
-    if last.is_some_and(|last| step <= last) {
-        return Err(WalletError::OtpReplay);
-    }
-    file.seek(SeekFrom::Start(0))
-        .map_err(|error| WalletError::Io(error.to_string()))?;
-    file.set_len(0)
-        .map_err(|error| WalletError::Io(error.to_string()))?;
-    file.write_all(step.to_string().as_bytes())
-        .map_err(|error| WalletError::Io(error.to_string()))?;
-    file.sync_all()
-        .map_err(|error| WalletError::Io(error.to_string()))?;
-    Ok(TotpStepGuard(file))
+    options
+        .open(path)
+        .map_err(|error| WalletError::Io(error.to_string()))
 }
 
 fn replay_store() -> Result<std::path::PathBuf> {
@@ -541,7 +564,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_replay_file_is_treated_as_uninitialized() {
+    fn existing_empty_replay_file_fails_closed() {
         let dir = std::env::temp_dir().join(format!(
             "vtr-totp-empty-{}-{}",
             std::process::id(),
@@ -553,15 +576,36 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("wallet.vtr");
         std::fs::write(path.with_extension("totp-step"), b"").unwrap();
-        consume_totp_step(&path, 12_345).expect("an empty state file must be recoverable");
+        assert!(consume_totp_step(&path, 12_345).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn replay_state_is_replaced_without_leaving_temp_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-totp-atomic-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wallet.vtr");
+        consume_totp_step(&path, 12_345).unwrap();
         assert_eq!(
             std::fs::read_to_string(path.with_extension("totp-step")).unwrap(),
             "12345"
         );
-        assert!(matches!(
-            consume_totp_step(&path, 12_345),
-            Err(WalletError::OtpReplay)
-        ));
+        consume_totp_step(&path, 12_346).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(path.with_extension("totp-step")).unwrap(),
+            "12346"
+        );
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            assert!(!name.contains(".tmp."), "leftover temp file: {name}");
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 

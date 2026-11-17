@@ -1107,6 +1107,34 @@ fn test_multisig_rejects_more_than_twenty_keys() {
 }
 
 #[test]
+fn test_multisig_accepts_exactly_twenty_keys() {
+    let keys: Vec<Vec<u8>> = (1..=20)
+        .map(|index| make_keypair_seed(index).1.serialize().to_vec())
+        .collect();
+    let mut script_pubkey = Script::new();
+    script_pubkey.push_data(&[1]).unwrap();
+    for key in &keys {
+        script_pubkey.push_data(key).unwrap();
+    }
+    script_pubkey.push_data(&[20]).unwrap();
+    script_pubkey.push_opcode(0xae);
+
+    let tx_hash = [0xef_u8; 32];
+    let sig = sign_tx(&make_keypair_seed(1).0, &tx_hash);
+    let mut script_sig = Script::new();
+    script_sig.push_opcode(0x00);
+    script_sig.push_data(&sig).unwrap();
+
+    let mut engine = Engine::new(ScriptEnv {
+        tx_hash,
+        ..Default::default()
+    });
+    engine
+        .execute(&script_sig, &script_pubkey)
+        .expect("a 20-key multisig must remain spendable");
+}
+
+#[test]
 fn test_1of2_multisig() {
     let (_, pk1) = make_keypair_seed(10);
     let (_, pk2) = make_keypair_seed(20);

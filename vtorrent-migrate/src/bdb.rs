@@ -42,7 +42,16 @@ fn parse_wallet_inner(data: &[u8], file_path: Option<&std::path::Path>) -> Resul
         }
     }
 
-    let native_records = parse_wallet_native(data)?;
+    let native_records = match parse_wallet_native(data) {
+        Ok(records) => records,
+        Err(native_error) => {
+            return parse_wallet_via_dbdump_path(data, file_path).map_err(|dump_error| {
+                MigrateError::Other(format!(
+                    "native BDB parser: {native_error}; dump: {dump_error}"
+                ))
+            });
+        }
+    };
 
     if native_records.len() < MIN_RECORDS_FOR_NATIVE {
         eprintln!(
@@ -67,6 +76,11 @@ fn parse_wallet_inner(data: &[u8], file_path: Option<&std::path::Path>) -> Resul
             }
             Err(e) => {
                 eprintln!("db5.3_dump fallback failed: {e}");
+                if native_records.is_empty() {
+                    return Err(MigrateError::Other(format!(
+                        "no records were recognized; db5.3_dump fallback failed: {e}"
+                    )));
+                }
                 return Ok(native_records);
             }
         }
@@ -75,56 +89,88 @@ fn parse_wallet_inner(data: &[u8], file_path: Option<&std::path::Path>) -> Resul
     Ok(native_records)
 }
 
-/// Native BDB parser (works for BDB 4.x page format).
-fn parse_wallet_native(data: &[u8]) -> Result<Vec<RawRecord>> {
+struct OverflowPage {
+    next: u32,
+    data: Vec<u8>,
+}
+
+/// Native BDB parser for the btree page format used by legacy `wallet.dat`.
+pub(crate) fn parse_wallet_native(data: &[u8]) -> Result<Vec<RawRecord>> {
     let page_size = u32::from_le_bytes([data[20], data[21], data[22], data[23]]);
     if !(512..=65536).contains(&page_size) || (page_size & (page_size - 1)) != 0 {
         return Err(MigrateError::UnsupportedPageSize(page_size));
     }
 
     let page_size = page_size as usize;
+    if !data.len().is_multiple_of(page_size) {
+        return Err(MigrateError::Other(
+            "BerkeleyDB file ends in a partial page".into(),
+        ));
+    }
     let num_pages = data.len() / page_size;
+    if num_pages < 2 {
+        return Err(MigrateError::Other("BerkeleyDB has no data pages".into()));
+    }
     let mut records = Vec::new();
 
-    let mut overflow_pages: std::collections::HashMap<u32, Vec<u8>> =
+    let mut overflow_pages: std::collections::HashMap<u32, OverflowPage> =
         std::collections::HashMap::new();
 
-    for page_idx in 0..num_pages {
+    for page_idx in 1..num_pages {
         let page_start = page_idx * page_size;
         let page = &data[page_start..page_start + page_size];
-        if page.len() < 26 {
+        if page[25] != 7 {
             continue;
         }
-        let page_type = page[25];
-        if page_type == 7 {
-            let page_num = u32::from_le_bytes([page[8], page[9], page[10], page[11]]);
-            let data_len = u16::from_le_bytes([page[14], page[15]]) as usize;
-            let available = page_size.saturating_sub(26);
-            let copy_len = data_len.min(available);
-            if copy_len > 0 && 26 + copy_len <= page.len() {
-                overflow_pages.insert(page_num, page[26..26 + copy_len].to_vec());
-            }
+        let page_num = u32::from_le_bytes([page[8], page[9], page[10], page[11]]);
+        if page_num as usize != page_idx {
+            return Err(MigrateError::Other("BDB page number mismatch".into()));
         }
+        overflow_pages.insert(
+            page_num,
+            OverflowPage {
+                next: u32::from_le_bytes([page[16], page[17], page[18], page[19]]),
+                data: page[26..].to_vec(),
+            },
+        );
     }
 
-    for page_idx in 0..num_pages {
+    let mut decoded_bytes = 0usize;
+    for page_idx in 1..num_pages {
         let page_start = page_idx * page_size;
         let page = &data[page_start..page_start + page_size];
-        if page.len() < 26 {
-            continue;
-        }
-        let page_type = page[25];
-        if page_type != 5 {
-            continue;
+        match page[25] {
+            // Internal pages, metadata, duplicate-value pages, overflow pages,
+            // and freed pages carry no keys of their own.
+            0 | 3 | 7 | 9 | 12 => continue,
+            5 => {}
+            8 | 2 | 13 => {
+                return Err(MigrateError::Other(
+                    "hash BerkeleyDB files require db5.3_dump".into(),
+                ))
+            }
+            4 | 6 => {
+                return Err(MigrateError::Other(
+                    "recno BerkeleyDB files require db5.3_dump".into(),
+                ))
+            }
+            other => {
+                return Err(MigrateError::Other(format!(
+                    "unsupported BerkeleyDB page type {other}"
+                )))
+            }
         }
         let num_entries = u16::from_le_bytes([page[20], page[21]]) as usize;
         if num_entries == 0 {
             continue;
         }
+        if !num_entries.is_multiple_of(2) {
+            return Err(MigrateError::Other("unpaired BDB entries".into()));
+        }
         let offsets_start = 26usize;
         let offsets_end = offsets_start + num_entries * 2;
         if offsets_end > page.len() {
-            continue;
+            return Err(MigrateError::Other("invalid BDB offset table".into()));
         }
         let mut entry_offsets = Vec::with_capacity(num_entries);
         for i in 0..num_entries {
@@ -134,7 +180,9 @@ fn parse_wallet_native(data: &[u8]) -> Result<Vec<RawRecord>> {
             // A crafted page can repeat offsets, making every pair re-copy the
             // same bytes and amplifying memory by orders of magnitude.
             if off < offsets_end || off >= page.len() || entry_offsets.contains(&off) {
-                continue;
+                return Err(MigrateError::Other(
+                    "invalid or duplicate BDB entry offset".into(),
+                ));
             }
             entry_offsets.push(off);
         }
@@ -142,8 +190,26 @@ fn parse_wallet_native(data: &[u8]) -> Result<Vec<RawRecord>> {
         while i + 1 < entry_offsets.len() {
             let key_off = entry_offsets[i];
             let val_off = entry_offsets[i + 1];
-            let key_data = read_entry(page, key_off, &overflow_pages);
-            let val_data = read_entry(page, val_off, &overflow_pages);
+            let key_data = read_entry(
+                page,
+                key_off,
+                &overflow_pages,
+                data.len(),
+                &mut decoded_bytes,
+            )?;
+            let val_data = read_entry(
+                page,
+                val_off,
+                &overflow_pages,
+                data.len(),
+                &mut decoded_bytes,
+            )?;
+            if key_data.is_some() && val_data.is_none() {
+                // Off-page duplicate values (for example labels that repeat a
+                // name) are not key material.
+                i += 2;
+                continue;
+            }
             if let (Some(k), Some(v)) = (key_data, val_data) {
                 if !k.is_empty() {
                     records.push(RawRecord {
@@ -162,36 +228,98 @@ fn parse_wallet_native(data: &[u8]) -> Result<Vec<RawRecord>> {
 fn read_entry(
     page: &[u8],
     offset: usize,
-    overflow_pages: &std::collections::HashMap<u32, Vec<u8>>,
-) -> Option<Vec<u8>> {
+    overflow_pages: &std::collections::HashMap<u32, OverflowPage>,
+    file_len: usize,
+    decoded_bytes: &mut usize,
+) -> Result<Option<Vec<u8>>> {
     if offset + 3 > page.len() {
-        return None;
+        return Err(MigrateError::Other("truncated BDB entry header".into()));
     }
     let data_len = u16::from_le_bytes([page[offset], page[offset + 1]]) as usize;
-    let entry_type = page[offset + 2];
+    // Item types share the high bit with BDB's delete flag.
+    let entry_type = page[offset + 2] & 0x7f;
+    if page[offset + 2] & 0x80 != 0 {
+        return Ok(None);
+    }
     match entry_type {
         1 => {
             let data_start = offset + 3;
-            let data_end = data_start + data_len;
+            let data_end = data_start
+                .checked_add(data_len)
+                .ok_or_else(|| MigrateError::Other("BDB entry length overflow".into()))?;
             if data_end > page.len() {
-                return None;
+                return Err(MigrateError::Other("truncated BDB inline entry".into()));
             }
-            Some(page[data_start..data_end].to_vec())
+            *decoded_bytes = decoded_bytes.saturating_add(data_len);
+            if *decoded_bytes > file_len {
+                return Err(MigrateError::Other(
+                    "BDB entries exceed the file size".into(),
+                ));
+            }
+            Ok(Some(page[data_start..data_end].to_vec()))
         }
         3 => {
-            if offset + 7 > page.len() {
-                return None;
+            // BOVERFLOW: unused1 (2), type (1), unused2 (1), pgno (4),
+            // total length (4). The value spans a next_pgno chain of pages.
+            if offset + 12 > page.len() {
+                return Err(MigrateError::Other("truncated BDB overflow header".into()));
             }
-            let overflow_page = u32::from_le_bytes([
-                page[offset + 3],
+            let first_page = u32::from_le_bytes([
                 page[offset + 4],
                 page[offset + 5],
                 page[offset + 6],
+                page[offset + 7],
             ]);
-            overflow_pages.get(&overflow_page).cloned()
+            let total_len = u32::from_le_bytes([
+                page[offset + 8],
+                page[offset + 9],
+                page[offset + 10],
+                page[offset + 11],
+            ]) as usize;
+            *decoded_bytes = decoded_bytes.saturating_add(total_len);
+            if *decoded_bytes > file_len {
+                return Err(MigrateError::Other(
+                    "BDB entries exceed the file size".into(),
+                ));
+            }
+            read_overflow(first_page, total_len, overflow_pages).map(Some)
         }
-        _ => None,
+        // B_DUPLICATE: the value lives on an off-page duplicate leaf.
+        2 => Ok(None),
+        other => Err(MigrateError::Other(format!(
+            "unsupported BDB item type {other}"
+        ))),
     }
+}
+
+fn read_overflow(
+    first_page: u32,
+    total_len: usize,
+    overflow_pages: &std::collections::HashMap<u32, OverflowPage>,
+) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(total_len.min(1 << 20));
+    let mut visited = std::collections::HashSet::new();
+    let mut current = first_page;
+    while out.len() < total_len {
+        if !visited.insert(current) {
+            return Err(MigrateError::Other("cyclic BDB overflow chain".into()));
+        }
+        let page = overflow_pages
+            .get(&current)
+            .ok_or_else(|| MigrateError::Other("missing BDB overflow page".into()))?;
+        let take = (total_len - out.len()).min(page.data.len());
+        out.extend_from_slice(&page.data[..take]);
+        if out.len() < total_len {
+            if page.next == 0 {
+                return Err(MigrateError::Other("truncated BDB overflow chain".into()));
+            }
+            current = page.next;
+        }
+    }
+    if out.len() != total_len {
+        return Err(MigrateError::Other("wrong BDB overflow length".into()));
+    }
+    Ok(out)
 }
 
 /// Parse wallet using db5.3_dump, preferring the original file path when available.
@@ -280,6 +408,7 @@ fn run_dbdump(args: &[&str]) -> std::result::Result<String, String> {
 fn parse_dbdump_output(output: &str) -> Result<Vec<RawRecord>> {
     let mut records = Vec::new();
     let mut in_data = false;
+    let mut sections = 0usize;
     let mut pending_key: Option<Vec<u8>> = None;
     for line in output.lines() {
         let value = line.trim();
@@ -296,6 +425,7 @@ fn parse_dbdump_output(output: &str) -> Result<Vec<RawRecord>> {
                 ));
             }
             in_data = false;
+            sections += 1;
             continue;
         }
         let bytes = if value.is_empty() {
@@ -316,7 +446,7 @@ fn parse_dbdump_output(output: &str) -> Result<Vec<RawRecord>> {
             }
         }
     }
-    if pending_key.is_some() {
+    if pending_key.is_some() || in_data || sections == 0 {
         return Err(MigrateError::Other(
             "db5.3_dump ended before the value line".into(),
         ));
@@ -458,6 +588,89 @@ mod tests {
     fn test_parse_dbdump_rejects_an_unmatched_key() {
         let output = "HEADER=END\n 6b657931\nDATA=END\n";
         assert!(parse_dbdump_output(output).is_err());
+    }
+
+    #[test]
+    fn dump_requires_complete_section() {
+        assert!(parse_dbdump_output("").is_err());
+        assert!(parse_dbdump_output("HEADER=END\n 6b\n 76\n").is_err());
+    }
+
+    #[test]
+    fn native_parser_reconstructs_overflow_values() {
+        let data = include_bytes!("../tests/fixtures/btree-overflow.db");
+        let records = parse_wallet_native(data).expect("parse overflow values");
+        assert_eq!(records.len(), 2);
+        let first = records
+            .iter()
+            .find(|record| record.key_data == b"key1")
+            .expect("key1");
+        assert_eq!(first.value_data, vec![b'a'; 5000]);
+        assert!(records
+            .iter()
+            .any(|record| record.key_data == b"key2" && record.value_data == b"val2"));
+    }
+
+    #[test]
+    fn native_parser_reads_every_record_across_leaf_pages() {
+        let data = include_bytes!("../tests/fixtures/btree-multipage.db");
+        let records = parse_wallet_native(data).expect("parse multipage database");
+        assert_eq!(records.len(), 200);
+        for index in 0..200 {
+            let key = format!("rec{index:04}");
+            let value = vec![b'v'; 40];
+            assert!(
+                records
+                    .iter()
+                    .any(|record| record.key_data == key.as_bytes() && record.value_data == value),
+                "missing {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_parser_rejects_a_broken_overflow_chain() {
+        let mut data = include_bytes!("../tests/fixtures/btree-overflow.db").to_vec();
+        let page = 4096;
+        let next = 2 * page + 16;
+        data[next..next + 4].copy_from_slice(&99u32.to_le_bytes());
+        assert!(parse_wallet_native(&data).is_err());
+    }
+
+    #[test]
+    fn native_parser_skips_entries_marked_deleted() {
+        let mut data = include_bytes!("../tests/fixtures/btree-small.db").to_vec();
+        let page = 4096;
+        let value_off = u16::from_le_bytes([data[page + 28], data[page + 29]]) as usize;
+        data[page + value_off + 2] |= 0x80;
+        let records = parse_wallet_native(&data).unwrap();
+        assert_eq!(records.len(), 1, "records: {records:?}");
+        assert_eq!(records[0].key_data, b"key2");
+    }
+
+    #[test]
+    fn native_matches_the_reference_dump_when_available() {
+        for fixture in ["btree-small.db", "btree-overflow.db", "btree-multipage.db"] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures")
+                .join(fixture);
+            let Ok(output) = run_dbdump(&["-r", path.to_str().unwrap()]) else {
+                return;
+            };
+            let reference = parse_dbdump_output(&output).unwrap();
+            let native = parse_wallet_native(&std::fs::read(&path).unwrap()).unwrap();
+            let mut reference: Vec<_> = reference
+                .into_iter()
+                .map(|r| (r.key_data, r.value_data))
+                .collect();
+            let mut native: Vec<_> = native
+                .into_iter()
+                .map(|r| (r.key_data, r.value_data))
+                .collect();
+            reference.sort();
+            native.sort();
+            assert_eq!(native, reference, "{fixture}");
+        }
     }
 
     #[test]

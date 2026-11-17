@@ -17,14 +17,38 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
-/// Claim a piece for credit at most once. A peer replaying a piece we already
-/// hold must not earn another payout.
-fn claim_piece(scheduler: &mut SchedulerState, index: u32) -> bool {
-    if scheduler.has_piece(index) {
-        return false;
+struct PieceWriteClaim {
+    scheduler: Arc<StdMutex<SchedulerState>>,
+    index: u32,
+}
+
+impl PieceWriteClaim {
+    fn acquire(scheduler: Arc<StdMutex<SchedulerState>>, index: u32) -> Option<Self> {
+        {
+            let mut state = scheduler.lock().unwrap_or_else(|e| e.into_inner());
+            if state.has_piece(index) || !state.writing_pieces.insert(index) {
+                return None;
+            }
+        }
+        Some(Self { scheduler, index })
     }
-    scheduler.mark_have(index);
-    true
+
+    fn finish(self) {
+        self.scheduler
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .mark_have(self.index);
+    }
+}
+
+impl Drop for PieceWriteClaim {
+    fn drop(&mut self) {
+        self.scheduler
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .writing_pieces
+            .remove(&self.index);
+    }
 }
 
 /// Tracker-supplied peers must pass the same address policy as magnet metadata
@@ -829,17 +853,14 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     if let Some(expected) = metainfo.pieces.get(index as usize) {
                         if asm.verify(expected) {
                             if let Some(piece_data) = asm.assemble() {
-                                let claimed = {
-                                    let mut sched =
-                                        scheduler.lock().unwrap_or_else(|e| e.into_inner());
-                                    claim_piece(&mut sched, index)
-                                };
-                                if !claimed {
+                                let Some(claim) =
+                                    PieceWriteClaim::acquire(scheduler.clone(), index)
+                                else {
                                     // A replayed piece we already hold must not
                                     // earn another payout.
                                     assemblers.remove(&index);
                                     continue;
-                                }
+                                };
                                 let written = write_piece_to_disk(
                                     &metainfo,
                                     &download_dir,
@@ -847,10 +868,10 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                                     &piece_data,
                                 )
                                 .await;
-                                // Credit only when the piece is durably on
-                                // disk. Otherwise undo the claim; the blocks
-                                // expire and the piece is re-requested.
+                                // Publish only after the write completes. A failed
+                                // write releases the claim for a later retry.
                                 if written {
+                                    claim.finish();
                                     // Deterministic progress: verified_bytes is sum of
                                     // SHA1-verified piece lengths via have_bytes, not
                                     // raw received bytes. Prevents progress inflation
@@ -883,11 +904,6 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                                     limits
                                         .consume_download(piece_data.len() as u64, &cancel)
                                         .await;
-                                } else {
-                                    scheduler
-                                        .lock()
-                                        .unwrap_or_else(|e| e.into_inner())
-                                        .mark_not_have(index);
                                 }
                             }
                         }
@@ -1167,10 +1183,72 @@ mod tests {
 
     #[test]
     fn replayed_pieces_cannot_be_credited_twice() {
-        let mut scheduler = SchedulerState::new(4);
-        assert!(claim_piece(&mut scheduler, 0));
-        assert!(!claim_piece(&mut scheduler, 0));
-        assert!(scheduler.has_piece(0));
+        let scheduler = Arc::new(StdMutex::new(SchedulerState::new(4)));
+        PieceWriteClaim::acquire(scheduler.clone(), 0)
+            .unwrap()
+            .finish();
+        assert!(PieceWriteClaim::acquire(scheduler.clone(), 0).is_none());
+        assert!(scheduler.lock().unwrap().has_piece(0));
+    }
+
+    #[test]
+    fn piece_claim_does_not_publish_before_write_and_cancellation_releases_it() {
+        let scheduler = Arc::new(StdMutex::new(SchedulerState::new(1)));
+        let claim = PieceWriteClaim::acquire(scheduler.clone(), 0).unwrap();
+        assert!(!scheduler.lock().unwrap().has_piece(0));
+        assert!(PieceWriteClaim::acquire(scheduler.clone(), 0).is_none());
+        drop(claim);
+        let claim = PieceWriteClaim::acquire(scheduler.clone(), 0).unwrap();
+        claim.finish();
+        assert!(scheduler.lock().unwrap().has_piece(0));
+        assert!(PieceWriteClaim::acquire(scheduler.clone(), 0).is_none());
+    }
+
+    #[tokio::test]
+    async fn failed_piece_write_leaves_the_piece_unpublished_and_reclaimable() {
+        use crate::metainfo::{Metainfo, TorrentFile};
+
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-piece-write-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // The torrent directory name is occupied by a regular file, so the
+        // write must fail without touching anything.
+        std::fs::write(dir.join("torrent"), b"not a directory").unwrap();
+        let metainfo = Metainfo {
+            info_hash: [1u8; 20],
+            name: "torrent".into(),
+            total_size: 4,
+            piece_length: 4,
+            piece_count: 1,
+            pieces: vec![[2u8; 20]],
+            announce: None,
+            announce_list: Vec::new(),
+            files: vec![TorrentFile {
+                path: vec!["file.bin".into()],
+                length: 4,
+                md5sum: None,
+            }],
+            created_at: None,
+            comment: None,
+            is_private: false,
+        };
+        let scheduler = Arc::new(StdMutex::new(SchedulerState::new(1)));
+        let claim = PieceWriteClaim::acquire(scheduler.clone(), 0).unwrap();
+        let written = write_piece_to_disk(&metainfo, &dir, 0, b"data").await;
+        assert!(!written, "write into a file path must fail");
+        drop(claim);
+        assert!(!scheduler.lock().unwrap().has_piece(0));
+        assert!(
+            PieceWriteClaim::acquire(scheduler.clone(), 0).is_some(),
+            "a failed write must release the claim"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

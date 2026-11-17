@@ -82,6 +82,8 @@ jobs:
         run: cp release/Cargo.lock Cargo.lock
       - name: Run Clippy with warnings denied
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Test seed provisioning
+        run: ./deploy/test-provision-seed.sh
       - name: Verify release lockfile
         run: cp release/Cargo.lock Cargo.lock && cargo metadata --locked --format-version 1 > /dev/null
 

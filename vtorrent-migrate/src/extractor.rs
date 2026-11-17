@@ -494,6 +494,112 @@ mod tests {
         assert!(extract_from_records(&records, Some("wrong")).is_err());
     }
 
+    #[test]
+    fn extracts_an_encrypted_key_from_a_real_berkeley_db() {
+        use cbc::cipher::{BlockEncryptMut, KeyIvInit};
+        use cbc::Encryptor;
+        use secp256k1::{Secp256k1, SecretKey};
+
+        if std::process::Command::new("db5.3_load")
+            .arg("-h")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+
+        let passphrase = "correct horse battery staple";
+        let salt = vec![0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        let derived = crate::crypter::derive_key_scrypt(passphrase.as_bytes(), &salt).unwrap();
+        let master_key: [u8; 32] = derived[..32].try_into().unwrap();
+        let master_iv: [u8; 16] = derived[32..48].try_into().unwrap();
+
+        let mut master_buf = vec![0u8; 48];
+        master_buf[..32].copy_from_slice(&master_key);
+        let encrypted_master = Encryptor::<aes::Aes256>::new(&master_key.into(), &master_iv.into())
+            .encrypt_padded_mut::<cbc::cipher::block_padding::Pkcs7>(&mut master_buf, 32)
+            .unwrap()
+            .to_vec();
+        let mut mkey_value = vec![encrypted_master.len() as u8];
+        mkey_value.extend_from_slice(&encrypted_master);
+        mkey_value.push(salt.len() as u8);
+        mkey_value.extend_from_slice(&salt);
+        mkey_value.extend_from_slice(&2u32.to_le_bytes());
+        mkey_value.extend_from_slice(&0u32.to_le_bytes());
+        mkey_value.push(0);
+
+        let secret = SecretKey::from_slice(&[0x42; 32]).unwrap();
+        let pubkey = secp256k1::PublicKey::from_secret_key(&Secp256k1::new(), &secret)
+            .serialize()
+            .to_vec();
+        let iv_hash = vtorrent_core::crypto::sha256d(&pubkey);
+        let ckey_iv: [u8; 16] = iv_hash[..16].try_into().unwrap();
+        let mut ckey_buf = vec![0u8; 48];
+        ckey_buf[..32].copy_from_slice(&secret.secret_bytes());
+        let encrypted_ckey = Encryptor::<aes::Aes256>::new(&master_key.into(), &ckey_iv.into())
+            .encrypt_padded_mut::<cbc::cipher::block_padding::Pkcs7>(&mut ckey_buf, 32)
+            .unwrap()
+            .to_vec();
+        let mut ckey_value = vec![encrypted_ckey.len() as u8];
+        ckey_value.extend_from_slice(&encrypted_ckey);
+        let mut ckey_key = vec![4u8];
+        ckey_key.extend_from_slice(b"ckey");
+        ckey_key.push(pubkey.len() as u8);
+        ckey_key.extend_from_slice(&pubkey);
+        let mut mkey_key = vec![4u8];
+        mkey_key.extend_from_slice(b"mkey");
+        mkey_key.extend_from_slice(&0u32.to_le_bytes());
+
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-bdb-extract-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dump = dir.join("dump");
+        let db = dir.join("wallet.dat");
+        let mut text = String::from("VERSION=3\nformat=bytevalue\ntype=btree\nHEADER=END\n");
+        for (key, value) in [(&mkey_key, &mkey_value), (&ckey_key, &ckey_value)] {
+            text.push(' ');
+            text.push_str(&hex::encode(key));
+            text.push('\n');
+            text.push(' ');
+            text.push_str(&hex::encode(value));
+            text.push('\n');
+        }
+        text.push_str("DATA=END\n");
+        std::fs::write(&dump, text).unwrap();
+        let status = std::process::Command::new("db5.3_load")
+            .arg("-f")
+            .arg(&dump)
+            .arg(&db)
+            .status()
+            .unwrap();
+        assert!(status.success(), "db5.3_load failed");
+
+        let data = std::fs::read(&db).unwrap();
+        let extraction = extract_wallet(&data, Some(passphrase)).unwrap();
+        assert!(extraction.was_encrypted);
+        assert_eq!(extraction.keys.len(), 1);
+        let expected = vtorrent_core::address::Address::from_pubkey(
+            &secp256k1::PublicKey::from_slice(&pubkey).unwrap(),
+            true,
+            vtorrent_core::network::legacy::PUBKEY_ADDRESS_PREFIX,
+        );
+        assert_eq!(extraction.keys[0].legacy_address, expected.to_string());
+        let native = crate::bdb::parse_wallet_native(&data).unwrap();
+        let native_extraction = extract_from_records(&native, Some(passphrase)).unwrap();
+        assert_eq!(native_extraction.keys.len(), 1);
+        assert_eq!(
+            native_extraction.keys[0].legacy_address,
+            extraction.keys[0].legacy_address
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// A valid wallet with no key records yields an empty extraction.
     #[test]
     fn test_extract_wallet_with_no_keys() {

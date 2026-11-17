@@ -185,6 +185,7 @@ pub struct SchedulerState {
     /// Leases expire after `BLOCK_LEASE_TIMEOUT` so blocks lost to a choked,
     /// disconnected, or stalled peer are automatically re-requestable.
     requested_blocks: HashMap<u32, Vec<(u32, Instant)>>,
+    pub(crate) writing_pieces: std::collections::HashSet<u32>,
 }
 
 impl SchedulerState {
@@ -195,6 +196,7 @@ impl SchedulerState {
             max_pipelined_blocks: 5,
             endgame_threshold: 3,
             requested_blocks: HashMap::new(),
+            writing_pieces: std::collections::HashSet::new(),
         }
     }
 

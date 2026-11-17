@@ -17,7 +17,7 @@ SEED_PEER="${1:?usage: provision-seed.sh <seed-peer-ip>}"
 # Runs ON the target node; the daemon binary must already be staged at
 # /tmp/vtorrent-daemon (scp it from a build machine first — see header).
 
-cat <<EOF
+cat <<'EOF'
 ── vTorrent seed provisioning ───────────────────────────────────────────────
 This script expects to run ON the target node as root, with the daemon
 binary already at /tmp/vtorrent-daemon:
@@ -32,7 +32,10 @@ EOF
 
 [[ -f /tmp/vtorrent-daemon ]] || { echo "missing /tmp/vtorrent-daemon" >&2; exit 1; }
 expected="${VTR_DAEMON_SHA256:?set VTR_DAEMON_SHA256 to the published daemon digest}"
-actual=$(sha256sum /tmp/vtorrent-daemon | cut -d' ' -f1)
+stage_dir=$(mktemp -d /run/vtorrent-provision.XXXXXXXX)
+trap 'rm -f -- "$stage_dir/vtorrent-daemon"; rmdir -- "$stage_dir"' EXIT
+install -m 0700 /tmp/vtorrent-daemon "$stage_dir/vtorrent-daemon"
+actual=$(sha256sum "$stage_dir/vtorrent-daemon" | cut -d' ' -f1)
 [[ "$actual" == "$expected" ]] || {
   echo "daemon checksum mismatch: got $actual, expected $expected" >&2
   exit 1
@@ -40,12 +43,18 @@ actual=$(sha256sum /tmp/vtorrent-daemon | cut -d' ' -f1)
 
 id -u vtorrent &>/dev/null || useradd --system --home-dir /var/lib/vtorrent --create-home --shell /usr/sbin/nologin vtorrent
 
-install -m 0755 /tmp/vtorrent-daemon /usr/local/bin/vtorrent-daemon
+install -m 0755 "$stage_dir/vtorrent-daemon" /usr/local/bin/vtorrent-daemon
 
-install -d -m 0700 /etc/vtorrent
+install -d -o vtorrent -g vtorrent -m 0700 /etc/vtorrent
 if [[ ! -f /etc/vtorrent/rpc-api-key ]]; then
   (umask 077; head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > /etc/vtorrent/rpc-api-key)
 fi
+[[ -f /etc/vtorrent/rpc-api-key && ! -L /etc/vtorrent/rpc-api-key ]] || {
+  echo "RPC key must be a regular file, not a symlink" >&2
+  exit 1
+}
+chown vtorrent:vtorrent /etc/vtorrent/rpc-api-key
+chmod 0600 /etc/vtorrent/rpc-api-key
 
 cat > /etc/systemd/system/vtorrent.service <<EOF
 [Unit]
