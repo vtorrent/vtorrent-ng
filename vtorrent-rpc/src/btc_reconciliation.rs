@@ -518,8 +518,82 @@ pub async fn run_btc_reconciler(state: AppState) {
                     error = %error,
                     "Automatic BTC swap reconciliation failed"
                 );
+            } else {
+                maybe_auto_claim_vtr(&state, &id).await;
             }
         }
+    }
+}
+
+/// After the maker's BTC claim reveals the preimage, submit the taker's VTR
+/// claim automatically instead of relying on an operator to press Claim before
+/// the VTR refund deadline.
+async fn maybe_auto_claim_vtr(state: &AppState, order_id: &str) {
+    let now = crate::handlers::now_secs_mock(state).await;
+    let (order, ready, wif) = {
+        let order_book = state.order_book.read().await;
+        let Some(order) = order_book.get_order(order_id).cloned() else {
+            return;
+        };
+        let swaps = state.swaps.read().await;
+        let Some(swap) = swaps.get(order_id) else {
+            return;
+        };
+        let ready = swap.preimage.is_some()
+            && swap.vtr_claim_txid.is_none()
+            && swap.vtr_refund_txid.is_none();
+        let wif = state.wallet_wif.read().await.clone();
+        (order, ready, wif)
+    };
+    if !ready {
+        return;
+    }
+    // Leave a margin for block confirmation before the VTR refund path opens.
+    if u64::from(order.expiry) <= now.saturating_add(3600) {
+        tracing::warn!(
+            order_id = %order_id,
+            "Skipping automatic VTR claim: refund deadline is too close"
+        );
+        return;
+    }
+    let Some(wif) = wif else {
+        return;
+    };
+    let Ok(key) = vtorrent_core::keys::PrivateKey::from_wif(&wif) else {
+        return;
+    };
+    let Ok(pubkey) = key.public_key() else {
+        return;
+    };
+    let address = vtorrent_core::address::Address::from_pubkey(
+        &pubkey,
+        key.is_compressed(),
+        vtorrent_core::network::mainnet::PUBKEY_ADDRESS_PREFIX,
+    )
+    .to_string();
+    // Only the taker can claim the VTR HTLC; the maker's wallet key does not
+    // control the taker address.
+    if order.taker_address.as_deref() != Some(address.as_str()) {
+        return;
+    }
+    let request = crate::models::VtrClaimRequest {
+        order_id: order_id.to_string(),
+        preimage: String::new(),
+        passphrase: zeroize::Zeroizing::new(String::new()),
+        otp_code: None,
+        taker_wif: zeroize::Zeroizing::new(wif.to_string()),
+    };
+    match crate::handlers::swap::vtr_claim_with_state(state, request).await {
+        Ok(response) => tracing::info!(
+            order_id = %order_id,
+            txid = %response.txid,
+            "Automatically submitted the VTR claim after the BTC claim"
+        ),
+        Err(error) => tracing::warn!(
+            order_id = %order_id,
+            %error,
+            "Automatic VTR claim failed; a manual claim may still be required"
+        ),
     }
 }
 

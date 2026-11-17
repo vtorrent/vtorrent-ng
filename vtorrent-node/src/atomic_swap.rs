@@ -1031,6 +1031,27 @@ impl SwapOrderBook {
         true
     }
 
+    /// Revert a matched order when funding admission fails, so it can be
+    /// matched again instead of remaining stuck in `Matched`.
+    pub fn revert_match(&mut self, order_id: &str) -> bool {
+        let Some(order) = self
+            .orders
+            .iter_mut()
+            .find(|order| hex::encode(order.order_id) == order_id)
+        else {
+            return false;
+        };
+        if order.status != OrderStatus::Matched {
+            return false;
+        }
+        order.status = OrderStatus::Open;
+        order.taker_address = None;
+        order.funding_txid = None;
+        order.hash_lock = None;
+        order.preimage = None;
+        true
+    }
+
     /// Mark a reserved order as funded and matched after its HTLC funding
     /// transaction has been accepted into the local mempool.
     pub fn fund_and_match_order(

@@ -232,13 +232,24 @@ pub async fn match_dex_order_with_wif(
         .replace_order(prepared_order.clone());
     let mut swaps = state.swaps.write().await;
     let swap = swaps
-        .entry(req.order_id)
+        .entry(req.order_id.clone())
         .or_insert_with(|| SwapState::new(prepared_order.order_id, hash_lock));
     swap.vtr_funding_txid = Some(funding_txid);
     swap.vtr_funding_tx = Some(funding_tx.clone());
     swap.status = SwapStatus::VtrFunded;
     crate::swap_recovery::persist(state, &prepared_order, Some(swap)).await?;
-    crate::swap_recovery::submit_vtr(state, &funding_tx).await?;
+    if let Err(error) = crate::swap_recovery::submit_vtr(state, &funding_tx).await {
+        state.order_book.write().await.revert_match(&req.order_id);
+        state.swaps.write().await.remove(&req.order_id);
+        if let Err(remove_error) = crate::swap_recovery::remove(state, &req.order_id).await {
+            tracing::warn!(
+                order_id = %req.order_id,
+                error = %remove_error,
+                "Could not remove failed funding recovery record"
+            );
+        }
+        return Err(error);
+    }
     Ok(match_response(&prepared_order))
 }
 

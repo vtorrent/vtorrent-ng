@@ -36,6 +36,8 @@ items are marked by verification level.
 | Medium | Torrent `recv` had no deadline and accepted repeated bitfields up to 16 MiB, each costing a full per-bit walk. | A message must complete within 180 seconds; only the first bitfield is accepted and it may not exceed `ceil(piece_count/8)` bytes. |
 | Low | `/ws` skipped its origin allow-list when the header was absent, and the Tauri seed probe could scan loopback/LAN services. | `/ws` now requires an allowed Origin. The probe rejects loopback, private, link-local, multicast, and unspecified targets; its test asserts loopback filtering. |
 | Medium | Two concurrent matches could select the same confirmed VTR outpoint because coin selection ignored the mempool. | Funding selection and admission are serialized by a dedicated lock, and candidates spent by a mempool transaction are filtered out. The order is still marked `Matched` before admission, so a later non-conflict admission failure remains possible. |
+| Medium | A `Matched` order persisted before funding admission could become permanently stuck if admission failed. | On submission failure the order is reverted to `Open`, the in-memory swap is removed, and its recovery record is deleted. |
+| Medium | After the maker claimed BTC, nothing automatically submitted the taker's VTR claim, so an idle operator could lose the BTC leg. | The BTC reconciler now submits the VTR claim once the preimage is observed and the refund deadline is more than an hour away. It only acts when the wallet address equals the order's taker address, so maker nodes cannot attempt it. |
 | Medium | A `Cancel` from one peer cleared another peer's in-flight block lease. | Leases now record the owning peer id; `clear_block` removes only the caller's lease. A test covers owner versus non-owner cancellation. |
 | Medium | A partial BTC scan treated an old funding transaction as absent and deleted the refund record. | When the scan does not start at genesis, the reserved input is released but the contract and `refund_raw` are retained for a later covered scan or manual recovery. |
 | Medium | One host could fill the overlay session table with unauthenticated punches. | Inbound sessions are capped at eight per source IP, in addition to the global cap. |
@@ -81,14 +83,14 @@ items are marked by verification level.
 
 ### BTC and swaps
 
-11. **Partially fixed — funding selection is serialized and mempool-aware**,
-    but a non-conflict admission failure after `Matched` can still wedge the
-    order.
+11. **Fixed — funding selection is serialized and mempool-aware**, and a
+    failed admission reverts the order and removes its recovery record.
 12. **Partially fixed — a partial BTC scan keeps the contract and refund
     record** while releasing the input; a covered scan is still required to
     clear it safely.
-13. **Medium — no automatic VTR claim after the maker's BTC claim.** An idle
-    taker can lose the BTC leg.
+13. **Fixed — the taker's VTR claim is submitted automatically** once the BTC
+    preimage is observed, subject to a one-hour refund-deadline margin and the
+    taker-address check.
 
 ### RPC, daemon, and wallet
 
