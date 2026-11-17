@@ -97,7 +97,8 @@ pub fn set_allow_private_tracker_targets(allow: bool) {
     ALLOW_PRIVATE_TRACKER_TARGETS.store(allow, std::sync::atomic::Ordering::SeqCst);
 }
 
-fn private_targets_allowed() -> bool {
+/// Current process-wide override for private tracker targets.
+pub fn private_targets_allowed() -> bool {
     ALLOW_PRIVATE_TRACKER_TARGETS.load(std::sync::atomic::Ordering::SeqCst)
 }
 
@@ -105,7 +106,13 @@ fn private_targets_allowed() -> bool {
 /// `set_allow_private_tracker_targets` override. Used by the UDP path, which
 /// resolves its own address rather than going through `validate_tracker_url`.
 pub fn tracker_target_allowed(ip: std::net::IpAddr) -> bool {
-    private_targets_allowed() || !is_non_public(ip)
+    tracker_target_allowed_with(ip, private_targets_allowed())
+}
+
+/// Policy-explicit form for callers (and tests) that must not depend on the
+/// process-wide override.
+pub fn tracker_target_allowed_with(ip: std::net::IpAddr, allow_private: bool) -> bool {
+    allow_private || !is_non_public(ip)
 }
 
 /// Validate a tracker URL before fetching it.

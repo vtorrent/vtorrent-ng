@@ -9,7 +9,7 @@ use crate::metainfo::{Metainfo, TorrentFile};
 use crate::peer_wire::PeerMessage;
 use crate::scheduler::SchedulerState;
 use crate::session::{SessionManager, SessionState};
-use crate::tracker::{tracker_target_allowed, AnnounceEvent, AnnounceRequest, HttpTracker};
+use crate::tracker::{tracker_target_allowed_with, AnnounceEvent, AnnounceRequest, HttpTracker};
 use serde_bencode::value::Value;
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
@@ -29,8 +29,13 @@ fn claim_piece(scheduler: &mut SchedulerState, index: u32) -> bool {
 
 /// Tracker-supplied peers must pass the same address policy as magnet metadata
 /// peers: no loopback, link-local, private, or zero-port targets.
-fn peer_target_allowed(peer: &crate::tracker::TrackerPeer) -> bool {
-    peer.port != 0 && peer.ip.parse().map(tracker_target_allowed).unwrap_or(false)
+fn peer_target_allowed(peer: &crate::tracker::TrackerPeer, allow_private: bool) -> bool {
+    peer.port != 0
+        && peer
+            .ip
+            .parse()
+            .map(|ip| tracker_target_allowed_with(ip, allow_private))
+            .unwrap_or(false)
 }
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -349,7 +354,7 @@ pub async fn run_engine(
     let mut metainfo = metainfo;
     if metainfo.pieces.is_empty() {
         for peer in &peers {
-            if !peer_target_allowed(peer) {
+            if !peer_target_allowed(peer, crate::tracker::private_targets_allowed()) {
                 continue;
             }
             let addr: SocketAddr = match format!("{}:{}", peer.ip, peer.port).parse() {
@@ -426,7 +431,7 @@ pub async fn run_engine(
         if peer_tasks.len() >= MAX_PEERS {
             break;
         }
-        if !peer_target_allowed(&peer) {
+        if !peer_target_allowed(&peer, crate::tracker::private_targets_allowed()) {
             continue;
         }
         let addr: SocketAddr = match format!("{}:{}", peer.ip, peer.port).parse() {
@@ -1177,14 +1182,15 @@ mod tests {
             port: 6881,
             peer_id: None,
         };
-        assert!(peer_target_allowed(&peer));
+        assert!(peer_target_allowed(&peer, false));
         peer.ip = "127.0.0.1".to_string();
-        assert!(!peer_target_allowed(&peer));
+        assert!(!peer_target_allowed(&peer, false));
+        assert!(peer_target_allowed(&peer, true));
         peer.ip = "169.254.169.254".to_string();
-        assert!(!peer_target_allowed(&peer));
+        assert!(!peer_target_allowed(&peer, false));
         peer.ip = "8.8.8.8".to_string();
         peer.port = 0;
-        assert!(!peer_target_allowed(&peer));
+        assert!(!peer_target_allowed(&peer, true));
     }
 
     #[test]
