@@ -7,7 +7,7 @@
 > boundary.
 
 **Reviewed tree:** `c7ebe44`, plus the fixes in `b02dd33`, `3d32e8c`,
-`6c2193b`, `f897f5c`, and `db0902c`.
+`6c2193b`, `f897f5c`, `db0902c`, and `a514d5b`.
 **Method:** six parallel read-only reviews plus a direct frontend check. Every
 fixed item was traced against the source and covered by a focused test; open
 items are marked by verification level.
