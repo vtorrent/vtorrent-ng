@@ -111,6 +111,13 @@ pub struct Cli {
     #[arg(long, default_value_t = vtorrent_node::chain::DEFAULT_BLOCK_BODY_CACHE)]
     pub block_body_cache: usize,
 
+    /// Enable automatic VTR payments to torrent peers.
+    ///
+    /// Off by default: peer addresses are self-reported and payouts are not
+    /// yet bound to a verified bandwidth receipt.
+    #[arg(long, default_value_t = false)]
+    pub torrent_incentive_payments: bool,
+
     /// Optional API key required for sensitive RPC endpoints.
     ///
     /// Read from the environment rather than argv so it is not exposed in the

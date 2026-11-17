@@ -22,6 +22,22 @@ fn test_htlc_creation() {
 }
 
 #[test]
+fn test_htlc_rejects_an_expiry_above_the_script_locktime_limit() {
+    let error = Htlc::with_expiry(
+        [0u8; 32],
+        "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string(),
+        "VU3QSqAqM7tP3QXZ8sT7v8sQSdAxUZvqdS".to_string(),
+        MAX_SCRIPT_LOCKTIME + 1,
+        1,
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("maximum script locktime"),
+        "{error}"
+    );
+}
+
+#[test]
 fn test_htlc_script_not_empty() {
     let htlc = make_htlc();
     let script = htlc.build_script().unwrap();

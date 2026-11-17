@@ -31,6 +31,7 @@ fn missing_seed_scoped_btc_state_blocks_startup() {
     let dir = tempfile::tempdir().unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let rpc = listener.local_addr().unwrap().to_string();
+    drop(listener);
     let mut child = Command::new(env!("CARGO_BIN_EXE_vtorrent-daemon"))
         .args([
             "--regtest",
@@ -82,6 +83,7 @@ fn operator_new_seed_attestation_creates_seed_scoped_state() {
     let dir = tempfile::tempdir().unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let rpc = listener.local_addr().unwrap().to_string();
+    drop(listener);
     let mut child = Command::new(env!("CARGO_BIN_EXE_vtorrent-daemon"))
         .args([
             "--regtest",

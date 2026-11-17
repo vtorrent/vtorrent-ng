@@ -956,39 +956,45 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Periodic torrent incentive settlement — runs every 5 minutes.
-    let torrent_sessions_for_settlement = Arc::clone(&rpc_state.torrent_sessions);
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
-            vtorrent_torrent::incentive::PAYMENT_INTERVAL_SECS,
-        ));
-        loop {
-            interval.tick().await;
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            let mut guard = torrent_sessions_for_settlement.write().await;
-            let mut settled = 0;
-            for session in guard.sessions_mut() {
-                for account in session.incentive_accounts.values_mut() {
-                    if account.needs_settlement(now) {
-                        let (_earned, owed) = account.settle(now);
-                        if owed > 0 && !account.peer_address.is_empty() {
-                            payment_sender.emit(vtorrent_torrent::payment::PaymentDue {
-                                peer_address: account.peer_address.clone(),
-                                amount_satoshis: owed,
-                            });
+    if cli.torrent_incentive_payments {
+        // Periodic torrent incentive settlement — runs every 5 minutes.
+        let torrent_sessions_for_settlement = Arc::clone(&rpc_state.torrent_sessions);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
+                vtorrent_torrent::incentive::PAYMENT_INTERVAL_SECS,
+            ));
+            loop {
+                interval.tick().await;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let mut guard = torrent_sessions_for_settlement.write().await;
+                let mut settled = 0;
+                for session in guard.sessions_mut() {
+                    for account in session.incentive_accounts.values_mut() {
+                        if account.needs_settlement(now) {
+                            let (_earned, owed) = account.settle(now);
+                            if owed > 0 && !account.peer_address.is_empty() {
+                                payment_sender.emit(vtorrent_torrent::payment::PaymentDue {
+                                    peer_address: account.peer_address.clone(),
+                                    amount_satoshis: owed,
+                                });
+                            }
+                            settled += 1;
                         }
-                        settled += 1;
                     }
                 }
+                if settled > 0 {
+                    tracing::info!("Torrent incentive: settled {} peer accounts", settled);
+                }
             }
-            if settled > 0 {
-                tracing::info!("Torrent incentive: settled {} peer accounts", settled);
-            }
-        }
-    });
+        });
+    } else {
+        tracing::info!(
+            "Torrent incentive payments are disabled; peer addresses are self-reported and receipts are not enforced"
+        );
+    }
 
     // Bitcoin SPV sync — resolves DNS seeds and syncs headers in a loop.
     tokio::spawn(vtorrent_rpc::btc_sync::run_sync_loop(std::sync::Arc::new(
@@ -998,7 +1004,10 @@ async fn main() -> anyhow::Result<()> {
     let rpc_handle = tokio::spawn(async move {
         tracing::info!("RPC server starting on {}", rpc_addr);
         if let Err(e) = start_server(&rpc_addr, rpc_state).await {
-            tracing::error!("RPC server error: {}", e);
+            tracing::error!("RPC server failed: {}", e);
+            // A bind failure must not look like a clean shutdown: the process
+            // manager should restart the node, not leave it down.
+            std::process::exit(1);
         }
     });
 

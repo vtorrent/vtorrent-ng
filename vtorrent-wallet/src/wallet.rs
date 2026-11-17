@@ -23,6 +23,7 @@ const WALLET_FORMAT_VERSION: u32 = 1;
 /// The `Debug` impl redacts the WIF private key so a wallet can never be
 /// logged with key material exposed.
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WalletKeyEntry {
     /// The new-chain vTorrent address (starts with 'V').
     pub address: String,
@@ -77,6 +78,7 @@ pub struct WalletData {
 
 /// A cold-staking key pair and its raw P2CS script.
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ColdStakeKeys {
     /// The hot staking key (WIF) — export to the staking node.
     pub staking_wif: zeroize::Zeroizing<String>,

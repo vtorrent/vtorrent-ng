@@ -26,6 +26,7 @@ pub struct TotpSecret {
 
 /// The serializable form of an OTP configuration stored in the wallet file.
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OtpConfig {
     /// Base32-encoded TOTP secret (for QR code generation and backup).
     pub secret_base32: zeroize::Zeroizing<String>,

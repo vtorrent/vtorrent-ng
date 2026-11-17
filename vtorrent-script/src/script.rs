@@ -106,6 +106,15 @@ impl Script {
         }
     }
 
+    /// Whether the script contains only pushes and small integers, as BIP16
+    /// requires for a P2SH scriptSig.
+    pub fn is_push_only(&self) -> bool {
+        self.iter().all(|item| match item {
+            ScriptItem::PushData(_) => true,
+            ScriptItem::Opcode(op) => (0x4f..=0x60).contains(&op),
+        })
+    }
+
     /// Validate that every push-data length prefix fits within the script.
     ///
     /// A push whose declared length exceeds the remaining bytes makes
@@ -277,5 +286,17 @@ mod tests {
         let mut script = Script::new();
         script.push_int(0x80);
         assert_eq!(script.as_bytes(), &[0x02, 0x80, 0x00]);
+    }
+
+    #[test]
+    fn push_only_accepts_pushes_and_small_integers() {
+        let mut script = Script::new();
+        script.push_opcode(0x00);
+        script.push_opcode(0x51);
+        script.push_data(&[0xaa; 20]).unwrap();
+        assert!(script.is_push_only());
+
+        script.push_opcode(0x75); // OP_DROP
+        assert!(!script.is_push_only());
     }
 }

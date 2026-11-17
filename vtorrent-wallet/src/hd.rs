@@ -13,6 +13,7 @@ pub struct Mnemonic {
 /// The mnemonic is stored in a `Zeroizing<String>` to ensure it is zeroed on
 /// drop, preventing seed phrase recovery from freed heap memory.
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HdAccount {
     /// The BIP39 mnemonic phrase (space-separated words).
     pub mnemonic: zeroize::Zeroizing<String>,

@@ -1,6 +1,8 @@
 # Torrent Incentive Verification — Design
 
-Status: DRAFT (no consensus change; torrent protocol + accounting)
+Status: DRAFT (no consensus change; torrent protocol + accounting). Until this
+is implemented, automatic VTR payouts remain disabled by default
+(`--torrent-incentive-payments`).
 Scope: `vtorrent-torrent` (peer wire, incentive), `vtorrent-wallet-service`
 (payment), RPC/UI.
 Motivation: the headline feature — **pay peers for bandwidth** — is currently

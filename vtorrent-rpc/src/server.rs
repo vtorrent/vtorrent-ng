@@ -236,9 +236,9 @@ pub fn build_router(state: AppState) -> Router {
             ip_rate_limit,
         ));
 
-    Router::new()
-        .route("/api/v1/info", get(get_node_info))
-        .route("/api/v1/blockchain/height", get(get_block_height))
+    // Expensive read paths deserialize full blocks/txs and can allocate per
+    // request; rate-limit them by source IP as well.
+    let query_routes = Router::new()
         .route(
             "/api/v1/blockchain/block/height/:height",
             get(get_block_by_height),
@@ -246,15 +246,24 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/blockchain/block/:hash", get(get_block_by_hash))
         .route("/api/v1/blockchain/tx/:txid", get(get_transaction_by_id))
         .route("/api/v1/mempool", get(get_mempool))
+        .route("/api/v1/spv/proof/:hash", get(spv_get_proof))
+        .layer(middleware::from_fn_with_state(
+            Arc::clone(&state.rate_limiter),
+            ip_rate_limit,
+        ));
+
+    Router::new()
+        .route("/api/v1/info", get(get_node_info))
+        .route("/api/v1/blockchain/height", get(get_block_height))
         .route("/api/v1/fee/estimate", get(get_fee_estimate))
         .route("/api/v1/spv/status", get(get_spv_status))
-        .route("/api/v1/spv/proof/:hash", get(spv_get_proof))
         // `/ws` and `/metrics` stay public for the local UI and Prometheus.
         // Do not bind RPC to a public interface without a reverse proxy that
         // restricts them.
         .route("/ws", get(ws_handler))
         .route("/metrics", get(metrics_handler))
         .merge(public_routes)
+        .merge(query_routes)
         .merge(protected)
         .layer(cors)
         .with_state(state)

@@ -943,6 +943,23 @@ pub async fn create_cold_stake(
         &keys.spending_address,
         &spending_key_passphrase,
     )?;
+    // The export is the only copy of the spending key. Verify it decrypts
+    // before the wallet and registry advertise the script as fundable.
+    let (loaded_wif, loaded_address) = vtorrent_wallet::cold_stake_export::load_spending_key(
+        &export_path,
+        &spending_key_passphrase,
+    )
+    .map_err(|error| {
+        let _ = std::fs::remove_file(&export_path);
+        TauriError::from(error)
+    })?;
+    if loaded_wif.as_str() != keys.spending_wif.as_str() || loaded_address != keys.spending_address
+    {
+        let _ = std::fs::remove_file(&export_path);
+        return Err(TauriError::InvalidInput(
+            "Spending-key export did not round-trip; no keys were recorded".into(),
+        ));
+    }
     let script_hash = hex::encode(vtorrent_core::crypto::hash160(&keys.script_pubkey));
     if let Some(wallet_path) = wallet_path {
         vtorrent_wallet::cold_stake_registry::add(&wallet_path, &script_hash).map_err(|e| {

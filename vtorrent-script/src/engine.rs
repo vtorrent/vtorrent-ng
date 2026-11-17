@@ -100,6 +100,9 @@ impl Engine {
 
         // P2SH: if scriptPubKey is P2SH, execute the redeem script
         if is_p2sh(script_pubkey) {
+            if !script_sig.is_push_only() {
+                return Err(ScriptError::P2shScriptSigNotPushOnly);
+            }
             self.stack = stack_after_sig;
             let redeem_script_bytes = self.stack.pop().ok_or(ScriptError::EmptyStack)?;
             let redeem_script = Script::from_bytes(redeem_script_bytes)?;

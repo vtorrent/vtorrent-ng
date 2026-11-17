@@ -34,6 +34,10 @@ pub const MIN_HTLC_LOCKTIME: u32 = 3600;
 /// Maximum HTLC locktime: 7 days.
 pub const MAX_HTLC_LOCKTIME: u32 = 7 * 24 * 3600;
 
+/// Largest positive 4-byte script number the engine accepts for CLTV. Values
+/// above this would be encoded with the sign bit set and fail the refund path.
+pub const MAX_SCRIPT_LOCKTIME: u32 = 0x7FFF_FFFF;
+
 /// Fixed fee for VTR-side HTLC transactions (funding, claim, refund).
 ///
 /// The custom HTLC script is larger than a standard P2PKH input, so this is
@@ -109,6 +113,11 @@ impl Htlc {
                 "HTLC expiry overflow: timestamp + locktime exceeds u32::MAX".into(),
             )
         })?;
+        if expiry > MAX_SCRIPT_LOCKTIME {
+            return Err(NodeError::AtomicSwap(format!(
+                "HTLC expiry {expiry} exceeds the maximum script locktime {MAX_SCRIPT_LOCKTIME}"
+            )));
+        }
 
         Ok(Self {
             hash_lock,
@@ -131,6 +140,11 @@ impl Htlc {
     ) -> Result<Self> {
         if amount == 0 {
             return Err(NodeError::AtomicSwap("HTLC amount cannot be zero".into()));
+        }
+        if expiry > MAX_SCRIPT_LOCKTIME {
+            return Err(NodeError::AtomicSwap(format!(
+                "HTLC expiry {expiry} exceeds the maximum script locktime {MAX_SCRIPT_LOCKTIME}"
+            )));
         }
         if vtorrent_core::address::validate_p2pkh(&recipient).is_err() {
             return Err(NodeError::AtomicSwap(format!(
@@ -167,6 +181,12 @@ impl Htlc {
     /// OP_ENDIF
     /// ```
     pub fn build_script(&self) -> Result<Vec<u8>> {
+        if self.expiry > MAX_SCRIPT_LOCKTIME {
+            return Err(NodeError::AtomicSwap(format!(
+                "HTLC expiry {} exceeds the maximum script locktime {MAX_SCRIPT_LOCKTIME}",
+                self.expiry
+            )));
+        }
         let recipient_hash = address_to_hash160(&self.recipient).ok_or_else(|| {
             NodeError::AtomicSwap(format!("invalid recipient address: {}", self.recipient))
         })?;

@@ -234,6 +234,11 @@ impl Transaction {
     }
 }
 
+/// Serialized block framing: 120-byte header plus the transaction-vector
+/// length prefix. Block templates must budget for this in addition to the
+/// transaction payload.
+pub const BLOCK_FRAMING_BYTES: usize = 128;
+
 /// A block header.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockHeader {
@@ -651,6 +656,27 @@ mod tests {
             claim_size,
             bincode::serialized_size(&claim).unwrap() as usize,
             "serialized_size must match the wire encoding"
+        );
+    }
+
+    #[test]
+    fn block_framing_bytes_matches_the_wire_encoding() {
+        let block = Block {
+            header: BlockHeader {
+                version: 1,
+                prev_block_hash: [0; 32],
+                merkle_root: [0; 32],
+                utxo_root: [0; 32],
+                timestamp: 0,
+                bits: 0,
+                nonce: 0,
+                stake_modifier: 0,
+            },
+            transactions: Vec::new(),
+        };
+        assert_eq!(
+            bincode::serialized_size(&block).unwrap() as usize,
+            BLOCK_FRAMING_BYTES
         );
     }
 

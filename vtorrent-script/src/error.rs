@@ -8,6 +8,9 @@ pub enum ScriptError {
     #[error("Script execution failed: top of stack is false")]
     VerifyFailed,
 
+    #[error("P2SH scriptSig must be push-only")]
+    P2shScriptSigNotPushOnly,
+
     #[error("Invalid opcode: 0x{0:02x}")]
     InvalidOpcode(u8),
 

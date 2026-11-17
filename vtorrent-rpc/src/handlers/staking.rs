@@ -28,18 +28,40 @@ pub async fn persist_staking_intent(
             let bytes = serde_json::to_vec_pretty(&blob).map_err(|e| {
                 RpcError::Internal(format!("Staking intent serialize failed: {}", e))
             })?;
-            // Atomic write: a crash mid-write would otherwise leave a
-            // truncated staking.json that fails to parse on resume.
-            let tmp = path.with_extension("json.tmp");
-            std::fs::write(&tmp, &bytes)
-                .and_then(|()| std::fs::rename(&tmp, &path))
+            // Atomic, symlink-safe write: a predictable temp name could be
+            // pre-created as a symlink to wallet.json, and a crash mid-write
+            // would leave a truncated staking.json.
+            let parent = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| std::path::Path::new("."));
+            std::fs::create_dir_all(parent).map_err(|e| {
+                RpcError::Internal(format!("Could not create staking directory: {e}"))
+            })?;
+            let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(|e| {
+                RpcError::Internal(format!("Could not create staking temp file: {e}"))
+            })?;
+            use std::io::Write;
+            tmp.write_all(&bytes)
+                .and_then(|()| tmp.as_file().sync_all())
                 .map_err(|e| {
                     RpcError::Internal(format!(
                         "Could not persist staking intent to {}: {}",
                         path.display(),
                         e
                     ))
-                })
+                })?;
+            tmp.persist(&path).map_err(|e| {
+                RpcError::Internal(format!(
+                    "Could not publish staking intent to {}: {}",
+                    path.display(),
+                    e
+                ))
+            })?;
+            if let Ok(directory) = std::fs::File::open(parent) {
+                let _ = directory.sync_all();
+            }
+            Ok(())
         }
         None => {
             // Removal is best-effort: a missing file is the desired state.

@@ -274,14 +274,18 @@ impl TxBuilder {
         // Decode all signing keys. Secrets are held in Zeroizing buffers so
         // they are not left in freed heap memory after signing.
         let secp = Secp256k1::new();
-        let mut key_pairs: Vec<(zeroize::Zeroizing<[u8; 32]>, Vec<u8>)> = Vec::new(); // (secret_bytes, compressed_pubkey)
+        let mut key_pairs: Vec<(zeroize::Zeroizing<[u8; 32]>, Vec<u8>)> = Vec::new();
         for wif in &self.wif_keys {
             let key = vtorrent_core::keys::PrivateKey::from_wif(wif)
                 .map_err(|e| WalletError::Signing(e.to_string()))?;
             let secret_key = SecretKey::from_slice(key.as_bytes())
                 .map_err(|e| WalletError::Signing(e.to_string()))?;
             let pubkey = secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
-            let pubkey_bytes = pubkey.serialize().to_vec(); // compressed
+            let pubkey_bytes = if key.is_compressed() {
+                pubkey.serialize().to_vec()
+            } else {
+                pubkey.serialize_uncompressed().to_vec()
+            };
             key_pairs.push((zeroize::Zeroizing::new(*key.as_bytes()), pubkey_bytes));
         }
 
@@ -447,9 +451,15 @@ pub fn sign_custom_transaction(
     let secret_key =
         SecretKey::from_slice(key.as_bytes()).map_err(|e| WalletError::Signing(e.to_string()))?;
     let secp = Secp256k1::new();
-    let pubkey = secp256k1::PublicKey::from_secret_key(&secp, &secret_key)
-        .serialize()
-        .to_vec();
+    let pubkey = if key.is_compressed() {
+        secp256k1::PublicKey::from_secret_key(&secp, &secret_key)
+            .serialize()
+            .to_vec()
+    } else {
+        secp256k1::PublicKey::from_secret_key(&secp, &secret_key)
+            .serialize_uncompressed()
+            .to_vec()
+    };
 
     for (input_index, utxo) in input_utxos.iter().enumerate() {
         let (prev_txid, prev_vout) = {
@@ -485,9 +495,15 @@ pub fn sign_input_over_subscript(
     let secret_key =
         SecretKey::from_slice(key.as_bytes()).map_err(|e| WalletError::Signing(e.to_string()))?;
     let secp = Secp256k1::new();
-    let pubkey = secp256k1::PublicKey::from_secret_key(&secp, &secret_key)
-        .serialize()
-        .to_vec();
+    let pubkey = if key.is_compressed() {
+        secp256k1::PublicKey::from_secret_key(&secp, &secret_key)
+            .serialize()
+            .to_vec()
+    } else {
+        secp256k1::PublicKey::from_secret_key(&secp, &secret_key)
+            .serialize_uncompressed()
+            .to_vec()
+    };
 
     let sighash = tx.sighash(input_index, subscript);
     let signature = sign_input(key.as_bytes(), &sighash)?;
@@ -544,7 +560,15 @@ pub fn build_p2cs_spend(
     let secret_key =
         SecretKey::from_slice(key.as_bytes()).map_err(|e| WalletError::Signing(e.to_string()))?;
     let secp = Secp256k1::new();
-    let pubkey = secp256k1::PublicKey::from_secret_key(&secp, &secret_key).serialize();
+    let pubkey = if key.is_compressed() {
+        secp256k1::PublicKey::from_secret_key(&secp, &secret_key)
+            .serialize()
+            .to_vec()
+    } else {
+        secp256k1::PublicKey::from_secret_key(&secp, &secret_key)
+            .serialize_uncompressed()
+            .to_vec()
+    };
     if vtorrent_core::crypto::hash160(&pubkey) != spending_hash {
         return Err(WalletError::BuildError(
             "the supplied spending key does not match the P2CS script".into(),
@@ -837,6 +861,27 @@ mod tests {
             .build(&utxos)
             .unwrap_err();
         assert!(matches!(error, WalletError::BuildError(_)), "{error}");
+    }
+
+    #[test]
+    fn uncompressed_keys_can_spend_their_own_address() {
+        let key = PrivateKey::from_bytes([0x42; 32], false).unwrap();
+        let wif = key.to_wif(198);
+        let pubkey = key.public_key().unwrap();
+        let address = vtorrent_core::address::Address::from_pubkey(&pubkey, false, 70).to_string();
+        let script = p2pkh_script_pubkey(&address).unwrap();
+        let utxos = vec![make_utxo(10, 0, 1_000_000, script)];
+        let (_, recipient) = random_wif();
+
+        let tx = TxBuilder::new()
+            .recipient(&recipient, 500_000)
+            .fee_rate(10)
+            .sign_with_wif(&wif)
+            .build(&utxos)
+            .unwrap();
+        let script_sig = &tx.inputs[0].script_sig;
+        assert!(script_sig.len() >= 65);
+        assert_eq!(script_sig[script_sig.len() - 65], 0x04);
     }
 
     #[test]

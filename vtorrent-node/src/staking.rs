@@ -720,7 +720,7 @@ impl StakingEngine {
         // block past MAX_BLOCK_SIZE and be rejected on apply. The coinstake
         // itself counts toward the limit too.
         const MAX_BLOCK_SIZE: usize = 1_000_000;
-        let mut block_size = transactions[0].serialized_size();
+        let mut block_size = transactions[0].serialized_size() + crate::block::BLOCK_FRAMING_BYTES;
 
         for tx in pending_txs {
             let tx_size = tx.serialized_size();

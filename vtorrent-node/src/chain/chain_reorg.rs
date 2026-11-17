@@ -1,5 +1,5 @@
 use crate::{
-    block::{Block, Transaction},
+    block::{Block, Transaction, BLOCK_FRAMING_BYTES},
     consensus::{
         add_p2sh_sigops, check_stake_kernel_v2, compute_pos_reward_with, is_stakeable_with,
         validate_legacy_claim, validate_transaction, MAX_BLOCK_SIGOPS, MAX_BLOCK_SIZE, MAX_SUPPLY,
@@ -456,7 +456,7 @@ pub(crate) fn select_block_transactions(
         begin_governance_block(chain, height, timestamp, governance_active, &journal);
         validate_transaction(first_tx)?;
         let mut block_sigops = 0usize;
-        let mut size = first_tx.serialized_size();
+        let mut size = first_tx.serialized_size() + BLOCK_FRAMING_BYTES;
         if size > MAX_BLOCK_SIZE {
             return Err(NodeError::InvalidBlock(
                 "Template prefix exceeds block size limit".into(),

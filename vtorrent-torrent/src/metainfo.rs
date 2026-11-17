@@ -2,6 +2,13 @@ use crate::error::{Result, TorrentError};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 
+/// Upper bound for a torrent piece. Larger values force whole-piece
+/// allocations and disk reads per block request.
+pub const MAX_PIECE_LENGTH: u64 = 16 * 1024 * 1024;
+
+/// Upper bound for the piece count to keep scheduler bitfields bounded.
+pub const MAX_PIECE_COUNT: u64 = 1_000_000;
+
 /// A parsed .torrent file (BEP-3 metainfo).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Metainfo {
@@ -97,10 +104,10 @@ impl Metainfo {
 
         let name = get_string(info_dict, b"name")?;
         let piece_length = get_u64(info_dict, b"piece length")?;
-        if piece_length == 0 {
-            return Err(TorrentError::InvalidMetainfo(
-                "'piece length' cannot be zero".into(),
-            ));
+        if piece_length == 0 || piece_length > MAX_PIECE_LENGTH {
+            return Err(TorrentError::InvalidMetainfo(format!(
+                "'piece length' must be between 1 and {MAX_PIECE_LENGTH}"
+            )));
         }
 
         // Determine if single-file or multi-file
@@ -125,7 +132,9 @@ impl Metainfo {
                     _ => continue,
                 };
                 let length = get_u64(fd, b"length")?;
-                total = total.saturating_add(length);
+                total = total.checked_add(length).ok_or_else(|| {
+                    TorrentError::InvalidMetainfo("total torrent size overflows u64".into())
+                })?;
                 let path = get_string_list(fd, b"path")?;
                 files.push(TorrentFile {
                     path,
@@ -146,10 +155,10 @@ impl Metainfo {
         };
 
         let piece_count_u64 = total_size.div_ceil(piece_length);
-        if piece_count_u64 > u32::MAX as u64 {
-            return Err(TorrentError::InvalidMetainfo(
-                "piece count exceeds u32 range".into(),
-            ));
+        if piece_count_u64 > MAX_PIECE_COUNT {
+            return Err(TorrentError::InvalidMetainfo(format!(
+                "piece count exceeds the maximum of {MAX_PIECE_COUNT}"
+            )));
         }
         let piece_count = piece_count_u64 as u32;
 
@@ -710,6 +719,22 @@ mod tests {
 
         let result = Metainfo::from_bytes(&bencode);
         assert!(result.is_err(), "zero piece length must be rejected");
+    }
+
+    #[test]
+    fn test_oversized_piece_length_rejected() {
+        let pieces = [0x11u8; 20];
+        let mut bencode = Vec::new();
+        bencode
+            .extend_from_slice(b"d4:infod6:lengthi8e4:name4:test12:piece lengthi16777217e6:pieces");
+        bencode.extend_from_slice(format!("{}:", pieces.len()).as_bytes());
+        bencode.extend_from_slice(&pieces);
+        bencode.extend_from_slice(b"e8:announce15:http://tracker/e");
+
+        assert!(
+            Metainfo::from_bytes(&bencode).is_err(),
+            "oversized piece length must be rejected"
+        );
     }
 
     #[test]

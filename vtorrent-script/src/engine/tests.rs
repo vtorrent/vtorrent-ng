@@ -1264,6 +1264,31 @@ fn test_p2sh_roundtrip() {
         .execute(&script_sig, &script_pubkey)
         .expect("P2SH roundtrip should succeed");
 }
+
+#[test]
+fn test_p2sh_rejects_non_push_only_scriptsig() {
+    let mut redeem_script = Script::new();
+    redeem_script.push_opcode(0x51); // OP_1
+    let redeem_bytes = redeem_script.as_bytes().to_vec();
+    let script_hash: [u8; 20] = {
+        let sha = Sha256::digest(&redeem_bytes);
+        Ripemd160::digest(sha).into()
+    };
+    let mut script_pubkey = Script::new();
+    script_pubkey.push_opcode(0xa9);
+    script_pubkey.push_data(&script_hash).unwrap();
+    script_pubkey.push_opcode(0x87);
+
+    // OP_1 OP_DROP <redeem> leaves the redeem on top but is not push-only.
+    let mut script_sig = Script::new();
+    script_sig.push_opcode(0x51);
+    script_sig.push_opcode(0x75);
+    script_sig.push_data(&redeem_bytes).unwrap();
+
+    let mut engine = Engine::new(ScriptEnv::default());
+    let error = engine.execute(&script_sig, &script_pubkey).unwrap_err();
+    assert!(matches!(error, ScriptError::P2shScriptSigNotPushOnly));
+}
 #[test]
 fn test_cltv_passes_with_sufficient_sequence() {
     let mut script = Script::new();

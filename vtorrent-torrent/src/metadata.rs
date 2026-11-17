@@ -32,11 +32,24 @@ pub fn build_ut_vtr_address(address: &str) -> Vec<u8> {
 
 /// Parse a `ut_vtr` address message payload (the bencoded string).
 pub fn parse_ut_vtr_address(payload: &[u8]) -> Result<String> {
+    // This value becomes a per-peer map key and a payment recipient.
+    if payload.len() > 128 {
+        return Err(TorrentError::PeerWireError(
+            "ut_vtr address payload is too large".into(),
+        ));
+    }
     let value: Value = crate::bencode_guard::parse_untrusted(payload)
         .ok_or_else(|| TorrentError::PeerWireError("bencode nesting too deep".into()))?
         .map_err(TorrentError::PeerWireError)?;
     match value {
-        Value::Bytes(b) => Ok(String::from_utf8_lossy(&b).into_owned()),
+        Value::Bytes(b) => {
+            let address = String::from_utf8(b)
+                .map_err(|_| TorrentError::PeerWireError("ut_vtr is not UTF-8".into()))?;
+            vtorrent_core::address::validate_p2pkh(&address).map_err(|error| {
+                TorrentError::PeerWireError(format!("invalid ut_vtr address: {error}"))
+            })?;
+            Ok(address)
+        }
         _ => Err(TorrentError::PeerWireError("ut_vtr not a string".into())),
     }
 }
@@ -243,5 +256,13 @@ mod tests {
         let msg = build_ut_vtr_address(addr);
         let parsed = parse_ut_vtr_address(&msg).unwrap();
         assert_eq!(parsed, addr);
+    }
+
+    #[test]
+    fn test_ut_vtr_rejects_invalid_or_oversized_addresses() {
+        let invalid = build_ut_vtr_address("not-an-address");
+        assert!(parse_ut_vtr_address(&invalid).is_err());
+        let oversized = build_ut_vtr_address(&"V".repeat(129));
+        assert!(parse_ut_vtr_address(&oversized).is_err());
     }
 }
