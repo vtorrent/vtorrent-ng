@@ -26,6 +26,9 @@ pub enum StoreError {
     #[error("block not found: {0}")]
     BlockNotFound(String),
 
+    #[error("invalid block append: {0}")]
+    InvalidAppend(String),
+
     #[error("store is corrupted: {0}")]
     Corrupted(String),
 }

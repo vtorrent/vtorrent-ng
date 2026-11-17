@@ -266,6 +266,7 @@ fn decode_and_verify(
     backup_base64: &str,
     passphrase: &str,
     otp_code: Option<&str>,
+    consume_otp: bool,
 ) -> Result<(BackupBundle, Wallet, Vec<String>)> {
     if backup_base64.len() > MAX_BACKUP_BYTES * 2 {
         return Err(TauriError::InvalidInput("Backup file is too large".into()));
@@ -334,7 +335,12 @@ fn decode_and_verify(
         rand::random::<u32>()
     ));
     write_private(&temp_path, &wallet_bytes)?;
-    let wallet = Wallet::load(&temp_path, passphrase, otp_code).map_err(|error| {
+    let wallet = if consume_otp {
+        Wallet::load(&temp_path, passphrase, otp_code)
+    } else {
+        Wallet::load_verify_only(&temp_path, passphrase, otp_code)
+    }
+    .map_err(|error| {
         let _ = std::fs::remove_file(&temp_path);
         TauriError::InvalidInput(format!("Backup wallet could not be opened: {error}"))
     })?;
@@ -423,6 +429,7 @@ pub fn verify_backup(
         &backup_base64,
         passphrase.as_str(),
         otp_code.as_ref().map(|code| code.as_str()),
+        false,
     )?;
     Ok(preview(&bundle, &wallet, files))
 }
@@ -447,6 +454,7 @@ pub fn restore_backup(
         &backup_base64,
         passphrase.as_str(),
         otp_code.as_ref().map(|code| code.as_str()),
+        true,
     )?;
 
     let app_data_dir =

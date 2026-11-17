@@ -260,6 +260,13 @@ impl SchedulerState {
         }
     }
 
+    /// Whether a block offset is currently leased to some peer task.
+    pub fn is_block_requested(&self, piece: u32, begin: u32) -> bool {
+        self.requested_blocks
+            .get(&piece)
+            .is_some_and(|leases| leases.iter().any(|(leased, _)| *leased == begin))
+    }
+
     /// Mark a piece as fully downloaded, clearing any in-flight block tracking
     /// for it so `requested_blocks` does not leak stale offsets.
     pub fn mark_have(&mut self, index: u32) {
@@ -373,6 +380,17 @@ mod tests {
 
         // All blocks requested; no more.
         assert!(state.next_block(&piece_len).is_none());
+    }
+
+    #[test]
+    fn unsolicited_blocks_are_not_considered_requested() {
+        let mut state = SchedulerState::new(1);
+        state.tracker.set_peer_bitfield([1u8; 20], &[0x80]);
+        let piece_len = |_index: u32| 40 * 1024u64;
+        let (piece, begin, _) = state.next_block(&piece_len).unwrap();
+        assert!(state.is_block_requested(piece, begin));
+        assert!(!state.is_block_requested(piece, begin + 1));
+        assert!(!state.is_block_requested(piece + 1, begin));
     }
 
     #[test]

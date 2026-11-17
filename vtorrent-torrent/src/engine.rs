@@ -829,6 +829,19 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
             }
             Ok(PeerMessage::Piece { index, begin, data }) => {
                 in_flight = in_flight.saturating_sub(1);
+                let requested = scheduler
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_block_requested(index, begin);
+                if !requested {
+                    tracing::debug!(
+                        "Ignoring unsolicited block {}:{} from {}",
+                        index,
+                        begin,
+                        addr
+                    );
+                    continue;
+                }
                 // NOTE: the block's in-flight lease is intentionally kept until
                 // the piece completes (`mark_have`) or the lease expires. The
                 // block data lives only in this peer task's assembler, so

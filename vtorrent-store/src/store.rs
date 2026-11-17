@@ -198,6 +198,22 @@ impl BlockStore {
         let block_hash = block.hash();
         let hash_hex = hex::encode(block_hash);
 
+        let current_height = self.best_height()?;
+        let current_hash = self.best_hash()?;
+        if height <= current_height {
+            if height == current_height && current_hash == Some(block_hash) {
+                return Ok(());
+            }
+            return Err(StoreError::InvalidAppend(format!(
+                "block height {height} does not extend tip {current_height}"
+            )));
+        }
+        if height != current_height + 1 {
+            return Err(StoreError::InvalidAppend(format!(
+                "block height {height} is not the next height after {current_height}"
+            )));
+        }
+
         let block_bytes = serde_json::to_vec(block)?;
 
         let write_txn = self.db.begin_write()?;
@@ -803,6 +819,7 @@ impl BlockStore {
         {
             let mut height_idx = write_txn.open_table(HEIGHT_INDEX)?;
             let mut blocks = write_txn.open_table(BLOCKS)?;
+            let keep_hash = height_idx.get(keep)?.map(|value| value.value().to_string());
             let doomed: Vec<(u32, String)> = height_idx
                 .range(keep + 1..)?
                 .filter_map(|r| r.ok().map(|(k, v)| (k.value(), v.value().to_string())))
@@ -810,6 +827,18 @@ impl BlockStore {
             for (h, hash_hex) in doomed {
                 blocks.remove(hash_hex.as_str())?;
                 height_idx.remove(h)?;
+            }
+
+            let mut meta = write_txn.open_table(META)?;
+            let keep_str = keep.to_string();
+            meta.insert("best_height", keep_str.as_str())?;
+            match keep_hash {
+                Some(hash) => {
+                    meta.insert("best_hash", hash.as_str())?;
+                }
+                None => {
+                    meta.remove("best_hash")?;
+                }
             }
         }
         write_txn.commit()?;
@@ -849,10 +878,21 @@ impl BlockStore {
         from: u32,
         to: u32,
     ) -> Result<()> {
+        if from > to {
+            return Ok(());
+        }
+        let mut blocks = Vec::with_capacity((to - from + 1) as usize);
         for h in from..=to {
             let block = self.get_block_at_height(h)?.ok_or_else(|| {
                 StoreError::Corrupted(format!("missing block at height {} during rebuild", h))
             })?;
+            blocks.push((h, block));
+        }
+        // Re-append from a clean height index: the caller kept a prefix for
+        // replay, but its derived state was cleared and the append guard
+        // rejects overwriting existing heights.
+        self.truncate_above(0)?;
+        for (h, block) in blocks {
             let acceptance = chain.add_block(block.clone()).map_err(|e| {
                 StoreError::Corrupted(format!("rebuild replay failed at height {}: {}", h, e))
             })?;

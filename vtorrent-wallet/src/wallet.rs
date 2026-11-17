@@ -232,6 +232,27 @@ impl Wallet {
     /// Load and decrypt a wallet from a file path.
     /// If 2FA is enabled, `otp_code` must be provided to verify.
     pub fn load(path: &std::path::Path, passphrase: &str, otp_code: Option<&str>) -> Result<Self> {
+        Self::load_inner(path, passphrase, otp_code, true)
+    }
+
+    /// Load and verify a wallet without consuming the TOTP step.
+    ///
+    /// Used for read-only checks such as backup previews so a subsequent
+    /// restore can use the same code.
+    pub fn load_verify_only(
+        path: &std::path::Path,
+        passphrase: &str,
+        otp_code: Option<&str>,
+    ) -> Result<Self> {
+        Self::load_inner(path, passphrase, otp_code, false)
+    }
+
+    fn load_inner(
+        path: &std::path::Path,
+        passphrase: &str,
+        otp_code: Option<&str>,
+        consume_otp: bool,
+    ) -> Result<Self> {
         let json = std::fs::read_to_string(path).map_err(|e| WalletError::Io(e.to_string()))?;
         let wallet_file: WalletFile =
             serde_json::from_str(&json).map_err(|e| WalletError::Serialization(e.to_string()))?;
@@ -259,12 +280,15 @@ impl Wallet {
                 let step = config
                     .verify_step(code)?
                     .ok_or(WalletError::OtpInvalidCode)?;
-                replay_guard = Some(config.consume_step(path, step, data.last_totp_step)?);
-                data.last_totp_step = Some(step);
+                if consume_otp {
+                    replay_guard = Some(config.consume_step(path, step, data.last_totp_step)?);
+                    data.last_totp_step = Some(step);
+                }
             }
         }
 
-        let used_otp = data.last_totp_step.is_some()
+        let used_otp = consume_otp
+            && data.last_totp_step.is_some()
             && data
                 .otp_config
                 .as_ref()
@@ -282,7 +306,16 @@ impl Wallet {
                     "wallet changed during TOTP verification".into(),
                 ));
             }
-            wallet.save(path)?;
+            // The account-scoped replay sidecar already consumed this step.
+            // A read-only disk must not turn that into an unopenable wallet;
+            // the next unlock uses a fresh code.
+            if let Err(error) = wallet.save(path) {
+                tracing::warn!(
+                    wallet = %path.display(),
+                    %error,
+                    "Could not persist the consumed TOTP step into the wallet"
+                );
+            }
         }
         drop(replay_guard);
         Ok(wallet)

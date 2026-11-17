@@ -26,6 +26,10 @@ items are marked by verification level.
 | Medium | VTR HTLCs with an expiry at or above `0x8000_0000` (2038-01-19) produce a negative CLTV number and an unrefundable maker output. | Construction rejects expiry above `MAX_SCRIPT_LOCKTIME`; test covers `with_expiry`. Full post-2038 support still requires a script-number change. |
 | Medium | Torrent `piece length` was unbounded and `piece count` could reach `u32::MAX`, forcing whole-piece allocations and huge bitfields. | `MAX_PIECE_LENGTH` is 16 MiB, `MAX_PIECE_COUNT` is 1,000,000, and multi-file totals use checked addition. Oversized-piece test added. |
 | Low | Nested wallet types (`WalletKeyEntry`, `ColdStakeKeys`, `OtpConfig`, `HdAccount`) still accepted unknown fields. | `deny_unknown_fields` added so future fields fail to load instead of being silently stripped on re-save. |
+| Medium | A stale buffered `NewBlock` could regress the store tip and leave the height index inconsistent, bricking startup. | `append_block` now accepts only the next height (or an identical tip append); rebuild/replay resets metadata before reappending. Store tests cover divergence healing, tail reconciliation, and missing/extra UTXO repair. |
+| Medium | `verify_backup` consumed the TOTP step, so Verify followed by Restore within 30 seconds failed as a replay. | Added `Wallet::load_verify_only`; backup preview verifies the code without consuming it, while restore still consumes the step. |
+| Medium | `Wallet::load` treated a failed TOTP re-save as fatal after the step was consumed, leaving the wallet unopenable on a read-only disk. | The wallet is returned with a warning; the account-scoped replay sidecar still enforces one-time use. |
+| Medium | Unsolicited torrent `Piece` messages were accepted and credited without a matching request. | The engine now drops a block unless its `(piece, begin)` is leased; a scheduler test covers requested versus unsolicited offsets. |
 
 ## Open findings
 
@@ -60,9 +64,8 @@ items are marked by verification level.
 
 ### Torrent protocol
 
-9. **High — unsolicited `Piece` messages are still accepted and credited**, and
-   no receive timeout exists. Disabling payouts removes the immediate fund risk,
-   but a silent peer can still pin a task and block resume persistence.
+9. **Partially fixed — unsolicited pieces are rejected**, but no receive timeout
+   exists. A silent peer can still pin a task and block resume persistence.
 10. **Medium — a 16 MiB bitfield costs ~1 s of CPU per message**, and `Cancel`
     clears other peers' leases.
 
@@ -78,25 +81,21 @@ items are marked by verification level.
 
 ### RPC, daemon, and wallet
 
-14. **Medium — `append_block` has no monotonicity guard**, so a stale buffered
-    `NewBlock` can regress `best_height` and brick startup.
+14. **Fixed — store append monotonicity.** See the fixed table.
 15. **Medium — backups containing BTC state cannot be restored**; the restore
     path refuses both the existing-state and fresh-state branches by design but
     with the same terminal error.
-16. **Medium — `verify_backup` consumes the TOTP step**, so Verify followed by
-    Restore within 30 seconds fails with "OTP already used".
-17. **Medium — `Wallet::load` re-saves the wallet on every 2FA unlock**; a
-    read-only disk or full volume burns the code and leaves the wallet
-    unopenable.
+16. **Fixed — backup verification no longer consumes the TOTP step.**
+17. **Fixed — a failed TOTP re-save is non-fatal.**
 18. **Low — `/ws` skips its origin allow-list when `Origin` is absent**, and
     Tauri `probe_seed_peers` lets injected JS scan localhost/LAN services.
 
 ## Verification
 
-Focused verification: 97 script tests, 247 node tests, 114 torrent tests, 73
-wallet tests, 203 RPC tests, 33 Tauri tests, 10 wallet-service tests, and
-`cargo fmt`/Clippy on the changed crates. The full workspace suite passed
-**1,432 tests, 0 failures, 11 ignored**.
+Focused verification: 97 script tests, 247 node tests, 115 torrent tests, 73
+wallet tests, 203 RPC tests, 33 Tauri tests, 10 wallet-service tests, 16 store
+tests, and `cargo fmt`/Clippy on the changed crates. The full workspace suite
+passed **1,433 tests, 0 failures, 11 ignored**.
 
 ## Verdict
 
