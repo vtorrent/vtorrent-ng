@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `99b02fc`
+Subject: Independent security review — vTorrent-NG mainnet candidate `8fed10c`
 
 Hello,
 
@@ -18,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `99b02fcab603cb568f7499c00e408c161206916a`
+**Review head:** `8fed10cc2df87eaef3652948ad56f0f518759be2`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `99b02fc`. It is not covered by any prior soak: the
+The code under review is `8fed10c`. It is not covered by any prior soak: the
 `6a49727` fleet predates every change below and was interrupted by a host
 restart on 2026-11-16. The eventual shipping image needs its own full window
 after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 code changed after the candidate with
-`git diff --name-only 99b02fc..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only 8fed10c..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -126,6 +126,9 @@ candidate `ba46fd6`:
   timestamp grinding and CLTV drift.
 - `99b02fc` — the kernel denominator now counts only stake inside the age
   window, preventing block-rate decay from aged-out coins.
+- `8fed10c` — a failed funding admission reverts the order instead of leaving
+  it stuck; the taker's VTR claim is submitted automatically after the observed
+  BTC claim.
 
 Four internal AI-assisted supplementary reviews are recorded in
 `docs/2026-11-17_ai-supplementary-review.md`,
@@ -139,8 +142,9 @@ CSP fixes in `9f3d4e9`, the wallet, script, and operations batch in `f0013bb`,
 the fourth-pass fixes in `b02dd33`, the store/backup/torrent hardening in
 `3d32e8c`, the SPV/P2P/WS/funding hardening in `6c2193b`, the torrent/BTC/
 overlay fixes in `f897f5c`, the container hardening in `db0902c`, the
-timestamp-drift bound in `a514d5b`, and the eligible-stake denominator in
-`99b02fc`. They are not independent review and do not count for this gate.
+timestamp-drift bound in `a514d5b`, the eligible-stake denominator in
+`99b02fc`, and the swap rollback/auto-claim in `8fed10c`. They are not
+independent review and do not count for this gate.
 
 Earlier in this round, from `b729e36` through `ba46fd6`:
 
@@ -275,7 +279,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `99b02fcab603cb568f7499c00e408c161206916a`
+- Confirm the review head is still `8fed10cc2df87eaef3652948ad56f0f518759be2`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.
