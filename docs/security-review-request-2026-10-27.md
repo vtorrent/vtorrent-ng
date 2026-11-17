@@ -10,7 +10,7 @@ already accepted so it is not re-litigated.
 
 ## Review target
 
-Review the candidate `089e7c1cc95dde2ff6005e3c324c74549adde342`. This is the current review head. It is **not**
+Review the candidate `9f3d4e9eb9e9f6c591a84e3f47a9c61b005f1358`. This is the current review head. It is **not**
 covered by any prior soak: the `6a49727` fleet predates the fund-safety and
 recovery changes below and was interrupted by a host restart on 2026-11-16.
 Under the soak provenance policy, the shipping image needs its own full window
@@ -18,8 +18,8 @@ after this review and its fixes settle.
 
 Read this document from the tip of `main`. Confirm that no code changed after
 the candidate with
-`git diff --name-only 089e7c1..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
-must return nothing. Check out `089e7c1` itself when running the verification
+`git diff --name-only 9f3d4e9..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+must return nothing. Check out `9f3d4e9` itself when running the verification
 commands. The tables below record the earlier deltas. The table after the
 `f8e0162` deltas covers the range from `ba46fd6` to the candidate.
 
@@ -98,6 +98,7 @@ Deltas after `ba46fd6`:
 | `aacf371` | Legacy BDB page offsets and dump parsing; 32 MiB import cap |
 | `20e3fe6` | BDB overflow reconstruction and fixtures; atomic TOTP replay state; torrent write claim; seed key ownership and container test; multisig boundary tests |
 | `089e7c1` | Legacy 20,000 block sigop limit at validation, application, mempool, and template selection; raw oversized-script counting; same-block P2SH regression test |
+| `9f3d4e9` | Cold-stake exports in backups; wallet version/unknown-field rejection; snapshot integrity checks; BTC staging confirmations and provenance; mainnet RPC key requirement; release CORS narrowing; CSP and font cleanup; real-wallet check harness |
 
 Deltas after the earlier review head:
 
@@ -149,7 +150,7 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout 089e7c1cc95dde2ff6005e3c324c74549adde342
+git checkout 9f3d4e9eb9e9f6c591a84e3f47a9c61b005f1358
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
@@ -157,7 +158,7 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 cargo test --workspace --all-features
 ```
 
-The `089e7c1` workspace run passed 54 test groups and 1,407 tests with 0
+The `9f3d4e9` workspace run passed 53 test groups and 1,420 tests with 0
 failures and 11 ignored. CI repeats the `--all-features` suite on every push.
 Set `VTORRENT_TOTP_STATE_DIR` to a fresh directory before running the suite so
 the host-scoped TOTP replay state does not collide with an existing
@@ -254,7 +255,8 @@ Added with `ff148fd` and `35ea52e`:
   temp handling, cold-stake debug redaction, and release/seed hardening in
   `8f7fe14` and `49d56d2`. The initial BDB parsing fix is in `aacf371`; the
   follow-up recovery, TOTP, torrent, and seed fixes are in `20e3fe6`, and the
-  block sigop limit is in `089e7c1`. It is **not** independent review.
+  block sigop limit is in `089e7c1`, and the wallet, snapshot, staging, RPC,
+  and CSP fixes are in `9f3d4e9`. It is **not** independent review.
 
 ## Status
 
@@ -266,7 +268,7 @@ Added with `ff148fd` and `35ea52e`:
   swap preserved across a maker restart, BTC claim with six confirmations, and
   a separate taker node broadcasting the VTR claim.
 - CI runs the workspace suite with `--all-features` on every push. The last
-  counted local run on the review head was 54 groups and 1,407 tests, zero
+  counted local run on the review head was 53 groups and 1,420 tests, zero
   failures, with 11 ignored: seven need a Bitcoin Core container, two are manual
   release-mode governance experiments, one is a mainnet-scale header-retention
   test, and one is a doctest. The whole-tree review remediation is documented in
