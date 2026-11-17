@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `49d56d2`
+Subject: Independent security review — vTorrent-NG mainnet candidate `20e3fe6`
 
 Hello,
 
@@ -18,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `49d56d23b1fc0ac5197f2b6df284b76e648a5919`
+**Review head:** `20e3fe60eb9882f1db2cbe7cd876a7d26008f839`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `49d56d2`. It is not covered by any prior soak: the
+The code under review is `20e3fe6`. It is not covered by any prior soak: the
 `6a49727` fleet predates every change below and was interrupted by a host
 restart on 2026-11-16. The eventual shipping image needs its own full window
 after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 code changed after the candidate with
-`git diff --name-only 49d56d2..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only 20e3fe6..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -85,14 +85,20 @@ candidate `ba46fd6`:
 - `49d56d2` — multisig is capped at 20 keys; wallet saves use unique temps and
   clean up on failure; cold-stake WIFs are redacted from `Debug`; the desktop
   refund-fee form sends the passphrase and 2FA code.
+- `aacf371` — legacy BDB page offsets corrected and dump parsing made
+  section-aware; desktop import capped at 32 MiB.
+- `20e3fe6` — BDB overflow values reconstructed and covered by real fixtures;
+  TOTP replay state replaced atomically; torrent pieces publish only after a
+  successful write; seed key ownership and a container test; multisig boundary
+  tests.
 
 Three internal AI-assisted supplementary reviews are recorded in
-`docs/2026-11-17_ai-supplementary-review.md` and
-`docs/2026-11-17_ai-supplementary-review-pass2.md` and
+`docs/2026-11-17_ai-supplementary-review.md`,
+`docs/2026-11-17_ai-supplementary-review-pass2.md`, and
 `docs/2026-11-17_ai-supplementary-review-pass3.md`. They found and fixed the
 desktop authorization defects above, the torrent credit replay, the multisig
-DoS cap, and release/seed hardening. They are not independent review and do not
-count for this gate.
+DoS cap, release/seed hardening, and the recovery fixes in `20e3fe6`. They are
+not independent review and do not count for this gate.
 
 Earlier in this round, from `b729e36` through `ba46fd6`:
 
@@ -227,7 +233,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `49d56d23b1fc0ac5197f2b6df284b76e648a5919`
+- Confirm the review head is still `20e3fe60eb9882f1db2cbe7cd876a7d26008f839`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.
