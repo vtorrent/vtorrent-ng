@@ -605,6 +605,41 @@ impl BtcWallet {
         Ok(released || spent)
     }
 
+    /// Release the reserved input but keep the swap contract.
+    ///
+    /// Used when a partial scan cannot prove the funding transaction absent:
+    /// the outpoint is freed, while `refund_raw` and the HTLC terms stay for a
+    /// later covered scan or manual recovery.
+    pub fn release_swap_input_keep_contract(&self, order_id: &str) -> Result<bool> {
+        let mut set = self.utxos.lock();
+        let Some(contract) = set.swap_contract(order_id).cloned() else {
+            return Ok(false);
+        };
+        let (Some(txid), Some(vout)) = (contract.input_txid.clone(), contract.input_vout) else {
+            return Ok(false);
+        };
+        let previous = set.clone();
+        let reserved = set.reserved_utxo(&txid, vout).cloned();
+        let spent = set.was_reserved_spent(&txid, vout);
+        let released = set.release(&txid, vout);
+        if released && !spent {
+            if let Some(utxo) = reserved {
+                set.add(utxo);
+            }
+        }
+        if let Some(path) = &self.utxo_path {
+            if let Err(error) = set.save(path) {
+                if !crate::utxo::save_may_have_committed(&error) {
+                    *set = previous;
+                }
+                return Err(crate::error::BtcError::Bitcoin(format!(
+                    "Could not persist BTC reservation release: {error}"
+                )));
+            }
+        }
+        Ok(released || spent)
+    }
+
     pub fn record_swap_refund(&self, order_id: &str, raw: &[u8]) -> Result<()> {
         let mut set = self.utxos.lock();
         let mut contract = set.swap_contract(order_id).cloned().ok_or_else(|| {

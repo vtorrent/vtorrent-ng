@@ -664,7 +664,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
             let piece_len = |index: u32| piece_length(&metainfo, index);
             let (piece, begin, len) = {
                 let mut sched = scheduler.lock().unwrap_or_else(|e| e.into_inner());
-                match sched.next_block(&piece_len) {
+                match sched.next_block(&piece_len, conn.remote_peer_id) {
                     Some(b) => b,
                     None => break,
                 }
@@ -842,7 +842,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                 scheduler
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .clear_block(index, begin);
+                    .clear_block(index, begin, conn.remote_peer_id);
             }
             Ok(PeerMessage::Piece { index, begin, data }) => {
                 in_flight = in_flight.saturating_sub(1);

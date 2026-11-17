@@ -36,6 +36,9 @@ items are marked by verification level.
 | Medium | Torrent `recv` had no deadline and accepted repeated bitfields up to 16 MiB, each costing a full per-bit walk. | A message must complete within 180 seconds; only the first bitfield is accepted and it may not exceed `ceil(piece_count/8)` bytes. |
 | Low | `/ws` skipped its origin allow-list when the header was absent, and the Tauri seed probe could scan loopback/LAN services. | `/ws` now requires an allowed Origin. The probe rejects loopback, private, link-local, multicast, and unspecified targets; its test asserts loopback filtering. |
 | Medium | Two concurrent matches could select the same confirmed VTR outpoint because coin selection ignored the mempool. | Funding selection and admission are serialized by a dedicated lock, and candidates spent by a mempool transaction are filtered out. The order is still marked `Matched` before admission, so a later non-conflict admission failure remains possible. |
+| Medium | A `Cancel` from one peer cleared another peer's in-flight block lease. | Leases now record the owning peer id; `clear_block` removes only the caller's lease. A test covers owner versus non-owner cancellation. |
+| Medium | A partial BTC scan treated an old funding transaction as absent and deleted the refund record. | When the scan does not start at genesis, the reserved input is released but the contract and `refund_raw` are retained for a later covered scan or manual recovery. |
+| Medium | One host could fill the overlay session table with unauthenticated punches. | Inbound sessions are capped at eight per source IP, in addition to the global cap. |
 
 ## Open findings
 
@@ -56,8 +59,8 @@ items are marked by verification level.
 
 ### P2P, overlay, and SPV
 
-4. **High — unauthenticated overlay punches can fill all 125 peer slots** for
-   the one-hour session TTL, isolating the node.
+4. **Partially fixed — overlay sessions are capped at eight per source IP**;
+   distributed sources can still fill the global table for the session TTL.
 5. **Partially fixed — peer dials are now bounded** to 3 seconds and four per
    tick; fully asynchronous dialing is still needed to remove the event-loop
    stall.
@@ -70,8 +73,8 @@ items are marked by verification level.
 
 ### Torrent protocol
 
-9. **Partially fixed — unsolicited pieces, repeated bitfields, and idle
-   receives are handled.** Per-peer cancel ownership remains open.
+9. **Fixed — unsolicited pieces, repeated bitfields, idle receives, and
+   cross-peer cancellation are handled.** See the fixed table.
 10. **Medium — a 16 MiB bitfield costs ~1 s of CPU per message**, and `Cancel`
     clears other peers' leases.
 
@@ -80,9 +83,9 @@ items are marked by verification level.
 11. **Partially fixed — funding selection is serialized and mempool-aware**,
     but a non-conflict admission failure after `Matched` can still wedge the
     order.
-12. **Medium — the bounded 1,008-block scan is treated as proof of no BTC
-    funding**, and a confirmed funding tx below the window can cause the refund
-    record to be deleted.
+12. **Partially fixed — a partial BTC scan keeps the contract and refund
+    record** while releasing the input; a covered scan is still required to
+    clear it safely.
 13. **Medium — no automatic VTR claim after the maker's BTC claim.** An idle
     taker can lose the BTC leg.
 
@@ -99,10 +102,11 @@ items are marked by verification level.
 
 ## Verification
 
-Focused verification: 97 script tests, 247 node tests, 115 torrent tests, 73
+Focused verification: 97 script tests, 247 node tests, 116 torrent tests, 73
 wallet tests, 203 RPC tests, 33 Tauri tests, 10 wallet-service tests, 16 store
-tests, 44 SPV tests, and `cargo fmt`/Clippy on the changed crates. The full
-workspace suite passed **1,435 tests, 0 failures, 11 ignored**.
+tests, 44 SPV tests, 224 BTC tests, 33 overlay tests, and `cargo fmt`/Clippy on
+the changed crates. The full workspace suite passed **1,436 tests, 0 failures,
+11 ignored**.
 
 ## Verdict
 

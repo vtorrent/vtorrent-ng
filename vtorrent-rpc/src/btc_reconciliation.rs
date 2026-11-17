@@ -329,6 +329,32 @@ pub async fn release_expired_reservations(state: &AppState) -> usize {
                 continue;
             }
         };
+        // A partial scan cannot prove an old funding tx absent. Free the
+        // reserved input, but keep the contract so a later covered scan can
+        // still refund or recover it.
+        if scan.funding.is_none() && scan.scan_start > 0 {
+            let btc = state.btc_wallet.read().await;
+            let Some(wallet) = btc.as_ref() else {
+                break;
+            };
+            match wallet.release_swap_input_keep_contract(&contract.order_id) {
+                Ok(true) => {
+                    released += 1;
+                    tracing::info!(
+                        order_id = %contract.order_id,
+                        scan_start = scan.scan_start,
+                        "Released BTC input reservation; kept contract because the scan is partial"
+                    );
+                }
+                Ok(false) => {}
+                Err(error) => tracing::warn!(
+                    order_id = %contract.order_id,
+                    error = %error,
+                    "Could not persist partial-scan BTC reservation release"
+                ),
+            }
+            continue;
+        }
         // Only release when the funding tx is provably not confirmed.
         if !scan_proves_unfunded(&scan) {
             tracing::info!(

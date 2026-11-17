@@ -184,7 +184,7 @@ pub struct SchedulerState {
     /// Blocks currently in flight: piece index -> (begin offset, lease time).
     /// Leases expire after `BLOCK_LEASE_TIMEOUT` so blocks lost to a choked,
     /// disconnected, or stalled peer are automatically re-requestable.
-    requested_blocks: HashMap<u32, Vec<(u32, Instant)>>,
+    requested_blocks: HashMap<u32, Vec<(u32, [u8; 20], Instant)>>,
     pub(crate) writing_pieces: std::collections::HashSet<u32>,
 }
 
@@ -211,7 +211,7 @@ impl SchedulerState {
         let mut expired_pieces: Vec<u32> = Vec::new();
         for (piece, leases) in self.requested_blocks.iter_mut() {
             let before = leases.len();
-            leases.retain(|(_, leased_at)| now.duration_since(*leased_at) < BLOCK_LEASE_TIMEOUT);
+            leases.retain(|(_, _, leased_at)| now.duration_since(*leased_at) < BLOCK_LEASE_TIMEOUT);
             if leases.len() != before {
                 expired_pieces.push(*piece);
             }
@@ -227,7 +227,11 @@ impl SchedulerState {
     /// Picks the rarest piece we don't have, then the next unrequested block
     /// within that piece. `piece_len` maps a piece index to its byte length.
     /// Returns `None` when no block is available.
-    pub fn next_block(&mut self, piece_len: &dyn Fn(u32) -> u64) -> Option<(u32, u32, u32)> {
+    pub fn next_block(
+        &mut self,
+        piece_len: &dyn Fn(u32) -> u64,
+        peer: [u8; 20],
+    ) -> Option<(u32, u32, u32)> {
         self.purge_expired_leases();
         let piece = self.tracker.next_piece()?;
         let len = piece_len(piece);
@@ -236,11 +240,11 @@ impl SchedulerState {
         let requested = self.requested_blocks.entry(piece).or_default();
         for block in 0..total_blocks {
             let begin = (block * block_size) as u32;
-            if requested.iter().any(|&(b, _)| b == begin) {
+            if requested.iter().any(|&(b, _, _)| b == begin) {
                 continue;
             }
             let block_len = (len - block * block_size).min(block_size) as u32;
-            requested.push((begin, Instant::now()));
+            requested.push((begin, peer, Instant::now()));
             return Some((piece, begin, block_len));
         }
         // All blocks of this piece are in flight; mark the piece requested so
@@ -250,9 +254,9 @@ impl SchedulerState {
     }
 
     /// Mark a block as no longer in flight (e.g. on cancel).
-    pub fn clear_block(&mut self, piece: u32, begin: u32) {
+    pub fn clear_block(&mut self, piece: u32, begin: u32, peer: [u8; 20]) {
         if let Some(leases) = self.requested_blocks.get_mut(&piece) {
-            leases.retain(|&(b, _)| b != begin);
+            leases.retain(|&(b, owner, _)| b != begin || owner != peer);
             if leases.is_empty() {
                 self.requested_blocks.remove(&piece);
                 self.tracker.clear_requested(piece);
@@ -264,7 +268,7 @@ impl SchedulerState {
     pub fn is_block_requested(&self, piece: u32, begin: u32) -> bool {
         self.requested_blocks
             .get(&piece)
-            .is_some_and(|leases| leases.iter().any(|(leased, _)| *leased == begin))
+            .is_some_and(|leases| leases.iter().any(|(leased, _, _)| *leased == begin))
     }
 
     /// Mark a piece as fully downloaded, clearing any in-flight block tracking
@@ -367,19 +371,19 @@ mod tests {
         let mut state = SchedulerState::new(1);
         state.tracker.set_peer_bitfield([1u8; 20], &[0x80]);
         let piece_len = |_index: u32| 40 * 1024u64;
-        let (piece, begin, len) = state.next_block(&piece_len).unwrap();
+        let (piece, begin, len) = state.next_block(&piece_len, [1u8; 20]).unwrap();
         assert_eq!(piece, 0);
         assert_eq!(begin, 0);
         assert_eq!(len, 16 * 1024);
 
-        let (_, begin2, _) = state.next_block(&piece_len).unwrap();
+        let (_, begin2, _) = state.next_block(&piece_len, [1u8; 20]).unwrap();
         assert_eq!(begin2, 16 * 1024);
 
-        let (_, begin3, _) = state.next_block(&piece_len).unwrap();
+        let (_, begin3, _) = state.next_block(&piece_len, [1u8; 20]).unwrap();
         assert_eq!(begin3, 32 * 1024);
 
         // All blocks requested; no more.
-        assert!(state.next_block(&piece_len).is_none());
+        assert!(state.next_block(&piece_len, [1u8; 20]).is_none());
     }
 
     #[test]
@@ -387,10 +391,26 @@ mod tests {
         let mut state = SchedulerState::new(1);
         state.tracker.set_peer_bitfield([1u8; 20], &[0x80]);
         let piece_len = |_index: u32| 40 * 1024u64;
-        let (piece, begin, _) = state.next_block(&piece_len).unwrap();
+        let (piece, begin, _) = state.next_block(&piece_len, [1u8; 20]).unwrap();
         assert!(state.is_block_requested(piece, begin));
         assert!(!state.is_block_requested(piece, begin + 1));
         assert!(!state.is_block_requested(piece + 1, begin));
+    }
+
+    #[test]
+    fn cancel_only_clears_the_owners_lease() {
+        let mut state = SchedulerState::new(1);
+        state.tracker.set_peer_bitfield([1u8; 20], &[0x80]);
+        let piece_len = |_index: u32| 40 * 1024u64;
+        let peer_a = [1u8; 20];
+        let peer_b = [2u8; 20];
+        let (piece, _, _) = state.next_block(&piece_len, peer_a).unwrap();
+        let (_, begin_b, _) = state.next_block(&piece_len, peer_b).unwrap();
+
+        state.clear_block(piece, begin_b, peer_a);
+        assert!(state.is_block_requested(piece, begin_b));
+        state.clear_block(piece, begin_b, peer_b);
+        assert!(!state.is_block_requested(piece, begin_b));
     }
 
     #[test]
@@ -416,7 +436,7 @@ mod tests {
         let mut state = SchedulerState::new(1);
         state.tracker.set_peer_bitfield([1u8; 20], &[0x80]);
         let piece_len = |_index: u32| 16 * 1024u64;
-        let _ = state.next_block(&piece_len).unwrap();
+        let _ = state.next_block(&piece_len, [1u8; 20]).unwrap();
         assert!(!state.requested_blocks.is_empty());
         state.mark_have(0);
         assert!(state.requested_blocks.is_empty());

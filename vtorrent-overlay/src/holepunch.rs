@@ -52,6 +52,9 @@ const PUNCH_RETRY_INTERVAL: Duration = Duration::from_millis(200);
 const PUNCH_TIMEOUT: Duration = Duration::from_secs(5);
 /// Maximum number of concurrent hole-punch sessions to prevent memory exhaustion.
 const MAX_SESSIONS: usize = 256;
+/// Bound concurrent sessions from one address so a single host cannot fill
+/// the global session table and eclipse the node.
+const MAX_SESSIONS_PER_IP: usize = 8;
 /// Session TTL — idle sessions older than this are evicted.
 const SESSION_TTL: Duration = Duration::from_secs(3600);
 /// Pending (half-open) handshakes awaiting CONFIRM.
@@ -395,6 +398,16 @@ impl HolePuncher {
         {
             let mut sessions = self.sessions.write().await;
             sessions.retain(|_, s| s.created_at.elapsed() < SESSION_TTL);
+            if sessions
+                .values()
+                .filter(|session| session.remote_addr.ip() == from.ip())
+                .count()
+                >= MAX_SESSIONS_PER_IP
+            {
+                return Err(OverlayError::HolePunch(
+                    "too many hole-punch sessions from this address".into(),
+                ));
+            }
             if sessions.len() >= MAX_SESSIONS {
                 if let Some(oldest) = sessions
                     .iter()
