@@ -50,12 +50,20 @@ fn parse_wallet_inner(data: &[u8], file_path: Option<&std::path::Path>) -> Resul
             native_records.len()
         );
         match parse_wallet_via_dbdump_path(data, file_path) {
-            Ok(dump_records) => {
+            Ok(dump_records) if dump_records.len() >= native_records.len() => {
                 eprintln!(
                     "db5.3_dump found {} records — using fallback parser.",
                     dump_records.len()
                 );
                 return Ok(dump_records);
+            }
+            Ok(dump_records) => {
+                eprintln!(
+                    "db5.3_dump found {} records, fewer than the native parser's {} — keeping native results.",
+                    dump_records.len(),
+                    native_records.len()
+                );
+                return Ok(native_records);
             }
             Err(e) => {
                 eprintln!("db5.3_dump fallback failed: {e}");
@@ -87,9 +95,9 @@ fn parse_wallet_native(data: &[u8]) -> Result<Vec<RawRecord>> {
         if page.len() < 26 {
             continue;
         }
-        let page_type = page[17];
+        let page_type = page[25];
         if page_type == 7 {
-            let page_num = u32::from_le_bytes([page[0], page[1], page[2], page[3]]);
+            let page_num = u32::from_le_bytes([page[8], page[9], page[10], page[11]]);
             let data_len = u16::from_le_bytes([page[14], page[15]]) as usize;
             let available = page_size.saturating_sub(26);
             let copy_len = data_len.min(available);
@@ -105,11 +113,11 @@ fn parse_wallet_native(data: &[u8]) -> Result<Vec<RawRecord>> {
         if page.len() < 26 {
             continue;
         }
-        let page_type = page[17];
+        let page_type = page[25];
         if page_type != 5 {
             continue;
         }
-        let num_entries = u16::from_le_bytes([page[12], page[13]]) as usize;
+        let num_entries = u16::from_le_bytes([page[20], page[21]]) as usize;
         if num_entries == 0 {
             continue;
         }
@@ -123,6 +131,11 @@ fn parse_wallet_native(data: &[u8]) -> Result<Vec<RawRecord>> {
             let off =
                 u16::from_le_bytes([page[offsets_start + i * 2], page[offsets_start + i * 2 + 1]])
                     as usize;
+            // A crafted page can repeat offsets, making every pair re-copy the
+            // same bytes and amplifying memory by orders of magnitude.
+            if off < offsets_end || off >= page.len() || entry_offsets.contains(&off) {
+                continue;
+            }
             entry_offsets.push(off);
         }
         let mut i = 0;
@@ -249,7 +262,7 @@ fn run_dbdump(args: &[&str]) -> std::result::Result<String, String> {
     let output = std::fs::read_to_string(&out_path).map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(&out_path);
 
-    if status.success() || output.contains("6d61696e") || output.contains("636b6579") {
+    if status.success() {
         Ok(output)
     } else {
         match status.code() {
@@ -261,38 +274,52 @@ fn run_dbdump(args: &[&str]) -> std::result::Result<String, String> {
 
 /// Parse the output of `db5.3_dump -r`.
 ///
-/// Format:
-/// - Line 1: subdatabase name (hex-encoded)
-/// - Line 2: record count header (hex-encoded)
-/// - Then alternating key/value lines (hex-encoded)
+/// Format: a `HEADER=END` marker, alternating key/value hex lines (one leading
+/// space each, and an empty value is a line containing only that space), then
+/// `DATA=END`. A file with multiple subdatabases repeats the section.
 fn parse_dbdump_output(output: &str) -> Result<Vec<RawRecord>> {
-    let lines: Vec<&str> = output.lines().collect();
-    if lines.len() < 4 {
-        return Ok(Vec::new());
-    }
-
-    let data_lines: Vec<&str> = lines[2..]
-        .iter()
-        .filter(|l| !l.trim().is_empty())
-        .copied()
-        .collect();
-
     let mut records = Vec::new();
-    let mut i = 0;
-    while i + 1 < data_lines.len() {
-        let key_hex = data_lines[i].trim();
-        let val_hex = data_lines[i + 1].trim();
-
-        if let (Ok(key_data), Ok(value_data)) = (hex_decode(key_hex), hex_decode(val_hex)) {
-            if !key_data.is_empty() {
-                records.push(RawRecord {
-                    key_data,
-                    value_data,
-                });
+    let mut in_data = false;
+    let mut pending_key: Option<Vec<u8>> = None;
+    for line in output.lines() {
+        let value = line.trim();
+        if !in_data {
+            if value == "HEADER=END" {
+                in_data = true;
+            }
+            continue;
+        }
+        if value == "DATA=END" {
+            if pending_key.is_some() {
+                return Err(MigrateError::Other(
+                    "db5.3_dump ended with an unmatched key".into(),
+                ));
+            }
+            in_data = false;
+            continue;
+        }
+        let bytes = if value.is_empty() {
+            Vec::new()
+        } else {
+            hex_decode(value)
+                .map_err(|_| MigrateError::Other("db5.3_dump emitted invalid hex".into()))?
+        };
+        match pending_key.take() {
+            None => pending_key = Some(bytes),
+            Some(key_data) => {
+                if !key_data.is_empty() {
+                    records.push(RawRecord {
+                        key_data,
+                        value_data: bytes,
+                    });
+                }
             }
         }
-
-        i += 2;
+    }
+    if pending_key.is_some() {
+        return Err(MigrateError::Other(
+            "db5.3_dump ended before the value line".into(),
+        ));
     }
 
     Ok(records)
@@ -382,8 +409,22 @@ mod tests {
     }
 
     #[test]
+    fn native_parser_reads_a_real_btree_database() {
+        // Generated with `db5.3_load -T -t btree`; synthetic keys only.
+        let data = include_bytes!("../tests/fixtures/btree-small.db");
+        let records = parse_wallet_native(data).expect("parse a real B-tree database");
+        assert_eq!(records.len(), 2, "records: {records:?}");
+        assert!(records
+            .iter()
+            .any(|record| record.key_data == b"key1" && record.value_data == b"val1"));
+        assert!(records
+            .iter()
+            .any(|record| record.key_data == b"key2" && record.value_data == b"val2"));
+    }
+
+    #[test]
     fn test_parse_dbdump_output() {
-        let output = " 6d61696e\n 00000002\n 046d6b657901000000\n 301234567890abcdef\n";
+        let output = "VERSION=3\nformat=bytevalue\ntype=btree\nHEADER=END\n 046d6b657901000000\n 301234567890abcdef\nDATA=END\n";
         let records = parse_dbdump_output(output).unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(
@@ -398,8 +439,25 @@ mod tests {
 
     #[test]
     fn test_parse_empty_dbdump() {
-        let records = parse_dbdump_output("").unwrap();
+        let records = parse_dbdump_output("HEADER=END\nDATA=END\n").unwrap();
         assert!(records.is_empty());
+    }
+
+    #[test]
+    fn test_parse_dbdump_keeps_empty_values_aligned() {
+        let output = "HEADER=END\n 6b657931\n \n 6b657932\n 76616c32\nDATA=END\n";
+        let records = parse_dbdump_output(output).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].key_data, b"key1");
+        assert!(records[0].value_data.is_empty());
+        assert_eq!(records[1].key_data, b"key2");
+        assert_eq!(records[1].value_data, b"val2");
+    }
+
+    #[test]
+    fn test_parse_dbdump_rejects_an_unmatched_key() {
+        let output = "HEADER=END\n 6b657931\nDATA=END\n";
+        assert!(parse_dbdump_output(output).is_err());
     }
 
     #[test]
