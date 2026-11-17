@@ -10,7 +10,7 @@ already accepted so it is not re-litigated.
 
 ## Review target
 
-Review the candidate `a514d5b23e78cf99901e42d7f192c24a6453e29f`. This is the current review head. It is **not**
+Review the candidate `99b02fcab603cb568f7499c00e408c161206916a`. This is the current review head. It is **not**
 covered by any prior soak: the `6a49727` fleet predates the fund-safety and
 recovery changes below and was interrupted by a host restart on 2026-11-16.
 Under the soak provenance policy, the shipping image needs its own full window
@@ -18,8 +18,8 @@ after this review and its fixes settle.
 
 Read this document from the tip of `main`. Confirm that no code changed after
 the candidate with
-`git diff --name-only a514d5b..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
-must return nothing. Check out `a514d5b` itself when running the verification
+`git diff --name-only 99b02fc..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+must return nothing. Check out `99b02fc` itself when running the verification
 commands. The tables below record the earlier deltas. The table after the
 `f8e0162` deltas covers the range from `ba46fd6` to the candidate.
 
@@ -106,6 +106,7 @@ Deltas after `ba46fd6`:
 | `f897f5c` | Per-peer torrent lease ownership; partial-scan BTC reservation keeps contract; per-IP overlay session cap |
 | `db0902c` | Testnet RPC/monitoring loopback binding; Grafana password required and anonymous off; bitcoind RPC scoped to Docker network; release image requires explicit runtime base |
 | `a514d5b` | Maximum future block drift reduced from 2 hours to 5 seconds, bounding stake-timestamp grinding and CLTV drift |
+| `99b02fc` | Kernel denominator uses eligible stake inside the age window, excluding young and aged-out coins |
 
 Deltas after the earlier review head:
 
@@ -157,7 +158,7 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout a514d5b23e78cf99901e42d7f192c24a6453e29f
+git checkout 99b02fcab603cb568f7499c00e408c161206916a
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
@@ -165,7 +166,7 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 cargo test --workspace --all-features
 ```
 
-The `a514d5b` workspace run passed 54 test groups and 1,436 tests with 0
+The `99b02fc` workspace run passed 54 test groups and 1,437 tests with 0
 failures and 11 ignored. CI repeats the `--all-features` suite on every push.
 Set `VTORRENT_TOTP_STATE_DIR` to a fresh directory before running the suite so
 the host-scoped TOTP replay state does not collide with an existing
@@ -270,8 +271,9 @@ Added with `ff148fd` and `35ea52e`:
   default, uncompressed-key signing, P2SH push-only, template framing, and
   related findings in `b02dd33`, with store/backup/torrent hardening in
   `3d32e8c`, SPV/P2P/WS/funding hardening in `6c2193b`, torrent/BTC/overlay
-  fixes in `f897f5c`, container hardening in `db0902c`, and the timestamp-drift
-  bound in `a514d5b`. It is **not** independent review.
+  fixes in `f897f5c`, container hardening in `db0902c`, the timestamp-drift
+  bound in `a514d5b`, and the eligible-stake denominator in `99b02fc`. It is
+  **not** independent review.
 
 ## Status
 
