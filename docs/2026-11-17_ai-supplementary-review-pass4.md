@@ -38,6 +38,7 @@ items are marked by verification level.
 | Medium | Two concurrent matches could select the same confirmed VTR outpoint because coin selection ignored the mempool. | Funding selection and admission are serialized by a dedicated lock, and candidates spent by a mempool transaction are filtered out. The order is still marked `Matched` before admission, so a later non-conflict admission failure remains possible. |
 | Medium | A `Matched` order persisted before funding admission could become permanently stuck if admission failed. | On submission failure the order is reverted to `Open`, the in-memory swap is removed, and its recovery record is deleted. |
 | Medium | After the maker claimed BTC, nothing automatically submitted the taker's VTR claim, so an idle operator could lose the BTC leg. | The BTC reconciler now submits the VTR claim once the preimage is observed and the refund deadline is more than an hour away. It only acts when the wallet address equals the order's taker address, so maker nodes cannot attempt it. |
+| High | SPV accepted any height-0 header and any peer-supplied difficulty, so a fabricated low-work fork could become the best chain. | The daemon and desktop pin the VTR genesis hash and `GENESIS_BITS`; every header must use the fixed consensus difficulty, and inclusion still requires best-chain ancestry. A test covers genesis, difficulty, and side-fork rejection. |
 | Medium | A `Cancel` from one peer cleared another peer's in-flight block lease. | Leases now record the owning peer id; `clear_block` removes only the caller's lease. A test covers owner versus non-owner cancellation. |
 | Medium | A partial BTC scan treated an old funding transaction as absent and deleted the refund record. | When the scan does not start at genesis, the reserved input is released but the contract and `refund_raw` are retained for a later covered scan or manual recovery. |
 | Medium | One host could fill the overlay session table with unauthenticated punches. | Inbound sessions are capped at eight per source IP, in addition to the global cap. |
@@ -67,8 +68,9 @@ items are marked by verification level.
 5. **Partially fixed — peer dials are now bounded** to 3 seconds and four per
    tick; fully asynchronous dialing is still needed to remove the event-loop
    stall.
-6. **Partially fixed — SPV genesis and best-chain ancestry are enforced.**
-   Difficulty-schedule and checkpoint validation remain open.
+6. **Fixed — SPV pins the VTR genesis and fixed consensus difficulty**, and
+   inclusion requires best-chain ancestry. VTR uses a fixed difficulty, so no
+   retarget schedule is needed.
 7. **Medium — bans are enforced at accept/handshake, not dispatch**, and flood
    budgets are per socket, so one IP with many connections keeps its budget.
 8. **Medium — control responses are unbounded** (`getheaders`/`getaddr`), and
@@ -105,10 +107,10 @@ items are marked by verification level.
 
 ## Verification
 
-Focused verification: 97 script tests, 248 node tests, 116 torrent tests, 73
+Focused verification: 97 script tests, 249 node tests, 116 torrent tests, 73
 wallet tests, 203 RPC tests, 33 Tauri tests, 10 wallet-service tests, 16 store
-tests, 44 SPV tests, 224 BTC tests, 33 overlay tests, and `cargo fmt`/Clippy on
-the changed crates. The full workspace suite passed **1,437 tests, 0 failures,
+tests, 45 SPV tests, 224 BTC tests, 33 overlay tests, and `cargo fmt`/Clippy on
+the changed crates. The full workspace suite passed **1,439 tests, 0 failures,
 11 ignored**.
 
 ## Verdict

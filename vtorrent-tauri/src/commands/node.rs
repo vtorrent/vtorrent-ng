@@ -232,6 +232,15 @@ pub async fn start_node(
     rpc_state.regtest = regtest;
     rpc_state.staking_state_path = Some(data_dir.join("staking.json"));
     *rpc_state.btc_network.write().await = btc_network;
+    rpc_state
+        .spv_chain
+        .write()
+        .await
+        .set_genesis(
+            vtorrent_node::genesis::GENESIS_HASH,
+            vtorrent_node::genesis::GENESIS_BITS,
+        )
+        .map_err(|error| TauriError::InvalidInput(format!("SPV genesis: {error}")))?;
     if let Ok(peer) = std::env::var("VTORRENT_BTC_PEER") {
         if !peer.trim().is_empty() {
             *rpc_state.btc_peer.write().await = Some(peer);

@@ -304,11 +304,33 @@ pub struct SpvChain {
     best_height: u32,
     /// Hash of the accepted height-0 header, if one was seen.
     genesis_hash: Option<[u8; 32]>,
+    /// Expected genesis hash and fixed difficulty, when pinned by the caller.
+    /// `None` keeps the first-header behaviour used by unit tests.
+    pinned_genesis: Option<([u8; 32], u32)>,
 }
 
 impl SpvChain {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Create a chain that pins the chain's genesis hash and fixed difficulty.
+    pub fn with_genesis(hash: [u8; 32], bits: u32) -> Self {
+        Self {
+            pinned_genesis: Some((hash, bits)),
+            ..Self::default()
+        }
+    }
+
+    /// Pin the genesis hash and fixed difficulty before any header is added.
+    pub fn set_genesis(&mut self, hash: [u8; 32], bits: u32) -> Result<()> {
+        if !self.headers.is_empty() {
+            return Err(SpvError::HeaderValidation(
+                "cannot change the SPV genesis after headers are loaded".into(),
+            ));
+        }
+        self.pinned_genesis = Some((hash, bits));
+        Ok(())
     }
 
     /// Add a block header to the chain.
@@ -514,6 +536,20 @@ impl SpvChain {
 
     fn add_header_inner(&mut self, header: SpvHeader, trusted: bool) -> Result<()> {
         let hash = header.hash();
+
+        if let Some((genesis_hash, genesis_bits)) = self.pinned_genesis {
+            if header.height == 0 {
+                if hash != genesis_hash || header.bits != genesis_bits {
+                    return Err(SpvError::HeaderValidation(
+                        "height-0 header is not the pinned genesis".into(),
+                    ));
+                }
+            } else if header.bits != genesis_bits {
+                return Err(SpvError::HeaderValidation(
+                    "header difficulty does not match the pinned fixed difficulty".into(),
+                ));
+            }
+        }
 
         if header.height == 0 {
             match self.genesis_hash {
@@ -794,6 +830,25 @@ mod tests {
         chain.add_header(first).unwrap();
         let second = make_header(0, [0u8; 32], [2u8; 32]);
         assert!(chain.add_header(second).is_err());
+    }
+
+    #[test]
+    fn test_pinned_genesis_and_fixed_difficulty() {
+        let genesis = make_header(0, [0u8; 32], [1u8; 32]);
+        let genesis_hash = genesis.hash();
+        let bits = genesis.bits;
+        let mut chain = SpvChain::with_genesis(genesis_hash, bits);
+        chain.add_header(genesis).unwrap();
+
+        let child = make_header(1, genesis_hash, [2u8; 32]);
+        chain.add_header(child.clone()).unwrap();
+
+        let mut wrong_bits = make_header(1, genesis_hash, [3u8; 32]);
+        wrong_bits.bits = 0x207f_fffe;
+        assert!(chain.add_header(wrong_bits).is_err());
+
+        let other_genesis = make_header(0, [0u8; 32], [4u8; 32]);
+        assert!(chain.add_header(other_genesis).is_err());
     }
 
     #[test]

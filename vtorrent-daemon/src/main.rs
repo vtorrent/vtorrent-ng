@@ -498,6 +498,12 @@ async fn main() -> anyhow::Result<()> {
         seed.zeroize();
         *rpc_state.btc_wallet.write().await = Some(btc_wallet);
         *rpc_state.btc_network.write().await = network;
+        if let Err(error) = rpc_state.spv_chain.write().await.set_genesis(
+            vtorrent_node::genesis::GENESIS_HASH,
+            vtorrent_node::genesis::GENESIS_BITS,
+        ) {
+            anyhow::bail!("Could not pin SPV genesis: {error}");
+        }
         if let Some(peer) = &cli.btc_peer {
             // Store the host:port as given; it is resolved on every connection
             // attempt so peer IPs can change across container restarts.

@@ -26,6 +26,12 @@ pub const GENESIS_TIMESTAMP: u32 = 1_700_000_000;
 /// The genesis block difficulty target.
 pub const GENESIS_BITS: u32 = 0x1e0fffff;
 
+/// Deterministic genesis block hash, checked against `create_genesis_block`.
+pub const GENESIS_HASH: [u8; 32] = [
+    0x36, 0xca, 0x79, 0x2a, 0xa4, 0x5c, 0xa7, 0x85, 0x0f, 0x27, 0x89, 0xff, 0x2e, 0x62, 0xec, 0x13,
+    0xe9, 0x1b, 0xd5, 0xf2, 0x77, 0x0d, 0x6f, 0xea, 0x8d, 0xf8, 0x1b, 0xc2, 0xda, 0x1d, 0xa8, 0xf8,
+];
+
 /// The legacy chain snapshot height.
 pub const LEGACY_SNAPSHOT_HEIGHT: u32 = 1680456;
 
@@ -221,6 +227,11 @@ pub fn is_legacy_address(address: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_genesis_hash_constant_matches() {
+        assert_eq!(create_genesis_block().hash(), GENESIS_HASH);
+    }
 
     #[test]
     fn test_snapshot_sum_matches_documented_supply() {
