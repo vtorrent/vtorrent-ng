@@ -301,16 +301,21 @@ impl PeerConnection {
 
     /// Receive one message (blocking until a full message arrives).
     pub async fn recv(&mut self) -> Result<PeerMessage> {
+        const RECEIVE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(180);
+        let deadline = tokio::time::Instant::now() + RECEIVE_DEADLINE;
         let mut buf = Vec::new();
         let mut tmp = [0u8; 4096];
         loop {
             if let Some((msg, _)) = PeerMessage::decode(&buf)? {
                 return Ok(msg);
             }
-            let n = self
-                .stream
-                .read(&mut tmp)
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(TorrentError::PeerWireError("peer receive timed out".into()));
+            }
+            let n = tokio::time::timeout(remaining, self.stream.read(&mut tmp))
                 .await
+                .map_err(|_| TorrentError::PeerWireError("peer receive timed out".into()))?
                 .map_err(|e| TorrentError::PeerWireError(e.to_string()))?;
             if n == 0 {
                 return Err(TorrentError::PeerWireError("connection closed".into()));
@@ -642,6 +647,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
     let mut downloaded_window: u64 = 0;
     let mut uploaded_window: u64 = 0;
     let mut speed_window_start = std::time::Instant::now();
+    let mut bitfield_seen = false;
 
     loop {
         if cancel.is_cancelled() {
@@ -693,6 +699,17 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
         // Read one message.
         match conn.recv().await {
             Ok(PeerMessage::Bitfield { bits }) => {
+                let expected = (metainfo.piece_count as usize).div_ceil(8);
+                if bitfield_seen || bits.len() > expected {
+                    tracing::debug!(
+                        "Ignoring invalid or repeated bitfield from {} ({} bytes, expected at most {})",
+                        addr,
+                        bits.len(),
+                        expected
+                    );
+                    continue;
+                }
+                bitfield_seen = true;
                 scheduler
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())

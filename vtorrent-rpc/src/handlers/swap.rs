@@ -146,6 +146,9 @@ pub async fn match_dex_order_with_wif(
             req.order_id
         )));
     }
+    // Serialize selection + admission so two matches cannot pick the same
+    // confirmed outpoint before either reaches the mempool.
+    let _funding_guard = state.vtr_funding_lock.lock().await;
 
     // Use a verified wallet UTXO large enough to fund this single-input HTLC.
     // A fixed 10,000-satoshi fee is intentionally conservative for the custom
@@ -153,9 +156,11 @@ pub async fn match_dex_order_with_wif(
     const FUNDING_FEE_SATOSHIS: u64 = vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS;
     let funding_utxo = {
         let chain = state.chain.lock().await;
+        let mempool = state.mempool.lock().await;
         chain
             .get_utxos_for_address(&wallet_address)
             .into_iter()
+            .filter(|utxo| !mempool.is_outpoint_spent(&utxo.txid, utxo.vout))
             .filter(|utxo| utxo.value >= order.vtr_amount.saturating_add(FUNDING_FEE_SATOSHIS))
             .max_by_key(|utxo| utxo.value)
     };

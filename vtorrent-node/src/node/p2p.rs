@@ -136,6 +136,11 @@ impl super::Node {
     /// Maintain peer connections — reconnect if below target using PEX address book.
     /// Lock order `chain → mempool` not needed here (no chain/mempool locks).
     pub(crate) async fn maintain_peers(&mut self) {
+        // Dials run inside the node event loop, so bound each attempt and the
+        // number of attempts per tick. Otherwise a poisoned PEX list of
+        // blackholed addresses stalls block/stake processing for minutes.
+        const DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+        const MAX_DIALS_PER_TICK: usize = 4;
         let count = self.peer_manager.peer_count();
         if count < TARGET_OUTBOUND {
             let needed = TARGET_OUTBOUND - count;
@@ -149,11 +154,19 @@ impl super::Node {
             // First try PEX address book candidates
             let candidates = self.peer_manager.get_peer_candidates(needed * 2);
             let mut connected = 0;
-            for addr in candidates {
+            for addr in candidates.into_iter().take(MAX_DIALS_PER_TICK) {
                 if connected >= needed {
                     break;
                 }
-                if let Err(e) = self.peer_manager.connect_addr(addr).await {
+                if let Err(e) =
+                    tokio::time::timeout(DIAL_TIMEOUT, self.peer_manager.connect_addr(addr))
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(vtorrent_p2p::error::P2pError::Transport(
+                                "dial timed out".into(),
+                            ))
+                        })
+                {
                     tracing::debug!("Could not connect to PEX candidate {}: {}", addr, e);
                 } else {
                     connected += 1;
@@ -166,11 +179,25 @@ impl super::Node {
                     "PEX insufficient, re-dialing {} explicit seeds",
                     self.config.extra_seeds.len()
                 );
-                for seed in self.config.extra_seeds.clone() {
+                for seed in self
+                    .config
+                    .extra_seeds
+                    .clone()
+                    .into_iter()
+                    .take(MAX_DIALS_PER_TICK)
+                {
                     if connected >= needed {
                         break;
                     }
-                    if let Err(e) = self.peer_manager.connect(&seed).await {
+                    if let Err(e) =
+                        tokio::time::timeout(DIAL_TIMEOUT, self.peer_manager.connect(&seed))
+                            .await
+                            .unwrap_or_else(|_| {
+                                Err(vtorrent_p2p::error::P2pError::Transport(
+                                    "dial timed out".into(),
+                                ))
+                            })
+                    {
                         tracing::debug!("Could not connect to seed {}: {}", seed, e);
                     } else {
                         connected += 1;

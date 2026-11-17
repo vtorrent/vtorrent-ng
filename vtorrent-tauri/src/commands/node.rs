@@ -787,13 +787,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_probe_seed_peers_finds_listener() {
+    async fn test_probe_seed_peers_rejects_loopback() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
-        let found = probe_seed_peers(vec![addr.clone(), "127.0.0.1:1".to_string()])
-            .await
-            .unwrap();
-        assert_eq!(found, vec![addr]);
+        let found = probe_seed_peers(vec![addr]).await.unwrap();
+        assert!(found.is_empty(), "loopback probes must be filtered");
     }
 }
 
@@ -814,6 +812,17 @@ pub async fn probe_seed_peers(candidates: Vec<String>) -> Result<Vec<String>> {
             Ok(a) => a,
             Err(_) => continue,
         };
+        let ip = socket.ip();
+        let non_public = ip.is_loopback()
+            || ip.is_unspecified()
+            || ip.is_multicast()
+            || match ip {
+                std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
+                std::net::IpAddr::V6(v6) => v6.is_unique_local() || v6.is_unicast_link_local(),
+            };
+        if non_public {
+            continue;
+        }
         if tokio::time::timeout(
             Duration::from_secs(2),
             tokio::net::TcpStream::connect(socket),

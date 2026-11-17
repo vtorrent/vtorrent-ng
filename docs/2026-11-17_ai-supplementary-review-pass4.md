@@ -30,6 +30,11 @@ items are marked by verification level.
 | Medium | `verify_backup` consumed the TOTP step, so Verify followed by Restore within 30 seconds failed as a replay. | Added `Wallet::load_verify_only`; backup preview verifies the code without consuming it, while restore still consumes the step. |
 | Medium | `Wallet::load` treated a failed TOTP re-save as fatal after the step was consumed, leaving the wallet unopenable on a read-only disk. | The wallet is returned with a warning; the account-scoped replay sidecar still enforces one-time use. |
 | Medium | Unsolicited torrent `Piece` messages were accepted and credited without a matching request. | The engine now drops a block unless its `(piece, begin)` is leased; a scheduler test covers requested versus unsolicited offsets. |
+| High | SPV accepted any height-0 header and verified inclusion proofs against side-fork headers. | The chain pins the first genesis hash and rejects conflicting height-0 headers; inclusion now requires the header to be an ancestor of the best tip. Tests cover both. Difficulty-schedule validation remains open. |
+| High | Peer dials ran sequentially inside the node event loop with 30-second transport timeouts, so a poisoned PEX list could stall block/stake processing for minutes. | Each dial is bounded to 3 seconds and at most four are attempted per tick. Fully asynchronous dialing remains a follow-up. |
+| Medium | Torrent `recv` had no deadline and accepted repeated bitfields up to 16 MiB, each costing a full per-bit walk. | A message must complete within 180 seconds; only the first bitfield is accepted and it may not exceed `ceil(piece_count/8)` bytes. |
+| Low | `/ws` skipped its origin allow-list when the header was absent, and the Tauri seed probe could scan loopback/LAN services. | `/ws` now requires an allowed Origin. The probe rejects loopback, private, link-local, multicast, and unspecified targets; its test asserts loopback filtering. |
+| Medium | Two concurrent matches could select the same confirmed VTR outpoint because coin selection ignored the mempool. | Funding selection and admission are serialized by a dedicated lock, and candidates spent by a mempool transaction are filtered out. The order is still marked `Matched` before admission, so a later non-conflict admission failure remains possible. |
 
 ## Open findings
 
@@ -52,11 +57,11 @@ items are marked by verification level.
 
 4. **High — unauthenticated overlay punches can fill all 125 peer slots** for
    the one-hour session TTL, isolating the node.
-5. **High — sequential 30-second dials run inside the node event loop.** A PEX
-   list of blackholed addresses can stall block/stake processing for minutes.
-6. **High — SPV accepts any height-0 header and peer-supplied difficulty.**
-   `verify_tx_inclusion` resolves by header hash without requiring best-chain
-   ancestry, so a fabricated low-work fork yields a "valid" proof.
+5. **Partially fixed — peer dials are now bounded** to 3 seconds and four per
+   tick; fully asynchronous dialing is still needed to remove the event-loop
+   stall.
+6. **Partially fixed — SPV genesis and best-chain ancestry are enforced.**
+   Difficulty-schedule and checkpoint validation remain open.
 7. **Medium — bans are enforced at accept/handshake, not dispatch**, and flood
    budgets are per socket, so one IP with many connections keeps its budget.
 8. **Medium — control responses are unbounded** (`getheaders`/`getaddr`), and
@@ -64,15 +69,16 @@ items are marked by verification level.
 
 ### Torrent protocol
 
-9. **Partially fixed — unsolicited pieces are rejected**, but no receive timeout
-   exists. A silent peer can still pin a task and block resume persistence.
+9. **Partially fixed — unsolicited pieces, repeated bitfields, and idle
+   receives are handled.** Per-peer cancel ownership remains open.
 10. **Medium — a 16 MiB bitfield costs ~1 s of CPU per message**, and `Cancel`
     clears other peers' leases.
 
 ### BTC and swaps
 
-11. **Medium — concurrent matches can reuse the same VTR UTXO**, leaving an
-    order `Matched` with an unfundable transaction.
+11. **Partially fixed — funding selection is serialized and mempool-aware**,
+    but a non-conflict admission failure after `Matched` can still wedge the
+    order.
 12. **Medium — the bounded 1,008-block scan is treated as proof of no BTC
     funding**, and a confirmed funding tx below the window can cause the refund
     record to be deleted.
@@ -87,15 +93,15 @@ items are marked by verification level.
     with the same terminal error.
 16. **Fixed — backup verification no longer consumes the TOTP step.**
 17. **Fixed — a failed TOTP re-save is non-fatal.**
-18. **Low — `/ws` skips its origin allow-list when `Origin` is absent**, and
-    Tauri `probe_seed_peers` lets injected JS scan localhost/LAN services.
+18. **Fixed — `/ws` requires an allowed Origin, and the seed probe rejects
+    non-public targets.** See the fixed table.
 
 ## Verification
 
 Focused verification: 97 script tests, 247 node tests, 115 torrent tests, 73
 wallet tests, 203 RPC tests, 33 Tauri tests, 10 wallet-service tests, 16 store
-tests, and `cargo fmt`/Clippy on the changed crates. The full workspace suite
-passed **1,433 tests, 0 failures, 11 ignored**.
+tests, 44 SPV tests, and `cargo fmt`/Clippy on the changed crates. The full
+workspace suite passed **1,435 tests, 0 failures, 11 ignored**.
 
 ## Verdict
 

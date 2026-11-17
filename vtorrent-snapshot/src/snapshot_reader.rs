@@ -246,7 +246,8 @@ mod tests {
     #[test]
     fn test_binary_roundtrip() {
         let snapshot = make_test_snapshot();
-        let tmp = std::env::temp_dir().join("vtorrent_test_snapshot.bin");
+        let dir = tempfile::tempdir().unwrap();
+        let tmp = dir.path().join("snapshot.bin");
 
         write_binary(&snapshot, &tmp).expect("Write failed");
         let loaded = load_binary(&tmp).expect("Load failed");
@@ -258,8 +259,6 @@ mod tests {
         assert_eq!(loaded.entries[0].balance, 100_000_000);
         assert_eq!(loaded.entries[1].address, "VAddr2");
         assert_eq!(loaded.entries[1].balance, 200_000_000);
-
-        std::fs::remove_file(&tmp).ok();
     }
 
     #[test]
@@ -269,18 +268,10 @@ mod tests {
     }
 
     fn encoded(snapshot: &UtxoSnapshot) -> Vec<u8> {
-        let path = std::env::temp_dir().join(format!(
-            "vtr-snap-test-{}-{}.bin",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.bin");
         write_binary(snapshot, &path).unwrap();
-        let bytes = std::fs::read(&path).unwrap();
-        let _ = std::fs::remove_file(path);
-        bytes
+        std::fs::read(&path).unwrap()
     }
 
     #[test]

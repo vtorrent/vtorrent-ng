@@ -818,6 +818,11 @@ impl Mempool {
         conflicts
     }
 
+    /// Whether a confirmed outpoint is already spent by a mempool transaction.
+    pub fn is_outpoint_spent(&self, txid: &[u8; 32], vout: u32) -> bool {
+        self.spent_inputs.contains_key(&(*txid, vout))
+    }
+
     /// Find the txid of the entry with the lowest fee rate.
     ///
     /// Ties are broken by txid so eviction is deterministic: with random

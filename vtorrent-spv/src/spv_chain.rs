@@ -302,6 +302,8 @@ pub struct SpvChain {
     best_hash: Option<[u8; 32]>,
     /// Best chain height.
     best_height: u32,
+    /// Hash of the accepted height-0 header, if one was seen.
+    genesis_hash: Option<[u8; 32]>,
 }
 
 impl SpvChain {
@@ -513,6 +515,23 @@ impl SpvChain {
     fn add_header_inner(&mut self, header: SpvHeader, trusted: bool) -> Result<()> {
         let hash = header.hash();
 
+        if header.height == 0 {
+            match self.genesis_hash {
+                Some(expected) if expected != hash => {
+                    return Err(SpvError::HeaderValidation(
+                        "height-0 header does not match the accepted genesis".into(),
+                    ))
+                }
+                None if !self.headers.is_empty() => {
+                    return Err(SpvError::HeaderValidation(
+                        "genesis header must be the first header".into(),
+                    ))
+                }
+                None => self.genesis_hash = Some(hash),
+                _ => {}
+            }
+        }
+
         // Check for duplicate
         if self.headers.contains_key(&hash) {
             return Ok(());
@@ -647,8 +666,33 @@ impl SpvChain {
             .headers
             .get(block_hash)
             .ok_or_else(|| SpvError::UnknownParent(hex::encode(block_hash)))?;
+        if !self.is_on_best_chain(block_hash) {
+            return Err(SpvError::HeaderValidation(
+                "inclusion proof header is not on the best chain".into(),
+            ));
+        }
 
         proof.verify(&header.merkle_root)
+    }
+
+    fn is_on_best_chain(&self, target: &[u8; 32]) -> bool {
+        let mut current = self.best_hash;
+        let mut visited = 0usize;
+        while let Some(hash) = current {
+            if &hash == target {
+                return true;
+            }
+            visited += 1;
+            if visited > self.headers.len() {
+                return false;
+            }
+            current = self
+                .headers
+                .get(&hash)
+                .filter(|header| header.height > 0)
+                .map(|header| header.prev_hash);
+        }
+        false
     }
 
     /// Build a `getheaders` locator from the current chain tip.
@@ -744,6 +788,15 @@ mod tests {
     }
 
     #[test]
+    fn test_conflicting_genesis_rejected() {
+        let mut chain = SpvChain::new();
+        let first = make_header(0, [0u8; 32], [1u8; 32]);
+        chain.add_header(first).unwrap();
+        let second = make_header(0, [0u8; 32], [2u8; 32]);
+        assert!(chain.add_header(second).is_err());
+    }
+
+    #[test]
     fn test_chain_of_headers() {
         let mut chain = SpvChain::new();
         let h0 = make_header(0, [0u8; 32], [1u8; 32]);
@@ -798,6 +851,36 @@ mod tests {
 
         let proof = tree.proof(2).unwrap();
         chain.verify_tx_inclusion(&block_hash, &proof).unwrap();
+    }
+
+    #[test]
+    fn test_inclusion_rejects_a_side_fork() {
+        use crate::merkle::MerkleTree;
+
+        let txids: Vec<[u8; 32]> = (0..2u8)
+            .map(|i| {
+                let mut h = [0u8; 32];
+                h[0] = i;
+                h
+            })
+            .collect();
+        let tree = MerkleTree::build(&txids);
+        let proof = tree.proof(0).unwrap();
+
+        let mut chain = SpvChain::new();
+        let genesis = make_header(0, [0u8; 32], [9u8; 32]);
+        let genesis_hash = genesis.hash();
+        chain.add_header(genesis).unwrap();
+        let main = make_header(1, genesis_hash, [7u8; 32]);
+        chain.add_header(main).unwrap();
+        let side = make_header(1, genesis_hash, tree.root());
+        let side_hash = side.hash();
+        chain.add_header(side).unwrap();
+
+        assert!(
+            chain.verify_tx_inclusion(&side_hash, &proof).is_err(),
+            "a side-fork proof must not verify"
+        );
     }
 
     #[test]

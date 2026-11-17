@@ -183,21 +183,26 @@ pub async fn ws_handler(
     Query(params): Query<HashMap<String, String>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    if let Some(origin) = headers
+    // Origin is mandatory: a non-browser client can omit it, and skipping the
+    // allow-list would let any local process subscribe to staking/peer events.
+    let Some(origin) = headers
         .get(axum::http::header::ORIGIN)
         .and_then(|v| v.to_str().ok())
-    {
-        const ALLOWED: &[&str] = &[
-            "tauri://localhost",
-            "http://tauri.localhost",
-            "http://localhost:1420",
-            "http://127.0.0.1:1420",
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-        ];
-        if !ALLOWED.contains(&origin) {
-            return axum::http::StatusCode::FORBIDDEN.into_response();
-        }
+    else {
+        return axum::http::StatusCode::FORBIDDEN.into_response();
+    };
+    const ALLOWED: &[&str] = &[
+        "tauri://localhost",
+        "http://tauri.localhost",
+        "http://localhost:1420",
+        "http://127.0.0.1:1420",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ];
+    if !ALLOWED.contains(&origin) {
+        return axum::http::StatusCode::FORBIDDEN.into_response();
     }
     // The upgrade uses a single-use, short-lived token obtained from
     // `POST /api/v1/ws-token` with the API key. The long-lived API key is not

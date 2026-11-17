@@ -1660,8 +1660,14 @@ async fn websocket_requires_api_key_when_configured() {
     let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let token = body["token"].as_str().expect("token in response");
 
-    let authorized =
-        tokio_tungstenite::connect_async(format!("ws://{address}/ws?token={token}")).await;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut request = format!("ws://{address}/ws?token={token}")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("Origin", "http://tauri.localhost".parse().unwrap());
+    let authorized = tokio_tungstenite::connect_async(request).await;
     assert!(
         authorized.is_ok(),
         "authorized WebSocket upgrade must succeed"

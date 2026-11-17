@@ -82,6 +82,9 @@ pub struct AppState {
     /// Bitcoin SPV wallet (optional — created when a seed is available).
     pub btc_wallet: Arc<RwLock<Option<BtcWallet>>>,
     pub btc_swap_scan_lock: Arc<Mutex<()>>,
+    /// Serializes VTR funding-UTXO selection, construction, and admission so
+    /// two matches cannot choose the same confirmed outpoint.
+    pub vtr_funding_lock: Arc<Mutex<()>>,
     /// Bitcoin network the wallet operates on (mainnet or regtest).
     pub btc_network: Arc<RwLock<bitcoin::Network>>,
     /// Optional explicit Bitcoin peer as `host:port` (regtest). When set, BTC
@@ -213,6 +216,7 @@ impl AppState {
             stake_proofs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             btc_wallet: Arc::new(RwLock::new(None)),
             btc_swap_scan_lock: Arc::new(Mutex::new(())),
+            vtr_funding_lock: Arc::new(Mutex::new(())),
             btc_network: Arc::new(RwLock::new(bitcoin::Network::Bitcoin)),
             btc_peer: Arc::new(RwLock::new(None)),
             btc_peer_cache: Arc::new(RwLock::new(Vec::new())),
@@ -280,6 +284,7 @@ impl AppState {
             stake_proofs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             btc_wallet: Arc::new(RwLock::new(None)),
             btc_swap_scan_lock: Arc::new(Mutex::new(())),
+            vtr_funding_lock: Arc::new(Mutex::new(())),
             btc_network: Arc::new(RwLock::new(bitcoin::Network::Bitcoin)),
             btc_peer: Arc::new(RwLock::new(None)),
             btc_peer_cache: Arc::new(RwLock::new(Vec::new())),
