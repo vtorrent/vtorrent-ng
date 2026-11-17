@@ -176,6 +176,55 @@ fn require_regular_file(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn provenance_path(path: &Path) -> PathBuf {
+    path.with_extension("json.provenance")
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(bytes))
+}
+
+fn write_provenance(
+    path: &Path,
+    label: &str,
+    wallet_id: &str,
+    source_sha256: &str,
+) -> anyhow::Result<()> {
+    let target = provenance_path(path);
+    let data = serde_json::to_vec(&serde_json::json!({
+        "label": label,
+        "wallet_id": wallet_id,
+        "source_sha256": source_sha256,
+    }))?;
+    let mut file = open_private_new(&target)?;
+    file.write_all(&data)?;
+    file.sync_all()?;
+    fsync_parent(&target)?;
+    Ok(())
+}
+
+fn require_provenance(
+    path: &Path,
+    label: &str,
+    wallet_id: &str,
+    source_sha256: &str,
+) -> anyhow::Result<()> {
+    let target = provenance_path(path);
+    require_private_file(&target)?;
+    let value: serde_json::Value = serde_json::from_slice(&fs::read(&target)?)?;
+    if value.get("label").and_then(|v| v.as_str()) != Some(label)
+        || value.get("wallet_id").and_then(|v| v.as_str()) != Some(wallet_id)
+        || value.get("source_sha256").and_then(|v| v.as_str()) != Some(source_sha256)
+    {
+        anyhow::bail!(
+            "{} does not bind this file to network {label}, wallet {wallet_id}, and digest {source_sha256}",
+            target.display()
+        );
+    }
+    Ok(())
+}
+
 fn validate_in_data_dir(data_dir: &Path, path: &Path) -> anyhow::Result<()> {
     let parent = path
         .parent()
@@ -238,9 +287,12 @@ fn stage(
     output: PathBuf,
     seed_file: PathBuf,
     network: Option<String>,
-    _isolated: bool,
-    _owner: bool,
+    isolated: bool,
+    owner: bool,
 ) -> anyhow::Result<()> {
+    if !isolated || !owner {
+        anyhow::bail!("--confirm-isolated and --confirm-owner must both be true");
+    }
     let seed = zeroize::Zeroizing::new(read_seed(&seed_file)?);
     let expected_id = wallet_id(&seed);
     let label = source_label(&source, network.as_deref())?;
@@ -264,6 +316,7 @@ fn stage(
     }
     fs::remove_file(&stage_path)?;
     fsync_parent(&output)?;
+    write_provenance(&output, label, &expected_id, &sha256_hex(&original))?;
     eprintln!("Staged bytes only. The original remains in place; the operator must verify ownership, isolation, backups, and recovery before use.");
     Ok(())
 }
@@ -276,14 +329,21 @@ fn archive_legacy(
     output: PathBuf,
     seed_file: PathBuf,
     network: Option<String>,
-    _isolated: bool,
-    _owner: bool,
+    isolated: bool,
+    owner: bool,
 ) -> anyhow::Result<()> {
+    if !isolated || !owner {
+        anyhow::bail!("--confirm-isolated and --confirm-owner must both be true");
+    }
     let seed = zeroize::Zeroizing::new(read_seed(&seed_file)?);
     let expected_id = wallet_id(&seed);
     let label = source_label(&source, network.as_deref())?;
     validate_in_data_dir(&data_dir, &source)?;
     validate_in_data_dir(&data_dir, &output)?;
+    validate_in_data_dir(&data_dir, &archive)?;
+    if archive == source || archive == output {
+        anyhow::bail!("--archive must differ from --source and --output");
+    }
     require_regular_file(&source)?;
     let original = fs::read(&source)?;
     let _: vtorrent_btc::utxo::UtxoSet = serde_json::from_slice(&original)?;
@@ -292,6 +352,8 @@ fn archive_legacy(
     if fs::read(&output)? != original {
         anyhow::bail!("staged output does not match the legacy bytes; re-stage before archiving");
     }
+    let digest = sha256_hex(&original);
+    require_provenance(&output, label, &expected_id, &digest)?;
     let stage_path = archive.with_extension("json.archive-stage");
     let mut file = open_private_new(&stage_path)?;
     file.write_all(&original)?;
@@ -311,10 +373,11 @@ fn archive_legacy(
             "source changed after archive publication; the legacy filename was not removed"
         );
     }
-    fs::remove_file(&source)?;
-    fsync_parent(&source)?;
     fs::remove_file(&stage_path)?;
     fsync_parent(&archive)?;
+    write_provenance(&archive, label, &expected_id, &digest)?;
+    fs::remove_file(&source)?;
+    fsync_parent(&source)?;
     eprintln!("Archived exact legacy bytes. The active legacy filename is gone; verify the archive before starting the wallet.");
     Ok(())
 }
@@ -326,11 +389,16 @@ fn promote(
     output: PathBuf,
     seed_file: PathBuf,
     network: String,
-    _isolated: bool,
-    _owner: bool,
-    _recovery_preconditions: bool,
+    isolated: bool,
+    owner: bool,
+    recovery_preconditions: bool,
     confirm_archive_sha256: String,
 ) -> anyhow::Result<()> {
+    if !isolated || !owner || !recovery_preconditions {
+        anyhow::bail!(
+            "--confirm-isolated, --confirm-owner, and --confirm-recovery-preconditions must all be true"
+        );
+    }
     let seed = zeroize::Zeroizing::new(read_seed(&seed_file)?);
     let expected_id = wallet_id(&seed);
     let label = match network.as_str() {
@@ -354,13 +422,13 @@ fn promote(
     if fs::read(&archive)? != original {
         anyhow::bail!("archive does not match the staged copy; do not promote either file");
     }
-    use sha2::{Digest, Sha256};
-    let digest = hex::encode(Sha256::digest(&original));
+    let digest = sha256_hex(&original);
     if !digest.eq_ignore_ascii_case(&confirm_archive_sha256) {
         anyhow::bail!(
             "archive digest {digest} does not match --confirm-archive-sha256; review the exact archive before promoting"
         );
     }
+    require_provenance(&archive, label, &expected_id, &digest)?;
     let version = serde_json::from_slice::<serde_json::Value>(&original)?
         .get("journal_version")
         .and_then(serde_json::Value::as_u64)
@@ -438,5 +506,31 @@ fn main() -> anyhow::Result<()> {
             confirm_recovery_preconditions,
             confirm_archive_sha256,
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provenance_binds_the_label_wallet_and_digest() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-stage-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("btc_utxos-regtest-abc.json");
+        write_provenance(&path, "regtest", "abc", "deadbeef").unwrap();
+
+        require_provenance(&path, "regtest", "abc", "deadbeef").unwrap();
+        assert!(require_provenance(&path, "mainnet", "abc", "deadbeef").is_err());
+        assert!(require_provenance(&path, "regtest", "other", "deadbeef").is_err());
+        assert!(require_provenance(&path, "regtest", "abc", "beef").is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

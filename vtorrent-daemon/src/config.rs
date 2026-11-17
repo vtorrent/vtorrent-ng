@@ -285,9 +285,10 @@ pub fn validate_startup_config(cli: &Cli, data_dir: &std::path::Path) -> anyhow:
         .as_deref()
         .is_some_and(|key| !key.is_empty())
         || cli.rpc_api_key_file.is_some();
-    if !rpc_is_loopback && !has_rpc_key {
+    let mainnet = !cli.regtest && !cli.testnet;
+    if (!rpc_is_loopback || mainnet) && !has_rpc_key {
         anyhow::bail!(
-            "an RPC API key is required when --rpc-addr is not bound to loopback; use --rpc-api-key-file or VTORRENT_RPC_API_KEY"
+            "an RPC API key is required on mainnet and whenever --rpc-addr is not bound to loopback; use --rpc-api-key-file"
         );
     }
     tracing::info!(
@@ -389,5 +390,23 @@ mod tests {
             assert!(load_secret_files(&mut cli).is_err());
         }
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn mainnet_rpc_requires_a_key_even_on_loopback() {
+        let dir = std::env::temp_dir();
+        let cli = Cli::parse_from(["vtorrent-daemon"]);
+        let error = validate_startup_config(&cli, &dir).unwrap_err();
+        assert!(error.to_string().contains("RPC API key"), "{error}");
+
+        let with_key = Cli::parse_from([
+            "vtorrent-daemon",
+            "--rpc-api-key-file",
+            "/run/vtorrent/rpc-api-key",
+        ]);
+        validate_startup_config(&with_key, &dir).expect("mainnet with a key must pass");
+
+        let regtest = Cli::parse_from(["vtorrent-daemon", "--regtest"]);
+        validate_startup_config(&regtest, &dir).expect("regtest may run without a key");
     }
 }

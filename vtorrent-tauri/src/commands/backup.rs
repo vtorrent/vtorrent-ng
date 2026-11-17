@@ -147,6 +147,48 @@ fn collect_entries(wallet_path: &Path, wallet: &Wallet) -> Result<Vec<BackupEntr
     let mut btc_locks = Vec::new();
     add_entry(&mut entries, WALLET_ENTRY, wallet_path)?;
 
+    // Cold-stake spending keys are exported once, beside the wallet. A
+    // wallet-only restore would leave funded P2CS scripts unspendable until
+    // their locktime, so include the exports in the encrypted backup.
+    let stem = wallet_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("wallet");
+    let prefix = format!("{stem}.");
+    let parent = wallet_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if parent.exists() {
+        let mut exports = Vec::new();
+        for entry in std::fs::read_dir(parent).map_err(|e| TauriError::Io(e.to_string()))? {
+            let entry = entry.map_err(|e| TauriError::Io(e.to_string()))?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if !name.starts_with(&prefix) || !name.ends_with(".spending-key") {
+                continue;
+            }
+            let file_type = entry
+                .file_type()
+                .map_err(|e| TauriError::Io(e.to_string()))?;
+            if !file_type.is_file() {
+                return Err(TauriError::InvalidInput(format!(
+                    "Cold-stake export {name} must be a regular file"
+                )));
+            }
+            exports.push((name.to_string(), entry.path()));
+        }
+        exports.sort_by(|a, b| a.0.cmp(&b.0));
+        if exports.len() > 64 {
+            return Err(TauriError::InvalidInput(
+                "Too many cold-stake exports to back up".into(),
+            ));
+        }
+        for (name, path) in exports {
+            add_entry(&mut entries, &name, &path)?;
+        }
+    }
+
     let cold_stake = wallet_path.with_extension("cold_stake.json");
     if cold_stake.exists() {
         add_entry(&mut entries, "wallet.cold_stake.json", &cold_stake)?;
@@ -484,6 +526,14 @@ pub fn restore_backup(
         if safe == Path::new("wallet.cold_stake.json") {
             return Err(TauriError::InvalidInput(
                 "Cold-stake registry cannot be restored automatically: backup freshness cannot be established; preserve the backup for reviewed recovery".into(),
+            ));
+        }
+        if safe
+            .extension()
+            .is_some_and(|extension| extension == "spending-key")
+        {
+            return Err(TauriError::InvalidInput(
+                "Cold-stake spending-key exports cannot be restored automatically: preserve the backup and recover the key under the reviewed runbook".into(),
             ));
         }
         if safe != Path::new(WALLET_ENTRY) {
@@ -981,5 +1031,54 @@ mod tests {
         assert!(safe_relative_path("swaps/../../wallet.vtr").is_err());
         assert!(safe_relative_path("wallet.vtr").is_ok());
         assert!(safe_relative_path("swaps/order.json").is_ok());
+    }
+
+    #[test]
+    fn backup_includes_cold_stake_spending_key_exports() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-backup-coldstake-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wallet = Wallet::create("password").unwrap();
+        let wallet_path = dir.join(WALLET_ENTRY);
+        wallet.save(&wallet_path).unwrap();
+        std::fs::write(dir.join("wallet.Vtest.spending-key"), b"encrypted").unwrap();
+
+        let entries = collect_entries(&wallet_path, &wallet).unwrap();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.name.ends_with(".spending-key"))
+            .expect("spending-key export must be in the backup");
+        assert_eq!(entry.name, "wallet.Vtest.spending-key");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_rejects_a_symlinked_spending_key_export() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-backup-coldstake-link-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wallet = Wallet::create("password").unwrap();
+        let wallet_path = dir.join(WALLET_ENTRY);
+        wallet.save(&wallet_path).unwrap();
+        let victim = dir.join("victim");
+        std::fs::write(&victim, b"secret").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.join("wallet.Vtest.spending-key")).unwrap();
+
+        let error = collect_entries(&wallet_path, &wallet).unwrap_err();
+        assert!(error.to_string().contains("regular file"), "{error}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

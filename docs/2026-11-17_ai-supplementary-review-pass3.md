@@ -42,40 +42,42 @@ varying levels of verification; do not treat the report as independent review.
 | Medium | A verified torrent piece was published before the disk write completed. | Follow-up: an in-progress claim is separate from `have`; a failed or cancelled write releases the claim. Tests cover the failure path and claim lifecycle. |
 | Medium | Seed provisioning had no end-to-end check. | `deploy/test-provision-seed.sh` runs the real installer in `ubuntu:22.04` with stubbed service management, then verifies the service account can read the key, the unit references it, staging is removed, and a bad digest changes nothing. CI runs it. |
 | High | Blocks had no aggregate sigop limit, so a block could pack many multisig/P2SH checks. | Added `MAX_BLOCK_SIGOPS = 20_000` (`MAX_BLOCK_SIZE / 50`, matching the legacy client). Block validation counts legacy sigops; the transaction application path adds P2SH redeem-script sigops from the live UTXO set before executing each script, which also covers outputs created earlier in the same block. Mempool admission and template selection enforce the same bound. Tests cover exactly 20,000 accepted, 20,001 rejected, and a same-block P2SH spend that crosses the limit. |
+| Medium | The snapshot reader clamped entry counts, ignored trailing bytes, skipped hash verification on load, and did not compare metadata totals with entries. | Parse now rejects entry-count overflow, trailing bytes, duplicate addresses, and hash mismatches; it verifies `total_addresses` and `total_supply` against the parsed entries before sorting. Tests cover each tamper case. |
+| Medium | `btc-state-stage` accepted false confirmation flags, derived network provenance only from the filename, and did not confine the archive path. | All three flags must be true; the archive must be inside `--data-dir` and differ from source/output. A 0600 provenance sidecar binds label, wallet id, and SHA-256 at stage time and is required for archive and promotion. |
+| High | The cold-stake spending key was absent from the desktop backup. | Encrypted backups now include `<wallet>.<address>.spending-key` exports as regular files (symlinks rejected). Restore deliberately refuses them with the same reviewed-recovery rule as the cold-stake registry, so the key stays in the backup for manual recovery. |
+| Medium | Wallet format versions and unknown fields were ignored, allowing a future field to be silently dropped and rewritten as v1. | `WalletFile` and `WalletData` reject unknown fields; loading rejects any format version other than 1 with `UnsupportedWalletVersion`. Tests cover both. |
+| Medium | Loopback RPC was unauthenticated by default and release CORS allowed a localhost web origin. | Mainnet now refuses to start without `--rpc-api-key-file` (or the env key); regtest/testnet keep local development. Release CORS allows only Tauri origins; the Vite origin is debug-only. |
+| Low/medium | CSP allowed any loopback port, the theme bootstrap was inline, and browser mode loaded Google Fonts. | CSP now names `127.0.0.1:22525` (HTTP/WS) and Tauri IPC, adds `object-src`/`base-uri`/`frame-ancestors`/`form-action` `'none'`, and `font-src 'self'`. The theme bootstrap moved to `src/themeInit.ts`; Google Fonts links were removed. |
+| Medium | Parser coverage was example-based with no malformed corpus; no procedure compared a real wallet with `db5.3_dump`. | Added a deterministic mutation test (300 mutated fixtures, no panics) and `scripts/wallet-import-check.sh`, which runs the tool with and without `db5.3_dump` and checks one extracted key per `key`/`ckey` record. Procedure: `docs/wallet-import-verification.md`. Real wallet files are still required. |
 | Medium | The desktop legacy import decoded base64 with no size cap. | Fixed in `aacf371`: payloads above 32 MiB are rejected before decoding. |
 
-Verified in the follow-up: 28 migration tests (including a real BDB fixture
-that is parsed natively and through `db5.3_dump`), 93 script tests, 245 node
-tests, 68 wallet tests, 112 torrent tests, Clippy on the changed crates, and
+Verified in the follow-up: 29 migration tests (including a real BDB fixture
+that is parsed natively and through `db5.3_dump`, plus mutation coverage),
+93 script tests, 245 node tests, 70 wallet tests, 112 torrent tests, 16
+snapshot tests, Clippy on the changed crates, the UI test/lint/build, and
 `deploy/test-provision-seed.sh` in `ubuntu:22.04`. The full workspace suite on
 `49d56d2` passed **1,388 tests, 0 failures, 11 ignored**; the follow-up suite
-passed **1,407 tests, 0 failures, 11 ignored**.
+passed **1,420 tests, 0 failures, 11 ignored**.
 
-## Open findings
+## Findings and status
 
 ### Legacy migration and snapshot parsing
 
-1. **High — representative `wallet.dat` recovery remains unproven.** The
-   committed fixtures are synthetic, and no real legacy wallet has been imported
-   end to end. Run a set of real wallets through both the native parser and
-   `db5.3_dump` and compare the recovered key sets before advertising recovery.
+1. **Evidence gap, not a code defect — representative `wallet.dat` recovery is
+   still unproven.** The committed fixtures are synthetic. Run
+   `scripts/wallet-import-check.sh` on real wallets and retain the `PASS`
+   output before advertising recovery; see `docs/wallet-import-verification.md`.
 2. **Medium — dump completeness is still inferred from record counts.** A dump
    that returns the same number of records but different contents would be
    accepted. Compare key material, not only counts.
-3. **Medium — no fuzzing or malformed-fixture corpus.** The parser rejects
-   unsupported page types and broken chains, but coverage is by example.
-4. **Medium — the snapshot reader accepts truncation and tampering.**
-   `entry_count` is clamped to available bytes, trailing bytes are ignored, the
-   stored hash is not checked on load and does not cover the headline totals,
-   and duplicate addresses are not merged; `lookup_balance` returns an arbitrary
-   duplicate.
-5. **Medium — `btc-state-stage` derives network provenance from the filename
-   only**, and `--confirm-isolated/owner/recovery-preconditions` are accepted as
-   false. Copying a mainnet state file to a `regtest` name bypasses the
-   mainnet-disabled guard. Bind the network in persisted state and require the
-   flags to be true.
-6. **Medium — the archive destination is not confined** to the data directory or
-   a seed-scoped name.
+3. **Fixed — malformed-input coverage.** A deterministic mutation test mutates
+   each fixture 100 times and asserts the parser does not panic; the crafted
+   overflow, deleted-entry, and page-type tests cover the structural cases.
+4. **Fixed — snapshot truncation and tampering.** See the fixed table.
+5. **Fixed — `btc-state-stage` confirmation flags and provenance.** See the
+   fixed table. Filename-derived provenance is still an operator assertion; the
+   sidecar prevents relabelling after staging.
+6. **Fixed — archive destination confinement.** See the fixed table.
 7. **Low/medium — mkey handling** rejects wallets with more than eight keys and
    permits a multi-second KDF burn per crafted key.
 8. **Low — the dump fallback dumps and reopens by path**, allowing a same-user
@@ -85,17 +87,10 @@ passed **1,407 tests, 0 failures, 11 ignored**.
 
 ### Wallet internals
 
-10. **High — the cold-stake spending key is absent from both the wallet and the
-    desktop backup.** `spending_wif` is `skip_serializing`; `create_cold_stake`
-    exports it once beside the wallet, and the backup collector never includes
-    `*.spending-key`. After a machine loss and wallet-only restore, the registry
-    still marks the script as fundable, but the key needed to withdraw is gone
-    until the CLTV locktime (up to ~2036). Either encrypt the spending key inside
-    the wallet, include the export file in the backup, or gate funding on a
-    persisted “spending key backed up” flag.
-11. **Medium — no wallet format-version gating.** Unknown versions/fields load,
-    are silently dropped, and the next save (including the automatic TOTP
-    re-save) rewrites the file as v1. Reject future versions and unknown fields.
+10. **Fixed — cold-stake spending key custody.** Encrypted backups include the
+    export; restore requires manual recovery. Funding still relies on the user
+    confirming the file is saved; there is no persisted backed-up flag.
+11. **Fixed — wallet format-version gating.** See the fixed table.
 12. **Medium — AEAD failures are reported as “incorrect passphrase”.** Bit rot
     or tampering is indistinguishable from a typo, inviting a restore from an old
     backup that loses later keys.
@@ -114,12 +109,11 @@ passed **1,407 tests, 0 failures, 11 ignored**.
 17. **Medium — the migration UI claims 2FA was verified while it is dropped.**
     Import creates a fresh wallet and hardcodes `has2FA: false`, but the wizard
     shows a green “2FA verified” badge when the legacy file had 2FA.
-18. **Medium — loopback RPC is unauthenticated by default** and CORS allows
-    `http://localhost:3000`; a local process (or anything served on that port)
-    can reach wallet/send/claim routes. Mint a key on first run and narrow CORS.
-19. **Low/medium — CSP is permissive** (`connect-src` allows any loopback port,
-    missing `object-src`/`base-uri`/`frame-ancestors`/`form-action`), the theme
-    bootstrap is inline, and browser mode loads Google Fonts with no CSP.
+18. **Partially fixed — RPC authorization.** Mainnet refuses to start without a
+    key and release CORS is Tauri-only; regtest/testnet still allow
+    unauthenticated loopback RPC for local development, and browser mode keeps
+    its key in `localStorage`.
+19. **Fixed — CSP and external font loading.** See the fixed table.
 20. **Low/medium — TOTP seed and staking WIF remain in React state/DOM/clipboard**
     without clearing or reveal gating.
 21. **Low — the legacy claim page says the key is “never transmitted”**, while

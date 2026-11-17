@@ -141,12 +141,16 @@ node resumes from genesis unexpectedly.
 
 ## Procedure: RPC Key Rotation
 
-The API key is supplied at launch via `--rpc-api-key-file` or `VTORRENT_RPC_API_KEY` (see the unit's ExecStart). Never put it in argv.
-RPC binds to localhost only, so rotation is low-risk:
+Mainnet refuses to start without an RPC API key, even when RPC binds to
+loopback: any local process can reach a loopback port. Supply the key through
+`--rpc-api-key-file`, not argv or the environment, so it does not appear in the
+process list. The file and its directory are owned by the service account with
+`0600`/`0700`.
 
 1. Generate: `openssl rand -base64 32`.
-2. Edit the unit: `systemctl edit vtorrent` → override `ExecStart=` with the
-   new key appended.
+2. Write it to `/etc/vtorrent/rpc-api-key` as the service account with mode
+   `0600`. The unit's `ExecStart` passes `--rpc-api-key-file
+   /etc/vtorrent/rpc-api-key`.
 3. `systemctl daemon-reload && systemctl restart vtorrent`.
 4. Verify: `curl -s -H "X-API-Key: NEW" localhost:22525/api/v1/wallet/balance`.
    Old key must now return 401.

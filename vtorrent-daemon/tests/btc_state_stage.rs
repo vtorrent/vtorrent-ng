@@ -236,6 +236,23 @@ fn promote_command(
     command
 }
 
+fn write_archive_provenance(archive: &std::path::Path, digest: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = archive.with_extension("json.provenance");
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "label": "regtest",
+            "wallet_id": "62d04ad2793b8849",
+            "source_sha256": digest,
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+}
+
 #[test]
 fn promote_requires_the_recovery_preconditions_assertion() {
     let dir = tempfile::tempdir().unwrap();
@@ -268,12 +285,16 @@ fn promote_requires_the_recovery_preconditions_assertion() {
 
 #[test]
 fn promote_converts_a_verified_copy_and_preserves_the_archive() {
+    use sha2::{Digest, Sha256};
+
     let dir = tempfile::tempdir().unwrap();
     let output = dir.path().join("btc_utxos-regtest-62d04ad2793b8849.json");
     let archive = dir.path().join("legacy-btc-state.json");
     let original = b"{\"utxos\":[],\"next_index\":7}";
     std::fs::write(&output, original).unwrap();
     std::fs::write(&archive, original).unwrap();
+    let digest = hex::encode(Sha256::digest(original));
+    write_archive_provenance(&archive, &digest);
     let result = promote_command(dir.path(), &archive, &output)
         .output()
         .unwrap();

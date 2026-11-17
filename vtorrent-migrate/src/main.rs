@@ -5,12 +5,6 @@ use vtorrent_migrate::extractor::extract_wallet_with_path;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    println!("╔══════════════════════════════════════════════════════╗");
-    println!("║   vTorrent Legacy Wallet Migration Tool v0.1.0       ║");
-    println!("║   Extracts keys from legacy wallet.dat files         ║");
-    println!("╚══════════════════════════════════════════════════════╝");
-    println!();
-
     if args.len() < 2 {
         eprintln!("Usage: vtorrent-migrate <wallet.dat> [--passphrase <passphrase>]");
         eprintln!();
@@ -57,7 +51,18 @@ fn main() {
         }
     }
 
-    println!("Reading wallet file: {}", wallet_path.display());
+    if passphrase.is_none() {
+        passphrase = std::env::var("VTORRENT_WALLET_PASSPHRASE").ok();
+    }
+
+    if !json_output {
+        println!("╔══════════════════════════════════════════════════════╗");
+        println!("║   vTorrent Legacy Wallet Migration Tool v0.1.0       ║");
+        println!("║   Extracts keys from legacy wallet.dat files         ║");
+        println!("╚══════════════════════════════════════════════════════╝");
+        println!();
+        println!("Reading wallet file: {}", wallet_path.display());
+    }
     let wallet_data = match fs::read(&wallet_path) {
         Ok(data) => data,
         Err(e) => {
@@ -65,10 +70,11 @@ fn main() {
             std::process::exit(1);
         }
     };
-    println!("File size: {} bytes", wallet_data.len());
-    println!();
-
-    println!("Parsing BerkeleyDB structure...");
+    if !json_output {
+        println!("File size: {} bytes", wallet_data.len());
+        println!();
+        println!("Parsing BerkeleyDB structure...");
+    }
     match extract_wallet_with_path(&wallet_data, passphrase.as_deref(), Some(&wallet_path)) {
         Ok(extraction) => {
             if json_output {

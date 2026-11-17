@@ -649,6 +649,27 @@ mod tests {
     }
 
     #[test]
+    fn native_parser_survives_mutations_without_panicking() {
+        let fixtures: [&[u8]; 3] = [
+            include_bytes!("../tests/fixtures/btree-small.db"),
+            include_bytes!("../tests/fixtures/btree-overflow.db"),
+            include_bytes!("../tests/fixtures/btree-multipage.db"),
+        ];
+        for fixture in fixtures {
+            for seed in 0..100u32 {
+                let mut data = fixture.to_vec();
+                let mut state = seed.wrapping_mul(2_654_435_761).wrapping_add(1);
+                for _ in 0..8 {
+                    state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                    let index = (state as usize) % data.len();
+                    data[index] ^= 1 << ((state >> 8) % 8);
+                }
+                let _ = parse_wallet_native(&data);
+            }
+        }
+    }
+
+    #[test]
     fn native_matches_the_reference_dump_when_available() {
         for fixture in ["btree-small.db", "btree-overflow.db", "btree-multipage.db"] {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

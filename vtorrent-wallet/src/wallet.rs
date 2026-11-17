@@ -56,6 +56,7 @@ impl std::fmt::Debug for WalletKeyEntry {
 
 /// The plaintext wallet data (serialized to JSON before encryption).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WalletData {
     pub version: u32,
     pub keys: Vec<WalletKeyEntry>,
@@ -164,6 +165,7 @@ fn generate_private_key() -> Result<PrivateKey> {
 
 /// The wallet file as stored on disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WalletFile {
     pub format_version: u32,
     pub encrypted: EncryptedWallet,
@@ -231,9 +233,21 @@ impl Wallet {
         let json = std::fs::read_to_string(path).map_err(|e| WalletError::Io(e.to_string()))?;
         let wallet_file: WalletFile =
             serde_json::from_str(&json).map_err(|e| WalletError::Serialization(e.to_string()))?;
+        if wallet_file.format_version != WALLET_FORMAT_VERSION {
+            return Err(WalletError::UnsupportedWalletVersion(
+                wallet_file.format_version,
+                WALLET_FORMAT_VERSION,
+            ));
+        }
         let plaintext = decrypt_wallet(&wallet_file.encrypted, passphrase)?;
         let mut data: WalletData = serde_json::from_slice(&plaintext)
             .map_err(|e| WalletError::Serialization(e.to_string()))?;
+        if data.version != WALLET_FORMAT_VERSION {
+            return Err(WalletError::UnsupportedWalletVersion(
+                data.version,
+                WALLET_FORMAT_VERSION,
+            ));
+        }
 
         let mut replay_guard = None;
         // If 2FA is enabled, verify the OTP code before returning the wallet
@@ -751,6 +765,53 @@ mod tests {
         let loaded = Wallet::from_json_file(&json, passphrase, None).expect("Load failed");
         assert_eq!(loaded.key_count(), wallet.key_count());
         assert_eq!(loaded.addresses(), wallet.addresses());
+    }
+
+    #[test]
+    fn wallet_rejects_a_future_format_version() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-wallet-version-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wallet.json");
+        let wallet = Wallet::create("test-passphrase").unwrap();
+        wallet.save(&path).unwrap();
+        let mut json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        json["format_version"] = serde_json::json!(WALLET_FORMAT_VERSION + 1);
+        std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+
+        let error = match Wallet::load(&path, "test-passphrase", None) {
+            Ok(_) => panic!("a future wallet format must not load"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            WalletError::UnsupportedWalletVersion(version, _)
+                if version == WALLET_FORMAT_VERSION + 1
+        ));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn wallet_rejects_unknown_fields() {
+        let wallet = Wallet::create("test-passphrase").unwrap();
+        let mut value = serde_json::to_value(&wallet.data).unwrap();
+        value["future_field"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<WalletData>(value).is_err());
+
+        let file = WalletFile {
+            format_version: WALLET_FORMAT_VERSION,
+            encrypted: encrypt_wallet(b"{}", "test-passphrase").unwrap(),
+        };
+        let mut value = serde_json::to_value(&file).unwrap();
+        value["future_field"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<WalletFile>(value).is_err());
     }
 
     #[test]

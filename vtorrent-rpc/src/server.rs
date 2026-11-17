@@ -11,7 +11,7 @@ use axum::{
     Router,
 };
 use std::sync::Arc;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
 /// Default RPC port — same as legacy vTorrent RPC port + 1.
 pub const DEFAULT_RPC_PORT: u16 = 22525;
@@ -81,15 +81,22 @@ async fn rate_limit(
 /// Build the Axum router with all API routes.
 pub fn build_router(state: AppState) -> Router {
     let state = Arc::new(state);
-    let cors = CorsLayer::new()
-        .allow_origin([
+    let mut origins = vec![
+        "tauri://localhost".parse().unwrap(),
+        "http://tauri.localhost".parse().unwrap(),
+    ];
+    if cfg!(debug_assertions) {
+        // Browser-mode development only; release builds must not grant a
+        // webpage on localhost read/PREFLIGHT access to the wallet RPC.
+        origins.extend([
             "http://localhost".parse().unwrap(),
             "http://127.0.0.1".parse().unwrap(),
             "http://localhost:3000".parse().unwrap(),
             "http://127.0.0.1:3000".parse().unwrap(),
-            "tauri://localhost".parse().unwrap(),
-            "http://tauri.localhost".parse().unwrap(),
-        ])
+        ]);
+    }
+    let cors = CorsLayer::new()
+        .allow_origin(AllowOrigin::list(origins))
         .allow_methods(Any)
         .allow_headers(Any);
 

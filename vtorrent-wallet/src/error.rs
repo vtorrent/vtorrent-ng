@@ -17,6 +17,9 @@ pub enum WalletError {
     #[error("Wallet file is corrupted or invalid")]
     CorruptedWallet,
 
+    #[error("Unsupported wallet format version {0}; this build supports version {1}")]
+    UnsupportedWalletVersion(u32, u32),
+
     #[error("Incorrect passphrase")]
     IncorrectPassphrase,
 
