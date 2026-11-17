@@ -125,6 +125,7 @@ pub async fn add_torrent(
     let download_dir = state.download_dir.read().await.clone();
     let limits = Arc::clone(&state.torrent_limits);
     let seed_ratio_target = Arc::clone(&state.seed_ratio_target);
+    let local_wif = state.wallet_wif.read().await.clone();
     let sid = session_id.clone();
     tokio::spawn(async move {
         vtorrent_torrent::engine::run_engine(
@@ -134,6 +135,7 @@ pub async fn add_torrent(
             limits,
             seed_ratio_target,
             cancel,
+            local_wif,
         )
         .await;
     });

@@ -35,6 +35,12 @@ pub struct PeerBandwidthAccount {
     pub last_active: u64,
     /// Whether this peer is participating in the incentive scheme.
     pub incentive_enabled: bool,
+    /// Latest verified receipt from this peer for the current settlement.
+    #[serde(default)]
+    pub peer_receipt: Option<vtorrent_core::receipt::BandwidthReceipt>,
+    /// Highest settlement id seen from this peer, for replay rejection.
+    #[serde(default)]
+    pub last_receipt_id: u64,
 }
 
 impl PeerBandwidthAccount {
@@ -48,6 +54,8 @@ impl PeerBandwidthAccount {
             last_settlement: 0,
             last_active: 0,
             incentive_enabled: true,
+            peer_receipt: None,
+            last_receipt_id: 0,
         }
     }
 
@@ -108,7 +116,27 @@ impl PeerBandwidthAccount {
         self.bytes_uploaded = 0;
         self.bytes_downloaded = 0;
         self.last_settlement = current_timestamp;
+        self.peer_receipt = None;
         (earned, owed)
+    }
+
+    /// Store a verified peer receipt. Returns false for a replayed id.
+    pub fn record_receipt(&mut self, receipt: vtorrent_core::receipt::BandwidthReceipt) -> bool {
+        if receipt.settlement_id <= self.last_receipt_id {
+            return false;
+        }
+        self.last_receipt_id = receipt.settlement_id;
+        self.peer_receipt = Some(receipt);
+        true
+    }
+
+    /// Amount payable for this window, or `None` without a matching receipt.
+    pub fn agreed_owed(&self) -> Option<u64> {
+        let receipt = self.peer_receipt.as_ref()?;
+        match agree_on_download(self.calculate_owed(), receipt.uploaded_by_me) {
+            ReceiptAgreement::Agreed { satoshis } => Some(satoshis),
+            ReceiptAgreement::Disputed { .. } => None,
+        }
     }
 }
 
@@ -212,6 +240,24 @@ pub fn agree_on_upload(mine_satoshis: u64, their_receipt_uploaded: u64) -> Recei
     let hi = mine_satoshis.max(theirs);
     let lo = mine_satoshis.min(theirs);
     // |mine - theirs| <= tolerance * hi
+    let diff = hi - lo;
+    if diff.saturating_mul(10_000) <= hi.saturating_mul(RECEIPT_TOLERANCE_BPS) {
+        ReceiptAgreement::Agreed { satoshis: lo }
+    } else {
+        ReceiptAgreement::Disputed {
+            mine: mine_satoshis,
+            theirs,
+        }
+    }
+}
+
+/// Compare what we owe a peer for their uploads against the bytes their signed
+/// receipt says they uploaded. The download price is half the seeding price.
+pub fn agree_on_download(mine_satoshis: u64, their_receipt_uploaded: u64) -> ReceiptAgreement {
+    const GB: u128 = 1024 * 1024 * 1024;
+    let theirs = ((their_receipt_uploaded as u128 * (COIN as u128 / 2)) / GB) as u64;
+    let hi = mine_satoshis.max(theirs);
+    let lo = mine_satoshis.min(theirs);
     let diff = hi - lo;
     if diff.saturating_mul(10_000) <= hi.saturating_mul(RECEIPT_TOLERANCE_BPS) {
         ReceiptAgreement::Agreed { satoshis: lo }
@@ -403,5 +449,30 @@ mod tests {
         assert_eq!(r.peer, account.peer_address);
         assert_eq!(r.settlement_id, 7);
         assert_eq!(r.info_hash, [9u8; 20]);
+    }
+
+    #[test]
+    fn receipt_is_required_for_agreed_payment_and_cannot_be_replayed() {
+        use vtorrent_core::receipt::BandwidthReceipt;
+
+        let mut account = PeerBandwidthAccount::new("VPeer".into());
+        account.record_download(1024 * 1024 * 1024);
+        assert_eq!(account.agreed_owed(), None);
+
+        let receipt = BandwidthReceipt {
+            info_hash: [1u8; 20],
+            window_start: 0,
+            window_end: 300,
+            uploaded_by_me: 1024 * 1024 * 1024,
+            downloaded_by_me: 0,
+            peer: "VUs".into(),
+            signer: "VPeer".into(),
+            settlement_id: 7,
+        };
+        assert!(account.record_receipt(receipt.clone()));
+        assert_eq!(account.agreed_owed(), Some(COIN / 2));
+        assert!(!account.record_receipt(receipt));
+        let _ = account.settle(300);
+        assert_eq!(account.agreed_owed(), None);
     }
 }

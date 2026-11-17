@@ -5869,6 +5869,7 @@ dependencies = [
 name = "vtorrent-torrent"
 version = "2.0.0-beta.3"
 dependencies = [
+ "bincode",
  "hex",
  "libc",
  "rand 0.8.8",
@@ -5883,6 +5884,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "vtorrent-core",
+ "zeroize",
 ]
 
 [[package]]

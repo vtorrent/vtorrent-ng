@@ -8,6 +8,8 @@ repository.workspace = true
 
 [dependencies]
 vtorrent-core = { path = "../vtorrent-core" }
+bincode = { workspace = true }
+zeroize = { workspace = true }
 tokio = { version = "1", features = ["full"] }
 tokio-util = { workspace = true }
 serde = { version = "1", features = ["derive"] }

@@ -17,9 +17,32 @@ pub fn build_extension_handshake(ut_metadata_id: u8, metadata_size: u64) -> Vec<
 pub fn build_ut_vtr_handshake(ut_vtr_id: u8) -> Vec<u8> {
     let mut m = std::collections::HashMap::new();
     m.insert(b"ut_vtr".to_vec(), Value::Int(ut_vtr_id as i64));
+    if ut_vtr_id < u8::MAX {
+        m.insert(
+            b"ut_vtr_receipt".to_vec(),
+            Value::Int(i64::from(ut_vtr_id) + 1),
+        );
+    }
     let mut dict = std::collections::HashMap::new();
     dict.insert(b"m".to_vec(), Value::Dict(m));
     serde_bencode::to_bytes(&Value::Dict(dict)).unwrap_or_default()
+}
+
+/// Encode a signed bandwidth receipt for an `ut_vtr_receipt` extension message.
+pub fn encode_receipt(receipt: &vtorrent_core::receipt::SignedBandwidthReceipt) -> Vec<u8> {
+    bincode::serialize(receipt).unwrap_or_default()
+}
+
+/// Decode a signed bandwidth receipt from an `ut_vtr_receipt` payload.
+pub fn decode_receipt(payload: &[u8]) -> Result<vtorrent_core::receipt::SignedBandwidthReceipt> {
+    const MAX_RECEIPT_PAYLOAD: usize = 4096;
+    if payload.len() > MAX_RECEIPT_PAYLOAD {
+        return Err(TorrentError::PeerWireError(
+            "ut_vtr_receipt payload is too large".into(),
+        ));
+    }
+    bincode::deserialize(payload)
+        .map_err(|_| TorrentError::PeerWireError("invalid ut_vtr_receipt payload".into()))
 }
 
 /// Build a `ut_vtr` address message payload: `<bencoded string>`.
@@ -242,6 +265,7 @@ mod tests {
         if let Value::Dict(d) = value {
             if let Some(Value::Dict(m)) = d.get(b"m".as_slice()) {
                 assert_eq!(m.get(b"ut_vtr".as_slice()), Some(&Value::Int(2)));
+                assert_eq!(m.get(b"ut_vtr_receipt".as_slice()), Some(&Value::Int(3)));
             } else {
                 panic!("missing m dict");
             }
@@ -264,5 +288,25 @@ mod tests {
         assert!(parse_ut_vtr_address(&invalid).is_err());
         let oversized = build_ut_vtr_address(&"V".repeat(129));
         assert!(parse_ut_vtr_address(&oversized).is_err());
+    }
+
+    #[test]
+    fn receipt_payload_roundtrip() {
+        let receipt = vtorrent_core::receipt::SignedBandwidthReceipt {
+            receipt: vtorrent_core::receipt::BandwidthReceipt {
+                info_hash: [1u8; 20],
+                window_start: 0,
+                window_end: 300,
+                uploaded_by_me: 1024,
+                downloaded_by_me: 2048,
+                peer: "VPeer".into(),
+                signer: "VSigner".into(),
+                settlement_id: 9,
+            },
+            pubkey: vec![2u8; 33],
+            signature: vec![3u8; 70],
+        };
+        let encoded = encode_receipt(&receipt);
+        assert_eq!(decode_receipt(&encoded).unwrap(), receipt);
     }
 }

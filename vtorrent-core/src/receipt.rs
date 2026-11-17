@@ -101,6 +101,21 @@ impl BandwidthReceipt {
     }
 }
 
+/// A receipt plus the signer's public key and signature, as sent on the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignedBandwidthReceipt {
+    pub receipt: BandwidthReceipt,
+    pub pubkey: Vec<u8>,
+    pub signature: Vec<u8>,
+}
+
+impl SignedBandwidthReceipt {
+    pub fn verify(&self) -> Result<bool> {
+        self.receipt
+            .verify_with_pubkey(&self.pubkey, &self.signature)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,5 +181,22 @@ mod tests {
         let b = key(2);
         let r = receipt(&a, &b);
         assert!(r.signing_payload().starts_with(RECEIPT_DOMAIN));
+    }
+
+    #[test]
+    fn signed_envelope_verifies_and_rejects_tampering() {
+        let a = key(1);
+        let b = key(2);
+        let receipt = receipt(&a, &b);
+        let envelope = SignedBandwidthReceipt {
+            signature: receipt.sign(&a).unwrap(),
+            pubkey: a.public_key().unwrap().serialize().to_vec(),
+            receipt,
+        };
+        assert!(envelope.verify().unwrap());
+
+        let mut tampered = envelope.clone();
+        tampered.receipt.uploaded_by_me += 1;
+        assert!(!tampered.verify().unwrap());
     }
 }

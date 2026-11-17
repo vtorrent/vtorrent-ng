@@ -1,9 +1,8 @@
 # Torrent Incentive Micropayments — Design
 
-Status: DRAFT (no VTR consensus change; payment layer). Automatic payouts are
-disabled by default (`--torrent-incentive-payments` is off) until the
-receipt-based design in `docs/incentive-verification-design.md` is implemented
-and peer addresses are bound to keys.
+Status: the signed-receipt gate in `docs/incentive-verification-design.md` is
+implemented; a payment requires a verified peer receipt. Window alignment is
+conservative, so a missing or mismatched receipt withholds payment.
 Scope: `vtorrent-torrent` (incentive), `vtorrent-wallet-service` (payment),
 `vtorrent-node` (payment channel/aggregation).
 Motivation: the incentive pays peers **on-chain, one transaction per peer per

@@ -338,6 +338,7 @@ pub async fn run_engine(
     limits: Arc<crate::limits::TorrentRateLimiter>,
     seed_ratio_target: Arc<RwLock<f64>>,
     cancel: CancellationToken,
+    local_wif: Option<zeroize::Zeroizing<String>>,
 ) {
     // Snapshot the metainfo and tracker list.
     let (metainfo, trackers) = {
@@ -347,6 +348,10 @@ pub async fn run_engine(
             Err(_) => return,
         }
     };
+    let receipt_key = local_wif
+        .as_ref()
+        .and_then(|wif| vtorrent_core::keys::PrivateKey::from_wif(wif).ok())
+        .map(Arc::new);
 
     // Mark connecting.
     {
@@ -475,6 +480,7 @@ pub async fn run_engine(
         let session_id = Arc::clone(&shared_session_id);
         let limits = Arc::clone(&shared_limits);
         let seed_ratio_target = Arc::clone(&shared_seed_ratio);
+        let receipt_key = receipt_key.clone();
         peer_tasks.push(tokio::spawn(async move {
             run_peer_task(
                 addr,
@@ -488,6 +494,7 @@ pub async fn run_engine(
                     limits,
                     seed_ratio_target,
                     cancel,
+                    receipt_key,
                 },
             )
             .await;
@@ -545,6 +552,7 @@ struct PeerTaskContext {
     limits: Arc<crate::limits::TorrentRateLimiter>,
     seed_ratio_target: Arc<RwLock<f64>>,
     cancel: CancellationToken,
+    receipt_key: Option<Arc<vtorrent_core::keys::PrivateKey>>,
 }
 
 /// Drive a single peer connection: exchange bitfields, request blocks, and
@@ -560,6 +568,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
         limits,
         seed_ratio_target,
         cancel,
+        receipt_key,
     } = ctx;
 
     let mut conn = match PeerConnection::connect(addr, metainfo.info_hash, peer_id).await {
@@ -573,6 +582,8 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
 
     // Exchange VTR addresses via the ut_vtr extension (BEP-10).
     let mut peer_vtr_address: Option<String> = None;
+    let mut receipt_id: Option<u8> = None;
+    let mut local_address = String::new();
     {
         let handshake = crate::metadata::build_ut_vtr_handshake(1);
         let _ = conn
@@ -593,6 +604,11 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                             if let Some(Value::Int(id)) = m.get(b"ut_vtr".as_slice()) {
                                 ut_vtr_id = Some(*id as u8);
                             }
+                            if let Some(Value::Int(id)) = m.get(b"ut_vtr_receipt".as_slice()) {
+                                if (1..=u8::MAX as i64).contains(id) {
+                                    receipt_id = Some(*id as u8);
+                                }
+                            }
                         }
                     }
                     break;
@@ -603,7 +619,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
         }
         if let Some(id) = ut_vtr_id {
             // Send our address, then read the peer's address.
-            let our_addr = {
+            local_address = {
                 let guard = sessions.read().await;
                 guard
                     .get_session(&session_id)
@@ -613,7 +629,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
             let _ = conn
                 .send(&PeerMessage::Extended {
                     id,
-                    payload: crate::metadata::build_ut_vtr_address(&our_addr),
+                    payload: crate::metadata::build_ut_vtr_address(&local_address),
                 })
                 .await;
             for _ in 0..10 {
@@ -648,10 +664,57 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
     let mut uploaded_window: u64 = 0;
     let mut speed_window_start = std::time::Instant::now();
     let mut bitfield_seen = false;
+    let mut next_receipt = std::time::Instant::now();
 
     loop {
         if cancel.is_cancelled() {
             break;
+        }
+
+        if let (Some(key), Some(id), Some(peer_addr)) =
+            (receipt_key.as_ref(), receipt_id, peer_vtr_address.as_ref())
+        {
+            if !local_address.is_empty() && std::time::Instant::now() >= next_receipt {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let account = {
+                    let guard = sessions.read().await;
+                    guard
+                        .get_session(&session_id)
+                        .ok()
+                        .and_then(|s| s.incentive_accounts.get(peer_addr).cloned())
+                };
+                if let Some(account) = account {
+                    let receipt = vtorrent_core::receipt::BandwidthReceipt {
+                        info_hash: metainfo.info_hash,
+                        window_start: account.last_settlement,
+                        window_end: now,
+                        uploaded_by_me: account.bytes_uploaded,
+                        downloaded_by_me: account.bytes_downloaded,
+                        peer: peer_addr.clone(),
+                        signer: local_address.clone(),
+                        settlement_id: now,
+                    };
+                    if let Ok(signature) = receipt.sign(key) {
+                        if let Ok(pubkey) = key.public_key() {
+                            let envelope = vtorrent_core::receipt::SignedBandwidthReceipt {
+                                receipt,
+                                pubkey: pubkey.serialize().to_vec(),
+                                signature,
+                            };
+                            let _ = conn
+                                .send(&PeerMessage::Extended {
+                                    id,
+                                    payload: crate::metadata::encode_receipt(&envelope),
+                                })
+                                .await;
+                        }
+                    }
+                }
+                next_receipt = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            }
         }
 
         // Request blocks while we have pipeline capacity and pieces to fetch.
@@ -939,6 +1002,34 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                         }
                     }
                     assemblers.remove(&index);
+                }
+            }
+            Ok(PeerMessage::Extended { id, payload }) if Some(id) == receipt_id => {
+                let Some(peer_addr) = peer_vtr_address.as_ref() else {
+                    continue;
+                };
+                let Ok(envelope) = crate::metadata::decode_receipt(&payload) else {
+                    continue;
+                };
+                let receipt = &envelope.receipt;
+                if receipt.info_hash != metainfo.info_hash
+                    || receipt.peer != local_address
+                    || receipt.signer != *peer_addr
+                    || !envelope.verify().unwrap_or(false)
+                {
+                    continue;
+                }
+                let mut guard = sessions.write().await;
+                if let Ok(session) = guard.get_session_mut(&session_id) {
+                    if let Some(account) = session.incentive_accounts.get_mut(peer_addr) {
+                        if !account.record_receipt(receipt.clone()) {
+                            tracing::debug!(
+                                peer = %peer_addr,
+                                settlement_id = %receipt.settlement_id,
+                                "Ignoring replayed bandwidth receipt"
+                            );
+                        }
+                    }
                 }
             }
             Ok(_) => continue,

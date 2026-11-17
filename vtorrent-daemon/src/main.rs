@@ -980,12 +980,21 @@ async fn main() -> anyhow::Result<()> {
                 for session in guard.sessions_mut() {
                     for account in session.incentive_accounts.values_mut() {
                         if account.needs_settlement(now) {
-                            let (_earned, owed) = account.settle(now);
-                            if owed > 0 && !account.peer_address.is_empty() {
+                            let payable = account.agreed_owed();
+                            let (_earned, _owed) = account.settle(now);
+                            if let Some(satoshis) = payable.filter(|sats| *sats > 0) {
+                                if account.peer_address.is_empty() {
+                                    continue;
+                                }
                                 payment_sender.emit(vtorrent_torrent::payment::PaymentDue {
                                     peer_address: account.peer_address.clone(),
-                                    amount_satoshis: owed,
+                                    amount_satoshis: satoshis,
                                 });
+                            } else {
+                                tracing::debug!(
+                                    peer = %account.peer_address,
+                                    "Withholding incentive payment: no matching signed receipt"
+                                );
                             }
                             settled += 1;
                         }

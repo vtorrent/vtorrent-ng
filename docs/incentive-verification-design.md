@@ -1,8 +1,11 @@
 # Torrent Incentive Verification — Design
 
-Status: DRAFT (no consensus change; torrent protocol + accounting). Until this
-is implemented, automatic VTR payouts remain disabled by default
-(`--torrent-incentive-payments`).
+Status: implemented for the signed-receipt exchange and settlement gate (no
+consensus change). Automatic payouts are enabled by default, but a payment is
+made only when a verified peer receipt agrees with our own counter within 5%.
+Window alignment is conservative: an independently settling peer may send
+counters that no longer cover our window, in which case the payment is withheld
+rather than overpaid.
 Scope: `vtorrent-torrent` (peer wire, incentive), `vtorrent-wallet-service`
 (payment), RPC/UI.
 Motivation: the headline feature — **pay peers for bandwidth** — is currently

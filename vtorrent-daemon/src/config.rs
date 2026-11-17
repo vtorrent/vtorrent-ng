@@ -113,9 +113,9 @@ pub struct Cli {
 
     /// Enable automatic VTR payments to torrent peers.
     ///
-    /// Off by default: peer addresses are self-reported and payouts are not
-    /// yet bound to a verified bandwidth receipt.
-    #[arg(long, default_value_t = false)]
+    /// Payments require a signed peer receipt that agrees with our own
+    /// download count within 5%; a missing or disputed receipt pays nothing.
+    #[arg(long, default_value_t = true)]
     pub torrent_incentive_payments: bool,
 
     /// Optional API key required for sensitive RPC endpoints.
