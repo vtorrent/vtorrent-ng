@@ -9,7 +9,7 @@
 > parsing now reconstructs overflow chains and is differentially tested against
 > `db5.3_dump` on committed fixtures, but representative real wallets are still
 > required. TOTP replay state is now replaced atomically. A block-level sigop
-> budget remains open.
+> limit of 20,000 now matches the legacy client.
 
 > **AI-generated supplementary review. It does not satisfy the independent
 > human security-review gate.** No code was shared externally. This pass covers
@@ -26,7 +26,7 @@ varying levels of verification; do not treat the report as independent review.
 
 | Sev. | Finding | Status |
 |---|---|---|
-| Assessed | `OP_CHECKMULTISIG` lacked a 20-key cap. | `49d56d2` adds the cap. The local legacy client source (not in this repo) rejects more than 20 keys, so the rule matches legacy consensus. Tests cover 20 and 21 keys. A block-level sigop budget remains open. |
+| Assessed | `OP_CHECKMULTISIG` lacked a 20-key cap. | `49d56d2` adds the cap. The local legacy client source (not in this repo) rejects more than 20 keys, so the rule matches legacy consensus. Tests cover 20 and 21 keys. |
 | Medium | Wallet `save()` used a deterministic temp name and leaked the temp on write/sync errors, so one ENOSPC/EIO bricked every later save in the process. | Fixed in `49d56d2`: unique temp name, `create_new`, fsync, cleanup on every error arm. |
 | Medium | `ColdStakeKeys` derived `Debug`, printing both staking and spending WIFs; `Zeroizing<String>`'s `Debug` prints the inner value. | Fixed in `49d56d2`: manual redacted `Debug`; test asserts neither WIF appears. |
 | Medium | The desktop refund-bump form sent no passphrase/OTP, so the newly required authorization always failed. | Fixed in `49d56d2`: the form passes the existing wallet passphrase and 2FA code; the hook forwards both. |
@@ -41,14 +41,15 @@ varying levels of verification; do not treat the report as independent review.
 | High | TOTP replay state was truncated in place before the new step was written. | Follow-up: a separate lock file plus temp-file-and-rename replacement. Existing empty state fails closed, and tests assert the stored step and temp cleanup. |
 | Medium | A verified torrent piece was published before the disk write completed. | Follow-up: an in-progress claim is separate from `have`; a failed or cancelled write releases the claim. Tests cover the failure path and claim lifecycle. |
 | Medium | Seed provisioning had no end-to-end check. | `deploy/test-provision-seed.sh` runs the real installer in `ubuntu:22.04` with stubbed service management, then verifies the service account can read the key, the unit references it, staging is removed, and a bad digest changes nothing. CI runs it. |
+| High | Blocks had no aggregate sigop limit, so a block could pack many multisig/P2SH checks. | Added `MAX_BLOCK_SIGOPS = 20_000` (`MAX_BLOCK_SIZE / 50`, matching the legacy client). Block validation counts legacy sigops; the transaction application path adds P2SH redeem-script sigops from the live UTXO set before executing each script, which also covers outputs created earlier in the same block. Mempool admission and template selection enforce the same bound. Tests cover exactly 20,000 accepted, 20,001 rejected, and a same-block P2SH spend that crosses the limit. |
 | Medium | The desktop legacy import decoded base64 with no size cap. | Fixed in `aacf371`: payloads above 32 MiB are rejected before decoding. |
 
 Verified in the follow-up: 28 migration tests (including a real BDB fixture
-that is parsed natively and through `db5.3_dump`), 91 script tests, 68 wallet
-tests, 112 torrent tests, Clippy on the four changed crates, and
+that is parsed natively and through `db5.3_dump`), 93 script tests, 245 node
+tests, 68 wallet tests, 112 torrent tests, Clippy on the changed crates, and
 `deploy/test-provision-seed.sh` in `ubuntu:22.04`. The full workspace suite on
 `49d56d2` passed **1,388 tests, 0 failures, 11 ignored**; the follow-up suite
-passed **1,402 tests, 0 failures, 11 ignored**.
+passed **1,407 tests, 0 failures, 11 ignored**.
 
 ## Open findings
 
@@ -167,8 +168,9 @@ passed **1,402 tests, 0 failures, 11 ignored**.
   databases are synthetic.
 - **Cold-stake funding should require a proven spending-key backup** (finding
   12); otherwise a wallet-only restore can lock new cold-stake funds forever.
-- **The multisig cap matches the legacy client's own 20-key limit.** A
-  block-level sigop budget remains a separate hardening item.
+- **The multisig cap matches the legacy client's 20-key limit, and the
+  block-level sigop limit matches its `MAX_BLOCK_SIZE / 50` rule.** Templates
+  skip transactions that would exceed the limit.
 - **Unsigned releases (finding 26) mean the download channel is not
   tamper-evident.** Publishing a signed `SHA256SUMS` is release work, not a code
   fix.

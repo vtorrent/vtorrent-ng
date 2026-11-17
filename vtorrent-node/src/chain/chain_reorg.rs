@@ -1,8 +1,8 @@
 use crate::{
     block::{Block, Transaction},
     consensus::{
-        check_stake_kernel_v2, compute_pos_reward_with, is_stakeable_with, validate_legacy_claim,
-        validate_transaction, MAX_BLOCK_SIZE, MAX_SUPPLY,
+        add_p2sh_sigops, check_stake_kernel_v2, compute_pos_reward_with, is_stakeable_with,
+        validate_legacy_claim, validate_transaction, MAX_BLOCK_SIGOPS, MAX_BLOCK_SIZE, MAX_SUPPLY,
     },
     error::{NodeError, Result},
     genesis::get_legacy_balance,
@@ -289,6 +289,7 @@ fn begin_governance_block(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_transaction(
     chain: &mut Chain,
     tx: &Transaction,
@@ -297,6 +298,7 @@ fn apply_transaction(
     parent_modifier: u64,
     journal: &mut BlockJournal,
     governance_active: bool,
+    block_sigops: &mut usize,
 ) -> Result<()> {
     if governance_active {
         chain.governance.process_transaction(
@@ -317,6 +319,7 @@ fn apply_transaction(
         parent_modifier,
         journal,
         governance_active,
+        block_sigops,
     )
 }
 
@@ -328,6 +331,8 @@ pub(crate) fn apply_block_journaled(
     let governance_active = chain.governance_active(height);
     let governance_before = governance_active.then(|| chain.governance.clone());
     let mut journal = new_journal(chain, block.hash(), height);
+
+    let mut block_sigops = 0usize;
 
     let parent_modifier = if height == 0 {
         0
@@ -357,6 +362,7 @@ pub(crate) fn apply_block_journaled(
                 parent_modifier,
                 &mut journal,
                 governance_active,
+                &mut block_sigops,
             )?;
         }
 
@@ -449,6 +455,7 @@ pub(crate) fn select_block_transactions(
     let selection = (|| -> Result<Vec<Transaction>> {
         begin_governance_block(chain, height, timestamp, governance_active, &journal);
         validate_transaction(first_tx)?;
+        let mut block_sigops = 0usize;
         let mut size = first_tx.serialized_size();
         if size > MAX_BLOCK_SIZE {
             return Err(NodeError::InvalidBlock(
@@ -463,6 +470,7 @@ pub(crate) fn select_block_transactions(
             modifier,
             &mut journal,
             governance_active,
+            &mut block_sigops,
         )?;
         if chain.total_supply.saturating_add(journal.supply_delta) > MAX_SUPPLY {
             return Err(NodeError::InvalidBlock(
@@ -485,6 +493,7 @@ pub(crate) fn select_block_transactions(
             let claims = journal.claimed_addresses.len();
             let supply_delta = journal.supply_delta;
             let staked_delta = journal.staked_delta;
+            let sigops_before = block_sigops;
             let governance_undo =
                 governance_active.then(|| chain.governance.transaction_undo(&tx, height));
             let result = apply_transaction(
@@ -495,6 +504,7 @@ pub(crate) fn select_block_transactions(
                 modifier,
                 &mut journal,
                 governance_active,
+                &mut block_sigops,
             );
             if result.is_err()
                 || chain.total_supply.saturating_add(journal.supply_delta) > MAX_SUPPLY
@@ -511,6 +521,7 @@ pub(crate) fn select_block_transactions(
                 journal.claimed_addresses.truncate(claims);
                 journal.supply_delta = supply_delta;
                 journal.staked_delta = staked_delta;
+                block_sigops = sigops_before;
                 continue;
             }
             size += tx_size;
@@ -526,6 +537,7 @@ pub(crate) fn select_block_transactions(
     selection
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_transaction_journaled(
     chain: &mut Chain,
     tx: &Transaction,
@@ -534,8 +546,16 @@ fn apply_transaction_journaled(
     parent_stake_modifier: u64,
     journal: &mut BlockJournal,
     governance_active: bool,
+    block_sigops: &mut usize,
 ) -> Result<()> {
     let txid = tx.txid();
+
+    *block_sigops = block_sigops.saturating_add(tx.legacy_sigop_count());
+    if *block_sigops > MAX_BLOCK_SIGOPS {
+        return Err(NodeError::InvalidBlock(format!(
+            "Block exceeds the sigop limit of {MAX_BLOCK_SIGOPS}"
+        )));
+    }
 
     let mut total_input: u64 = 0;
     let mut stake_input: Option<Utxo> = None;
@@ -566,6 +586,7 @@ fn apply_transaction_journaled(
                 let stake_timestamp = utxo.timestamp;
 
                 if !tx.is_legacy_claim() {
+                    add_p2sh_sigops(block_sigops, &utxo.script_pubkey, &input.script_sig)?;
                     let tx_hash = tx.sighash(input_index, &utxo.script_pubkey);
                     let env = ScriptEnv {
                         tx_hash,

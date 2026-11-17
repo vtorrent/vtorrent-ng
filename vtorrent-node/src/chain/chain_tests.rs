@@ -1,6 +1,8 @@
+use super::chain_reorg::apply_block_journaled;
 use super::*;
 use crate::block::{Block, BlockHeader, Transaction, TxInput, TxOutput, TxType};
-use crate::consensus::{check_stake_kernel, compute_pos_reward};
+use crate::consensus::{check_stake_kernel, compute_pos_reward, compute_stake_modifier};
+use vtorrent_script::standard::{build_p2pkh, build_p2sh};
 
 fn make_block(prev_hash: [u8; 32], prev_stake_modifier: u64, height: u32) -> Block {
     let transactions = vec![Transaction {
@@ -39,6 +41,86 @@ fn make_block(prev_hash: [u8; 32], prev_stake_modifier: u64, height: u32) -> Blo
     };
     block.header.merkle_root = block.compute_merkle_root();
     block
+}
+
+#[test]
+fn sigop_limit_counts_p2sh_outputs_created_in_the_same_block() {
+    let mut chain = Chain::new().expect("Chain init failed");
+    let genesis_hash = chain.best_hash().unwrap();
+
+    // A redeem script with 100 sigops in a branch that is never executed, so
+    // each input verifies cheaply while still counting toward the limit.
+    let mut redeem_bytes = vec![0x51, 0x63, 0x51, 0x67]; // OP_1 OP_IF OP_1 OP_ELSE
+    redeem_bytes.extend(std::iter::repeat_n(0xac, 100)); // OP_CHECKSIG
+    redeem_bytes.push(0x68); // OP_ENDIF
+    let redeem = vtorrent_script::Script::from_bytes(redeem_bytes.clone()).unwrap();
+    let p2sh = build_p2sh(&vtorrent_core::crypto::hash160(&redeem_bytes)).unwrap();
+    let p2pkh = build_p2pkh(&[0x11; 20]).unwrap();
+
+    let coinbase = Transaction {
+        version: 1,
+        tx_type: TxType::Coinbase,
+        inputs: vec![TxInput {
+            prev_txid: [0; 32],
+            prev_vout: u32::MAX,
+            script_sig: vec![],
+            sequence: u32::MAX,
+        }],
+        outputs: (0..201)
+            .map(|_| TxOutput {
+                value: 1,
+                script_pubkey: p2sh.as_bytes().to_vec(),
+            })
+            .collect(),
+        lock_time: 1,
+        claim_address: None,
+        claim_signature: None,
+    };
+    let coinbase_txid = coinbase.txid();
+
+    let mut script_sig = vtorrent_script::Script::new();
+    script_sig.push_data(redeem.as_bytes()).unwrap();
+    let spend = Transaction {
+        version: 1,
+        tx_type: TxType::Standard,
+        inputs: (0..201)
+            .map(|vout| TxInput {
+                prev_txid: coinbase_txid,
+                prev_vout: vout,
+                script_sig: script_sig.as_bytes().to_vec(),
+                sequence: u32::MAX,
+            })
+            .collect(),
+        outputs: vec![TxOutput {
+            value: 201,
+            script_pubkey: p2pkh.as_bytes().to_vec(),
+        }],
+        lock_time: 0,
+        claim_address: None,
+        claim_signature: None,
+    };
+
+    let mut block = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block_hash: genesis_hash,
+            merkle_root: [0u8; 32],
+            utxo_root: [0u8; 32],
+            timestamp: 1_700_000_001,
+            bits: crate::genesis::GENESIS_BITS,
+            nonce: 1,
+            stake_modifier: compute_stake_modifier(0, &genesis_hash),
+        },
+        transactions: vec![coinbase, spend],
+    };
+    block.header.merkle_root = block.compute_merkle_root();
+
+    let error = apply_block_journaled(&mut chain, &block, 1).unwrap_err();
+    assert!(error.to_string().contains("sigop"), "{error}");
+    assert!(
+        chain.get_utxo(&coinbase_txid, 0).is_none(),
+        "the rejected block must not leave its coinbase outputs"
+    );
 }
 
 #[test]

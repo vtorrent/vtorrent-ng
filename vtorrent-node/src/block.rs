@@ -74,6 +74,27 @@ impl Transaction {
         hash
     }
 
+    /// Count signature operations in this transaction using the legacy
+    /// `GetLegacySigOpCount` rules: scriptSig plus every output scriptPubKey,
+    /// with `OP_CHECKMULTISIG` assumed to carry 20 keys unless counted
+    /// accurately.
+    pub fn legacy_sigop_count(&self) -> usize {
+        let mut count = 0usize;
+        for input in &self.inputs {
+            count = count.saturating_add(vtorrent_script::standard::count_sigops_raw(
+                &input.script_sig,
+                false,
+            ));
+        }
+        for output in &self.outputs {
+            count = count.saturating_add(vtorrent_script::standard::count_sigops_raw(
+                &output.script_pubkey,
+                false,
+            ));
+        }
+        count
+    }
+
     /// Compute the SIGHASH_ALL signature hash for a single input.
     ///
     /// This is the canonical message that both the wallet (when signing) and

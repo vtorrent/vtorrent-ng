@@ -9,7 +9,7 @@
 //! - `build_op_return()` — OP_RETURN data carrier output
 
 use crate::error::{Result, ScriptError};
-use crate::script::Script;
+use crate::script::{Script, ScriptItem};
 
 /// The type of a standard scriptPubKey.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -308,6 +308,100 @@ pub fn build_op_return(data: &[u8]) -> Result<Script> {
     Ok(s)
 }
 
+/// Count signature operations in a script, matching the legacy client's
+/// `CScript::GetSigOpCount`.
+///
+/// `accurate` controls whether `OP_CHECKMULTISIG` uses the preceding
+/// `OP_1`..`OP_16` as the key count or assumes the legacy maximum of 20.
+pub fn count_sigops(script: &Script, accurate: bool) -> usize {
+    count_sigops_raw(script.as_bytes(), accurate)
+}
+
+/// Count signature operations directly from raw script bytes.
+///
+/// Unlike [`count_sigops`], this does not reject scripts above the execution
+/// size cap: the legacy client counts sigops before that check, so an oversized
+/// output script must still contribute to the block limit.
+pub fn count_sigops_raw(script: &[u8], accurate: bool) -> usize {
+    let mut count = 0usize;
+    let mut last_opcode = None;
+    let mut index = 0usize;
+    while index < script.len() {
+        let opcode = script[index];
+        index += 1;
+        let push_len = match opcode {
+            0..=75 => Some(opcode as usize),
+            0x4c => {
+                let Some(len) = script.get(index) else { break };
+                index += 1;
+                Some(*len as usize)
+            }
+            0x4d => {
+                let Some(bytes) = script.get(index..index + 2) else {
+                    break;
+                };
+                index += 2;
+                Some(u16::from_le_bytes([bytes[0], bytes[1]]) as usize)
+            }
+            0x4e => {
+                let Some(bytes) = script.get(index..index + 4) else {
+                    break;
+                };
+                index += 4;
+                Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize)
+            }
+            _ => None,
+        };
+        if let Some(len) = push_len {
+            if index.saturating_add(len) > script.len() {
+                break;
+            }
+            index += len;
+            last_opcode = Some(0);
+            continue;
+        }
+        match opcode {
+            0xac | 0xad => count += 1,
+            0xae | 0xaf => {
+                if accurate {
+                    if let Some(op @ 0x51..=0x60) = last_opcode {
+                        count += (op - 0x50) as usize;
+                    } else {
+                        count += 20;
+                    }
+                } else {
+                    count += 20;
+                }
+            }
+            _ => {}
+        }
+        last_opcode = Some(opcode);
+    }
+    count
+}
+
+/// Count the signature operations a P2SH spend contributes.
+///
+/// Mirrors the legacy `CScript::GetSigOpCount(scriptSig)`: the scriptSig must
+/// contain only pushes and small integers, and its last pushed item is the
+/// redeem script.
+pub fn p2sh_sigops(script_pubkey: &Script, script_sig: &Script) -> usize {
+    if classify_script(script_pubkey) != ScriptType::P2SH {
+        return count_sigops(script_pubkey, true);
+    }
+    let mut redeem: &[u8] = &[];
+    for item in script_sig.iter() {
+        match item {
+            ScriptItem::PushData(data) => redeem = data,
+            ScriptItem::Opcode(0x4f..=0x60) => redeem = &[],
+            ScriptItem::Opcode(_) => return 0,
+        }
+    }
+    Script::from_bytes(redeem.to_vec())
+        .map(|script| count_sigops(&script, true))
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,5 +502,38 @@ mod tests {
         // An HTLC (OP_IF OP_SHA256 ...) must still classify as Htlc, not P2CS.
         let htlc = build_htlc(&[0u8; 32], &[1u8; 20], &[2u8; 20], 100).unwrap();
         assert_eq!(classify_script(&htlc), ScriptType::Htlc);
+    }
+
+    #[test]
+    fn counts_checksig_and_multisig_sigops() {
+        let p2pkh = build_p2pkh(&[0x11; 20]).unwrap();
+        assert_eq!(count_sigops(&p2pkh, false), 1);
+
+        let keys = vec![vec![0x02; 33], vec![0x03; 33], vec![0x04; 33]];
+        let multisig = build_p2ms(2, &keys).unwrap();
+        assert_eq!(count_sigops(&multisig, true), 3);
+        assert_eq!(count_sigops(&multisig, false), 20);
+
+        assert_eq!(count_sigops_raw(&vec![0xac; 20_001], false), 20_001);
+    }
+
+    #[test]
+    fn p2sh_sigop_count_uses_the_pushed_redeem_script() {
+        let keys = vec![vec![0x02; 33], vec![0x03; 33], vec![0x04; 33]];
+        let redeem = build_p2ms(2, &keys).unwrap();
+        let p2sh = build_p2sh(&[0x22; 20]).unwrap();
+
+        let mut script_sig = Script::new();
+        script_sig.push_opcode(0x00);
+        script_sig.push_data(redeem.as_bytes()).unwrap();
+        assert_eq!(p2sh_sigops(&p2sh, &script_sig), 3);
+
+        let mut no_redeem = Script::new();
+        no_redeem.push_opcode(0x51);
+        assert_eq!(p2sh_sigops(&p2sh, &no_redeem), 0);
+
+        let mut non_push = Script::new();
+        non_push.push_opcode(0x76);
+        assert_eq!(p2sh_sigops(&p2sh, &non_push), 0);
     }
 }

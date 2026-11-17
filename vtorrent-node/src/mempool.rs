@@ -18,7 +18,7 @@
 
 use crate::{
     block::Transaction,
-    consensus::validate_transaction,
+    consensus::{validate_transaction, MAX_BLOCK_SIGOPS},
     error::{NodeError, Result},
 };
 use std::collections::HashMap;
@@ -567,6 +567,33 @@ impl Mempool {
                 ));
             }
         };
+        // A transaction that alone exceeds the block sigop limit can never be
+        // mined. Check it before running any scripts so it cannot burn CPU.
+        let mut sigops = tx.legacy_sigop_count();
+        for input in &tx.inputs {
+            let Some(utxo) = chain.get_utxo(&input.prev_txid, input.prev_vout) else {
+                continue;
+            };
+            let Ok(script_pubkey) = vtorrent_script::Script::from_bytes(utxo.script_pubkey.clone())
+            else {
+                continue;
+            };
+            if vtorrent_script::classify_script(&script_pubkey) != vtorrent_script::ScriptType::P2SH
+            {
+                continue;
+            }
+            if let Ok(script_sig) = vtorrent_script::Script::from_bytes(input.script_sig.clone()) {
+                sigops = sigops.saturating_add(vtorrent_script::standard::p2sh_sigops(
+                    &script_pubkey,
+                    &script_sig,
+                ));
+            }
+        }
+        if sigops > MAX_BLOCK_SIGOPS {
+            return Err(NodeError::PolicyRejected(format!(
+                "Transaction exceeds the sigop limit of {MAX_BLOCK_SIGOPS}"
+            )));
+        }
         // Script verification against the current chain state: without this a
         // script-invalid tx (bad signature, unsatisfied timelock) is relayed
         // network-wide and poisons stakers' block templates until the TTL

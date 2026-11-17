@@ -18,6 +18,63 @@ use crate::{
 /// Maximum block size in bytes.
 pub const MAX_BLOCK_SIZE: usize = 1_000_000; // 1 MB
 
+/// Legacy block sigop limit: `MAX_BLOCK_SIZE / 50`, matching the legacy client.
+pub const MAX_BLOCK_SIGOPS: usize = 20_000;
+
+/// Count a block's signature operations, optionally resolving prevout scripts
+/// for the P2SH redeem-script contribution. Mirrors the legacy `CheckBlock`
+/// (no prevouts) and `ConnectBlock` (P2SH included) checks.
+pub(crate) fn check_block_sigops<F>(block: &Block, mut prevout_script: F) -> Result<()>
+where
+    F: FnMut(&[u8; 32], u32) -> Option<Vec<u8>>,
+{
+    let mut total = 0usize;
+    for tx in &block.transactions {
+        total = total.saturating_add(tx.legacy_sigop_count());
+        if total > MAX_BLOCK_SIGOPS {
+            return Err(sigop_limit_error());
+        }
+        for input in &tx.inputs {
+            let Some(script) = prevout_script(&input.prev_txid, input.prev_vout) else {
+                continue;
+            };
+            add_p2sh_sigops(&mut total, &script, &input.script_sig)?;
+        }
+    }
+    Ok(())
+}
+
+/// Add the P2SH redeem-script sigops for one input and enforce the block limit.
+pub(crate) fn add_p2sh_sigops(
+    total: &mut usize,
+    prevout_script: &[u8],
+    script_sig: &[u8],
+) -> Result<()> {
+    let Ok(script_pubkey) = vtorrent_script::Script::from_bytes(prevout_script.to_vec()) else {
+        return Ok(());
+    };
+    if vtorrent_script::classify_script(&script_pubkey) != vtorrent_script::ScriptType::P2SH {
+        return Ok(());
+    }
+    let Ok(script_sig) = vtorrent_script::Script::from_bytes(script_sig.to_vec()) else {
+        return Ok(());
+    };
+    *total = total.saturating_add(vtorrent_script::standard::p2sh_sigops(
+        &script_pubkey,
+        &script_sig,
+    ));
+    if *total > MAX_BLOCK_SIGOPS {
+        return Err(sigop_limit_error());
+    }
+    Ok(())
+}
+
+fn sigop_limit_error() -> NodeError {
+    NodeError::InvalidBlock(format!(
+        "Block exceeds the sigop limit of {MAX_BLOCK_SIGOPS}"
+    ))
+}
+
 /// Minimum transaction fee in satoshis per byte.
 pub const MIN_FEE_RATE: u64 = 10;
 
@@ -293,6 +350,10 @@ pub(crate) fn validate_block_inner(
         )));
     }
 
+    // Match the legacy client's CheckBlock sigop bound. P2SH redeem-script
+    // sigops are added once the UTXO set is available (ConnectBlock).
+    check_block_sigops(block, |_, _| None)?;
+
     // The block height is encoded in the first transaction's lock_time and
     // must be exactly one more than the parent's height.
     if block.height() != prev_height + 1 {
@@ -397,6 +458,12 @@ pub(crate) fn validate_block_inner(
 
 /// Validate a transaction against the consensus rules.
 pub fn validate_transaction(tx: &Transaction) -> Result<()> {
+    if tx.legacy_sigop_count() > MAX_BLOCK_SIGOPS {
+        return Err(NodeError::InvalidTransaction(format!(
+            "Transaction exceeds the sigop limit of {MAX_BLOCK_SIGOPS}"
+        )));
+    }
+
     if tx.outputs.is_empty() {
         return Err(NodeError::InvalidTransaction(
             "Transaction has no outputs".into(),
@@ -694,7 +761,7 @@ fn pubkey_to_vtorrent_address(pubkey: &PublicKey, compressed: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block::TxOutput;
+    use crate::block::{BlockHeader, TxOutput};
     use secp256k1::SecretKey;
 
     fn stake_utxo(value: u64) -> Utxo {
@@ -720,6 +787,91 @@ mod tests {
             .filter(|i| check_stake_kernel_v2(0xdead_beef, &utxo, 1_700_000_000 + i, total_staked))
             .count();
         hits as f64 / samples as f64
+    }
+
+    fn test_block(tx: Transaction) -> Block {
+        Block {
+            header: BlockHeader {
+                version: 1,
+                prev_block_hash: [0; 32],
+                merkle_root: [0; 32],
+                utxo_root: [0; 32],
+                timestamp: 0,
+                bits: 0,
+                nonce: 0,
+                stake_modifier: 0,
+            },
+            transactions: vec![tx],
+        }
+    }
+
+    fn outputs(count: usize, script_pubkey: Vec<u8>) -> Transaction {
+        Transaction {
+            version: 1,
+            tx_type: TxType::Coinbase,
+            inputs: Vec::new(),
+            outputs: (0..count)
+                .map(|_| TxOutput {
+                    value: 1,
+                    script_pubkey: script_pubkey.clone(),
+                })
+                .collect(),
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        }
+    }
+
+    #[test]
+    fn transaction_sigop_count_matches_legacy_rules() {
+        let p2pkh = vtorrent_script::standard::build_p2pkh(&[0x11; 20]).unwrap();
+        assert_eq!(
+            outputs(3, p2pkh.as_bytes().to_vec()).legacy_sigop_count(),
+            3
+        );
+        // Oversized output scripts cannot execute, but the legacy counter still
+        // charges them so they cannot bypass the block limit.
+        assert_eq!(outputs(1, vec![0xac; 20_001]).legacy_sigop_count(), 20_001);
+    }
+
+    #[test]
+    fn block_sigop_limit_accepts_the_boundary_and_rejects_one_over() {
+        assert_eq!(MAX_BLOCK_SIGOPS, MAX_BLOCK_SIZE / 50);
+        let p2pkh = vtorrent_script::standard::build_p2pkh(&[0x11; 20]).unwrap();
+        let at_limit = test_block(outputs(MAX_BLOCK_SIGOPS, p2pkh.as_bytes().to_vec()));
+        check_block_sigops(&at_limit, |_, _| None).expect("the limit itself must be accepted");
+
+        // Each redeem script can hold thousands of CHECKSIGs; three P2SH
+        // inputs are enough to cross the block limit. The push uses PUSHDATA2
+        // and stays within the 10 KB script cap.
+        let redeem = vtorrent_script::Script::from_bytes(vec![0xac; 9_990]).unwrap();
+        let mut script_sig_bytes = vec![0x4d];
+        script_sig_bytes.extend_from_slice(&(redeem.len() as u16).to_le_bytes());
+        script_sig_bytes.extend_from_slice(redeem.as_bytes());
+        let script_sig = vtorrent_script::Script::from_bytes(script_sig_bytes).unwrap();
+        let p2sh = vtorrent_script::standard::build_p2sh(&[0x22; 20]).unwrap();
+        let tx = Transaction {
+            version: 1,
+            tx_type: TxType::Standard,
+            inputs: (0..3)
+                .map(|index| crate::block::TxInput {
+                    prev_txid: [index as u8; 32],
+                    prev_vout: 0,
+                    script_sig: script_sig.as_bytes().to_vec(),
+                    sequence: u32::MAX,
+                })
+                .collect(),
+            outputs: vec![TxOutput {
+                value: 1,
+                script_pubkey: p2pkh.as_bytes().to_vec(),
+            }],
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        };
+        let over = test_block(tx);
+        let error = check_block_sigops(&over, |_, _| Some(p2sh.as_bytes().to_vec())).unwrap_err();
+        assert!(error.to_string().contains("sigop"), "{error}");
     }
 
     #[test]

@@ -30,6 +30,7 @@
 | Min stake age | 6 hours (21,600 s) | `vtorrent-node/src/consensus.rs:31` |
 | Max stake age | 6 days (518,400 s) | `vtorrent-node/src/consensus.rs:34` |
 | Max supply | 20,000,000 VTR (2×10¹⁵ sats) | `vtorrent-node/src/consensus.rs:46` |
+| Max block sigops | 20,000 (`MAX_BLOCK_SIZE / 50`, legacy rule) | `vtorrent-node/src/consensus.rs:22` |
 | Difficulty adjustment | Every 2016 blocks | `vtorrent-node/src/consensus.rs:61` |
 | Genesis bits | `0x1e0fffff` | `vtorrent-node/src/genesis.rs:27` |
 | Genesis timestamp | `1700000000` | `vtorrent-node/src/genesis.rs:24` |
