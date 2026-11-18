@@ -1,6 +1,6 @@
 use super::Node;
 use vtorrent_p2p::dht::{discover_peers_via_doh, discover_peers_via_github, DhtBootstrap};
-use vtorrent_p2p::peer_manager::{DEFAULT_PORT, TARGET_OUTBOUND};
+use vtorrent_p2p::peer_manager::{DialSource, DEFAULT_PORT, TARGET_OUTBOUND};
 
 pub(crate) async fn bootstrap_via_dht(node: &mut Node) {
     tracing::info!("Starting parallel DHT + Cloudflare DoH bootstrap...");
@@ -46,9 +46,10 @@ pub(crate) async fn bootstrap_via_dht(node: &mut Node) {
     let candidates = node.peer_manager.get_peer_candidates(TARGET_OUTBOUND);
     for addr in candidates {
         tracing::info!("Bootstrap: Connecting to peer candidate {}", addr);
-        if let Err(e) = node.peer_manager.connect_addr(addr).await {
-            tracing::debug!("Bootstrap: Could not connect to {}: {}", addr, e);
-        }
+        let _ = node
+            .peer_manager
+            .try_dial_addr_with_source(addr, DialSource::Trusted)
+            .await;
     }
 }
 
@@ -70,9 +71,7 @@ pub(crate) async fn dht_announce(node: &Node) {
 pub(crate) async fn connect_to_extra_seeds(node: &mut Node) {
     for seed in node.config.extra_seeds.clone() {
         tracing::info!("Connecting to extra seed: {}", seed);
-        if let Err(e) = node.peer_manager.connect(&seed).await {
-            tracing::debug!("Could not connect to {}: {}", seed, e);
-        }
+        node.peer_manager.try_dial_host(seed).await;
     }
 }
 
@@ -103,9 +102,10 @@ pub(crate) async fn bootstrap_via_github(node: &mut Node) {
     let candidates = node.peer_manager.get_peer_candidates(TARGET_OUTBOUND);
     for addr in candidates {
         tracing::info!("GitHub: Connecting to peer candidate {}", addr);
-        if let Err(e) = node.peer_manager.connect_addr(addr).await {
-            tracing::debug!("GitHub: Could not connect to {}: {}", addr, e);
-        }
+        let _ = node
+            .peer_manager
+            .try_dial_addr_with_source(addr, DialSource::Trusted)
+            .await;
     }
 }
 
@@ -118,8 +118,6 @@ pub(crate) async fn connect_to_dns_seeds(node: &mut Node) {
 
     for seed in seeds {
         tracing::info!("Connecting to DNS seed (fallback): {}", seed);
-        if let Err(e) = node.peer_manager.connect(&seed).await {
-            tracing::debug!("Could not connect to {}: {}", seed, e);
-        }
+        node.peer_manager.try_dial_host(seed).await;
     }
 }

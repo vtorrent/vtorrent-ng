@@ -39,13 +39,16 @@ pub const DUST_SATOSHIS: u64 = 546;
 pub const DEFAULT_FEE_RATE: u64 = 10;
 
 /// Maximum serialized P2PKH input size: txid (32) + vout (4) + bincode Vec
-/// length (8) + scriptSig (108) + sequence (4).
+/// length (8) + scriptSig (140 for an uncompressed 65-byte pubkey) +
+/// sequence (4). Uncompressed legacy imports cost 32 bytes more than
+/// compressed ones; the estimate must cover the larger case or those sends
+/// fall below the requested fee rate.
 /// Absolute minimum transaction fee accepted by the node's relay policy.
 /// Must stay in sync with `vtorrent_node::mempool::MIN_RELAY_FEE` (a unit
 /// test in the node crate asserts equality).
 pub const MIN_ABSOLUTE_FEE_SATS: u64 = 1_000;
 
-const P2PKH_INPUT_SIZE: usize = 156;
+const P2PKH_INPUT_SIZE: usize = 188;
 
 /// Maximum serialized P2PKH output: value (8) + bincode Vec length (8) +
 /// scriptpubkey (25).

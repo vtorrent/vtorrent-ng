@@ -13,9 +13,14 @@ set -eu
 umask 077
 STAMP=$(date -u +%Y%m%d)
 DEST="/backups/vtorrent-$STAMP.tar.gz"
+PART="$DEST.partial"
 STAGE=$(mktemp -d /backups/.vtorrent-stage.XXXXXX)
 restart() { systemctl start vtorrent >/dev/null 2>&1 || true; }
 trap 'restart; rm -rf "$STAGE"' EXIT
+
+# cron.daily fires at the same minute on every seed. Stagger this host so the
+# fleet never stops all nodes together.
+sleep $((RANDOM % 3600))
 
 # Stop writers so redb is not copied mid-transaction. The seed rejoins after
 # the copy; keep this window short.
@@ -28,9 +33,13 @@ done
 restart
 trap 'rm -rf "$STAGE"' EXIT
 
-tar -czf "$DEST" -C "$STAGE" .
-tar -tzf "$DEST" >/dev/null
+tar -czf "$PART" -C "$STAGE" .
+tar -tzf "$PART" >/dev/null
+DIGEST=$(sha256sum "$PART" | awk '{print $1}')
+printf '%s  %s\n' "$DIGEST" "$(basename "$DEST")" > "$DEST.sha256"
+mv "$PART" "$DEST"
 find /backups -name 'vtorrent-*.tar.gz' -mtime +14 -delete
+find /backups -name 'vtorrent-*.tar.gz.partial' -mtime +1 -delete
 ```
 
 The archive is created with `umask 077` because it may contain `wallet.json`.

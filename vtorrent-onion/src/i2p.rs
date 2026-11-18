@@ -23,11 +23,15 @@ use tokio::net::TcpStream;
 /// I2P SAM transport.
 #[derive(Clone)]
 pub struct I2pTransport {
-    config: TransportConfig,
+    config: std::sync::Arc<TransportConfig>,
 }
 
 impl I2pTransport {
     pub fn new(config: TransportConfig) -> Self {
+        Self::from_shared(std::sync::Arc::new(config))
+    }
+
+    pub(crate) fn from_shared(config: std::sync::Arc<TransportConfig>) -> Self {
         Self { config }
     }
 

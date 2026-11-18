@@ -132,12 +132,19 @@ pub async fn persist(
 
 /// Remove the recovery record for an order whose funding admission failed.
 pub(crate) async fn remove(state: &AppState, order_id: &str) -> RpcResult<()> {
+    // Nothing was persisted when recovery is not configured, so there is
+    // nothing to remove and no identity check is needed.
+    if state.swap_recovery_dir.is_none() {
+        return Ok(());
+    }
     let Some(wif) = state.wallet_wif.read().await.clone() else {
-        return Ok(());
+        return Err(failure(
+            "wallet is locked; cannot remove the failed funding recovery record",
+        ));
     };
-    let Some((directory, _password)) = context(state, &wif).await? else {
-        return Ok(());
-    };
+    let (directory, _password) = context(state, &wif)
+        .await?
+        .ok_or_else(|| failure("swap recovery directory disappeared during removal"))?;
     let path = directory.join(format!("{order_id}.json"));
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),

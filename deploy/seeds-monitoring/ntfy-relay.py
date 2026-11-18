@@ -6,6 +6,7 @@ them to an ntfy topic as human-readable push messages.
 """
 import json
 import os
+import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -39,7 +40,15 @@ def publish(alerts, firing):
         }
     ).encode()
     req = urllib.request.Request(NTFY_URL, data=body, headers={"Content-Type": "application/json"})
-    urllib.request.urlopen(req, timeout=10).read()
+    last_error = None
+    for attempt in range(3):
+        try:
+            urllib.request.urlopen(req, timeout=10).read()
+            return
+        except Exception as error:  # transient DNS/TLS/5xx
+            last_error = error
+            time.sleep(1 << attempt)
+    raise last_error
 
 
 class Handler(BaseHTTPRequestHandler):

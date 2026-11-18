@@ -68,23 +68,25 @@ impl SwapScanTracker {
             self.coinbase = tx.is_coinbase();
             self.funding = Some(anchor.clone());
         }
-        if tx.input.iter().any(|input| {
+        let htlc_input = tx.input.iter().find(|input| {
             input.previous_output.txid.to_byte_array() == self.funding_txid
                 && input.previous_output.vout == 0
-        }) {
+        });
+        if let Some(input) = htlc_input {
             self.spend = Some(anchor);
             // A hash-lock claim reveals the preimage in the witness as a
-            // 32-byte element whose SHA-256 equals the HTLC hash lock. This is
-            // how a taker on another node learns the secret. A refund witness
-            // has no such element, so this stays `None`.
-            for item in tx.input.iter().flat_map(|input| input.witness.iter()) {
-                if item.len() == 32 {
-                    let candidate: [u8; 32] = item.try_into().expect("len checked");
+            // 32-byte element whose SHA-256 equals the HTLC hash lock. Only
+            // the input that actually spends the HTLC qualifies, and only the
+            // exact `<sig> <pubkey> <preimage> <1> <script>` claim shape.
+            // Harvesting from any input or any 32-byte witness element would
+            // misclassify a refund carrying unrelated data as a claim.
+            let witness: Vec<&[u8]> = input.witness.iter().collect();
+            if witness.len() == 5 && witness[3] == [1u8].as_slice() {
+                if let Ok(candidate) = <[u8; 32]>::try_from(witness[2]) {
                     if bitcoin::hashes::sha256::Hash::hash(&candidate).to_byte_array()
                         == self.hash_lock
                     {
                         self.preimage = Some(candidate);
-                        break;
                     }
                 }
             }

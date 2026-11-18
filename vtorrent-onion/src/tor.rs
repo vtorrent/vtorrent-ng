@@ -20,7 +20,7 @@ use tokio::net::TcpStream;
 /// Tor transport — wraps SOCKS5 and control port interactions.
 #[derive(Clone)]
 pub struct TorTransport {
-    config: TransportConfig,
+    config: std::sync::Arc<TransportConfig>,
 }
 
 /// Control-port operations must not hang forever: a wedged local Tor control
@@ -40,6 +40,10 @@ async fn timed_io<T>(
 }
 impl TorTransport {
     pub fn new(config: TransportConfig) -> Self {
+        Self::from_shared(std::sync::Arc::new(config))
+    }
+
+    pub(crate) fn from_shared(config: std::sync::Arc<TransportConfig>) -> Self {
         Self { config }
     }
 

@@ -108,24 +108,27 @@ pub async fn get_torrent_sessions(state: tauri::State<'_, AppState>) -> Result<V
     Ok(sessions
         .list_sessions()
         .into_iter()
-        .map(|s| TorrentResult {
-            id: s.id.clone(),
-            name: s.metainfo.name.clone(),
-            info_hash: hex::encode(s.metainfo.info_hash),
-            state: format!("{:?}", s.state),
-            progress: s.progress(),
-            size_bytes: s.metainfo.total_size,
-            downloaded_bytes: s.bytes_downloaded,
-            uploaded_bytes: s.bytes_uploaded,
-            download_speed: s.download_speed,
-            upload_speed: s.upload_speed,
-            peer_count: s.peers.len(),
-            vtr_earned_satoshis: s.incentive_summary().total_earned_satoshis,
-            vtr_paid_satoshis: s.incentive_summary().total_paid_satoshis,
-            vtr_pending_earned_satoshis: s.incentive_summary().pending_earned_satoshis,
-            vtr_pending_owed_satoshis: s.incentive_summary().pending_owed_satoshis,
-            vtr_settled_earned_satoshis: s.incentive_summary().total_earned_satoshis,
-            vtr_settled_paid_satoshis: s.incentive_summary().total_paid_satoshis,
+        .map(|s| {
+            let summary = s.incentive_summary();
+            TorrentResult {
+                id: s.id.clone(),
+                name: s.metainfo.name.clone(),
+                info_hash: hex::encode(s.metainfo.info_hash),
+                state: format!("{:?}", s.state),
+                progress: s.progress(),
+                size_bytes: s.metainfo.total_size,
+                downloaded_bytes: s.bytes_downloaded,
+                uploaded_bytes: s.bytes_uploaded,
+                download_speed: s.download_speed,
+                upload_speed: s.upload_speed,
+                peer_count: s.peers.len(),
+                vtr_earned_satoshis: summary.total_earned_satoshis,
+                vtr_paid_satoshis: summary.total_paid_satoshis,
+                vtr_pending_earned_satoshis: summary.pending_earned_satoshis,
+                vtr_pending_owed_satoshis: summary.pending_owed_satoshis,
+                vtr_settled_earned_satoshis: summary.total_earned_satoshis,
+                vtr_settled_paid_satoshis: summary.total_paid_satoshis,
+            }
         })
         .collect())
 }

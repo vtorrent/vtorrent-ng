@@ -139,12 +139,10 @@ impl TorrentSession {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let account = self
-            .incentive_accounts
-            .entry(peer_address.to_string())
-            .or_insert_with(|| PeerBandwidthAccount::new(peer_address.to_string()));
-        account.record_download(bytes);
-        account.touch(now);
+        if let Some(account) = self.account_for(peer_address) {
+            account.record_download(bytes);
+            account.touch(now);
+        }
     }
 
     /// Record bytes uploaded to a peer.
@@ -155,12 +153,51 @@ impl TorrentSession {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let account = self
-            .incentive_accounts
-            .entry(peer_address.to_string())
-            .or_insert_with(|| PeerBandwidthAccount::new(peer_address.to_string()));
-        account.record_upload(bytes);
-        account.touch(now);
+        if let Some(account) = self.account_for(peer_address) {
+            account.record_upload(bytes);
+            account.touch(now);
+        }
+    }
+
+    /// Get or create an incentive account while keeping the map bounded.
+    ///
+    /// A peer id is attacker-chosen until it presents a VTR address, so an
+    /// unbounded map is a trivial memory-exhaustion vector. Unpayable accounts
+    /// are evicted first; if every account is payable and holds unsettled
+    /// bytes, new ids are simply not tracked.
+    fn account_for(&mut self, peer_address: &str) -> Option<&mut PeerBandwidthAccount> {
+        self.evict_stale_accounts();
+        if !self.incentive_accounts.contains_key(peer_address)
+            && self.incentive_accounts.len() >= MAX_INCENTIVE_ACCOUNTS
+        {
+            let victim = self
+                .incentive_accounts
+                .iter()
+                .filter(|(addr, a)| {
+                    a.unpaid_satoshis == 0
+                        && !a.payment_in_flight
+                        && vtorrent_core::address::Address::parse(addr).is_err()
+                })
+                .min_by_key(|(_, a)| a.last_active)
+                .map(|(addr, _)| addr.clone());
+            match victim {
+                Some(addr) => {
+                    self.incentive_accounts.remove(&addr);
+                }
+                None => {
+                    tracing::debug!(
+                        peer = peer_address,
+                        "Incentive account cap reached; not tracking peer"
+                    );
+                    return None;
+                }
+            }
+        }
+        Some(
+            self.incentive_accounts
+                .entry(peer_address.to_string())
+                .or_insert_with(|| PeerBandwidthAccount::new(peer_address.to_string())),
+        )
     }
 
     /// Evict accounts with zero bandwidth and least-recently-active accounts
@@ -185,6 +222,8 @@ impl TorrentSession {
                 .filter(|(_, a)| {
                     a.bytes_uploaded == 0
                         && a.bytes_downloaded == 0
+                        && a.unpaid_satoshis == 0
+                        && !a.payment_in_flight
                         && a.total_earned_satoshis == a.total_paid_satoshis
                 })
                 .take(excess)

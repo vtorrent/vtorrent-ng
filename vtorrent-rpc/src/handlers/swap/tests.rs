@@ -1478,7 +1478,7 @@ async fn btc_claim_bump_rejects_changed_order_amount_before_broadcast() {
     let called = std::sync::atomic::AtomicBool::new(false);
     let result = crate::btc_claim_bump::bump_with_broadcast(
         &state,
-        bump_request(&id, claim, 3_000),
+        bump_request(&id, claim, 6_000),
         async |raw: &[u8]| {
             called.store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(txid(raw))
@@ -1509,7 +1509,7 @@ async fn btc_claim_bump_rejects_changed_destination_or_unsafe_expiry() {
         }
         let result = crate::btc_claim_bump::bump_with_broadcast(
             &state,
-            bump_request(&id, claim, 3_000),
+            bump_request(&id, claim, 6_000),
             async |_: &[u8]| panic!("changed terms must not be broadcast"),
         )
         .await;
@@ -1523,7 +1523,7 @@ async fn btc_claim_bump_rejects_changed_destination_or_unsafe_expiry() {
 #[tokio::test]
 async fn btc_claim_bump_requires_explicit_approval() {
     let (state, id, claim) = claim_bump_fixture().await;
-    let mut req = bump_request(&id, claim, 2_000);
+    let mut req = bump_request(&id, claim, 6_000);
     req.approve = false;
     assert!(crate::btc_claim_bump::bump(&state, req).await.is_err());
     // State must be untouched.
@@ -1535,7 +1535,7 @@ async fn btc_claim_bump_requires_durable_recovery() {
     let (state, id, claim) = claim_bump_fixture().await;
     // claim_fixture does not set swap_recovery_dir.
     assert!(state.swap_recovery_dir.is_none());
-    let err = crate::btc_claim_bump::bump(&state, bump_request(&id, claim, 2_000))
+    let err = crate::btc_claim_bump::bump(&state, bump_request(&id, claim, 6_000))
         .await
         .unwrap_err();
     assert!(err.to_string().contains("recovery"));
@@ -1586,7 +1586,7 @@ async fn btc_claim_bump_persists_when_recovery_was_enabled_before_claim() {
 
     let response = crate::btc_claim_bump::bump_with_broadcast(
         &state,
-        bump_request(&id, claim, 3_000),
+        bump_request(&id, claim, 6_000),
         async |raw: &[u8]| Ok(txid(raw)),
     )
     .await
@@ -1601,7 +1601,7 @@ async fn btc_claim_bump_replaces_with_higher_fee_and_signals_rbf() {
     state.swap_recovery_dir = Some(directory.path().to_path_buf());
     let response = crate::btc_claim_bump::bump_with_broadcast(
         &state,
-        bump_request(&id, claim, 3_000),
+        bump_request(&id, claim, 6_000),
         async |raw: &[u8]| Ok(txid(raw)),
     )
     .await
@@ -1612,11 +1612,11 @@ async fn btc_claim_bump_replaces_with_higher_fee_and_signals_rbf() {
     let swaps = state.swaps.read().await;
     let swap = &swaps[&id];
     let replacement = swap.latest_btc_claim().unwrap();
-    assert_eq!(replacement.total_fee_satoshis, 3_000);
+    assert_eq!(replacement.total_fee_satoshis, 6_000);
     let tx: bitcoin::Transaction = bitcoin::consensus::deserialize(&replacement.raw).unwrap();
     assert!(tx.input[0].sequence.is_rbf(), "replacement must signal RBF");
     // The replacement pays the higher fee, so its output is smaller.
-    assert_eq!(tx.output[0].value.to_sat(), swap.btc_amount - 3_000);
+    assert_eq!(tx.output[0].value.to_sat(), swap.btc_amount - 6_000);
     assert_eq!(swap.btc_claim_txid, Some(replacement.replaces_txid));
 }
 
@@ -1628,13 +1628,13 @@ async fn btc_claim_bump_rejects_stale_parent() {
     // First bump succeeds.
     crate::btc_claim_bump::bump_with_broadcast(
         &state,
-        bump_request(&id, claim, 3_000),
+        bump_request(&id, claim, 6_000),
         async |raw: &[u8]| Ok(txid(raw)),
     )
     .await
     .unwrap();
     // A second bump naming the original (now superseded) parent must fail.
-    let err = crate::btc_claim_bump::bump(&state, bump_request(&id, claim, 4_000))
+    let err = crate::btc_claim_bump::bump(&state, bump_request(&id, claim, 7_000))
         .await
         .unwrap_err();
     assert!(err.to_string().contains("Stale"));
@@ -1647,7 +1647,7 @@ async fn btc_claim_persist_refuses_a_shorter_lineage() {
     state.swap_recovery_dir = Some(directory.path().to_path_buf());
     crate::btc_claim_bump::bump_with_broadcast(
         &state,
-        bump_request(&id, claim, 3_000),
+        bump_request(&id, claim, 6_000),
         async |raw: &[u8]| Ok(txid(raw)),
     )
     .await
@@ -1676,7 +1676,7 @@ async fn restore_adopts_the_latest_signed_claim_raw() {
     state.swap_recovery_dir = Some(directory.path().to_path_buf());
     let first = crate::btc_claim_bump::bump_with_broadcast(
         &state,
-        bump_request(&id, claim, 3_000),
+        bump_request(&id, claim, 6_000),
         async |raw: &[u8]| Ok(txid(raw)),
     )
     .await
@@ -1684,7 +1684,7 @@ async fn restore_adopts_the_latest_signed_claim_raw() {
     let first_txid: [u8; 32] = hex::decode(&first.txid).unwrap().try_into().unwrap();
     crate::btc_claim_bump::bump_with_broadcast(
         &state,
-        bump_request(&id, first_txid, 4_000),
+        bump_request(&id, first_txid, 7_000),
         async |raw: &[u8]| Ok(txid(raw)),
     )
     .await

@@ -548,6 +548,10 @@ impl SpvChain {
                 return Err(SpvError::HeaderValidation(
                     "header difficulty does not match the pinned fixed difficulty".into(),
                 ));
+            } else if self.headers.is_empty() {
+                return Err(SpvError::HeaderValidation(
+                    "first header must be the pinned genesis".into(),
+                ));
             }
         }
 
@@ -576,7 +580,7 @@ impl SpvChain {
         // Validate chain linkage (skip for genesis block at height 0)
         if header.height > 0
             && !self.headers.contains_key(&header.prev_hash)
-            && !(trusted && self.headers.is_empty())
+            && !(trusted && self.headers.is_empty() && self.pinned_genesis.is_none())
         {
             return Err(SpvError::UnknownParent(hex::encode(header.prev_hash)));
         }
@@ -849,6 +853,17 @@ mod tests {
 
         let other_genesis = make_header(0, [0u8; 32], [4u8; 32]);
         assert!(chain.add_header(other_genesis).is_err());
+    }
+
+    #[test]
+    fn pinned_chain_rejects_a_trusted_first_header_at_height_one() {
+        let genesis = make_header(0, [0u8; 32], [1u8; 32]);
+        let genesis_hash = genesis.hash();
+        let mut chain = SpvChain::with_genesis(genesis_hash, genesis.bits);
+        // Trusted headers skip PoW but must never establish an arbitrary root.
+        let child = make_header(1, genesis_hash, [2u8; 32]);
+        assert!(chain.add_trusted_header(child).is_err());
+        assert!(chain.is_empty());
     }
 
     #[test]

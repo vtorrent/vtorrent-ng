@@ -442,6 +442,7 @@ impl BtcWallet {
             refund_raw: None,
             input_txid: Some(input.txid.clone()),
             input_vout: Some(input.vout),
+            input_released: false,
         });
         if let Some(path) = &self.utxo_path {
             if let Err(error) = set.save(path) {
@@ -612,21 +613,8 @@ impl BtcWallet {
     /// later covered scan or manual recovery.
     pub fn release_swap_input_keep_contract(&self, order_id: &str) -> Result<bool> {
         let mut set = self.utxos.lock();
-        let Some(contract) = set.swap_contract(order_id).cloned() else {
-            return Ok(false);
-        };
-        let (Some(txid), Some(vout)) = (contract.input_txid.clone(), contract.input_vout) else {
-            return Ok(false);
-        };
         let previous = set.clone();
-        let reserved = set.reserved_utxo(&txid, vout).cloned();
-        let spent = set.was_reserved_spent(&txid, vout);
-        let released = set.release(&txid, vout);
-        if released && !spent {
-            if let Some(utxo) = reserved {
-                set.add(utxo);
-            }
-        }
+        let released = set.release_swap_input_keep_contract(order_id);
         if let Some(path) = &self.utxo_path {
             if let Err(error) = set.save(path) {
                 if !crate::utxo::save_may_have_committed(&error) {
@@ -637,7 +625,7 @@ impl BtcWallet {
                 )));
             }
         }
-        Ok(released || spent)
+        Ok(released)
     }
 
     pub fn record_swap_refund(&self, order_id: &str, raw: &[u8]) -> Result<()> {
@@ -2711,6 +2699,49 @@ mod tests {
     }
 
     #[test]
+    fn partial_scan_release_frees_the_input_and_keeps_the_contract() {
+        let wallet = BtcWallet::new([7u8; 64]);
+        let owned = Utxo {
+            txid: "fb".repeat(32),
+            vout: 0,
+            value: 100_000,
+            address: wallet.current_address().unwrap(),
+            height: 100,
+        };
+        wallet.add_utxo(owned.clone());
+        let htlc = crate::htlc::BtcHtlc {
+            hash_lock: [3; 32],
+            recipient: owned.address.clone(),
+            refund_address: owned.address.clone(),
+            expiry: 1_900_000_000,
+            amount: 90_000,
+            network: bitcoin::Network::Bitcoin,
+        };
+        let funding = htlc
+            .build_funding_tx([1; 32], 0, 100_000, 1_000, &owned.address)
+            .unwrap();
+        wallet
+            .reserve_swap_input(
+                &owned,
+                &bitcoin::consensus::serialize(&funding),
+                "order".into(),
+                &htlc,
+            )
+            .unwrap();
+        assert!(wallet.release_swap_input_keep_contract("order").unwrap());
+        // The contract is retained for a later refund or manual recovery.
+        assert!(wallet.swap_contract("order").is_some());
+        // The outpoint is spendable again, not silently re-reserved.
+        assert!(
+            wallet
+                .list_utxos()
+                .iter()
+                .any(|utxo| utxo.txid == owned.txid && utxo.vout == owned.vout),
+            "released input must be visible to coin selection"
+        );
+    }
+
+    #[test]
     fn failed_persistence_path_change_keeps_the_working_path() {
         let dir = std::env::temp_dir().join(format!(
             "vtr-btc-path-change-{}-{}",
@@ -3668,6 +3699,7 @@ mod tests {
             refund_raw: None,
             input_txid: input.map(|(t, _)| t.to_string()),
             input_vout: input.map(|(_, v)| v),
+            input_released: false,
         }
     }
 

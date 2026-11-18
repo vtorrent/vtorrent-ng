@@ -283,6 +283,11 @@ impl Wallet {
                 if consume_otp {
                     replay_guard = Some(config.consume_step(path, step, data.last_totp_step)?);
                     data.last_totp_step = Some(step);
+                } else if data.last_totp_step.is_some_and(|last| step <= last) {
+                    // Verify-only callers must still honor the wallet's replay
+                    // floor: a code already used to unlock this wallet cannot
+                    // be reused for a backup preview.
+                    return Err(WalletError::OtpReplay);
                 }
             }
         }
@@ -437,20 +442,31 @@ impl Wallet {
         Ok(address_str)
     }
 
-    /// Generate a cold-staking key pair and the P2CS script/address.
+    /// Generate a cold-staking key pair without recording it.
     ///
-    /// Returns the **staking** key (hot — for the node) and the **spending** key
-    /// (cold — keep offline). The P2CS script commits to both. See
-    /// `docs/cold-staking-p2cs-design.md`.
+    /// The caller must export and round-trip the spending key before calling
+    /// [`Self::record_cold_stake`]. Recording first would leave a fundable
+    /// P2CS script whose spending key was never persisted if the export
+    /// failed, and `spending_wif` is deliberately skipped during wallet
+    /// serialization.
     pub fn generate_cold_stake_keys(
-        &mut self,
+        &self,
         locktime: u32,
         label: Option<&str>,
     ) -> Result<ColdStakeKeys> {
-        let keys = generate_cold_stake_keys(locktime, label)?;
-        self.data.cold_stake.push(keys.clone());
+        generate_cold_stake_keys(locktime, label)
+    }
+
+    /// Record a verified cold-staking script.
+    ///
+    /// The spending key is not retained: the encrypted export is the only
+    /// copy, and persisting the pairing without it would advertise a script
+    /// the wallet could never spend.
+    pub fn record_cold_stake(&mut self, keys: &ColdStakeKeys) {
+        let mut stored = keys.clone();
+        stored.spending_wif = zeroize::Zeroizing::new(String::new());
+        self.data.cold_stake.push(stored);
         self.data.last_modified = unix_now();
-        Ok(keys)
     }
 
     /// Import a WIF-encoded private key (from legacy wallet migration).
@@ -521,6 +537,11 @@ impl Wallet {
             .iter()
             .find(|k| k.address == default_addr)
             .map(|k| k.wif.as_str())
+    }
+
+    /// Get every WIF in the wallet, for coin selection across imported keys.
+    pub fn all_wifs(&self) -> Vec<&str> {
+        self.data.keys.iter().map(|k| k.wif.as_str()).collect()
     }
 
     /// Get the number of keys in the wallet.
@@ -1018,8 +1039,12 @@ mod tests {
         }
         // The staking and spending WIFs differ.
         assert_ne!(*keys.staking_wif, *keys.spending_wif);
-        // The pair is recorded on the wallet.
+        // Generation alone does not advertise a fundable script.
+        assert_eq!(w.data.cold_stake.len(), 0);
+        w.record_cold_stake(&keys);
         assert_eq!(w.data.cold_stake.len(), 1);
         assert_eq!(w.data.cold_stake[0].script_pubkey, keys.script_pubkey);
+        // The wallet never retains the cold spending key.
+        assert!(w.data.cold_stake[0].spending_wif.is_empty());
     }
 }

@@ -41,6 +41,12 @@ pub struct PeerBandwidthAccount {
     /// Highest settlement id seen from this peer, for replay rejection.
     #[serde(default)]
     pub last_receipt_id: u64,
+    /// Agreed satoshis settled but not yet confirmed paid on-chain.
+    #[serde(default)]
+    pub unpaid_satoshis: u64,
+    /// A payment for `unpaid_satoshis` is currently in flight.
+    #[serde(default)]
+    pub payment_in_flight: bool,
 }
 
 impl PeerBandwidthAccount {
@@ -56,6 +62,8 @@ impl PeerBandwidthAccount {
             incentive_enabled: true,
             peer_receipt: None,
             last_receipt_id: 0,
+            unpaid_satoshis: 0,
+            payment_in_flight: false,
         }
     }
 
@@ -106,18 +114,46 @@ impl PeerBandwidthAccount {
         time_elapsed >= PAYMENT_INTERVAL_SECS || bytes_total >= MIN_PAYMENT_BYTES
     }
 
-    /// Settle the account: reset counters and record totals.
+    /// Settle the account: reset counters and move the agreed amount into the
+    /// unpaid balance.
+    ///
+    /// `total_paid_satoshis` is only advanced by [`Self::mark_paid`] after the
+    /// payment transaction has been broadcast, so a failed or skipped payment
+    /// is retried instead of being reported as paid.
+    ///
     /// Returns (earned_satoshis, owed_satoshis) for this settlement period.
     pub fn settle(&mut self, current_timestamp: u64) -> (u64, u64) {
-        let earned = self.calculate_earned();
         let owed = self.calculate_owed();
+        let earned = self.settle_agreed(current_timestamp, owed);
+        (earned, owed)
+    }
+
+    /// Settle using an externally agreed amount (the receipt-verified value).
+    ///
+    /// Returns the earned amount for this period.
+    pub fn settle_agreed(&mut self, current_timestamp: u64, agreed: u64) -> u64 {
+        let earned = self.calculate_earned();
         self.total_earned_satoshis = self.total_earned_satoshis.saturating_add(earned);
-        self.total_paid_satoshis = self.total_paid_satoshis.saturating_add(owed);
+        self.unpaid_satoshis = self.unpaid_satoshis.saturating_add(agreed);
         self.bytes_uploaded = 0;
         self.bytes_downloaded = 0;
         self.last_settlement = current_timestamp;
         self.peer_receipt = None;
-        (earned, owed)
+        earned
+    }
+
+    /// Confirm that a payment was broadcast. Returns the remaining unpaid amount.
+    pub fn mark_paid(&mut self, satoshis: u64) -> u64 {
+        let paid = satoshis.min(self.unpaid_satoshis);
+        self.unpaid_satoshis = self.unpaid_satoshis.saturating_sub(paid);
+        self.total_paid_satoshis = self.total_paid_satoshis.saturating_add(paid);
+        self.payment_in_flight = false;
+        self.unpaid_satoshis
+    }
+
+    /// Clear the in-flight marker after a failed payment so it is retried.
+    pub fn payment_failed(&mut self) {
+        self.payment_in_flight = false;
     }
 
     /// Store a verified peer receipt. Returns false for a replayed id.
@@ -355,6 +391,9 @@ mod tests {
         assert_eq!(account.bytes_uploaded, 0);
         assert_eq!(account.bytes_downloaded, 0);
         assert_eq!(account.total_earned_satoshis, earned);
+        assert_eq!(account.unpaid_satoshis, owed);
+        assert_eq!(account.total_paid_satoshis, 0);
+        assert_eq!(account.mark_paid(owed), 0);
         assert_eq!(account.total_paid_satoshis, owed);
     }
 
@@ -363,6 +402,19 @@ mod tests {
         let account = PeerBandwidthAccount::new("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
         // last_settlement = 0, current = PAYMENT_INTERVAL_SECS
         assert!(account.needs_settlement(PAYMENT_INTERVAL_SECS));
+    }
+
+    #[test]
+    fn failed_payment_stays_unpaid_and_is_retried() {
+        let mut account = PeerBandwidthAccount::new("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+        account.record_download(2 * 1024 * 1024 * 1024);
+        account.settle_agreed(1_700_000_000, COIN);
+        assert_eq!(account.unpaid_satoshis, COIN);
+        account.payment_failed();
+        assert_eq!(account.unpaid_satoshis, COIN);
+        assert_eq!(account.total_paid_satoshis, 0);
+        assert_eq!(account.mark_paid(COIN), 0);
+        assert_eq!(account.total_paid_satoshis, COIN);
     }
 
     #[test]

@@ -13,8 +13,16 @@ use crate::address::Address;
 use crate::crypto::sha256;
 use crate::error::{CoreError, Result};
 use crate::keys::PrivateKey;
-use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
+use secp256k1::{All, Message, PublicKey, Secp256k1, SecretKey, VerifyOnly};
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
+
+/// Shared signing context. Constructing a secp256k1 context per receipt
+/// re-randomizes the context and is measurably expensive.
+static SIGN_CTX: LazyLock<Secp256k1<All>> = LazyLock::new(Secp256k1::new);
+
+/// Shared verification-only context for network-supplied receipts.
+static VERIFY_CTX: LazyLock<Secp256k1<VerifyOnly>> = LazyLock::new(Secp256k1::verification_only);
 
 /// Domain-separation prefix so a receipt signature can never be replayed as a
 /// transaction signature (or any other signed message).
@@ -73,11 +81,10 @@ impl BandwidthReceipt {
 
     /// Sign this receipt with `key`, returning the DER-encoded signature.
     pub fn sign(&self, key: &PrivateKey) -> Result<Vec<u8>> {
-        let secp = Secp256k1::new();
         let secret =
             SecretKey::from_slice(key.as_bytes()).map_err(|_| CoreError::InvalidPrivateKey)?;
         let message = Message::from_digest(self.digest());
-        let sig = secp.sign_ecdsa(&message, &secret);
+        let sig = SIGN_CTX.sign_ecdsa(&message, &secret);
         Ok(sig.serialize_der().to_vec())
     }
 
@@ -89,15 +96,22 @@ impl BandwidthReceipt {
     pub fn verify_with_pubkey(&self, pubkey: &[u8], signature: &[u8]) -> Result<bool> {
         let expected = Address::parse(&self.signer)?;
         let pk = PublicKey::from_slice(pubkey).map_err(|_| CoreError::InvalidPublicKey)?;
-        let derived = Address::from_pubkey(&pk, true, expected.version);
+        // Match the signer's compression: legacy wallets derive their address
+        // from the 65-byte key, and hardcoding compressed would reject every
+        // receipt they sign.
+        let compressed = match pubkey.len() {
+            33 => true,
+            65 => false,
+            _ => return Err(CoreError::InvalidPublicKey),
+        };
+        let derived = Address::from_pubkey(&pk, compressed, expected.version);
         if derived.to_string() != self.signer {
             return Ok(false);
         }
-        let secp = Secp256k1::new();
         let sig = secp256k1::ecdsa::Signature::from_der(signature)
             .map_err(|_| CoreError::InvalidAddress("malformed signature".into()))?;
         let message = Message::from_digest(self.digest());
-        Ok(secp.verify_ecdsa(&message, &sig, &pk).is_ok())
+        Ok(VERIFY_CTX.verify_ecdsa(&message, &sig, &pk).is_ok())
     }
 }
 

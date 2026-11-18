@@ -43,10 +43,12 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Use release lockfile
+        run: cp release/Cargo.lock Cargo.lock
       - name: Run all workspace tests
-        run: cargo test --workspace --all-features
+        run: cargo test --locked --workspace --all-features
       - name: Run workspace tests with default features
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
       - name: Verify genesis independently
         run: python3 scripts/verify-genesis.py
 
@@ -144,7 +146,9 @@ jobs:
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
       - name: Run benchmark gate
-        run: bash scripts/bench-gate.sh --compare-ref "${{ steps.baseline.outputs.ref }}"
+        env:
+          BASELINE_REF: ${{ steps.baseline.outputs.ref }}
+        run: bash scripts/bench-gate.sh --compare-ref "$BASELINE_REF"
 
   # ─── Frontend lint and tests ────────────────────────────────────────────────
   frontend:
@@ -234,7 +238,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: vtorrent-ui
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Build frontend
         working-directory: vtorrent-ui
@@ -281,4 +285,5 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ github.ref_name }}" Cargo.lock --clobber
+          REF_NAME: ${{ github.ref_name }}
+        run: gh release upload "$REF_NAME" Cargo.lock --clobber

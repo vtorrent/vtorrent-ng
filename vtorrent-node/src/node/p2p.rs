@@ -141,47 +141,49 @@ impl super::Node {
         const MAX_DIALS_PER_TICK: usize = 4;
         let count = self.peer_manager.peer_count();
         if count < TARGET_OUTBOUND {
-            let needed = TARGET_OUTBOUND - count;
             tracing::debug!(
-                "Low peer count ({}/{}), trying {} PEX candidates",
+                "Low peer count ({}/{}), refreshing peer sources",
                 count,
-                TARGET_OUTBOUND,
-                needed
+                TARGET_OUTBOUND
             );
 
-            // First try PEX address book candidates
-            let mut connected = 0;
-            for addr in self
-                .peer_manager
-                .get_peer_candidates(needed * 2)
-                .into_iter()
-                .take(MAX_DIALS_PER_TICK)
+            // Run DHT discovery only when no dial is in flight and at most
+            // once per ten minutes. It is a bounded 10-second blocking
+            // discovery, so doing it on every low-peer tick would itself become
+            // a liveness problem.
+            const DHT_REFRESH: std::time::Duration = std::time::Duration::from_secs(600);
+            let now = std::time::Instant::now();
+            if self.config.use_dht
+                && !self.config.isolated
+                && self.peer_manager.pending_dial_count() == 0
+                && self
+                    .last_dht_bootstrap
+                    .is_none_or(|last| now.duration_since(last) >= DHT_REFRESH)
             {
-                if self.peer_manager.try_dial_addr(addr).await {
-                    connected += 1;
+                self.last_dht_bootstrap = Some(now);
+                tracing::debug!("Low peers with no dials in flight, refreshing DHT");
+                self.bootstrap_via_dht().await;
+            }
+
+            // Re-dial configured seeds first. A poisoned PEX list can keep
+            // returning dead candidates every tick; if those queued dials
+            // counted as "coverage", the seed/DHT fallback would never run.
+            if !self.config.extra_seeds.is_empty() {
+                for seed in self.config.extra_seeds.iter().take(MAX_DIALS_PER_TICK) {
+                    self.peer_manager.try_dial_host(seed.clone()).await;
                 }
             }
 
-            // If still not enough, re-dial explicitly configured seeds
-            if connected < needed && !self.config.extra_seeds.is_empty() {
-                tracing::debug!(
-                    "PEX insufficient, re-dialing {} explicit seeds",
-                    self.config.extra_seeds.len()
-                );
-                let seeds: Vec<String> = self
-                    .config
-                    .extra_seeds
-                    .iter()
-                    .take(MAX_DIALS_PER_TICK)
-                    .cloned()
-                    .collect();
-                connected += self.peer_manager.connect_many(seeds).await;
-            }
-
-            // If still not enough, try DHT again
-            if connected < needed && self.config.use_dht && !self.config.isolated {
-                tracing::debug!("PEX insufficient, re-running DHT bootstrap");
-                self.bootstrap_via_dht().await;
+            // Then supplement from PEX. These dials are queued, not awaited,
+            // so a poisoned list cannot stall this tick.
+            let covered = self.peer_manager.peer_count() + self.peer_manager.pending_dial_count();
+            for addr in self
+                .peer_manager
+                .get_peer_candidates((TARGET_OUTBOUND - covered.min(TARGET_OUTBOUND)) * 2)
+                .into_iter()
+                .take(MAX_DIALS_PER_TICK)
+            {
+                let _ = self.peer_manager.try_dial_addr(addr).await;
             }
         }
     }

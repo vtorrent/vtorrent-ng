@@ -18,5 +18,5 @@ name: vtorrent-testnet
 services:
   node1:
     ports:
-      - "22625:22525"
+      - "127.0.0.1:22625:22525"
       - "22526:22526"

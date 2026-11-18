@@ -31,8 +31,9 @@
 | Max stake age | 6 days (518,400 s) | `vtorrent-node/src/consensus.rs:34` |
 | Max supply | 20,000,000 VTR (2×10¹⁵ sats) | `vtorrent-node/src/consensus.rs:46` |
 | Max block sigops | 20,000 (`MAX_BLOCK_SIZE / 50`, legacy rule) | `vtorrent-node/src/consensus.rs:22` |
-| Max future block drift | 5 seconds (`MAX_FUTURE_BLOCK_DRIFT`) | `vtorrent-node/src/consensus.rs:26` |
-| Difficulty adjustment | Every 2016 blocks | `vtorrent-node/src/consensus.rs:61` |
+| Max future block drift | 5 seconds (`MAX_FUTURE_BLOCK_DRIFT`), relative to `max(wall clock, parent timestamp)` | `vtorrent-node/src/consensus.rs` |
+| Minimum block spacing | 55 seconds (60 − 5s drift); enforced for production blocks, waived for test/regtest fixtures | `vtorrent-node/src/consensus.rs` |
+| Difficulty | Fixed: each block's `bits` must equal its parent's | `vtorrent-node/src/consensus.rs` |
 | Genesis bits | `0x1e0fffff` | `vtorrent-node/src/genesis.rs:27` |
 | Genesis timestamp | `1700000000` | `vtorrent-node/src/genesis.rs:24` |
 

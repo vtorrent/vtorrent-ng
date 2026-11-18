@@ -665,6 +665,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
     let mut speed_window_start = std::time::Instant::now();
     let mut bitfield_seen = false;
     let mut next_receipt = std::time::Instant::now();
+    let mut last_receipt_at: Option<std::time::Instant> = None;
 
     loop {
         if cancel.is_cancelled() {
@@ -699,9 +700,14 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     };
                     if let Ok(signature) = receipt.sign(key) {
                         if let Ok(pubkey) = key.public_key() {
+                            let pubkey_bytes = if key.is_compressed() {
+                                pubkey.serialize().to_vec()
+                            } else {
+                                pubkey.serialize_uncompressed().to_vec()
+                            };
                             let envelope = vtorrent_core::receipt::SignedBandwidthReceipt {
                                 receipt,
-                                pubkey: pubkey.serialize().to_vec(),
+                                pubkey: pubkey_bytes,
                                 signature,
                             };
                             let _ = conn
@@ -1008,15 +1014,52 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                 let Some(peer_addr) = peer_vtr_address.as_ref() else {
                     continue;
                 };
+                // Receipt verification is ECDSA over attacker-supplied bytes.
+                // One receipt per 30s per peer is far above the 5-minute
+                // settlement cadence and bounds CPU per connection.
+                if let Some(last) = last_receipt_at {
+                    if last.elapsed() < std::time::Duration::from_secs(30) {
+                        continue;
+                    }
+                }
+                last_receipt_at = Some(std::time::Instant::now());
                 let Ok(envelope) = crate::metadata::decode_receipt(&payload) else {
                     continue;
                 };
                 let receipt = &envelope.receipt;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                // Bound attacker-chosen times and ids: an unvalidated
+                // `u64::MAX` settlement id would permanently reject every
+                // later receipt from this peer.
+                if receipt.window_start > receipt.window_end
+                    || receipt.window_end > now.saturating_add(600)
+                    || receipt.settlement_id > now.saturating_add(600)
+                {
+                    continue;
+                }
                 if receipt.info_hash != metainfo.info_hash
                     || receipt.peer != local_address
                     || receipt.signer != *peer_addr
-                    || !envelope.verify().unwrap_or(false)
                 {
+                    continue;
+                }
+                // Cheap replay rejection before the expensive ECDSA verify.
+                let last_id = {
+                    let guard = sessions.read().await;
+                    guard
+                        .get_session(&session_id)
+                        .ok()
+                        .and_then(|s| s.incentive_accounts.get(peer_addr))
+                        .map(|a| a.last_receipt_id)
+                        .unwrap_or(0)
+                };
+                if receipt.settlement_id <= last_id {
+                    continue;
+                }
+                if !envelope.verify().unwrap_or(false) {
                     continue;
                 }
                 let mut guard = sessions.write().await;

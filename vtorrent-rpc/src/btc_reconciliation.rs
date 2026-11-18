@@ -377,10 +377,23 @@ pub async fn release_expired_reservations(state: &AppState) -> usize {
             let Some(wallet) = btc.as_ref() else {
                 break;
             };
-            wallet
-                .scan_reserved_input_spent(input_txid, input_vout, &peers)
-                .await
-                .unwrap_or(false)
+            // Bound the network scan while this read guard is held; an
+            // unresponsive peer set must not block BTC wallet writes forever.
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(120),
+                wallet.scan_reserved_input_spent(input_txid, input_vout, &peers),
+            )
+            .await
+            {
+                Ok(result) => result.unwrap_or(false),
+                Err(_) => {
+                    tracing::warn!(
+                        order_id = %contract.order_id,
+                        "BTC reserved-input spend scan timed out; keeping reservation"
+                    );
+                    continue;
+                }
+            }
         };
         if !spent {
             tracing::info!(
@@ -539,7 +552,16 @@ async fn maybe_auto_claim_vtr(state: &AppState, order_id: &str) {
         let Some(swap) = swaps.get(order_id) else {
             return;
         };
+        // Require a current claim observation. A preimage left behind by a
+        // reorged-out claim must not authorize the taker's VTR claim.
+        let claim_observed = swap.btc_observation.as_ref().is_some_and(|observation| {
+            matches!(
+                observation.state,
+                BtcSettlementState::Claimed | BtcSettlementState::ClaimConfirming
+            )
+        });
         let ready = swap.preimage.is_some()
+            && claim_observed
             && swap.vtr_claim_txid.is_none()
             && swap.vtr_refund_txid.is_none();
         let wif = state.wallet_wif.read().await.clone();
@@ -660,6 +682,7 @@ mod tests {
             refund_raw: None,
             input_txid: input.map(str::to_string),
             input_vout: input.map(|_| 0),
+            input_released: false,
         }
     }
 

@@ -14,6 +14,12 @@
 set -euo pipefail
 
 SEED_PEER="${1:?usage: provision-seed.sh <seed-peer-ip>}"
+# The value is interpolated into a systemd unit. Accept only an IPv4 literal
+# so a newline or metacharacter cannot inject a `[Service]` directive.
+if [[ ! "$SEED_PEER" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+  echo "invalid seed peer '$SEED_PEER': expected an IPv4 address" >&2
+  exit 1
+fi
 # Runs ON the target node; the daemon binary must already be staged at
 # /tmp/vtorrent-daemon (scp it from a build machine first — see header).
 

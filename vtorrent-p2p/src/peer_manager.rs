@@ -120,12 +120,35 @@ pub struct PeerManager {
     /// Connected streams from detached dial tasks, registered by the event loop.
     dial_tx: mpsc::Sender<DialOutcome>,
     dial_rx: mpsc::Receiver<DialOutcome>,
+    /// Dials currently in flight, keyed by the dialed address text.
+    pending_dials: HashMap<String, DialSource>,
 }
 
-type DialOutcome = (
-    SocketAddr,
-    std::result::Result<(tokio::net::TcpStream, TransportMode), String>,
-);
+struct DialOutcome {
+    key: String,
+    addr: Option<SocketAddr>,
+    source: DialSource,
+    result: std::result::Result<(tokio::net::TcpStream, TransportMode), String>,
+}
+
+/// Where a detached dial came from.
+///
+/// Only trusted sources may escalate a failed dial into an IP ban. PEX entries
+/// are attacker-supplied, so a failure there must not ban an honest IP.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DialSource {
+    /// Peer-exchange address book entry.
+    Pex,
+    /// Configured seed, DNS seed, DHT, or GitHub bootstrap entry.
+    Trusted,
+}
+
+impl PeerManager {
+    /// Number of detached dials still in flight.
+    pub fn pending_dial_count(&self) -> usize {
+        self.pending_dials.len()
+    }
+}
 
 impl PeerManager {
     /// Create a new mainnet peer manager (private addresses rejected in PEX).
@@ -197,6 +220,7 @@ impl PeerManager {
             },
             dial_tx,
             dial_rx,
+            pending_dials: HashMap::new(),
         }
     }
 
@@ -371,6 +395,9 @@ impl PeerManager {
                 peer_addr
             )));
         }
+        if self.peers.len() >= MAX_PEERS {
+            return Err(P2pError::Transport("peer limit reached".into()));
+        }
 
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
         let event_tx = self.event_tx.clone();
@@ -476,30 +503,98 @@ impl PeerManager {
     /// channel drained by [`process_events`], so the node event loop never waits
     /// on a TCP connect.
     pub async fn try_dial_addr(&mut self, addr: SocketAddr) -> bool {
+        self.try_dial_addr_with_source(addr, DialSource::Pex).await
+    }
+
+    /// Queue a detached dial for a parsed socket address with an explicit source.
+    pub async fn try_dial_addr_with_source(
+        &mut self,
+        addr: SocketAddr,
+        source: DialSource,
+    ) -> bool {
         const DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
-        if self.peers.len() >= MAX_PEERS || self.peers.contains_key(&addr) {
+        let key = addr.to_string();
+        if !self.can_dial(&key, Some(addr)) {
             return false;
         }
         if self.ban_manager.read().await.is_banned(addr.ip()) {
             return false;
         }
         self.addr_book.record_attempt(addr);
+        self.pending_dials.insert(key.clone(), source);
         let transport = self.transport.clone();
         let tx = self.dial_tx.clone();
         tokio::spawn(async move {
-            let outcome = match tokio::time::timeout(
-                DIAL_TIMEOUT,
-                transport.connect(&addr.to_string()),
-            )
-            .await
-            {
-                Ok(Ok((stream, mode))) => (addr, Ok((stream, mode))),
-                Ok(Err(error)) => (addr, Err(error.to_string())),
-                Err(_) => (addr, Err("dial timed out".into())),
+            let result = match tokio::time::timeout(DIAL_TIMEOUT, transport.connect(&key)).await {
+                Ok(Ok((stream, mode))) => Ok((stream, mode)),
+                Ok(Err(error)) => Err(error.to_string()),
+                Err(_) => Err("dial timed out".into()),
             };
-            let _ = tx.send(outcome).await;
+            let _ = tx
+                .send(DialOutcome {
+                    key,
+                    addr: Some(addr),
+                    source,
+                    result,
+                })
+                .await;
         });
         true
+    }
+
+    /// Queue a detached dial for a hostname or anonymous address.
+    ///
+    /// Resolution and connection both happen in the spawned task, so a slow
+    /// DNS server cannot stall the node event loop.
+    pub async fn try_dial_host(&mut self, host: String) -> bool {
+        const DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+        let anonymous = is_anonymous_address(&host);
+        let parsed = if anonymous {
+            None
+        } else {
+            host.parse::<SocketAddr>().ok()
+        };
+        if !anonymous {
+            if let Some(addr) = parsed {
+                return self
+                    .try_dial_addr_with_source(addr, DialSource::Trusted)
+                    .await;
+            }
+        }
+        if !self.can_dial(&host, parsed) {
+            return false;
+        }
+        if let Some(addr) = parsed {
+            if self.ban_manager.read().await.is_banned(addr.ip()) {
+                return false;
+            }
+            self.addr_book.record_attempt(addr);
+        }
+        self.pending_dials.insert(host.clone(), DialSource::Trusted);
+        let transport = self.transport.clone();
+        let tx = self.dial_tx.clone();
+        tokio::spawn(async move {
+            let (result, addr) = dial_host(&transport, &host, DIAL_TIMEOUT).await;
+            let _ = tx
+                .send(DialOutcome {
+                    key: host,
+                    addr,
+                    source: DialSource::Trusted,
+                    result,
+                })
+                .await;
+        });
+        true
+    }
+
+    fn can_dial(&self, key: &str, addr: Option<SocketAddr>) -> bool {
+        if self.peers.len() + self.pending_dials.len() >= MAX_PEERS {
+            return false;
+        }
+        if self.pending_dials.contains_key(key) {
+            return false;
+        }
+        !addr.map(|a| self.peers.contains_key(&a)).unwrap_or(false)
     }
 
     /// Process pending peer events (call this in the main loop).
@@ -513,24 +608,39 @@ impl PeerManager {
     pub async fn process_events(&mut self) -> Vec<PeerEvent> {
         let mut events = Vec::new();
 
-        while let Ok((addr, result)) = self.dial_rx.try_recv() {
-            match result {
+        while let Ok(outcome) = self.dial_rx.try_recv() {
+            self.pending_dials.remove(&outcome.key);
+            // The dialed label, not the synthetic key: anonymous peers must
+            // hash the original `.onion`/`.i2p` name for a stable peer key.
+            let label = outcome.key.clone();
+            match outcome.result {
                 Ok((stream, mode)) => {
-                    if let Err(error) = self.register_connected(&addr.to_string(), stream, mode) {
+                    if let Some(addr) = outcome.addr {
+                        if self.ban_manager.read().await.is_banned(addr.ip()) {
+                            tracing::debug!("Dropping dial result from banned peer {}", addr);
+                            continue;
+                        }
+                    }
+                    if let Err(error) = self.register_connected(&label, stream, mode) {
                         tracing::debug!(
                             "Detached dial registration failed for {}: {}",
-                            addr,
+                            label,
                             error
                         );
                     }
                 }
                 Err(error) => {
-                    tracing::debug!("Detached dial to {} failed: {}", addr, error);
-                    if !is_bootstrap_seed(&addr.to_string(), addr.ip()) {
-                        self.ban_manager
-                            .write()
-                            .await
-                            .record_connection_failure(addr.ip());
+                    tracing::debug!("Detached dial to {} failed: {}", label, error);
+                    // PEX entries are attacker-supplied: a poisoned entry must
+                    // not be able to ban an honest IP. Only trusted sources
+                    // (seeds, DNS seeds, DHT, GitHub bootstrap) escalate.
+                    if outcome.source == DialSource::Trusted {
+                        if let Some(addr) = outcome.addr {
+                            let ip = addr.ip();
+                            if !is_bootstrap_seed(&label, ip) && !ip.is_unspecified() {
+                                self.ban_manager.write().await.record_connection_failure(ip);
+                            }
+                        }
                     }
                 }
             }
@@ -538,14 +648,25 @@ impl PeerManager {
 
         // Register inbound peers accepted by the accept loop.
         while let Ok((peer_addr, cmd_tx)) = self.inbound_rx.try_recv() {
-            self.peers.entry(peer_addr).or_insert(Peer {
-                addr: peer_addr,
-                state: PeerState::Connecting,
-                best_height: 0,
-                user_agent: String::new(),
-                services: 0,
-                cmd_tx,
-            });
+            if self.peers.contains_key(&peer_addr) {
+                // A duplicate key would orphan the existing peer: the new
+                // task's channel closes immediately and its `Disconnected`
+                // event removes the live entry. Reject the new stream instead.
+                tracing::debug!("Rejecting duplicate inbound registration for {}", peer_addr);
+                drop(cmd_tx);
+                continue;
+            }
+            self.peers.insert(
+                peer_addr,
+                Peer {
+                    addr: peer_addr,
+                    state: PeerState::Connecting,
+                    best_height: 0,
+                    user_agent: String::new(),
+                    services: 0,
+                    cmd_tx,
+                },
+            );
         }
 
         while let Ok(event) = self.event_rx.try_recv() {
@@ -870,6 +991,43 @@ impl PeerManager {
 /// matching, so `ABC.ONION:22526` is recognised (T12).
 fn is_anonymous_address(addr: &str) -> bool {
     vtorrent_onion::addr::is_anon_addr(addr)
+}
+
+/// Resolve and dial a hostname or anonymous address inside a detached task.
+///
+/// Returns the dial result and the resolved address when one is known. Both
+/// resolution and connection are bounded by `timeout`.
+async fn dial_host(
+    transport: &OnionTransport,
+    host: &str,
+    timeout: std::time::Duration,
+) -> (
+    std::result::Result<(tokio::net::TcpStream, TransportMode), String>,
+    Option<SocketAddr>,
+) {
+    if is_anonymous_address(host) {
+        let key = anonymous_peer_key(host);
+        let result = match tokio::time::timeout(timeout, transport.connect(host)).await {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(error)) => Err(error.to_string()),
+            Err(_) => Err("dial timed out".into()),
+        };
+        return (result, Some(key));
+    }
+    let addr = match tokio::time::timeout(timeout, tokio::net::lookup_host(host)).await {
+        Ok(Ok(mut addrs)) => match addrs.next() {
+            Some(addr) => addr,
+            None => return (Err("no addresses resolved".into()), None),
+        },
+        Ok(Err(error)) => return (Err(format!("resolution failed: {}", error)), None),
+        Err(_) => return (Err("resolution timed out".into()), None),
+    };
+    let result = match tokio::time::timeout(timeout, transport.connect(&addr.to_string())).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(_) => Err("dial timed out".into()),
+    };
+    (result, Some(addr))
 }
 
 /// Whether an anonymous peer's synthetic key may feed the IP ban table.

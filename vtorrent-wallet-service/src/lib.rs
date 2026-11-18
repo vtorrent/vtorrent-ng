@@ -17,6 +17,29 @@ pub fn build_payment(
         .build(utxos)
 }
 
+/// Build a payment that may spend outputs owned by any of `wifs`.
+///
+/// Imported legacy keys are not the wallet's default address, so a
+/// default-key-only builder makes those funds visible but unspendable.
+pub fn build_payment_with_keys(
+    utxos: &[vtorrent_node::chain::Utxo],
+    recipient: &str,
+    change_address: &str,
+    amount_satoshis: u64,
+    fee_rate: u64,
+    wifs: &[&str],
+) -> Result<vtorrent_node::block::Transaction, vtorrent_wallet::error::WalletError> {
+    let mut builder = TxBuilder::new()
+        .recipient(recipient, amount_satoshis)
+        .change_address(change_address)
+        .fee_rate(fee_rate)
+        .min_absolute_fee(MIN_ABSOLUTE_FEE_SATS);
+    for wif in wifs {
+        builder = builder.sign_with_wif(wif);
+    }
+    builder.build(utxos)
+}
+
 /// Build a payment whose recipient output is a raw scriptPubKey (for example a
 /// P2CS cold-stake script). The script is used verbatim; callers must validate
 /// it before funding.
@@ -35,6 +58,26 @@ pub fn build_payment_to_script(
         .min_absolute_fee(MIN_ABSOLUTE_FEE_SATS)
         .sign_with_wif(wif)
         .build(utxos)
+}
+
+/// Build a script-recipient payment that may spend outputs owned by any key.
+pub fn build_payment_to_script_with_keys(
+    utxos: &[vtorrent_node::chain::Utxo],
+    script_pubkey: Vec<u8>,
+    change_address: &str,
+    amount_satoshis: u64,
+    fee_rate: u64,
+    wifs: &[&str],
+) -> Result<vtorrent_node::block::Transaction, vtorrent_wallet::error::WalletError> {
+    let mut builder = TxBuilder::new()
+        .recipient_script(script_pubkey, amount_satoshis)
+        .change_address(change_address)
+        .fee_rate(fee_rate)
+        .min_absolute_fee(MIN_ABSOLUTE_FEE_SATS);
+    for wif in wifs {
+        builder = builder.sign_with_wif(wif);
+    }
+    builder.build(utxos)
 }
 
 /// Inputs for an incentive settlement payment.

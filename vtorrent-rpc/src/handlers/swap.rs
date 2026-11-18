@@ -238,16 +238,26 @@ pub async fn match_dex_order_with_wif(
     swap.vtr_funding_tx = Some(funding_tx.clone());
     swap.status = SwapStatus::VtrFunded;
     crate::swap_recovery::persist(state, &prepared_order, Some(swap)).await?;
+    // Drop before the failure path: `state.swaps` is a non-reentrant write
+    // lock, and taking it again below would deadlock the whole swap subsystem.
+    drop(swaps);
     if let Err(error) = crate::swap_recovery::submit_vtr(state, &funding_tx).await {
-        state.order_book.write().await.revert_match(&req.order_id);
-        state.swaps.write().await.remove(&req.order_id);
+        // Remove the durable record before reverting the public order. If the
+        // record cannot be removed, leaving the order Matched keeps memory and
+        // disk consistent; reverting would let the next unlock resurrect the
+        // swap from a record that still names this funding transaction.
         if let Err(remove_error) = crate::swap_recovery::remove(state, &req.order_id).await {
             tracing::warn!(
                 order_id = %req.order_id,
                 error = %remove_error,
-                "Could not remove failed funding recovery record"
+                "Could not remove failed funding recovery record; keeping order matched"
             );
+            return Err(RpcError::Internal(format!(
+                "{error}; recovery record could not be removed ({remove_error}); order remains matched for manual recovery"
+            )));
         }
+        state.order_book.write().await.revert_match(&req.order_id);
+        state.swaps.write().await.remove(&req.order_id);
         return Err(error);
     }
     Ok(match_response(&prepared_order))
@@ -965,6 +975,21 @@ async fn refund_with_broadcast(
         SwapLeg::Btc => {
             if swap.btc_claim_txid.is_some() {
                 return Err(RpcError::BadRequest("BTC claim already submitted".into()));
+            }
+            // The maker's claim reveals the preimage. Refunding BTC after that
+            // point lets the taker keep both legs if the claim later reorgs.
+            if swap.preimage.is_some()
+                || swap.btc_observation.as_ref().is_some_and(|observation| {
+                    matches!(
+                        observation.state,
+                        vtorrent_node::atomic_swap::BtcSettlementState::Claimed
+                            | vtorrent_node::atomic_swap::BtcSettlementState::ClaimConfirming
+                    )
+                })
+            {
+                return Err(RpcError::BadRequest(
+                    "BTC claim has been observed; a BTC refund would double-spend the swap".into(),
+                ));
             }
             if now < swap.btc_expiry || swap.btc_expiry == 0 {
                 return Err(RpcError::BadRequest("BTC HTLC has not expired yet".into()));

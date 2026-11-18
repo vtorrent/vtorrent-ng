@@ -161,6 +161,7 @@ fn wallet_state_round_trip_preserves_swap_metadata_after_chain_reset() {
         refund_raw: Some(vec![4, 5, 6]),
         input_txid: None,
         input_vout: None,
+        input_released: false,
     });
     state.save(&path).unwrap();
 

@@ -258,6 +258,10 @@ pub struct SwapContract {
     pub input_txid: Option<String>,
     #[serde(default)]
     pub input_vout: Option<u32>,
+    /// The input reservation was released while the contract is retained for
+    /// recovery. The contract must no longer hold the outpoint.
+    #[serde(default)]
+    pub input_released: bool,
 }
 
 /// In-memory UTXO set with optional disk persistence.
@@ -906,6 +910,9 @@ impl UtxoSet {
         let mut unreported: Vec<SwapContract> = Vec::new();
         let mut contract_holds = false;
         for contract in self.swap_contracts.values() {
+            if contract.input_released {
+                continue;
+            }
             match (contract.input_txid.as_deref(), contract.input_vout) {
                 // A contract persisted before input tracking has no recorded
                 // input; only its retained funding raw can rule the outpoint
@@ -1087,6 +1094,35 @@ impl UtxoSet {
     pub fn record_swap_contract(&mut self, contract: SwapContract) {
         self.swap_contracts
             .insert(contract.order_id.clone(), contract);
+    }
+
+    /// Release a reserved swap input while retaining the contract terms.
+    ///
+    /// Marks the contract as no longer holding the outpoint and drops the
+    /// retained funding transaction, then returns the input to the spendable
+    /// set. Returns true when a reservation was released.
+    pub fn release_swap_input_keep_contract(&mut self, order_id: &str) -> bool {
+        let Some(mut contract) = self.swap_contracts.get(order_id).cloned() else {
+            return false;
+        };
+        let (Some(txid), Some(vout)) = (contract.input_txid.clone(), contract.input_vout) else {
+            return false;
+        };
+        contract.input_released = true;
+        contract.input_txid = None;
+        contract.input_vout = None;
+        self.pending_swap_transactions
+            .remove(&contract.funding_txid);
+        self.swap_contracts.insert(order_id.to_string(), contract);
+        let reserved = self.reserved_utxo(&txid, vout).cloned();
+        let spent = self.was_reserved_spent(&txid, vout);
+        let released = self.release(&txid, vout);
+        if released && !spent {
+            if let Some(utxo) = reserved {
+                self.add(utxo);
+            }
+        }
+        released || spent
     }
 
     pub fn swap_contract(&self, order_id: &str) -> Option<&SwapContract> {
@@ -1513,6 +1549,7 @@ mod tests {
             refund_raw: None,
             input_txid: input.map(|(txid, _)| txid.to_string()),
             input_vout: input.map(|(_, vout)| vout),
+            input_released: false,
         }
     }
 
@@ -1779,6 +1816,7 @@ mod tests {
             refund_raw: None,
             input_txid: Some("b".into()),
             input_vout: Some(0),
+            input_released: false,
         });
 
         set.clear_chain_utxos();
@@ -1856,6 +1894,7 @@ mod tests {
             refund_raw: None,
             input_txid: Some("cc".into()),
             input_vout: Some(0),
+            input_released: false,
         });
         set.note_spend("cc", 0);
         set.push_undo(UndoEntry {
@@ -1895,6 +1934,7 @@ mod tests {
             refund_raw: None,
             input_txid: Some("cd".into()),
             input_vout: Some(0),
+            input_released: false,
         });
         set.push_undo(UndoEntry {
             height: 7,
@@ -2830,6 +2870,7 @@ mod tests {
             refund_raw: None,
             input_txid: Some("a".into()),
             input_vout: Some(0),
+            input_released: false,
         });
         let removed = set.remove_swap_contract("order1").unwrap();
         assert_eq!(removed.funding_txid, "tx1");

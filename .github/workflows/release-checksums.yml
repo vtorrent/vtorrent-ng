@@ -1,5 +1,10 @@
 name: Release checksums
 
+# Integrity only. SHA256SUMS detects corrupted or partially uploaded assets;
+# it does not prove who built them. Anyone able to replace a release asset can
+# also replace this file. Provenance requires release signing, which is an
+# operator key-management task still open in docs/mainnet-readiness.md.
+
 on:
   release:
     types: [published]

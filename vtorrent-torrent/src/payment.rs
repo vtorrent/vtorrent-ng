@@ -9,6 +9,17 @@ pub struct PaymentDue {
     pub peer_address: String,
     /// Amount owed in satoshis.
     pub amount_satoshis: u64,
+    /// Stable key for the originating incentive account.
+    #[serde(default)]
+    pub account_key: String,
+}
+
+/// Result of a payment attempt, keyed back to its incentive account.
+#[derive(Debug, Clone)]
+pub struct PaymentResult {
+    pub account_key: String,
+    pub amount_satoshis: u64,
+    pub success: bool,
 }
 
 /// A channel for emitting payment events to the daemon.
@@ -40,6 +51,7 @@ mod tests {
         sender.emit(PaymentDue {
             peer_address: "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string(),
             amount_satoshis: 50_000_000,
+            account_key: "session\u{0}peer".to_string(),
         });
         let payment = receiver.recv().await.unwrap();
         assert_eq!(payment.peer_address, "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT");

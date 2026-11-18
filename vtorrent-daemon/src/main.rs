@@ -449,6 +449,35 @@ async fn main() -> anyhow::Result<()> {
             Err(e) => tracing::warn!("Could not read stored wallet: {}", e),
         }
     }
+    // Anchor the SPV chain to the pinned VTR genesis before any header can be
+    // accepted. This runs unconditionally: an unpinned chain would let an
+    // authenticated caller install an arbitrary root and replace the
+    // inclusion view.
+    {
+        let genesis = vtorrent_node::genesis::create_genesis_block();
+        let header = SpvHeader {
+            version: genesis.header.version,
+            prev_hash: genesis.header.prev_block_hash,
+            merkle_root: genesis.header.merkle_root,
+            utxo_root: genesis.header.utxo_root,
+            timestamp: genesis.header.timestamp,
+            bits: genesis.header.bits,
+            nonce: genesis.header.nonce,
+            stake_modifier: genesis.header.stake_modifier,
+            height: 0,
+        };
+        let mut spv = rpc_state.spv_chain.write().await;
+        if let Err(error) = spv.set_genesis(
+            vtorrent_node::genesis::GENESIS_HASH,
+            vtorrent_node::genesis::GENESIS_BITS,
+        ) {
+            anyhow::bail!("Could not pin SPV genesis: {error}");
+        }
+        if let Err(error) = spv.add_trusted_header(header) {
+            anyhow::bail!("Could not seed the SPV genesis header: {error}");
+        }
+    }
+
     // Reflect startup-configured staking in the RPC status so it agrees with
     // the node's actual staking engine (rather than reporting "disabled").
     if staking_enabled {
@@ -498,12 +527,6 @@ async fn main() -> anyhow::Result<()> {
         seed.zeroize();
         *rpc_state.btc_wallet.write().await = Some(btc_wallet);
         *rpc_state.btc_network.write().await = network;
-        if let Err(error) = rpc_state.spv_chain.write().await.set_genesis(
-            vtorrent_node::genesis::GENESIS_HASH,
-            vtorrent_node::genesis::GENESIS_BITS,
-        ) {
-            anyhow::bail!("Could not pin SPV genesis: {error}");
-        }
         if let Some(peer) = &cli.btc_peer {
             // Store the host:port as given; it is resolved on every connection
             // attempt so peer IPs can change across container restarts.
@@ -741,6 +764,34 @@ async fn main() -> anyhow::Result<()> {
                                         pause_reorg_write(reorg_pause, completed).await;
                                     }
                                 }
+                                // The SPV chain must follow the reorg too:
+                                // without these headers, the next NewBlock's
+                                // parent is unknown and every later header is
+                                // rejected, leaving inclusion proofs anchored
+                                // to the abandoned tip.
+                                {
+                                    let mut spv = spv_chain_ref.write().await;
+                                    for fb in applied_fork_blocks.iter() {
+                                        let header = SpvHeader {
+                                            version: fb.block.header.version,
+                                            prev_hash: fb.block.header.prev_block_hash,
+                                            merkle_root: fb.block.header.merkle_root,
+                                            utxo_root: fb.block.header.utxo_root,
+                                            timestamp: fb.block.header.timestamp,
+                                            bits: fb.block.header.bits,
+                                            nonce: fb.block.header.nonce,
+                                            stake_modifier: fb.block.header.stake_modifier,
+                                            height: fb.height,
+                                        };
+                                        if let Err(e) = spv.add_trusted_header(header) {
+                                            tracing::warn!(
+                                                "SPV chain: could not add reorg header at {}: {}",
+                                                fb.height,
+                                                e
+                                            );
+                                        }
+                                    }
+                                }
 
                                 Some(RpcNodeEvent::Reorg {
                                     old_tip: hex::encode(old_tip),
@@ -936,6 +987,8 @@ async fn main() -> anyhow::Result<()> {
     let payment_chain = Arc::clone(&rpc_state.chain);
     let payment_mempool = Arc::clone(&rpc_state.mempool);
     let payment_tx_submit = rpc_state.tx_submit.clone();
+    let (payment_result_tx, mut payment_result_rx) =
+        tokio::sync::mpsc::unbounded_channel::<vtorrent_torrent::payment::PaymentResult>();
     tokio::spawn(async move {
         while let Some(payment) = payment_receiver.recv().await {
             let peer_address = payment.peer_address.clone();
@@ -952,12 +1005,26 @@ async fn main() -> anyhow::Result<()> {
             )
             .await;
             match result {
-                Ok(txid) => tracing::info!(
-                    "Incentive payment {} sent to {}",
-                    txid,
-                    payment.peer_address
-                ),
-                Err(e) => tracing::warn!("Incentive payment failed: {}", e),
+                Ok(txid) => {
+                    tracing::info!(
+                        "Incentive payment {} sent to {}",
+                        txid,
+                        payment.peer_address
+                    );
+                    let _ = payment_result_tx.send(vtorrent_torrent::payment::PaymentResult {
+                        account_key: payment.account_key,
+                        amount_satoshis: payment.amount_satoshis,
+                        success: true,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("Incentive payment failed: {}", e);
+                    let _ = payment_result_tx.send(vtorrent_torrent::payment::PaymentResult {
+                        account_key: payment.account_key,
+                        amount_satoshis: payment.amount_satoshis,
+                        success: false,
+                    });
+                }
             }
         }
     });
@@ -976,27 +1043,54 @@ async fn main() -> anyhow::Result<()> {
                     .unwrap_or_default()
                     .as_secs();
                 let mut guard = torrent_sessions_for_settlement.write().await;
+                while let Ok(result) = payment_result_rx.try_recv() {
+                    let Some((session_id, peer_key)) = result.account_key.split_once('\u{0}')
+                    else {
+                        continue;
+                    };
+                    let Ok(session) = guard.get_session_mut(session_id) else {
+                        continue;
+                    };
+                    let Some(account) = session.incentive_accounts.get_mut(peer_key) else {
+                        continue;
+                    };
+                    if result.success {
+                        account.mark_paid(result.amount_satoshis);
+                    } else {
+                        account.payment_failed();
+                    }
+                }
                 let mut settled = 0;
                 for session in guard.sessions_mut() {
-                    for account in session.incentive_accounts.values_mut() {
+                    let session_id = session.id.clone();
+                    for (peer_key, account) in session.incentive_accounts.iter_mut() {
                         if account.needs_settlement(now) {
-                            let payable = account.agreed_owed();
-                            let (_earned, _owed) = account.settle(now);
-                            if let Some(satoshis) = payable.filter(|sats| *sats > 0) {
-                                if account.peer_address.is_empty() {
-                                    continue;
-                                }
-                                payment_sender.emit(vtorrent_torrent::payment::PaymentDue {
-                                    peer_address: account.peer_address.clone(),
-                                    amount_satoshis: satoshis,
-                                });
+                            // Never destroy accounting without a verified
+                            // receipt: an unpayable account keeps accumulating
+                            // until the peer starts sending receipts.
+                            if account.peer_address.is_empty() {
+                                continue;
+                            }
+                            if let Some(satoshis) = account.agreed_owed() {
+                                account.settle_agreed(now, satoshis);
+                                settled += 1;
                             } else {
                                 tracing::debug!(
                                     peer = %account.peer_address,
-                                    "Withholding incentive payment: no matching signed receipt"
+                                    "Withholding incentive settlement: no matching signed receipt"
                                 );
                             }
-                            settled += 1;
+                        }
+                        if account.unpaid_satoshis > 0
+                            && !account.payment_in_flight
+                            && !account.peer_address.is_empty()
+                        {
+                            account.payment_in_flight = true;
+                            payment_sender.emit(vtorrent_torrent::payment::PaymentDue {
+                                peer_address: account.peer_address.clone(),
+                                amount_satoshis: account.unpaid_satoshis,
+                                account_key: format!("{}\u{0}{}", session_id, peer_key),
+                            });
                         }
                     }
                 }

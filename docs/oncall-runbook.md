@@ -40,8 +40,8 @@ disk < 85%, no crash-looping units.
 | Alert | Likely cause | Action |
 |---|---|---|
 | `DaemonDown` (>2m) | process crash / OOM / host reboot | `systemctl status vtorrent -l`; check `journalctl -u vtorrent -n 100`. Restart: `systemctl restart vtorrent`. If OOM-killed repeatedly, check memory trend in Grafana before restarting. |
-| `PeerCountZero` (>5m) | peer lost connectivity, or remote seed down | From each side: `curl -s localhost:22525/api/v1/peers`. Test cross-connectivity: from seed1 `nc -zv 2.29.8.113 22526`. If ufw dropped rules after a host reboot: re-apply `ufw allow 22526/tcp`. If the other seed is the dead one, see *Seed failover*. |
-| `HeightStalled` | staking stopped fleet-wide, or mempool poisoning | Check latest block age vs Grafana. Verify a staker is alive: `curl -s localhost:22525/api/v1/staking/status`. Inspect recent daemon log for "Rejected block" lines — if one node rejects all blocks, capture its log and restart it last. |
+| `PeerCountZero` (>5m) | peer lost connectivity, or remote seed down | From each side: `curl -s -H "X-API-Key: $(cat /etc/vtorrent/rpc-api-key)" localhost:22525/api/v1/peers`. Test cross-connectivity: from seed1 `nc -zv 2.29.8.113 22526`. If ufw dropped rules after a host reboot: re-apply `ufw allow 22526/tcp`. If the other seed is the dead one, see *Seed failover*. |
+| `HeightStalled` | staking stopped fleet-wide, or mempool poisoning | Check latest block age vs Grafana. Verify a staker is alive: `curl -s -H "X-API-Key: $(cat /etc/vtorrent/rpc-api-key)" localhost:22525/api/v1/staking/status`. Inspect recent daemon log for "Rejected block" lines — if one node rejects all blocks, capture its log and restart it last. |
 | `StakingStopped` | wallet locked / UTXO spent / passphrase cleared | `POST /api/v1/staking/start` with address+passphrase after unlocking. |
 | `HostDiskFull` (<15%) | chain.db growth or journald bloat | `du -sh /var/lib/vtorrent/*`; `journalctl --vacuum-size=200M`. Do NOT delete chain.db (see *Chain-state recovery*). |
 | `HostOutOfMemory` | leak or co-tenant | `systemctl status vtorrent` for oom score; consider restarting the daemon during a quiet window. |

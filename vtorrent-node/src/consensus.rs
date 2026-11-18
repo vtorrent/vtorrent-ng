@@ -26,6 +26,14 @@ pub const MAX_BLOCK_SIGOPS: usize = 20_000;
 /// not the old two-hour window.
 pub const MAX_FUTURE_BLOCK_DRIFT: u32 = 5;
 
+/// Minimum parent-to-child timestamp spacing for production blocks.
+///
+/// The target is 60 seconds; five seconds of slack absorbs clock jitter while
+/// still capping production at roughly one block per minute. Without this a
+/// staker could grind several timestamp slots inside the future window and
+/// produce multiple blocks per interval.
+pub const MIN_BLOCK_SPACING: u32 = TARGET_BLOCK_TIME as u32 - MAX_FUTURE_BLOCK_DRIFT;
+
 /// Count a block's signature operations, optionally resolving prevout scripts
 /// for the P2SH redeem-script contribution. Mirrors the legacy `CheckBlock`
 /// (no prevouts) and `ConnectBlock` (P2SH included) checks.
@@ -458,7 +466,9 @@ pub(crate) fn validate_block_inner(
 
     // Bound producer clock drift tightly: the stake kernel hashes this
     // timestamp, so a large future window would allow grinding.
-    let now = now_timestamp_u32();
+    // Never let a backwards clock step make an already-accepted parent
+    // timestamp look like the future during store replay.
+    let now = now_timestamp_u32().max(prev_timestamp);
 
     if block.header.timestamp > now.saturating_add(MAX_FUTURE_BLOCK_DRIFT) {
         return Err(NodeError::InvalidBlock(format!(
@@ -472,6 +482,15 @@ pub(crate) fn validate_block_inner(
         return Err(NodeError::InvalidBlock(
             "Block timestamp must be greater than previous block".into(),
         ));
+    }
+
+    // Production blocks must also leave at least one near-target interval
+    // since the parent. Test/regtest fixtures opt out through `allow_pow`.
+    if !allow_pow && block.header.timestamp < prev_timestamp.saturating_add(MIN_BLOCK_SPACING) {
+        return Err(NodeError::InvalidBlock(format!(
+            "Block timestamp {} is less than {} seconds after parent {}",
+            block.header.timestamp, MIN_BLOCK_SPACING, prev_timestamp
+        )));
     }
 
     // Verify merkle root
@@ -1206,6 +1225,7 @@ mod tests {
         // block: genesis has no stakeable UTXO, so no coinstake can exist (T3).
         let mut block = make_test_block(claim_tx(1, MIN_STAKE_AMOUNT), 0x1e0fffff, 0);
         block.header.prev_block_hash = [9u8; 32];
+        block.header.timestamp = 1_700_000_000 + MIN_BLOCK_SPACING;
         block.header.stake_modifier = compute_stake_modifier(0, &[9u8; 32]);
         block.header.merkle_root = block.compute_merkle_root();
 
@@ -1218,12 +1238,32 @@ mod tests {
     }
 
     #[test]
+    fn test_production_rejects_sub_interval_block_spacing() {
+        let mut block = make_test_block(claim_tx(1, MIN_STAKE_AMOUNT), 0x1e0fffff, 0);
+        block.header.prev_block_hash = [9u8; 32];
+        block.header.stake_modifier = compute_stake_modifier(0, &[9u8; 32]);
+        block.header.timestamp = 1_700_000_000 + MIN_BLOCK_SPACING - 1;
+        block.header.merkle_root = block.compute_merkle_root();
+        assert!(
+            validate_block_inner(&block, 0, 1_700_000_000, 0x1e0fffff, 0, [9u8; 32], false)
+                .is_err()
+        );
+
+        block.header.timestamp = 1_700_000_000 + MIN_BLOCK_SPACING;
+        block.header.merkle_root = block.compute_merkle_root();
+        assert!(
+            validate_block_inner(&block, 0, 1_700_000_000, 0x1e0fffff, 0, [9u8; 32], false).is_ok()
+        );
+    }
+
+    #[test]
     fn test_height1_bootstrap_requires_single_transaction() {
         // A bootstrap block carries only the claim; extra txs would let a
         // non-claim tx ride along at height 1.
         let mut block = make_test_block(claim_tx(1, MIN_STAKE_AMOUNT), 0x1e0fffff, 0);
         block.transactions.push(claim_tx(1, MIN_STAKE_AMOUNT));
         block.header.prev_block_hash = [9u8; 32];
+        block.header.timestamp = 1_700_000_000 + MIN_BLOCK_SPACING;
         block.header.stake_modifier = compute_stake_modifier(0, &[9u8; 32]);
         block.header.merkle_root = block.compute_merkle_root();
 
@@ -1236,6 +1276,7 @@ mod tests {
         // The bootstrap rule is height-1 only.
         let mut block = make_test_block(claim_tx(2, MIN_STAKE_AMOUNT), 0x1e0fffff, 0);
         block.header.prev_block_hash = [9u8; 32];
+        block.header.timestamp = 1_700_000_000 + MIN_BLOCK_SPACING;
         block.header.stake_modifier = compute_stake_modifier(0, &[9u8; 32]);
         block.header.merkle_root = block.compute_merkle_root();
 
@@ -1266,6 +1307,7 @@ mod tests {
         };
         let mut block = make_test_block(coinstake, 0x1e0fffff, 0);
         block.header.prev_block_hash = [9u8; 32];
+        block.header.timestamp = 1_700_000_000 + MIN_BLOCK_SPACING;
         block.header.stake_modifier = compute_stake_modifier(0, &[9u8; 32]);
         block.header.merkle_root = block.compute_merkle_root();
 

@@ -45,11 +45,14 @@ pub const MAX_SCRIPT_LOCKTIME: u32 = 0x7FFF_FFFF;
 /// legs of a swap always agree on the fee.
 pub const VTR_HTLC_FEE_SATOSHIS: u64 = 10_000;
 
-/// Fixed fee for BTC-side HTLC transactions (funding, claim, refund).
+/// Fixed fee floor for BTC-side HTLC transactions (funding, claim, refund).
 ///
-/// BTC HTLC inputs are segwit-style with smaller witness data than the VTR
-/// custom-script path; 1,000 sats covers a single-input transaction.
-pub const BTC_HTLC_FEE_SATOSHIS: u64 = 1_000;
+/// A single-input BTC HTLC transaction is roughly 140 vbytes, so 5,000 sats
+/// covers about 35 sat/vB. The old 1,000-sat value stalled funding and refunds
+/// once the network rate rose above ~7 sat/vB. Claims are RBF-signalling and
+/// can be bumped; funding and refunds cannot be replaced safely, so their
+/// fixed fee must be conservative.
+pub const BTC_HTLC_FEE_SATOSHIS: u64 = 5_000;
 
 /// An HTLC (Hash Time-Locked Contract) for atomic swaps.
 #[derive(Debug, Clone)]

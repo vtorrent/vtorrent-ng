@@ -6,6 +6,7 @@ use crate::{
     i2p::I2pTransport,
     tor::TorTransport,
 };
+use std::sync::Arc;
 /// Top-level transport router.
 ///
 /// Routes outbound TCP connections through the appropriate transport:
@@ -30,15 +31,16 @@ pub enum TransportMode {
 /// The main transport abstraction — routes connections to the right backend.
 #[derive(Clone)]
 pub struct OnionTransport {
-    config: TransportConfig,
+    config: Arc<TransportConfig>,
     tor: TorTransport,
     i2p: I2pTransport,
 }
 
 impl OnionTransport {
     pub fn new(config: TransportConfig) -> Self {
-        let tor = TorTransport::new(config.clone());
-        let i2p = I2pTransport::new(config.clone());
+        let config = Arc::new(config);
+        let tor = TorTransport::from_shared(config.clone());
+        let i2p = I2pTransport::from_shared(config.clone());
         Self { config, tor, i2p }
     }
 

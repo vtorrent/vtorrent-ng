@@ -215,6 +215,8 @@ pub struct Node {
     /// Per-peer compact block relay state (BIP-152).
     pub(crate) compact_peers:
         std::collections::HashMap<std::net::SocketAddr, CompactBlockPeerState>,
+    /// Last detached DHT bootstrap, so an empty DHT cannot stall every tick.
+    last_dht_bootstrap: Option<std::time::Instant>,
     /// Partial compact blocks awaiting `blocktxn` responses (BIP-152).
     /// Keyed by block hash; populated when `cmpctblock` reports missing txs.
     pub(crate) pending_compact_blocks: HashMap<[u8; 32], CmpctBlockMsg>,
@@ -324,6 +326,7 @@ impl Node {
             overlay_handshaken: HashSet::new(),
             event_tx: None,
             compact_peers: std::collections::HashMap::new(),
+            last_dht_bootstrap: None,
             pending_compact_blocks: HashMap::new(),
             orphan_blocks: HashMap::new(),
             orphan_order: VecDeque::new(),
@@ -398,6 +401,7 @@ impl Node {
             overlay_handshaken: HashSet::new(),
             event_tx: None,
             compact_peers: std::collections::HashMap::new(),
+            last_dht_bootstrap: None,
             pending_compact_blocks: HashMap::new(),
             orphan_blocks: HashMap::new(),
             orphan_order: VecDeque::new(),
@@ -569,9 +573,13 @@ impl Node {
                 // Immediately try cached peers before doing any network bootstrap
                 let candidates = self.peer_manager.get_peer_candidates(TARGET_OUTBOUND);
                 for addr in candidates {
-                    if let Err(e) = self.peer_manager.connect_addr(addr).await {
-                        tracing::debug!("Cache: Could not connect to {}: {}", addr, e);
-                    }
+                    let _ = self
+                        .peer_manager
+                        .try_dial_addr_with_source(
+                            addr,
+                            vtorrent_p2p::peer_manager::DialSource::Pex,
+                        )
+                        .await;
                 }
             }
             Ok(_) => tracing::info!("No peer cache found — cold start"),
@@ -592,6 +600,7 @@ impl Node {
         // ── Stage 1: DHT + Cloudflare DoH in parallel (decentralized) ────────
         if self.config.use_dht && !self.config.isolated {
             self.bootstrap_via_dht().await;
+            self.last_dht_bootstrap = Some(std::time::Instant::now());
         }
 
         // ── Stage 2: Explicitly configured extra seeds ────────────────────────
