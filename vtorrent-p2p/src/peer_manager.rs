@@ -117,7 +117,15 @@ pub struct PeerManager {
     /// Version nonces we have sent, for self-connection detection.
     sent_version_nonces: crate::peer::SentNonceRegistry,
     network_magic: [u8; 4],
+    /// Connected streams from detached dial tasks, registered by the event loop.
+    dial_tx: mpsc::Sender<DialOutcome>,
+    dial_rx: mpsc::Receiver<DialOutcome>,
 }
+
+type DialOutcome = (
+    SocketAddr,
+    std::result::Result<(tokio::net::TcpStream, TransportMode), String>,
+);
 
 impl PeerManager {
     /// Create a new mainnet peer manager (private addresses rejected in PEX).
@@ -161,6 +169,7 @@ impl PeerManager {
         }
 
         let (inbound_tx, inbound_rx) = mpsc::channel(1024);
+        let (dial_tx, dial_rx) = mpsc::channel(64);
 
         Self {
             best_height,
@@ -186,6 +195,8 @@ impl PeerManager {
             } else {
                 NETWORK_MAGIC
             },
+            dial_tx,
+            dial_rx,
         }
     }
 
@@ -354,6 +365,12 @@ impl PeerManager {
             TransportMode::Clearnet => stream.peer_addr()?,
             TransportMode::Tor | TransportMode::I2p => anonymous_peer_key(addr),
         };
+        if self.peers.contains_key(&peer_addr) {
+            return Err(P2pError::Transport(format!(
+                "already connected to {}",
+                peer_addr
+            )));
+        }
 
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
         let event_tx = self.event_tx.clone();
@@ -453,6 +470,38 @@ impl PeerManager {
         connected
     }
 
+    /// Queue a detached dial for a parsed socket address.
+    ///
+    /// Returns immediately. The connected stream arrives through the internal
+    /// channel drained by [`process_events`], so the node event loop never waits
+    /// on a TCP connect.
+    pub async fn try_dial_addr(&mut self, addr: SocketAddr) -> bool {
+        const DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+        if self.peers.len() >= MAX_PEERS || self.peers.contains_key(&addr) {
+            return false;
+        }
+        if self.ban_manager.read().await.is_banned(addr.ip()) {
+            return false;
+        }
+        self.addr_book.record_attempt(addr);
+        let transport = self.transport.clone();
+        let tx = self.dial_tx.clone();
+        tokio::spawn(async move {
+            let outcome = match tokio::time::timeout(
+                DIAL_TIMEOUT,
+                transport.connect(&addr.to_string()),
+            )
+            .await
+            {
+                Ok(Ok((stream, mode))) => (addr, Ok((stream, mode))),
+                Ok(Err(error)) => (addr, Err(error.to_string())),
+                Err(_) => (addr, Err("dial timed out".into())),
+            };
+            let _ = tx.send(outcome).await;
+        });
+        true
+    }
+
     /// Process pending peer events (call this in the main loop).
     /// Returns events for the node to handle, and also updates the address book.
     /// Declare this node's public `ip:port` so PEX-learned addresses matching
@@ -463,6 +512,29 @@ impl PeerManager {
 
     pub async fn process_events(&mut self) -> Vec<PeerEvent> {
         let mut events = Vec::new();
+
+        while let Ok((addr, result)) = self.dial_rx.try_recv() {
+            match result {
+                Ok((stream, mode)) => {
+                    if let Err(error) = self.register_connected(&addr.to_string(), stream, mode) {
+                        tracing::debug!(
+                            "Detached dial registration failed for {}: {}",
+                            addr,
+                            error
+                        );
+                    }
+                }
+                Err(error) => {
+                    tracing::debug!("Detached dial to {} failed: {}", addr, error);
+                    if !is_bootstrap_seed(&addr.to_string(), addr.ip()) {
+                        self.ban_manager
+                            .write()
+                            .await
+                            .record_connection_failure(addr.ip());
+                    }
+                }
+            }
+        }
 
         // Register inbound peers accepted by the accept loop.
         while let Ok((peer_addr, cmd_tx)) = self.inbound_rx.try_recv() {

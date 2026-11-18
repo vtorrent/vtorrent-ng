@@ -35,6 +35,7 @@ items are marked by verification level.
 | High | SPV accepted any height-0 header and verified inclusion proofs against side-fork headers. | The chain pins the first genesis hash and rejects conflicting height-0 headers; inclusion now requires the header to be an ancestor of the best tip. Tests cover both. Difficulty-schedule validation remains open. |
 | High | Peer dials ran sequentially inside the node event loop with 30-second transport timeouts, so a poisoned PEX list could stall block/stake processing for minutes. | Each dial is bounded to 3 seconds and at most four are attempted per tick. Fully asynchronous dialing remains a follow-up. |
 | High | Sequential dials multiplied the stall by the number of candidates. | Dials now run in parallel with per-attempt timeouts; a tick waits for one batch, not one timeout per address. The batch still runs from the event loop pending a peer-manager refactor. |
+| High | The dial batch itself still blocked the event loop for up to three seconds. | PEX candidates are now queued to detached tasks; connected streams arrive through an internal channel and are registered from `process_events`. The event loop no longer waits on untrusted dials. Configured seed re-dials remain a bounded parallel batch. |
 | Medium | Torrent `recv` had no deadline and accepted repeated bitfields up to 16 MiB, each costing a full per-bit walk. | A message must complete within 180 seconds; only the first bitfield is accepted and it may not exceed `ceil(piece_count/8)` bytes. |
 | Low | `/ws` skipped its origin allow-list when the header was absent, and the Tauri seed probe could scan loopback/LAN services. | `/ws` now requires an allowed Origin. The probe rejects loopback, private, link-local, multicast, and unspecified targets; its test asserts loopback filtering. |
 | Medium | Two concurrent matches could select the same confirmed VTR outpoint because coin selection ignored the mempool. | Funding selection and admission are serialized by a dedicated lock, and candidates spent by a mempool transaction are filtered out. The order is still marked `Matched` before admission, so a later non-conflict admission failure remains possible. |
@@ -68,9 +69,8 @@ items are marked by verification level.
 
 4. **Partially fixed — overlay sessions are capped at eight per source IP**;
    distributed sources can still fill the global table for the session TTL.
-5. **Partially fixed — peer dials are parallel and bounded** to one 3-second
-   batch per tick; fully detached dialing is still needed to remove the
-   event-loop wait entirely.
+5. **Fixed — untrusted PEX dials are fully detached** and registered from the
+   event loop; only the small configured-seed batch remains inline.
 6. **Fixed — SPV pins the VTR genesis and fixed consensus difficulty**, and
    inclusion requires best-chain ancestry. VTR uses a fixed difficulty, so no
    retarget schedule is needed.

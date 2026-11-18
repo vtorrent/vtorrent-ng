@@ -150,14 +150,17 @@ impl super::Node {
             );
 
             // First try PEX address book candidates
-            let candidates: Vec<String> = self
+            let mut connected = 0;
+            for addr in self
                 .peer_manager
                 .get_peer_candidates(needed * 2)
                 .into_iter()
                 .take(MAX_DIALS_PER_TICK)
-                .map(|addr| addr.to_string())
-                .collect();
-            let mut connected = self.peer_manager.connect_many(candidates).await;
+            {
+                if self.peer_manager.try_dial_addr(addr).await {
+                    connected += 1;
+                }
+            }
 
             // If still not enough, re-dial explicitly configured seeds
             if connected < needed && !self.config.extra_seeds.is_empty() {
