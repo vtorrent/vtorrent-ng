@@ -623,7 +623,13 @@ impl Chain {
                     "checkpoint at height 0 is not the local genesis".into(),
                 ));
             }
-        } else if let Some(header) = self.get_header_at_height(height) {
+        } else if height <= self.best_height() {
+            let header = self.get_header_at_height(height).ok_or_else(|| {
+                NodeError::Chain(format!(
+                    "checkpoint height {} is not in the local chain",
+                    height
+                ))
+            })?;
             if header.hash() != hash {
                 return Err(NodeError::Chain(format!(
                     "checkpoint mismatch at height {}: local block is {}",

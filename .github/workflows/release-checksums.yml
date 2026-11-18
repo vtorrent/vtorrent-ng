@@ -1,9 +1,9 @@
 name: Release checksums
 
-# Integrity only. SHA256SUMS detects corrupted or partially uploaded assets;
-# it does not prove who built them. Anyone able to replace a release asset can
-# also replace this file. Provenance requires release signing, which is an
-# operator key-management task still open in docs/mainnet-readiness.md.
+# SHA256SUMS detects corrupted or partially uploaded assets. When
+# MINISIGN_SECRET_KEY is configured, it also carries a minisign signature over
+# the checksum file; see docs/release-signing.md. Checksums alone do not prove
+# who built an asset.
 
 on:
   release:
@@ -17,17 +17,44 @@ jobs:
     name: Publish SHA256SUMS
     runs-on: ubuntu-latest
     steps:
-      - name: Generate and attach checksums
+      - name: Generate and verify checksums
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p dist
           gh release download "$GITHUB_REF_NAME" --dir dist --clobber
-          rm -f dist/SHA256SUMS
+          rm -f dist/SHA256SUMS dist/SHA256SUMS.minisig
           cd dist
-          find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
+          find . -maxdepth 1 -type f -print0 \
             | LC_ALL=C sort -z \
             | xargs -0 sha256sum > SHA256SUMS
           sha256sum -c SHA256SUMS
-          gh release upload "$GITHUB_REF_NAME" SHA256SUMS --clobber
+
+      - name: Publish checksums and optional signature
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MINISIGN_SECRET_KEY:-}" ]; then
+            echo "MINISIGN_SECRET_KEY is not set; publishing unsigned checksums"
+            gh release upload "$GITHUB_REF_NAME" dist/SHA256SUMS --clobber
+            exit 0
+          fi
+          test -f release/minisign.pub || {
+            echo "release/minisign.pub must be committed when signing is enabled" >&2
+            exit 1
+          }
+          if ! command -v minisign >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y minisign
+          fi
+          key="$RUNNER_TEMP/minisign.key"
+          umask 077
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
+          trap 'rm -f "$key"' EXIT
+          minisign -S -s "$key" -m dist/SHA256SUMS -x dist/SHA256SUMS.minisig
+          minisign -Vm dist/SHA256SUMS -p release/minisign.pub -x dist/SHA256SUMS.minisig
+          gh release upload "$GITHUB_REF_NAME" \
+            dist/SHA256SUMS dist/SHA256SUMS.minisig --clobber

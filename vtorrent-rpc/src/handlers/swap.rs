@@ -335,6 +335,11 @@ pub async fn import_match_with_wif(
         .get_order(&req.order_id)
         .cloned();
     if let Some(order) = &existing {
+        if order.preimage.is_some() {
+            return Err(RpcError::BadRequest(
+                "The local order already holds the maker secret; import is for taker nodes".into(),
+            ));
+        }
         if order.maker_address != req.maker_address
             || order.vtr_amount != req.vtr_amount
             || order.target_asset != req.target_asset

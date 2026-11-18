@@ -285,6 +285,10 @@ window ran on, and that commit must equal the release commit.
       (workspace-library pattern); release builds should archive the lock used.
 - [x] **Release notes drafted** — `docs/release-notes-beta.3.md` (finalized,
       Addendum 4 covers the soak + memory work + P0 fixes).
+- [ ] **Release signing** — minisign over `SHA256SUMS` plus Apple/Windows
+      code-signing certificates. The workflow supports an optional
+      `MINISIGN_SECRET_KEY`; key custody and certificates are operator tasks.
+      See `docs/release-signing.md`.
 - [x] **Tag created**: `v2.0.0-beta.3` (2026-10-06), pushed, GitHub Release
       published. (Final `v2.0.0` only after §1–§3 complete.)
 

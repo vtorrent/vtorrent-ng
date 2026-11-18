@@ -278,6 +278,9 @@ jobs:
             the source commit, or build from source, before trusting a binary.
             A `SHA256SUMS` asset is attached after publication; verify with
             `sha256sum -c SHA256SUMS` (or `Get-FileHash` on Windows).
+            If `SHA256SUMS.minisig` is present, verify it against the
+            published `release/minisign.pub` with
+            `scripts/verify-release.sh` before trusting an asset.
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }} -- --locked

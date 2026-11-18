@@ -21,3 +21,10 @@ cargo metadata --locked --format-version 1 > /dev/null
 
 Regenerate deliberately with `cargo generate-lockfile`, review the dependency
 diff, then copy the resulting root `Cargo.lock` to `release/Cargo.lock`.
+
+## Release signing public key
+
+When minisign signing is enabled, commit the public key as
+`release/minisign.pub`. The release workflow refuses to sign without it and
+publishes `SHA256SUMS.minisig` alongside the checksums. See
+`docs/release-signing.md`.

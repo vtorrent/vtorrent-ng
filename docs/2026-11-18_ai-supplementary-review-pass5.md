@@ -97,6 +97,11 @@ pass-5 commit:
   `OP_0`/`OP_n`/minimal pushes for the locktime; the parser still accepts the
   legacy fixed `PUSH4` shape. Timestamp locktimes were already minimal, so this
   removes the zero/small-locktime future-unspendability case.
+- **Release signing is wired.** If `MINISIGN_SECRET_KEY` is configured, the
+  release workflow signs `SHA256SUMS`, verifies it against
+  `release/minisign.pub`, and uploads `SHA256SUMS.minisig`. Without the secret,
+  releases remain unsigned. `scripts/verify-release.sh` and
+  `docs/release-signing.md` cover verification and key custody.
 
 ## Not fixed
 
@@ -104,7 +109,7 @@ pass-5 commit:
 |---|---|
 | A new node without `--checkpoint` still accepts a long-range forged PoS chain from genesis. | Enforcement and `HEIGHT:HASH` plumbing are in place; the actual mainnet checkpoint can only be published after 10,000 blocks. New nodes must be configured with it per the launch runbook. |
 | Backups containing cold-stake or swap state are deliberately not auto-restorable. | Recovery requires the reviewed manual runbook; the UI and policy documents must keep saying so. |
-| Release builds are unsigned and `SHA256SUMS` is integrity-only. | Signing needs operator key custody (Apple/Windows/minisign), deferred by the operator. |
+| Release builds are unsigned unless the operator configures signing. | The minisign workflow, verification script, and documentation are in place; generating the key, storing it in `MINISIGN_SECRET_KEY`, and obtaining Apple/Windows certificates remain operator key-custody tasks. |
 | BTC HTLC fees are a configurable floor, not a live estimate. | `VTORRENT_BTC_HTLC_FEE_SATOSHIS` raises the 35 sat/vB floor without a rebuild; a live estimator and safe funding replacement are still needed. |
 | EVM/BTC cross-chain swap promotion on mainnet remains disabled. | The independent review and multi-node adversarial testing are still required. |
 | The base testnet stack still pins a Docker Hub tag; the source-build overlay is opt-in. | A release must publish and pin the image digest (`@sha256:`) so operators verify the exact artifact they run. |
@@ -121,7 +126,9 @@ pass-5 commit:
   across 54 test groups.
 - Container source build: `docker build -f docker/Dockerfile` succeeded;
   `vtorrent-daemon 2.0.0` runs as uid `vtorrent`; image
-  `sha256:fdf2e67df02cc3032220821692d3dc4a20641ed8d6c277b011afaded1be5fa87`.
+  `sha256:bb95d3a304f96b786647b5fa67228ac753ca075d0ca216b901ec13254c5dea8b`.
+- Release verification: `scripts/verify-release.sh` accepts an intact
+  checksum directory and rejects a tampered asset.
 
 The consensus timestamp change, the detached dial refactor, the receipt
 settlement/payout path, and the SPV pin/reorg handling are AI-authored and
