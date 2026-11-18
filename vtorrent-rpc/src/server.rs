@@ -153,6 +153,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/dex/order/:id", delete(cancel_dex_order))
         .route("/api/v1/dex/orders", get(get_dex_orders))
         .route("/api/v1/dex/match", post(match_dex_order))
+        .route(
+            "/api/v1/swap/import-match",
+            post(crate::handlers::swap::import_match),
+        )
         .route("/api/v1/swap/btc-fund", post(btc_fund))
         .route("/api/v1/swap/vtr-claim", post(vtr_claim))
         .route(

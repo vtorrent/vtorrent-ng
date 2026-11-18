@@ -219,6 +219,9 @@ pub struct Chain {
     /// Test-only scheduled governance deployment and signalling period.
     #[cfg(any(test, feature = "test-util"))]
     governance_test_deployment: Option<(crate::deployments::Deployment, u32)>,
+    /// Optional operator-pinned checkpoint `(height, hash)`. When set, no
+    /// main-chain block at that height may differ and no reorg may cross it.
+    checkpoint: Option<(u32, [u8; 32])>,
 }
 
 impl Chain {
@@ -255,6 +258,7 @@ impl Chain {
             governance_test_activation: None,
             #[cfg(any(test, feature = "test-util"))]
             governance_test_deployment: None,
+            checkpoint: None,
         };
 
         chain.blocks.insert(genesis_hash, genesis.clone());
@@ -600,6 +604,51 @@ impl Chain {
         self.height_index
             .get(height as usize)
             .and_then(|hash| self.headers.get(hash))
+    }
+
+    /// Pin a checkpoint `(height, hash)`.
+    ///
+    /// Refuses to install a checkpoint that contradicts a block already on the
+    /// local main chain. A checkpoint above the current tip is allowed: it is
+    /// enforced when the chain reaches that height.
+    pub fn set_checkpoint(&mut self, height: u32, hash: [u8; 32]) -> Result<()> {
+        if height == 0 {
+            let genesis = self
+                .height_index
+                .first()
+                .copied()
+                .ok_or_else(|| NodeError::Chain("genesis header is missing".into()))?;
+            if genesis != hash {
+                return Err(NodeError::Chain(
+                    "checkpoint at height 0 is not the local genesis".into(),
+                ));
+            }
+        } else if let Some(header) = self.get_header_at_height(height) {
+            if header.hash() != hash {
+                return Err(NodeError::Chain(format!(
+                    "checkpoint mismatch at height {}: local block is {}",
+                    height,
+                    hex::encode(header.hash())
+                )));
+            }
+        }
+        self.checkpoint = Some((height, hash));
+        Ok(())
+    }
+
+    pub fn checkpoint(&self) -> Option<(u32, [u8; 32])> {
+        self.checkpoint
+    }
+
+    fn checkpoint_accepts(&self, height: u32, hash: &[u8; 32]) -> bool {
+        self.checkpoint.is_none_or(|(checkpoint_height, expected)| {
+            height != checkpoint_height || hash == &expected
+        })
+    }
+
+    fn checkpoint_blocks_reorg(&self, fork_height: u32) -> bool {
+        self.checkpoint
+            .is_some_and(|(checkpoint_height, _)| fork_height < checkpoint_height)
     }
 
     /// Count, per retarget period, how many main-chain blocks signalled a
@@ -1124,6 +1173,12 @@ impl Chain {
             let prev_header = self
                 .get_header_at_height(height - 1)
                 .ok_or_else(|| NodeError::Chain("Previous block not found".into()))?;
+            if !self.checkpoint_accepts(height, &block_hash) {
+                return Err(NodeError::Chain(format!(
+                    "block at checkpoint height {} does not match the pinned hash",
+                    height
+                )));
+            }
 
             validate_block_inner(
                 &block,

@@ -523,6 +523,7 @@ export interface MatchOrderResult {
   hashLock: string
   expiry: number
   fundingTxid: string
+  makerBtcAddress?: string
 }
 
 export interface SwapActionResult {
@@ -545,6 +546,46 @@ export async function matchDexOrder(req: {
     await rpcPost<unknown>('/api/v1/dex/match', {
       order_id: req.orderId,
       taker_address: req.takerAddress,
+      passphrase: req.passphrase,
+      otp_code: req.otpCode ?? null,
+    })
+  ) as MatchOrderResult
+}
+
+export interface ImportSwapMatchRequest {
+  orderId: string
+  makerAddress: string
+  takerAddress: string
+  vtrAmount: number
+  targetAsset: string
+  targetAmount: number
+  hashLock: string
+  expiry: number
+  fundingTxid: string
+  makerBtcAddress?: string
+  passphrase: string
+  otpCode?: string
+}
+
+/** Import the maker's match response on the taker's own node. */
+export async function importSwapMatch(req: ImportSwapMatchRequest): Promise<MatchOrderResult> {
+  if (isTauri()) {
+    return camel(
+      await tauriInvoke<MatchOrderResult>('import_swap_match', { args: req })
+    ) as MatchOrderResult
+  }
+  return camel(
+    await rpcPost<unknown>('/api/v1/swap/import-match', {
+      order_id: req.orderId,
+      maker_address: req.makerAddress,
+      taker_address: req.takerAddress,
+      vtr_amount: req.vtrAmount,
+      target_asset: req.targetAsset,
+      target_amount: req.targetAmount,
+      hash_lock: req.hashLock,
+      expiry: req.expiry,
+      funding_txid: req.fundingTxid,
+      maker_btc_address: req.makerBtcAddress ?? null,
       passphrase: req.passphrase,
       otp_code: req.otpCode ?? null,
     })

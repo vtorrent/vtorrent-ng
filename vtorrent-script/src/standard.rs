@@ -121,37 +121,76 @@ pub fn classify_script(script: &Script) -> ScriptType {
 /// Parse the exact P2CS script shape, returning `(staking_hash, spending_hash,
 /// locktime)` if it matches.
 fn parse_p2cs(b: &[u8]) -> Option<([u8; 20], [u8; 20], u32)> {
-    // Layout (60 bytes):
-    //  0: OP_IF
-    //  1: OP_DUP  2: OP_HASH160  3: PUSH20  4..24: staking_hash
-    // 24: OP_EQUALVERIFY  25: OP_CHECKSIGVERIFY
-    // 26: OP_ELSE
-    // 27: PUSH4  28..32: locktime  32: OP_CHECKLOCKTIMEVERIFY  33: OP_DROP
-    // 34: OP_DUP  35: OP_HASH160  36: PUSH20  37..57: spending_hash
-    // 57: OP_EQUALVERIFY  58: OP_CHECKSIGVERIFY
-    // 59: OP_ENDIF
-    if b.len() != 60 {
+    let mut cursor = 0usize;
+    let expect = |cursor: &mut usize, opcode: u8| -> bool {
+        if b.get(*cursor) == Some(&opcode) {
+            *cursor += 1;
+            true
+        } else {
+            false
+        }
+    };
+    let push20 = |cursor: &mut usize| -> Option<[u8; 20]> {
+        if b.get(*cursor) != Some(&0x14) {
+            return None;
+        }
+        let bytes = b.get(*cursor + 1..*cursor + 21)?;
+        *cursor += 21;
+        bytes.try_into().ok()
+    };
+
+    if !expect(&mut cursor, 0x63) || !expect(&mut cursor, 0x76) || !expect(&mut cursor, 0xa9) {
         return None;
     }
-    if b[0] != 0x63 || b[1] != 0x76 || b[2] != 0xa9 || b[3] != 0x14 {
+    let staking = push20(&mut cursor)?;
+    if !expect(&mut cursor, 0x88) || !expect(&mut cursor, 0xac) || !expect(&mut cursor, 0x67) {
         return None;
     }
-    if b[24] != 0x88 || b[25] != 0xac || b[26] != 0x67 || b[27] != 0x04 {
+    let (locktime, consumed) = read_script_num(&b[cursor..])?;
+    cursor += consumed;
+    if !expect(&mut cursor, 0xb1)
+        || !expect(&mut cursor, 0x75)
+        || !expect(&mut cursor, 0x76)
+        || !expect(&mut cursor, 0xa9)
+    {
         return None;
     }
-    if b[32] != 0xb1 || b[33] != 0x75 || b[34] != 0x76 || b[35] != 0xa9 || b[36] != 0x14 {
+    let spending = push20(&mut cursor)?;
+    if !expect(&mut cursor, 0x88)
+        || !expect(&mut cursor, 0xac)
+        || !expect(&mut cursor, 0x68)
+        || cursor != b.len()
+    {
         return None;
     }
-    if b[57] != 0x88 || b[58] != 0xac || b[59] != 0x68 {
+    Some((staking, spending, locktime))
+}
+
+/// Read a non-negative script number and return `(value, bytes consumed)`.
+///
+/// Accepts `OP_0`, `OP_1..OP_16`, and `PUSH1..PUSH5`. Non-minimal pushes are
+/// accepted so scripts created by older builds still classify.
+fn read_script_num(b: &[u8]) -> Option<(u32, usize)> {
+    let opcode = *b.first()?;
+    if opcode == 0x00 {
+        return Some((0, 1));
+    }
+    if (0x51..=0x60).contains(&opcode) {
+        return Some((u32::from(opcode - 0x50), 1));
+    }
+    let len = match opcode {
+        0x01..=0x05 => opcode as usize,
+        _ => return None,
+    };
+    let data = b.get(1..1 + len)?;
+    if data.last()? & 0x80 != 0 {
         return None;
     }
-    let mut staking = [0u8; 20];
-    staking.copy_from_slice(&b[4..24]);
-    let mut spending = [0u8; 20];
-    spending.copy_from_slice(&b[37..57]);
-    let mut lt = [0u8; 4];
-    lt.copy_from_slice(&b[28..32]);
-    Some((staking, spending, u32::from_le_bytes(lt)))
+    let mut value = 0u64;
+    for (index, byte) in data.iter().enumerate() {
+        value |= u64::from(*byte) << (8 * index);
+    }
+    Some((u32::try_from(value).ok()?, 1 + len))
 }
 
 /// Build a P2PKH scriptPubKey from a 20-byte public key hash.
@@ -209,6 +248,32 @@ pub fn build_p2ms(m: u8, keys: &[Vec<u8>]) -> Result<Script> {
     Ok(s)
 }
 
+/// Push a non-negative script number in minimal encoding.
+///
+/// Bitcoin's `CScriptNum` rejects non-minimal encodings when the minimal-data
+/// rule is active. The old builders pushed a fixed four-byte little-endian
+/// value for CLTV, which works today but would make every P2CS/HTLC spend
+/// unspendable under a stricter script-version rule.
+fn push_script_num(s: &mut Script, n: u32) -> Result<()> {
+    if n == 0 {
+        s.push_opcode(0x00); // OP_0
+        return Ok(());
+    }
+    if n <= 16 {
+        s.push_opcode(0x50 + n as u8); // OP_1 .. OP_16
+        return Ok(());
+    }
+    let mut bytes = n.to_le_bytes().to_vec();
+    while bytes.len() > 1 && bytes.last() == Some(&0) && bytes[bytes.len() - 2] & 0x80 == 0 {
+        bytes.pop();
+    }
+    if bytes.last().is_some_and(|byte| byte & 0x80 != 0) {
+        bytes.push(0);
+    }
+    s.push_data(&bytes)
+        .map_err(|e| ScriptError::Serialization(e.to_string()))
+}
+
 /// Build an HTLC (Hash Time-Locked Contract) scriptPubKey for atomic swaps.
 ///
 /// The script allows:
@@ -248,8 +313,7 @@ pub fn build_htlc(
 
     // Refund branch
     s.push_opcode(0x67); // OP_ELSE
-    s.push_data(&expiry.to_le_bytes())
-        .map_err(|e| ScriptError::Serialization(e.to_string()))?;
+    push_script_num(&mut s, expiry)?;
     s.push_opcode(0xb1); // OP_CHECKLOCKTIMEVERIFY
     s.push_opcode(0x75); // OP_DROP
     s.push_opcode(0x76); // OP_DUP
@@ -292,8 +356,7 @@ pub fn build_p2cs(
     s.push_opcode(0x88); // OP_EQUALVERIFY
     s.push_opcode(0xac); // OP_CHECKSIG (leaves true)
     s.push_opcode(0x67); // OP_ELSE
-    s.push_data(&locktime.to_le_bytes())
-        .map_err(|e| ScriptError::Serialization(e.to_string()))?;
+    push_script_num(&mut s, locktime)?;
     s.push_opcode(0xb1); // OP_CHECKLOCKTIMEVERIFY
     s.push_opcode(0x75); // OP_DROP
     s.push_opcode(0x76); // OP_DUP
@@ -491,6 +554,29 @@ mod tests {
         assert!(script.len() > 50); // HTLC scripts are complex
         assert_eq!(classify_script(&script), ScriptType::Htlc);
     }
+    #[test]
+    fn script_numbers_are_minimal_and_legacy_pushes_still_parse() {
+        assert_eq!(read_script_num(&[0x00]), Some((0, 1)));
+        assert_eq!(read_script_num(&[0x51]), Some((1, 1)));
+        // Legacy fixed PUSH4 zero is still accepted.
+        assert_eq!(read_script_num(&[0x04, 0, 0, 0, 0]), Some((0, 5)));
+        // Minimal PUSH5 for u32::MAX (sign byte appended).
+        assert_eq!(
+            read_script_num(&[0x05, 0xff, 0xff, 0xff, 0xff, 0x00]),
+            Some((u32::MAX, 6))
+        );
+    }
+
+    #[test]
+    fn test_p2cs_zero_locktime_is_minimal() {
+        let script = build_p2cs(&[0x11; 20], &[0x22; 20], 0).unwrap();
+        assert!(script.len() < 60);
+        match classify_script(&script) {
+            ScriptType::P2CS { locktime, .. } => assert_eq!(locktime, 0),
+            other => panic!("expected P2CS, got {other:?}"),
+        }
+    }
+
     #[test]
     fn test_p2cs_roundtrip() {
         let staking = [0x11u8; 20];

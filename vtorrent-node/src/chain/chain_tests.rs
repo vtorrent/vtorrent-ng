@@ -451,6 +451,47 @@ fn test_mint_to_address() {
 }
 
 #[test]
+fn checkpoint_must_match_the_local_chain_and_blocks_reorg_below_it() {
+    use secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+    let secp = Secp256k1::new();
+    let mut key_bytes = [0u8; 32];
+    key_bytes[31] = 9;
+    let secret = SecretKey::from_slice(&key_bytes).unwrap();
+    let pubkey = PublicKey::from_secret_key(&secp, &secret);
+    let address = vtorrent_core::address::Address::from_pubkey(&pubkey, true, 70).to_string();
+
+    let mut chain = Chain::new().expect("Chain init failed");
+    chain
+        .mint_to_address(&address, 100 * crate::consensus::COIN)
+        .expect("mint should succeed");
+    let anchor = chain
+        .get_header_at_height(1)
+        .expect("height 1 header")
+        .hash();
+
+    assert!(chain.set_checkpoint(1, [0xAA; 32]).is_err());
+    chain
+        .set_checkpoint(1, anchor)
+        .expect("matching checkpoint should install");
+    assert_eq!(chain.checkpoint(), Some((1, anchor)));
+    assert!(chain.checkpoint_accepts(1, &anchor));
+    assert!(!chain.checkpoint_accepts(1, &[0xBB; 32]));
+    assert!(chain.checkpoint_accepts(2, &[0xBB; 32]));
+    assert!(chain.checkpoint_blocks_reorg(0));
+    assert!(!chain.checkpoint_blocks_reorg(1));
+
+    // A future checkpoint is enforced when the chain reaches that height.
+    let mut fresh = Chain::new().expect("Chain init failed");
+    fresh
+        .set_checkpoint(1, [0xAA; 32])
+        .expect("future checkpoint should install");
+    assert!(fresh
+        .mint_to_address(&address, 100 * crate::consensus::COIN)
+        .is_err());
+}
+
+#[test]
 fn test_total_staked_tracks_stakeable_utxos() {
     use secp256k1::{PublicKey, Secp256k1, SecretKey};
 

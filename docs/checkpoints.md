@@ -1,0 +1,36 @@
+# Chain checkpoints
+
+Published checkpoints let a new node reject a long-range forged chain from
+genesis. The daemon accepts `--checkpoint HEIGHT:HASH`; when set:
+
+- the main-chain block at `HEIGHT` must have exactly `HASH`; and
+- a reorg whose fork point is below `HEIGHT` is refused.
+
+The checkpoint is optional for testnets. **Every mainnet node should use the
+published checkpoint after launch.** It is not a consensus rule; a node without
+it still validates blocks normally, but remains exposed to a from-genesis
+forgery.
+
+## Mainnet
+
+Published after 10,000 blocks (about seven days) once at least two seeds agree.
+
+| Height | Block hash | Published | Evidence |
+|---|---|---|---|
+| — | pending launch | — | — |
+
+### Publish procedure
+
+1. On at least two independent seeds, read the same height:
+   `curl -s -H "X-API-Key: $(cat /etc/vtorrent/rpc-api-key)" \
+   localhost:22525/api/v1/blockchain/block/height/10000`.
+2. Confirm both responses report the same hash.
+3. Fill the table above and the release notes.
+4. Restart each seed with `--checkpoint 10000:<hash>` and confirm the log line
+   `Enforcing operator checkpoint`.
+5. Tell operators to start new nodes with the same argument.
+
+## Testnet / regtest
+
+No checkpoint is required. A local checkpoint is useful when rehearsing the
+launch procedure; use a height already on the local chain and its exact hash.

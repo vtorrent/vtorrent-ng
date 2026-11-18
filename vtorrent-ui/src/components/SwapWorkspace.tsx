@@ -14,6 +14,7 @@ import {
   btcFund,
   getSwapDeadlines,
   getSwapStatus,
+  importSwapMatch,
   matchDexOrder,
   reconcileBtcSwap,
   swapRefund,
@@ -120,6 +121,10 @@ export default function SwapWorkspace({ orders, onRefresh }: SwapWorkspaceProps)
   const [otpCode, setOtpCode] = useState('')
   const [preimage, setPreimage] = useState('')
   const [btcRefundAddress, setBtcRefundAddress] = useState('')
+  const [importJson, setImportJson] = useState('')
+  const [importBusy, setImportBusy] = useState(false)
+  const [importError, setImportError] = useState('')
+  const [importMessage, setImportMessage] = useState('')
 
   useEffect(() => {
     if (!btcAddress) generateBtcAddress()
@@ -176,6 +181,55 @@ export default function SwapWorkspace({ orders, onRefresh }: SwapWorkspaceProps)
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusy(false)
+    }
+  }
+
+  const runImport = async () => {
+    setImportBusy(true)
+    setImportError('')
+    setImportMessage('')
+    try {
+      const parsed = JSON.parse(importJson) as Record<string, unknown>
+      const str = (snake: string, camel: string) => {
+        const value = parsed[camel] ?? parsed[snake]
+        return typeof value === 'string' ? value : ''
+      }
+      const num = (snake: string, camel: string) => {
+        const value = Number(parsed[camel] ?? parsed[snake])
+        if (!Number.isFinite(value)) throw new Error(`Match response is missing ${camel}`)
+        return value
+      }
+      const orderId = str('order_id', 'orderId')
+      const makerAddress = str('maker_address', 'makerAddress')
+      const hashLock = str('hash_lock', 'hashLock')
+      const fundingTxid = str('funding_txid', 'fundingTxid')
+      const makerBtcAddress = str('maker_btc_address', 'makerBtcAddress') || undefined
+      if (!orderId || !makerAddress || !hashLock || !fundingTxid) {
+        throw new Error('Match response is missing required fields')
+      }
+      if (!defaultAddress) throw new Error('No wallet address is available')
+      if (!passphrase) throw new Error('Wallet passphrase is required')
+      await importSwapMatch({
+        orderId,
+        makerAddress,
+        takerAddress: defaultAddress,
+        vtrAmount: num('vtr_amount', 'vtrAmount'),
+        targetAsset: str('target_asset', 'targetAsset') || 'BTC',
+        targetAmount: num('target_amount', 'targetAmount'),
+        hashLock,
+        expiry: num('expiry', 'expiry'),
+        fundingTxid,
+        makerBtcAddress,
+        passphrase,
+        otpCode: otpCode || undefined,
+      })
+      setImportMessage('Match imported. Fund the BTC side next.')
+      setSelectedId(orderId)
+      onRefresh()
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setImportBusy(false)
     }
   }
 
@@ -436,6 +490,52 @@ export default function SwapWorkspace({ orders, onRefresh }: SwapWorkspaceProps)
           Refresh
         </button>
       </div>
+
+      <details className="card">
+        <summary className="text-sm font-medium text-gray-200 cursor-pointer">
+          Import a match from another node
+        </summary>
+        <div className="space-y-3 mt-3">
+          <p className="text-xs text-gray-500">
+            Paste the maker&apos;s match response JSON. Your wallet address becomes
+            the taker, and every term is verified against the confirmed VTR HTLC.
+          </p>
+          <textarea
+            className="input-field font-mono text-xs"
+            rows={4}
+            placeholder="Paste the maker's match response JSON"
+            value={importJson}
+            onChange={event => setImportJson(event.target.value)}
+            disabled={importBusy}
+          />
+          <input
+            type="password"
+            className="input-field"
+            placeholder="Import wallet passphrase"
+            value={passphrase}
+            onChange={event => setPassphrase(event.target.value)}
+            disabled={importBusy}
+          />
+          <input
+            type="text"
+            className="input-field"
+            placeholder="2FA code (if enabled)"
+            value={otpCode}
+            onChange={event => setOtpCode(event.target.value)}
+            disabled={importBusy}
+          />
+          <button
+            type="button"
+            className="btn-primary w-full"
+            disabled={!importJson || !passphrase || importBusy}
+            onClick={runImport}
+          >
+            {importBusy ? 'Importing…' : 'Import match'}
+          </button>
+          {importError && <p className="text-xs text-red-400">{importError}</p>}
+          {importMessage && <p className="text-xs text-emerald-400">{importMessage}</p>}
+        </div>
+      </details>
 
       {orders.length === 0 ? (
         <div className="card text-sm text-gray-500">

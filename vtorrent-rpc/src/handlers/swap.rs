@@ -273,7 +273,165 @@ fn match_response(order: &vtorrent_node::atomic_swap::SwapOrder) -> MatchOrderRe
         hash_lock: hex::encode(order.hash_lock.unwrap_or_default()),
         expiry: order.expiry,
         funding_txid: hex::encode(order.funding_txid.unwrap_or_default()),
+        maker_btc_address: order.maker_btc_address.clone(),
     }
+}
+
+/// Import the maker's match response on the taker's own node.
+///
+/// The request is untrusted: every term is re-derived into the exact VTR HTLC
+/// script and checked against the confirmed funding output before local swap
+/// state is created. This lets a separate taker use `btc-fund`, observe the
+/// BTC claim, and claim VTR automatically without sharing the maker's node.
+pub async fn import_match(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ImportMatchRequest>,
+) -> RpcResult<Json<MatchOrderResponse>> {
+    let wif = verify_wallet_auth(&state, &req.passphrase, req.otp_code.as_deref()).await?;
+    import_match_with_wif(&state, req, &wif).await.map(Json)
+}
+
+pub async fn import_match_with_wif(
+    state: &AppState,
+    req: ImportMatchRequest,
+    wif: &str,
+) -> RpcResult<MatchOrderResponse> {
+    use vtorrent_node::atomic_swap::{OrderStatus, SwapOrder};
+    use vtorrent_wallet_service::swap_policy::verify_vtr_swap_funding;
+
+    if !state.is_wallet_unlocked().await {
+        return Err(RpcError::WalletLocked);
+    }
+    if req.target_asset != "BTC" {
+        return Err(RpcError::BadRequest(
+            "Only BTC-targeted swaps are supported".into(),
+        ));
+    }
+    let order_id = parse_hash32(&req.order_id, "order_id")?;
+    let hash_lock = parse_hash32(&req.hash_lock, "hash_lock")?;
+    let funding_txid = parse_hash32(&req.funding_txid, "funding_txid")?;
+
+    let key = vtorrent_core::keys::PrivateKey::from_wif(wif)
+        .map_err(|error| RpcError::BadRequest(error.to_string()))?;
+    let public = key
+        .public_key()
+        .map_err(|error| RpcError::BadRequest(error.to_string()))?;
+    let local_taker = vtorrent_core::address::Address::from_pubkey(
+        &public,
+        key.is_compressed(),
+        vtorrent_core::network::mainnet::PUBKEY_ADDRESS_PREFIX,
+    )
+    .to_string();
+    if local_taker != req.taker_address {
+        return Err(RpcError::Unauthorized(
+            "The unlocked wallet does not control the imported taker address".into(),
+        ));
+    }
+
+    let existing = state
+        .order_book
+        .read()
+        .await
+        .get_order(&req.order_id)
+        .cloned();
+    if let Some(order) = &existing {
+        if order.maker_address != req.maker_address
+            || order.vtr_amount != req.vtr_amount
+            || order.target_asset != req.target_asset
+            || order.target_amount != req.target_amount
+            || order.expiry != req.expiry
+            || order.hash_lock.is_some_and(|value| value != hash_lock)
+            || order
+                .funding_txid
+                .is_some_and(|value| value != funding_txid)
+            || order
+                .taker_address
+                .as_deref()
+                .is_some_and(|value| value != req.taker_address)
+        {
+            return Err(RpcError::BadRequest(
+                "Imported match terms disagree with the local order announcement".into(),
+            ));
+        }
+    }
+    let maker_btc_address = match (
+        existing
+            .as_ref()
+            .and_then(|order| order.maker_btc_address.clone()),
+        req.maker_btc_address.clone(),
+    ) {
+        (Some(local), Some(imported)) if local != imported => {
+            return Err(RpcError::BadRequest(
+                "Imported maker BTC address disagrees with the local order".into(),
+            ))
+        }
+        (Some(local), _) => local,
+        (None, Some(imported)) => imported,
+        (None, None) => {
+            return Err(RpcError::BadRequest(
+                "Maker BTC address is required when the local order is unknown".into(),
+            ))
+        }
+    };
+    use std::str::FromStr as _;
+    bitcoin::Address::from_str(&maker_btc_address)
+        .map_err(|error| RpcError::BadRequest(format!("Invalid maker BTC address: {error}")))?;
+
+    let mut order = existing.unwrap_or_else(|| {
+        SwapOrder::new(
+            req.maker_address.clone(),
+            req.vtr_amount,
+            req.target_asset.clone(),
+            req.target_amount,
+            req.expiry,
+        )
+    });
+    order.order_id = order_id;
+    order.maker_address = req.maker_address.clone();
+    order.maker_btc_address = Some(maker_btc_address);
+    order.vtr_amount = req.vtr_amount;
+    order.target_asset = req.target_asset.clone();
+    order.target_amount = req.target_amount;
+    order.expiry = req.expiry;
+    order.hash_lock = Some(hash_lock);
+    order.funding_txid = Some(funding_txid);
+    order.taker_address = Some(req.taker_address.clone());
+    order.status = OrderStatus::Matched;
+    order.preimage = None;
+
+    let now = now_secs_mock(state).await;
+    let expires_at = {
+        let chain = state.chain.lock().await;
+        verify_vtr_swap_funding(&chain, &order, now)
+            .map_err(RpcError::BadRequest)?
+            .btc_expiry()
+    };
+
+    state.order_book.write().await.replace_order(order.clone());
+    let mut swaps = state.swaps.write().await;
+    let swap = swaps
+        .entry(req.order_id.clone())
+        .or_insert_with(|| SwapState::new(order_id, hash_lock));
+    if swap
+        .vtr_funding_txid
+        .is_some_and(|value| value != funding_txid)
+        || swap.btc_funding_txid.is_some()
+        || swap.vtr_claim_txid.is_some()
+        || swap.vtr_refund_txid.is_some()
+    {
+        return Err(RpcError::BadRequest(
+            "Local swap state already refers to a different or later stage".into(),
+        ));
+    }
+    swap.hash_lock = hash_lock;
+    swap.vtr_funding_txid = Some(funding_txid);
+    swap.maker_btc_address = order.maker_btc_address.clone();
+    swap.btc_amount = order.target_amount;
+    swap.btc_expiry = expires_at;
+    swap.status = SwapStatus::VtrFunded;
+    swap.refresh_status();
+    crate::swap_recovery::persist_for_wallet(state, &order, Some(swap), Some(wif)).await?;
+    Ok(match_response(&order))
 }
 
 pub async fn btc_fund(

@@ -7,6 +7,7 @@ import type { DexOrder, SwapChainStatus } from '../hooks/useNode'
 
 const backend = vi.hoisted(() => ({
   match: vi.fn(),
+  importMatch: vi.fn(),
   fundBtc: vi.fn(),
   claimVtr: vi.fn(),
   claimBtc: vi.fn(),
@@ -32,6 +33,7 @@ vi.mock('../hooks/useBtc', () => ({
 
 vi.mock('../hooks/useNode', () => ({
   matchDexOrder: backend.match,
+  importSwapMatch: backend.importMatch,
   btcFund: backend.fundBtc,
   vtrClaim: backend.claimVtr,
   btcClaim: backend.claimBtc,
@@ -145,4 +147,45 @@ describe('swap workspace', () => {
       passphrase: 'password',
     }))
   })
+  it('imports a maker match response for a separate taker', async () => {
+    backend.importMatch.mockResolvedValue({
+      orderId: 'order-9',
+      makerAddress: 'VOther',
+      vtrAmount: 100_000_000,
+      targetAsset: 'BTC',
+      targetAmount: 1_000_000,
+      hashLock: 'ab'.repeat(32),
+      expiry: 9_999_999_999,
+      fundingTxid: 'cd'.repeat(32),
+      makerBtcAddress: 'bcrt1qmaker',
+    })
+    render(<SwapWorkspace orders={[]} onRefresh={vi.fn()} />)
+    fireEvent.click(screen.getByText('Import a match from another node'))
+    fireEvent.change(screen.getByPlaceholderText(/Paste the maker/), {
+      target: {
+        value: JSON.stringify({
+          orderId: 'order-9',
+          makerAddress: 'VOther',
+          vtrAmount: 100_000_000,
+          targetAsset: 'BTC',
+          targetAmount: 1_000_000,
+          hashLock: 'ab'.repeat(32),
+          expiry: 9_999_999_999,
+          fundingTxid: 'cd'.repeat(32),
+          makerBtcAddress: 'bcrt1qmaker',
+        }),
+      },
+    })
+    fireEvent.change(screen.getByPlaceholderText('Import wallet passphrase'), {
+      target: { value: 'secret-pass' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Import match' }))
+    await waitFor(() => expect(backend.importMatch).toHaveBeenCalledTimes(1))
+    expect(backend.importMatch.mock.calls[0][0]).toMatchObject({
+      orderId: 'order-9',
+      takerAddress: 'VMe',
+      makerBtcAddress: 'bcrt1qmaker',
+    })
+  })
+
 })

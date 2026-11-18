@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     error::{Result, TauriError},
@@ -369,6 +369,68 @@ pub async fn btc_fund(
         txid: result.btc_funding_txid,
         status: result.status,
     })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSwapMatchArgs {
+    pub order_id: String,
+    pub maker_address: String,
+    pub taker_address: String,
+    pub vtr_amount: u64,
+    pub target_asset: String,
+    pub target_amount: u64,
+    pub hash_lock: String,
+    pub expiry: u32,
+    pub funding_txid: String,
+    pub maker_btc_address: Option<String>,
+    pub passphrase: String,
+    pub otp_code: Option<String>,
+}
+
+/// Import the maker's match response on the taker's own desktop node.
+#[tauri::command]
+pub async fn import_swap_match(
+    state: tauri::State<'_, AppState>,
+    args: ImportSwapMatchArgs,
+) -> Result<vtorrent_rpc::models::MatchOrderResponse> {
+    let guard = state.node.lock().await;
+    let handle = guard
+        .as_ref()
+        .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    crate::commands::wallet::authorize_wallet(
+        state.inner(),
+        &args.passphrase,
+        args.otp_code.as_deref(),
+    )?;
+    state.sync_swap_wallet(&handle.rpc_state).await?;
+    let wif = handle
+        .rpc_state
+        .wallet_wif
+        .read()
+        .await
+        .clone()
+        .ok_or(TauriError::WalletLocked)?;
+    vtorrent_rpc::handlers::swap::import_match_with_wif(
+        &handle.rpc_state,
+        vtorrent_rpc::models::ImportMatchRequest {
+            order_id: args.order_id,
+            maker_address: args.maker_address,
+            taker_address: args.taker_address,
+            vtr_amount: args.vtr_amount,
+            target_asset: args.target_asset,
+            target_amount: args.target_amount,
+            hash_lock: args.hash_lock,
+            expiry: args.expiry,
+            funding_txid: args.funding_txid,
+            maker_btc_address: args.maker_btc_address,
+            passphrase: args.passphrase.into(),
+            otp_code: args.otp_code,
+        },
+        &wif,
+    )
+    .await
+    .map_err(TauriError::from)
 }
 
 #[tauri::command]

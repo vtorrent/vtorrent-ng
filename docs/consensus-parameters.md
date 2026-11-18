@@ -47,6 +47,16 @@
 | Snapshot total supply | 11,589,746.63 VTR (1,158,974,663,136,877 sats) |
 | Snapshot format | Binary blob (`genesis_snapshot.bin`, 2,493,754 bytes) |
 
+## Checkpoints
+
+`--checkpoint HEIGHT:HASH` pins one main-chain block. The daemon rejects any
+block at that height with a different hash and refuses a reorg whose fork point
+is below it. It is not a consensus rule and is optional on testnets; mainnet
+nodes should use the checkpoint published after launch
+(`docs/checkpoints.md`). Without it, a new node can be fed a long-range forged
+chain from genesis, which minimum block spacing limits in rate but cannot
+prevent.
+
 ## Verification
 
 - Genesis hash independently verified via RPC: `GET /api/v1/blockchain/block/height/0`

@@ -83,14 +83,26 @@ pass-5 commit:
 - **The separate-taker path is documented.** The supported external claim flow
   is now spelled out in `docs/atomic-swap-protocol.md`; the automatic claim
   remains a single-node convenience.
+- **Taker match import is implemented.** A separate taker can paste the
+  maker's match response (or call `POST /api/v1/swap/import-match`) to create
+  local swap state. The handler derives the taker address from the unlocked
+  wallet, reconstructs the exact VTR HTLC, requires six confirmations, and
+  persists the record. The desktop has an import form, and a regression test
+  imports a match and submits the taker's VTR claim.
+- **Checkpoint enforcement is implemented.** `--checkpoint HEIGHT:HASH` pins a
+  main-chain block and rejects reorgs below it. The launch runbook now requires
+  publishing the height-10,000 checkpoint from two agreeing seeds; the code
+  side is closed, while the mainnet artifact is necessarily post-launch.
+- **CLTV operands are minimal.** New P2CS and VTR HTLC scripts use
+  `OP_0`/`OP_n`/minimal pushes for the locktime; the parser still accepts the
+  legacy fixed `PUSH4` shape. Timestamp locktimes were already minimal, so this
+  removes the zero/small-locktime future-unspendability case.
 
 ## Not fixed
 
 | Risk | Why it remains |
 |---|---|
-| A genuinely separate taker still has no locally persisted `SwapState`, so the automated VTR claim cannot sign on the taker's node. | The supported path is now explicit: `/swap/vtr-claim-external` with the maker's match terms and the observed preimage, documented in `docs/atomic-swap-protocol.md`. Full automation needs taker-side match import and an adversarial two-node test. |
-| A long-range forged PoS chain from genesis is still accepted by a new node. | Minimum spacing caps production rate but does not replace a checkpoint. A launch checkpoint or finalized header commitment is still needed. |
-| P2CS/HTLC CLTV operands are non-minimal for small locktimes. | Changing the script shape is a consensus/script-version change; the current engine accepts them. |
+| A new node without `--checkpoint` still accepts a long-range forged PoS chain from genesis. | Enforcement and `HEIGHT:HASH` plumbing are in place; the actual mainnet checkpoint can only be published after 10,000 blocks. New nodes must be configured with it per the launch runbook. |
 | Backups containing cold-stake or swap state are deliberately not auto-restorable. | Recovery requires the reviewed manual runbook; the UI and policy documents must keep saying so. |
 | Release builds are unsigned and `SHA256SUMS` is integrity-only. | Signing needs operator key custody (Apple/Windows/minisign), deferred by the operator. |
 | BTC HTLC fees are a configurable floor, not a live estimate. | `VTORRENT_BTC_HTLC_FEE_SATOSHIS` raises the 35 sat/vB floor without a rebuild; a live estimator and safe funding replacement are still needed. |
@@ -100,15 +112,16 @@ pass-5 commit:
 
 ## Verification
 
-- Focused suites: core 36, wallet 75, torrent 120, BTC 225, node 250, SPV 46,
-  P2P 84, RPC 202, Tauri 34, wallet-service 10.
+- Focused suites: core 36, script 99, wallet 75, torrent 120, BTC 225, node
+  251, SPV 46, P2P 84, RPC 204, Tauri 34, wallet-service 10. Desktop UI: 45
+  tests, lint and production build clean.
 - Clippy: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
   completed clean.
-- Full workspace on the final tree: **1,450 passed, 0 failed, 11 ignored**
+- Full workspace on the final tree: **1,456 passed, 0 failed, 11 ignored**
   across 54 test groups.
 - Container source build: `docker build -f docker/Dockerfile` succeeded;
   `vtorrent-daemon 2.0.0` runs as uid `vtorrent`; image
-  `sha256:0267702d54d0767ebb756ee173c877e9525b246b85f7306227919379b7ba7b28`.
+  `sha256:fdf2e67df02cc3032220821692d3dc4a20641ed8d6c277b011afaded1be5fa87`.
 
 The consensus timestamp change, the detached dial refactor, the receipt
 settlement/payout path, and the SPV pin/reorg handling are AI-authored and

@@ -67,7 +67,19 @@ below).
 ### A taker on a separate node
 
 The maker's node is the only node that holds the full `SwapState` created by
-`/dex/match`. A separate taker does not need that state to claim VTR:
+`/dex/match`. A separate taker can either import the match or claim externally.
+
+**Import the match (automation path).** Call
+`POST /api/v1/swap/import-match` with the maker's match response plus the
+taker's own wallet passphrase (or use the desktop "Import a match" form). The
+handler derives the taker address from the unlocked wallet, rebuilds the exact
+VTR HTLC from the supplied terms, requires the confirmed funding output to
+match it with six confirmations, and creates local `SwapState`. After that,
+`btc-fund`, the BTC-claim observation, and the automatic VTR claim work on the
+taker's node.
+
+**Claim externally (no local swap state).** A taker who does not want to
+import can claim VTR directly:
 
 1. Take the maker's match response (`order_id`, `maker_address`,
    `vtr_amount`, `target_amount`, `hash_lock`, `expiry`, `funding_txid`) and

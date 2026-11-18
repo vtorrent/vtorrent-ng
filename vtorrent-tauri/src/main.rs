@@ -58,6 +58,7 @@ fn main() {
             commands::cancel_dex_order,
             // Swap lifecycle
             commands::match_dex_order,
+            commands::import_swap_match,
             commands::btc_fund,
             commands::vtr_claim,
             commands::btc_claim,

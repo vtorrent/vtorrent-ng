@@ -1770,7 +1770,9 @@ mod tests {
             .unwrap();
             assert_eq!(address, entry.spending_address);
         }
-        assert_eq!(keys.script_pubkey.len(), 120);
+        // Locktime 0 uses the minimal OP_0 encoding, so the script is shorter
+        // than the legacy fixed PUSH4 form.
+        assert!(keys.script_pubkey.len() < 120);
         assert_eq!(keys.script_hash.len(), 40);
         let script = hex::decode(&keys.script_pubkey).unwrap();
         assert!(state.cold_stake_scripts.lock().unwrap().contains(&script));

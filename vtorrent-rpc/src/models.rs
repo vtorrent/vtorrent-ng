@@ -492,6 +492,9 @@ pub struct MatchOrderResponse {
     pub expiry: u32,
     /// vTorrent HTLC funding transaction ID accepted into the local mempool.
     pub funding_txid: String,
+    /// Maker's BTC receiving address, needed by a taker on another node.
+    #[serde(default)]
+    pub maker_btc_address: Option<String>,
 }
 
 // ─── SPV ─────────────────────────────────────────────────────────────────────
@@ -659,6 +662,31 @@ pub struct BtcFundResponse {
     pub order_id: String,
     pub btc_funding_txid: String,
     pub status: String,
+}
+
+/// Request body for `POST /api/v1/swap/import-match`.
+///
+/// Carries the maker's match response to a taker on a different node. The
+/// handler re-verifies every term against the confirmed VTR funding output
+/// before it creates local swap state.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportMatchRequest {
+    pub order_id: String,
+    pub maker_address: String,
+    pub taker_address: String,
+    pub vtr_amount: u64,
+    pub target_asset: String,
+    pub target_amount: u64,
+    pub hash_lock: String,
+    pub expiry: u32,
+    pub funding_txid: String,
+    /// Optional when the local order book already has the announcement.
+    #[serde(default)]
+    pub maker_btc_address: Option<String>,
+    #[serde(default)]
+    pub passphrase: zeroize::Zeroizing<String>,
+    #[serde(default)]
+    pub otp_code: Option<String>,
 }
 
 /// Request body for `POST /api/v1/swap/vtr-claim`.

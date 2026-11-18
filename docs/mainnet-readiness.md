@@ -58,6 +58,11 @@ snapshot, two-person review, and an explicit decision for each record.
 - [x] **Consensus parameter sign-off**: all values frozen and documented in
       `docs/consensus-parameters.md` (network magic, ports, address/WIF prefixes,
       PoS rules, genesis hash, snapshot totals).
+- [ ] **Post-launch checkpoint published and required for new nodes**: after
+      height 10,000, publish `HEIGHT:HASH` from two agreeing seeds in
+      `docs/checkpoints.md` and start seeds/new nodes with
+      `--checkpoint HEIGHT:HASH`. This closes long-range from-genesis forgery;
+      block spacing alone does not. See `docs/mainnet-launch-runbook.md` §4.7.
 - [x] **Network magic + port freeze**: magic `0x56 0x54 0x52 0x58` ("VTRX"),
       P2P 22526, RPC 22527 (daemon defaults to 22525). See
       `docs/consensus-parameters.md`.

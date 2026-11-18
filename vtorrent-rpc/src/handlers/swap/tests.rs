@@ -616,6 +616,142 @@ async fn claim_fixture() -> (AppState, String) {
     (state, id)
 }
 
+async fn import_match_fixture(
+    announce: bool,
+) -> (
+    AppState,
+    crate::models::ImportMatchRequest,
+    zeroize::Zeroizing<String>,
+    [u8; 32],
+) {
+    let (taker_wif, taker) = vtr_identity(2);
+    let (_, maker) = vtr_identity(1);
+    let maker_btc =
+        vtorrent_btc::wallet::BtcWallet::with_network([1; 64], bitcoin::Network::Regtest);
+    let secret = AtomicSwap::new();
+    let mut order = SwapOrder::new(maker.clone(), 1_000_000, "BTC".into(), 100_000, 48 * 3600);
+    order.expiry = NOW as u32 + 48 * 3600;
+    order.hash_lock = Some(secret.hash_lock);
+    order.taker_address = Some(taker.clone());
+    order.maker_btc_address = Some(maker_btc.current_address().unwrap());
+    let htlc = Htlc::with_expiry(
+        secret.hash_lock,
+        taker.clone(),
+        maker.clone(),
+        order.expiry,
+        order.vtr_amount,
+    )
+    .unwrap();
+    let mut chain = vtorrent_node::chain::Chain::new_regtest().unwrap();
+    chain.mint_to_address(&maker, order.vtr_amount).unwrap();
+    let mut block = chain.get_block_at_height(1).unwrap().clone();
+    chain = vtorrent_node::chain::Chain::new_regtest().unwrap();
+    block.transactions[0].outputs[0].script_pubkey = htlc.build_script().unwrap();
+    block.header.merkle_root = block.compute_merkle_root();
+    order.funding_txid = Some(block.transactions[0].txid());
+    chain.add_block(block).unwrap();
+    for _ in 0..5 {
+        chain.mint_to_address(&maker, 1).unwrap();
+    }
+
+    let state = AppState::new();
+    *state.chain.lock().await = chain;
+    *state.mock_time.write().await = Some(NOW);
+    *state.wallet_wif.write().await = Some(taker_wif.clone());
+    *state.wallet_change_address.write().await = Some(taker.clone());
+    *state.wallet_unlock_expiry.write().await = Some(0);
+
+    // The taker's local P2P view: a public announcement without the match terms.
+    let mut announcement = order.clone();
+    announcement.funding_txid = None;
+    announcement.taker_address = None;
+    announcement.hash_lock = None;
+    announcement.status = vtorrent_node::atomic_swap::OrderStatus::Open;
+    if announce {
+        state.order_book.write().await.add_order(announcement);
+    }
+
+    let request = crate::models::ImportMatchRequest {
+        order_id: hex::encode(order.order_id),
+        maker_address: maker,
+        taker_address: taker,
+        vtr_amount: order.vtr_amount,
+        target_asset: order.target_asset.clone(),
+        target_amount: order.target_amount,
+        hash_lock: hex::encode(secret.hash_lock),
+        expiry: order.expiry,
+        funding_txid: hex::encode(order.funding_txid.unwrap()),
+        maker_btc_address: order.maker_btc_address.clone(),
+        passphrase: Default::default(),
+        otp_code: None,
+    };
+    (state, request, taker_wif, secret.preimage)
+}
+
+#[tokio::test]
+async fn import_match_without_a_local_announcement_uses_the_imported_terms() {
+    let (state, request, taker_wif, _) = import_match_fixture(false).await;
+    let order_id = request.order_id.clone();
+    let expiry = request.expiry;
+    import_match_with_wif(&state, request, taker_wif.as_str())
+        .await
+        .unwrap();
+    let order = state
+        .order_book
+        .read()
+        .await
+        .get_order(&order_id)
+        .unwrap()
+        .clone();
+    assert_eq!(order.expiry, expiry);
+    assert_eq!(
+        order.status,
+        vtorrent_node::atomic_swap::OrderStatus::Matched
+    );
+}
+
+#[tokio::test]
+async fn import_match_creates_taker_state_and_allows_the_vtr_claim() {
+    let (state, request, taker_wif, preimage) = import_match_fixture(true).await;
+    let order_id = request.order_id.clone();
+    let taker = request.taker_address.clone();
+    let imported = import_match_with_wif(&state, request, taker_wif.as_str())
+        .await
+        .unwrap();
+    assert!(!imported.funding_txid.is_empty());
+    let order = state
+        .order_book
+        .read()
+        .await
+        .get_order(&order_id)
+        .unwrap()
+        .clone();
+    assert_eq!(
+        order.status,
+        vtorrent_node::atomic_swap::OrderStatus::Matched
+    );
+    assert_eq!(order.taker_address.as_deref(), Some(taker.as_str()));
+    let swap = state.swaps.read().await[&order_id].clone();
+    assert_eq!(swap.status, SwapStatus::VtrFunded);
+    assert_eq!(swap.btc_expiry, NOW as u32 + 42 * 3600);
+
+    // The taker can now build and submit the VTR claim with the observed secret.
+    let claim = vtr_claim_with_state(
+        &state,
+        VtrClaimRequest {
+            order_id: order_id.clone(),
+            preimage: hex::encode(preimage),
+            passphrase: Default::default(),
+            otp_code: None,
+            taker_wif,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(!claim.txid.is_empty());
+    assert!(state.swaps.read().await[&order_id].vtr_claim_txid.is_some());
+}
+
 #[tokio::test]
 async fn btc_claim_verification_failure_never_broadcasts_or_updates_state() {
     let (state, id) = claim_fixture().await;

@@ -341,6 +341,18 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         .map_err(|e| anyhow::anyhow!("Failed to load chain from store: {}", e))?;
+        if let Some(value) = &cli.checkpoint {
+            let (height, hash) = config::parse_checkpoint(value)
+                .map_err(|e| anyhow::anyhow!("Invalid --checkpoint: {}", e))?;
+            chain
+                .set_checkpoint(height, hash)
+                .map_err(|e| anyhow::anyhow!("Could not install checkpoint: {}", e))?;
+            tracing::info!(
+                height,
+                hash = %hex::encode(hash),
+                "Enforcing operator checkpoint"
+            );
+        }
         // Serve bodies pruned from memory during replay from the store.
         let body_source: std::sync::Arc<dyn vtorrent_node::chain::BlockBodySource> =
             block_store.clone();

@@ -957,6 +957,12 @@ fn reorganize_to_inner(
             chain.journals.len()
         )));
     }
+    if chain.checkpoint_blocks_reorg(fork_height) {
+        return Err(NodeError::Chain(format!(
+            "Reorg fork point {} is below the pinned checkpoint",
+            fork_height
+        )));
+    }
 
     tracing::info!("Reorg: fork point at height {}", fork_height);
 

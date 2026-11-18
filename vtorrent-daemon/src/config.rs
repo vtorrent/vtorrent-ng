@@ -26,6 +26,14 @@ pub struct Cli {
     #[arg(long)]
     pub data_dir: Option<PathBuf>,
 
+    /// Pin a post-launch checkpoint as `HEIGHT:HASH` (64 hex chars).
+    ///
+    /// New nodes must use the checkpoint published after launch: without it a
+    /// long-range forged chain from genesis is accepted. The checkpoint is
+    /// enforced on main-chain blocks and reorgs; it is optional for testnets.
+    #[arg(long, value_name = "HEIGHT:HASH")]
+    pub checkpoint: Option<String>,
+
     /// Enable PoS staking with this wallet address.
     #[arg(long)]
     pub staking_address: Option<String>,
@@ -180,6 +188,21 @@ pub struct Cli {
 }
 
 /// Load secrets from 0600 files, rejecting ambiguous or exposed inputs.
+/// Parse an operator checkpoint argument into `(height, hash)`.
+pub fn parse_checkpoint(value: &str) -> Result<(u32, [u8; 32]), String> {
+    let (height, hash) = value
+        .split_once(':')
+        .ok_or_else(|| "checkpoint must be HEIGHT:HASH".to_string())?;
+    let height = height
+        .parse::<u32>()
+        .map_err(|error| format!("invalid checkpoint height: {error}"))?;
+    let bytes = hex::decode(hash).map_err(|error| format!("invalid checkpoint hash: {error}"))?;
+    let hash: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| "checkpoint hash must be 32 bytes (64 hex chars)".to_string())?;
+    Ok((height, hash))
+}
+
 pub fn load_secret_files(cli: &mut Cli) -> anyhow::Result<()> {
     if cli.rpc_api_key.is_some() && cli.rpc_api_key_file.is_some() {
         anyhow::bail!("set only one of VTORRENT_RPC_API_KEY and --rpc-api-key-file");
@@ -415,5 +438,17 @@ mod tests {
 
         let regtest = Cli::parse_from(["vtorrent-daemon", "--regtest"]);
         validate_startup_config(&regtest, &dir).expect("regtest may run without a key");
+    }
+
+    #[test]
+    fn checkpoint_argument_parses_height_and_hash() {
+        let hash = "ab".repeat(32);
+        assert_eq!(
+            parse_checkpoint(&format!("42:{}", hash)).unwrap(),
+            (42, [0xab; 32])
+        );
+        assert!(parse_checkpoint("42").is_err());
+        assert!(parse_checkpoint("height:abcd").is_err());
+        assert!(parse_checkpoint("42:00").is_err());
     }
 }
