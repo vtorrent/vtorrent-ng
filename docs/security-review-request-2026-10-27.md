@@ -10,7 +10,7 @@ already accepted so it is not re-litigated.
 
 ## Review target
 
-Review the candidate `733e4768d8c31d0b89f4a1707607e49565f0e48c`. This is the current review head. It is **not**
+Review the candidate `c874dac11a958349eb3d46dea533b9bd157aa10f`. This is the current review head. It is **not**
 covered by any prior soak: the `6a49727` fleet predates the fund-safety and
 recovery changes below and was interrupted by a host restart on 2026-11-16.
 Under the soak provenance policy, the shipping image needs its own full window
@@ -18,8 +18,8 @@ after this review and its fixes settle.
 
 Read this document from the tip of `main`. Confirm that no code changed after
 the candidate with
-`git diff --name-only 733e476..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
-must return nothing. Check out `733e476` itself when running the verification
+`git diff --name-only c874dac..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+must return nothing. Check out `c874dac` itself when running the verification
 commands. The tables below record the earlier deltas. The table after the
 `f8e0162` deltas covers the range from `ba46fd6` to the candidate.
 
@@ -113,6 +113,7 @@ Deltas after `ba46fd6`:
 | `5011acf` | Peer dials run in parallel batches with per-attempt timeouts |
 | `fce6495` | Untrusted PEX dials run in detached tasks and are registered from the event loop |
 | `733e476` | Release text states unsigned; published releases get a generated, verified SHA256SUMS asset |
+| `c874dac` | Fifth-pass fixes: bounded block spacing, unconditional SPV pin, detached bootstrap dials, receipt-gated retryable settlement, swap deadlock/refund fixes, BTC reservation release, cold-stake key handling, and CI/ops hardening |
 
 Deltas after the earlier review head:
 
@@ -164,7 +165,7 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout 733e4768d8c31d0b89f4a1707607e49565f0e48c
+git checkout c874dac11a958349eb3d46dea533b9bd157aa10f
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
@@ -172,7 +173,7 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 cargo test --workspace --all-features
 ```
 
-The `733e476` workspace run passed 54 test groups and 1,442 tests with 0
+The `c874dac` workspace run passed 54 test groups and 1,446 tests with 0
 failures and 11 ignored. CI repeats the `--all-features` suite on every push.
 Set `VTORRENT_TOTP_STATE_DIR` to a fresh directory before running the suite so
 the host-scoped TOTP replay state does not collide with an existing
@@ -281,8 +282,9 @@ Added with `ff148fd` and `35ea52e`:
   bound in `a514d5b`, the eligible-stake denominator in `99b02fc`, and the swap
   rollback/auto-claim in `8fed10c`, the SPV genesis pin in `eddd565`, and the
   receipt-gated incentives in `4d32ab2`, and the parallel peer dials in
-  `5011acf`, the detached untrusted dials in `fce6495`, and the release
-  checksums in `733e476`. It is **not** independent review.
+  `5011acf`, the detached untrusted dials in `fce6495`, the release checksums
+  in `733e476`, and the fifth-pass fixes in `c874dac`. It is **not** independent
+  review.
 
 ## Status
 

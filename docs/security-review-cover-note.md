@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `733e476`
+Subject: Independent security review — vTorrent-NG mainnet candidate `c874dac`
 
 Hello,
 
@@ -18,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `733e4768d8c31d0b89f4a1707607e49565f0e48c`
+**Review head:** `c874dac11a958349eb3d46dea533b9bd157aa10f`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `733e476`. It is not covered by any prior soak: the
+The code under review is `c874dac`. It is not covered by any prior soak: the
 `6a49727` fleet predates every change below and was interrupted by a host
 restart on 2026-11-16. The eventual shipping image needs its own full window
 after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 code changed after the candidate with
-`git diff --name-only 733e476..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only c874dac..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -138,12 +138,19 @@ candidate `ba46fd6`:
   from the node event loop.
 - `733e476` — release text is honest about unsigned builds, and a published
   release gets a generated and verified `SHA256SUMS` asset.
+- `c874dac` — fifth-pass fixes: 55-second production block spacing, replay
+  independent of clock steps, unconditional SPV genesis pin and reorg
+  following, fully detached bootstrap dials, PEX failures no longer banning
+  honest IPs, receipt-gated and retryable incentive settlement, bounded
+  receipt verification, swap lock/refund fixes, BTC reservation release,
+  cold-stake key handling, multi-key sends, and CI/ops hardening.
 
-Four internal AI-assisted supplementary reviews are recorded in
+Five internal AI-assisted supplementary reviews are recorded in
 `docs/2026-11-17_ai-supplementary-review.md`,
 `docs/2026-11-17_ai-supplementary-review-pass2.md`,
-`docs/2026-11-17_ai-supplementary-review-pass3.md`, and
-`docs/2026-11-17_ai-supplementary-review-pass4.md`. They found and fixed the
+`docs/2026-11-17_ai-supplementary-review-pass3.md`,
+`docs/2026-11-17_ai-supplementary-review-pass4.md`, and
+`docs/2026-11-18_ai-supplementary-review-pass5.md`. They found and fixed the
 desktop authorization defects above, the torrent credit replay, the multisig
 DoS cap, release/seed hardening, the recovery fixes in `20e3fe6`, the block
 sigop limit in `089e7c1`, and the remaining wallet, snapshot, staging, RPC, and
@@ -154,9 +161,9 @@ overlay fixes in `f897f5c`, the container hardening in `db0902c`, the
 timestamp-drift bound in `a514d5b`, the eligible-stake denominator in
 `99b02fc`, the swap rollback/auto-claim in `8fed10c`, the SPV genesis pin in
 `eddd565`, the receipt-gated incentives in `4d32ab2`, and the parallel peer
-dials in `5011acf`, the detached untrusted dials in `fce6495`, and the release
-checksums in `733e476`. They are not independent review and do not count for
-this gate.
+dials in `5011acf`, the detached untrusted dials in `fce6495`, the release
+checksums in `733e476`, and the fifth-pass fixes in `c874dac`. They are not
+independent review and do not count for this gate.
 
 Earlier in this round, from `b729e36` through `ba46fd6`:
 
@@ -291,7 +298,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `733e4768d8c31d0b89f4a1707607e49565f0e48c`
+- Confirm the review head is still `c874dac11a958349eb3d46dea533b9bd157aa10f`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.
