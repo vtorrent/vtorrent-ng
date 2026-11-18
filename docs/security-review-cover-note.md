@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `5011acf`
+Subject: Independent security review — vTorrent-NG mainnet candidate `fce6495`
 
 Hello,
 
@@ -18,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `5011acfaaf8a755e9a3657012d3ab3898f747d4b`
+**Review head:** `fce6495e4bad599162d27a65f2be8a306d04360b`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `5011acf`. It is not covered by any prior soak: the
+The code under review is `fce6495`. It is not covered by any prior soak: the
 `6a49727` fleet predates every change below and was interrupted by a host
 restart on 2026-11-16. The eventual shipping image needs its own full window
 after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 code changed after the candidate with
-`git diff --name-only 5011acf..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only fce6495..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -134,6 +134,8 @@ candidate `ba46fd6`:
 - `4d32ab2` — signed bandwidth receipts gate incentive payouts; missing,
   disputed, or replayed receipts pay nothing.
 - `5011acf` — peer dials run in parallel batches with per-attempt timeouts.
+- `fce6495` — untrusted PEX dials run in detached tasks and are registered
+  from the node event loop.
 
 Four internal AI-assisted supplementary reviews are recorded in
 `docs/2026-11-17_ai-supplementary-review.md`,
@@ -150,8 +152,8 @@ overlay fixes in `f897f5c`, the container hardening in `db0902c`, the
 timestamp-drift bound in `a514d5b`, the eligible-stake denominator in
 `99b02fc`, the swap rollback/auto-claim in `8fed10c`, the SPV genesis pin in
 `eddd565`, the receipt-gated incentives in `4d32ab2`, and the parallel peer
-dials in `5011acf`. They are not independent review and do not count for this
-gate.
+dials in `5011acf`, and the detached untrusted dials in `fce6495`. They are not
+independent review and do not count for this gate.
 
 Earlier in this round, from `b729e36` through `ba46fd6`:
 
@@ -286,7 +288,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `5011acfaaf8a755e9a3657012d3ab3898f747d4b`
+- Confirm the review head is still `fce6495e4bad599162d27a65f2be8a306d04360b`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.
