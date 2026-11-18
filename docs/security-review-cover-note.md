@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `2a25e3f`
+Subject: Independent security review — vTorrent-NG mainnet candidate `1e42381`
 
 Hello,
 
@@ -18,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `2a25e3f912982f3b1662817913d721d85661ddb3`
+**Review head:** `1e423819c5090ec9ae6487700ec7d6e4bd1420bd`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `2a25e3f`. It is not covered by any prior soak: the
+The code under review is `1e42381`. It is not covered by any prior soak: the
 `6a49727` fleet predates every change below and was interrupted by a host
 restart on 2026-11-16. The eventual shipping image needs its own full window
 after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 code changed after the candidate with
-`git diff --name-only 2a25e3f..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only 1e42381..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -152,6 +152,9 @@ candidate `ba46fd6`:
 - `2a25e3f` — taker match import with local swap persistence and a desktop
   form; `--checkpoint HEIGHT:HASH` enforcement plus the launch checkpoint
   procedure; minimal P2CS/HTLC CLTV encoding with legacy-shape parsing.
+- `1e42381` — optional minisign signing over `SHA256SUMS`, a release
+  verification script, key-custody documentation, and import/checkpoint guard
+  tightening.
 
 Five internal AI-assisted supplementary reviews are recorded in
 `docs/2026-11-17_ai-supplementary-review.md`,
@@ -170,9 +173,10 @@ timestamp-drift bound in `a514d5b`, the eligible-stake denominator in
 `99b02fc`, the swap rollback/auto-claim in `8fed10c`, the SPV genesis pin in
 `eddd565`, the receipt-gated incentives in `4d32ab2`, and the parallel peer
 dials in `5011acf`, the detached untrusted dials in `fce6495`, the release
-checksums in `733e476`, the fifth-pass fixes in `c874dac`, and the follow-up
-closures in `5cdd580`, and the taker-import/checkpoint/CLTV work in
-`2a25e3f`. They are not independent review and do not count for this gate.
+checksums in `733e476`, the fifth-pass fixes in `c874dac`, the follow-up
+closures in `5cdd580`, the taker-import/checkpoint/CLTV work in `2a25e3f`, and
+the release-signing wiring in `1e42381`. They are not independent review and
+do not count for this gate.
 
 Earlier in this round, from `b729e36` through `ba46fd6`:
 
@@ -307,7 +311,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `2a25e3f912982f3b1662817913d721d85661ddb3`
+- Confirm the review head is still `1e423819c5090ec9ae6487700ec7d6e4bd1420bd`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.
