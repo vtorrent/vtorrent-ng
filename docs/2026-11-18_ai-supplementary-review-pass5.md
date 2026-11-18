@@ -100,15 +100,15 @@ pass-5 commit:
 
 ## Verification
 
-- Focused suites: core 36, wallet 73, torrent 118, BTC 225, node 250, SPV 45,
-  P2P 84, RPC 202, Tauri 33, wallet-service 10.
+- Focused suites: core 36, wallet 75, torrent 120, BTC 225, node 250, SPV 46,
+  P2P 84, RPC 202, Tauri 34, wallet-service 10.
 - Clippy: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
   completed clean.
 - Full workspace on the final tree: **1,450 passed, 0 failed, 11 ignored**
   across 54 test groups.
 - Container source build: `docker build -f docker/Dockerfile` succeeded;
   `vtorrent-daemon 2.0.0` runs as uid `vtorrent`; image
-  `sha256:13ce3ce3891371cf208e7ad41828f3f1088b2cd335a69f8a269021f74c847f7e`.
+  `sha256:0267702d54d0767ebb756ee173c877e9525b246b85f7306227919379b7ba7b28`.
 
 The consensus timestamp change, the detached dial refactor, the receipt
 settlement/payout path, and the SPV pin/reorg handling are AI-authored and
