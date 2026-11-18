@@ -12,7 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY Cargo.toml release/Cargo.lock ./
+COPY Cargo.toml ./
+# The workspace lockfile is tracked as release/Cargo.lock (root Cargo.lock is
+# gitignored). Copy it to the name Cargo actually reads, or `--locked` fails.
+COPY release/Cargo.lock ./Cargo.lock
 # All workspace members must be present for `cargo build` to resolve the
 # workspace — even crates the daemon does not depend on (e.g. vtorrent-tauri).
 COPY vtorrent-core ./vtorrent-core
@@ -43,6 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN useradd -m -u 1000 vtorrent
 RUN install -d -o vtorrent -g vtorrent -m 0700 /home/vtorrent/.vtorrent
+RUN install -d -o vtorrent -g vtorrent -m 0700 /data/node1 /data/node2 /data/node3
 USER vtorrent
 WORKDIR /home/vtorrent
 VOLUME /home/vtorrent/.vtorrent

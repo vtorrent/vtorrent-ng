@@ -283,10 +283,13 @@ impl Wallet {
                 if consume_otp {
                     replay_guard = Some(config.consume_step(path, step, data.last_totp_step)?);
                     data.last_totp_step = Some(step);
-                } else if data.last_totp_step.is_some_and(|last| step <= last) {
-                    // Verify-only callers must still honor the wallet's replay
-                    // floor: a code already used to unlock this wallet cannot
-                    // be reused for a backup preview.
+                } else if data.last_totp_step.is_some_and(|last| step <= last)
+                    || crate::otp::account_step_consumed(path, &config.secret_base32(), step)?
+                {
+                    // Verify-only callers must still honor the wallet and
+                    // account replay floors: a code already used to unlock or
+                    // restore any wallet on this host cannot be reused for a
+                    // backup preview.
                     return Err(WalletError::OtpReplay);
                 }
             }

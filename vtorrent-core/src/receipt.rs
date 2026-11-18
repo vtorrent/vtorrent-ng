@@ -26,7 +26,7 @@ static VERIFY_CTX: LazyLock<Secp256k1<VerifyOnly>> = LazyLock::new(Secp256k1::ve
 
 /// Domain-separation prefix so a receipt signature can never be replayed as a
 /// transaction signature (or any other signed message).
-pub const RECEIPT_DOMAIN: &[u8] = b"vTorrent/BandwidthReceipt/v1";
+pub const RECEIPT_DOMAIN: &[u8] = b"vTorrent/BandwidthReceipt/v2";
 
 /// A signed statement of bytes observed in one settlement window.
 ///
@@ -50,6 +50,10 @@ pub struct BandwidthReceipt {
     pub signer: String,
     /// Monotonic settlement id — makes a receipt single-use (anti-replay).
     pub settlement_id: u64,
+    /// Account epoch. Counters are cumulative within one epoch; a peer restart
+    /// starts a new epoch and resets both sides' comparison baselines.
+    #[serde(default)]
+    pub epoch: u64,
 }
 
 impl BandwidthReceipt {
@@ -71,6 +75,7 @@ impl BandwidthReceipt {
             buf.extend_from_slice(b);
         }
         buf.extend_from_slice(&self.settlement_id.to_le_bytes());
+        buf.extend_from_slice(&self.epoch.to_le_bytes());
         buf
     }
 
@@ -154,6 +159,7 @@ mod tests {
             peer: addr(peer),
             signer: addr(signer),
             settlement_id: 42,
+            epoch: 7,
         }
     }
 

@@ -300,9 +300,10 @@ pub async fn build_btc_htlc_funding(
     btc_refund_address: &str,
     broadcast: impl AsyncFnOnce(&[u8]) -> Result<[u8; 32], String>,
 ) -> Result<([u8; 32], u32), String> {
-    use vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS;
+    use vtorrent_node::atomic_swap::btc_htlc_fee_satoshis;
 
     let network = btc_wallet.network();
+    let htlc_fee = btc_htlc_fee_satoshis();
     let btc_amount = terms.btc_amount;
     let htlc = vtorrent_btc::htlc::BtcHtlc {
         hash_lock: terms.hash_lock,
@@ -315,7 +316,7 @@ pub async fn build_btc_htlc_funding(
     let expiry = htlc.expiry;
 
     let required = btc_amount
-        .checked_add(BTC_HTLC_FEE_SATOSHIS)
+        .checked_add(htlc_fee)
         .ok_or("BTC amount plus fee overflow")?;
     let funding_utxo = btc_wallet
         .list_utxos()
@@ -349,7 +350,7 @@ pub async fn build_btc_htlc_funding(
             funding_txid_bytes,
             funding_utxo.vout,
             funding_utxo.value,
-            BTC_HTLC_FEE_SATOSHIS,
+            htlc_fee,
             &change_address,
         )
         .map_err(|e| format!("Unable to build BTC funding tx: {}", e))?;
@@ -545,8 +546,8 @@ pub fn build_btc_htlc_claim(
     btc_wallet: &vtorrent_btc::wallet::BtcWallet,
     params: BtcClaimParams<'_>,
 ) -> Result<(Vec<u8>, [u8; 32]), String> {
-    use vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS;
-    build_btc_htlc_claim_with_fee(btc_wallet, params, BTC_HTLC_FEE_SATOSHIS)
+    use vtorrent_node::atomic_swap::btc_htlc_fee_satoshis;
+    build_btc_htlc_claim_with_fee(btc_wallet, params, btc_htlc_fee_satoshis())
 }
 
 /// Build and sign a BTC HTLC claim with an explicit fee.

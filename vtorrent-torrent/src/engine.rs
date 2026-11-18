@@ -697,6 +697,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                         peer: peer_addr.clone(),
                         signer: local_address.clone(),
                         settlement_id: now,
+                        epoch: account.receipt_epoch,
                     };
                     if let Ok(signature) = receipt.sign(key) {
                         if let Ok(pubkey) = key.public_key() {

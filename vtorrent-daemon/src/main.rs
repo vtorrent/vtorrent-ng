@@ -1071,8 +1071,8 @@ async fn main() -> anyhow::Result<()> {
                             if account.peer_address.is_empty() {
                                 continue;
                             }
-                            if let Some(satoshis) = account.agreed_owed() {
-                                account.settle_agreed(now, satoshis);
+                            if let Some(agreement) = account.agreed_owed() {
+                                account.settle_agreed(now, agreement.satoshis, agreement.bytes);
                                 settled += 1;
                             } else {
                                 tracing::debug!(

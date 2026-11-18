@@ -44,23 +44,59 @@ fix was written. Fixes are on `main` after `f9a91a2`.
 | 28 | Low | Alerts | A transient ntfy failure returned 500 immediately, and critical alerts repeated only every four hours. | The relay retries with backoff; the repeat interval is one hour. |
 | 29 | Low | Docs | Consensus docs claimed a 2016-block difficulty adjustment and omitted the real timestamp rules. | The table now states fixed difficulty, 5-second future drift, and 55-second minimum spacing. |
 
+## Follow-up closures
+
+The residual items that could be closed without an operator key, a launch-time
+artifact, or a multi-node architecture change were addressed after the first
+pass-5 commit:
+
+- **Receipt accounting is cumulative.** Accounts track total bytes uploaded and
+  downloaded plus the baselines already settled. A receipt now signs the
+  cumulative totals and its account epoch; settlement compares the unpaid delta
+  and advances the baselines only by the bytes actually paid for. A missed,
+  late, or clock-skewed window no longer permanently disputes an honest claim,
+  a lagging peer receipt cannot cause a double payment, and an epoch change
+  after a restart realigns both baselines without paying the same bytes twice.
+  The receipt domain is now v2; both peers must run this build.
+- **Verify-only TOTP checks the account sidecar.** Backup previews now consult
+  the read-only account-scoped replay store (and the legacy per-wallet file),
+  so a code consumed to unlock or restore any wallet on the host is rejected.
+- **Cold-stake registry is append-only.** Each script hash is written as its
+  own `0600` file under `wallet.cold_stake.d/`, which makes concurrent GUI/CLI
+  registration lossless across processes. The JSON snapshot is still written
+  for older readers and backups, but reads merge both sources. Backups include
+  the directory, and restore still refuses it for reviewed manual recovery.
+- **The container image builds from the repo.** `docker/Dockerfile` now copies
+  `release/Cargo.lock` to the name Cargo reads, and
+  `docker-compose.build.yml` is an opt-in source-build overlay. The verified
+  build is recorded as an image ID/digest; the base stack keeps its pinned soak
+  image.
+- **A hardened testnet overlay exists.** `docker-compose.hardened.yml` runs the
+  nodes as uid 1000 with `cap_drop: ALL`, no-new-privileges, a read-only root
+  filesystem, and tmpfs `/tmp`. It is opt-in because the active soak volumes
+  are root-owned.
+- **CI audits frontend dependencies.** The release build runs
+  `pnpm audit --prod --audit-level=high` after the frozen-lockfile install.
+- **BTC HTLC fees are operator-adjustable.** The compiled 5,000-sat floor can
+  be raised at runtime with `VTORRENT_BTC_HTLC_FEE_SATOSHIS`; claims remain
+  RBF-signalling for explicit bumps.
+- **The separate-taker path is documented.** The supported external claim flow
+  is now spelled out in `docs/atomic-swap-protocol.md`; the automatic claim
+  remains a single-node convenience.
+
 ## Not fixed
 
 | Risk | Why it remains |
 |---|---|
-| A genuinely separate taker still has no locally persisted `SwapState`, so the automated VTR claim cannot sign on the taker's node. | This is an architectural gap in the two-node swap flow, not a local bug. It needs taker-side order/swap persistence and an adversarial two-node test. |
-| Receipt windows are not aligned to a shared id; a lost piece or a differently reset window can exceed the 5% tolerance and withhold payment. | The gate only lowers payment, never raises it, but the conservative dispute behavior needs a per-piece acknowledgement or shared window id. |
+| A genuinely separate taker still has no locally persisted `SwapState`, so the automated VTR claim cannot sign on the taker's node. | The supported path is now explicit: `/swap/vtr-claim-external` with the maker's match terms and the observed preimage, documented in `docs/atomic-swap-protocol.md`. Full automation needs taker-side match import and an adversarial two-node test. |
 | A long-range forged PoS chain from genesis is still accepted by a new node. | Minimum spacing caps production rate but does not replace a checkpoint. A launch checkpoint or finalized header commitment is still needed. |
-| Cold-stake registry updates use only a process-local mutex. | A GUI and CLI updating the registry concurrently can lose one hash. An OS file lock or per-hash directory is the fix. |
 | P2CS/HTLC CLTV operands are non-minimal for small locktimes. | Changing the script shape is a consensus/script-version change; the current engine accepts them. |
 | Backups containing cold-stake or swap state are deliberately not auto-restorable. | Recovery requires the reviewed manual runbook; the UI and policy documents must keep saying so. |
 | Release builds are unsigned and `SHA256SUMS` is integrity-only. | Signing needs operator key custody (Apple/Windows/minisign), deferred by the operator. |
-| BTC HTLC fees are a fixed floor, not a live estimate. | A BTC fee estimator and a safe funding-replacement flow are still needed for fee spikes above ~35 sat/vB. |
-| Verify-only TOTP does not consult the account replay sidecar, only the wallet's stored step. | The sidecar read-only path is not implemented; impact is limited to backup metadata preview. |
+| BTC HTLC fees are a configurable floor, not a live estimate. | `VTORRENT_BTC_HTLC_FEE_SATOSHIS` raises the 35 sat/vB floor without a rebuild; a live estimator and safe funding replacement are still needed. |
 | EVM/BTC cross-chain swap promotion on mainnet remains disabled. | The independent review and multi-node adversarial testing are still required. |
-| The release image is not reproducible from the repo: compose pins a Docker Hub tag and the documented context lives in a gitignored ops directory. | A CI-staged build context (or digest-pinned registry push) is needed before operators can verify the image they run. |
-| Testnet containers run as root with `NET_ADMIN`/`NET_RAW` and unconfined AppArmor. | Testnet-only blast radius; a non-root image with dropped capabilities is the follow-up. |
-| Release frontend install has no `pnpm audit` gate. | `--frozen-lockfile` is now enforced, but dependency advisories are not checked in CI. |
+| The base testnet stack still pins a Docker Hub tag; the source-build overlay is opt-in. | A release must publish and pin the image digest (`@sha256:`) so operators verify the exact artifact they run. |
+| The base testnet stack still runs as root for the active soak volumes. | A hardened non-root/cap-drop overlay exists for new deployments; migrating the live volumes is an operator change window. |
 
 ## Verification
 
@@ -68,8 +104,11 @@ fix was written. Fixes are on `main` after `f9a91a2`.
   P2P 84, RPC 202, Tauri 33, wallet-service 10.
 - Clippy: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
   completed clean.
-- Full workspace on the final tree: **1,446 passed, 0 failed, 11 ignored**
+- Full workspace on the final tree: **1,450 passed, 0 failed, 11 ignored**
   across 54 test groups.
+- Container source build: `docker build -f docker/Dockerfile` succeeded;
+  `vtorrent-daemon 2.0.0` runs as uid `vtorrent`; image
+  `sha256:13ce3ce3891371cf208e7ad41828f3f1088b2cd335a69f8a269021f74c847f7e`.
 
 The consensus timestamp change, the detached dial refactor, the receipt
 settlement/payout path, and the SPV pin/reorg handling are AI-authored and

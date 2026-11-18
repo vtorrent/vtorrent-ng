@@ -1,9 +1,17 @@
 # Local testnet images
 
-All three nodes use the locally built release `vtorrent/node:4d1ae47`. No node
-has a Compose `build` entry, so recreation cannot silently replace that version
-with the current working tree. No image was pushed to a registry. Provision the
-image locally before bringing up this stack on another host.
+The base stack pins `vtorrent/node:batch-e7691fb` so recreation cannot silently
+replace the soak image with the current working tree. To build the three nodes
+from a reviewed checkout instead, opt in to the source-build overlay:
+
+```bash
+VTR_SOURCE_REV=$(git rev-parse --short HEAD) \
+  docker compose -f docker-compose.yml -f docker-compose.build.yml build
+```
+
+`docker/Dockerfile` builds `vtorrent-daemon` with `release/Cargo.lock` and
+pins its base images by digest. Record the resulting image ID and run the
+168-hour soak on that exact image; a source build is not the pinned soak image.
 
 ## Current release image
 

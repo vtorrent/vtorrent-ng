@@ -1023,7 +1023,7 @@ async fn refund_with_broadcast(
                 let unsigned = htlc
                     .build_refund_tx_at(
                         funding_txid,
-                        vtorrent_node::atomic_swap::BTC_HTLC_FEE_SATOSHIS,
+                        vtorrent_node::atomic_swap::btc_htlc_fee_satoshis(),
                         now,
                     )
                     .map_err(|e| RpcError::BadRequest(e.to_string()))?;

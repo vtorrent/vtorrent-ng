@@ -59,9 +59,33 @@ below).
    network verification; recent BTC header times also bound the claim window.
 
 6. The taker obtains the preimage from the BTC claim and calls
-   `POST /api/v1/swap/vtr-claim` with `order_id`, `preimage`, and
-   `taker_wif`. VTR claim/refund admission verifies input scripts and fees
-   against the local chain. Transaction submission is not confirmation.
+   `POST /api/v1/swap/vtr-claim` with `order_id` and `preimage`; the local
+   wallet passphrase signs the claim. VTR claim/refund admission verifies
+   input scripts and fees against the local chain. Transaction submission is
+   not confirmation.
+
+### A taker on a separate node
+
+The maker's node is the only node that holds the full `SwapState` created by
+`/dex/match`. A separate taker does not need that state to claim VTR:
+
+1. Take the maker's match response (`order_id`, `maker_address`,
+   `vtr_amount`, `target_amount`, `hash_lock`, `expiry`, `funding_txid`) and
+   the public order's maker BTC address.
+2. Fund BTC with the taker's own wallet. The refund address must belong to
+   that wallet.
+3. Observe the maker's BTC claim and obtain the 32-byte preimage, or receive
+   it out of band.
+4. Call `POST /api/v1/swap/vtr-claim-external` from the taker's own node with
+   the terms, preimage, taker address, and the taker's WIF. The handler
+   re-derives the exact HTLC script from those terms and the confirmed VTR
+   funding output, and pays only the script-bound taker address.
+
+Run this call against a loopback RPC with the API key enabled. The WIF is
+accepted only on this authenticated endpoint; it is not the normal wallet
+passphrase path. The automatic `vtr_claim` after a local BTC observation is a
+single-node convenience: it needs the local `SwapState`, so it is not
+available to a taker who only has the maker's match response.
 
 ## Timing policy
 

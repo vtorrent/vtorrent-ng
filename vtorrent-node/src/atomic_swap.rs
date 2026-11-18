@@ -54,6 +54,23 @@ pub const VTR_HTLC_FEE_SATOSHIS: u64 = 10_000;
 /// fixed fee must be conservative.
 pub const BTC_HTLC_FEE_SATOSHIS: u64 = 5_000;
 
+/// Operator override for the BTC HTLC fee floor.
+///
+/// A fee spike above the compiled floor can be handled without rebuilding the
+/// daemon by setting `VTORRENT_BTC_HTLC_FEE_SATOSHIS` (values below the
+/// compiled floor are ignored). This is still a fixed fee, not a live
+/// estimator; claims remain RBF-signalling for explicit bumps.
+pub fn btc_htlc_fee_satoshis() -> u64 {
+    static FEE: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+        std::env::var("VTORRENT_BTC_HTLC_FEE_SATOSHIS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|fee| *fee >= BTC_HTLC_FEE_SATOSHIS)
+            .unwrap_or(BTC_HTLC_FEE_SATOSHIS)
+    });
+    *FEE
+}
+
 /// An HTLC (Hash Time-Locked Contract) for atomic swaps.
 #[derive(Debug, Clone)]
 pub struct Htlc {

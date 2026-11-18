@@ -1,0 +1,24 @@
+# Build the testnet nodes from this checkout.
+#
+#   VTR_SOURCE_REV=$(git rev-parse --short HEAD) \
+#     docker compose -f docker-compose.yml -f docker-compose.build.yml build
+#
+# This overlay deliberately does not change the active soak stack unless it is
+# explicitly passed. The base compose keeps its pinned image for soak
+# reproducibility.
+services:
+  node1:
+    image: vtorrent/node:source-${VTR_SOURCE_REV:-local}
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+  node2:
+    image: vtorrent/node:source-${VTR_SOURCE_REV:-local}
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+  node3:
+    image: vtorrent/node:source-${VTR_SOURCE_REV:-local}
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile

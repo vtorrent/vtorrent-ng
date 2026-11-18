@@ -36,18 +36,24 @@ BEP-10, `peer_wire.rs:41`). Use them for a lightweight **receipt** handshake:
 
 ### 2.1 Signed bandwidth receipts
 
-- Each side periodically (per settlement window) sends a **receipt**: a signed
-  statement of the bytes it observed in each direction over the window.
+- Each side periodically sends a **receipt**: a signed statement of its
+  **cumulative** bytes in each direction since its account epoch.
   ```
   Receipt {
     info_hash: [u8;20],
-    window: (start, end),
-    uploaded_by_me: u64,     // bytes I sent you
-    downloaded_by_me: u64,   // bytes I received from you
+    window: (start, end),    // audit only
+    uploaded_by_me: u64,     // cumulative bytes I sent you
+    downloaded_by_me: u64,   // cumulative bytes I received from you
+    settlement_id: u64,      // monotonic within an epoch
+    epoch: u64,              // restarts create a new epoch
     peer: <address>,
     sig: <signature over the above>,
   }
   ```
+- Cumulative counters mean a missed, late, or clock-skewed settlement window
+  does not permanently dispute an honest claim; the next receipt covers the
+  whole unpaid delta. When a peer's epoch changes, both baselines are reset at
+  its first receipt, so a restart cannot cause a double payment.
 - The **payer** only pays when the receipt is **countersigned by the payee**
   (mutual agreement), or at least when the payee's own receipt **agrees within a
   tolerance**. Disagreement → no payment (or a reduced, disputed amount).
@@ -71,9 +77,10 @@ BEP-10, `peer_wire.rs:41`). Use them for a lightweight **receipt** handshake:
 
 ## 3. Settlement changes
 
-- `needs_settlement` (`incentive.rs:95`) also requires a **matching receipt**
-  (or the tolerance window elapsed with no dispute).
-- `settle` (`:103`) records the **agreed** amount, not the self-reported one.
+- Settlement requires a **matching receipt**; without one the counters are
+  retained instead of cleared.
+- `settle_agreed` records the **agreed** amount and advances both cumulative
+  baselines by exactly the bytes paid for.
 - The payment path (`wallet-service::build_incentive_payment`) is unchanged
   except the amount comes from the agreed receipt.
 - Persist recent receipts (bounded) so a restart doesn't lose an in-flight

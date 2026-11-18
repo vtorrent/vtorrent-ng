@@ -14,6 +14,16 @@ pub const MIN_PAYMENT_BYTES: u64 = 10 * 1024 * 1024; // Minimum 10 MB before pay
 pub const PAYMENT_INTERVAL_SECS: u64 = 300; // Payment settled every 5 minutes
 pub const COIN: u64 = 100_000_000; // 1 VTR = 100,000,000 satoshis
 
+/// Monotonic-enough per-account epoch. A restart creates a new epoch so a
+/// peer's cumulative receipt cannot be compared against a different session.
+fn account_epoch() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0)
+        .max(1)
+}
+
 /// Tracks bandwidth exchanged with a single peer for incentive accounting.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerBandwidthAccount {
@@ -23,6 +33,18 @@ pub struct PeerBandwidthAccount {
     pub bytes_uploaded: u64,
     /// Bytes we have downloaded from this peer since last settlement.
     pub bytes_downloaded: u64,
+    /// Cumulative bytes uploaded to this peer since the account was created.
+    #[serde(default)]
+    pub total_bytes_uploaded: u64,
+    /// Cumulative bytes downloaded from this peer since the account was created.
+    #[serde(default)]
+    pub total_bytes_downloaded: u64,
+    /// Our cumulative downloaded bytes at the last settlement.
+    #[serde(default)]
+    pub settled_our_downloaded: u64,
+    /// The peer's cumulative uploaded bytes at the last settlement.
+    #[serde(default)]
+    pub settled_peer_uploaded: u64,
     /// Total VTR earned from this peer (in satoshis).
     pub total_earned_satoshis: u64,
     /// Total VTR paid to this peer (in satoshis).
@@ -41,6 +63,9 @@ pub struct PeerBandwidthAccount {
     /// Highest settlement id seen from this peer, for replay rejection.
     #[serde(default)]
     pub last_receipt_id: u64,
+    /// This side's cumulative-counter epoch. A restart gets a new value.
+    #[serde(default)]
+    pub receipt_epoch: u64,
     /// Agreed satoshis settled but not yet confirmed paid on-chain.
     #[serde(default)]
     pub unpaid_satoshis: u64,
@@ -55,6 +80,10 @@ impl PeerBandwidthAccount {
             peer_address,
             bytes_uploaded: 0,
             bytes_downloaded: 0,
+            total_bytes_uploaded: 0,
+            total_bytes_downloaded: 0,
+            settled_our_downloaded: 0,
+            settled_peer_uploaded: 0,
             total_earned_satoshis: 0,
             total_paid_satoshis: 0,
             last_settlement: 0,
@@ -62,6 +91,7 @@ impl PeerBandwidthAccount {
             incentive_enabled: true,
             peer_receipt: None,
             last_receipt_id: 0,
+            receipt_epoch: account_epoch(),
             unpaid_satoshis: 0,
             payment_in_flight: false,
         }
@@ -70,11 +100,13 @@ impl PeerBandwidthAccount {
     /// Record bytes uploaded to this peer.
     pub fn record_upload(&mut self, bytes: u64) {
         self.bytes_uploaded = self.bytes_uploaded.saturating_add(bytes);
+        self.total_bytes_uploaded = self.total_bytes_uploaded.saturating_add(bytes);
     }
 
     /// Record bytes downloaded from this peer.
     pub fn record_download(&mut self, bytes: u64) {
         self.bytes_downloaded = self.bytes_downloaded.saturating_add(bytes);
+        self.total_bytes_downloaded = self.total_bytes_downloaded.saturating_add(bytes);
     }
 
     /// Update the last-activity timestamp.
@@ -102,9 +134,7 @@ impl PeerBandwidthAccount {
         if !self.incentive_enabled {
             return 0;
         }
-        const GB: u128 = 1024 * 1024 * 1024;
-        // 0.5 VTR per GB = COIN/2 satoshis per GB.
-        ((self.bytes_downloaded as u128 * (COIN as u128 / 2)) / GB) as u64
+        calculate_owed_for_bytes(self.bytes_downloaded)
     }
 
     /// Check if a settlement is due based on bytes transferred or time elapsed.
@@ -124,17 +154,35 @@ impl PeerBandwidthAccount {
     /// Returns (earned_satoshis, owed_satoshis) for this settlement period.
     pub fn settle(&mut self, current_timestamp: u64) -> (u64, u64) {
         let owed = self.calculate_owed();
-        let earned = self.settle_agreed(current_timestamp, owed);
+        let earned = self.settle_agreed(current_timestamp, owed, self.bytes_downloaded);
         (earned, owed)
     }
 
-    /// Settle using an externally agreed amount (the receipt-verified value).
+    /// Settle using an externally agreed amount and byte count.
+    ///
+    /// `agreed_bytes` advances the cumulative baselines by exactly the bytes
+    /// that were paid for, so a peer whose receipt lags behind our counter is
+    /// not paid twice and the unpaid remainder is reconsidered next time.
     ///
     /// Returns the earned amount for this period.
-    pub fn settle_agreed(&mut self, current_timestamp: u64, agreed: u64) -> u64 {
+    pub fn settle_agreed(
+        &mut self,
+        current_timestamp: u64,
+        agreed_satoshis: u64,
+        agreed_bytes: u64,
+    ) -> u64 {
         let earned = self.calculate_earned();
+        let remaining = self
+            .total_bytes_downloaded
+            .saturating_sub(self.settled_our_downloaded);
+        let agreed_bytes = agreed_bytes.min(remaining);
         self.total_earned_satoshis = self.total_earned_satoshis.saturating_add(earned);
-        self.unpaid_satoshis = self.unpaid_satoshis.saturating_add(agreed);
+        self.unpaid_satoshis = self.unpaid_satoshis.saturating_add(agreed_satoshis);
+        self.settled_our_downloaded = self
+            .settled_our_downloaded
+            .saturating_add(agreed_bytes)
+            .min(self.total_bytes_downloaded);
+        self.settled_peer_uploaded = self.settled_peer_uploaded.saturating_add(agreed_bytes);
         self.bytes_uploaded = 0;
         self.bytes_downloaded = 0;
         self.last_settlement = current_timestamp;
@@ -158,6 +206,17 @@ impl PeerBandwidthAccount {
 
     /// Store a verified peer receipt. Returns false for a replayed id.
     pub fn record_receipt(&mut self, receipt: vtorrent_core::receipt::BandwidthReceipt) -> bool {
+        if receipt.epoch != self.receipt_epoch {
+            // The peer restarted its cumulative accounting. Align both
+            // baselines at its first receipt: bytes before this point are not
+            // paid, which is conservative and prevents a double payment.
+            self.receipt_epoch = receipt.epoch;
+            self.settled_peer_uploaded = receipt.uploaded_by_me;
+            self.settled_our_downloaded = self.total_bytes_downloaded;
+            self.last_receipt_id = receipt.settlement_id;
+            self.peer_receipt = Some(receipt);
+            return true;
+        }
         if receipt.settlement_id <= self.last_receipt_id {
             return false;
         }
@@ -166,14 +225,43 @@ impl PeerBandwidthAccount {
         true
     }
 
-    /// Amount payable for this window, or `None` without a matching receipt.
-    pub fn agreed_owed(&self) -> Option<u64> {
+    /// Amount payable, or `None` without a matching receipt.
+    ///
+    /// Counters are cumulative, so a missed or clock-skewed window does not
+    /// permanently dispute an honest claim: the next receipt covers the whole
+    /// unpaid delta.
+    pub fn agreed_owed(&self) -> Option<AgreedOwed> {
         let receipt = self.peer_receipt.as_ref()?;
-        match agree_on_download(self.calculate_owed(), receipt.uploaded_by_me) {
-            ReceiptAgreement::Agreed { satoshis } => Some(satoshis),
+        if receipt.uploaded_by_me < self.settled_peer_uploaded {
+            return None;
+        }
+        let our_bytes = self
+            .total_bytes_downloaded
+            .saturating_sub(self.settled_our_downloaded);
+        let their_bytes = receipt
+            .uploaded_by_me
+            .saturating_sub(self.settled_peer_uploaded);
+        let mine_satoshis = calculate_owed_for_bytes(our_bytes);
+        let theirs_satoshis = calculate_owed_for_bytes(their_bytes);
+        match agree_on_satoshis(mine_satoshis, theirs_satoshis) {
+            ReceiptAgreement::Agreed { satoshis } => {
+                let bytes = if mine_satoshis <= theirs_satoshis {
+                    our_bytes
+                } else {
+                    their_bytes
+                };
+                Some(AgreedOwed { satoshis, bytes })
+            }
             ReceiptAgreement::Disputed { .. } => None,
         }
     }
+}
+
+/// A receipt-verified amount and the byte delta it covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgreedOwed {
+    pub satoshis: u64,
+    pub bytes: u64,
 }
 
 /// Session-level incentive summary for the UI.
@@ -240,11 +328,12 @@ pub fn build_receipt(
         info_hash,
         window_start,
         window_end,
-        uploaded_by_me: account.bytes_uploaded,
-        downloaded_by_me: account.bytes_downloaded,
+        uploaded_by_me: account.total_bytes_uploaded,
+        downloaded_by_me: account.total_bytes_downloaded,
         peer: account.peer_address.clone(),
         signer: signer.to_string(),
         settlement_id,
+        epoch: account.receipt_epoch,
     }
 }
 
@@ -264,18 +353,21 @@ pub enum ReceiptAgreement {
     Disputed { mine: u64, theirs: u64 },
 }
 
-/// Compare what we earned from a peer against what the peer's signed receipt
-/// claims we uploaded, and decide whether to pay.
-///
-/// `mine_satoshis` is what our own accounting says we are owed for uploads to
-/// the peer; `their_receipt_uploaded` is the bytes the peer's signed receipt says
-/// it downloaded from us. Both are converted at the same 1 VTR/GB rate.
-pub fn agree_on_upload(mine_satoshis: u64, their_receipt_uploaded: u64) -> ReceiptAgreement {
+/// Satoshis owed for downloading `bytes` from a peer (0.5 VTR/GB).
+pub fn calculate_owed_for_bytes(bytes: u64) -> u64 {
     const GB: u128 = 1024 * 1024 * 1024;
-    let theirs = ((their_receipt_uploaded as u128 * COIN as u128) / GB) as u64;
+    ((bytes as u128 * (COIN as u128 / 2)) / GB) as u64
+}
+
+/// Satoshis earned for uploading `bytes` to a peer (1 VTR/GB).
+pub fn calculate_earned_for_bytes(bytes: u64) -> u64 {
+    const GB: u128 = 1024 * 1024 * 1024;
+    ((bytes as u128 * COIN as u128) / GB) as u64
+}
+
+fn agree_on_satoshis(mine_satoshis: u64, theirs: u64) -> ReceiptAgreement {
     let hi = mine_satoshis.max(theirs);
     let lo = mine_satoshis.min(theirs);
-    // |mine - theirs| <= tolerance * hi
     let diff = hi - lo;
     if diff.saturating_mul(10_000) <= hi.saturating_mul(RECEIPT_TOLERANCE_BPS) {
         ReceiptAgreement::Agreed { satoshis: lo }
@@ -287,22 +379,26 @@ pub fn agree_on_upload(mine_satoshis: u64, their_receipt_uploaded: u64) -> Recei
     }
 }
 
+/// Compare what we earned from a peer against what the peer's signed receipt
+/// claims we uploaded, and decide whether to pay.
+///
+/// `mine_satoshis` is what our own accounting says we are owed for uploads to
+/// the peer; `their_receipt_uploaded` is the bytes the peer's signed receipt says
+/// it downloaded from us. Both are converted at the same 1 VTR/GB rate.
+pub fn agree_on_upload(mine_satoshis: u64, their_receipt_uploaded: u64) -> ReceiptAgreement {
+    agree_on_satoshis(
+        mine_satoshis,
+        calculate_earned_for_bytes(their_receipt_uploaded),
+    )
+}
+
 /// Compare what we owe a peer for their uploads against the bytes their signed
 /// receipt says they uploaded. The download price is half the seeding price.
 pub fn agree_on_download(mine_satoshis: u64, their_receipt_uploaded: u64) -> ReceiptAgreement {
-    const GB: u128 = 1024 * 1024 * 1024;
-    let theirs = ((their_receipt_uploaded as u128 * (COIN as u128 / 2)) / GB) as u64;
-    let hi = mine_satoshis.max(theirs);
-    let lo = mine_satoshis.min(theirs);
-    let diff = hi - lo;
-    if diff.saturating_mul(10_000) <= hi.saturating_mul(RECEIPT_TOLERANCE_BPS) {
-        ReceiptAgreement::Agreed { satoshis: lo }
-    } else {
-        ReceiptAgreement::Disputed {
-            mine: mine_satoshis,
-            theirs,
-        }
-    }
+    agree_on_satoshis(
+        mine_satoshis,
+        calculate_owed_for_bytes(their_receipt_uploaded),
+    )
 }
 
 pub fn aggregate_summary(accounts: &[PeerBandwidthAccount]) -> IncentiveSummary {
@@ -408,7 +504,7 @@ mod tests {
     fn failed_payment_stays_unpaid_and_is_retried() {
         let mut account = PeerBandwidthAccount::new("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
         account.record_download(2 * 1024 * 1024 * 1024);
-        account.settle_agreed(1_700_000_000, COIN);
+        account.settle_agreed(1_700_000_000, COIN, 2 * 1024 * 1024 * 1024);
         assert_eq!(account.unpaid_satoshis, COIN);
         account.payment_failed();
         assert_eq!(account.unpaid_satoshis, COIN);
@@ -520,11 +616,59 @@ mod tests {
             peer: "VUs".into(),
             signer: "VPeer".into(),
             settlement_id: 7,
+            epoch: account.receipt_epoch,
         };
         assert!(account.record_receipt(receipt.clone()));
-        assert_eq!(account.agreed_owed(), Some(COIN / 2));
+        assert_eq!(
+            account.agreed_owed().map(|agreement| agreement.satoshis),
+            Some(COIN / 2)
+        );
         assert!(!account.record_receipt(receipt));
         let _ = account.settle(300);
         assert_eq!(account.agreed_owed(), None);
+    }
+
+    #[test]
+    fn receipt_epoch_change_resets_baselines_without_double_paying() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        use vtorrent_core::receipt::BandwidthReceipt;
+
+        let mut account = PeerBandwidthAccount::new("VPeer".into());
+        account.record_download(2 * GB);
+        let mut receipt = BandwidthReceipt {
+            info_hash: [1u8; 20],
+            window_start: 0,
+            window_end: 300,
+            uploaded_by_me: 2 * GB,
+            downloaded_by_me: 0,
+            peer: "VUs".into(),
+            signer: "VPeer".into(),
+            settlement_id: 1,
+            epoch: account.receipt_epoch,
+        };
+        assert!(account.record_receipt(receipt.clone()));
+        let first = account.agreed_owed().unwrap();
+        assert_eq!(first.satoshis, COIN);
+        account.settle_agreed(300, first.satoshis, first.bytes);
+
+        // The peer restarted: its cumulative counter starts over.
+        receipt.epoch = account.receipt_epoch.wrapping_add(1);
+        receipt.settlement_id = 2;
+        assert!(account.record_receipt(receipt.clone()));
+        assert_eq!(
+            account.agreed_owed().map(|agreement| agreement.satoshis),
+            Some(0)
+        );
+        let baseline = account.agreed_owed().unwrap();
+        account.settle_agreed(600, baseline.satoshis, baseline.bytes);
+
+        account.record_download(2 * GB);
+        receipt.settlement_id = 3;
+        receipt.uploaded_by_me = 4 * GB;
+        assert!(account.record_receipt(receipt));
+        assert_eq!(
+            account.agreed_owed().map(|agreement| agreement.satoshis),
+            Some(COIN)
+        );
     }
 }

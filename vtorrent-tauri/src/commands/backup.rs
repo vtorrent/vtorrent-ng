@@ -193,6 +193,42 @@ fn collect_entries(wallet_path: &Path, wallet: &Wallet) -> Result<Vec<BackupEntr
     if cold_stake.exists() {
         add_entry(&mut entries, "wallet.cold_stake.json", &cold_stake)?;
     }
+    // New registries are append-only directories. Include every entry so a
+    // backup still carries all script hashes if the JSON snapshot is stale.
+    let cold_dir = wallet_path.with_extension("cold_stake.d");
+    if cold_dir.is_dir() {
+        let dir_name = cold_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("wallet.cold_stake.d")
+            .to_string();
+        let mut hashes = Vec::new();
+        for entry in std::fs::read_dir(&cold_dir).map_err(|e| TauriError::Io(e.to_string()))? {
+            let entry = entry.map_err(|e| TauriError::Io(e.to_string()))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|e| TauriError::Io(e.to_string()))?;
+            if !file_type.is_file() {
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            if name.len() != 40 || !name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                continue;
+            }
+            hashes.push((name, entry.path()));
+        }
+        hashes.sort_by(|a, b| a.0.cmp(&b.0));
+        if hashes.len() > 64 {
+            return Err(TauriError::InvalidInput(
+                "Too many cold-stake registry entries to back up".into(),
+            ));
+        }
+        for (name, path) in hashes {
+            add_entry(&mut entries, &format!("{dir_name}/{name}"), &path)?;
+        }
+    }
 
     let swaps = wallet_path.with_extension("swaps");
     if swaps.is_dir() {
@@ -532,6 +568,16 @@ pub fn restore_backup(
             ));
         }
         if safe == Path::new("wallet.cold_stake.json") {
+            return Err(TauriError::InvalidInput(
+                "Cold-stake registry cannot be restored automatically: backup freshness cannot be established; preserve the backup for reviewed recovery".into(),
+            ));
+        }
+        if safe.components().any(|component| {
+            component
+                .as_os_str()
+                .to_string_lossy()
+                .ends_with(".cold_stake.d")
+        }) {
             return Err(TauriError::InvalidInput(
                 "Cold-stake registry cannot be restored automatically: backup freshness cannot be established; preserve the backup for reviewed recovery".into(),
             ));
@@ -1063,6 +1109,32 @@ mod tests {
             .find(|entry| entry.name.ends_with(".spending-key"))
             .expect("spending-key export must be in the backup");
         assert_eq!(entry.name, "wallet.Vtest.spending-key");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn backup_includes_the_append_only_cold_stake_registry() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-backup-coldreg-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wallet = Wallet::create("password").unwrap();
+        let wallet_path = dir.join(WALLET_ENTRY);
+        wallet.save(&wallet_path).unwrap();
+        let hash = "ab".repeat(20);
+        vtorrent_wallet::cold_stake_registry::add(&wallet_path, &hash).unwrap();
+
+        let entries = collect_entries(&wallet_path, &wallet).unwrap();
+        let name = format!("wallet.cold_stake.d/{hash}");
+        assert!(
+            entries.iter().any(|entry| entry.name == name),
+            "append-only registry entry must be in the backup"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 

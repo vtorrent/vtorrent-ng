@@ -388,6 +388,84 @@ pub fn consume_account_totp_step_unbound(
     consume_account_step_in_store(&replay_store()?, None, secret, step, wallet_last)
 }
 
+/// Read-only check: has this authenticator already consumed `step`?
+///
+/// Used by verify-only wallet loads (backup previews) so they cannot replay a
+/// code that was already spent to unlock or restore the live wallet.
+pub fn account_step_consumed(
+    wallet_path: &std::path::Path,
+    secret: &str,
+    step: u64,
+) -> Result<bool> {
+    account_step_consumed_in_store(&replay_store()?, Some(wallet_path), secret, step)
+}
+
+fn account_step_consumed_in_store(
+    store: &std::path::Path,
+    wallet_path: Option<&std::path::Path>,
+    secret: &str,
+    step: u64,
+) -> Result<bool> {
+    if let Some(wallet_path) = wallet_path {
+        let legacy = wallet_path.with_extension("totp-step");
+        if read_step_file(&legacy)?.is_some_and(|last| step <= last) {
+            return Ok(true);
+        }
+    }
+    let account = account_store_path(store, secret);
+    Ok(read_step_file(&account)?.is_some_and(|last| step <= last))
+}
+
+fn account_store_path(store: &std::path::Path, secret: &str) -> std::path::PathBuf {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"vtorrent/totp-replay/v1\0");
+    hasher.update(secret.as_bytes());
+    // `consume_totp_step_locked` normalises the path with
+    // `with_extension("totp-step")`, so the account file on disk uses that
+    // suffix. Keep the read-only check on the same path.
+    store.join(format!("{}.totp-step", hex::encode(hasher.finalize())))
+}
+
+fn read_step_file(path: &std::path::Path) -> Result<Option<u64>> {
+    use std::io::Read;
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(WalletError::Io(error.to_string())),
+    };
+    if metadata.file_type().is_symlink() || metadata.len() > 128 {
+        return Err(WalletError::Io("invalid TOTP replay state".into()));
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options
+        .open(path)
+        .map_err(|error| WalletError::Io(error.to_string()))?;
+    file.lock_shared()
+        .map_err(|error| WalletError::Io(error.to_string()))?;
+    let mut value = String::new();
+    file.take(129)
+        .read_to_string(&mut value)
+        .map_err(|error| WalletError::Io(error.to_string()))?;
+    if value.len() > 128 {
+        return Err(WalletError::Io("invalid TOTP replay state".into()));
+    }
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    value
+        .parse::<u64>()
+        .map(Some)
+        .map_err(|_| WalletError::Io("invalid TOTP replay state".into()))
+}
+
 fn consume_account_step_in_store(
     store: &std::path::Path,
     wallet_path: Option<&std::path::Path>,
@@ -395,49 +473,14 @@ fn consume_account_step_in_store(
     step: u64,
     wallet_last: Option<u64>,
 ) -> Result<TotpStepGuard> {
-    use sha2::{Digest, Sha256};
     if wallet_last.is_some_and(|last| step <= last) {
         return Err(WalletError::OtpReplay);
     }
     if let Some(wallet_path) = wallet_path {
-        let legacy = wallet_path.with_extension("totp-step");
-        match std::fs::symlink_metadata(&legacy) {
-            Ok(metadata) if metadata.file_type().is_symlink() || metadata.len() > 128 => {
-                return Err(WalletError::Io("invalid legacy TOTP replay state".into()))
-            }
-            Ok(_) => {
-                use std::io::Read;
-                let mut options = std::fs::OpenOptions::new();
-                options.read(true);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    options.custom_flags(libc::O_NOFOLLOW);
-                }
-                let file = options
-                    .open(&legacy)
-                    .map_err(|error| WalletError::Io(error.to_string()))?;
-                file.lock_shared()
-                    .map_err(|error| WalletError::Io(error.to_string()))?;
-                let mut value = String::new();
-                file.take(129)
-                    .read_to_string(&mut value)
-                    .map_err(|error| WalletError::Io(error.to_string()))?;
-                if value.len() > 128 {
-                    return Err(WalletError::Io("invalid legacy TOTP replay state".into()));
-                }
-                let value = value.trim();
-                if !value.is_empty() {
-                    let last = value
-                        .parse::<u64>()
-                        .map_err(|_| WalletError::Io("invalid legacy TOTP replay state".into()))?;
-                    if step <= last {
-                        return Err(WalletError::OtpReplay);
-                    }
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(WalletError::Io(error.to_string())),
+        if read_step_file(&wallet_path.with_extension("totp-step"))?
+            .is_some_and(|last| step <= last)
+        {
+            return Err(WalletError::OtpReplay);
         }
     }
     let mut builder = std::fs::DirBuilder::new();
@@ -464,10 +507,7 @@ fn consume_account_step_in_store(
             ));
         }
     }
-    let mut hasher = Sha256::new();
-    hasher.update(b"vtorrent/totp-replay/v1\0");
-    hasher.update(secret.as_bytes());
-    let account_path = store.join(format!("{}.wallet", hex::encode(hasher.finalize())));
+    let account_path = account_store_path(store, secret);
     consume_totp_step_locked(&account_path, step)
 }
 
@@ -685,5 +725,28 @@ mod tests {
 
         let loaded = config.load_secret().expect("Load secret failed");
         assert_eq!(secret.as_bytes(), loaded.as_bytes());
+    }
+
+    #[test]
+    fn read_only_check_sees_a_consumed_account_step() {
+        let root = std::env::temp_dir().join(format!(
+            "vtr-totp-readonly-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = root.join("store");
+        let first = root.join("wallet-a.vtr");
+        let second = root.join("wallet-b.vtr");
+        consume_account_step_in_store(&store, Some(&first), "same-secret", 100, None).unwrap();
+
+        assert!(account_step_consumed_in_store(&store, Some(&first), "same-secret", 100).unwrap());
+        assert!(!account_step_consumed_in_store(&store, Some(&first), "same-secret", 101).unwrap());
+        // The account-scoped sidecar follows the authenticator across wallets.
+        assert!(account_step_consumed_in_store(&store, Some(&second), "same-secret", 100).unwrap());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

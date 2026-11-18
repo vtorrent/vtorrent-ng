@@ -1,0 +1,39 @@
+# Hardened runtime overlay for new testnet deployments.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.hardened.yml up -d
+#
+# Do not apply this to an existing root-owned data volume without migrating its
+# ownership first; the daemon runs as uid 1000 and will fail closed on an
+# unwritable data directory. The image creates /data/node{1,2,3} owned by that
+# uid, so fresh named volumes inherit the correct ownership.
+services:
+  node1:
+    user: "1000:1000"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+      - /home/vtorrent:uid=1000,gid=1000,mode=0700
+  node2:
+    user: "1000:1000"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+      - /home/vtorrent:uid=1000,gid=1000,mode=0700
+  node3:
+    user: "1000:1000"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+      - /home/vtorrent:uid=1000,gid=1000,mode=0700

@@ -302,6 +302,7 @@ mod tests {
                 peer: "VPeer".into(),
                 signer: "VSigner".into(),
                 settlement_id: 9,
+                epoch: 7,
             },
             pubkey: vec![2u8; 33],
             signature: vec![3u8; 70],

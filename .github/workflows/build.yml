@@ -240,6 +240,10 @@ jobs:
         working-directory: vtorrent-ui
         run: pnpm install --frozen-lockfile
 
+      - name: Audit frontend dependencies
+        working-directory: vtorrent-ui
+        run: pnpm audit --prod --audit-level=high
+
       - name: Build frontend
         working-directory: vtorrent-ui
         run: pnpm build
