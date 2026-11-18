@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `5cdd580`
+Subject: Independent security review — vTorrent-NG mainnet candidate `2a25e3f`
 
 Hello,
 
@@ -18,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `5cdd580e8c8d95194598c04d3d0528a25f90f3fb`
+**Review head:** `2a25e3f912982f3b1662817913d721d85661ddb3`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `5cdd580`. It is not covered by any prior soak: the
+The code under review is `2a25e3f`. It is not covered by any prior soak: the
 `6a49727` fleet predates every change below and was interrupted by a host
 restart on 2026-11-16. The eventual shipping image needs its own full window
 after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 code changed after the candidate with
-`git diff --name-only 5cdd580..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only 2a25e3f..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -149,6 +149,9 @@ candidate `ba46fd6`:
   cold-stake registration, a source-built container image, a hardened
   non-root testnet overlay, frontend dependency auditing, a BTC HTLC fee
   override, and the documented external-taker claim path.
+- `2a25e3f` — taker match import with local swap persistence and a desktop
+  form; `--checkpoint HEIGHT:HASH` enforcement plus the launch checkpoint
+  procedure; minimal P2CS/HTLC CLTV encoding with legacy-shape parsing.
 
 Five internal AI-assisted supplementary reviews are recorded in
 `docs/2026-11-17_ai-supplementary-review.md`,
@@ -168,8 +171,8 @@ timestamp-drift bound in `a514d5b`, the eligible-stake denominator in
 `eddd565`, the receipt-gated incentives in `4d32ab2`, and the parallel peer
 dials in `5011acf`, the detached untrusted dials in `fce6495`, the release
 checksums in `733e476`, the fifth-pass fixes in `c874dac`, and the follow-up
-closures in `5cdd580`. They are not independent review and do not count for
-this gate.
+closures in `5cdd580`, and the taker-import/checkpoint/CLTV work in
+`2a25e3f`. They are not independent review and do not count for this gate.
 
 Earlier in this round, from `b729e36` through `ba46fd6`:
 
@@ -304,7 +307,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `5cdd580e8c8d95194598c04d3d0528a25f90f3fb`
+- Confirm the review head is still `2a25e3f912982f3b1662817913d721d85661ddb3`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.

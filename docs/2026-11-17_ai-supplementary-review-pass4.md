@@ -9,7 +9,7 @@
 **Reviewed tree:** `c7ebe44`, plus the fixes in `b02dd33`, `3d32e8c`,
 `6c2193b`, `f897f5c`, `db0902c`, `a514d5b`, `99b02fc`, `8fed10c`, and
 `eddd565`, `4d32ab2`, `5011acf`, `fce6495`, `733e476`, and the fifth-pass
-head `c874dac` and follow-up `5cdd580` (see
+head `c874dac` and follow-ups `5cdd580` and `2a25e3f` (see
 `docs/2026-11-18_ai-supplementary-review-pass5.md`).
 **Method:** six parallel read-only reviews plus a direct frontend check. Every
 fixed item was traced against the source and covered by a focused test; open
