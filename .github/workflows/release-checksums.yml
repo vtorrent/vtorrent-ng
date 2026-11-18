@@ -1,0 +1,28 @@
+name: Release checksums
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  checksums:
+    name: Publish SHA256SUMS
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate and attach checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "$GITHUB_REF_NAME" --dir dist --clobber
+          rm -f dist/SHA256SUMS
+          cd dist
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
+            | LC_ALL=C sort -z \
+            | xargs -0 sha256sum > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          gh release upload "$GITHUB_REF_NAME" SHA256SUMS --clobber
