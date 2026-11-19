@@ -3331,3 +3331,20 @@ exposed that a daemon restarting from a stored chain never rebuilt its
 in-memory SPV headers; the SPV chain is now seeded from the loaded VTR headers.
 The 168-hour window restarts on the rebuilt image; this window is **not** valid
 evidence.
+
+## 2026-11-19 — exact-image candidate restarted (`dd7676f`)
+
+The fixed image was rebuilt after the equal-work fork and SPV restart fixes.
+
+- Code commit: `dd7676f826d27add07b37e45afa4ca2bf42e2ed4`
+- Image: `vtorrent/node:dd7676f`
+  (`sha256:1e7896caf0d32d21017b46493ffc2b2a6a5dfd355c9c22bdb00edb4535937a84`)
+- Start: **2026-11-19T11:20:03Z**; window ends **2026-11-26T11:20:03Z**
+- Fleet: `review-dd7676f`, BTC mainnet SPV, RPC 23951–23953, Prometheus 23973
+- Evidence: `/mnt/temp/vtorrent-ng-evidence/soak-dd7676f/`
+- Initial: tip agreement at height 4, staking on nodes 2/3, restarts 0, all
+  three Prometheus targets up. BTC header sync was still starting.
+
+This is the candidate window for the review head. The independent human review
+remains open; any review-driven code change restarts the window. The active
+`vtr-node*` fleet was not modified.
