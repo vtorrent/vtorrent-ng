@@ -66,6 +66,14 @@ existing testnet/soak chain, upgrade every node before creating or spending a
 new cold-stake or swap script. A mixed fleet can classify the same output
 differently.
 
+## Fork choice
+
+The main chain is the branch with the greatest cumulative work (one unit per
+PoS block). If a fork has **equal** work at the same height, the branch whose
+tip block hash is lexicographically lower wins; a node reorgs to it. Without
+this tie-break, two stakers producing at the same height can build on their own
+tips indefinitely, because neither branch has strictly greater work.
+
 ## Verification
 
 - Genesis hash independently verified via RPC: `GET /api/v1/blockchain/block/height/0`

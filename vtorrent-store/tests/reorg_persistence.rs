@@ -59,6 +59,15 @@ fn make_block_value(
     block
 }
 
+/// Keep a competing block from winning the equal-work tie-break (lower hash
+/// wins), so the fixture can test the later longer-fork reorg deterministically.
+fn force_hash_above(mut block: Block, threshold: [u8; 32]) -> Block {
+    while block.hash() < threshold {
+        block.header.nonce = block.header.nonce.wrapping_add(1);
+    }
+    block
+}
+
 /// Persist a MainChain acceptance the way the daemon bridge does.
 fn persist_main(store: &BlockStore, block: &Block, height: u32, acceptance: &BlockAcceptance) {
     if let BlockAcceptance::MainChain {
@@ -147,6 +156,7 @@ fn reorg_persistence_roundtrip() {
         });
         b1.header.utxo_root = compute_utxo_root_sorted(&utxos);
     }
+    let b1 = force_hash_above(b1, a1_stored.hash());
     let acc_b1 = chain.add_block(b1.clone()).unwrap();
     assert!(matches!(acc_b1, BlockAcceptance::Fork { .. }));
 
@@ -175,6 +185,7 @@ fn reorg_persistence_roundtrip() {
         });
         b2.header.utxo_root = compute_utxo_root_sorted(&utxos2);
     }
+    let b2 = force_hash_above(b2, tip_a);
     let acc_b2 = chain.add_block(b2.clone()).unwrap();
     assert!(matches!(acc_b2, BlockAcceptance::Fork { .. }));
 

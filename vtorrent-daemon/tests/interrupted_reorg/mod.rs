@@ -132,22 +132,35 @@ fn reorg_writer_child() {
             )
             .unwrap();
     }
-    let mut acceptance = BlockAcceptance::Duplicate;
+    // The equal-work tie-break may resolve the fork before the final block;
+    // that final block is then an ordinary main-chain append.
+    let mut reorg = None;
+    let mut trailing = Vec::new();
     for block in fork {
-        acceptance = chain.add_block(block).unwrap();
+        match chain.add_block(block.clone()).unwrap() {
+            BlockAcceptance::Reorg {
+                depth,
+                rolled_back_blocks,
+                applied_fork_blocks,
+                ..
+            } => {
+                reorg = Some((depth, rolled_back_blocks, applied_fork_blocks));
+            }
+            BlockAcceptance::MainChain {
+                height,
+                utxos_added,
+                utxos_removed,
+                claimed_addresses,
+            } => trailing.push((block, height, utxos_added, utxos_removed, claimed_addresses)),
+            _ => {}
+        }
     }
-    let BlockAcceptance::Reorg {
-        depth,
-        rolled_back_blocks,
-        applied_fork_blocks,
-        ..
-    } = acceptance
-    else {
-        panic!("expected reorg");
-    };
+    let (depth, rolled_back_blocks, applied_fork_blocks) = reorg.expect("expected reorg");
     assert_eq!(depth, 2);
     assert_eq!(rolled_back_blocks.len(), 2);
-    assert_eq!(applied_fork_blocks.len(), 3);
+    // Depending on wall-clock-dependent hashes, the tie-break may resolve the
+    // fork on the second or third block. Both paths produce five writes.
+    assert!((2..=3).contains(&applied_fork_blocks.len()));
     checkpoint(&directory, requested, 0);
     let mut completed = 0;
     for rb in rolled_back_blocks {
@@ -169,6 +182,19 @@ fn reorg_writer_child() {
                 &fb.utxos_added,
                 &fb.utxos_removed,
                 &fb.claimed_addresses,
+            )
+            .unwrap();
+        completed += 1;
+        checkpoint(&directory, requested, completed);
+    }
+    for (block, height, utxos_added, utxos_removed, claimed_addresses) in trailing {
+        store
+            .append_block(
+                &block,
+                height,
+                &utxos_added,
+                &utxos_removed,
+                &claimed_addresses,
             )
             .unwrap();
         completed += 1;
@@ -220,16 +246,18 @@ async fn daemon_startup_repairs_old_rollback_damage() {
     let mut blocks = vec![chain.get_block_at_height(0).unwrap().clone()];
     blocks.extend(old.clone());
     let expected = replay(&old[..2]);
-    let mut acceptance = BlockAcceptance::Duplicate;
+    // Equal-work tie-breaking may cause the reorg before the final fork
+    // block; the last block then extends the new main chain.
+    let mut reorg_rollback = None;
     for block in fork {
-        acceptance = chain.add_block(block).unwrap();
+        if let BlockAcceptance::Reorg {
+            rolled_back_blocks, ..
+        } = chain.add_block(block).unwrap()
+        {
+            reorg_rollback = Some(rolled_back_blocks);
+        }
     }
-    let BlockAcceptance::Reorg {
-        rolled_back_blocks, ..
-    } = acceptance
-    else {
-        panic!("expected reorg");
-    };
+    let rolled_back_blocks = reorg_rollback.expect("expected reorg");
     let rollback = &rolled_back_blocks[0];
     assert!(!rollback.utxos_to_restore.is_empty());
     {

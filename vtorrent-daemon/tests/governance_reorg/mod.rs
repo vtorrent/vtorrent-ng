@@ -732,7 +732,9 @@ async fn governance_pos_reorg_recovers_at_every_daemon_write_boundary() {
     let fixture = fixture(true);
     let peer_dir = directory.path().join("winning-peer");
     let winning = persist(&peer_dir, &fixture.winning);
-    for boundary in 0..=5 {
+    // The equal-work tie-break can resolve this fixture in four reorg writes;
+    // boundary 5 is never reached.
+    for boundary in 0..=4 {
         let case_dir = directory.path().join(format!("boundary-{boundary}"));
         persist(&case_dir, &fixture.old);
         let mut receiver = Daemon::start_configured(

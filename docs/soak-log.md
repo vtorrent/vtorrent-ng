@@ -3315,3 +3315,19 @@ output is appended to `/mnt/temp/vtorrent-ng-evidence/soak-9533a2c/observations.
 Daily observation is scheduled at **17:20 local (10:20 UTC)** via crontab; it
 appends to `observations.md` and `cron.log` in the evidence directory. Remove
 that crontab line after the window closes.
+
+## 2026-11-19 — candidate window aborted: equal-work fork split
+
+The `review-9533a2c` candidate was stopped during its first minutes. At
+**07:45Z**, nodes 1/2 were on block `e4ecec…` and node 3 on `39a058…`, both at
+height 10. The split persisted at height 11 (`472495…` vs `36f459…`): two
+stakers produced equal-height blocks, and fork choice only reorganized on
+strictly greater cumulative work, so neither side adopted the other.
+
+Root cause: no deterministic tie-break for equal-work forks. Fix: a same-height
+fork with the lexicographically lower block hash wins, and nodes reorg to it.
+This is a fork-choice rule, not a change to block validity. The same run also
+exposed that a daemon restarting from a stored chain never rebuilt its
+in-memory SPV headers; the SPV chain is now seeded from the loaded VTR headers.
+The 168-hour window restarts on the rebuilt image; this window is **not** valid
+evidence.

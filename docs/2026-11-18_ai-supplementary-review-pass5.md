@@ -43,6 +43,8 @@ fix was written. Fixes are on `main` after `f9a91a2`.
 | 27 | Low | TOTP | Verify-only backup preview skipped the wallet-carried replay floor. | A code at or below `last_totp_step` is rejected in verify-only mode too. |
 | 28 | Low | Alerts | A transient ntfy failure returned 500 immediately, and critical alerts repeated only every four hours. | The relay retries with backoff; the repeat interval is one hour. |
 | 29 | Low | Docs | Consensus docs claimed a 2016-block difficulty adjustment and omitted the real timestamp rules. | The table now states fixed difficulty, 5-second future drift, and 55-second minimum spacing. |
+| 30 | High | Fork choice | The exact-image soak produced two equal-height blocks and the fleet split permanently: fork choice only reorganized on strictly greater cumulative work. | A same-height fork with the lexicographically lower tip hash now wins, so all nodes deterministically converge. The first candidate window was discarded and restarted. |
+| 31 | High | SPV restart | The SPV chain was seeded with genesis only; a daemon resuming from a stored VTR chain rejected every later header as an unknown parent, including reorg fork headers. | The daemon rebuilds the in-memory SPV chain from the loaded VTR headers before the event bridge starts. The governance reorg boundary test now passes. |
 
 ## Follow-up closures
 
@@ -151,11 +153,11 @@ pass-5 commit:
 ## Verification
 
 - Focused suites: core 36, script 99, wallet 75, torrent 121, BTC 225, node
-  253, SPV 46, P2P 84, RPC 205, Tauri 34, wallet-service 10. Desktop UI: 45
+  254, SPV 46, P2P 84, RPC 205, Tauri 34, wallet-service 10. Desktop UI: 45
   tests, lint and production build clean.
 - Clippy: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
   completed clean.
-- Full workspace on the final tree: **1,461 passed, 0 failed, 11 ignored**
+- Full workspace on the final tree: **1,462 passed, 0 failed, 11 ignored**
   across 54 test groups.
 - Container source build: `docker build -f docker/Dockerfile` succeeded;
   `vtorrent-daemon 2.0.0` runs as uid `vtorrent`; image

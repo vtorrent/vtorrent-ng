@@ -123,6 +123,37 @@ fn load_chain_from_store(
     }
 }
 
+/// Rebuild the in-memory SPV header chain from the loaded VTR chain.
+///
+/// The SPV chain is not persisted; a daemon resuming from a stored chain would
+/// otherwise have only genesis and reject every later header as an unknown
+/// parent, including after a reorg.
+async fn seed_spv_from_chain(state: &vtorrent_rpc::state::AppState) -> anyhow::Result<()> {
+    let chain = state.chain.lock().await;
+    let best = chain.best_height();
+    let mut spv = state.spv_chain.write().await;
+    let start = spv.best_height().saturating_add(1);
+    for height in start..=best {
+        let header = chain.get_header_at_height(height).ok_or_else(|| {
+            anyhow::anyhow!("missing VTR header at height {} while seeding SPV", height)
+        })?;
+        spv.add_trusted_header(SpvHeader {
+            version: header.version,
+            prev_hash: header.prev_block_hash,
+            merkle_root: header.merkle_root,
+            utxo_root: header.utxo_root,
+            timestamp: header.timestamp,
+            bits: header.bits,
+            nonce: header.nonce,
+            stake_modifier: header.stake_modifier,
+            height,
+        })
+        .map_err(|error| anyhow::anyhow!("could not seed SPV header {}: {}", height, error))?;
+    }
+    tracing::info!("SPV chain seeded from VTR chain through height {}", best);
+    Ok(())
+}
+
 /// UTXO file for this seed. Two wallets on one data directory must not share
 /// state (cursor, reservations, contracts, birthday), so the filename carries a
 /// seed-derived id, matching the desktop path's scheme.
@@ -509,6 +540,7 @@ async fn main() -> anyhow::Result<()> {
             anyhow::bail!("Could not seed the SPV genesis header: {error}");
         }
     }
+    seed_spv_from_chain(&rpc_state).await?;
 
     // Reflect startup-configured staking in the RPC status so it agrees with
     // the node's actual staking engine (rather than reporting "disabled").

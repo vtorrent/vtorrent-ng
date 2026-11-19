@@ -224,6 +224,19 @@ pub struct Chain {
     checkpoint: Option<(u32, [u8; 32])>,
 }
 
+/// Equal-work fork choice: prefer the lexicographically lower block hash.
+///
+/// Without this, two stakers producing at the same height can keep building on
+/// their own tips forever, because neither fork has strictly greater work.
+fn equal_work_tie_break(
+    fork_hash: &[u8; 32],
+    main_hash: &[u8; 32],
+    fork_work: u64,
+    main_work: u64,
+) -> bool {
+    fork_work == main_work && fork_hash < main_hash
+}
+
 impl Chain {
     /// Initialize a new chain with the genesis block.
     pub fn new() -> Result<Self> {
@@ -1302,8 +1315,10 @@ impl Chain {
 
             let main_work = self.cumulative_work.get(&main_tip).copied().unwrap_or(0);
 
-            if fork_work > main_work {
-                // ── Reorg: fork is now longer than main chain ─────────────
+            if fork_work > main_work
+                || equal_work_tie_break(&block_hash, &main_tip, fork_work, main_work)
+            {
+                // ── Reorg: fork is longer, or wins an equal-work tie ──────
                 let old_tip = main_tip;
                 let (rolled_back_txs, rolled_back_blocks, applied_fork_blocks) =
                     match self.reorganize_to(block_hash, fork_height) {

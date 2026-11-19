@@ -399,10 +399,21 @@ fn test_invalid_fork_reorg_restores_original_state() {
     fork.header.merkle_root = fork.compute_merkle_root();
     let fork_hash = fork.hash();
     let fork_modifier = fork.header.stake_modifier;
-    assert!(matches!(
-        chain.add_block(fork).unwrap(),
-        BlockAcceptance::Fork { .. }
-    ));
+    let acceptance = chain.add_block(fork);
+    if let Err(error) = acceptance {
+        // The equal-work tie-break can try to apply this invalid fork
+        // immediately; the failed application must leave the original state.
+        assert!(
+            error.to_string().contains("not found in UTXO set"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(chain.best_hash(), Some(original_tip));
+        assert_eq!(chain.total_supply(), original_supply);
+        assert_eq!(chain.total_staked(), original_staked);
+        assert_eq!(chain.utxo_set, original_utxos);
+        return;
+    }
+    assert!(matches!(acceptance.unwrap(), BlockAcceptance::Fork { .. }));
 
     let extension = make_block(fork_hash, fork_modifier, 2);
     assert!(chain.add_block(extension).is_err());
@@ -489,6 +500,15 @@ fn checkpoint_must_match_the_local_chain_and_blocks_reorg_below_it() {
     assert!(fresh
         .mint_to_address(&address, 100 * crate::consensus::COIN)
         .is_err());
+}
+
+#[test]
+fn equal_work_forks_prefer_the_lower_hash() {
+    let lower = [0x11; 32];
+    let higher = [0x22; 32];
+    assert!(super::equal_work_tie_break(&lower, &higher, 10, 10));
+    assert!(!super::equal_work_tie_break(&higher, &lower, 10, 10));
+    assert!(!super::equal_work_tie_break(&lower, &higher, 9, 10));
 }
 
 #[test]
@@ -1582,19 +1602,26 @@ fn test_reorg_conflicting_spends_longer_fork_wins() {
     let fork_hash = fork_block.hash();
     let fork_modifier = fork_block.header.stake_modifier;
     let acceptance = chain.add_block(fork_block).unwrap();
+    let reorged_early = matches!(acceptance, super::BlockAcceptance::Reorg { .. });
     assert!(
-        matches!(acceptance, super::BlockAcceptance::Fork { .. }),
-        "same-height competing block must be stored as a fork"
+        reorged_early || matches!(acceptance, super::BlockAcceptance::Fork { .. }),
+        "same-height competing block must be stored or win the tie-break"
     );
     assert_eq!(chain.best_height(), 2);
-    assert!(chain.get_utxos_for_address(&recipient_fork).is_empty());
+    if !reorged_early {
+        assert!(chain.get_utxos_for_address(&recipient_fork).is_empty());
+    }
 
-    // Fork extension at height 3 → the fork becomes the main chain (reorg).
+    // Fork extension at height 3: the fork is now authoritative, either via
+    // the earlier tie-break or by becoming longer.
     let ext_block = block_with_txs_on(fork_modifier, fork_hash, 3, funded_ts + 3, vec![]);
     let ext_acceptance = chain.add_block(ext_block).unwrap();
     assert!(
-        matches!(ext_acceptance, super::BlockAcceptance::Reorg { .. }),
-        "longer fork must trigger a reorg"
+        matches!(
+            ext_acceptance,
+            super::BlockAcceptance::Reorg { .. } | super::BlockAcceptance::MainChain { .. }
+        ),
+        "fork extension must become the main chain"
     );
     assert_eq!(chain.best_height(), 3);
 
