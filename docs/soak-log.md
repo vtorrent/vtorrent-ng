@@ -3353,3 +3353,10 @@ Observation at **2026-11-19T11:26Z** (`+6m`): all three nodes at height 14
 with the same tip; BTC SPV synced to 976,575/976,576; RSS
 140.3/141.0/126.5 MiB; Prometheus 3/3; restarts 0. No same-height split
 recurred after the tie-break fix.
+
+Observation at **2026-11-19T17:45Z** (`+6h`): height 378, all three tips
+identical, BTC SPV synced to 976,618, RSS 136.1/160.7/145.2 MiB, Prometheus
+3/3, restarts 0, and no ERROR/panic lines. The fleet recorded about 130
+depth-1 reorgs as the two stakers produced equal-height blocks and the
+lower-hash tie-break resolved them; this is the intended convergence behavior
+on a transaction-empty test chain, not a split.
