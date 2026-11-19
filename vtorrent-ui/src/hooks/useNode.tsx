@@ -524,6 +524,7 @@ export interface MatchOrderResult {
   expiry: number
   fundingTxid: string
   makerBtcAddress?: string
+  takerAddress?: string
 }
 
 export interface SwapActionResult {

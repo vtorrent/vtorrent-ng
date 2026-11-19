@@ -657,6 +657,7 @@ async fn import_match_fixture(
     let state = AppState::new();
     *state.chain.lock().await = chain;
     *state.mock_time.write().await = Some(NOW);
+    *state.btc_network.write().await = bitcoin::Network::Regtest;
     *state.wallet_wif.write().await = Some(taker_wif.clone());
     *state.wallet_change_address.write().await = Some(taker.clone());
     *state.wallet_unlock_expiry.write().await = Some(0);
@@ -708,6 +709,83 @@ async fn import_match_without_a_local_announcement_uses_the_imported_terms() {
         order.status,
         vtorrent_node::atomic_swap::OrderStatus::Matched
     );
+}
+
+#[tokio::test]
+async fn imported_match_persists_and_restores_on_the_taker_node() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut state, request, taker_wif, _) = import_match_fixture(false).await;
+    state.swap_recovery_dir = Some(directory.path().to_path_buf());
+    let order_id = request.order_id.clone();
+    import_match_with_wif(&state, request, taker_wif.as_str())
+        .await
+        .unwrap();
+
+    let mut restored = AppState::new_with_shared(
+        state.chain.clone(),
+        Arc::new(tokio::sync::Mutex::new(
+            vtorrent_node::mempool::Mempool::new(10_000),
+        )),
+    );
+    restored.swap_recovery_dir = state.swap_recovery_dir.clone();
+    *restored.mock_time.write().await = Some(NOW);
+    *restored.btc_network.write().await = bitcoin::Network::Regtest;
+    crate::swap_recovery::restore_with_wif(&restored, taker_wif.as_str())
+        .await
+        .unwrap();
+
+    let order = restored
+        .order_book
+        .read()
+        .await
+        .get_order(&order_id)
+        .unwrap()
+        .clone();
+    assert_eq!(
+        order.status,
+        vtorrent_node::atomic_swap::OrderStatus::Matched
+    );
+    assert_eq!(
+        restored.swaps.read().await[&order_id].status,
+        SwapStatus::VtrFunded
+    );
+}
+
+#[tokio::test]
+async fn import_match_canonicalizes_the_id_and_does_not_overwrite_on_rejected_terms() {
+    let (state, request, taker_wif, _) = import_match_fixture(true).await;
+    let order_id = request.order_id.clone();
+    let original = state
+        .order_book
+        .read()
+        .await
+        .get_order(&order_id)
+        .unwrap()
+        .clone();
+    let other_btc =
+        vtorrent_btc::wallet::BtcWallet::with_network([9; 64], bitcoin::Network::Regtest)
+            .current_address()
+            .unwrap();
+    let mut hostile = request;
+    hostile.order_id = order_id.to_uppercase();
+    hostile.maker_btc_address = Some(other_btc);
+    assert!(import_match_with_wif(&state, hostile, taker_wif.as_str())
+        .await
+        .is_err());
+    let after = state
+        .order_book
+        .read()
+        .await
+        .get_order(&order_id)
+        .unwrap()
+        .clone();
+    assert_eq!(after.maker_btc_address, original.maker_btc_address);
+    assert!(state
+        .swaps
+        .read()
+        .await
+        .get(&order_id.to_uppercase())
+        .is_none());
 }
 
 #[tokio::test]

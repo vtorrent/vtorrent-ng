@@ -347,6 +347,8 @@ async fn main() -> anyhow::Result<()> {
             chain
                 .set_checkpoint(height, hash)
                 .map_err(|e| anyhow::anyhow!("Could not install checkpoint: {}", e))?;
+            vtorrent_node::node::persist_checkpoint(&data_dir, height, hash)
+                .map_err(|e| anyhow::anyhow!("Could not persist checkpoint: {}", e))?;
             tracing::info!(
                 height,
                 hash = %hex::encode(hash),

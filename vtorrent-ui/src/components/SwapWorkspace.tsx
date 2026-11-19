@@ -204,6 +204,7 @@ export default function SwapWorkspace({ orders, onRefresh }: SwapWorkspaceProps)
       const hashLock = str('hash_lock', 'hashLock')
       const fundingTxid = str('funding_txid', 'fundingTxid')
       const makerBtcAddress = str('maker_btc_address', 'makerBtcAddress') || undefined
+      const importedTaker = str('taker_address', 'takerAddress')
       if (!orderId || !makerAddress || !hashLock || !fundingTxid) {
         throw new Error('Match response is missing required fields')
       }
@@ -212,7 +213,7 @@ export default function SwapWorkspace({ orders, onRefresh }: SwapWorkspaceProps)
       await importSwapMatch({
         orderId,
         makerAddress,
-        takerAddress: defaultAddress,
+        takerAddress: importedTaker || defaultAddress,
         vtrAmount: num('vtr_amount', 'vtrAmount'),
         targetAsset: str('target_asset', 'targetAsset') || 'BTC',
         targetAmount: num('target_amount', 'targetAmount'),

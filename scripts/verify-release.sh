@@ -30,6 +30,11 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
+# Supplying a public key is a request to verify a signature, not a hint.
+if [[ -n "$pubkey" ]]; then
+    require_signature=1
+fi
+
 [[ -d "$dir" ]] || { echo "release directory not found: $dir" >&2; exit 1; }
 sums="$dir/SHA256SUMS"
 [[ -f "$sums" ]] || { echo "missing $sums" >&2; exit 1; }

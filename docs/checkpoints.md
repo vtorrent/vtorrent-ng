@@ -1,7 +1,9 @@
 # Chain checkpoints
 
 Published checkpoints let a new node reject a long-range forged chain from
-genesis. The daemon accepts `--checkpoint HEIGHT:HASH`; when set:
+genesis. The daemon accepts `--checkpoint HEIGHT:HASH` and persists it to
+`<data-dir>/checkpoint.json`; on later starts the file is loaded even without
+the flag. When set:
 
 - the main-chain block at `HEIGHT` must have exactly `HASH`; and
 - a reorg whose fork point is below `HEIGHT` is refused.

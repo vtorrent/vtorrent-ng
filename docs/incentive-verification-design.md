@@ -54,6 +54,9 @@ BEP-10, `peer_wire.rs:41`). Use them for a lightweight **receipt** handshake:
   does not permanently dispute an honest claim; the next receipt covers the
   whole unpaid delta. When a peer's epoch changes, both baselines are reset at
   its first receipt, so a restart cannot cause a double payment.
+- The first receipt after an epoch change establishes baselines; it is not
+  itself paid. That is a conservative one-window underpayment, not a
+  double-payment path.
 - The **payer** only pays when the receipt is **countersigned by the payee**
   (mutual agreement), or at least when the payee's own receipt **agrees within a
   tolerance**. Disagreement → no payment (or a reduced, disputed amount).

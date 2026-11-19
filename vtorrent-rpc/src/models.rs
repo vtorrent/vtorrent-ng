@@ -495,6 +495,10 @@ pub struct MatchOrderResponse {
     /// Maker's BTC receiving address, needed by a taker on another node.
     #[serde(default)]
     pub maker_btc_address: Option<String>,
+    /// The taker address the maker funded, so a separate taker can import the
+    /// exact HTLC without substituting its current default address.
+    #[serde(default)]
+    pub taker_address: Option<String>,
 }
 
 // ─── SPV ─────────────────────────────────────────────────────────────────────

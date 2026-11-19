@@ -159,6 +159,110 @@ pub struct NodeConfig {
     pub transport: TransportConfig,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CheckpointFile {
+    height: u32,
+    hash: String,
+}
+
+fn checkpoint_path(data_dir: &std::path::Path) -> PathBuf {
+    data_dir.join("checkpoint.json")
+}
+
+/// Read the persisted checkpoint, if one exists.
+pub fn read_checkpoint(data_dir: &std::path::Path) -> Result<Option<(u32, [u8; 32])>> {
+    let path = checkpoint_path(data_dir);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(NodeError::Chain(format!(
+                "Could not read checkpoint {}: {}",
+                path.display(),
+                error
+            )))
+        }
+    };
+    let file: CheckpointFile = serde_json::from_slice(&bytes).map_err(|error| {
+        NodeError::Chain(format!("Invalid checkpoint {}: {}", path.display(), error))
+    })?;
+    let hash = hex::decode(&file.hash)
+        .map_err(|error| NodeError::Chain(format!("Invalid checkpoint hash: {}", error)))?;
+    let hash: [u8; 32] = hash
+        .try_into()
+        .map_err(|_| NodeError::Chain("Checkpoint hash must be 32 bytes".into()))?;
+    Ok(Some((file.height, hash)))
+}
+
+/// Persist the operator checkpoint so a restart without the CLI flag keeps it.
+pub fn persist_checkpoint(data_dir: &std::path::Path, height: u32, hash: [u8; 32]) -> Result<()> {
+    std::fs::create_dir_all(data_dir)
+        .map_err(|error| NodeError::Chain(format!("Could not create data directory: {}", error)))?;
+    let path = checkpoint_path(data_dir);
+    let bytes = serde_json::to_vec_pretty(&CheckpointFile {
+        height,
+        hash: hex::encode(hash),
+    })
+    .map_err(|error| NodeError::Chain(format!("Could not encode checkpoint: {}", error)))?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let tmp = path.with_extension(format!("tmp.{}.{}", std::process::id(), nanos));
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)
+            .map_err(|error| NodeError::Chain(format!("Could not write checkpoint: {}", error)))?;
+        file.write_all(&bytes)
+            .and_then(|_| file.sync_all())
+            .map_err(|error| NodeError::Chain(format!("Could not sync checkpoint: {}", error)))?;
+    }
+    #[cfg(not(unix))]
+    {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .map_err(|error| NodeError::Chain(format!("Could not write checkpoint: {}", error)))?;
+        file.write_all(&bytes)
+            .and_then(|_| file.sync_all())
+            .map_err(|error| NodeError::Chain(format!("Could not sync checkpoint: {}", error)))?;
+    }
+    std::fs::rename(&tmp, &path).map_err(|error| {
+        let _ = std::fs::remove_file(&tmp);
+        NodeError::Chain(format!("Could not install checkpoint: {}", error))
+    })?;
+    #[cfg(unix)]
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
+    Ok(())
+}
+
+fn apply_persisted_checkpoint(config: &NodeConfig, chain: &mut Chain) -> Result<()> {
+    if chain.checkpoint().is_some() {
+        return Ok(());
+    }
+    if let Some((height, hash)) = read_checkpoint(&config.data_dir)? {
+        chain.set_checkpoint(height, hash)?;
+        tracing::info!(
+            height,
+            hash = %hex::encode(hash),
+            "Loaded persisted checkpoint"
+        );
+    }
+    Ok(())
+}
+
 impl Default for NodeConfig {
     fn default() -> Self {
         Self {
@@ -275,13 +379,14 @@ use overlay::*;
 impl Node {
     /// Create a new node.
     pub fn new(config: NodeConfig) -> Result<Self> {
-        let chain = if config.regtest && config.regtest_fast_stake {
+        let mut chain = if config.regtest && config.regtest_fast_stake {
             Chain::new_regtest_fast()?
         } else if config.regtest {
             Chain::new_regtest()?
         } else {
             Chain::new()?
         };
+        apply_persisted_checkpoint(&config, &mut chain)?;
         let best_height = chain.best_height();
         let mempool = Mempool::new(config.max_mempool);
         let mut peer_manager = PeerManager::with_transport_config(
@@ -356,7 +461,8 @@ impl Node {
     ///
     /// This is used by `vtorrent-daemon` when resuming from a persisted chain state
     /// rather than starting from genesis.
-    pub fn new_with_chain(config: NodeConfig, chain: Chain) -> Result<Self> {
+    pub fn new_with_chain(config: NodeConfig, mut chain: Chain) -> Result<Self> {
+        apply_persisted_checkpoint(&config, &mut chain)?;
         let best_height = chain.best_height();
         let mempool = Mempool::new(config.max_mempool);
         let mut peer_manager = PeerManager::with_transport_config(
@@ -1034,6 +1140,24 @@ impl Node {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checkpoint_file_roundtrips_and_rejects_tampering() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-checkpoint-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let hash = [0xab; 32];
+        persist_checkpoint(&dir, 42, hash).unwrap();
+        assert_eq!(read_checkpoint(&dir).unwrap(), Some((42, hash)));
+        std::fs::write(dir.join("checkpoint.json"), b"not json").unwrap();
+        assert!(read_checkpoint(&dir).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn overlay_message_roundtrip_preserves_command_and_payload() {

@@ -89,14 +89,33 @@ pass-5 commit:
   wallet, reconstructs the exact VTR HTLC, requires six confirmations, and
   persists the record. The desktop has an import form, and a regression test
   imports a match and submits the taker's VTR claim.
-- **Checkpoint enforcement is implemented.** `--checkpoint HEIGHT:HASH` pins a
-  main-chain block and rejects reorgs below it. The launch runbook now requires
-  publishing the height-10,000 checkpoint from two agreeing seeds; the code
-  side is closed, while the mainnet artifact is necessarily post-launch.
+- **Checkpoint enforcement is implemented and persisted.**
+  `--checkpoint HEIGHT:HASH` pins a main-chain block, rejects reorgs below it,
+  and writes `<data-dir>/checkpoint.json`; `Node::new`/`new_with_chain` reload
+  it on later starts, including the desktop node. The launch runbook now
+  requires publishing the height-10,000 checkpoint from two agreeing seeds; the
+  code side is closed, while the mainnet artifact is necessarily post-launch.
 - **CLTV operands are minimal.** New P2CS and VTR HTLC scripts use
   `OP_0`/`OP_n`/minimal pushes for the locktime; the parser still accepts the
   legacy fixed `PUSH4` shape. Timestamp locktimes were already minimal, so this
-  removes the zero/small-locktime future-unspendability case.
+  removes the zero/small-locktime future-unspendability case. Old nodes do not
+  recognize the new minimal shape, so this is part of the coordinated release
+  upgrade; legacy scripts remain spendable on the new build.
+- **Import is canonical and two-phase.** The order ID is canonicalized before
+  lookup, map keys, and persistence, so an uppercase spelling cannot bypass the
+  local-term checks. The recovery record is written before memory is updated,
+  so a rejected write cannot leave an overwritten order behind. The match
+  response also echoes `taker_address` so the desktop imports the address the
+  maker actually funded.
+- **Receipts separate local and peer epochs.** The epoch this side signs is
+  immutable; receiving a peer's epoch updates only the peer baseline. The
+  engine now signs cumulative totals, matching the settlement delta math.
+- **Checkpoint is persisted.** `--checkpoint` writes
+  `<data-dir>/checkpoint.json`; `Node::new`/`new_with_chain` reload it on later
+  starts, including the desktop, so a restart without the flag keeps the pin.
+- **Release verification is strict.** Supplying a public key now requires a
+  signature; a committed `release/minisign.pub` without a CI secret fails the
+  release workflow instead of silently publishing unsigned.
 - **Release signing is wired.** If `MINISIGN_SECRET_KEY` is configured, the
   release workflow signs `SHA256SUMS`, verifies it against
   `release/minisign.pub`, and uploads `SHA256SUMS.minisig`. Without the secret,
@@ -112,21 +131,22 @@ pass-5 commit:
 | Release builds are unsigned unless the operator configures signing. | The minisign workflow, verification script, and documentation are in place; generating the key, storing it in `MINISIGN_SECRET_KEY`, and obtaining Apple/Windows certificates remain operator key-custody tasks. |
 | BTC HTLC fees are a configurable floor, not a live estimate. | `VTORRENT_BTC_HTLC_FEE_SATOSHIS` raises the 35 sat/vB floor without a rebuild; a live estimator and safe funding replacement are still needed. |
 | EVM/BTC cross-chain swap promotion on mainnet remains disabled. | The independent review and multi-node adversarial testing are still required. |
+| New minimal P2CS/HTLC scripts are not understood by pre-change nodes. | This is a mainnet-from-genesis rule and requires a full fleet upgrade; do not run a mixed fleet while creating or spending cold-stake/swap scripts. |
 | The base testnet stack still pins a Docker Hub tag; the source-build overlay is opt-in. | A release must publish and pin the image digest (`@sha256:`) so operators verify the exact artifact they run. |
 | The base testnet stack still runs as root for the active soak volumes. | A hardened non-root/cap-drop overlay exists for new deployments; migrating the live volumes is an operator change window. |
 
 ## Verification
 
-- Focused suites: core 36, script 99, wallet 75, torrent 120, BTC 225, node
-  251, SPV 46, P2P 84, RPC 204, Tauri 34, wallet-service 10. Desktop UI: 45
+- Focused suites: core 36, script 99, wallet 75, torrent 121, BTC 225, node
+  252, SPV 46, P2P 84, RPC 205, Tauri 34, wallet-service 10. Desktop UI: 45
   tests, lint and production build clean.
 - Clippy: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
   completed clean.
-- Full workspace on the final tree: **1,456 passed, 0 failed, 11 ignored**
+- Full workspace on the final tree: **1,460 passed, 0 failed, 11 ignored**
   across 54 test groups.
 - Container source build: `docker build -f docker/Dockerfile` succeeded;
   `vtorrent-daemon 2.0.0` runs as uid `vtorrent`; image
-  `sha256:bb95d3a304f96b786647b5fa67228ac753ca075d0ca216b901ec13254c5dea8b`.
+  `sha256:3628a4169b62f6901cf62d551e8ebb74052a39ebf005c7b5c72e7c3ece9605cb`.
 - Release verification: `scripts/verify-release.sh` accepts an intact
   checksum directory and rejects a tampered asset.
 

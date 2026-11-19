@@ -692,8 +692,10 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                         info_hash: metainfo.info_hash,
                         window_start: account.last_settlement,
                         window_end: now,
-                        uploaded_by_me: account.bytes_uploaded,
-                        downloaded_by_me: account.bytes_downloaded,
+                        // Receipts sign cumulative totals; settlement compares
+                        // unpaid deltas and advances baselines.
+                        uploaded_by_me: account.total_bytes_uploaded,
+                        downloaded_by_me: account.total_bytes_downloaded,
                         peer: peer_addr.clone(),
                         signer: local_address.clone(),
                         settlement_id: now,

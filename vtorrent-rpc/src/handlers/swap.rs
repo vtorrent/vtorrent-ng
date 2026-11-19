@@ -274,6 +274,7 @@ fn match_response(order: &vtorrent_node::atomic_swap::SwapOrder) -> MatchOrderRe
         expiry: order.expiry,
         funding_txid: hex::encode(order.funding_txid.unwrap_or_default()),
         maker_btc_address: order.maker_btc_address.clone(),
+        taker_address: order.taker_address.clone(),
     }
 }
 
@@ -308,6 +309,7 @@ pub async fn import_match_with_wif(
         ));
     }
     let order_id = parse_hash32(&req.order_id, "order_id")?;
+    let canonical_id = hex::encode(order_id);
     let hash_lock = parse_hash32(&req.hash_lock, "hash_lock")?;
     let funding_txid = parse_hash32(&req.funding_txid, "funding_txid")?;
 
@@ -332,7 +334,7 @@ pub async fn import_match_with_wif(
         .order_book
         .read()
         .await
-        .get_order(&req.order_id)
+        .get_order(&canonical_id)
         .cloned();
     if let Some(order) = &existing {
         if order.preimage.is_some() {
@@ -379,8 +381,15 @@ pub async fn import_match_with_wif(
         }
     };
     use std::str::FromStr as _;
+    let btc_network = *state.btc_network.read().await;
     bitcoin::Address::from_str(&maker_btc_address)
-        .map_err(|error| RpcError::BadRequest(format!("Invalid maker BTC address: {error}")))?;
+        .map_err(|error| RpcError::BadRequest(format!("Invalid maker BTC address: {error}")))?
+        .require_network(btc_network)
+        .map_err(|error| {
+            RpcError::BadRequest(format!(
+                "Maker BTC address is not valid for the configured BTC network: {error}"
+            ))
+        })?;
 
     let mut order = existing.unwrap_or_else(|| {
         SwapOrder::new(
@@ -412,11 +421,8 @@ pub async fn import_match_with_wif(
             .btc_expiry()
     };
 
-    state.order_book.write().await.replace_order(order.clone());
-    let mut swaps = state.swaps.write().await;
-    let swap = swaps
-        .entry(req.order_id.clone())
-        .or_insert_with(|| SwapState::new(order_id, hash_lock));
+    let existing_swap = state.swaps.read().await.get(&canonical_id).cloned();
+    let mut swap = existing_swap.unwrap_or_else(|| SwapState::new(order_id, hash_lock));
     if swap
         .vtr_funding_txid
         .is_some_and(|value| value != funding_txid)
@@ -435,7 +441,12 @@ pub async fn import_match_with_wif(
     swap.btc_expiry = expires_at;
     swap.status = SwapStatus::VtrFunded;
     swap.refresh_status();
-    crate::swap_recovery::persist_for_wallet(state, &order, Some(swap), Some(wif)).await?;
+
+    // Persist first: a rejected recovery write must not leave the in-memory
+    // order overwritten with different terms.
+    crate::swap_recovery::persist_for_wallet(state, &order, Some(&swap), Some(wif)).await?;
+    state.order_book.write().await.replace_order(order.clone());
+    state.swaps.write().await.insert(canonical_id, swap);
     Ok(match_response(&order))
 }
 

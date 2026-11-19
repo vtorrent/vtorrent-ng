@@ -15,6 +15,8 @@ repository secret `MINISIGN_SECRET_KEY` is set, it also:
 3. uploads `SHA256SUMS.minisig`.
 
 Without the secret, releases remain unsigned and the release notes say so.
+Once `release/minisign.pub` is committed, a missing secret is a hard failure
+rather than a silent downgrade to unsigned.
 
 ## Key setup (operator, offline)
 

@@ -66,6 +66,11 @@ pub struct PeerBandwidthAccount {
     /// This side's cumulative-counter epoch. A restart gets a new value.
     #[serde(default)]
     pub receipt_epoch: u64,
+    /// The peer's epoch last seen in a receipt. Kept separate from
+    /// [`Self::receipt_epoch`] so adopting a peer's epoch never changes the
+    /// epoch this side signs.
+    #[serde(default)]
+    pub peer_epoch: u64,
     /// Agreed satoshis settled but not yet confirmed paid on-chain.
     #[serde(default)]
     pub unpaid_satoshis: u64,
@@ -92,6 +97,7 @@ impl PeerBandwidthAccount {
             peer_receipt: None,
             last_receipt_id: 0,
             receipt_epoch: account_epoch(),
+            peer_epoch: 0,
             unpaid_satoshis: 0,
             payment_in_flight: false,
         }
@@ -206,11 +212,12 @@ impl PeerBandwidthAccount {
 
     /// Store a verified peer receipt. Returns false for a replayed id.
     pub fn record_receipt(&mut self, receipt: vtorrent_core::receipt::BandwidthReceipt) -> bool {
-        if receipt.epoch != self.receipt_epoch {
+        if receipt.epoch != self.peer_epoch {
             // The peer restarted its cumulative accounting. Align both
             // baselines at its first receipt: bytes before this point are not
-            // paid, which is conservative and prevents a double payment.
-            self.receipt_epoch = receipt.epoch;
+            // paid, which is conservative and prevents a double payment. This
+            // changes only the peer's epoch, never the epoch we sign.
+            self.peer_epoch = receipt.epoch;
             self.settled_peer_uploaded = receipt.uploaded_by_me;
             self.settled_our_downloaded = self.total_bytes_downloaded;
             self.last_receipt_id = receipt.settlement_id;
@@ -606,6 +613,8 @@ mod tests {
         let mut account = PeerBandwidthAccount::new("VPeer".into());
         account.record_download(1024 * 1024 * 1024);
         assert_eq!(account.agreed_owed(), None);
+        // Simulate a peer epoch already established by an earlier receipt.
+        account.peer_epoch = account.receipt_epoch;
 
         let receipt = BandwidthReceipt {
             info_hash: [1u8; 20],
@@ -629,11 +638,47 @@ mod tests {
     }
 
     #[test]
+    fn first_receipt_establishes_the_peer_baseline_conservatively() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        use vtorrent_core::receipt::BandwidthReceipt;
+
+        let mut account = PeerBandwidthAccount::new("VPeer".into());
+        account.record_download(GB);
+        let mut receipt = BandwidthReceipt {
+            info_hash: [1u8; 20],
+            window_start: 0,
+            window_end: 300,
+            uploaded_by_me: GB,
+            downloaded_by_me: 0,
+            peer: "VUs".into(),
+            signer: "VPeer".into(),
+            settlement_id: 1,
+            epoch: account.receipt_epoch,
+        };
+        assert!(account.record_receipt(receipt.clone()));
+        // The first receipt aligns baselines rather than paying bytes whose
+        // peer epoch is not yet known.
+        assert_eq!(account.agreed_owed().map(|a| a.satoshis), Some(0));
+        let baseline = account.agreed_owed().unwrap();
+        account.settle_agreed(300, baseline.satoshis, baseline.bytes);
+
+        account.record_download(GB);
+        receipt.settlement_id = 2;
+        receipt.uploaded_by_me = 2 * GB;
+        assert!(account.record_receipt(receipt));
+        assert_eq!(
+            account.agreed_owed().map(|agreement| agreement.satoshis),
+            Some(COIN / 2)
+        );
+    }
+
+    #[test]
     fn receipt_epoch_change_resets_baselines_without_double_paying() {
         const GB: u64 = 1024 * 1024 * 1024;
         use vtorrent_core::receipt::BandwidthReceipt;
 
         let mut account = PeerBandwidthAccount::new("VPeer".into());
+        account.peer_epoch = account.receipt_epoch;
         account.record_download(2 * GB);
         let mut receipt = BandwidthReceipt {
             info_hash: [1u8; 20],

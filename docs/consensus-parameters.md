@@ -57,6 +57,15 @@ nodes should use the checkpoint published after launch
 chain from genesis, which minimum block spacing limits in rate but cannot
 prevent.
 
+## Minimal CLTV scripts
+
+New P2CS and VTR HTLC scripts encode locktimes with `OP_0`/`OP_n`/minimal
+pushes. The parser accepts the legacy fixed `PUSH4` shape, but pre-change nodes
+do not recognize the minimal shape. Mainnet starts on the new code; for an
+existing testnet/soak chain, upgrade every node before creating or spending a
+new cold-stake or swap script. A mixed fleet can classify the same output
+differently.
+
 ## Verification
 
 - Genesis hash independently verified via RPC: `GET /api/v1/blockchain/block/height/0`

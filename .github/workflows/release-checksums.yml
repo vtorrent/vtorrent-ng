@@ -17,6 +17,8 @@ jobs:
     name: Publish SHA256SUMS
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
       - name: Generate and verify checksums
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -38,6 +40,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${MINISIGN_SECRET_KEY:-}" ]; then
+            if [ -f release/minisign.pub ]; then
+              echo "release/minisign.pub is committed but MINISIGN_SECRET_KEY is not set; refusing to publish unsigned" >&2
+              exit 1
+            fi
             echo "MINISIGN_SECRET_KEY is not set; publishing unsigned checksums"
             gh release upload "$GITHUB_REF_NAME" dist/SHA256SUMS --clobber
             exit 0
