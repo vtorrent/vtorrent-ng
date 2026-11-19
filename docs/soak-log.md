@@ -3284,3 +3284,23 @@ original start times. Prometheus reports zero active alerts. The sampler has
 This fleet is evidence for `6a49727` only. It does not cover the fund-safety,
 send-recovery, cold-stake spending, claim-lineage, migration, or eviction
 changes after that commit.
+
+## 2026-11-19 — exact-image candidate fleet (`9533a2c`)
+
+Started the isolated candidate fleet `review-9533a2c` for the 168-hour
+exact-image window.
+
+- Code commit: `9533a2c7aaacc1d505af745eafe97323c4a7cf7b`
+- Image: `vtorrent/node:9533a2c`
+  (`sha256:5e6542a05ebaf01b9935229ed7b2b8419caaf4444ebff066f9f6e70b43ad99f8`)
+- Start: **2026-11-19T07:36:51Z**; window ends **2026-11-26T07:36:51Z**
+- Three nodes, BTC mainnet SPV, allocator pinned, RPC 23951–23953
+- Evidence: `/mnt/temp/vtorrent-ng-evidence/soak-9533a2c/`
+- Initial: all three nodes up, height 3, two/one/two peers, BTC status
+  responsive via the health snapshot during header sync.
+- The first start attempt exposed and fixed `--btc-attest-new-seed` in the
+  release-fleet script; the restarted fleet is on the corrected image.
+
+This is a **candidate** window. The independent human review is still open; if
+it requires code changes, the image and this window are invalidated and the
+168-hour clock restarts. The active `vtr-node*` fleet was not modified.
