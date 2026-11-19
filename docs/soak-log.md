@@ -3304,3 +3304,10 @@ exact-image window.
 This is a **candidate** window. The independent human review is still open; if
 it requires code changes, the image and this window are invalidated and the
 168-hour clock restarts. The active `vtr-node*` fleet was not modified.
+
+Initial observation at **2026-11-19T07:44:13Z** (`+0h`): all three nodes at
+height 9 with the same tip, staking on nodes 2/3, BTC mainnet SPV synced to
+height 976,550 on all three, RSS 125.4/132.8/143.3 MiB, container restarts 0,
+and Prometheus (`127.0.0.1:23973`, job `vtorrent-daemon`) at 3/3 targets.
+The candidate observation helper is `scripts/soak-observe-candidate.sh`; its
+output is appended to `/mnt/temp/vtorrent-ng-evidence/soak-9533a2c/observations.md`.
