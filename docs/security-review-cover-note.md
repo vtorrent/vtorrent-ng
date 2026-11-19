@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `29892b9`
+Subject: Independent security review — vTorrent-NG mainnet candidate `514fe9f`
 
 Hello,
 
@@ -18,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `29892b9532e2dc86096068be44267cf4b78e1658`
+**Review head:** `514fe9fa73fc72be8187de606a415c6d1dc2bcb4`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `29892b9`. It is not covered by any prior soak: the
+The code under review is `514fe9f`. It is not covered by any prior soak: the
 `6a49727` fleet predates every change below and was interrupted by a host
 restart on 2026-11-16. The eventual shipping image needs its own full window
 after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 code changed after the candidate with
-`git diff --name-only 29892b9..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only 514fe9f..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -158,6 +158,10 @@ candidate `ba46fd6`:
 - `29892b9` — canonical and two-phase match import, funded taker address
   echo, separate receipt signing/peer epochs with cumulative engine totals,
   persisted checkpoints, and strict release signature verification.
+- `514fe9f` — post-persist import recheck, receipt domain v3 with explicit
+  peer epochs, genesis-bound size-capped checkpoints, release checksum
+  self-hash fix, unlisted-asset rejection, key/checkpoint tooling, and
+  per-node image overrides.
 
 Five internal AI-assisted supplementary reviews are recorded in
 `docs/2026-11-17_ai-supplementary-review.md`,
@@ -177,10 +181,10 @@ timestamp-drift bound in `a514d5b`, the eligible-stake denominator in
 `eddd565`, the receipt-gated incentives in `4d32ab2`, and the parallel peer
 dials in `5011acf`, the detached untrusted dials in `fce6495`, the release
 checksums in `733e476`, the fifth-pass fixes in `c874dac`, the follow-up
-closures in `5cdd580`, the taker-import/checkpoint/CLTV work in `2a25e3f`, and
-the release-signing wiring in `1e42381`, and the import/receipt/checkpoint
-fixes in `29892b9`. They are not independent review and do not count for this
-gate.
+closures in `5cdd580`, the taker-import/checkpoint/CLTV work in `2a25e3f`, the
+release-signing wiring in `1e42381`, the import/receipt/checkpoint fixes
+in `29892b9`, and the edge-case hardening in `514fe9f`. They are not
+independent review and do not count for this gate.
 
 Earlier in this round, from `b729e36` through `ba46fd6`:
 
@@ -315,7 +319,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `29892b9532e2dc86096068be44267cf4b78e1658`
+- Confirm the review head is still `514fe9fa73fc72be8187de606a415c6d1dc2bcb4`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.
