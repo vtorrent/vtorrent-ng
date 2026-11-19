@@ -35,6 +35,7 @@ SECRET_DIR="${SECRET_DIR:-$REPO_ROOT/target/$NAME-secrets}"
 BTC_PEER="${BTC_PEER:-89.58.60.208:8333}"
 RPC_BASE="${RPC_BASE:-23950}"
 WAIT_SECS="${WAIT_SECS:-180}"
+CODE_COMMIT="${CODE_COMMIT:-unknown}"
 
 # Staking needs regtest faucet funding, so it is opt-out for non-staking
 # probes. The default keys are the documented regtest fixtures already used by
@@ -95,6 +96,7 @@ for i in 1 2 3; do
         --rpc-api-key-file /run/vtr-api-key
         --btc-peer "$BTC_PEER"
         --btc-seed-file /run/vtr-btc-seed
+        --btc-attest-new-seed
         --btc-header-retention 100000
     )
     if [ "$i" -gt 1 ]; then
@@ -125,6 +127,7 @@ name=$NAME
 image=$IMAGE
 image_id=$(docker image inspect "$IMAGE" --format '{{.Id}}')
 commit=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)
+code_commit=$CODE_COMMIT
 created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 btc_peer=$BTC_PEER
 rpc_ports=$(seq -s, $((RPC_BASE + 1)) $((RPC_BASE + 3)))

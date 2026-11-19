@@ -2,7 +2,7 @@
 
 use axum::{extract::State, Json};
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::sync::{atomic::Ordering, Arc};
 
 use super::broadcast_btc;
 use super::truncate_chars;
@@ -14,7 +14,22 @@ use crate::state::AppState;
 pub async fn get_btc_status(
     State(state): State<Arc<AppState>>,
 ) -> RpcResult<Json<BtcStatusResponse>> {
-    let btc = state.btc_wallet.read().await;
+    // The sync task holds the wallet write lock across header sync and scans,
+    // which can take minutes to hours on mainnet. A status read must not queue
+    // behind that; return the published health snapshot instead.
+    let btc = match state.btc_wallet.try_read() {
+        Ok(btc) => btc,
+        Err(_) => {
+            return Ok(Json(BtcStatusResponse {
+                initialized: true,
+                balance_satoshis: 0,
+                address: None,
+                best_height: state.btc_health.best_height.load(Ordering::Relaxed) as u32,
+                synced: state.btc_health.synced.load(Ordering::Relaxed),
+                balance_hidden: true,
+            }))
+        }
+    };
     match &*btc {
         None => Ok(Json(BtcStatusResponse {
             initialized: false,
@@ -38,8 +53,12 @@ pub async fn get_btc_status(
 /// GET /api/v1/btc/address
 pub async fn get_btc_address(State(state): State<Arc<AppState>>) -> RpcResult<Json<Value>> {
     // Read-only: return the current receiving address without advancing the
-    // wallet's address index (a GET must not mutate state).
-    let btc = state.btc_wallet.read().await;
+    // wallet's address index (a GET must not mutate state). Do not block behind
+    // a long BTC sync.
+    let btc = state
+        .btc_wallet
+        .try_read()
+        .map_err(|_| RpcError::Internal("BTC wallet is syncing; retry shortly".into()))?;
     match &*btc {
         None => Err(RpcError::BadRequest(
             "BTC wallet not initialized — call POST /api/v1/btc/init first".into(),

@@ -124,6 +124,11 @@ pass-5 commit:
   `VTR_REQUIRE_SIGNING=1` without a CI secret fails the release workflow.
   `verify-release.sh` also rejects unlisted files, and the checksum step no
   longer hashes a partially written `SHA256SUMS` into itself.
+- **Soak tooling starts a BTC-enabled fleet correctly.** The release-fleet
+  script passes `--btc-attest-new-seed` for fresh container-local BTC state.
+  `/btc/status` and `/btc/address` use a non-blocking wallet read and fall back
+  to the published health snapshot while the sync task holds the wallet write
+  lock, so monitoring does not hang during the initial mainnet header sync.
 - **Release signing is wired.** If `MINISIGN_SECRET_KEY` is configured, the
   release workflow signs `SHA256SUMS`, verifies it against
   `release/minisign.pub`, and uploads `SHA256SUMS.minisig`. Without the secret,
