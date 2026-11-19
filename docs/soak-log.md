@@ -3348,3 +3348,8 @@ The fixed image was rebuilt after the equal-work fork and SPV restart fixes.
 This is the candidate window for the review head. The independent human review
 remains open; any review-driven code change restarts the window. The active
 `vtr-node*` fleet was not modified.
+
+Observation at **2026-11-19T11:26Z** (`+6m`): all three nodes at height 14
+with the same tip; BTC SPV synced to 976,575/976,576; RSS
+140.3/141.0/126.5 MiB; Prometheus 3/3; restarts 0. No same-height split
+recurred after the tie-break fix.
