@@ -157,12 +157,26 @@ pub struct NodeConfig {
     pub regtest_fast_stake: bool,
     /// Outbound routing policy for clearnet, Tor SOCKS5, and I2P SAM peers.
     pub transport: TransportConfig,
+    /// Load an operator checkpoint from `<data-dir>/checkpoint.json`.
+    ///
+    /// Off by default so library/test constructors never read a user's home
+    /// directory. Production daemon and desktop configs enable it.
+    pub load_persisted_checkpoint: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheckpointPin {
+    pub height: u32,
+    pub hash: [u8; 32],
+    pub genesis: [u8; 32],
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CheckpointFile {
     height: u32,
     hash: String,
+    /// Genesis hash, so a checkpoint from another chain cannot pin this one.
+    genesis: String,
 }
 
 fn checkpoint_path(data_dir: &std::path::Path) -> PathBuf {
@@ -170,19 +184,32 @@ fn checkpoint_path(data_dir: &std::path::Path) -> PathBuf {
 }
 
 /// Read the persisted checkpoint, if one exists.
-pub fn read_checkpoint(data_dir: &std::path::Path) -> Result<Option<(u32, [u8; 32])>> {
+pub fn read_checkpoint(data_dir: &std::path::Path) -> Result<Option<CheckpointPin>> {
     let path = checkpoint_path(data_dir);
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
             return Err(NodeError::Chain(format!(
-                "Could not read checkpoint {}: {}",
+                "Could not inspect checkpoint {}: {}",
                 path.display(),
                 error
             )))
         }
     };
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > 4096 {
+        return Err(NodeError::Chain(format!(
+            "Invalid checkpoint file {}",
+            path.display()
+        )));
+    }
+    let bytes = std::fs::read(&path).map_err(|error| {
+        NodeError::Chain(format!(
+            "Could not read checkpoint {}: {}",
+            path.display(),
+            error
+        ))
+    })?;
     let file: CheckpointFile = serde_json::from_slice(&bytes).map_err(|error| {
         NodeError::Chain(format!("Invalid checkpoint {}: {}", path.display(), error))
     })?;
@@ -191,17 +218,32 @@ pub fn read_checkpoint(data_dir: &std::path::Path) -> Result<Option<(u32, [u8; 3
     let hash: [u8; 32] = hash
         .try_into()
         .map_err(|_| NodeError::Chain("Checkpoint hash must be 32 bytes".into()))?;
-    Ok(Some((file.height, hash)))
+    let genesis = hex::decode(&file.genesis)
+        .map_err(|error| NodeError::Chain(format!("Invalid checkpoint genesis: {}", error)))?;
+    let genesis: [u8; 32] = genesis
+        .try_into()
+        .map_err(|_| NodeError::Chain("Checkpoint genesis must be 32 bytes".into()))?;
+    Ok(Some(CheckpointPin {
+        height: file.height,
+        hash,
+        genesis,
+    }))
 }
 
 /// Persist the operator checkpoint so a restart without the CLI flag keeps it.
-pub fn persist_checkpoint(data_dir: &std::path::Path, height: u32, hash: [u8; 32]) -> Result<()> {
+pub fn persist_checkpoint(
+    data_dir: &std::path::Path,
+    height: u32,
+    hash: [u8; 32],
+    genesis: [u8; 32],
+) -> Result<()> {
     std::fs::create_dir_all(data_dir)
         .map_err(|error| NodeError::Chain(format!("Could not create data directory: {}", error)))?;
     let path = checkpoint_path(data_dir);
     let bytes = serde_json::to_vec_pretty(&CheckpointFile {
         height,
         hash: hex::encode(hash),
+        genesis: hex::encode(genesis),
     })
     .map_err(|error| NodeError::Chain(format!("Could not encode checkpoint: {}", error)))?;
     let nanos = std::time::SystemTime::now()
@@ -249,14 +291,19 @@ pub fn persist_checkpoint(data_dir: &std::path::Path, height: u32, hash: [u8; 32
 }
 
 fn apply_persisted_checkpoint(config: &NodeConfig, chain: &mut Chain) -> Result<()> {
-    if chain.checkpoint().is_some() {
+    if !config.load_persisted_checkpoint || chain.checkpoint().is_some() {
         return Ok(());
     }
-    if let Some((height, hash)) = read_checkpoint(&config.data_dir)? {
-        chain.set_checkpoint(height, hash)?;
+    if let Some(pin) = read_checkpoint(&config.data_dir)? {
+        if pin.genesis != chain.genesis_block().hash() {
+            return Err(NodeError::Chain(
+                "Persisted checkpoint belongs to a different genesis".into(),
+            ));
+        }
+        chain.set_checkpoint(pin.height, pin.hash)?;
         tracing::info!(
-            height,
-            hash = %hex::encode(hash),
+            height = pin.height,
+            hash = %hex::encode(pin.hash),
             "Loaded persisted checkpoint"
         );
     }
@@ -281,6 +328,7 @@ impl Default for NodeConfig {
             regtest: false,
             regtest_fast_stake: false,
             transport: TransportConfig::default(),
+            load_persisted_checkpoint: false,
         }
     }
 }
@@ -1152,10 +1200,46 @@ mod tests {
                 .as_nanos()
         ));
         let hash = [0xab; 32];
-        persist_checkpoint(&dir, 42, hash).unwrap();
-        assert_eq!(read_checkpoint(&dir).unwrap(), Some((42, hash)));
+        let genesis = [0x11; 32];
+        persist_checkpoint(&dir, 42, hash, genesis).unwrap();
+        assert_eq!(
+            read_checkpoint(&dir).unwrap(),
+            Some(CheckpointPin {
+                height: 42,
+                hash,
+                genesis,
+            })
+        );
         std::fs::write(dir.join("checkpoint.json"), b"not json").unwrap();
         assert!(read_checkpoint(&dir).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn persisted_checkpoint_is_bound_to_the_chain_genesis() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-checkpoint-genesis-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut chain = Chain::new().unwrap();
+        let genesis = chain.genesis_block().hash();
+        let config = NodeConfig {
+            data_dir: dir.clone(),
+            load_persisted_checkpoint: true,
+            ..NodeConfig::default()
+        };
+
+        persist_checkpoint(&dir, 1, [0xab; 32], [0x11; 32]).unwrap();
+        assert!(apply_persisted_checkpoint(&config, &mut chain).is_err());
+        assert!(chain.checkpoint().is_none());
+
+        persist_checkpoint(&dir, 1, [0xab; 32], genesis).unwrap();
+        apply_persisted_checkpoint(&config, &mut chain).unwrap();
+        assert_eq!(chain.checkpoint(), Some((1, [0xab; 32])));
         let _ = std::fs::remove_dir_all(dir);
     }
 

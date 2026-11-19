@@ -1050,16 +1050,18 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     continue;
                 }
                 // Cheap replay rejection before the expensive ECDSA verify.
-                let last_id = {
+                let (last_id, peer_epoch) = {
                     let guard = sessions.read().await;
                     guard
                         .get_session(&session_id)
                         .ok()
                         .and_then(|s| s.incentive_accounts.get(peer_addr))
-                        .map(|a| a.last_receipt_id)
-                        .unwrap_or(0)
+                        .map(|a| (a.last_receipt_id, a.peer_epoch))
+                        .unwrap_or((0, None))
                 };
-                if receipt.settlement_id <= last_id {
+                // A new peer epoch may legitimately restart settlement ids;
+                // only enforce monotonicity within the same epoch.
+                if peer_epoch == Some(receipt.epoch) && receipt.settlement_id <= last_id {
                     continue;
                 }
                 if !envelope.verify().unwrap_or(false) {

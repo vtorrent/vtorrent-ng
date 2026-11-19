@@ -153,7 +153,10 @@ pub async fn start_node(
         }
     }
 
-    let mut config = NodeConfig::default();
+    let mut config = NodeConfig {
+        load_persisted_checkpoint: true,
+        ..NodeConfig::default()
+    };
     if network_name == "vtorrent-regtest" {
         // Soak recipe: regtest consensus chain, MAINNET P2P magic (the soak
         // fleet runs without --testnet), isolated (no mainnet DHT/DNS), and

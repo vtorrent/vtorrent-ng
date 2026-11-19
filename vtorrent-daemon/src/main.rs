@@ -267,6 +267,7 @@ async fn main() -> anyhow::Result<()> {
         regtest: cli.regtest,
         regtest_fast_stake: cli.regtest_fast_stake,
         transport,
+        load_persisted_checkpoint: true,
     };
 
     // ── Build the P2P Node ────────────────────────────────────────────────────
@@ -344,11 +345,28 @@ async fn main() -> anyhow::Result<()> {
         if let Some(value) = &cli.checkpoint {
             let (height, hash) = config::parse_checkpoint(value)
                 .map_err(|e| anyhow::anyhow!("Invalid --checkpoint: {}", e))?;
+            if let Some(persisted) = vtorrent_node::node::read_checkpoint(&data_dir)? {
+                if persisted.genesis == chain.genesis_block().hash()
+                    && persisted.height > height
+                    && persisted.hash != hash
+                {
+                    anyhow::bail!(
+                        "refusing to lower checkpoint from height {}; delete {}/checkpoint.json to reset",
+                        persisted.height,
+                        data_dir.display()
+                    );
+                }
+            }
             chain
                 .set_checkpoint(height, hash)
                 .map_err(|e| anyhow::anyhow!("Could not install checkpoint: {}", e))?;
-            vtorrent_node::node::persist_checkpoint(&data_dir, height, hash)
-                .map_err(|e| anyhow::anyhow!("Could not persist checkpoint: {}", e))?;
+            vtorrent_node::node::persist_checkpoint(
+                &data_dir,
+                height,
+                hash,
+                chain.genesis_block().hash(),
+            )
+            .map_err(|e| anyhow::anyhow!("Could not persist checkpoint: {}", e))?;
             tracing::info!(
                 height,
                 hash = %hex::encode(hash),

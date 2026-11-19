@@ -18,6 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
 
       - name: Generate and verify checksums
         env:
@@ -28,20 +30,23 @@ jobs:
           gh release download "$GITHUB_REF_NAME" --dir dist --clobber
           rm -f dist/SHA256SUMS dist/SHA256SUMS.minisig
           cd dist
-          find . -maxdepth 1 -type f -print0 \
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS*' -print0 \
             | LC_ALL=C sort -z \
-            | xargs -0 sha256sum > SHA256SUMS
-          sha256sum -c SHA256SUMS
+            | xargs -0 -r sha256sum > SHA256SUMS.tmp
+          test -s SHA256SUMS.tmp || { echo "release has no assets" >&2; exit 1; }
+          sha256sum -c SHA256SUMS.tmp
+          mv SHA256SUMS.tmp SHA256SUMS
 
       - name: Publish checksums and optional signature
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          VTR_REQUIRE_SIGNING: ${{ vars.VTR_REQUIRE_SIGNING }}
         run: |
           set -euo pipefail
           if [ -z "${MINISIGN_SECRET_KEY:-}" ]; then
-            if [ -f release/minisign.pub ]; then
-              echo "release/minisign.pub is committed but MINISIGN_SECRET_KEY is not set; refusing to publish unsigned" >&2
+            if [ -f release/minisign.pub ] || [ "${VTR_REQUIRE_SIGNING:-}" = "1" ]; then
+              echo "signing is required (public key or VTR_REQUIRE_SIGNING=1) but MINISIGN_SECRET_KEY is not set; refusing to publish unsigned" >&2
               exit 1
             fi
             echo "MINISIGN_SECRET_KEY is not set; publishing unsigned checksums"

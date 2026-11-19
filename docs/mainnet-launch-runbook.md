@@ -88,7 +88,9 @@ component-level active soak passed. The header retention bound is covered by an 
 
 7. **Publish the launch checkpoint**: after 10,000 blocks (about seven days),
    read the block hash at that height from at least two seeds and confirm they
-   agree. Publish `HEIGHT:HASH` in the release notes and
+   agree:
+   `scripts/checkpoint-hash.sh 10000 http://seed1:22525 http://seed2:22525`.
+   Publish `HEIGHT:HASH` in the release notes and
    `docs/checkpoints.md`, then restart each seed with
    `--checkpoint HEIGHT:HASH`. Every new node must use it. The daemon rejects a
    main-chain block at that height with a different hash and refuses any reorg

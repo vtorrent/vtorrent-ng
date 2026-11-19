@@ -62,4 +62,33 @@ else
     (cd "$dir" && shasum -a 256 -c SHA256SUMS)
 fi
 
+# A checksum file must cover every artifact in the directory. Otherwise an
+# attacker can add an unlisted binary that no check ever touches.
+python3 - "$dir" <<'PY'
+import os
+import sys
+
+directory = sys.argv[1]
+listed = set()
+with open(os.path.join(directory, "SHA256SUMS"), encoding="utf-8") as handle:
+    for line in handle:
+        parts = line.rstrip("\n").split("  ", 1)
+        if len(parts) == 2:
+            listed.add(parts[1].removeprefix("./"))
+actual = {
+    name
+    for name in os.listdir(directory)
+    if os.path.isfile(os.path.join(directory, name))
+    and name not in {"SHA256SUMS", "SHA256SUMS.minisig"}
+}
+extra = actual - listed
+missing = listed - actual
+if extra:
+    print("unlisted release files: " + ", ".join(sorted(extra)), file=sys.stderr)
+if missing:
+    print("listed files missing: " + ", ".join(sorted(missing)), file=sys.stderr)
+if extra or missing:
+    sys.exit(1)
+PY
+
 echo "release verification passed: $dir"

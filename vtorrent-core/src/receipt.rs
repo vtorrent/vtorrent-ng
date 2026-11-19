@@ -26,7 +26,7 @@ static VERIFY_CTX: LazyLock<Secp256k1<VerifyOnly>> = LazyLock::new(Secp256k1::ve
 
 /// Domain-separation prefix so a receipt signature can never be replayed as a
 /// transaction signature (or any other signed message).
-pub const RECEIPT_DOMAIN: &[u8] = b"vTorrent/BandwidthReceipt/v2";
+pub const RECEIPT_DOMAIN: &[u8] = b"vTorrent/BandwidthReceipt/v3";
 
 /// A signed statement of bytes observed in one settlement window.
 ///

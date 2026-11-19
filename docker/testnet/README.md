@@ -13,6 +13,18 @@ VTR_SOURCE_REV=$(git rev-parse --short HEAD) \
 pins its base images by digest. Record the resulting image ID and run the
 168-hour soak on that exact image; a source build is not the pinned soak image.
 
+To run a published image by digest without editing this file, set the
+per-node variable and recreate **one node at a time**:
+
+```bash
+VTORRENT_NODE1_IMAGE='vtorrent/node@sha256:<digest>' docker compose up -d node1
+```
+
+Use `VTORRENT_NODE2_IMAGE`/`VTORRENT_NODE3_IMAGE` for the others. Recreating all
+three at once resets the soak clock fleet-wide. The default remains the pinned
+soak tag; the digest override is how a release operator verifies the exact
+artifact.
+
 ## Current release image
 
 Source revision: `4d1ae473b110e7bd7d32325f2dd5591c6c69fcec`.

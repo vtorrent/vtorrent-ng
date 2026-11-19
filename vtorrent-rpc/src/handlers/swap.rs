@@ -445,8 +445,45 @@ pub async fn import_match_with_wif(
     // Persist first: a rejected recovery write must not leave the in-memory
     // order overwritten with different terms.
     crate::swap_recovery::persist_for_wallet(state, &order, Some(&swap), Some(wif)).await?;
-    state.order_book.write().await.replace_order(order.clone());
-    state.swaps.write().await.insert(canonical_id, swap);
+
+    // Re-check under the write locks: a concurrent btc_fund/match must not be
+    // overwritten by the snapshot we read before the recovery write.
+    let mut orders = state.order_book.write().await;
+    if let Some(current) = orders.get_order(&canonical_id) {
+        if current.preimage.is_some()
+            || current.maker_address != order.maker_address
+            || current.vtr_amount != order.vtr_amount
+            || current.target_asset != order.target_asset
+            || current.target_amount != order.target_amount
+            || current.expiry != order.expiry
+            || current.hash_lock.is_some_and(|value| value != hash_lock)
+            || current
+                .funding_txid
+                .is_some_and(|value| value != funding_txid)
+        {
+            return Err(RpcError::BadRequest(
+                "Local order changed during match import; retry from current state".into(),
+            ));
+        }
+    }
+    orders.replace_order(order.clone());
+    drop(orders);
+
+    let mut swaps = state.swaps.write().await;
+    if let Some(current) = swaps.get(&canonical_id) {
+        if current.btc_funding_txid.is_some()
+            || current.vtr_claim_txid.is_some()
+            || current.vtr_refund_txid.is_some()
+            || current
+                .vtr_funding_txid
+                .is_some_and(|value| value != funding_txid)
+        {
+            return Err(RpcError::BadRequest(
+                "Local swap advanced during match import; retry from current state".into(),
+            ));
+        }
+    }
+    swaps.insert(canonical_id, swap);
     Ok(match_response(&order))
 }
 

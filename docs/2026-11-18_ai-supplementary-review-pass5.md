@@ -57,7 +57,7 @@ pass-5 commit:
   late, or clock-skewed window no longer permanently disputes an honest claim,
   a lagging peer receipt cannot cause a double payment, and an epoch change
   after a restart realigns both baselines without paying the same bytes twice.
-  The receipt domain is now v2; both peers must run this build.
+  The receipt domain is now v3; both peers must run this build.
 - **Verify-only TOTP checks the account sidecar.** Backup previews now consult
   the read-only account-scoped replay store (and the legacy per-wallet file),
   so a code consumed to unlock or restore any wallet on the host is rejected.
@@ -104,18 +104,26 @@ pass-5 commit:
 - **Import is canonical and two-phase.** The order ID is canonicalized before
   lookup, map keys, and persistence, so an uppercase spelling cannot bypass the
   local-term checks. The recovery record is written before memory is updated,
-  so a rejected write cannot leave an overwritten order behind. The match
-  response also echoes `taker_address` so the desktop imports the address the
-  maker actually funded.
+  and both maps are re-checked under their write locks before commit, so a
+  concurrent stage advance or a rejected write cannot leave an overwritten
+  order behind. The match response also echoes `taker_address` so the desktop
+  imports the address the maker actually funded.
 - **Receipts separate local and peer epochs.** The epoch this side signs is
-  immutable; receiving a peer's epoch updates only the peer baseline. The
-  engine now signs cumulative totals, matching the settlement delta math.
-- **Checkpoint is persisted.** `--checkpoint` writes
-  `<data-dir>/checkpoint.json`; `Node::new`/`new_with_chain` reload it on later
-  starts, including the desktop, so a restart without the flag keeps the pin.
-- **Release verification is strict.** Supplying a public key now requires a
-  signature; a committed `release/minisign.pub` without a CI secret fails the
-  release workflow instead of silently publishing unsigned.
+  immutable; receiving a peer's epoch updates only the peer baseline, and
+  `peer_epoch` is an explicit `Option` so epoch 0 is not a sentinel. The engine
+  signs cumulative totals and only enforces settlement-id monotonicity within
+  the same epoch. The domain is v3, so pre-fix peers fail closed instead of
+  being misread.
+- **Checkpoint is persisted and chain-bound.** `--checkpoint` writes
+  `<data-dir>/checkpoint.json` with the genesis hash; the file is size-capped,
+  symlinks are rejected, a different-genesis file fails startup, and a lower
+  CLI pin cannot silently replace a higher one. Production daemon/desktop
+  configs load it on later starts; library/test constructors opt out.
+- **Release verification is strict and complete.** Supplying a public key now
+  requires a signature; a committed `release/minisign.pub` or
+  `VTR_REQUIRE_SIGNING=1` without a CI secret fails the release workflow.
+  `verify-release.sh` also rejects unlisted files, and the checksum step no
+  longer hashes a partially written `SHA256SUMS` into itself.
 - **Release signing is wired.** If `MINISIGN_SECRET_KEY` is configured, the
   release workflow signs `SHA256SUMS`, verifies it against
   `release/minisign.pub`, and uploads `SHA256SUMS.minisig`. Without the secret,
@@ -132,21 +140,21 @@ pass-5 commit:
 | BTC HTLC fees are a configurable floor, not a live estimate. | `VTORRENT_BTC_HTLC_FEE_SATOSHIS` raises the 35 sat/vB floor without a rebuild; a live estimator and safe funding replacement are still needed. |
 | EVM/BTC cross-chain swap promotion on mainnet remains disabled. | The independent review and multi-node adversarial testing are still required. |
 | New minimal P2CS/HTLC scripts are not understood by pre-change nodes. | This is a mainnet-from-genesis rule and requires a full fleet upgrade; do not run a mixed fleet while creating or spending cold-stake/swap scripts. |
-| The base testnet stack still pins a Docker Hub tag; the source-build overlay is opt-in. | A release must publish and pin the image digest (`@sha256:`) so operators verify the exact artifact they run. |
+| The base testnet stack still defaults to a Docker Hub tag; per-node image variables and the source-build overlay are available. | A release must publish the image digest (`@sha256:`) and set `VTORRENT_NODE{1,2,3}_IMAGE` one node at a time so the soak clock is not reset fleet-wide. |
 | The base testnet stack still runs as root for the active soak volumes. | A hardened non-root/cap-drop overlay exists for new deployments; migrating the live volumes is an operator change window. |
 
 ## Verification
 
 - Focused suites: core 36, script 99, wallet 75, torrent 121, BTC 225, node
-  252, SPV 46, P2P 84, RPC 205, Tauri 34, wallet-service 10. Desktop UI: 45
+  253, SPV 46, P2P 84, RPC 205, Tauri 34, wallet-service 10. Desktop UI: 45
   tests, lint and production build clean.
 - Clippy: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
   completed clean.
-- Full workspace on the final tree: **1,460 passed, 0 failed, 11 ignored**
+- Full workspace on the final tree: **1,461 passed, 0 failed, 11 ignored**
   across 54 test groups.
 - Container source build: `docker build -f docker/Dockerfile` succeeded;
   `vtorrent-daemon 2.0.0` runs as uid `vtorrent`; image
-  `sha256:3628a4169b62f6901cf62d551e8ebb74052a39ebf005c7b5c72e7c3ece9605cb`.
+  `sha256:b382a8cba5bcafe6604d31697688f4bb808c42cc38280d2f7c1bf0caa23b1927`.
 - Release verification: `scripts/verify-release.sh` accepts an intact
   checksum directory and rejects a tampered asset.
 

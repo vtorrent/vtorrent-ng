@@ -137,6 +137,7 @@ async fn main() -> anyhow::Result<()> {
         regtest: false,
         regtest_fast_stake: false,
         transport,
+        load_persisted_checkpoint: true,
     };
 
     let mut node = Node::new(config.clone())?;

@@ -3,7 +3,10 @@
 Published checkpoints let a new node reject a long-range forged chain from
 genesis. The daemon accepts `--checkpoint HEIGHT:HASH` and persists it to
 `<data-dir>/checkpoint.json`; on later starts the file is loaded even without
-the flag. When set:
+the flag. The file is bound to the local genesis hash and size-capped; a pin
+from another chain or a corrupt file fails startup. A lower `--checkpoint`
+does not silently replace a higher persisted pin; delete the file to reset.
+When set:
 
 - the main-chain block at `HEIGHT` must have exactly `HASH`; and
 - a reorg whose fork point is below `HEIGHT` is refused.

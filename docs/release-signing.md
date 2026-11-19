@@ -16,14 +16,16 @@ repository secret `MINISIGN_SECRET_KEY` is set, it also:
 
 Without the secret, releases remain unsigned and the release notes say so.
 Once `release/minisign.pub` is committed, a missing secret is a hard failure
-rather than a silent downgrade to unsigned.
+rather than a silent downgrade to unsigned. A repository variable
+`VTR_REQUIRE_SIGNING=1` enforces the same rule even for tags that predate the
+public key.
 
 ## Key setup (operator, offline)
 
 Generate a dedicated release key on an offline machine:
 
 ```bash
-minisign -G -p release/minisign.pub -s /secure/offline/minisign.key
+scripts/generate-release-key.sh /secure/offline/vtorrent-release-keys
 ```
 
 - Commit only `release/minisign.pub`.
