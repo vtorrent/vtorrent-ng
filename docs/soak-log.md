@@ -3311,3 +3311,7 @@ height 976,550 on all three, RSS 125.4/132.8/143.3 MiB, container restarts 0,
 and Prometheus (`127.0.0.1:23973`, job `vtorrent-daemon`) at 3/3 targets.
 The candidate observation helper is `scripts/soak-observe-candidate.sh`; its
 output is appended to `/mnt/temp/vtorrent-ng-evidence/soak-9533a2c/observations.md`.
+
+Daily observation is scheduled at **17:20 local (10:20 UTC)** via crontab; it
+appends to `observations.md` and `cron.log` in the evidence directory. Remove
+that crontab line after the window closes.
