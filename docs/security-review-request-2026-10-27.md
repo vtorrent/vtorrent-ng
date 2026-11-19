@@ -10,7 +10,7 @@ already accepted so it is not re-litigated.
 
 ## Review target
 
-Review the candidate `1e423819c5090ec9ae6487700ec7d6e4bd1420bd`. This is the current review head. It is **not**
+Review the candidate `29892b9532e2dc86096068be44267cf4b78e1658`. This is the current review head. It is **not**
 covered by any prior soak: the `6a49727` fleet predates the fund-safety and
 recovery changes below and was interrupted by a host restart on 2026-11-16.
 Under the soak provenance policy, the shipping image needs its own full window
@@ -18,8 +18,8 @@ after this review and its fixes settle.
 
 Read this document from the tip of `main`. Confirm that no code changed after
 the candidate with
-`git diff --name-only 1e42381..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
-must return nothing. Check out `1e42381` itself when running the verification
+`git diff --name-only 29892b9..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+must return nothing. Check out `29892b9` itself when running the verification
 commands. The tables below record the earlier deltas. The table after the
 `f8e0162` deltas covers the range from `ba46fd6` to the candidate.
 
@@ -117,6 +117,7 @@ Deltas after `ba46fd6`:
 | `5cdd580` | Follow-up closures: cumulative receipt epochs, account-wide TOTP replay check, append-only cold-stake registry, source-built container image, hardened testnet overlay, frontend audit, BTC fee override, and documented external-taker claim path |
 | `2a25e3f` | Taker match import with local swap persistence; `--checkpoint HEIGHT:HASH` enforcement and launch procedure; minimal P2CS/HTLC CLTV encoding with legacy parsing |
 | `1e42381` | Optional minisign-signed `SHA256SUMS`, release verification script and key-custody guide; import and checkpoint guard tightening |
+| `29892b9` | Canonical/two-phase match import, funded taker address echo, separate receipt epochs with cumulative engine totals, persisted checkpoints, strict release verification |
 
 Deltas after the earlier review head:
 
@@ -168,7 +169,7 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout 1e423819c5090ec9ae6487700ec7d6e4bd1420bd
+git checkout 29892b9532e2dc86096068be44267cf4b78e1658
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
@@ -176,7 +177,7 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 cargo test --workspace --all-features
 ```
 
-The `1e42381` workspace run passed 54 test groups and 1,456 tests with 0
+The `29892b9` workspace run passed 54 test groups and 1,460 tests with 0
 failures and 11 ignored. CI repeats the `--all-features` suite on every push.
 Set `VTORRENT_TOTP_STATE_DIR` to a fresh directory before running the suite so
 the host-scoped TOTP replay state does not collide with an existing
@@ -287,8 +288,9 @@ Added with `ff148fd` and `35ea52e`:
   receipt-gated incentives in `4d32ab2`, and the parallel peer dials in
   `5011acf`, the detached untrusted dials in `fce6495`, the release checksums
   in `733e476`, the fifth-pass fixes in `c874dac`, the follow-up closures in
-  `5cdd580`, the taker-import/checkpoint/CLTV work in `2a25e3f`, and the
-  release-signing wiring in `1e42381`. It is **not** independent review.
+  `5cdd580`, the taker-import/checkpoint/CLTV work in `2a25e3f`, the
+  release-signing wiring in `1e42381`, and the import/receipt/checkpoint fixes
+  in `29892b9`. It is **not** independent review.
 
 ## Status
 
