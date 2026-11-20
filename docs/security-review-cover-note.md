@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `dd7676f`
+Subject: Independent security review — vTorrent-NG mainnet candidate `04b3c4a`
 
 Hello,
 
@@ -18,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `dd7676f826d27add07b37e45afa4ca2bf42e2ed4`
+**Review head:** `04b3c4aff45f9b0cefd555de7cca6710c53e84cc`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `dd7676f`. It is not covered by any prior soak: the
+The code under review is `04b3c4a`. It is not covered by any prior soak: the
 `6a49727` fleet predates every change below and was interrupted by a host
 restart on 2026-11-16. The eventual shipping image needs its own full window
 after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 code changed after the candidate with
-`git diff --name-only dd7676f..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only 04b3c4a..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -167,6 +167,13 @@ candidate `ba46fd6`:
 - `dd7676f` — equal-work fork tie-break on the lower tip hash and SPV header
   rebuild from the stored chain on restart; the first candidate window was
   discarded after reproducing the split.
+- `04b3c4a` — independent-context AI review remediation: SPV follows the same
+  equal-work rule and rebuilds after lost events, equal-height peers reconcile
+  tips and relay validated forks, future checkpoints no longer block pre-pin
+  reorgs or ban peers, the desktop starts both swap reconcilers, automatic VTR
+  claims retry until expiry, receipts settle across epochs, incentive payments
+  stay owed until six confirmations and are capped, short downloads send a
+  final receipt, and trusted historical SPV headers survive a clock rollback.
 
 Five internal AI-assisted supplementary reviews are recorded in
 `docs/2026-11-17_ai-supplementary-review.md`,
@@ -189,7 +196,8 @@ checksums in `733e476`, the fifth-pass fixes in `c874dac`, the follow-up
 closures in `5cdd580`, the taker-import/checkpoint/CLTV work in `2a25e3f`, the
 release-signing wiring in `1e42381`, the import/receipt/checkpoint fixes
 in `29892b9`, the edge-case hardening in `514fe9f`, the BTC liveness/soak
-tooling in `9533a2c`, and the fork/SPV fixes in `dd7676f`. They are not
+  tooling in `9533a2c`, the fork/SPV fixes in `dd7676f`, and the review
+  remediation in `04b3c4a`. They are not
 independent review and do not count for this gate.
 
 Earlier in this round, from `b729e36` through `ba46fd6`:
@@ -325,7 +333,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `dd7676f826d27add07b37e45afa4ca2bf42e2ed4`
+- Confirm the review head is still `04b3c4aff45f9b0cefd555de7cca6710c53e84cc`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.
