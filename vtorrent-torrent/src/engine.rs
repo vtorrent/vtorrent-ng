@@ -1032,14 +1032,46 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                 if !envelope.verify().unwrap_or(false) {
                     continue;
                 }
-                let mut guard = sessions.write().await;
-                if let Ok(session) = guard.get_session_mut(&session_id) {
-                    if let Some(account) = session.incentive_accounts.get_mut(peer_addr) {
+                let journal = {
+                    let guard = sessions.read().await;
+                    guard.journal()
+                };
+                let updated = {
+                    let mut guard = sessions.write().await;
+                    guard.get_session_mut(&session_id).ok().and_then(|session| {
+                        let account = session.incentive_accounts.get_mut(peer_addr)?;
                         if !account.record_receipt(receipt.clone()) {
                             tracing::debug!(
                                 peer = %peer_addr,
                                 settlement_id = %receipt.settlement_id,
                                 "Ignoring replayed bandwidth receipt"
+                            );
+                            return None;
+                        }
+                        Some(account.clone())
+                    })
+                };
+                if let (Some(journal), Some(account)) = (journal, updated) {
+                    let info_hash = metainfo.info_hash;
+                    let peer_address = peer_addr.clone();
+                    match tokio::task::spawn_blocking(move || {
+                        journal.upsert(info_hash, &peer_address, account.receipt_epoch, &account)
+                    })
+                    .await
+                    {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => {
+                            tracing::warn!(
+                                peer = %peer_addr,
+                                "Could not journal incentive receipt: {}",
+                                error
+                            );
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                peer = %peer_addr,
+                                "Incentive journal task failed: {}",
+                                error
                             );
                         }
                     }

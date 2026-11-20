@@ -27,6 +27,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 mod config;
+mod incentive_journal;
 mod incentive_ledger;
 mod sync_status;
 
@@ -1147,9 +1148,60 @@ async fn main() -> anyhow::Result<()> {
                 tracing::warn!("Could not save the merged incentive ledger: {error:#}");
             }
         }
+        let journal_path = data_dir.join("incentive-journal.jsonl");
+        let concrete_journal = match incentive_journal::JsonlJournal::open(&journal_path) {
+            Ok(journal) => journal,
+            Err(error) => {
+                tracing::error!("Could not open the incentive journal: {error:#}");
+                return Err(error);
+            }
+        };
+        let journal_budget = concrete_journal.emitted_total();
+        let journal_accounts = concrete_journal.accounts();
+        let journal: std::sync::Arc<dyn vtorrent_torrent::incentive::IncentiveJournal> =
+            std::sync::Arc::new(concrete_journal);
+        rpc_state
+            .torrent_sessions
+            .write()
+            .await
+            .set_journal(journal.clone());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        // The journal is authoritative for keys it contains. Replace any
+        // ledger debt from a previous recovery run so repeated restarts do not
+        // duplicate the same obligation.
+        let journal_keys: std::collections::HashSet<String> = journal_accounts
+            .iter()
+            .map(|record| {
+                format!(
+                    "{}:{}:{}",
+                    hex::encode(record.info_hash),
+                    record.peer_address,
+                    record.receipt_epoch
+                )
+            })
+            .collect();
+        ledger
+            .debts
+            .retain(|debt| !journal_keys.contains(&debt.key));
+        for record in journal_accounts {
+            let mut account = record.account;
+            if let Some(agreement) = account.agreed_owed() {
+                account.settle_agreed(now, agreement.satoshis, agreement.bytes);
+            }
+            ledger.add_account(&record.info_hash, &record.peer_address, &account);
+        }
+        ledger.emitted_total = ledger.emitted_total.max(journal_budget);
+        if ledger.emitted_total > journal_budget {
+            journal_set_budget(&journal, ledger.emitted_total).await;
+        }
+        if let Err(error) = ledger.save(&incentive_ledger_path) {
+            tracing::warn!("Could not save the recovered incentive ledger: {error:#}");
+        }
         let mut emitted_total = ledger.emitted_total;
         let ledger_path = incentive_ledger_path.clone();
-        let live_path = incentive_live_path.clone();
         // Periodic torrent incentive settlement — runs every 5 minutes.
         let torrent_sessions_for_settlement = Arc::clone(&rpc_state.torrent_sessions);
         tokio::spawn(async move {
@@ -1160,21 +1212,13 @@ async fn main() -> anyhow::Result<()> {
                 tokio::select! {
                     _ = interval.tick() => {}
                     Some(ack) = ledger_shutdown_rx.recv() => {
-                        let sessions = torrent_sessions_for_settlement.read().await;
-                        for session in sessions.list_sessions() {
-                            for (peer, account) in session.incentive_accounts.iter() {
-                                ledger.add_account(
-                                    &session.metainfo.info_hash,
-                                    peer,
-                                    account,
-                                );
-                            }
-                        }
-                        drop(sessions);
+                        let flush_journal = journal.clone();
+                        let _ = tokio::task::spawn_blocking(move || flush_journal.flush()).await;
+                        journal_set_budget(&journal, emitted_total).await;
                         ledger.emitted_total = emitted_total;
-                        if let Err(error) = ledger.save(&live_path) {
+                        if let Err(error) = ledger.save(&ledger_path) {
                             tracing::error!(
-                                "Could not save the live incentive snapshot: {error:#}"
+                                "Could not save the incentive ledger at shutdown: {error:#}"
                             );
                         }
                         let _ = ack.send(());
@@ -1246,7 +1290,7 @@ async fn main() -> anyhow::Result<()> {
                             .is_some()
                     };
                     if confirmed {
-                        settled_debts.push(debt.id);
+                        settled_debts.push((debt.id, debt.key.clone(), debt.pending_satoshis));
                     } else if !in_chain && !in_mempool {
                         tracing::warn!(
                             peer = %debt.peer_address,
@@ -1256,13 +1300,47 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 if !settled_debts.is_empty() {
-                    ledger
-                        .debts
-                        .retain(|debt| !settled_debts.contains(&debt.id));
+                    for debt in &mut ledger.debts {
+                        if let Some((_, _, paid)) =
+                            settled_debts.iter().find(|(id, _, _)| *id == debt.id)
+                        {
+                            debt.confirm_payment(*paid);
+                        }
+                    }
+                    ledger.debts.retain(|debt| debt.has_outstanding());
+                    for (_, key, _) in &settled_debts {
+                        let mut parts = key.splitn(3, ':');
+                        let (Some(info_hex), Some(peer_address), Some(epoch)) =
+                            (parts.next(), parts.next(), parts.next())
+                        else {
+                            continue;
+                        };
+                        let Ok(epoch) = epoch.parse::<u64>() else {
+                            continue;
+                        };
+                        let Ok(info_hash) = hex::decode(info_hex)
+                            .ok()
+                            .and_then(|bytes| <[u8; 20]>::try_from(bytes).ok())
+                            .ok_or(())
+                        else {
+                            continue;
+                        };
+                        let live = torrent_sessions_for_settlement
+                            .read()
+                            .await
+                            .find_account(&info_hash, peer_address);
+                        if let Some(account) = live {
+                            journal_upsert(&journal, info_hash, peer_address, epoch, &account)
+                                .await;
+                        } else {
+                            journal_remove(&journal, info_hash, peer_address, epoch).await;
+                        }
+                    }
                     ledger_changed = true;
                 }
 
                 // Pay surviving ledger debts from the previous process.
+                let mut due_ledger_payments = Vec::new();
                 for debt in &mut ledger.debts {
                     if debt.pending_txid.is_some()
                         || debt.payment_in_flight
@@ -1280,20 +1358,34 @@ async fn main() -> anyhow::Result<()> {
                     }
                     debt.payment_in_flight = true;
                     emitted_total = emitted_total.saturating_add(amount);
-                    payment_sender.emit(vtorrent_torrent::payment::PaymentDue {
+                    due_ledger_payments.push(vtorrent_torrent::payment::PaymentDue {
                         peer_address: debt.peer_address.clone(),
                         amount_satoshis: amount,
                         account_key: format!("ledger\u{0}{}", debt.id),
                     });
                     ledger_changed = true;
                 }
+                let mut ledger_durable = true;
                 if ledger_changed {
                     ledger.emitted_total = emitted_total;
                     if let Err(error) = ledger.save(&ledger_path) {
                         tracing::warn!("Could not save the incentive ledger: {error:#}");
+                        ledger_durable = false;
                     }
+                    journal_set_budget(&journal, emitted_total).await;
+                }
+                if ledger_durable {
+                    for payment in due_ledger_payments {
+                        payment_sender.emit(payment);
+                    }
+                } else {
+                    tracing::warn!(
+                        "Skipping recovered incentive payments because the ledger write failed"
+                    );
                 }
 
+                let mut journal_updates = Vec::new();
+                let mut due_payments = Vec::new();
                 let mut pending = Vec::new();
                 {
                     let mut guard = torrent_sessions_for_settlement.write().await;
@@ -1308,6 +1400,7 @@ async fn main() -> anyhow::Result<()> {
                         let Ok(session) = guard.get_session_mut(session_id) else {
                             continue;
                         };
+                        let info_hash = session.metainfo.info_hash;
                         let Some(account) = session.incentive_accounts.get_mut(peer_key) else {
                             continue;
                         };
@@ -1321,6 +1414,7 @@ async fn main() -> anyhow::Result<()> {
                                 account.payment_failed();
                             }
                         }
+                        journal_updates.push((info_hash, peer_key.to_string(), account.clone()));
                     }
                     for session in guard.sessions_mut() {
                         let session_id = session.id.clone();
@@ -1367,6 +1461,7 @@ async fn main() -> anyhow::Result<()> {
                     let Ok(session) = guard.get_session_mut(&session_id) else {
                         continue;
                     };
+                    let info_hash = session.metainfo.info_hash;
                     let Some(account) = session.incentive_accounts.get_mut(&peer_key) else {
                         continue;
                     };
@@ -1380,10 +1475,12 @@ async fn main() -> anyhow::Result<()> {
                         );
                         account.payment_missing();
                     }
+                    journal_updates.push((info_hash, peer_key.clone(), account.clone()));
                 }
                 let mut settled = 0;
                 for session in guard.sessions_mut() {
                     let session_id = session.id.clone();
+                    let info_hash = session.metainfo.info_hash;
                     for (peer_key, account) in session.incentive_accounts.iter_mut() {
                         if account.needs_settlement(now) {
                             // Never destroy accounting without a verified
@@ -1394,6 +1491,11 @@ async fn main() -> anyhow::Result<()> {
                             }
                             if let Some(agreement) = account.agreed_owed() {
                                 account.settle_agreed(now, agreement.satoshis, agreement.bytes);
+                                journal_updates.push((
+                                    info_hash,
+                                    peer_key.clone(),
+                                    account.clone(),
+                                ));
                                 settled += 1;
                             } else {
                                 tracing::debug!(
@@ -1417,7 +1519,8 @@ async fn main() -> anyhow::Result<()> {
                             }
                             account.payment_in_flight = true;
                             emitted_total = emitted_total.saturating_add(amount);
-                            payment_sender.emit(vtorrent_torrent::payment::PaymentDue {
+                            journal_updates.push((info_hash, peer_key.clone(), account.clone()));
+                            due_payments.push(vtorrent_torrent::payment::PaymentDue {
                                 peer_address: account.peer_address.clone(),
                                 amount_satoshis: amount,
                                 account_key: format!("{}\u{0}{}", session_id, peer_key),
@@ -1425,6 +1528,28 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                 }
+                drop(guard);
+                let mut durable = true;
+                for (info_hash, peer_address, account) in journal_updates {
+                    durable &= journal_upsert(
+                        &journal,
+                        info_hash,
+                        &peer_address,
+                        account.receipt_epoch,
+                        &account,
+                    )
+                    .await;
+                }
+                if durable {
+                    for payment in due_payments {
+                        payment_sender.emit(payment);
+                    }
+                } else {
+                    tracing::warn!(
+                        "Skipping incentive payments because an account journal write failed"
+                    );
+                }
+                journal_set_budget(&journal, emitted_total).await;
                 if settled > 0 {
                     tracing::info!("Torrent incentive: settled {} peer accounts", settled);
                 }
@@ -1569,6 +1694,61 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("vTorrent daemon stopped.");
     Ok(())
+}
+
+/// Persist one live incentive account before an external payment effect.
+async fn journal_upsert(
+    journal: &std::sync::Arc<dyn vtorrent_torrent::incentive::IncentiveJournal>,
+    info_hash: [u8; 20],
+    peer_address: &str,
+    receipt_epoch: u64,
+    account: &vtorrent_torrent::incentive::PeerBandwidthAccount,
+) -> bool {
+    let journal = journal.clone();
+    let peer_address = peer_address.to_string();
+    let account = account.clone();
+    match tokio::task::spawn_blocking(move || {
+        journal.upsert(info_hash, &peer_address, receipt_epoch, &account)
+    })
+    .await
+    {
+        Ok(Ok(())) => true,
+        Ok(Err(error)) => {
+            tracing::warn!("Incentive journal write failed: {}", error);
+            false
+        }
+        Err(error) => {
+            tracing::warn!("Incentive journal task failed: {}", error);
+            false
+        }
+    }
+}
+
+async fn journal_remove(
+    journal: &std::sync::Arc<dyn vtorrent_torrent::incentive::IncentiveJournal>,
+    info_hash: [u8; 20],
+    peer_address: &str,
+    receipt_epoch: u64,
+) {
+    let journal = journal.clone();
+    let peer_address = peer_address.to_string();
+    match tokio::task::spawn_blocking(move || {
+        journal.remove(info_hash, &peer_address, receipt_epoch)
+    })
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!("Incentive journal delete failed: {}", error),
+        Err(error) => tracing::warn!("Incentive journal task failed: {}", error),
+    }
+}
+
+async fn journal_set_budget(
+    journal: &std::sync::Arc<dyn vtorrent_torrent::incentive::IncentiveJournal>,
+    emitted_total: u64,
+) {
+    let journal = journal.clone();
+    let _ = tokio::task::spawn_blocking(move || journal.set_emitted_total(emitted_total)).await;
 }
 
 /// Wait for Ctrl+C or SIGTERM.

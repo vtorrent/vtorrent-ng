@@ -1,5 +1,28 @@
 use serde::{Deserialize, Serialize};
 
+/// Durable per-peer incentive-account journal.
+///
+/// Implementations must persist the account before returning `Ok`, so a crash
+/// after a receipt cannot silently lose a payable debt. The engine calls this
+/// from a blocking task; implementations may use synchronous file I/O.
+pub trait IncentiveJournal: Send + Sync {
+    fn upsert(
+        &self,
+        info_hash: [u8; 20],
+        peer_address: &str,
+        receipt_epoch: u64,
+        account: &PeerBandwidthAccount,
+    ) -> Result<(), String>;
+    fn remove(
+        &self,
+        info_hash: [u8; 20],
+        peer_address: &str,
+        receipt_epoch: u64,
+    ) -> Result<(), String>;
+    fn set_emitted_total(&self, emitted_total: u64) -> Result<(), String>;
+    fn flush(&self) -> Result<(), String>;
+}
+
 /// VTR incentive constants.
 ///
 /// The incentive model rewards seeders and charges leechers a small VTR fee

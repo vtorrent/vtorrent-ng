@@ -38,13 +38,13 @@ principal only; network fees are additional. A payment remains an outstanding
 debt until six confirmations; a shallow reorg keeps it pending, and a
 transaction missing from both chain and mempool stays pending rather than being
 re-paid, because the original can still be mined. An operator must resolve a
-permanently stuck transaction. Debt and budget state survive a graceful restart:
-the daemon snapshots outstanding accounts to `incentive-live.json` on shutdown,
-merges them into `incentive-ledger.json` at the next start, and pays them. A
-crash can still lose debts accrued
-since the last shutdown, so settle outstanding incentive debt before an
-unplanned termination. Session eviction and `remove_torrent` refuse while debt
-or an in-flight payment exists.
+permanently stuck transaction. Receipt-backed accounts are journaled to
+`incentive-journal.jsonl` (0600, fsynced) as receipts and settlements arrive;
+the journal is replayed at startup, converted to payable debt, and paid. The
+legacy `incentive-live.json` snapshot is still imported for migration. Bytes
+transferred after the last peer receipt are not receipt-verified and are not
+recoverable after a crash. Session eviction and `remove_torrent` refuse while
+debt or an in-flight payment exists.
 
 **Desktop backup restriction:** Backup collection takes the BTC state lock and
 includes the initialization record when present. If that record exists but its

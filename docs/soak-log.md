@@ -3505,9 +3505,10 @@ under `/mnt/temp/vtorrent-ng-evidence/soak-7a216ee/final/`. The active
 `vtr-node*` fleet was not modified. This window is **not** valid evidence for
 the revised code.
 
-Incentive debt now survives a graceful restart through a shutdown snapshot and
-a persistent ledger; a crash can still lose debts accrued since the last
-shutdown. Sessions with outstanding debt cannot be evicted or removed. The
+Incentive debt is now journaled as receipts and settlements arrive; the journal
+is replayed at startup and receipt-backed debt is paid. Bytes transferred after
+the last peer receipt are not receipt-verified and are not recoverable after a
+crash. Sessions with outstanding debt cannot be evicted or removed. The
 independent human review and the 168-hour window remain external gates.
 
 ## 2026-11-20 — limitation-pass candidate (`c27daf2`)

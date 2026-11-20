@@ -25,7 +25,7 @@ sleep $((RANDOM % 3600))
 # Stop writers so redb is not copied mid-transaction. The seed rejoins after
 # the copy; keep this window short.
 systemctl stop vtorrent || true
-for file in chain.db wallet.json staking.json incentive-ledger.json incentive-live.json; do
+for file in chain.db wallet.json staking.json incentive-journal.jsonl incentive-ledger.json incentive-live.json; do
   if [ -f "/var/lib/vtorrent/$file" ]; then
     cp -a "/var/lib/vtorrent/$file" "$STAGE/"
   fi
@@ -43,8 +43,8 @@ find /backups -name 'vtorrent-*.tar.gz.partial' -mtime +1 -delete
 ```
 
 The archive is created with `umask 077` because it may contain `wallet.json`.
-`incentive-ledger.json` contains unpaid peer addresses and amounts; treat it as
-private operator data.
+`incentive-journal.jsonl` and `incentive-ledger.json` contain peer addresses
+and unpaid amounts; treat them as private operator data.
 Restore drills must extract a recent archive and open the wallet on a staging
 host; an untested archive is not a backup.
 

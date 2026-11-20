@@ -58,10 +58,11 @@ BEP-10, `peer_wire.rs:41`). Use them for a lightweight **receipt** handshake:
   because carrying them would permanently dispute every future payment.
 - The first receipt in an epoch pays the bytes it acknowledges, capped by our
   own download count. It is not a free window and does not double-pay.
-- Debt, pending-payment, and budget state survive a graceful restart through a
-  shutdown snapshot merged into a persistent ledger. A crash can lose debts
-  accrued since the last shutdown, so settle outstanding debt before an
-  unplanned termination. Sessions with unpaid or in-flight payments are not
+- Receipt-backed accounts are journaled to `incentive-journal.jsonl` as
+  receipts and settlements arrive. On startup the journal is replayed,
+  receipt-backed bytes are settled into debt, and the debt is paid. Bytes
+  transferred after the last peer receipt are not receipt-verified and are not
+  recoverable after a crash. Sessions with unpaid or in-flight payments are not
   evicted or removed.
 - A broadcast payment is considered settled only after six confirmations. If it
   disappears from both the chain and the mempool, it stays pending rather than

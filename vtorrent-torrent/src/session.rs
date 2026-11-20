@@ -272,9 +272,10 @@ impl TorrentSession {
 }
 
 /// Manages all active torrent sessions.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct SessionManager {
     sessions: HashMap<String, TorrentSession>,
+    journal: Option<std::sync::Arc<dyn crate::incentive::IncentiveJournal>>,
 }
 
 /// Maximum concurrent torrent sessions. Each session spawns a download task
@@ -286,7 +287,30 @@ impl SessionManager {
     pub fn new() -> Self {
         SessionManager {
             sessions: HashMap::new(),
+            journal: None,
         }
+    }
+
+    /// Install the durable incentive-account journal used by peer tasks.
+    pub fn set_journal(&mut self, journal: std::sync::Arc<dyn crate::incentive::IncentiveJournal>) {
+        self.journal = Some(journal);
+    }
+
+    pub fn journal(&self) -> Option<std::sync::Arc<dyn crate::incentive::IncentiveJournal>> {
+        self.journal.clone()
+    }
+
+    /// Find a live account by torrent and peer, for journal reconciliation.
+    pub fn find_account(
+        &self,
+        info_hash: &[u8; 20],
+        peer_address: &str,
+    ) -> Option<crate::incentive::PeerBandwidthAccount> {
+        self.sessions
+            .values()
+            .find(|session| session.metainfo.info_hash == *info_hash)
+            .and_then(|session| session.incentive_accounts.get(peer_address))
+            .cloned()
     }
 
     /// Number of active sessions.

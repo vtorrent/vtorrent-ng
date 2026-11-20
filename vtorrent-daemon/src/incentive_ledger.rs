@@ -27,6 +27,21 @@ pub struct IncentiveDebt {
     pub payment_in_flight: bool,
 }
 
+impl IncentiveDebt {
+    /// Apply a confirmed payment to the debt. A per-payment cap can cover only
+    /// part of it; the remainder stays payable.
+    pub fn confirm_payment(&mut self, paid_satoshis: u64) {
+        self.unpaid_satoshis = self.unpaid_satoshis.saturating_sub(paid_satoshis);
+        self.pending_txid = None;
+        self.pending_satoshis = 0;
+        self.payment_in_flight = false;
+    }
+
+    pub fn has_outstanding(&self) -> bool {
+        self.unpaid_satoshis > 0 || self.pending_txid.is_some() || self.payment_in_flight
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IncentiveLedger {
     #[serde(default)]
@@ -93,12 +108,17 @@ impl IncentiveLedger {
         self.next_id = self.next_id.saturating_add(1);
         self.debts.push(IncentiveDebt {
             id,
-            key: format!("{}:{}", hex::encode(info_hash), peer_address),
+            key: format!(
+                "{}:{}:{}",
+                hex::encode(info_hash),
+                peer_address,
+                account.receipt_epoch
+            ),
             peer_address: peer_address.to_string(),
             unpaid_satoshis: account.unpaid_satoshis,
             pending_txid,
             pending_satoshis,
-            payment_in_flight: false,
+            payment_in_flight: account.payment_in_flight,
         });
     }
 
@@ -147,5 +167,24 @@ mod tests {
         ledger.add_account(&[1u8; 20], "VPeer", &account);
         assert_eq!(ledger.debts[0].pending_txid, Some([9u8; 32]));
         assert_eq!(ledger.debts[0].pending_satoshis, 900);
+    }
+
+    #[test]
+    fn a_partial_payment_leaves_the_remainder_payable() {
+        let mut debt = IncentiveDebt {
+            id: 1,
+            key: "key".into(),
+            peer_address: "VPeer".into(),
+            unpaid_satoshis: 1_000,
+            pending_txid: Some([9u8; 32]),
+            pending_satoshis: 400,
+            payment_in_flight: true,
+        };
+        debt.confirm_payment(400);
+        assert_eq!(debt.unpaid_satoshis, 600);
+        assert!(debt.has_outstanding());
+        assert!(debt.pending_txid.is_none());
+        debt.confirm_payment(600);
+        assert!(!debt.has_outstanding());
     }
 }

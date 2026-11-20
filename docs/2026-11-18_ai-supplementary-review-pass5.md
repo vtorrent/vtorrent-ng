@@ -66,8 +66,9 @@ fix was written. Fixes are on `main` after `f9a91a2`.
 | 50 | Medium | SPV serving | `getheaders` resolved and emitted from pruned bodies, so equal-height reconciliation could no-op or walk from genesis; pruned bodies also caused an orphan re-fetch loop. | Header lookup and emission use the retained header index; known-header checks treat a pruned body as known. |
 | 51 | Medium | Incentive completion | The final receipt could be dropped by the receiver's 30-second per-connection rate limit. | The peer task waits out the remaining window before sending the final receipt. |
 | 52 | Medium | Swap fee bump | A recorded VTR claim could not be replaced after a local admission conflict, so a higher-fee maker refund could win permanently. | A conflicted claim is rebuilt with a higher fee (up to three bumps), persisted through a narrowly scoped replacement guard, and rebroadcast. The recovery guard still refuses every other replacement. |
-| 53 | Medium | Incentive persistence | Debt, pending-payment, and budget state were process-local; a restart lost them. | Sessions with outstanding debt are neither evicted nor removed. On shutdown the daemon snapshots them to `incentive-live.json`; the next start merges that into a persistent `incentive-ledger.json`, pays it, and keeps the budget total. A crash can still lose debts accrued since the last shutdown; this is documented. |
+| 53 | Medium | Incentive persistence | Debt, pending-payment, and budget state were process-local; a restart lost them. | Sessions with outstanding debt are neither evicted nor removed. Receipt-backed accounts are journaled to `incentive-journal.jsonl` as receipts and settlements arrive; startup replays the journal, settles receipt-backed bytes into debt, and pays it. Bytes after the last receipt remain unverified and unrecoverable. |
 | 54 | Medium | SPV rebuild latency | The header snapshot clone held the consensus chain lock for the whole chain, and side-branch headers were retained forever. | The snapshot is taken in 2,048-header chunks with a chain generation check, and the SPV view prunes headers that are not ancestors of the best tip. |
+| 55 | High | Crash durability | A SIGKILL or power loss lost settled debts and receipt-backed accounting because only graceful shutdowns were snapshotted. | The durable account journal persists the full account on each receipt and settlement, fsynced before the debt is treated as payable; pending transactions are checked after restart and never re-paid. |
 
 ## Follow-up closures
 
@@ -180,7 +181,7 @@ pass-5 commit:
   tests, lint and production build clean.
 - Clippy: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
   completed clean.
-- Full workspace on the final tree: **1,493 passed, 0 failed, 11 ignored**
+- Full workspace on the final tree: **1,497 passed, 0 failed, 11 ignored**
   across 54 test groups.
 - Container source build: `docker build -f docker/Dockerfile` succeeded;
   `vtorrent-daemon 2.0.0` runs as uid `vtorrent`; image
