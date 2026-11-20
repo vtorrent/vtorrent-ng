@@ -58,9 +58,11 @@ BEP-10, `peer_wire.rs:41`). Use them for a lightweight **receipt** handshake:
   because carrying them would permanently dispute every future payment.
 - The first receipt in an epoch pays the bytes it acknowledges, capped by our
   own download count. It is not a free window and does not double-pay.
-- Debt, pending-payment, and budget state are process-local. Restarting the
-  daemon loses them; settle outstanding debt before a restart. Sessions with
-  unpaid or in-flight payments are not evicted or removed.
+- Debt, pending-payment, and budget state survive a graceful restart through a
+  shutdown snapshot merged into a persistent ledger. A crash can lose debts
+  accrued since the last shutdown, so settle outstanding debt before an
+  unplanned termination. Sessions with unpaid or in-flight payments are not
+  evicted or removed.
 - A broadcast payment is considered settled only after six confirmations. If it
   disappears from both the chain and the mempool, it stays pending rather than
   being re-paid: the original transaction can still be mined, and paying again

@@ -66,7 +66,7 @@ fix was written. Fixes are on `main` after `f9a91a2`.
 | 50 | Medium | SPV serving | `getheaders` resolved and emitted from pruned bodies, so equal-height reconciliation could no-op or walk from genesis; pruned bodies also caused an orphan re-fetch loop. | Header lookup and emission use the retained header index; known-header checks treat a pruned body as known. |
 | 51 | Medium | Incentive completion | The final receipt could be dropped by the receiver's 30-second per-connection rate limit. | The peer task waits out the remaining window before sending the final receipt. |
 | 52 | Medium | Swap fee bump | A recorded VTR claim could not be replaced after a local admission conflict, so a higher-fee maker refund could win permanently. | A conflicted claim is rebuilt with a higher fee (up to three bumps), persisted through a narrowly scoped replacement guard, and rebroadcast. The recovery guard still refuses every other replacement. |
-| 53 | Medium | Incentive persistence | Debt, pending-payment, and budget state are process-local; a restart loses them. | Sessions with outstanding debt are neither evicted nor removed, and the restart limitation is documented; persistence remains an operator constraint. |
+| 53 | Medium | Incentive persistence | Debt, pending-payment, and budget state were process-local; a restart lost them. | Sessions with outstanding debt are neither evicted nor removed. On shutdown the daemon snapshots them to `incentive-live.json`; the next start merges that into a persistent `incentive-ledger.json`, pays it, and keeps the budget total. A crash can still lose debts accrued since the last shutdown; this is documented. |
 | 54 | Medium | SPV rebuild latency | The header snapshot clone held the consensus chain lock for the whole chain, and side-branch headers were retained forever. | The snapshot is taken in 2,048-header chunks with a chain generation check, and the SPV view prunes headers that are not ancestors of the best tip. |
 
 ## Follow-up closures
@@ -180,7 +180,7 @@ pass-5 commit:
   tests, lint and production build clean.
 - Clippy: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
   completed clean.
-- Full workspace on the final tree: **1,491 passed, 0 failed, 11 ignored**
+- Full workspace on the final tree: **1,493 passed, 0 failed, 11 ignored**
   across 54 test groups.
 - Container source build: `docker build -f docker/Dockerfile` succeeded;
   `vtorrent-daemon 2.0.0` runs as uid `vtorrent`; image

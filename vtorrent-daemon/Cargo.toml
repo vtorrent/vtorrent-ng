@@ -40,6 +40,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Encoding
 hex               = "0.4"
+serde             = { workspace = true }
 serde_json        = { workspace = true }
 bitcoin           = { workspace = true }
 sha2              = { workspace = true }

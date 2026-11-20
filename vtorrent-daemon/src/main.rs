@@ -27,6 +27,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 mod config;
+mod incentive_ledger;
 mod sync_status;
 
 #[cfg(feature = "test-util")]
@@ -1107,26 +1108,199 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    let incentive_ledger_path = data_dir.join("incentive-ledger.json");
+    let incentive_live_path = data_dir.join("incentive-live.json");
+    let mut incentive_shutdown_tx: Option<
+        tokio::sync::mpsc::Sender<tokio::sync::oneshot::Sender<()>>,
+    > = None;
     if cli.torrent_incentive_payments {
         let incentive_budget_sats = cli.torrent_incentive_budget_sats;
         let incentive_payment_cap_sats = cli.torrent_incentive_payment_cap_sats;
+        let (ledger_tx, mut ledger_shutdown_rx) = tokio::sync::mpsc::channel(1);
+        incentive_shutdown_tx = Some(ledger_tx);
+        let mut ledger = match incentive_ledger::IncentiveLedger::load(&incentive_ledger_path) {
+            Ok(ledger) => ledger,
+            Err(error) => {
+                tracing::error!("Could not load the incentive ledger: {error:#}");
+                return Err(error);
+            }
+        };
+        let merged_live = incentive_live_path.exists();
+        if merged_live {
+            let mut live = match incentive_ledger::IncentiveLedger::load(&incentive_live_path) {
+                Ok(live) => live,
+                Err(error) => {
+                    tracing::error!("Could not load the live incentive snapshot: {error:#}");
+                    return Err(error);
+                }
+            };
+            ledger.emitted_total = ledger.emitted_total.max(live.emitted_total);
+            for mut debt in live.debts.drain(..) {
+                debt.id = ledger.next_id;
+                ledger.next_id = ledger.next_id.saturating_add(1);
+                ledger.debts.push(debt);
+            }
+            if let Err(error) = std::fs::remove_file(&incentive_live_path) {
+                tracing::warn!("Could not remove the merged live incentive snapshot: {error}");
+            }
+            if let Err(error) = ledger.save(&incentive_ledger_path) {
+                tracing::warn!("Could not save the merged incentive ledger: {error:#}");
+            }
+        }
+        let mut emitted_total = ledger.emitted_total;
+        let ledger_path = incentive_ledger_path.clone();
+        let live_path = incentive_live_path.clone();
         // Periodic torrent incentive settlement — runs every 5 minutes.
         let torrent_sessions_for_settlement = Arc::clone(&rpc_state.torrent_sessions);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
                 vtorrent_torrent::incentive::PAYMENT_INTERVAL_SECS,
             ));
-            let mut emitted_total = 0u64;
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    _ = interval.tick() => {}
+                    Some(ack) = ledger_shutdown_rx.recv() => {
+                        let sessions = torrent_sessions_for_settlement.read().await;
+                        for session in sessions.list_sessions() {
+                            for (peer, account) in session.incentive_accounts.iter() {
+                                ledger.add_account(
+                                    &session.metainfo.info_hash,
+                                    peer,
+                                    account,
+                                );
+                            }
+                        }
+                        drop(sessions);
+                        ledger.emitted_total = emitted_total;
+                        if let Err(error) = ledger.save(&live_path) {
+                            tracing::error!(
+                                "Could not save the live incentive snapshot: {error:#}"
+                            );
+                        }
+                        let _ = ack.send(());
+                        break;
+                    }
+                }
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
+                let mut results = Vec::new();
+                while let Ok(result) = payment_result_rx.try_recv() {
+                    results.push(result);
+                }
+
+                // Ledger results are keyed by a stable debt id, not a session.
+                let mut ledger_changed = false;
+                for result in &results {
+                    let Some(id) = result
+                        .account_key
+                        .strip_prefix("ledger\u{0}")
+                        .and_then(|value| value.parse::<u64>().ok())
+                    else {
+                        continue;
+                    };
+                    let Some(debt) = ledger.debt_mut(id) else {
+                        continue;
+                    };
+                    if result.success {
+                        if let Some(txid) = result.txid {
+                            debt.pending_txid = Some(txid);
+                            debt.pending_satoshis = result.amount_satoshis;
+                        }
+                    } else {
+                        emitted_total = emitted_total.saturating_sub(result.amount_satoshis);
+                    }
+                    debt.payment_in_flight = false;
+                    ledger_changed = true;
+                }
+
+                // Keep a ledger payment pending until six confirmations; a
+                // transaction missing from the local view may still be mined,
+                // so it is never re-paid.
+                let mut settled_debts = Vec::new();
+                for debt in &ledger.debts {
+                    let Some(txid) = debt.pending_txid else {
+                        continue;
+                    };
+                    let (confirmed, in_chain) = {
+                        let chain = payment_check_chain.lock().await;
+                        match chain.get_transaction_owned(&txid) {
+                            Some((_, _, height)) => (
+                                vtorrent_torrent::payment::payment_is_final(
+                                    chain.best_height(),
+                                    height,
+                                ),
+                                true,
+                            ),
+                            None => (false, false),
+                        }
+                    };
+                    let in_mempool = if in_chain {
+                        true
+                    } else {
+                        payment_check_mempool
+                            .lock()
+                            .await
+                            .get_transaction(&txid)
+                            .is_some()
+                    };
+                    if confirmed {
+                        settled_debts.push(debt.id);
+                    } else if !in_chain && !in_mempool {
+                        tracing::warn!(
+                            peer = %debt.peer_address,
+                            txid = %hex::encode(txid),
+                            "Ledger incentive payment is not in the chain or mempool; keeping it pending"
+                        );
+                    }
+                }
+                if !settled_debts.is_empty() {
+                    ledger
+                        .debts
+                        .retain(|debt| !settled_debts.contains(&debt.id));
+                    ledger_changed = true;
+                }
+
+                // Pay surviving ledger debts from the previous process.
+                for debt in &mut ledger.debts {
+                    if debt.pending_txid.is_some()
+                        || debt.payment_in_flight
+                        || debt.unpaid_satoshis == 0
+                    {
+                        continue;
+                    }
+                    let amount = vtorrent_torrent::payment::capped_payment_amount(
+                        debt.unpaid_satoshis,
+                        incentive_payment_cap_sats,
+                        incentive_budget_sats.saturating_sub(emitted_total),
+                    );
+                    if amount < vtorrent_torrent::incentive::MIN_PAYMENT_SATS {
+                        continue;
+                    }
+                    debt.payment_in_flight = true;
+                    emitted_total = emitted_total.saturating_add(amount);
+                    payment_sender.emit(vtorrent_torrent::payment::PaymentDue {
+                        peer_address: debt.peer_address.clone(),
+                        amount_satoshis: amount,
+                        account_key: format!("ledger\u{0}{}", debt.id),
+                    });
+                    ledger_changed = true;
+                }
+                if ledger_changed {
+                    ledger.emitted_total = emitted_total;
+                    if let Err(error) = ledger.save(&ledger_path) {
+                        tracing::warn!("Could not save the incentive ledger: {error:#}");
+                    }
+                }
+
                 let mut pending = Vec::new();
                 {
                     let mut guard = torrent_sessions_for_settlement.write().await;
-                    while let Ok(result) = payment_result_rx.try_recv() {
+                    for result in results
+                        .iter()
+                        .filter(|result| !result.account_key.starts_with("ledger\u{0}"))
+                    {
                         let Some((session_id, peer_key)) = result.account_key.split_once('\u{0}')
                         else {
                             continue;
@@ -1376,6 +1550,16 @@ async fn main() -> anyhow::Result<()> {
         }
         _ = shutdown_signal() => {
             tracing::info!("Shutdown signal received — stopping daemon");
+            if let Some(sender) = incentive_shutdown_tx.take() {
+                let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+                if sender.send(ack_tx).await.is_ok() {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(15),
+                        ack_rx,
+                    )
+                    .await;
+                }
+            }
             // Flush mempool to disk so unconfirmed transactions survive restart.
             if let Err(e) = mempool_arc_for_saver.lock().await.save_to(&mempool_path) {
                 tracing::warn!("Final mempool save failed: {}", e);

@@ -3505,11 +3505,10 @@ under `/mnt/temp/vtorrent-ng-evidence/soak-7a216ee/final/`. The active
 `vtr-node*` fleet was not modified. This window is **not** valid evidence for
 the revised code.
 
-Incentive debt is still process-local across a restart. Sessions with
-outstanding debt cannot be evicted or removed, and operators must settle debt
-before a planned restart; a persistent debt ledger remains a follow-up rather
-than a code fix in this pass. The independent human review and the 168-hour
-window remain external gates.
+Incentive debt now survives a graceful restart through a shutdown snapshot and
+a persistent ledger; a crash can still lose debts accrued since the last
+shutdown. Sessions with outstanding debt cannot be evicted or removed. The
+independent human review and the 168-hour window remain external gates.
 
 ## 2026-11-20 — limitation-pass candidate (`c27daf2`)
 
@@ -3528,3 +3527,20 @@ as `vtorrent/node:c27daf2`
 The daily observer runs at 17:25 local (10:25 UTC). This is a candidate window,
 not release evidence. The independent human review and the full 168 hours
 remain open.
+
+## 2026-11-20 — incentive ledger closes the restart limitation
+
+Outstanding torrent incentive debt and the process budget are now persisted:
+
+- On graceful shutdown the payment task snapshots every live account with an
+  unpaid debt or pending payment to `incentive-live.json` (0600, atomic).
+- On the next start the snapshot is merged into `incentive-ledger.json`, paid
+  through the existing capped payment path, and removed only after six
+  confirmations. A missing transaction stays pending and is never re-paid.
+- The ledger's `emitted_total` preserves the budget across restarts.
+
+The `review-c27daf2` fleet was retired at **16:32Z**; logs are archived under
+`/mnt/temp/vtorrent-ng-evidence/soak-c27daf2/final/`. The active `vtr-node*`
+fleet was not modified. A crash still loses debts accrued since the last
+graceful shutdown; that residual is documented and is not a double-payment
+path.
