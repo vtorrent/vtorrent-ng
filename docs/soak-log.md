@@ -3544,3 +3544,21 @@ The `review-c27daf2` fleet was retired at **16:32Z**; logs are archived under
 fleet was not modified. A crash still loses debts accrued since the last
 graceful shutdown; that residual is documented and is not a double-payment
 path.
+
+## 2026-11-20 — incentive-ledger candidate (`d790c16`)
+
+The persistent-debt ledger was committed at
+`d790c16b66cf0332b845d4ae9072e9da43c90307` (release lock edge at `62e1eb4`,
+review docs at `e5bd974`) and built as `vtorrent/node:d790c16`
+(`sha256:296c7e7594f4b25e7636acebe41e32d942b38a614d1c47efe2fc37ce2c7e8b57`).
+
+- Start: **2026-11-20T17:09:43Z**; window ends **2026-11-27T17:09:43Z**
+- Fleet: `review-d790c16`, RPC 23951–23953, Prometheus 23973
+- Evidence: `/mnt/temp/vtorrent-ng-evidence/soak-d790c16/`
+- Initial stable observation at **17:17Z**: height 6 with identical tips,
+  BTC SPV synced to 976,757 on all three, staking on nodes 2/3, RSS
+  152.8/117.2/114.3 MiB, restarts 0, Prometheus 3/3.
+
+The daily observer runs at 17:25 local (10:25 UTC). This is a candidate window,
+not release evidence. The independent human review and the full 168 hours
+remain open.
