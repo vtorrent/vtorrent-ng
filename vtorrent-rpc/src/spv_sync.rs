@@ -37,25 +37,44 @@ pub async fn sync_spv_from_chain(state: &AppState) -> Result<(), String> {
         let spv = state.spv_chain.read().await;
         (spv.best_height(), spv.best_hash())
     };
-    let (best, rebuild, start, snapshot_tip) = {
+    let (best, rebuild, start, snapshot_tip, generation) = {
         let chain = state.chain.lock().await;
         let rebuild = match spv_hash {
             Some(hash) => chain.block_hash_at_height(spv_height) != Some(hash),
             None => true,
         };
         let start = if rebuild { 0 } else { spv_height + 1 };
-        (chain.best_height(), rebuild, start, chain.best_hash())
+        (
+            chain.best_height(),
+            rebuild,
+            start,
+            chain.best_hash(),
+            chain.tip_generation(),
+        )
     };
     if !rebuild && start > best {
         return Ok(());
     }
 
-    let headers: Vec<SpvHeader> = {
+    // Snapshot in bounded chunks so a full rebuild does not hold the consensus
+    // chain lock for the entire header clone. Any block or reorg invalidates
+    // the generation and defers the sync to the next tick.
+    const SNAPSHOT_CHUNK: u32 = 2_048;
+    let mut headers: Vec<SpvHeader> = Vec::new();
+    let mut next_height = start;
+    while next_height <= best {
         let chain = state.chain.lock().await;
-        (start..=best)
-            .map(|height| header_at(&chain, height))
-            .collect::<Result<_, _>>()?
-    };
+        if chain.tip_generation() != generation || chain.best_hash() != snapshot_tip {
+            return Ok(());
+        }
+        let end = next_height.saturating_add(SNAPSHOT_CHUNK - 1).min(best);
+        for height in next_height..=end {
+            headers.push(header_at(&chain, height)?);
+        }
+        drop(chain);
+        next_height = end.saturating_add(1);
+        tokio::task::yield_now().await;
+    }
 
     // Build outside every lock. A rebuild replaces the whole value, so the
     // install itself is O(1).
@@ -98,6 +117,7 @@ pub async fn sync_spv_from_chain(state: &AppState) -> Result<(), String> {
                 .map_err(|error| format!("could not sync SPV header {height}: {error}"))?;
         }
     }
+    spv.prune_side_headers();
     Ok(())
 }
 

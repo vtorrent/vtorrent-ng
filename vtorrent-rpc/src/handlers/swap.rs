@@ -699,6 +699,62 @@ pub async fn vtr_claim_with_state(
         return Err(RpcError::BadRequest("VTR refund already submitted".into()));
     }
     if let Some(txid) = swap.vtr_claim_txid {
+        if swap.vtr_claim_conflicted && swap.vtr_claim_bumps < 3 {
+            if let Some(old_tx) = swap.vtr_claim_tx.as_ref() {
+                let previous_fee = old_tx
+                    .outputs
+                    .first()
+                    .map(|output| order.vtr_amount.saturating_sub(output.value))
+                    .unwrap_or(vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS);
+                let bumped = previous_fee
+                    .saturating_mul(3)
+                    .saturating_div(2)
+                    .max(vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS.saturating_mul(2))
+                    .min(order.vtr_amount.saturating_sub(546));
+                if bumped > previous_fee {
+                    if let Ok(claim_tx) = vtorrent_wallet_service::build_vtr_htlc_claim(
+                        vtorrent_wallet_service::VtrClaimParams {
+                            hash_lock,
+                            taker_address: &taker_address,
+                            maker_address: &order.maker_address,
+                            expiry: order.expiry,
+                            vtr_amount: order.vtr_amount,
+                            funding_txid,
+                            preimage,
+                            taker_wif: &taker_wif,
+                            fee_satoshis: bumped,
+                        },
+                    ) {
+                        if crate::swap_recovery::validate_vtr(state, &claim_tx)
+                            .await
+                            .is_ok()
+                        {
+                            let new_txid = claim_tx.txid();
+                            swap.vtr_claim_txid = Some(new_txid);
+                            swap.vtr_claim_tx = Some(claim_tx.clone());
+                            swap.vtr_claim_bumps = swap.vtr_claim_bumps.saturating_add(1);
+                            swap.vtr_claim_conflicted = false;
+                            swap.refresh_status();
+                            crate::swap_recovery::persist_vtr_claim_replacement(
+                                state, &order, swap,
+                            )
+                            .await?;
+                            let admitted =
+                                crate::swap_recovery::submit_vtr(state, &claim_tx).await?;
+                            if !admitted {
+                                swap.vtr_claim_conflicted = true;
+                                crate::swap_recovery::persist(state, &order, Some(swap)).await?;
+                            }
+                            return Ok(SwapActionResponse {
+                                order_id: req.order_id,
+                                txid: hex::encode(new_txid),
+                                status: "VtrClaimSubmitted".into(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
         let transaction = swap
             .vtr_claim_tx
             .as_ref()
@@ -745,9 +801,14 @@ pub async fn vtr_claim_with_state(
     swap.preimage = Some(preimage);
     swap.vtr_claim_txid = Some(claim_txid);
     swap.vtr_claim_tx = Some(claim_tx.clone());
+    swap.vtr_claim_conflicted = false;
     swap.refresh_status();
     crate::swap_recovery::persist(state, &order, Some(swap)).await?;
-    crate::swap_recovery::submit_vtr(state, &claim_tx).await?;
+    let admitted = crate::swap_recovery::submit_vtr(state, &claim_tx).await?;
+    if !admitted {
+        swap.vtr_claim_conflicted = true;
+        crate::swap_recovery::persist(state, &order, Some(swap)).await?;
+    }
 
     Ok(SwapActionResponse {
         order_id: req.order_id,

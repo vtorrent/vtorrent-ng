@@ -611,6 +611,13 @@ pub struct SwapState {
     pub vtr_funding_tx: Option<Transaction>,
     #[serde(default)]
     pub vtr_claim_tx: Option<Transaction>,
+    /// The recorded VTR claim was broadcast but conflicted with a local
+    /// transaction, so the next retry may build a higher-fee replacement.
+    #[serde(default)]
+    pub vtr_claim_conflicted: bool,
+    /// Number of fee-bumped VTR claim replacements already built.
+    #[serde(default)]
+    pub vtr_claim_bumps: u8,
     #[serde(default)]
     pub vtr_refund_tx: Option<Transaction>,
     #[serde(default)]
@@ -645,6 +652,8 @@ impl SwapState {
             btc_claim_replacements: Vec::new(),
             vtr_funding_tx: None,
             vtr_claim_tx: None,
+            vtr_claim_conflicted: false,
+            vtr_claim_bumps: 0,
             vtr_refund_tx: None,
             vtr_observation: None,
             btc_observation: None,

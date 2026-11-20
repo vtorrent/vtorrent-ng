@@ -215,6 +215,7 @@ pub(crate) fn rollback_one_block(chain: &mut Chain) -> Result<(Vec<Transaction>,
     remove_block_transactions(chain, journal.block_hash);
 
     chain.height_index.pop();
+    chain.tip_generation = chain.tip_generation.wrapping_add(1);
 
     tracing::debug!(
         "Rolled back block {} at height {}",
@@ -1046,6 +1047,7 @@ fn reorganize_to_inner(
             chain.best_height()
         )));
     }
+    chain.tip_generation = chain.tip_generation.wrapping_add(1);
 
     Ok((rolled_back_txs, rolled_back_blocks, applied_fork_blocks))
 }

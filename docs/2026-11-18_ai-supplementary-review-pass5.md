@@ -65,8 +65,9 @@ fix was written. Fixes are on `main` after `f9a91a2`.
 | 49 | Medium | SPV install race | A reorg between the header snapshot and the SPV install could briefly re-publish the abandoned branch. | The replacement view is built outside the locks and installed only after re-checking the chain and SPV tips; a mismatch defers to the next tick. |
 | 50 | Medium | SPV serving | `getheaders` resolved and emitted from pruned bodies, so equal-height reconciliation could no-op or walk from genesis; pruned bodies also caused an orphan re-fetch loop. | Header lookup and emission use the retained header index; known-header checks treat a pruned body as known. |
 | 51 | Medium | Incentive completion | The final receipt could be dropped by the receiver's 30-second per-connection rate limit. | The peer task waits out the remaining window before sending the final receipt. |
-| 52 | Medium | Swap fee bump | The VTR claim now signals replaceability and is broadcast when local admission conflicts with a refund, but no automated higher-fee replacement is built. | Residual: a much higher-fee maker refund can still win; the operator must use manual claim tooling if the recorded claim stays stuck. |
+| 52 | Medium | Swap fee bump | A recorded VTR claim could not be replaced after a local admission conflict, so a higher-fee maker refund could win permanently. | A conflicted claim is rebuilt with a higher fee (up to three bumps), persisted through a narrowly scoped replacement guard, and rebroadcast. The recovery guard still refuses every other replacement. |
 | 53 | Medium | Incentive persistence | Debt, pending-payment, and budget state are process-local; a restart loses them. | Sessions with outstanding debt are neither evicted nor removed, and the restart limitation is documented; persistence remains an operator constraint. |
+| 54 | Medium | SPV rebuild latency | The header snapshot clone held the consensus chain lock for the whole chain, and side-branch headers were retained forever. | The snapshot is taken in 2,048-header chunks with a chain generation check, and the SPV view prunes headers that are not ancestors of the best tip. |
 
 ## Follow-up closures
 
@@ -175,11 +176,11 @@ pass-5 commit:
 ## Verification
 
 - Focused suites: core 36, script 99, wallet 75, torrent 129, BTC 226, node
-  261, SPV 51, P2P 84, RPC 211, Tauri 34, wallet-service 10. Desktop UI: 45
+  261, SPV 52, P2P 84, RPC 213, Tauri 34, wallet-service 10. Desktop UI: 45
   tests, lint and production build clean.
 - Clippy: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
   completed clean.
-- Full workspace on the final tree: **1,488 passed, 0 failed, 11 ignored**
+- Full workspace on the final tree: **1,491 passed, 0 failed, 11 ignored**
   across 54 test groups.
 - Container source build: `docker build -f docker/Dockerfile` succeeded;
   `vtorrent-daemon 2.0.0` runs as uid `vtorrent`; image

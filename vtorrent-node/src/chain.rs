@@ -222,6 +222,9 @@ pub struct Chain {
     /// Optional operator-pinned checkpoint `(height, hash)`. When set, no
     /// main-chain block at that height may differ and no reorg may cross it.
     checkpoint: Option<(u32, [u8; 32])>,
+    /// Increments whenever the active main chain changes. Consumers that build
+    /// a multi-lock snapshot can detect a concurrent block or reorg.
+    tip_generation: u64,
 }
 
 /// Equal-work fork choice: prefer the lexicographically lower block hash.
@@ -272,6 +275,7 @@ impl Chain {
             #[cfg(any(test, feature = "test-util"))]
             governance_test_deployment: None,
             checkpoint: None,
+            tip_generation: 0,
         };
 
         chain.blocks.insert(genesis_hash, genesis.clone());
@@ -665,6 +669,11 @@ impl Chain {
 
     pub fn checkpoint(&self) -> Option<(u32, [u8; 32])> {
         self.checkpoint
+    }
+
+    /// Monotonic generation of the active main chain.
+    pub fn tip_generation(&self) -> u64 {
+        self.tip_generation
     }
 
     fn checkpoint_accepts(&self, height: u32, hash: &[u8; 32]) -> bool {
@@ -1280,6 +1289,7 @@ impl Chain {
             self.blocks.insert(block_hash, block);
 
             self.height_index.push(block_hash);
+            self.tip_generation = self.tip_generation.wrapping_add(1);
             self.prune_bodies();
 
             tracing::info!(

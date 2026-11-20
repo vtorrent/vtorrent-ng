@@ -2105,3 +2105,56 @@ async fn automatic_claim_survives_a_failed_btc_scan() {
         .expect("claim built");
     assert!(state.mempool.lock().await.get_transaction(&claim).is_some());
 }
+
+#[tokio::test]
+async fn conflicted_vtr_claim_is_replaced_with_a_higher_fee() {
+    let directory = tempfile::tempdir().unwrap();
+    let (state, id, preimage) = cross_node_fixture(directory.path()).await;
+    state.swaps.write().await.get_mut(&id).unwrap().preimage = Some(preimage);
+    let first = vtr_claim_with_state(
+        &state,
+        VtrClaimRequest {
+            order_id: id.clone(),
+            preimage: String::new(),
+            passphrase: String::new().into(),
+            otp_code: None,
+            taker_wif: vtr_identity(2).0,
+        },
+    )
+    .await
+    .unwrap();
+    let old_value = state.swaps.read().await[&id]
+        .vtr_claim_tx
+        .as_ref()
+        .unwrap()
+        .outputs[0]
+        .value;
+    state
+        .swaps
+        .write()
+        .await
+        .get_mut(&id)
+        .unwrap()
+        .vtr_claim_conflicted = true;
+
+    let second = vtr_claim_with_state(
+        &state,
+        VtrClaimRequest {
+            order_id: id.clone(),
+            preimage: String::new(),
+            passphrase: String::new().into(),
+            otp_code: None,
+            taker_wif: vtr_identity(2).0,
+        },
+    )
+    .await
+    .unwrap();
+
+    let swap = state.swaps.read().await[&id].clone();
+    assert_ne!(first.txid, second.txid);
+    assert_eq!(swap.vtr_claim_bumps, 1);
+    assert!(
+        swap.vtr_claim_tx.as_ref().unwrap().outputs[0].value < old_value,
+        "the replacement must pay a higher fee"
+    );
+}

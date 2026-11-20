@@ -161,6 +161,27 @@ pub(crate) async fn persist_for_wallet(
     swap: Option<&SwapState>,
     expected_wif: Option<&str>,
 ) -> RpcResult<()> {
+    persist_for_wallet_inner(state, order, swap, expected_wif, false).await
+}
+
+/// Persist a new signed VTR claim that replaces the previous claim with a
+/// higher fee. The replacement must spend the same HTLC output and pay the
+/// same taker script; the recovery guard allows only that exact transition.
+pub(crate) async fn persist_vtr_claim_replacement(
+    state: &AppState,
+    order: &SwapOrder,
+    swap: &SwapState,
+) -> RpcResult<()> {
+    persist_for_wallet_inner(state, order, Some(swap), None, true).await
+}
+
+async fn persist_for_wallet_inner(
+    state: &AppState,
+    order: &SwapOrder,
+    swap: Option<&SwapState>,
+    expected_wif: Option<&str>,
+    allow_vtr_claim_replacement: bool,
+) -> RpcResult<()> {
     if let Some(swap) = swap {
         crate::refund_lineage::validate(order, swap)?;
         crate::btc_claim_lineage::validate(swap)?;
@@ -245,7 +266,16 @@ pub(crate) async fn persist_for_wallet(
                     (old.btc_refund_txid, new.btc_refund_txid),
                 ] {
                     if old_id.is_some() && old_id != new_id {
-                        return Err(failure("refusing to replace a prepared transaction"));
+                        let replaces_claim = allow_vtr_claim_replacement
+                            && old_id == old.vtr_claim_txid
+                            && old
+                                .vtr_claim_tx
+                                .as_ref()
+                                .zip(new.vtr_claim_tx.as_ref())
+                                .is_some_and(|(old_tx, new_tx)| vtr_claim_replaces(old_tx, new_tx));
+                        if !replaces_claim {
+                            return Err(failure("refusing to replace a prepared transaction"));
+                        }
                     }
                 }
             }
@@ -422,6 +452,26 @@ pub async fn restore_with_wif(state: &AppState, wif: &str) -> RpcResult<()> {
     Ok(())
 }
 
+/// Whether `new` is a valid fee-bumped replacement of `old` for the same HTLC.
+///
+/// Both must spend the same outpoint, pay the same taker script, and differ
+/// only by a lower output value (higher fee). Only one can ever confirm.
+pub(crate) fn vtr_claim_replaces(
+    old: &vtorrent_node::block::Transaction,
+    new: &vtorrent_node::block::Transaction,
+) -> bool {
+    old.inputs.len() == 1
+        && new.inputs.len() == 1
+        && old.outputs.len() == 1
+        && new.outputs.len() == 1
+        && old.inputs[0].prev_txid == new.inputs[0].prev_txid
+        && old.inputs[0].prev_vout == new.inputs[0].prev_vout
+        && old.outputs[0].script_pubkey == new.outputs[0].script_pubkey
+        && new.outputs[0].value < old.outputs[0].value
+        && old.tx_type == new.tx_type
+        && old.version == new.version
+}
+
 /// Reject invalid signatures or missing inputs before reserving a recovery action.
 pub async fn validate_vtr(
     state: &AppState,
@@ -450,13 +500,14 @@ pub async fn validate_vtr(
 pub async fn submit_vtr(
     state: &AppState,
     transaction: &vtorrent_node::block::Transaction,
-) -> RpcResult<()> {
+) -> RpcResult<bool> {
     let chain = state.chain.lock().await;
     let txid = transaction.txid();
     if chain.get_transaction_owned(&txid).is_some() {
-        return Ok(());
+        return Ok(true);
     }
     let mut mempool = state.mempool.lock().await;
+    let mut admitted = true;
     if mempool.get_transaction(&txid).is_none() {
         if let Err(error) = mempool.admit_with_chain_fee(&chain, transaction.clone()) {
             // A local conflict (for example a maker refund already in this
@@ -468,10 +519,60 @@ pub async fn submit_vtr(
                 error = %error,
                 "VTR recovery transaction was not admitted locally; broadcasting it anyway"
             );
+            admitted = false;
         }
     }
     if let Some(sender) = &state.tx_submit {
         let _ = sender.try_send(transaction.clone());
     }
-    Ok(())
+    Ok(admitted)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vtorrent_node::block::{Transaction, TxInput, TxOutput, TxType};
+
+    fn claim(value: u64, prev_txid: [u8; 32], script: Vec<u8>) -> Transaction {
+        Transaction {
+            version: 1,
+            tx_type: TxType::AtomicSwap,
+            inputs: vec![TxInput {
+                prev_txid,
+                prev_vout: 0,
+                script_sig: vec![1],
+                sequence: u32::MAX - 2,
+            }],
+            outputs: vec![TxOutput {
+                value,
+                script_pubkey: script,
+            }],
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        }
+    }
+
+    #[test]
+    fn vtr_claim_replacement_requires_same_outpoint_and_a_higher_fee() {
+        let old = claim(1_000, [1u8; 32], vec![0x51]);
+        let higher_fee = claim(900, [1u8; 32], vec![0x51]);
+        assert!(vtr_claim_replaces(&old, &higher_fee));
+        assert!(!vtr_claim_replaces(
+            &old,
+            &claim(1_000, [1u8; 32], vec![0x51])
+        ));
+        assert!(!vtr_claim_replaces(
+            &old,
+            &claim(1_100, [1u8; 32], vec![0x51])
+        ));
+        assert!(!vtr_claim_replaces(
+            &old,
+            &claim(900, [2u8; 32], vec![0x51])
+        ));
+        assert!(!vtr_claim_replaces(
+            &old,
+            &claim(900, [1u8; 32], vec![0x52])
+        ));
+    }
 }

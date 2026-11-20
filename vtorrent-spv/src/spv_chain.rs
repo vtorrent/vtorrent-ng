@@ -357,6 +357,26 @@ impl SpvChain {
         self.pinned_genesis
     }
 
+    /// Drop headers that are not ancestors of the current best tip.
+    ///
+    /// SPV keeps only the best chain for proofs; side-branch headers are
+    /// rebuilt from the full node if a later reorg selects them.
+    pub fn prune_side_headers(&mut self) {
+        let Some(best) = self.best_hash else {
+            return;
+        };
+        let mut keep = std::collections::HashSet::new();
+        let mut cursor = Some(best);
+        while let Some(hash) = cursor {
+            if !keep.insert(hash) {
+                break;
+            }
+            cursor = self.headers.get(&hash).map(|header| header.prev_hash);
+        }
+        self.headers.retain(|hash, _| keep.contains(hash));
+        self.work.retain(|hash, _| keep.contains(hash));
+    }
+
     /// Add a block header to the chain.
     ///
     /// Validates that the header connects to the existing chain.
@@ -1002,6 +1022,28 @@ mod tests {
         pinned.reset_headers().unwrap();
         assert!(pinned.is_empty());
         assert_eq!(pinned.pinned_genesis(), Some((genesis_hash, bits)));
+    }
+
+    #[test]
+    fn prune_side_headers_keeps_only_the_best_chain() {
+        let genesis = make_header(0, [0u8; 32], [1u8; 32]);
+        let first = make_header(1, genesis.hash(), [2u8; 32]);
+        let mut second = make_header(1, genesis.hash(), [3u8; 32]);
+        second.nonce = second.nonce.wrapping_add(1);
+        let (winner, loser) = if first.hash() < second.hash() {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let mut chain = SpvChain::new();
+        chain.add_trusted_header(genesis).unwrap();
+        chain.add_trusted_header(loser.clone()).unwrap();
+        chain.add_trusted_header(winner.clone()).unwrap();
+        chain.prune_side_headers();
+        assert_eq!(chain.best_hash(), Some(winner.hash()));
+        assert!(chain.get_header(&winner.hash()).is_some());
+        assert!(chain.get_header(&loser.hash()).is_none());
+        assert_eq!(chain.len(), 2);
     }
 
     #[test]

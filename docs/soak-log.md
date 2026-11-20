@@ -3485,3 +3485,28 @@ The second review pass was committed at
 The daily observer runs at 17:25 local (10:25 UTC) and writes to the candidate
 evidence directory. This is a candidate window, not release evidence. The
 independent human review and the full 168 hours remain open.
+
+## 2026-11-20 — limitation pass invalidates `7a216ee`
+
+The remaining code-fixable limitations were addressed:
+
+- **Automated VTR claim fee bump.** A claim that was broadcast but rejected by
+  the local mempool (for example because a maker refund arrived first) is now
+  rebuilt with a higher fee, up to three times, and persisted through a
+  narrowly scoped replacement guard. Exact retry of a non-conflicted recorded
+  claim is unchanged.
+- **SPV snapshot latency and fork retention.** The header snapshot is taken in
+  2,048-header chunks with a chain-generation check, so a full rebuild no
+  longer holds the consensus chain lock for the whole clone. The SPV view now
+  prunes headers that are not ancestors of its best tip.
+
+The `review-7a216ee` fleet was retired at **15:47Z**; final logs are archived
+under `/mnt/temp/vtorrent-ng-evidence/soak-7a216ee/final/`. The active
+`vtr-node*` fleet was not modified. This window is **not** valid evidence for
+the revised code.
+
+Incentive debt is still process-local across a restart. Sessions with
+outstanding debt cannot be evicted or removed, and operators must settle debt
+before a planned restart; a persistent debt ledger remains a follow-up rather
+than a code fix in this pass. The independent human review and the 168-hour
+window remain external gates.
