@@ -3409,3 +3409,21 @@ Findings and remediation now under verification:
 This window is **not** valid evidence for the revised code. A new image, a new
 168-hour window, and a new review head are required. The independent human
 review remains open; this review was AI-only and does not satisfy that gate.
+
+## 2026-11-20 — new exact-image candidate (`04b3c4a`)
+
+The review remediation was committed at
+`04b3c4aff45f9b0cefd555de7cca6710c53e84cc` (review docs at `95f4421`) and
+built as `vtorrent/node:04b3c4a`
+(`sha256:e26c878cade66adf6c54fc5a870b96454992ee17ce35a1d783bd45125715301d`).
+
+- Start: **2026-11-20T02:57:13Z**; window ends **2026-11-27T02:57:13Z**
+- Fleet: `review-04b3c4a`, RPC 23951–23953, Prometheus 23973
+- Evidence: `/mnt/temp/vtorrent-ng-evidence/soak-04b3c4a/`
+- Initial: three nodes up, tip agreement at height 3, staking on 2/3,
+  Prometheus 3/3, restarts 0. BTC header sync and the first stake were still
+  starting.
+
+The daily observer is scheduled for 17:25 local (10:25 UTC) and writes to the
+candidate evidence directory. This is a candidate window, not release evidence.
+Any review-driven code change invalidates the image and restarts the clock.
