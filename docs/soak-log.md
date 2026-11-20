@@ -3467,3 +3467,21 @@ Corrections now under verification:
   remain process-local and must be settled before a restart.
 
 This window is **not** valid evidence for the revised code.
+
+## 2026-11-20 — second-pass candidate (`7a216ee`)
+
+The second review pass was committed at
+`7a216eed715391ae7a84179f6b746266763f11ca` (docs at `b700cc0`) and built as
+`vtorrent/node:7a216ee`
+(`sha256:2ec2bfaf4d06896e96ce4a51c59b341fcf4d4cc1118a68a0de81785f182bbe72`).
+
+- Start: **2026-11-20T15:08:16Z**; window ends **2026-11-27T15:08:16Z**
+- Fleet: `review-7a216ee`, RPC 23951–23953, Prometheus 23973
+- Evidence: `/mnt/temp/vtorrent-ng-evidence/soak-7a216ee/`
+- Initial: three nodes up at height 7 with identical tips, BTC SPV synced to
+  976,742 on all three, staking on nodes 2/3, RSS 139.0/136.7/118.5 MiB,
+  restarts 0, Prometheus 3/3.
+
+The daily observer runs at 17:25 local (10:25 UTC) and writes to the candidate
+evidence directory. This is a candidate window, not release evidence. The
+independent human review and the full 168 hours remain open.
