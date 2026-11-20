@@ -185,7 +185,7 @@ pass-5 commit:
   across 54 test groups.
 - Container source build: `docker build -f docker/Dockerfile` succeeded;
   `vtorrent-daemon 2.0.0` runs as uid `vtorrent`; image
-  `sha256:296c7e7594f4b25e7636acebe41e32d942b38a614d1c47efe2fc37ce2c7e8b57`.
+  `sha256:daf223f502b2b9ba7a5897da648d40a785b446bb053d0800aee3fc1b07ea8865`.
 - Release verification: `scripts/verify-release.sh` accepts an intact
   checksum directory and rejects a tampered asset.
 

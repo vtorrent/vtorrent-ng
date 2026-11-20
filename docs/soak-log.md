@@ -3529,6 +3529,45 @@ The daily observer runs at 17:25 local (10:25 UTC). This is a candidate window,
 not release evidence. The independent human review and the full 168 hours
 remain open.
 
+## 2026-11-21 — durable incentive journal
+
+The crash window was closed for receipt-verified debt at
+`f8ccbfe129b3cc26429f024bdf1075a5ccdb634d`:
+
+- Every receipt, settlement, and payment state change appends the full
+  `PeerBandwidthAccount` to a 0600, fsynced `incentive-journal.jsonl`.
+- A pre-emit in-flight marker is durable before the payment leaves the process.
+- Startup replays the journal, settles receipt-backed bytes into debt, and pays
+  it through the capped budget path.
+- Journal and recovered-debt keys include the account's receipt epoch, so a
+  re-added torrent cannot collide with an older partial debt.
+- A torn final line is discarded; other corruption fails startup. The legacy
+  shutdown ledger remains as a migration path.
+
+Bytes transferred after the last peer receipt remain unverified and are not
+recoverable after a crash. The `review-d790c16` fleet was retired at
+**17:28Z**; logs are archived under
+`/mnt/temp/vtorrent-ng-evidence/soak-d790c16/final/`. The active `vtr-node*`
+fleet was not modified. This window is **not** valid evidence for the new code.
+
+## 2026-11-21 — durable-journal candidate (`f8ccbfe`)
+
+The receipt-backed journal was committed at
+`f8ccbfe129b3cc26429f024bdf1075a5ccdb634d` (review docs at `60d29d8`) and built
+as `vtorrent/node:f8ccbfe`
+(`sha256:daf223f502b2b9ba7a5897da648d40a785b446bb053d0800aee3fc1b07ea8865`).
+
+- Start: **2026-11-20T18:01:44Z**; window ends **2026-11-27T18:01:44Z**
+- Fleet: `review-f8ccbfe`, RPC 23951–23953, Prometheus 23973
+- Evidence: `/mnt/temp/vtorrent-ng-evidence/soak-f8ccbfe/`
+- Initial stable observation at **18:06Z**: height 7 with identical tips,
+  BTC SPV synced to 976,764 on all three, staking on nodes 2/3, RSS
+  131.9/144.5/123.3 MiB, restarts 0, Prometheus 3/3.
+
+The daily observer runs at 17:25 local (10:25 UTC). This is a candidate window,
+not release evidence. The independent human review and the full 168 hours
+remain open.
+
 ## 2026-11-20 — incentive ledger closes the restart limitation
 
 Outstanding torrent incentive debt and the process budget are now persisted:
