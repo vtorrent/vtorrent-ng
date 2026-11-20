@@ -3510,3 +3510,21 @@ outstanding debt cannot be evicted or removed, and operators must settle debt
 before a planned restart; a persistent debt ledger remains a follow-up rather
 than a code fix in this pass. The independent human review and the 168-hour
 window remain external gates.
+
+## 2026-11-20 — limitation-pass candidate (`c27daf2`)
+
+The code-fixable limitations were committed at
+`c27daf2e4eded6fac970c9903d71752ea7aba6e5` (review docs at `2201be1`) and built
+as `vtorrent/node:c27daf2`
+(`sha256:50a9d7402e533e648975ed7338205bbc33a80415d03b9952c7f656840156d54d`).
+
+- Start: **2026-11-20T16:20:46Z**; window ends **2026-11-27T16:20:46Z**
+- Fleet: `review-c27daf2`, RPC 23951–23953, Prometheus 23973
+- Evidence: `/mnt/temp/vtorrent-ng-evidence/soak-c27daf2/`
+- Initial: three nodes at height 6 with identical tips, BTC SPV synced to
+  976,753 on all three, staking on nodes 2/3, RSS 153.8/141.0/150.7 MiB,
+  restarts 0, Prometheus 3/3.
+
+The daily observer runs at 17:25 local (10:25 UTC). This is a candidate window,
+not release evidence. The independent human review and the full 168 hours
+remain open.
