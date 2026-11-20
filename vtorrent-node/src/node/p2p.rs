@@ -80,12 +80,19 @@ impl super::Node {
         };
         let network_height = self.peer_manager.network_best_height();
 
-        if network_height > our_height {
-            tracing::info!(
-                "Syncing: our height {} < network height {}",
-                our_height,
-                network_height
-            );
+        if network_height >= our_height {
+            if network_height > our_height {
+                tracing::info!(
+                    "Syncing: our height {} < network height {}",
+                    our_height,
+                    network_height
+                );
+            } else {
+                tracing::trace!(
+                    "Tip reconciliation at equal height {}: checking for a divergent tip",
+                    our_height
+                );
+            }
 
             // Build a block locator (exponentially stepped hashes from tip)
             let locator = {

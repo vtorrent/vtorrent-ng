@@ -45,6 +45,17 @@ fix was written. Fixes are on `main` after `f9a91a2`.
 | 29 | Low | Docs | Consensus docs claimed a 2016-block difficulty adjustment and omitted the real timestamp rules. | The table now states fixed difficulty, 5-second future drift, and 55-second minimum spacing. |
 | 30 | High | Fork choice | The exact-image soak produced two equal-height blocks and the fleet split permanently: fork choice only reorganized on strictly greater cumulative work. | A same-height fork with the lexicographically lower tip hash now wins, so all nodes deterministically converge. The first candidate window was discarded and restarted. |
 | 31 | High | SPV restart | The SPV chain was seeded with genesis only; a daemon resuming from a stored VTR chain rejected every later header as an unknown parent, including reorg fork headers. | The daemon rebuilds the in-memory SPV chain from the loaded VTR headers before the event bridge starts. The governance reorg boundary test now passes. |
+| 32 | High | SPV fork choice | SPV switched its best tip only on strictly greater work, so after an equal-work reorg it kept the abandoned tip and could accept or reject inclusion proofs on the wrong branch. | SPV applies the same lower-hash tie-break; a regression test submits both tips and checks the selected branch. |
+| 33 | High | SPV recovery | A dropped event or failed trusted-header insertion left SPV stale; lag reconciliation repaired only the block store, and later headers failed on unknown parents. | A shared `spv_sync` rebuilds the view from the canonical chain at startup, every 30 seconds, after lag reconciliation, and after a failed insertion. |
+| 34 | High | Desktop swaps | The desktop started BTC wallet sync but not the BTC swap reconciler, so a taker's automatic VTR claim depended on a manual RPC call. | Both front-ends start the two reconcilers through one shared `spawn_swap_services` function; a test asserts both are started. |
+| 35 | High | Swap claims | The automatic claim skipped a recorded claim after a persistence or submission failure, and refused to try during the final hour. A failed BTC scan also blocked the claim attempt. | Recorded claims are re-submitted, the claim is attempted until expiry, and a scan failure no longer suppresses the claim. Regression tests cover all three cases. |
+| 36 | High | Fork convergence | Equal-height peers never requested each other's tips, and a stored fork block was not relayed, so the tie-break could not run after a partition. | Equal-height handshakes and periodic tip reconciliation request headers; validated fork blocks are relayed. |
+| 37 | High | Checkpoints | A future checkpoint blocked reorgs before the node reached it and caused a peer ban for a local policy decision; fork blocks were not checked at the pinned height. | Reorgs are allowed below a not-yet-reached checkpoint, fork blocks are checked at the pinned height, and local policy rejections do not ban the sender. |
+| 38 | High | Receipt accounting | The first receipt and every peer epoch change discarded unsettled downloaded bytes; an epoch change also discarded the previous epoch's agreement. | The first receipt pays what it acknowledges, an epoch change settles the old receipt before rebasing, and the unsettled remainder is retained. |
+| 39 | Medium | Incentive payments | Mempool admission cleared the debt, so an evicted, lost, or reorged transaction left the peer unpaid with no retry. | A broadcast payment stays pending until six confirmations; a shallow reorg keeps it pending, and a transaction missing from both chain and mempool makes the debt payable again. |
+| 40 | Medium | Incentive spend cap | Default-on payouts had no process budget or per-payment limit. | Added `--torrent-incentive-budget-sats` (10 VTR default) and `--torrent-incentive-payment-cap-sats` (1 VTR default), including fee exposure. |
+| 41 | Medium | Short downloads | A fast download could exit before the periodic receipt exchange, leaving no payable agreement. | A final cumulative receipt is sent before the peer task closes. |
+| 42 | Medium | SPV clock | Trusted historical headers were re-checked against the wall clock, so a large backward clock step could stop startup during SPV seeding. | Trusted headers skip the future-time check; untrusted headers still enforce it. Both paths have tests. |
 
 ## Follow-up closures
 
@@ -152,12 +163,12 @@ pass-5 commit:
 
 ## Verification
 
-- Focused suites: core 36, script 99, wallet 75, torrent 121, BTC 225, node
-  254, SPV 46, P2P 84, RPC 205, Tauri 34, wallet-service 10. Desktop UI: 45
+- Focused suites: core 36, script 99, wallet 75, torrent 125, BTC 225, node
+  258, SPV 49, P2P 84, RPC 211, Tauri 34, wallet-service 10. Desktop UI: 45
   tests, lint and production build clean.
 - Clippy: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
   completed clean.
-- Full workspace on the final tree: **1,462 passed, 0 failed, 11 ignored**
+- Full workspace on the final tree: **1,480 passed, 0 failed, 11 ignored**
   across 54 test groups.
 - Container source build: `docker build -f docker/Dockerfile` succeeded;
   `vtorrent-daemon 2.0.0` runs as uid `vtorrent`; image

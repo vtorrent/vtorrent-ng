@@ -2004,3 +2004,99 @@ async fn vtr_claim_without_preimage_or_observation_is_rejected() {
     .unwrap_err();
     assert!(err.to_string().contains("no confirmed BTC claim"));
 }
+
+#[tokio::test]
+async fn automatic_claim_retries_after_recovery_write_failure() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut state, id, preimage) = cross_node_fixture(directory.path()).await;
+    *state.wallet_wif.write().await = Some(vtr_identity(2).0);
+    {
+        let mut swaps = state.swaps.write().await;
+        let swap = swaps.get_mut(&id).unwrap();
+        swap.preimage = Some(preimage);
+        swap.btc_observation = Some(vtorrent_node::atomic_swap::BtcSwapObservation {
+            network: "regtest".into(),
+            observed_at: 0,
+            tip_hash: "00".repeat(32),
+            tip_height: 1,
+            scan_start: 1,
+            state: vtorrent_node::atomic_swap::BtcSettlementState::Claimed,
+            funding: None,
+            spend: None,
+            reorg_count: 0,
+        });
+    }
+    let blocked = directory.path().join("not-a-directory");
+    std::fs::write(&blocked, b"blocked").unwrap();
+    state.swap_recovery_dir = Some(blocked);
+    crate::btc_reconciliation::maybe_auto_claim_vtr(&state, &id).await;
+    let claim = state.swaps.read().await[&id]
+        .vtr_claim_txid
+        .expect("claim built");
+    assert!(state.mempool.lock().await.get_transaction(&claim).is_none());
+    state.swap_recovery_dir = Some(directory.path().to_path_buf());
+    crate::btc_reconciliation::maybe_auto_claim_vtr(&state, &id).await;
+    assert!(
+        state.mempool.lock().await.get_transaction(&claim).is_some(),
+        "claim must be retried"
+    );
+}
+
+#[tokio::test]
+async fn automatic_claim_is_attempted_during_final_hour() {
+    let directory = tempfile::tempdir().unwrap();
+    let (state, id, preimage) = cross_node_fixture(directory.path()).await;
+    *state.wallet_wif.write().await = Some(vtr_identity(2).0);
+    let expiry = state.order_book.read().await.get_order(&id).unwrap().expiry;
+    *state.mock_time.write().await = Some(u64::from(expiry) - 1800);
+    {
+        let mut swaps = state.swaps.write().await;
+        let swap = swaps.get_mut(&id).unwrap();
+        swap.preimage = Some(preimage);
+        swap.btc_observation = Some(vtorrent_node::atomic_swap::BtcSwapObservation {
+            network: "regtest".into(),
+            observed_at: 0,
+            tip_hash: "00".repeat(32),
+            tip_height: 1,
+            scan_start: 1,
+            state: vtorrent_node::atomic_swap::BtcSettlementState::Claimed,
+            funding: None,
+            spend: None,
+            reorg_count: 0,
+        });
+    }
+    crate::btc_reconciliation::maybe_auto_claim_vtr(&state, &id).await;
+    let claim = state.swaps.read().await[&id]
+        .vtr_claim_txid
+        .expect("claim built");
+    assert!(state.mempool.lock().await.get_transaction(&claim).is_some());
+}
+
+#[tokio::test]
+async fn automatic_claim_survives_a_failed_btc_scan() {
+    let directory = tempfile::tempdir().unwrap();
+    let (state, id, preimage) = cross_node_fixture(directory.path()).await;
+    *state.wallet_wif.write().await = Some(vtr_identity(2).0);
+    {
+        let mut swaps = state.swaps.write().await;
+        let swap = swaps.get_mut(&id).unwrap();
+        swap.preimage = Some(preimage);
+        swap.btc_observation = Some(vtorrent_node::atomic_swap::BtcSwapObservation {
+            network: "regtest".into(),
+            observed_at: 0,
+            tip_hash: "00".repeat(32),
+            tip_height: 1,
+            scan_start: 1,
+            state: vtorrent_node::atomic_swap::BtcSettlementState::Claimed,
+            funding: None,
+            spend: None,
+            reorg_count: 0,
+        });
+    }
+    // No BTC wallet is installed, so the scan fails before the claim attempt.
+    crate::btc_reconciliation::reconcile_and_maybe_claim(&state, &id).await;
+    let claim = state.swaps.read().await[&id]
+        .vtr_claim_txid
+        .expect("claim built");
+    assert!(state.mempool.lock().await.get_transaction(&claim).is_some());
+}

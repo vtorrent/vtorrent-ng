@@ -3360,3 +3360,52 @@ identical, BTC SPV synced to 976,618, RSS 136.1/160.7/145.2 MiB, Prometheus
 depth-1 reorgs as the two stakers produced equal-height blocks and the
 lower-hash tie-break resolved them; this is the intended convergence behavior
 on a transaction-empty test chain, not a split.
+
+## 2026-11-20 — review pass invalidates the `dd7676f` candidate
+
+An independent-context AI security review of `dd7676f` found issues that the
+previous window did not cover. The `review-dd7676f` fleet was retired at
+**02:27Z**; its final container logs are archived under
+`/mnt/temp/vtorrent-ng-evidence/soak-dd7676f/final/`. The active `vtr-node*`
+fleet was not modified.
+
+Findings and remediation now under verification:
+
+- **SPV fork choice** used strictly greater work while the full node used an
+  equal-work tie-break, so an equal-work reorg could leave inclusion proofs on
+  the abandoned branch. SPV now uses the same lower-hash rule.
+- **SPV recovery** did not repair a dropped event or failed header insertion.
+  A shared `spv_sync` rebuilds from the canonical chain at startup, every 30
+  seconds, after lag reconciliation, and after a failed insertion.
+- **Desktop swaps** never started the BTC reconciler, so a taker's automatic
+  VTR claim depended on a manual RPC call. Both front-ends now start the VTR
+  and BTC reconcilers through one shared service function.
+- **Automatic VTR claims** skipped a recorded claim after a persistence or
+  submission failure, skipped the final hour, and were suppressed by a failed
+  BTC scan. They now retry the recorded claim until expiry; a scan failure no
+  longer blocks the claim.
+- **Equal-height convergence** lacked tip discovery and fork relay. Handshakes
+  at equal height request headers, periodic sync reconciles equal-height tips,
+  and validated fork blocks are relayed.
+- **Future checkpoints** blocked reorgs before the checkpoint was reached and
+  caused a peer ban for a local policy decision. Reorgs are allowed below a
+  not-yet-reached checkpoint, fork blocks are checked at the pinned height, and
+  local policy rejections do not ban the sender.
+- **Receipt accounting** discarded unsettled downloads on the first receipt
+  and on every epoch change. The first receipt pays what it acknowledges, an
+  epoch change settles the preceding agreement first, and the remainder is
+  carried.
+- **Incentive payments** treated mempool admission as settlement, so eviction,
+  restart loss, or a reorg left no outstanding debt. A broadcast transaction is
+  now tracked until confirmed; if it disappears from the chain and mempool the
+  debt is payable again. A per-process budget (default 10 VTR) and per-payment
+  cap (default 1 VTR) bound the hot-wallet exposure.
+- **Short downloads** could exit before a payable receipt exchange. A final
+  cumulative receipt is sent before the peer task closes.
+- **SPV clock rollback** could make startup fail while seeding trusted,
+  full-node-validated headers. Trusted headers now skip the wall-clock
+  future-time check; untrusted headers still enforce it.
+
+This window is **not** valid evidence for the revised code. A new image, a new
+168-hour window, and a new review head are required. The independent human
+review remains open; this review was AI-only and does not satisfy that gate.

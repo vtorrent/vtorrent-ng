@@ -333,6 +333,19 @@ impl SpvChain {
         Ok(())
     }
 
+    /// Drop every header and tip while keeping the pinned genesis.
+    ///
+    /// Used to rebuild the view from the full node's canonical chain after a
+    /// missed event, a failed insertion, or a reorg that moved the tip to a
+    /// different branch.
+    pub fn reset_headers(&mut self) {
+        self.headers.clear();
+        self.work.clear();
+        self.best_hash = None;
+        self.best_height = 0;
+        self.genesis_hash = None;
+    }
+
     /// Add a block header to the chain.
     ///
     /// Validates that the header connects to the existing chain.
@@ -604,7 +617,7 @@ impl SpvChain {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as u32;
-        if header.timestamp > now + 7200 {
+        if !trusted && header.timestamp > now.saturating_add(7200) {
             return Err(SpvError::HeaderValidation(format!(
                 "header timestamp {} too far in the future",
                 header.timestamp
@@ -641,8 +654,9 @@ impl SpvChain {
         self.headers.insert(hash, header);
         self.work.insert(hash, cumulative);
 
-        // Update best tip if this chain has the most accumulated work.
-        if self.best_hash.is_none() || cumulative > self.work[&self.best_hash.unwrap()] {
+        if self.best_hash.is_none_or(|best| {
+            cumulative > self.work[&best] || (cumulative == self.work[&best] && hash < best)
+        }) {
             self.best_height = height;
             self.best_hash = Some(hash);
         }
@@ -867,6 +881,39 @@ mod tests {
     }
 
     #[test]
+    fn trusted_historical_header_survives_clock_rollback() {
+        let genesis = make_header(0, [0; 32], [1; 32]);
+        let mut child = make_header(1, genesis.hash(), [2; 32]);
+        child.timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32
+            + 7_201;
+        let mut chain = SpvChain::with_genesis(genesis.hash(), genesis.bits);
+        chain.add_trusted_header(genesis).unwrap();
+        chain.add_trusted_header(child.clone()).unwrap();
+        assert_eq!(chain.best_hash(), Some(child.hash()));
+    }
+
+    #[test]
+    fn untrusted_header_still_rejects_future_timestamp() {
+        let genesis = make_header(0, [0; 32], [1; 32]);
+        let mut child = make_header(1, genesis.hash(), [2; 32]);
+        child.timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32
+            + 7_201;
+        while !hash_meets_target(&child.hash(), child.bits) {
+            child.nonce += 1;
+        }
+        let mut chain = SpvChain::with_genesis(genesis.hash(), genesis.bits);
+        chain.add_trusted_header(genesis).unwrap();
+        let error = chain.add_header(child).unwrap_err();
+        assert!(error.to_string().contains("too far in the future"));
+    }
+
+    #[test]
     fn test_chain_of_headers() {
         let mut chain = SpvChain::new();
         let h0 = make_header(0, [0u8; 32], [1u8; 32]);
@@ -882,6 +929,32 @@ mod tests {
 
         assert_eq!(chain.best_height(), 2);
         assert_eq!(chain.len(), 3);
+    }
+
+    #[test]
+    fn equal_work_trusted_fork_selects_lower_hash() {
+        use crate::merkle::MerkleTree;
+        let genesis = make_header(0, [0u8; 32], [1u8; 32]);
+        let txids = vec![[2u8; 32], [3u8; 32]];
+        let tree = MerkleTree::build(&txids);
+        let proof = tree.proof(0).unwrap();
+        let first = make_header(1, genesis.hash(), tree.root());
+        let mut second = make_header(1, genesis.hash(), tree.root());
+        second.nonce = second.nonce.wrapping_add(1);
+        let (winner, loser) = if first.hash() < second.hash() {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let mut chain = SpvChain::new();
+        chain.add_trusted_header(genesis).unwrap();
+        chain.add_trusted_header(loser.clone()).unwrap();
+        chain.add_trusted_header(winner.clone()).unwrap();
+        assert_eq!(chain.best_hash(), Some(winner.hash()));
+        assert!(chain.is_on_best_chain(&winner.hash()));
+        assert!(!chain.is_on_best_chain(&loser.hash()));
+        assert!(chain.verify_tx_inclusion(&winner.hash(), &proof).is_ok());
+        assert!(chain.verify_tx_inclusion(&loser.hash(), &proof).is_err());
     }
 
     #[test]

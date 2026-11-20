@@ -126,6 +126,21 @@ pub struct Cli {
     #[arg(long, default_value_t = true)]
     pub torrent_incentive_payments: bool,
 
+    /// Maximum total VTR (in satoshis) this process will pay to torrent peers.
+    ///
+    /// Bounds the hot-wallet exposure from a malicious or buggy peer that
+    /// triggers repeated settlements. Counts every payment this process
+    /// broadcasts; a failed broadcast is refunded to the budget.
+    #[arg(long, default_value_t = 1_000_000_000)]
+    pub torrent_incentive_budget_sats: u64,
+
+    /// Maximum VTR (in satoshis) in a single torrent incentive payment.
+    ///
+    /// Larger obligations are paid in successive transactions as earlier ones
+    /// confirm, so the per-transaction cap also bounds the fee exposure.
+    #[arg(long, default_value_t = 100_000_000)]
+    pub torrent_incentive_payment_cap_sats: u64,
+
     /// Optional API key required for sensitive RPC endpoints.
     ///
     /// Read from the environment rather than argv so it is not exposed in the

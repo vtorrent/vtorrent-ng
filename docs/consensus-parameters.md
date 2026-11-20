@@ -72,7 +72,10 @@ The main chain is the branch with the greatest cumulative work (one unit per
 PoS block). If a fork has **equal** work at the same height, the branch whose
 tip block hash is lexicographically lower wins; a node reorgs to it. Without
 this tie-break, two stakers producing at the same height can build on their own
-tips indefinitely, because neither branch has strictly greater work.
+tips indefinitely, because neither branch has strictly greater work. Nodes
+request headers from equal-height peers and relay validated fork blocks, so the
+tie-break can run after a partition, not only for blocks a node happens to
+receive directly.
 
 ## Verification
 

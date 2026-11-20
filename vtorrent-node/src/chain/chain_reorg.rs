@@ -958,7 +958,7 @@ fn reorganize_to_inner(
         )));
     }
     if chain.checkpoint_blocks_reorg(fork_height) {
-        return Err(NodeError::Chain(format!(
+        return Err(NodeError::BlockPolicyRejected(format!(
             "Reorg fork point {} is below the pinned checkpoint",
             fork_height
         )));

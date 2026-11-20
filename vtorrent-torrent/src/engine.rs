@@ -672,58 +672,19 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
             break;
         }
 
-        if let (Some(key), Some(id), Some(peer_addr)) =
-            (receipt_key.as_ref(), receipt_id, peer_vtr_address.as_ref())
-        {
-            if !local_address.is_empty() && std::time::Instant::now() >= next_receipt {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                let account = {
-                    let guard = sessions.read().await;
-                    guard
-                        .get_session(&session_id)
-                        .ok()
-                        .and_then(|s| s.incentive_accounts.get(peer_addr).cloned())
-                };
-                if let Some(account) = account {
-                    let receipt = vtorrent_core::receipt::BandwidthReceipt {
-                        info_hash: metainfo.info_hash,
-                        window_start: account.last_settlement,
-                        window_end: now,
-                        // Receipts sign cumulative totals; settlement compares
-                        // unpaid deltas and advances baselines.
-                        uploaded_by_me: account.total_bytes_uploaded,
-                        downloaded_by_me: account.total_bytes_downloaded,
-                        peer: peer_addr.clone(),
-                        signer: local_address.clone(),
-                        settlement_id: now,
-                        epoch: account.receipt_epoch,
-                    };
-                    if let Ok(signature) = receipt.sign(key) {
-                        if let Ok(pubkey) = key.public_key() {
-                            let pubkey_bytes = if key.is_compressed() {
-                                pubkey.serialize().to_vec()
-                            } else {
-                                pubkey.serialize_uncompressed().to_vec()
-                            };
-                            let envelope = vtorrent_core::receipt::SignedBandwidthReceipt {
-                                receipt,
-                                pubkey: pubkey_bytes,
-                                signature,
-                            };
-                            let _ = conn
-                                .send(&PeerMessage::Extended {
-                                    id,
-                                    payload: crate::metadata::encode_receipt(&envelope),
-                                })
-                                .await;
-                        }
-                    }
-                }
-                next_receipt = std::time::Instant::now() + std::time::Duration::from_secs(60);
-            }
+        if std::time::Instant::now() >= next_receipt {
+            send_bandwidth_receipt(
+                &mut conn,
+                metainfo.info_hash,
+                receipt_key.as_deref(),
+                receipt_id,
+                peer_vtr_address.as_deref(),
+                &local_address,
+                &session_id,
+                &sessions,
+            )
+            .await;
+            next_receipt = std::time::Instant::now() + std::time::Duration::from_secs(60);
         }
 
         // Request blocks while we have pipeline capacity and pieces to fetch.
@@ -1091,9 +1052,92 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
             .tracker
             .is_complete()
         {
+            // A short download can finish before the next periodic tick. Send
+            // one final cumulative receipt so the transfer is payable.
+            send_bandwidth_receipt(
+                &mut conn,
+                metainfo.info_hash,
+                receipt_key.as_deref(),
+                receipt_id,
+                peer_vtr_address.as_deref(),
+                &local_address,
+                &session_id,
+                &sessions,
+            )
+            .await;
             break;
         }
     }
+}
+
+/// Send one cumulative bandwidth receipt to the peer.
+///
+/// Cumulative totals are signed; the receiver settles on deltas from the last
+/// verified receipt, so sending the same data twice is harmless.
+#[allow(clippy::too_many_arguments)]
+async fn send_bandwidth_receipt(
+    conn: &mut PeerConnection,
+    info_hash: [u8; 20],
+    key: Option<&vtorrent_core::keys::PrivateKey>,
+    receipt_id: Option<u8>,
+    peer_vtr_address: Option<&str>,
+    local_address: &str,
+    session_id: &str,
+    sessions: &Arc<RwLock<SessionManager>>,
+) {
+    let (Some(key), Some(id), Some(peer_addr)) = (key, receipt_id, peer_vtr_address) else {
+        return;
+    };
+    if local_address.is_empty() {
+        return;
+    }
+    let account = {
+        let guard = sessions.read().await;
+        guard
+            .get_session(session_id)
+            .ok()
+            .and_then(|session| session.incentive_accounts.get(peer_addr).cloned())
+    };
+    let Some(account) = account else {
+        return;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let receipt = vtorrent_core::receipt::BandwidthReceipt {
+        info_hash,
+        window_start: account.last_settlement,
+        window_end: now,
+        uploaded_by_me: account.total_bytes_uploaded,
+        downloaded_by_me: account.total_bytes_downloaded,
+        peer: peer_addr.to_string(),
+        signer: local_address.to_string(),
+        settlement_id: now,
+        epoch: account.receipt_epoch,
+    };
+    let Ok(signature) = receipt.sign(key) else {
+        return;
+    };
+    let Ok(pubkey) = key.public_key() else {
+        return;
+    };
+    let pubkey_bytes = if key.is_compressed() {
+        pubkey.serialize().to_vec()
+    } else {
+        pubkey.serialize_uncompressed().to_vec()
+    };
+    let envelope = vtorrent_core::receipt::SignedBandwidthReceipt {
+        receipt,
+        pubkey: pubkey_bytes,
+        signature,
+    };
+    let _ = conn
+        .send(&PeerMessage::Extended {
+            id,
+            payload: crate::metadata::encode_receipt(&envelope),
+        })
+        .await;
 }
 
 /// Fetch the full metainfo from a peer via the ut_metadata extension (BEP-9).

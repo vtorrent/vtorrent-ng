@@ -78,6 +78,20 @@ pub struct PeerBandwidthAccount {
     /// A payment for `unpaid_satoshis` is currently in flight.
     #[serde(default)]
     pub payment_in_flight: bool,
+    /// A payment transaction that was broadcast but is not yet confirmed.
+    ///
+    /// The obligation stays in `unpaid_satoshis` until the transaction is
+    /// observed in a block. If it disappears from both the chain and the
+    /// mempool, the account becomes payable again.
+    #[serde(default)]
+    pub pending_payment: Option<PendingPayment>,
+}
+
+/// A broadcast incentive payment awaiting on-chain confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingPayment {
+    pub txid: [u8; 32],
+    pub satoshis: u64,
 }
 
 impl PeerBandwidthAccount {
@@ -101,6 +115,7 @@ impl PeerBandwidthAccount {
             peer_epoch: None,
             unpaid_satoshis: 0,
             payment_in_flight: false,
+            pending_payment: None,
         }
     }
 
@@ -203,7 +218,35 @@ impl PeerBandwidthAccount {
         self.unpaid_satoshis = self.unpaid_satoshis.saturating_sub(paid);
         self.total_paid_satoshis = self.total_paid_satoshis.saturating_add(paid);
         self.payment_in_flight = false;
+        self.pending_payment = None;
         self.unpaid_satoshis
+    }
+
+    /// Record a broadcast payment without clearing the debt.
+    ///
+    /// Mempool admission is not settlement: the transaction can be evicted,
+    /// lost on restart, or invalidated by a reorg. The obligation is cleared
+    /// only by [`Self::payment_confirmed`].
+    pub fn record_payment_broadcast(&mut self, txid: [u8; 32], satoshis: u64) {
+        self.payment_in_flight = false;
+        self.pending_payment = Some(PendingPayment {
+            txid,
+            satoshis: satoshis.min(self.unpaid_satoshis),
+        });
+    }
+
+    /// The pending payment was observed in a confirmed block.
+    pub fn payment_confirmed(&mut self) {
+        if let Some(pending) = self.pending_payment.take() {
+            self.mark_paid(pending.satoshis);
+        }
+        self.payment_in_flight = false;
+    }
+
+    /// The pending payment vanished from both the chain and the mempool.
+    pub fn payment_missing(&mut self) {
+        self.pending_payment = None;
+        self.payment_in_flight = false;
     }
 
     /// Clear the in-flight marker after a failed payment so it is retried.
@@ -220,13 +263,25 @@ impl PeerBandwidthAccount {
             return false;
         }
         if self.peer_epoch != Some(receipt.epoch) {
-            // The peer restarted its cumulative accounting. Align both
-            // baselines at its first receipt: bytes before this point are not
-            // paid, which is conservative and prevents a double payment. This
-            // changes only the peer's epoch, never the epoch we sign.
+            // The peer's epoch changed (normally a restart), so its cumulative
+            // counter restarted. Settle the previous epoch's agreement first,
+            // and leave our own unsettled downloads pending. Anchor the new
+            // counter so its next delta covers those downloads instead of
+            // discarding them. This changes only the peer's epoch, never the
+            // epoch we sign.
+            if self.peer_epoch.is_some() {
+                if let Some(agreement) = self.agreed_owed() {
+                    self.settle_agreed(receipt.window_end, agreement.satoshis, agreement.bytes);
+                }
+            }
             self.peer_epoch = Some(receipt.epoch);
-            self.settled_peer_uploaded = receipt.uploaded_by_me;
-            self.settled_our_downloaded = self.total_bytes_downloaded;
+            // Anchor the peer's cumulative counter so its next delta covers
+            // our unsettled downloads, even when the counter also includes
+            // bytes from before this connection or from a previous session.
+            let unsettled = self
+                .total_bytes_downloaded
+                .saturating_sub(self.settled_our_downloaded);
+            self.settled_peer_uploaded = receipt.uploaded_by_me.saturating_sub(unsettled);
             self.last_receipt_id = receipt.settlement_id;
             self.peer_receipt = Some(receipt);
             return true;
@@ -528,6 +583,33 @@ mod tests {
     }
 
     #[test]
+    fn broadcast_payment_keeps_the_debt_until_confirmed() {
+        let mut account = PeerBandwidthAccount::new("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+        account.record_download(2 * 1024 * 1024 * 1024);
+        account.settle_agreed(1_700_000_000, COIN, 2 * 1024 * 1024 * 1024);
+        assert_eq!(account.unpaid_satoshis, COIN);
+
+        account.record_payment_broadcast([9u8; 32], COIN);
+        assert_eq!(
+            account.unpaid_satoshis, COIN,
+            "mempool admission must not clear the debt"
+        );
+        assert!(account.pending_payment.is_some());
+
+        account.payment_missing();
+        assert!(account.pending_payment.is_none());
+        assert_eq!(
+            account.unpaid_satoshis, COIN,
+            "a vanished transaction must be payable again"
+        );
+
+        account.record_payment_broadcast([9u8; 32], COIN);
+        account.payment_confirmed();
+        assert_eq!(account.unpaid_satoshis, 0);
+        assert_eq!(account.total_paid_satoshis, COIN);
+    }
+
+    #[test]
     fn test_needs_settlement_by_bytes() {
         let mut account = PeerBandwidthAccount::new("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
         account.record_upload(MIN_PAYMENT_BYTES);
@@ -645,7 +727,7 @@ mod tests {
     }
 
     #[test]
-    fn first_receipt_establishes_the_peer_baseline_conservatively() {
+    fn first_receipt_pays_for_acknowledged_downloads() {
         const GB: u64 = 1024 * 1024 * 1024;
         use vtorrent_core::receipt::BandwidthReceipt;
 
@@ -663,9 +745,9 @@ mod tests {
             epoch: account.receipt_epoch,
         };
         assert!(account.record_receipt(receipt.clone()));
-        // The first receipt aligns baselines rather than paying bytes whose
-        // peer epoch is not yet known.
-        assert_eq!(account.agreed_owed().map(|a| a.satoshis), Some(0));
+        // The first receipt already acknowledges the bytes downloaded before
+        // it; the payment is capped by our own count.
+        assert_eq!(account.agreed_owed().map(|a| a.satoshis), Some(COIN / 2));
         let baseline = account.agreed_owed().unwrap();
         account.settle_agreed(300, baseline.satoshis, baseline.bytes);
 
@@ -676,6 +758,32 @@ mod tests {
         assert_eq!(
             account.agreed_owed().map(|agreement| agreement.satoshis),
             Some(COIN / 2)
+        );
+    }
+
+    #[test]
+    fn first_receipt_with_prior_session_bytes_does_not_dispute() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        use vtorrent_core::receipt::BandwidthReceipt;
+
+        let mut account = PeerBandwidthAccount::new("VPeer".into());
+        account.record_download(GB);
+        let receipt = BandwidthReceipt {
+            info_hash: [1u8; 20],
+            window_start: 0,
+            window_end: 300,
+            uploaded_by_me: 10 * GB,
+            downloaded_by_me: 0,
+            peer: "VUs".into(),
+            signer: "VPeer".into(),
+            settlement_id: 1,
+            epoch: account.receipt_epoch,
+        };
+        assert!(account.record_receipt(receipt));
+        assert_eq!(
+            account.agreed_owed().map(|agreement| agreement.satoshis),
+            Some(COIN / 2),
+            "a cumulative counter from a prior session must not block payment"
         );
     }
 
@@ -706,6 +814,7 @@ mod tests {
         // The peer restarted: its cumulative counter starts over.
         receipt.epoch = account.receipt_epoch.wrapping_add(1);
         receipt.settlement_id = 2;
+        receipt.uploaded_by_me = 0;
         assert!(account.record_receipt(receipt.clone()));
         assert_eq!(
             account.agreed_owed().map(|agreement| agreement.satoshis),
@@ -716,11 +825,71 @@ mod tests {
 
         account.record_download(2 * GB);
         receipt.settlement_id = 3;
-        receipt.uploaded_by_me = 4 * GB;
+        receipt.uploaded_by_me = 2 * GB;
         assert!(account.record_receipt(receipt));
         assert_eq!(
             account.agreed_owed().map(|agreement| agreement.satoshis),
             Some(COIN)
         );
+    }
+
+    #[test]
+    fn first_receipt_does_not_discard_unsettled_downloads() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        use vtorrent_core::receipt::BandwidthReceipt;
+
+        let mut account = PeerBandwidthAccount::new("VPeer".into());
+        account.record_download(GB);
+        let receipt = BandwidthReceipt {
+            info_hash: [1u8; 20],
+            window_start: 0,
+            window_end: 300,
+            uploaded_by_me: GB,
+            downloaded_by_me: 0,
+            peer: "VUs".into(),
+            signer: "VPeer".into(),
+            settlement_id: 1,
+            epoch: account.receipt_epoch,
+        };
+        assert!(account.record_receipt(receipt.clone()));
+        // The first receipt covers the earlier download instead of discarding
+        // it while anchoring the peer's epoch.
+        assert_eq!(
+            account.agreed_owed().map(|agreement| agreement.satoshis),
+            Some(COIN / 2),
+            "bytes downloaded before the first receipt must remain payable"
+        );
+    }
+
+    #[test]
+    fn epoch_change_settles_the_previous_receipt_before_rebasing() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        use vtorrent_core::receipt::BandwidthReceipt;
+
+        let mut account = PeerBandwidthAccount::new("VPeer".into());
+        account.peer_epoch = Some(account.receipt_epoch);
+        account.record_download(2 * GB);
+        let mut receipt = BandwidthReceipt {
+            info_hash: [1u8; 20],
+            window_start: 0,
+            window_end: 300,
+            uploaded_by_me: 2 * GB,
+            downloaded_by_me: 0,
+            peer: "VUs".into(),
+            signer: "VPeer".into(),
+            settlement_id: 1,
+            epoch: account.receipt_epoch,
+        };
+        assert!(account.record_receipt(receipt.clone()));
+        assert_eq!(account.agreed_owed().map(|a| a.satoshis), Some(COIN));
+
+        // A new epoch arrives before the first agreement was settled. The old
+        // claim must move into the unpaid balance, not disappear.
+        receipt.epoch = account.receipt_epoch.wrapping_add(1);
+        receipt.settlement_id = 2;
+        receipt.uploaded_by_me = 0;
+        assert!(account.record_receipt(receipt));
+        assert_eq!(account.unpaid_satoshis, COIN);
+        assert_eq!(account.total_paid_satoshis, 0);
     }
 }

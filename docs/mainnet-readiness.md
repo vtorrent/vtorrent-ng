@@ -30,6 +30,13 @@ state disappears while the record remains, even `--btc-attest-new-seed` refuses
 to recreate it. Losing or restoring both files from an old backup can still erase
 that evidence and requires operator-led recovery; do not re-attest a used seed.
 
+**Torrent incentive spend cap:** automatic payments are bounded per process by
+`--torrent-incentive-budget-sats` (default 10 VTR) and per payment by
+`--torrent-incentive-payment-cap-sats` (default 1 VTR). Larger obligations are
+paid in successive transactions as earlier ones confirm. A payment remains an
+outstanding debt until the transaction is observed in a block; eviction,
+restart loss, or a reorg makes it payable again instead of silently settling it.
+
 **Desktop backup restriction:** Backup collection takes the BTC state lock and
 includes the initialization record when present. If that record exists but its
 state file is missing, backup fails instead of omitting the state. Automatic

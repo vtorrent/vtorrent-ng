@@ -20,6 +20,12 @@ pub enum NodeError {
     #[error("Chain error: {0}")]
     Chain(String),
 
+    /// A block conflicts with a locally configured policy (for example a
+    /// pinned checkpoint). The block may be valid on another branch; the peer
+    /// must not be penalized for a local policy decision.
+    #[error("Block rejected by local policy: {0}")]
+    BlockPolicyRejected(String),
+
     #[error("Genesis block mismatch")]
     GenesisMismatch,
 

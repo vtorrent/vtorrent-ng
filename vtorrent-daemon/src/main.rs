@@ -123,37 +123,6 @@ fn load_chain_from_store(
     }
 }
 
-/// Rebuild the in-memory SPV header chain from the loaded VTR chain.
-///
-/// The SPV chain is not persisted; a daemon resuming from a stored chain would
-/// otherwise have only genesis and reject every later header as an unknown
-/// parent, including after a reorg.
-async fn seed_spv_from_chain(state: &vtorrent_rpc::state::AppState) -> anyhow::Result<()> {
-    let chain = state.chain.lock().await;
-    let best = chain.best_height();
-    let mut spv = state.spv_chain.write().await;
-    let start = spv.best_height().saturating_add(1);
-    for height in start..=best {
-        let header = chain.get_header_at_height(height).ok_or_else(|| {
-            anyhow::anyhow!("missing VTR header at height {} while seeding SPV", height)
-        })?;
-        spv.add_trusted_header(SpvHeader {
-            version: header.version,
-            prev_hash: header.prev_block_hash,
-            merkle_root: header.merkle_root,
-            utxo_root: header.utxo_root,
-            timestamp: header.timestamp,
-            bits: header.bits,
-            nonce: header.nonce,
-            stake_modifier: header.stake_modifier,
-            height,
-        })
-        .map_err(|error| anyhow::anyhow!("could not seed SPV header {}: {}", height, error))?;
-    }
-    tracing::info!("SPV chain seeded from VTR chain through height {}", best);
-    Ok(())
-}
-
 /// UTXO file for this seed. Two wallets on one data directory must not share
 /// state (cursor, reservations, contracts, birthday), so the filename carries a
 /// seed-derived id, matching the desktop path's scheme.
@@ -540,7 +509,9 @@ async fn main() -> anyhow::Result<()> {
             anyhow::bail!("Could not seed the SPV genesis header: {error}");
         }
     }
-    seed_spv_from_chain(&rpc_state).await?;
+    vtorrent_rpc::spv_sync::sync_spv_from_chain(&rpc_state)
+        .await
+        .map_err(|error| anyhow::anyhow!("could not seed SPV headers: {error}"))?;
 
     // Reflect startup-configured staking in the RPC status so it agrees with
     // the node's actual staking engine (rather than reporting "disabled").
@@ -635,6 +606,7 @@ async fn main() -> anyhow::Result<()> {
         let sync_status = sync_status::SyncStatus::new(&rpc_state);
         let spv_chain_ref = Arc::clone(&rpc_state.spv_chain);
         let chain_ref = Arc::clone(&rpc_state.chain);
+        let state_for_bridge = rpc_state.clone();
         let blocks_staked_ref = Arc::clone(&rpc_state.blocks_staked);
         let last_stake_time_ref = Arc::clone(&rpc_state.last_stake_time);
         let rewards_earned_ref = Arc::clone(&rpc_state.rewards_earned_sats);
@@ -690,12 +662,26 @@ async fn main() -> anyhow::Result<()> {
                                 stake_modifier: block.header.stake_modifier,
                                 height: *height,
                             };
-                            {
+                            let spv_failed = {
                                 let mut spv = spv_chain_ref.write().await;
                                 if let Err(e) = spv.add_trusted_header(spv_header) {
                                     tracing::debug!(
                                         "SPV chain: could not add header at {}: {}",
                                         height,
+                                        e
+                                    );
+                                    true
+                                } else {
+                                    false
+                                }
+                            };
+                            if spv_failed {
+                                if let Err(e) =
+                                    vtorrent_rpc::spv_sync::sync_spv_from_chain(&state_for_bridge)
+                                        .await
+                                {
+                                    tracing::warn!(
+                                        "SPV chain: full resync after a failed header failed: {}",
                                         e
                                     );
                                 }
@@ -833,8 +819,9 @@ async fn main() -> anyhow::Result<()> {
                                 // parent is unknown and every later header is
                                 // rejected, leaving inclusion proofs anchored
                                 // to the abandoned tip.
-                                {
+                                let spv_failed = {
                                     let mut spv = spv_chain_ref.write().await;
+                                    let mut failed = false;
                                     for fb in applied_fork_blocks.iter() {
                                         let header = SpvHeader {
                                             version: fb.block.header.version,
@@ -853,7 +840,21 @@ async fn main() -> anyhow::Result<()> {
                                                 fb.height,
                                                 e
                                             );
+                                            failed = true;
                                         }
+                                    }
+                                    failed
+                                };
+                                if spv_failed {
+                                    if let Err(e) = vtorrent_rpc::spv_sync::sync_spv_from_chain(
+                                        &state_for_bridge,
+                                    )
+                                    .await
+                                    {
+                                        tracing::warn!(
+                                            "SPV chain: full resync after a failed reorg header failed: {}",
+                                            e
+                                        );
                                     }
                                 }
 
@@ -966,6 +967,16 @@ async fn main() -> anyhow::Result<()> {
                                 tracing::error!("Block store reconciliation failed: {e}");
                             }
                         }
+                        // Lost events also leave the in-memory SPV view stale.
+                        // Rebuild it from the same canonical chain the store was
+                        // reconciled against.
+                        if let Err(e) =
+                            vtorrent_rpc::spv_sync::sync_spv_from_chain(&state_for_bridge).await
+                        {
+                            tracing::error!(
+                                "SPV chain reconciliation failed after event-bridge lag: {e}"
+                            );
+                        }
                         let local_height = chain_ref.lock().await.best_height();
                         sync_status.refresh(local_height).await;
                     }
@@ -1018,16 +1029,12 @@ async fn main() -> anyhow::Result<()> {
         validate_passphrase_file(path)?;
     }
     let rpc_state_for_unlock = rpc_state.clone();
-    tokio::spawn(vtorrent_rpc::swap_reconciliation::run_reconciler(
-        rpc_state.clone(),
-    ));
-    // Automatic BTC settlement monitoring. The VTR reconciler above only
-    // refreshes VTR evidence; without this, a maker's BTC claim (which reveals
-    // the preimage the taker needs) and BTC refunds are only observed when the
-    // RPC endpoint is called by hand.
-    tokio::spawn(vtorrent_rpc::btc_reconciliation::run_btc_reconciler(
-        rpc_state.clone(),
-    ));
+    // VTR + BTC swap monitoring. Both are required: the BTC reconciler observes
+    // the maker's claim (revealing the preimage) and drives the taker's claim.
+    let _swap_services = vtorrent_rpc::services::spawn_swap_services(rpc_state.clone());
+    // Belt and braces alongside the event-driven SPV updates: recovers from a
+    // silently dropped event or a failed header insertion.
+    let _spv_sync = vtorrent_rpc::services::spawn_spv_sync(rpc_state.clone());
 
     // Periodic DEX order expiry maintenance — runs every 60 seconds.
     let order_book_for_maintenance = Arc::clone(&rpc_state.order_book);
@@ -1050,6 +1057,8 @@ async fn main() -> anyhow::Result<()> {
     let payment_change = Arc::clone(&rpc_state.wallet_change_address);
     let payment_chain = Arc::clone(&rpc_state.chain);
     let payment_mempool = Arc::clone(&rpc_state.mempool);
+    let payment_check_chain = Arc::clone(&rpc_state.chain);
+    let payment_check_mempool = Arc::clone(&rpc_state.mempool);
     let payment_tx_submit = rpc_state.tx_submit.clone();
     let (payment_result_tx, mut payment_result_rx) =
         tokio::sync::mpsc::unbounded_channel::<vtorrent_torrent::payment::PaymentResult>();
@@ -1075,10 +1084,14 @@ async fn main() -> anyhow::Result<()> {
                         txid,
                         payment.peer_address
                     );
+                    let parsed = hex::decode(&txid)
+                        .ok()
+                        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
                     let _ = payment_result_tx.send(vtorrent_torrent::payment::PaymentResult {
                         account_key: payment.account_key,
                         amount_satoshis: payment.amount_satoshis,
-                        success: true,
+                        success: parsed.is_some(),
+                        txid: parsed,
                     });
                 }
                 Err(e) => {
@@ -1087,6 +1100,7 @@ async fn main() -> anyhow::Result<()> {
                         account_key: payment.account_key,
                         amount_satoshis: payment.amount_satoshis,
                         success: false,
+                        txid: None,
                     });
                 }
             }
@@ -1094,34 +1108,98 @@ async fn main() -> anyhow::Result<()> {
     });
 
     if cli.torrent_incentive_payments {
+        let incentive_budget_sats = cli.torrent_incentive_budget_sats;
+        let incentive_payment_cap_sats = cli.torrent_incentive_payment_cap_sats;
         // Periodic torrent incentive settlement — runs every 5 minutes.
         let torrent_sessions_for_settlement = Arc::clone(&rpc_state.torrent_sessions);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
                 vtorrent_torrent::incentive::PAYMENT_INTERVAL_SECS,
             ));
+            let mut emitted_total = 0u64;
             loop {
                 interval.tick().await;
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                let mut guard = torrent_sessions_for_settlement.write().await;
-                while let Ok(result) = payment_result_rx.try_recv() {
-                    let Some((session_id, peer_key)) = result.account_key.split_once('\u{0}')
-                    else {
-                        continue;
+                let mut pending = Vec::new();
+                {
+                    let mut guard = torrent_sessions_for_settlement.write().await;
+                    while let Ok(result) = payment_result_rx.try_recv() {
+                        let Some((session_id, peer_key)) = result.account_key.split_once('\u{0}')
+                        else {
+                            continue;
+                        };
+                        let Ok(session) = guard.get_session_mut(session_id) else {
+                            continue;
+                        };
+                        let Some(account) = session.incentive_accounts.get_mut(peer_key) else {
+                            continue;
+                        };
+                        match (result.success, result.txid) {
+                            (true, Some(txid)) => {
+                                account.record_payment_broadcast(txid, result.amount_satoshis);
+                            }
+                            _ => {
+                                emitted_total =
+                                    emitted_total.saturating_sub(result.amount_satoshis);
+                                account.payment_failed();
+                            }
+                        }
+                    }
+                    for session in guard.sessions_mut() {
+                        let session_id = session.id.clone();
+                        for (peer_key, account) in session.incentive_accounts.iter() {
+                            if let Some(payment) = account.pending_payment {
+                                pending.push((session_id.clone(), peer_key.clone(), payment.txid));
+                            }
+                        }
+                    }
+                }
+                // Check pending payments without holding the torrent-session
+                // lock, so a slow chain or mempool read cannot block the
+                // torrent engine.
+                let mut resolved = Vec::new();
+                for (session_id, peer_key, txid) in pending {
+                    let (confirmed, in_chain) = {
+                        let chain = payment_check_chain.lock().await;
+                        match chain.get_transaction_owned(&txid) {
+                            Some((_, _, height)) => (
+                                vtorrent_torrent::payment::payment_is_final(
+                                    chain.best_height(),
+                                    height,
+                                ),
+                                true,
+                            ),
+                            None => (false, false),
+                        }
                     };
-                    let Ok(session) = guard.get_session_mut(session_id) else {
-                        continue;
-                    };
-                    let Some(account) = session.incentive_accounts.get_mut(peer_key) else {
-                        continue;
-                    };
-                    if result.success {
-                        account.mark_paid(result.amount_satoshis);
+                    let in_mempool = if in_chain {
+                        true
                     } else {
-                        account.payment_failed();
+                        payment_check_mempool
+                            .lock()
+                            .await
+                            .get_transaction(&txid)
+                            .is_some()
+                    };
+                    if confirmed || (!in_chain && !in_mempool) {
+                        resolved.push((session_id, peer_key, confirmed));
+                    }
+                }
+                let mut guard = torrent_sessions_for_settlement.write().await;
+                for (session_id, peer_key, confirmed) in resolved {
+                    let Ok(session) = guard.get_session_mut(&session_id) else {
+                        continue;
+                    };
+                    let Some(account) = session.incentive_accounts.get_mut(&peer_key) else {
+                        continue;
+                    };
+                    if confirmed {
+                        account.payment_confirmed();
+                    } else {
+                        account.payment_missing();
                     }
                 }
                 let mut settled = 0;
@@ -1147,12 +1225,22 @@ async fn main() -> anyhow::Result<()> {
                         }
                         if account.unpaid_satoshis > 0
                             && !account.payment_in_flight
+                            && account.pending_payment.is_none()
                             && !account.peer_address.is_empty()
                         {
+                            let amount = vtorrent_torrent::payment::capped_payment_amount(
+                                account.unpaid_satoshis,
+                                incentive_payment_cap_sats,
+                                incentive_budget_sats.saturating_sub(emitted_total),
+                            );
+                            if amount == 0 {
+                                continue;
+                            }
                             account.payment_in_flight = true;
+                            emitted_total = emitted_total.saturating_add(amount);
                             payment_sender.emit(vtorrent_torrent::payment::PaymentDue {
                                 peer_address: account.peer_address.clone(),
-                                amount_satoshis: account.unpaid_satoshis,
+                                amount_satoshis: amount,
                                 account_key: format!("{}\u{0}{}", session_id, peer_key),
                             });
                         }

@@ -38,6 +38,8 @@ pub mod ratelimit;
 pub mod refund_bump;
 mod refund_lineage;
 pub mod server;
+pub mod services;
+pub mod spv_sync;
 pub mod state;
 pub mod swap_reconciliation;
 pub mod swap_recovery;

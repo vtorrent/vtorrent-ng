@@ -20,6 +20,22 @@ pub struct PaymentResult {
     pub account_key: String,
     pub amount_satoshis: u64,
     pub success: bool,
+    /// The broadcast transaction, present only on success.
+    pub txid: Option<[u8; 32]>,
+}
+
+/// Amount to put in one payment, bounded by the per-payment cap and the
+/// remaining process-wide budget.
+pub fn capped_payment_amount(unpaid: u64, per_payment_cap: u64, remaining_budget: u64) -> u64 {
+    unpaid.min(per_payment_cap).min(remaining_budget)
+}
+
+/// Whether a payment at `tx_height` is buried deeply enough to settle.
+///
+/// Six confirmations keeps a shallow reorg from clearing the debt and then
+/// removing the transaction.
+pub fn payment_is_final(best_height: u32, tx_height: u32) -> bool {
+    best_height.saturating_sub(tx_height).saturating_add(1) >= 6
 }
 
 /// A channel for emitting payment events to the daemon.
@@ -56,5 +72,20 @@ mod tests {
         let payment = receiver.recv().await.unwrap();
         assert_eq!(payment.peer_address, "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT");
         assert_eq!(payment.amount_satoshis, 50_000_000);
+    }
+
+    #[test]
+    fn payment_caps_the_single_payment_and_the_remaining_budget() {
+        assert_eq!(capped_payment_amount(500, 100, 1_000), 100);
+        assert_eq!(capped_payment_amount(500, 1_000, 40), 40);
+        assert_eq!(capped_payment_amount(500, 1_000, 0), 0);
+    }
+
+    #[test]
+    fn payment_settles_only_after_six_confirmations() {
+        assert!(!payment_is_final(100, 100));
+        assert!(!payment_is_final(104, 100));
+        assert!(payment_is_final(105, 100));
+        assert!(payment_is_final(106, 100));
     }
 }

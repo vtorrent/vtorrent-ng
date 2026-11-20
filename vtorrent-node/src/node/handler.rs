@@ -335,7 +335,11 @@ pub(crate) async fn handle_block(
                         }
                         BlockAcceptance::Fork { fork_tip } => {
                             tracing::debug!("Fork block {} stored", hex::encode(fork_tip));
-                            false
+                            // Relay a validated competing tip so peers that are
+                            // partitioned from its producer can still evaluate
+                            // the equal-work tie-break. Without this, a fork can
+                            // stop propagating at an intermediate node.
+                            true
                         }
                         BlockAcceptance::Duplicate => false,
                     };
@@ -366,6 +370,11 @@ pub(crate) async fn handle_block(
                 }
                 Err(e) => {
                     tracing::warn!("Rejected block from {}: {}", peer_addr, e);
+                    if matches!(e, NodeError::BlockPolicyRejected(_)) {
+                        // The block may be perfectly valid on another branch;
+                        // it conflicts with our local checkpoint policy only.
+                        return Ok(());
+                    }
                     node.peer_manager
                         .ban_peer_with_duration(
                             peer_addr,
@@ -1300,6 +1309,49 @@ mod tests {
         );
         let chain = node.chain.lock().await;
         assert_eq!(chain.best_height(), 0);
+    }
+
+    #[tokio::test]
+    async fn handle_block_rejected_by_local_checkpoint_does_not_ban_peer() {
+        let mut node = test_node();
+        let genesis_hash = {
+            let chain = node.chain.lock().await;
+            chain.best_hash().unwrap()
+        };
+        let block1 = coinbase_block(genesis_hash, 0, 1);
+        let block1_hash = block1.hash();
+        let modifier = block1.header.stake_modifier;
+        let payload = node.serialize_block_for_peer(&block1, PROTOCOL_VERSION);
+        handle_block(
+            &mut node,
+            peer(1),
+            &NetMessage::new("block", payload),
+            PROTOCOL_VERSION,
+        )
+        .await
+        .unwrap();
+        {
+            let mut chain = node.chain.lock().await;
+            chain.set_checkpoint(2, [0xaa; 32]).unwrap();
+        }
+
+        let block2 = coinbase_block(block1_hash, modifier, 2);
+        let payload = node.serialize_block_for_peer(&block2, PROTOCOL_VERSION);
+        let addr = peer(3);
+        handle_block(
+            &mut node,
+            addr,
+            &NetMessage::new("block", payload),
+            PROTOCOL_VERSION,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !node.peer_manager.is_banned(addr).await,
+            "a locally pinned checkpoint must not penalize the relaying peer"
+        );
+        assert_eq!(node.chain.lock().await.best_height(), 1);
     }
 
     #[tokio::test]

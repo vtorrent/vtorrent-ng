@@ -666,8 +666,9 @@ impl Chain {
     }
 
     fn checkpoint_blocks_reorg(&self, fork_height: u32) -> bool {
-        self.checkpoint
-            .is_some_and(|(checkpoint_height, _)| fork_height < checkpoint_height)
+        self.checkpoint.is_some_and(|(checkpoint_height, _)| {
+            self.best_height() >= checkpoint_height && fork_height < checkpoint_height
+        })
     }
 
     /// Count, per retarget period, how many main-chain blocks signalled a
@@ -1193,7 +1194,7 @@ impl Chain {
                 .get_header_at_height(height - 1)
                 .ok_or_else(|| NodeError::Chain("Previous block not found".into()))?;
             if !self.checkpoint_accepts(height, &block_hash) {
-                return Err(NodeError::Chain(format!(
+                return Err(NodeError::BlockPolicyRejected(format!(
                     "block at checkpoint height {} does not match the pinned hash",
                     height
                 )));
@@ -1287,6 +1288,12 @@ impl Chain {
             // never its body, which may be pruned.
             let parent_height = self.block_heights.get(&prev_hash).copied().unwrap_or(0);
             let fork_height = parent_height + 1;
+            if !self.checkpoint_accepts(fork_height, &block_hash) {
+                return Err(NodeError::BlockPolicyRejected(format!(
+                    "block at checkpoint height {} does not match the pinned hash",
+                    fork_height
+                )));
+            }
             let parent_header = self.headers.get(&prev_hash).ok_or_else(|| {
                 NodeError::Chain(format!("missing parent header {}", hex::encode(prev_hash)))
             })?;

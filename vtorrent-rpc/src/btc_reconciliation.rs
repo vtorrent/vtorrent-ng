@@ -513,36 +513,59 @@ pub async fn run_btc_reconciler(state: AppState) {
         if !state.is_wallet_unlocked().await {
             continue;
         }
-        let ids: Vec<String> = {
+        let candidates: Vec<(String, Option<[u8; 32]>)> = {
             let swaps = state.swaps.read().await;
             swaps
                 .iter()
-                .filter(|(_, swap)| btc_leg_needs_monitoring(swap))
-                .map(|(id, _)| id.clone())
+                .filter(|(_, swap)| {
+                    btc_leg_needs_monitoring(swap)
+                        || (swap.preimage.is_some() && swap.vtr_refund_txid.is_none())
+                })
+                .map(|(id, swap)| (id.clone(), swap.vtr_claim_txid))
+                .collect()
+        };
+        // A settled BTC leg is still worth revisiting until the taker's VTR
+        // claim is on-chain; otherwise a deeply buried claim stops monitoring
+        // exactly when a retry may still be needed.
+        let ids: Vec<String> = {
+            let chain = state.chain.lock().await;
+            candidates
+                .into_iter()
+                .filter(|(_, claim)| {
+                    claim.is_none_or(|txid| chain.get_transaction_owned(&txid).is_none())
+                })
+                .map(|(id, _)| id)
                 .collect()
         };
         for id in ids {
             if !state.is_wallet_unlocked().await {
                 break;
             }
-            if let Err(error) = reconcile(&state, &id).await {
-                tracing::debug!(
-                    order_id = %id,
-                    error = %error,
-                    "Automatic BTC swap reconciliation failed"
-                );
-            } else {
-                maybe_auto_claim_vtr(&state, &id).await;
-            }
+            reconcile_and_maybe_claim(&state, &id).await;
         }
     }
+}
+
+/// Refresh a swap's BTC evidence, then attempt the taker's VTR claim.
+///
+/// The claim attempt must not depend on a successful scan: a transient BTC peer
+/// or wallet read failure would otherwise defer a claim that is already
+/// authorized by a previously recorded claim observation and preimage.
+pub(crate) async fn reconcile_and_maybe_claim(state: &AppState, order_id: &str) {
+    if let Err(error) = reconcile(state, order_id).await {
+        tracing::debug!(
+            order_id = %order_id,
+            error = %error,
+            "Automatic BTC swap reconciliation failed"
+        );
+    }
+    maybe_auto_claim_vtr(state, order_id).await;
 }
 
 /// After the maker's BTC claim reveals the preimage, submit the taker's VTR
 /// claim automatically instead of relying on an operator to press Claim before
 /// the VTR refund deadline.
-async fn maybe_auto_claim_vtr(state: &AppState, order_id: &str) {
-    let now = crate::handlers::now_secs_mock(state).await;
+pub(crate) async fn maybe_auto_claim_vtr(state: &AppState, order_id: &str) {
     let (order, ready, wif) = {
         let order_book = state.order_book.read().await;
         let Some(order) = order_book.get_order(order_id).cloned() else {
@@ -560,22 +583,11 @@ async fn maybe_auto_claim_vtr(state: &AppState, order_id: &str) {
                 BtcSettlementState::Claimed | BtcSettlementState::ClaimConfirming
             )
         });
-        let ready = swap.preimage.is_some()
-            && claim_observed
-            && swap.vtr_claim_txid.is_none()
-            && swap.vtr_refund_txid.is_none();
+        let ready = swap.preimage.is_some() && claim_observed && swap.vtr_refund_txid.is_none();
         let wif = state.wallet_wif.read().await.clone();
         (order, ready, wif)
     };
     if !ready {
-        return;
-    }
-    // Leave a margin for block confirmation before the VTR refund path opens.
-    if u64::from(order.expiry) <= now.saturating_add(3600) {
-        tracing::warn!(
-            order_id = %order_id,
-            "Skipping automatic VTR claim: refund deadline is too close"
-        );
         return;
     }
     let Some(wif) = wif else {

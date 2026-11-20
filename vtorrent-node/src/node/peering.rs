@@ -7,9 +7,7 @@
 use tokio::sync::mpsc;
 use vtorrent_p2p::{
     compact::CompactBlockPeerState,
-    message::{
-        encode_v2, is_v2_peer, GetBlocksMsg, NetMessage, SendCmpctMsg, VersionMsg, PROTOCOL_VERSION,
-    },
+    message::{encode_v2, is_v2_peer, NetMessage, SendCmpctMsg, VersionMsg, PROTOCOL_VERSION},
     peer::{PeerCommand, PeerEvent},
     peer_manager::PeerManager,
 };
@@ -23,6 +21,16 @@ use super::{
     overlay::{encode_overlay_message, overlay_peer_addr},
     Node, OverlayIngress,
 };
+
+/// Whether a completed handshake should trigger a tip reconciliation.
+///
+/// Height alone cannot distinguish two equal-height peers: after a partition
+/// both sides can be at the same height on different tips. Asking for headers
+/// at equal height makes the peer return its divergent branch, which then
+/// reaches the fork-choice rule.
+fn should_reconcile_tips(peer_height: u32, our_height: u32) -> bool {
+    peer_height >= our_height
+}
 
 impl Node {
     /// Handle a peer lifecycle event: handshake, message, or disconnect.
@@ -88,12 +96,12 @@ impl Node {
                     let chain = self.chain.lock().await;
                     chain.best_height()
                 };
-                if version.start_height > our_height {
+                if should_reconcile_tips(version.start_height, our_height) {
                     let best_hash = {
                         let chain = self.chain.lock().await;
                         chain.best_hash().unwrap_or([0u8; 32])
                     };
-                    let msg_payload = GetBlocksMsg {
+                    let msg_payload = vtorrent_p2p::message::GetHeadersMsg {
                         version: PROTOCOL_VERSION,
                         block_locator_hashes: vec![best_hash],
                         hash_stop: [0u8; 32],
@@ -103,8 +111,8 @@ impl Node {
                     } else {
                         serde_json::to_vec(&msg_payload).unwrap_or_default()
                     };
-                    let msg = NetMessage::new("getblocks", payload);
-                    self.peer_manager.broadcast(msg).await;
+                    let msg = NetMessage::new("getheaders", payload);
+                    self.peer_manager.send_to(peer_addr, msg).await;
                 }
 
                 // Immediately request peer's address list (PEX bootstrap)
@@ -242,5 +250,17 @@ impl Node {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_reconcile_tips;
+
+    #[test]
+    fn equal_height_peers_reconcile_tips() {
+        assert!(should_reconcile_tips(10, 10));
+        assert!(should_reconcile_tips(11, 10));
+        assert!(!should_reconcile_tips(9, 10));
     }
 }

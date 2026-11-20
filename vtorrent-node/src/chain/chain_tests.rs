@@ -269,6 +269,48 @@ fn test_fork_block_stored() {
 }
 
 #[test]
+fn future_checkpoint_allows_reorg_before_checkpoint_height() {
+    let mut chain = Chain::new().unwrap();
+    let genesis = chain.best_hash().unwrap();
+    chain.set_checkpoint(10, [0xaa; 32]).unwrap();
+    chain.add_block(make_block(genesis, 0, 1)).unwrap();
+    let old_tip = chain.best_hash().unwrap();
+    let mut competing = make_block(genesis, 0, 1);
+    while competing.hash() >= old_tip {
+        competing.header.nonce = competing.header.nonce.wrapping_add(1);
+    }
+    let winning_tip = competing.hash();
+    assert!(matches!(
+        chain.add_block(competing).unwrap(),
+        BlockAcceptance::Reorg { .. }
+    ));
+    assert_eq!(chain.best_hash(), Some(winning_tip));
+}
+
+#[test]
+fn future_checkpoint_rejects_mismatched_fork_at_checkpoint_height() {
+    let mut chain = Chain::new().unwrap();
+    let genesis = chain.best_hash().unwrap();
+    chain.set_checkpoint(2, [0xaa; 32]).unwrap();
+    chain.add_block(make_block(genesis, 0, 1)).unwrap();
+    let old_tip = chain.best_hash().unwrap();
+    let mut fork = make_block(genesis, 0, 1);
+    while fork.hash() <= old_tip {
+        fork.header.nonce = fork.header.nonce.wrapping_add(1);
+    }
+    let fork_hash = fork.hash();
+    let modifier = fork.header.stake_modifier;
+    assert!(matches!(
+        chain.add_block(fork).unwrap(),
+        BlockAcceptance::Fork { .. }
+    ));
+    let invalid_checkpoint = make_block(fork_hash, modifier, 2);
+    let error = chain.add_block(invalid_checkpoint).unwrap_err();
+    assert!(error.to_string().contains("does not match the pinned hash"));
+    assert_eq!(chain.best_hash(), Some(old_tip));
+}
+
+#[test]
 fn test_rollback_restores_utxo() {
     let mut chain = Chain::new().expect("Chain init failed");
     let genesis_hash = chain.best_hash().unwrap();
