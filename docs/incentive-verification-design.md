@@ -52,11 +52,20 @@ BEP-10, `peer_wire.rs:41`). Use them for a lightweight **receipt** handshake:
   ```
 - Cumulative counters mean a missed, late, or clock-skewed settlement window
   does not permanently dispute an honest claim; the next receipt covers the
-  whole unpaid delta. When a peer's epoch changes, both baselines are reset at
-  its first receipt, so a restart cannot cause a double payment.
-- The first receipt after an epoch change establishes baselines; it is not
-  itself paid. That is a conservative one-window underpayment, not a
-  double-payment path.
+  whole unpaid delta. When a peer's epoch changes, the previous receipt's
+  agreement is settled first, then the new epoch starts from the current
+  totals. Bytes the reset counter cannot attest are not carried forward,
+  because carrying them would permanently dispute every future payment.
+- The first receipt in an epoch pays the bytes it acknowledges, capped by our
+  own download count. It is not a free window and does not double-pay.
+- Debt, pending-payment, and budget state are process-local. Restarting the
+  daemon loses them; settle outstanding debt before a restart. Sessions with
+  unpaid or in-flight payments are not evicted or removed.
+- A broadcast payment is considered settled only after six confirmations. If it
+  disappears from both the chain and the mempool, it stays pending rather than
+  being re-paid: the original transaction can still be mined, and paying again
+  could pay the peer twice. A permanently stuck transaction needs operator
+  resolution.
 - The **payer** only pays when the receipt is **countersigned by the payee**
   (mutual agreement), or at least when the payee's own receipt **agrees within a
   tolerance**. Disagreement → no payment (or a reduced, disputed amount).

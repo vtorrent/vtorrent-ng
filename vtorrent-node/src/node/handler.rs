@@ -196,12 +196,12 @@ pub(crate) async fn handle_inv(
                     &vtorrent_p2p::message::GetDataMsg { items: chunk },
                     peer_version,
                 );
-                // Broadcast to ALL peers, including the announcer: this is a
-                // request for the missing data, not an echo. The announcer is
-                // typically the peer that has the block, so excluding it would
-                // stall propagation.
+                // Ask the announcer only. Broadcasting would let one oversized
+                // or fake inventory make every connected peer send 500
+                // not-found responses, tripping the control-message budget and
+                // banning honest peers.
                 node.peer_manager
-                    .broadcast(NetMessage::new("getdata", payload))
+                    .send_to(peer_addr, NetMessage::new("getdata", payload))
                     .await;
             }
         }
@@ -222,7 +222,10 @@ pub(crate) async fn handle_block(
             let parent_hash = block.header.prev_block_hash;
             let dependency_known = {
                 let chain = node.chain.lock().await;
-                chain.get_block(&hash).is_some() || chain.get_block(&parent_hash).is_some()
+                // Headers are retained after a body is pruned. Treating a
+                // pruned body as an unknown dependency causes an orphan/parent
+                // request loop and eventually bans the honest serving peer.
+                chain.get_header(&hash).is_some() || chain.get_header(&parent_hash).is_some()
             };
             if !dependency_known {
                 let queued = queue_orphan(node, block, peer_addr, peer_version, msg.payload.len());
@@ -335,11 +338,12 @@ pub(crate) async fn handle_block(
                         }
                         BlockAcceptance::Fork { fork_tip } => {
                             tracing::debug!("Fork block {} stored", hex::encode(fork_tip));
-                            // Relay a validated competing tip so peers that are
-                            // partitioned from its producer can still evaluate
-                            // the equal-work tie-break. Without this, a fork can
-                            // stop propagating at an intermediate node.
-                            true
+                            // Fork storage performs only stateless validation.
+                            // Relaying every stateless-valid fork would let one
+                            // peer turn a cheap fork stream into an inv flood and
+                            // get this node banned by its peers. Competing tips
+                            // are discovered through equal-height getheaders.
+                            false
                         }
                         BlockAcceptance::Duplicate => false,
                     };
@@ -1011,8 +1015,8 @@ pub(crate) async fn handle_getheaders(
                 req.block_locator_hashes.iter().copied().collect();
             let mut start_height = 1u32;
             for h in (1..=our_height).rev() {
-                if let Some(b) = chain.get_block_at_height(h) {
-                    if locator.contains(&b.hash()) {
+                if let Some(hash) = chain.block_hash_at_height(h) {
+                    if locator.contains(&hash) {
                         start_height = h + 1;
                         break;
                     }
@@ -1023,17 +1027,17 @@ pub(crate) async fn handle_getheaders(
             let (from, to) =
                 capped_range(start_height, our_height, super::HEADERS_PER_BATCH as u32);
             for h in from..=to {
-                if let Some(block) = chain.get_block_at_height(h) {
-                    let hash = block.hash();
+                if let Some(header) = chain.get_header_at_height(h) {
+                    let hash = header.hash();
                     if req.hash_stop != [0u8; 32] && hash == req.hash_stop {
-                        let header_bytes = bincode::serialize(&block.header).unwrap_or_default();
+                        let header_bytes = bincode::serialize(header).unwrap_or_default();
                         headers.push(HeaderEntry {
                             header: header_bytes,
                             tx_count: 0,
                         });
                         break;
                     }
-                    let header_bytes = bincode::serialize(&block.header).unwrap_or_default();
+                    let header_bytes = bincode::serialize(header).unwrap_or_default();
                     headers.push(HeaderEntry {
                         header: header_bytes,
                         tx_count: 0,
@@ -1092,8 +1096,16 @@ pub(crate) async fn handle_headers(
             let chain = node.chain.lock().await;
             decoded
                 .iter()
+                .filter(|hdr| {
+                    let hash = hdr.hash();
+                    // A main-chain body may have been pruned; the header is
+                    // authoritative and re-fetching it causes an orphan loop.
+                    // A fork body is still fetched so a later reorg can apply
+                    // it.
+                    let on_main = chain.is_on_main_chain(&hash);
+                    !on_main && chain.get_block(&hash).is_none()
+                })
                 .map(|hdr| hdr.hash())
-                .filter(|hash| chain.get_block(hash).is_none())
                 .map(|hash| InvItem {
                     inv_type: InvType::Block,
                     hash,
@@ -1352,6 +1364,49 @@ mod tests {
             "a locally pinned checkpoint must not penalize the relaying peer"
         );
         assert_eq!(node.chain.lock().await.best_height(), 1);
+    }
+
+    #[tokio::test]
+    async fn invalid_block_at_checkpoint_height_is_still_banned() {
+        let mut node = test_node();
+        let genesis_hash = {
+            let chain = node.chain.lock().await;
+            chain.best_hash().unwrap()
+        };
+        let block1 = coinbase_block(genesis_hash, 0, 1);
+        let block1_hash = block1.hash();
+        let modifier = block1.header.stake_modifier;
+        let payload = node.serialize_block_for_peer(&block1, PROTOCOL_VERSION);
+        handle_block(
+            &mut node,
+            peer(1),
+            &NetMessage::new("block", payload),
+            PROTOCOL_VERSION,
+        )
+        .await
+        .unwrap();
+        {
+            let mut chain = node.chain.lock().await;
+            chain.set_checkpoint(2, [0xaa; 32]).unwrap();
+        }
+
+        let mut block2 = coinbase_block(block1_hash, modifier, 2);
+        block2.header.merkle_root = [0xbb; 32];
+        let payload = node.serialize_block_for_peer(&block2, PROTOCOL_VERSION);
+        let addr = peer(4);
+        handle_block(
+            &mut node,
+            addr,
+            &NetMessage::new("block", payload),
+            PROTOCOL_VERSION,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            node.peer_manager.is_banned(addr).await,
+            "validation must run before the local-policy no-ban exemption"
+        );
     }
 
     #[tokio::test]
@@ -1908,7 +1963,10 @@ pub(crate) async fn dispatch_message(
     // exceed the control budget, while each payload stays size-capped and
     // fully validated with violations banned as usual.
     let now = super::now_secs();
-    let is_bulk_data = matches!(msg.command_str(), "block" | "tx");
+    // `notfound` is a protocol-generated response to a getdata batch and can
+    // legitimately arrive hundreds at a time; count it against the larger
+    // data budget rather than the control budget.
+    let is_bulk_data = matches!(msg.command_str(), "block" | "tx" | "notfound");
     let (budget, counts) = if is_bulk_data {
         use super::MAX_DATA_MSGS_PER_WINDOW as BUDGET;
         (BUDGET, &mut node.peer_data_msg_counts)
@@ -2304,6 +2362,25 @@ mod dispatch_tests {
         assert!(
             !node.peer_manager.is_banned(addr).await,
             "upgrade chatter must never trip the flood budget"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_notfound_uses_the_data_budget() {
+        let mut node = test_node();
+        let addr = peer(26);
+        let msg = NetMessage::new(
+            "notfound",
+            bincode::serialize(&InvMsg { items: Vec::new() }).unwrap(),
+        );
+        for _ in 0..MAX_MSGS_PER_WINDOW + 1 {
+            dispatch_message(&mut node, addr, msg.clone())
+                .await
+                .unwrap();
+        }
+        assert!(
+            !node.peer_manager.is_banned(addr).await,
+            "protocol-generated not-found responses must not trip the control budget"
         );
     }
 

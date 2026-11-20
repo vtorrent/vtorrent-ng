@@ -151,12 +151,19 @@ pub async fn remove_torrent(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> RpcResult<Json<Value>> {
+    let mut sessions = state.torrent_sessions.write().await;
+    let Some(session) = sessions.get_session(&id).ok() else {
+        return Err(RpcError::NotFound(format!("Session {} not found", id)));
+    };
+    if session.has_outstanding_incentives() {
+        return Err(RpcError::BadRequest(
+            "Session has unpaid or in-flight incentive payments; retry after settlement".into(),
+        ));
+    }
+    sessions.remove_session(&id);
+    drop(sessions);
     if let Some(cancel) = state.torrent_cancels.write().await.remove(&id) {
         cancel.cancel();
-    }
-    let removed = state.torrent_sessions.write().await.remove_session(&id);
-    if removed.is_none() {
-        return Err(RpcError::NotFound(format!("Session {} not found", id)));
     }
     Ok(Json(
         json!({ "success": true, "message": format!("Session {} removed", id) }),

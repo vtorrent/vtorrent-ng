@@ -599,6 +599,14 @@ impl Chain {
         self.height_index.get(height as usize).copied()
     }
 
+    /// Whether a known block hash is on the active main chain.
+    pub fn is_on_main_chain(&self, hash: &[u8; 32]) -> bool {
+        self.block_heights
+            .get(hash)
+            .and_then(|height| self.block_hash_at_height(*height))
+            == Some(*hash)
+    }
+
     /// Get the retained header for a block by hash (main chain or fork).
     pub fn get_header(&self, hash: &[u8; 32]) -> Option<&BlockHeader> {
         self.headers.get(hash)
@@ -666,9 +674,17 @@ impl Chain {
     }
 
     fn checkpoint_blocks_reorg(&self, fork_height: u32) -> bool {
-        self.checkpoint.is_some_and(|(checkpoint_height, _)| {
-            self.best_height() >= checkpoint_height && fork_height < checkpoint_height
-        })
+        let Some((checkpoint_height, _)) = self.checkpoint else {
+            return false;
+        };
+        if self.best_height() >= checkpoint_height {
+            return fork_height < checkpoint_height;
+        }
+        // Below a future checkpoint, a reorg is only recoverable if the fork
+        // point is close enough that a later return to the pinned branch still
+        // fits the journal. Allowing a deeper reorg can strand the node on a
+        // branch that can never reach the checkpoint.
+        checkpoint_height.saturating_sub(fork_height) > self.max_reorg_depth
     }
 
     /// Count, per retarget period, how many main-chain blocks signalled a
@@ -1193,13 +1209,6 @@ impl Chain {
             let prev_header = self
                 .get_header_at_height(height - 1)
                 .ok_or_else(|| NodeError::Chain("Previous block not found".into()))?;
-            if !self.checkpoint_accepts(height, &block_hash) {
-                return Err(NodeError::BlockPolicyRejected(format!(
-                    "block at checkpoint height {} does not match the pinned hash",
-                    height
-                )));
-            }
-
             validate_block_inner(
                 &block,
                 height - 1,
@@ -1218,6 +1227,12 @@ impl Chain {
                 );
                 e
             })?;
+            if !self.checkpoint_accepts(height, &block_hash) {
+                return Err(NodeError::BlockPolicyRejected(format!(
+                    "block at checkpoint height {} does not match the pinned hash",
+                    height
+                )));
+            }
 
             let journal = self.apply_block_journaled(&block, height)?;
             if block.header.is_pos() && block.header.utxo_root != journal.utxo_root {
@@ -1288,12 +1303,6 @@ impl Chain {
             // never its body, which may be pruned.
             let parent_height = self.block_heights.get(&prev_hash).copied().unwrap_or(0);
             let fork_height = parent_height + 1;
-            if !self.checkpoint_accepts(fork_height, &block_hash) {
-                return Err(NodeError::BlockPolicyRejected(format!(
-                    "block at checkpoint height {} does not match the pinned hash",
-                    fork_height
-                )));
-            }
             let parent_header = self.headers.get(&prev_hash).ok_or_else(|| {
                 NodeError::Chain(format!("missing parent header {}", hex::encode(prev_hash)))
             })?;
@@ -1311,6 +1320,12 @@ impl Chain {
                 prev_hash,
                 self.allow_pow_test_blocks,
             )?;
+            if !self.checkpoint_accepts(fork_height, &block_hash) {
+                return Err(NodeError::BlockPolicyRejected(format!(
+                    "block at checkpoint height {} does not match the pinned hash",
+                    fork_height
+                )));
+            }
 
             let parent_work = self.cumulative_work.get(&prev_hash).copied().unwrap_or(0);
             let fork_work = parent_work + 1;

@@ -358,7 +358,10 @@ impl Htlc {
                 prev_txid: funding_txid,
                 prev_vout: 0,
                 script_sig: Vec::new(),
-                sequence: u32::MAX,
+                // Signal replaceability: a claim may need a higher fee to
+                // replace a competing maker refund, and the HTLC script uses
+                // CLTV on the refund branch only.
+                sequence: u32::MAX - 2,
             }],
             outputs: vec![TxOutput {
                 value: self.amount.saturating_sub(fee),

@@ -10,6 +10,7 @@ use vtorrent_btc::{
 };
 use vtorrent_node::atomic_swap::{
     BtcSettlementState, BtcSwapObservation, SwapConfirmation, SwapOrder, SwapState,
+    VtrSettlementState,
 };
 
 pub async fn reconcile_btc_swap(
@@ -170,7 +171,11 @@ pub(crate) async fn reconcile_with_scan(
     // state (never in the observation, which must stay secret-free). This is
     // how a taker on a different node learns the secret and can then call
     // `vtr-claim` without supplying it out of band.
-    if observation.state == vtorrent_node::atomic_swap::BtcSettlementState::Claimed {
+    if matches!(
+        observation.state,
+        vtorrent_node::atomic_swap::BtcSettlementState::Claimed
+            | vtorrent_node::atomic_swap::BtcSettlementState::ClaimConfirming
+    ) {
         if let Some(preimage) = evidence.preimage {
             updated.preimage = Some(preimage);
         }
@@ -513,15 +518,33 @@ pub async fn run_btc_reconciler(state: AppState) {
         if !state.is_wallet_unlocked().await {
             continue;
         }
+        let local_address = local_claim_address(&state).await;
         let candidates: Vec<(String, Option<[u8; 32]>)> = {
+            let order_book = state.order_book.read().await;
             let swaps = state.swaps.read().await;
             swaps
                 .iter()
-                .filter(|(_, swap)| {
-                    btc_leg_needs_monitoring(swap)
-                        || (swap.preimage.is_some() && swap.vtr_refund_txid.is_none())
+                .filter_map(|(id, swap)| {
+                    let is_local_taker = order_book.get_order(id).is_some_and(|order| {
+                        order.taker_address.as_deref() == local_address.as_deref()
+                    });
+                    let vtr_settled = swap.vtr_observation.as_ref().is_some_and(|observation| {
+                        matches!(
+                            observation.state,
+                            vtorrent_node::atomic_swap::VtrSettlementState::Claimed
+                                | vtorrent_node::atomic_swap::VtrSettlementState::Refunded
+                                | vtorrent_node::atomic_swap::VtrSettlementState::RefundConfirming
+                                | vtorrent_node::atomic_swap::VtrSettlementState::RefundPending
+                                | vtorrent_node::atomic_swap::VtrSettlementState::SpentElsewhere
+                        )
+                    });
+                    let needs_claim = is_local_taker
+                        && swap.preimage.is_some()
+                        && swap.vtr_refund_txid.is_none()
+                        && !vtr_settled;
+                    (btc_leg_needs_monitoring(swap) || needs_claim)
+                        .then(|| (id.clone(), swap.vtr_claim_txid))
                 })
-                .map(|(id, swap)| (id.clone(), swap.vtr_claim_txid))
                 .collect()
         };
         // A settled BTC leg is still worth revisiting until the taker's VTR
@@ -552,20 +575,39 @@ pub async fn run_btc_reconciler(state: AppState) {
 /// or wallet read failure would otherwise defer a claim that is already
 /// authorized by a previously recorded claim observation and preimage.
 pub(crate) async fn reconcile_and_maybe_claim(state: &AppState, order_id: &str) {
-    if let Err(error) = reconcile(state, order_id).await {
-        tracing::debug!(
-            order_id = %order_id,
-            error = %error,
-            "Automatic BTC swap reconciliation failed"
-        );
-    }
-    maybe_auto_claim_vtr(state, order_id).await;
+    let scan_ok = match reconcile(state, order_id).await {
+        Ok(_) => true,
+        Err(error) => {
+            tracing::debug!(
+                order_id = %order_id,
+                error = %error,
+                "Automatic BTC swap reconciliation failed"
+            );
+            false
+        }
+    };
+    maybe_auto_claim_vtr(state, order_id, scan_ok).await;
+}
+
+/// The VTR address controlled by the currently loaded hot wallet.
+async fn local_claim_address(state: &AppState) -> Option<String> {
+    let wif = state.wallet_wif.read().await.clone()?;
+    let key = vtorrent_core::keys::PrivateKey::from_wif(&wif).ok()?;
+    let pubkey = key.public_key().ok()?;
+    Some(
+        vtorrent_core::address::Address::from_pubkey(
+            &pubkey,
+            key.is_compressed(),
+            vtorrent_core::network::mainnet::PUBKEY_ADDRESS_PREFIX,
+        )
+        .to_string(),
+    )
 }
 
 /// After the maker's BTC claim reveals the preimage, submit the taker's VTR
 /// claim automatically instead of relying on an operator to press Claim before
 /// the VTR refund deadline.
-pub(crate) async fn maybe_auto_claim_vtr(state: &AppState, order_id: &str) {
+pub(crate) async fn maybe_auto_claim_vtr(state: &AppState, order_id: &str, scan_ok: bool) {
     let (order, ready, wif) = {
         let order_book = state.order_book.read().await;
         let Some(order) = order_book.get_order(order_id).cloned() else {
@@ -575,36 +617,45 @@ pub(crate) async fn maybe_auto_claim_vtr(state: &AppState, order_id: &str) {
         let Some(swap) = swaps.get(order_id) else {
             return;
         };
-        // Require a current claim observation. A preimage left behind by a
-        // reorged-out claim must not authorize the taker's VTR claim.
-        let claim_observed = swap.btc_observation.as_ref().is_some_and(|observation| {
+        // A restored observation can outlive a reorg. Only a fresh scan may
+        // authorize a six-confirmation claim; a stale observation must reach
+        // the code's finality threshold first.
+        let observation = swap.btc_observation.as_ref();
+        let claim_observed =
+            observation.is_some_and(|observation| observation.state == BtcSettlementState::Claimed);
+        let final_claim = observation
+            .and_then(|observation| observation.spend.as_ref())
+            .is_some_and(|spend| spend.confirmations >= BTC_SETTLEMENT_FINALITY_CONFIRMATIONS);
+        let vtr_settled = swap.vtr_observation.as_ref().is_some_and(|observation| {
             matches!(
                 observation.state,
-                BtcSettlementState::Claimed | BtcSettlementState::ClaimConfirming
+                VtrSettlementState::Claimed
+                    | VtrSettlementState::Refunded
+                    | VtrSettlementState::RefundConfirming
+                    | VtrSettlementState::RefundPending
+                    | VtrSettlementState::SpentElsewhere
             )
         });
-        let ready = swap.preimage.is_some() && claim_observed && swap.vtr_refund_txid.is_none();
+        let ready = swap.preimage.is_some()
+            && claim_observed
+            && swap.vtr_refund_txid.is_none()
+            && !vtr_settled
+            && (scan_ok || final_claim);
         let wif = state.wallet_wif.read().await.clone();
         (order, ready, wif)
     };
     if !ready {
         return;
     }
+    if !state.is_wallet_unlocked().await {
+        return;
+    }
     let Some(wif) = wif else {
         return;
     };
-    let Ok(key) = vtorrent_core::keys::PrivateKey::from_wif(&wif) else {
+    let Some(address) = local_claim_address(state).await else {
         return;
     };
-    let Ok(pubkey) = key.public_key() else {
-        return;
-    };
-    let address = vtorrent_core::address::Address::from_pubkey(
-        &pubkey,
-        key.is_compressed(),
-        vtorrent_core::network::mainnet::PUBKEY_ADDRESS_PREFIX,
-    )
-    .to_string();
     // Only the taker can claim the VTR HTLC; the maker's wallet key does not
     // control the taker address.
     if order.taker_address.as_deref() != Some(address.as_str()) {

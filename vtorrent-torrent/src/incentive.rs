@@ -13,6 +13,9 @@ pub const VTR_PER_GB_DOWNLOADED: f64 = 0.5; // 0.5 VTR per GB downloaded from in
 pub const MIN_PAYMENT_BYTES: u64 = 10 * 1024 * 1024; // Minimum 10 MB before payment is triggered
 pub const PAYMENT_INTERVAL_SECS: u64 = 300; // Payment settled every 5 minutes
 pub const COIN: u64 = 100_000_000; // 1 VTR = 100,000,000 satoshis
+/// Smallest debt worth an on-chain payment. Below this the fixed transaction
+/// fee dwarfs the payment, so the debt accumulates instead of retrying forever.
+pub const MIN_PAYMENT_SATS: u64 = 10_000;
 
 /// Monotonic-enough per-account epoch. A restart creates a new epoch so a
 /// peer's cumulative receipt cannot be compared against a different session.
@@ -243,9 +246,12 @@ impl PeerBandwidthAccount {
         self.payment_in_flight = false;
     }
 
-    /// The pending payment vanished from both the chain and the mempool.
+    /// The pending payment is not currently visible in the chain or mempool.
+    ///
+    /// Keep the pending marker: a broadcast transaction can still be mined
+    /// later, so clearing it and paying again would risk a double payment.
+    /// An operator must resolve a transaction that is permanently stuck.
     pub fn payment_missing(&mut self) {
-        self.pending_payment = None;
         self.payment_in_flight = false;
     }
 
@@ -275,13 +281,17 @@ impl PeerBandwidthAccount {
                 }
             }
             self.peer_epoch = Some(receipt.epoch);
-            // Anchor the peer's cumulative counter so its next delta covers
-            // our unsettled downloads, even when the counter also includes
-            // bytes from before this connection or from a previous session.
+            // Anchor both counters so the next receipt pays exactly the bytes
+            // this receipt acknowledges. If the peer's new counter is below
+            // our unsettled total, the older bytes cannot be attested by the
+            // reset epoch; forgive that unacknowledged remainder rather than
+            // carrying it forever and blocking every future payment.
             let unsettled = self
                 .total_bytes_downloaded
                 .saturating_sub(self.settled_our_downloaded);
-            self.settled_peer_uploaded = receipt.uploaded_by_me.saturating_sub(unsettled);
+            let acknowledged = unsettled.min(receipt.uploaded_by_me);
+            self.settled_our_downloaded = self.total_bytes_downloaded.saturating_sub(acknowledged);
+            self.settled_peer_uploaded = receipt.uploaded_by_me.saturating_sub(acknowledged);
             self.last_receipt_id = receipt.settlement_id;
             self.peer_receipt = Some(receipt);
             return true;
@@ -597,13 +607,14 @@ mod tests {
         assert!(account.pending_payment.is_some());
 
         account.payment_missing();
-        assert!(account.pending_payment.is_none());
+        assert!(
+            account.pending_payment.is_some(),
+            "a still-mineable transaction must not be paid twice"
+        );
         assert_eq!(
             account.unpaid_satoshis, COIN,
-            "a vanished transaction must be payable again"
+            "the original debt remains outstanding"
         );
-
-        account.record_payment_broadcast([9u8; 32], COIN);
         account.payment_confirmed();
         assert_eq!(account.unpaid_satoshis, 0);
         assert_eq!(account.total_paid_satoshis, COIN);
@@ -784,6 +795,65 @@ mod tests {
             account.agreed_owed().map(|agreement| agreement.satoshis),
             Some(COIN / 2),
             "a cumulative counter from a prior session must not block payment"
+        );
+    }
+
+    #[test]
+    fn first_receipt_pays_only_the_bytes_it_acknowledges() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        use vtorrent_core::receipt::BandwidthReceipt;
+
+        let mut account = PeerBandwidthAccount::new("VPeer".into());
+        account.record_download(2 * GB);
+        let receipt = BandwidthReceipt {
+            info_hash: [1u8; 20],
+            window_start: 0,
+            window_end: 300,
+            uploaded_by_me: GB,
+            downloaded_by_me: 0,
+            peer: "VUs".into(),
+            signer: "VPeer".into(),
+            settlement_id: 1,
+            epoch: account.receipt_epoch,
+        };
+        assert!(account.record_receipt(receipt));
+        assert_eq!(
+            account.agreed_owed().map(|agreement| agreement.satoshis),
+            Some(COIN / 2),
+            "only the acknowledged gigabyte is payable"
+        );
+    }
+
+    #[test]
+    fn epoch_reset_without_an_old_receipt_does_not_block_new_downloads() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        use vtorrent_core::receipt::BandwidthReceipt;
+
+        let mut account = PeerBandwidthAccount::new("VPeer".into());
+        account.peer_epoch = Some(account.receipt_epoch);
+        account.record_download(100 * GB);
+        let mut receipt = BandwidthReceipt {
+            info_hash: [1u8; 20],
+            window_start: 0,
+            window_end: 300,
+            uploaded_by_me: 0,
+            downloaded_by_me: 0,
+            peer: "VUs".into(),
+            signer: "VPeer".into(),
+            settlement_id: 1,
+            epoch: account.receipt_epoch.wrapping_add(1),
+        };
+        assert!(account.record_receipt(receipt.clone()));
+        assert_eq!(account.agreed_owed().map(|a| a.satoshis), Some(0));
+
+        account.record_download(GB);
+        receipt.settlement_id = 2;
+        receipt.uploaded_by_me = GB;
+        assert!(account.record_receipt(receipt));
+        assert_eq!(
+            account.agreed_owed().map(|agreement| agreement.satoshis),
+            Some(COIN / 2),
+            "the unacknowledged pre-reset gap must not poison new payments"
         );
     }
 

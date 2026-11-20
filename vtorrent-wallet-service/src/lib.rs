@@ -456,6 +456,8 @@ pub struct VtrClaimParams<'a> {
     pub preimage: [u8; 32],
     /// The taker's WIF key for signing.
     pub taker_wif: &'a str,
+    /// Fee deducted from the HTLC output for this claim.
+    pub fee_satoshis: u64,
 }
 
 /// Build and sign a VTR HTLC claim transaction (taker reveals the preimage).
@@ -478,8 +480,8 @@ pub fn build_vtr_htlc_claim(
         funding_txid,
         preimage,
         taker_wif,
+        fee_satoshis,
     } = params;
-    use vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS;
     use vtorrent_wallet::tx_builder::sign_input_over_subscript;
 
     crate::swap_policy::validate_vtr_amount(vtr_amount)?;
@@ -494,7 +496,7 @@ pub fn build_vtr_htlc_claim(
     .map_err(|e| format!("Unable to reconstruct HTLC: {}", e))?;
 
     let unsigned = htlc
-        .build_claim_tx_unsigned(funding_txid, &preimage, VTR_HTLC_FEE_SATOSHIS)
+        .build_claim_tx_unsigned(funding_txid, &preimage, fee_satoshis)
         .map_err(|e| format!("Unable to build VTR claim tx: {}", e))?;
 
     let htlc_script = htlc

@@ -666,6 +666,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
     let mut bitfield_seen = false;
     let mut next_receipt = std::time::Instant::now();
     let mut last_receipt_at: Option<std::time::Instant> = None;
+    let mut last_sent_receipt_at: Option<std::time::Instant> = None;
 
     loop {
         if cancel.is_cancelled() {
@@ -673,7 +674,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
         }
 
         if std::time::Instant::now() >= next_receipt {
-            send_bandwidth_receipt(
+            if send_bandwidth_receipt(
                 &mut conn,
                 metainfo.info_hash,
                 receipt_key.as_deref(),
@@ -683,7 +684,10 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                 &session_id,
                 &sessions,
             )
-            .await;
+            .await
+            {
+                last_sent_receipt_at = Some(std::time::Instant::now());
+            }
             next_receipt = std::time::Instant::now() + std::time::Duration::from_secs(60);
         }
 
@@ -1054,6 +1058,19 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
         {
             // A short download can finish before the next periodic tick. Send
             // one final cumulative receipt so the transfer is payable.
+            // The receiver drops receipts within 30 s of the previous one, so
+            // wait out that window before closing; otherwise the final receipt
+            // is silently discarded.
+            if let Some(last) = last_sent_receipt_at {
+                let elapsed = last.elapsed();
+                if elapsed < std::time::Duration::from_secs(30) {
+                    let wait = std::time::Duration::from_secs(30) - elapsed;
+                    tokio::select! {
+                        _ = tokio::time::sleep(wait) => {}
+                        _ = cancel.cancelled() => break,
+                    }
+                }
+            }
             send_bandwidth_receipt(
                 &mut conn,
                 metainfo.info_hash,
@@ -1084,12 +1101,12 @@ async fn send_bandwidth_receipt(
     local_address: &str,
     session_id: &str,
     sessions: &Arc<RwLock<SessionManager>>,
-) {
+) -> bool {
     let (Some(key), Some(id), Some(peer_addr)) = (key, receipt_id, peer_vtr_address) else {
-        return;
+        return false;
     };
     if local_address.is_empty() {
-        return;
+        return false;
     }
     let account = {
         let guard = sessions.read().await;
@@ -1099,7 +1116,7 @@ async fn send_bandwidth_receipt(
             .and_then(|session| session.incentive_accounts.get(peer_addr).cloned())
     };
     let Some(account) = account else {
-        return;
+        return false;
     };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1117,10 +1134,10 @@ async fn send_bandwidth_receipt(
         epoch: account.receipt_epoch,
     };
     let Ok(signature) = receipt.sign(key) else {
-        return;
+        return false;
     };
     let Ok(pubkey) = key.public_key() else {
-        return;
+        return false;
     };
     let pubkey_bytes = if key.is_compressed() {
         pubkey.serialize().to_vec()
@@ -1132,12 +1149,12 @@ async fn send_bandwidth_receipt(
         pubkey: pubkey_bytes,
         signature,
     };
-    let _ = conn
-        .send(&PeerMessage::Extended {
-            id,
-            payload: crate::metadata::encode_receipt(&envelope),
-        })
-        .await;
+    conn.send(&PeerMessage::Extended {
+        id,
+        payload: crate::metadata::encode_receipt(&envelope),
+    })
+    .await
+    .is_ok()
 }
 
 /// Fetch the full metainfo from a peer via the ut_metadata extension (BEP-9).

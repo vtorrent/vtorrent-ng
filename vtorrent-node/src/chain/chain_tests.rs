@@ -288,6 +288,26 @@ fn future_checkpoint_allows_reorg_before_checkpoint_height() {
 }
 
 #[test]
+fn distant_future_checkpoint_blocks_a_deep_pre_checkpoint_reorg() {
+    let mut chain = Chain::new().unwrap();
+    let genesis = chain.best_hash().unwrap();
+    let checkpoint = chain.max_reorg_depth + 2;
+    chain.set_checkpoint(checkpoint, [0xaa; 32]).unwrap();
+    chain.add_block(make_block(genesis, 0, 1)).unwrap();
+    let old_tip = chain.best_hash().unwrap();
+    let mut competing = make_block(genesis, 0, 1);
+    while competing.hash() >= old_tip {
+        competing.header.nonce = competing.header.nonce.wrapping_add(1);
+    }
+    let error = chain.add_block(competing).unwrap_err();
+    assert!(
+        error.to_string().contains("below the pinned checkpoint"),
+        "a reorg too far below a future checkpoint must be refused: {error}"
+    );
+    assert_eq!(chain.best_hash(), Some(old_tip));
+}
+
+#[test]
 fn future_checkpoint_rejects_mismatched_fork_at_checkpoint_height() {
     let mut chain = Chain::new().unwrap();
     let genesis = chain.best_hash().unwrap();

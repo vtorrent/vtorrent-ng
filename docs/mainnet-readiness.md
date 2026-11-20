@@ -33,9 +33,15 @@ that evidence and requires operator-led recovery; do not re-attest a used seed.
 **Torrent incentive spend cap:** automatic payments are bounded per process by
 `--torrent-incentive-budget-sats` (default 10 VTR) and per payment by
 `--torrent-incentive-payment-cap-sats` (default 1 VTR). Larger obligations are
-paid in successive transactions as earlier ones confirm. A payment remains an
-outstanding debt until the transaction is observed in a block; eviction,
-restart loss, or a reorg makes it payable again instead of silently settling it.
+paid in successive transactions as earlier ones confirm. The cap bounds
+principal only; network fees are additional. A payment remains an outstanding
+debt until six confirmations; a shallow reorg keeps it pending, and a
+transaction missing from both chain and mempool stays pending rather than being
+re-paid, because the original can still be mined. An operator must resolve a
+permanently stuck transaction. Debt and budget state are process-local: a
+restart loses them, so settle outstanding incentive debt before restarting.
+Session eviction and `remove_torrent` refuse while debt or an in-flight payment
+exists.
 
 **Desktop backup restriction:** Backup collection takes the BTC state lock and
 includes the initialization record when present. If that record exists but its

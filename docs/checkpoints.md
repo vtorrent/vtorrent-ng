@@ -9,7 +9,11 @@ does not silently replace a higher persisted pin; delete the file to reset.
 When set:
 
 - the main-chain block at `HEIGHT` must have exactly `HASH`; and
-- a reorg whose fork point is below `HEIGHT` is refused.
+- once the local chain has reached `HEIGHT`, a reorg whose fork point is below
+  `HEIGHT` is refused. Below a future checkpoint, a reorg is allowed only when
+  the fork point is close enough to `HEIGHT` that the pinned branch remains
+  recoverable within the journal depth; deeper pre-checkpoint reorgs are
+  refused.
 
 The checkpoint is optional for testnets. **Every mainnet node should use the
 published checkpoint after launch.** It is not a consensus rule; a node without

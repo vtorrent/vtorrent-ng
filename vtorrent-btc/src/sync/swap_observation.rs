@@ -75,18 +75,23 @@ impl SwapScanTracker {
         if let Some(input) = htlc_input {
             self.spend = Some(anchor);
             // A hash-lock claim reveals the preimage in the witness as a
-            // 32-byte element whose SHA-256 equals the HTLC hash lock. Only
-            // the input that actually spends the HTLC qualifies, and only the
-            // exact `<sig> <pubkey> <preimage> <1> <script>` claim shape.
-            // Harvesting from any input or any 32-byte witness element would
-            // misclassify a refund carrying unrelated data as a claim.
-            let witness: Vec<&[u8]> = input.witness.iter().collect();
-            if witness.len() == 5 && witness[3] == [1u8].as_slice() {
-                if let Ok(candidate) = <[u8; 32]>::try_from(witness[2]) {
-                    if bitcoin::hashes::sha256::Hash::hash(&candidate).to_byte_array()
-                        == self.hash_lock
-                    {
-                        self.preimage = Some(candidate);
+            // 32-byte element whose SHA-256 equals the HTLC hash lock. Accept
+            // any valid true-branch witness shape rather than only the exact
+            // five-element form a different client may not use. A refund
+            // selects the false branch and carries no true selector.
+            let true_branch = input
+                .witness
+                .iter()
+                .any(|element| element == [1u8].as_slice());
+            if true_branch {
+                for element in input.witness.iter() {
+                    if let Ok(candidate) = <[u8; 32]>::try_from(element) {
+                        if bitcoin::hashes::sha256::Hash::hash(&candidate).to_byte_array()
+                            == self.hash_lock
+                        {
+                            self.preimage = Some(candidate);
+                            break;
+                        }
                     }
                 }
             }
@@ -194,6 +199,26 @@ mod tests {
         let tx = spend_tx(vec![vec![0x30; 71], vec![0x02; 33], vec![8u8; 32], vec![1]]);
         tracker.record(&tx, 100, [3u8; 32]);
         assert_eq!(tracker.preimage, None);
+    }
+
+    #[test]
+    fn records_preimage_from_a_nonstandard_true_branch_witness() {
+        use bitcoin::hashes::Hash;
+        let preimage = [7u8; 32];
+        let hash_lock = bitcoin::hashes::sha256::Hash::hash(&preimage).to_byte_array();
+        let mut tracker = tracker_with_hash_lock(hash_lock);
+        // Another client may add an extra element or reorder the witness; the
+        // true selector and the hash-lock match are what identify a claim.
+        let tx = spend_tx(vec![
+            vec![0x30; 71],
+            vec![0x02; 33],
+            vec![0xaa; 10],
+            preimage.to_vec(),
+            vec![1],
+            vec![0x63],
+        ]);
+        tracker.record(&tx, 100, [3u8; 32]);
+        assert_eq!(tracker.preimage, Some(preimage));
     }
 
     #[test]

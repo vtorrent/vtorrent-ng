@@ -338,12 +338,23 @@ impl SpvChain {
     /// Used to rebuild the view from the full node's canonical chain after a
     /// missed event, a failed insertion, or a reorg that moved the tip to a
     /// different branch.
-    pub fn reset_headers(&mut self) {
+    pub fn reset_headers(&mut self) -> Result<()> {
+        if self.pinned_genesis.is_none() {
+            return Err(SpvError::HeaderValidation(
+                "cannot reset an unpinned SPV chain".into(),
+            ));
+        }
         self.headers.clear();
         self.work.clear();
         self.best_hash = None;
         self.best_height = 0;
         self.genesis_hash = None;
+        Ok(())
+    }
+
+    /// The pinned genesis hash and fixed difficulty, if the chain is pinned.
+    pub fn pinned_genesis(&self) -> Option<([u8; 32], u32)> {
+        self.pinned_genesis
     }
 
     /// Add a block header to the chain.
@@ -359,6 +370,10 @@ impl SpvChain {
     }
 
     /// Add a header already validated by the local full node.
+    ///
+    /// Only pass headers the local full node has accepted. Trusted headers
+    /// skip the wall-clock future-time check, so peer-supplied headers must use
+    /// [`Self::add_header`] instead.
     pub fn add_trusted_header(&mut self, header: SpvHeader) -> Result<()> {
         self.add_header_inner(header, true)
     }
@@ -955,6 +970,38 @@ mod tests {
         assert!(!chain.is_on_best_chain(&loser.hash()));
         assert!(chain.verify_tx_inclusion(&winner.hash(), &proof).is_ok());
         assert!(chain.verify_tx_inclusion(&loser.hash(), &proof).is_err());
+    }
+
+    #[test]
+    fn equal_work_tie_break_is_independent_of_insertion_order() {
+        let genesis = make_header(0, [0u8; 32], [1u8; 32]);
+        let first = make_header(1, genesis.hash(), [2u8; 32]);
+        let mut second = make_header(1, genesis.hash(), [3u8; 32]);
+        second.nonce = second.nonce.wrapping_add(1);
+        let (winner, loser) = if first.hash() < second.hash() {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let mut chain = SpvChain::new();
+        chain.add_trusted_header(genesis).unwrap();
+        chain.add_trusted_header(winner.clone()).unwrap();
+        chain.add_trusted_header(loser).unwrap();
+        assert_eq!(chain.best_hash(), Some(winner.hash()));
+    }
+
+    #[test]
+    fn reset_requires_a_pinned_genesis() {
+        let mut unpinned = SpvChain::new();
+        assert!(unpinned.reset_headers().is_err());
+        let genesis = make_header(0, [0u8; 32], [1u8; 32]);
+        let genesis_hash = genesis.hash();
+        let bits = genesis.bits;
+        let mut pinned = SpvChain::with_genesis(genesis_hash, bits);
+        pinned.add_trusted_header(genesis).unwrap();
+        pinned.reset_headers().unwrap();
+        assert!(pinned.is_empty());
+        assert_eq!(pinned.pinned_genesis(), Some((genesis_hash, bits)));
     }
 
     #[test]

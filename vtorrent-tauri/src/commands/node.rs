@@ -244,9 +244,6 @@ pub async fn start_node(
             vtorrent_node::genesis::GENESIS_BITS,
         )
         .map_err(|error| TauriError::InvalidInput(format!("SPV genesis: {error}")))?;
-    vtorrent_rpc::spv_sync::sync_spv_from_chain(&rpc_state)
-        .await
-        .map_err(|error| TauriError::NodeError(format!("SPV header sync: {error}")))?;
     if let Ok(peer) = std::env::var("VTORRENT_BTC_PEER") {
         if !peer.trim().is_empty() {
             *rpc_state.btc_peer.write().await = Some(peer);
@@ -329,7 +326,6 @@ pub async fn start_node(
     // Both swap reconcilers are required: the BTC loop observes the maker's
     // claim, records the preimage, and submits the taker's automatic VTR claim.
     let _swap_services = vtorrent_rpc::services::spawn_swap_services(rpc_state.clone());
-    let _spv_sync = vtorrent_rpc::services::spawn_spv_sync(rpc_state.clone());
     // The desktop previously created a BTC wallet but never synced headers or
     // scanned for UTXOs. Use the same shared loop as the daemon.
     tokio::spawn(vtorrent_rpc::btc_sync::run_sync_loop(std::sync::Arc::new(

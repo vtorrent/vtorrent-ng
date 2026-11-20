@@ -1185,11 +1185,11 @@ async fn main() -> anyhow::Result<()> {
                             .is_some()
                     };
                     if confirmed || (!in_chain && !in_mempool) {
-                        resolved.push((session_id, peer_key, confirmed));
+                        resolved.push((session_id, peer_key, confirmed, txid));
                     }
                 }
                 let mut guard = torrent_sessions_for_settlement.write().await;
-                for (session_id, peer_key, confirmed) in resolved {
+                for (session_id, peer_key, confirmed, txid) in resolved {
                     let Ok(session) = guard.get_session_mut(&session_id) else {
                         continue;
                     };
@@ -1199,6 +1199,11 @@ async fn main() -> anyhow::Result<()> {
                     if confirmed {
                         account.payment_confirmed();
                     } else {
+                        tracing::warn!(
+                            peer = %account.peer_address,
+                            txid = %hex::encode(txid),
+                            "Incentive payment is not in the chain or mempool; keeping it pending to avoid a double payment"
+                        );
                         account.payment_missing();
                     }
                 }
@@ -1233,7 +1238,7 @@ async fn main() -> anyhow::Result<()> {
                                 incentive_payment_cap_sats,
                                 incentive_budget_sats.saturating_sub(emitted_total),
                             );
-                            if amount == 0 {
+                            if amount < vtorrent_torrent::incentive::MIN_PAYMENT_SATS {
                                 continue;
                             }
                             account.payment_in_flight = true;

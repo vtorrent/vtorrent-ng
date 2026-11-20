@@ -208,8 +208,13 @@ impl TorrentSession {
             return;
         }
         // First pass: remove accounts with no activity
-        self.incentive_accounts
-            .retain(|_, a| a.bytes_uploaded > 0 || a.bytes_downloaded > 0);
+        self.incentive_accounts.retain(|_, a| {
+            a.bytes_uploaded > 0
+                || a.bytes_downloaded > 0
+                || a.unpaid_satoshis > 0
+                || a.payment_in_flight
+                || a.pending_payment.is_some()
+        });
         // If still over limit, remove the least-recently-active accounts —
         // but only those with no pending earnings: evicting an account with
         // unsettled bandwidth would silently destroy what we owe the peer.
@@ -238,6 +243,16 @@ impl TorrentSession {
     /// Format total size as human-readable.
     pub fn size_display(&self) -> String {
         format_bytes(self.metainfo.total_size)
+    }
+
+    /// Whether removing this session would discard an incentive debt or a
+    /// payment awaiting confirmation.
+    pub fn has_outstanding_incentives(&self) -> bool {
+        self.incentive_accounts.values().any(|account| {
+            account.unpaid_satoshis > 0
+                || account.payment_in_flight
+                || account.pending_payment.is_some()
+        })
     }
 
     /// Format downloaded bytes as human-readable.
@@ -302,7 +317,7 @@ impl SessionManager {
             let oldest_terminal = self
                 .sessions
                 .iter()
-                .filter(|(_, s)| s.state.is_terminal())
+                .filter(|(_, s)| s.state.is_terminal() && !s.has_outstanding_incentives())
                 .min_by_key(|(_, s)| s.last_active)
                 .map(|(id, _)| id.clone())?;
             self.sessions.remove(&oldest_terminal);

@@ -736,6 +736,7 @@ pub async fn vtr_claim_with_state(
             funding_txid,
             preimage,
             taker_wif: &taker_wif,
+            fee_satoshis: vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS,
         })
         .map_err(RpcError::BadRequest)?;
     let claim_txid = claim_tx.txid();
@@ -834,6 +835,7 @@ pub async fn vtr_claim_external(
             funding_txid,
             preimage,
             taker_wif: &taker_wif,
+            fee_satoshis: vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS,
         })
         .map_err(RpcError::BadRequest)?;
     let txid = claim.txid();

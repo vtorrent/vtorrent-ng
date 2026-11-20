@@ -92,18 +92,17 @@ impl Node {
                 self.compact_peers
                     .insert(peer_addr, CompactBlockPeerState::default());
                 // Ask peer for blocks if they are ahead of us
-                let our_height = {
+                let (our_height, locator) = {
                     let chain = self.chain.lock().await;
-                    chain.best_height()
+                    (
+                        chain.best_height(),
+                        crate::node::p2p::build_block_locator(&chain),
+                    )
                 };
                 if should_reconcile_tips(version.start_height, our_height) {
-                    let best_hash = {
-                        let chain = self.chain.lock().await;
-                        chain.best_hash().unwrap_or([0u8; 32])
-                    };
                     let msg_payload = vtorrent_p2p::message::GetHeadersMsg {
                         version: PROTOCOL_VERSION,
-                        block_locator_hashes: vec![best_hash],
+                        block_locator_hashes: locator,
                         hash_stop: [0u8; 32],
                     };
                     let payload = if is_v2_peer(version.version) {

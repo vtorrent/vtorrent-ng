@@ -9,6 +9,35 @@ use vtorrent_p2p::{
     peer_manager::{PeerManager, TARGET_OUTBOUND},
 };
 
+/// Build a geometric block locator from the current main-chain tip.
+///
+/// Used by periodic sync and by equal-height handshake reconciliation. A
+/// single-tip locator cannot find a common ancestor on a long divergent branch.
+pub(crate) fn build_block_locator(chain: &crate::chain::Chain) -> Vec<[u8; 32]> {
+    let tip = chain.best_height();
+    let mut hashes = Vec::new();
+    let mut step = 1u32;
+    let mut h = tip;
+    loop {
+        if let Some(hash) = chain.block_hash_at_height(h) {
+            hashes.push(hash);
+        }
+        if hashes.len() >= 10 {
+            step *= 2;
+        }
+        if h < step {
+            if let Some(genesis) = chain.block_hash_at_height(0) {
+                if hashes.last().copied() != Some(genesis) {
+                    hashes.push(genesis);
+                }
+            }
+            break;
+        }
+        h -= step;
+    }
+    hashes
+}
+
 /// Handle a peer event from the P2P layer.
 ///
 /// Extracted from `Node::handle_peer_event`. Lock order `chain → mempool` is
@@ -97,29 +126,7 @@ impl super::Node {
             // Build a block locator (exponentially stepped hashes from tip)
             let locator = {
                 let chain = self.chain.lock().await;
-                let tip = chain.best_height();
-                let mut hashes = Vec::new();
-                let mut step = 1u32;
-                let mut h = tip;
-                loop {
-                    if let Some(block) = chain.get_block_at_height(h) {
-                        hashes.push(block.hash());
-                    }
-                    if hashes.len() >= 10 {
-                        step *= 2;
-                    }
-                    if h < step {
-                        // Always include genesis
-                        if let Some(genesis) = chain.get_block_at_height(0) {
-                            if hashes.last().copied() != Some(genesis.hash()) {
-                                hashes.push(genesis.hash());
-                            }
-                        }
-                        break;
-                    }
-                    h -= step;
-                }
-                hashes
+                build_block_locator(&chain)
             };
 
             let msg = GetHeadersMsg {

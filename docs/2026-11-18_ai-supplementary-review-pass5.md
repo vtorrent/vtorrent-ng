@@ -49,13 +49,24 @@ fix was written. Fixes are on `main` after `f9a91a2`.
 | 33 | High | SPV recovery | A dropped event or failed trusted-header insertion left SPV stale; lag reconciliation repaired only the block store, and later headers failed on unknown parents. | A shared `spv_sync` rebuilds the view from the canonical chain at startup, every 30 seconds, after lag reconciliation, and after a failed insertion. |
 | 34 | High | Desktop swaps | The desktop started BTC wallet sync but not the BTC swap reconciler, so a taker's automatic VTR claim depended on a manual RPC call. | Both front-ends start the two reconcilers through one shared `spawn_swap_services` function; a test asserts both are started. |
 | 35 | High | Swap claims | The automatic claim skipped a recorded claim after a persistence or submission failure, and refused to try during the final hour. A failed BTC scan also blocked the claim attempt. | Recorded claims are re-submitted, the claim is attempted until expiry, and a scan failure no longer suppresses the claim. Regression tests cover all three cases. |
-| 36 | High | Fork convergence | Equal-height peers never requested each other's tips, and a stored fork block was not relayed, so the tie-break could not run after a partition. | Equal-height handshakes and periodic tip reconciliation request headers; validated fork blocks are relayed. |
-| 37 | High | Checkpoints | A future checkpoint blocked reorgs before the node reached it and caused a peer ban for a local policy decision; fork blocks were not checked at the pinned height. | Reorgs are allowed below a not-yet-reached checkpoint, fork blocks are checked at the pinned height, and local policy rejections do not ban the sender. |
-| 38 | High | Receipt accounting | The first receipt and every peer epoch change discarded unsettled downloaded bytes; an epoch change also discarded the previous epoch's agreement. | The first receipt pays what it acknowledges, an epoch change settles the old receipt before rebasing, and the unsettled remainder is retained. |
-| 39 | Medium | Incentive payments | Mempool admission cleared the debt, so an evicted, lost, or reorged transaction left the peer unpaid with no retry. | A broadcast payment stays pending until six confirmations; a shallow reorg keeps it pending, and a transaction missing from both chain and mempool makes the debt payable again. |
-| 40 | Medium | Incentive spend cap | Default-on payouts had no process budget or per-payment limit. | Added `--torrent-incentive-budget-sats` (10 VTR default) and `--torrent-incentive-payment-cap-sats` (1 VTR default), including fee exposure. |
+| 36 | High | Fork convergence | Equal-height peers never requested each other's tips, so the tie-break could not run after a partition. | Equal-height handshakes and periodic tip reconciliation request headers. Fork blocks are deliberately not relayed: they are only statelessly validated, and relaying them is a ban/eclipse amplifier. |
+| 37 | High | Checkpoints | A future checkpoint blocked reorgs before the node reached it and caused a peer ban for a local policy decision; fork blocks were not checked at the pinned height. | Below a not-yet-reached checkpoint, a reorg is allowed only when the fork point is close enough to remain recoverable within the journal; fork blocks are checked at the pinned height, validation runs first, and local policy rejections do not ban the sender. |
+| 38 | High | Receipt accounting | The first receipt and every peer epoch change discarded unsettled downloaded bytes; carrying the remainder then permanently disputed future payments when the peer's reset counter was lower. | The first receipt pays what it acknowledges, an epoch change settles the old receipt first, and only the unacknowledged remainder is dropped because the reset counter cannot attest it. |
+| 39 | Medium | Incentive payments | Mempool admission cleared the debt, so an evicted, lost, or reorged transaction left the peer unpaid with no retry. | A broadcast payment stays pending until six confirmations; a shallow reorg keeps it pending, and a missing transaction remains pending rather than being re-paid, because the original can still be mined. |
+| 40 | Medium | Incentive spend cap | Default-on payouts had no process budget or per-payment limit. | Added `--torrent-incentive-budget-sats` (10 VTR default) and `--torrent-incentive-payment-cap-sats` (1 VTR default). The cap bounds principal; network fees are additional and are not included. |
 | 41 | Medium | Short downloads | A fast download could exit before the periodic receipt exchange, leaving no payable agreement. | A final cumulative receipt is sent before the peer task closes. |
 | 42 | Medium | SPV clock | Trusted historical headers were re-checked against the wall clock, so a large backward clock step could stop startup during SPV seeding. | Trusted headers skip the future-time check; untrusted headers still enforce it. Both paths have tests. |
+| 43 | High | Fork relay | Relaying every stored fork block let one peer turn cheap, statelessly valid forks into an inv flood that got the relaying node banned by its peers. | Fork relay is removed; competing tips are discovered through equal-height header requests. |
+| 44 | High | Checkpoint trap | Allowing any reorg below a future checkpoint could strand a node on a branch more than the journal depth away, with no recovery reorg and repeated bans of honest peers. | A pre-checkpoint reorg is allowed only when the fork point is within `max_reorg_depth` of the checkpoint, so a later return to the pinned branch remains possible. |
+| 45 | High | Swap claim conflict | The recorded VTR claim was never re-broadcast when local mempool admission failed, so a maker refund in the taker's mempool could make the claim permanently unrelayable. | The claim is broadcast to peers even when local admission rejects it; the chain check still rejects an already-spent claim. |
+| 46 | Medium | Stale claim evidence | A failed BTC scan could authorize a VTR claim from a restored `ClaimConfirming`/`Claimed` observation that a reorg had removed. | Auto-claim requires `Claimed`; a stale observation must reach 100 confirmations, and the wallet-unlock state is re-checked after the scan. |
+| 47 | Medium | Preimage recovery | The preimage was persisted only at 6 confirmations, and a non-standard but valid claim witness was classified `SpentElsewhere`. | The preimage is persisted at `ClaimConfirming`, and any true-branch witness element hashing to the lock is accepted. |
+| 48 | Medium | Debt persistence | Session eviction and `remove_torrent` could discard unpaid or in-flight incentive debt; debt state is still process-local across restart. | Accounts with unpaid or pending payments are never evicted, and `remove_torrent` refuses while debt is outstanding. Restart persistence remains an operator constraint and is documented. |
+| 49 | Medium | SPV install race | A reorg between the header snapshot and the SPV install could briefly re-publish the abandoned branch. | The replacement view is built outside the locks and installed only after re-checking the chain and SPV tips; a mismatch defers to the next tick. |
+| 50 | Medium | SPV serving | `getheaders` resolved and emitted from pruned bodies, so equal-height reconciliation could no-op or walk from genesis; pruned bodies also caused an orphan re-fetch loop. | Header lookup and emission use the retained header index; known-header checks treat a pruned body as known. |
+| 51 | Medium | Incentive completion | The final receipt could be dropped by the receiver's 30-second per-connection rate limit. | The peer task waits out the remaining window before sending the final receipt. |
+| 52 | Medium | Swap fee bump | The VTR claim now signals replaceability and is broadcast when local admission conflicts with a refund, but no automated higher-fee replacement is built. | Residual: a much higher-fee maker refund can still win; the operator must use manual claim tooling if the recorded claim stays stuck. |
+| 53 | Medium | Incentive persistence | Debt, pending-payment, and budget state are process-local; a restart loses them. | Sessions with outstanding debt are neither evicted nor removed, and the restart limitation is documented; persistence remains an operator constraint. |
 
 ## Follow-up closures
 
@@ -163,12 +174,12 @@ pass-5 commit:
 
 ## Verification
 
-- Focused suites: core 36, script 99, wallet 75, torrent 125, BTC 225, node
-  258, SPV 49, P2P 84, RPC 211, Tauri 34, wallet-service 10. Desktop UI: 45
+- Focused suites: core 36, script 99, wallet 75, torrent 129, BTC 226, node
+  261, SPV 51, P2P 84, RPC 211, Tauri 34, wallet-service 10. Desktop UI: 45
   tests, lint and production build clean.
 - Clippy: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
   completed clean.
-- Full workspace on the final tree: **1,480 passed, 0 failed, 11 ignored**
+- Full workspace on the final tree: **1,488 passed, 0 failed, 11 ignored**
   across 54 test groups.
 - Container source build: `docker build -f docker/Dockerfile` succeeded;
   `vtorrent-daemon 2.0.0` runs as uid `vtorrent`; image

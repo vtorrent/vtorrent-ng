@@ -2029,13 +2029,13 @@ async fn automatic_claim_retries_after_recovery_write_failure() {
     let blocked = directory.path().join("not-a-directory");
     std::fs::write(&blocked, b"blocked").unwrap();
     state.swap_recovery_dir = Some(blocked);
-    crate::btc_reconciliation::maybe_auto_claim_vtr(&state, &id).await;
+    crate::btc_reconciliation::maybe_auto_claim_vtr(&state, &id, true).await;
     let claim = state.swaps.read().await[&id]
         .vtr_claim_txid
         .expect("claim built");
     assert!(state.mempool.lock().await.get_transaction(&claim).is_none());
     state.swap_recovery_dir = Some(directory.path().to_path_buf());
-    crate::btc_reconciliation::maybe_auto_claim_vtr(&state, &id).await;
+    crate::btc_reconciliation::maybe_auto_claim_vtr(&state, &id, true).await;
     assert!(
         state.mempool.lock().await.get_transaction(&claim).is_some(),
         "claim must be retried"
@@ -2065,7 +2065,7 @@ async fn automatic_claim_is_attempted_during_final_hour() {
             reorg_count: 0,
         });
     }
-    crate::btc_reconciliation::maybe_auto_claim_vtr(&state, &id).await;
+    crate::btc_reconciliation::maybe_auto_claim_vtr(&state, &id, true).await;
     let claim = state.swaps.read().await[&id]
         .vtr_claim_txid
         .expect("claim built");
@@ -2089,7 +2089,12 @@ async fn automatic_claim_survives_a_failed_btc_scan() {
             scan_start: 1,
             state: vtorrent_node::atomic_swap::BtcSettlementState::Claimed,
             funding: None,
-            spend: None,
+            spend: Some(vtorrent_node::atomic_swap::SwapConfirmation {
+                txid: "11".repeat(32),
+                block_hash: "22".repeat(32),
+                height: 1,
+                confirmations: 100,
+            }),
             reorg_count: 0,
         });
     }

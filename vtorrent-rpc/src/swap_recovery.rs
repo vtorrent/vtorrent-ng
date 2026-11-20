@@ -458,9 +458,17 @@ pub async fn submit_vtr(
     }
     let mut mempool = state.mempool.lock().await;
     if mempool.get_transaction(&txid).is_none() {
-        mempool
-            .admit_with_chain_fee(&chain, transaction.clone())
-            .map_err(failure)?;
+        if let Err(error) = mempool.admit_with_chain_fee(&chain, transaction.clone()) {
+            // A local conflict (for example a maker refund already in this
+            // mempool) must not prevent relaying the claim to peers that may
+            // not have the conflicting transaction. The chain check above
+            // still rejects a claim whose inputs are already spent.
+            tracing::warn!(
+                txid = %hex::encode(txid),
+                error = %error,
+                "VTR recovery transaction was not admitted locally; broadcasting it anyway"
+            );
+        }
     }
     if let Some(sender) = &state.tx_submit {
         let _ = sender.try_send(transaction.clone());

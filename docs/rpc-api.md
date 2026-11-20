@@ -639,6 +639,12 @@ fork header is returned as stored; the P2P service is canonical-only.
 
 Submit compact block headers for SPV sync.
 
+The daemon's SPV view is local-chain-authoritative: it is rebuilt from the full
+node's canonical headers at startup and periodically, and after a reorg or a
+failed header insertion. Headers submitted here are transient and are replaced
+when that rebuild runs. Use this endpoint for isolated PoW/regtest testing, not
+as durable mainnet SPV sync.
+
 ---
 
 ## Peers

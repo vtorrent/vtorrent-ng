@@ -3431,3 +3431,39 @@ Any review-driven code change invalidates the image and restarts the clock.
 Observation at **2026-11-20T03:02Z** (`+5m`): all three nodes at height 8 with
 the same tip, BTC SPV synced to 976,672 on all three, staking on nodes 2/3,
 RSS 158.7/147.0/138.5 MiB, container restarts 0, and Prometheus 3/3.
+
+## 2026-11-20 — second review pass invalidates `04b3c4a`
+
+A second independent-context AI review of `04b3c4a` found regressions in the
+same areas. The `review-04b3c4a` fleet was retired at **14:07Z**; final
+container logs are archived under
+`/mnt/temp/vtorrent-ng-evidence/soak-04b3c4a/final/`. The active `vtr-node*`
+fleet was not modified.
+
+Corrections now under verification:
+
+- **Fork relay removed.** Relaying every statelessly valid fork block let one
+  peer turn a cheap fork stream into an `inv` flood that got the relaying node
+  banned by its peers. Equal-height header reconciliation remains the
+  convergence mechanism.
+- **Future-checkpoint trap bounded.** A reorg below a future checkpoint is now
+  allowed only when the fork point is close enough that a return to the pinned
+  branch still fits the journal. Validation runs before the checkpoint policy
+  check, so invalid blocks are still penalized.
+- **SPV install race closed.** The replacement header view is built outside the
+  locks and installed only after re-checking both the chain and SPV tips.
+  `getheaders` serves retained headers instead of pruned bodies, and known
+  headers are no longer re-fetched as orphaned bodies.
+- **Swap claim relay hardened.** The VTR claim signals replaceability and is
+  broadcast even when local mempool admission conflicts with a maker refund.
+  Auto-claim requires a fresh `Claimed` observation or 100-confirmation
+  finality, stops once the VTR leg is settled, and re-checks wallet unlock.
+- **Preimage recovery widened.** The preimage is persisted from
+  `ClaimConfirming`, and any true-branch witness element matching the hash lock
+  is accepted.
+- **Incentive debt protected.** Sessions with unpaid or pending payments are not
+  evicted or removed; a missing payment transaction stays pending instead of
+  being re-paid; sub-dust debts are not retried forever. Debt and budget state
+  remain process-local and must be settled before a restart.
+
+This window is **not** valid evidence for the revised code.
