@@ -10,7 +10,7 @@ already accepted so it is not re-litigated.
 
 ## Review target
 
-Review the candidate `04b3c4aff45f9b0cefd555de7cca6710c53e84cc`. This is the current review head. It is **not**
+Review the candidate `7a216eed715391ae7a84179f6b746266763f11ca`. This is the current review head. It is **not**
 covered by any prior soak: the `6a49727` fleet predates the fund-safety and
 recovery changes below and was interrupted by a host restart on 2026-11-16.
 Under the soak provenance policy, the shipping image needs its own full window
@@ -18,8 +18,8 @@ after this review and its fixes settle.
 
 Read this document from the tip of `main`. Confirm that no code changed after
 the candidate with
-`git diff --name-only 04b3c4a..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
-must return nothing. Check out `04b3c4a` itself when running the verification
+`git diff --name-only 7a216ee..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+must return nothing. Check out `7a216ee` itself when running the verification
 commands. The tables below record the earlier deltas. The table after the
 `f8e0162` deltas covers the range from `ba46fd6` to the candidate.
 
@@ -122,6 +122,7 @@ Deltas after `ba46fd6`:
 | `9533a2c` | Non-blocking BTC status/address reads during SPV sync; release-fleet BTC attestation and code-commit evidence |
 | `dd7676f` | Equal-work fork tie-break (lower tip hash) and SPV header rebuild from the stored chain on restart |
 | `04b3c4a` | Equal-work SPV proofs, canonical SPV rebuilds, equal-height tip discovery, checkpoint policy, desktop swap services, claim retries, receipt/payment durability, incentive caps |
+| `7a216ee` | Second-pass fixes: fork-relay removal and ban bounds, recoverable checkpoint reorgs, SPV install race, header-index serving, fresh/final swap-claim evidence, preimage/witness recovery, incentive debt protection and final-receipt pacing |
 
 Deltas after the earlier review head:
 
@@ -173,7 +174,7 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout 04b3c4aff45f9b0cefd555de7cca6710c53e84cc
+git checkout 7a216eed715391ae7a84179f6b746266763f11ca
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
@@ -181,7 +182,7 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 cargo test --workspace --all-features
 ```
 
-The `04b3c4a` workspace run passed 54 test groups and 1,480 tests with 0
+The `7a216ee` workspace run passed 54 test groups and 1,488 tests with 0
 failures and 11 ignored. CI repeats the `--all-features` suite on every push.
 Set `VTORRENT_TOTP_STATE_DIR` to a fresh directory before running the suite so
 the host-scoped TOTP replay state does not collide with an existing
@@ -296,7 +297,7 @@ Added with `ff148fd` and `35ea52e`:
   release-signing wiring in `1e42381`, the import/receipt/checkpoint fixes in
   `29892b9`, the edge-case hardening in `514fe9f`, the BTC liveness/soak
   tooling in `9533a2c`, the fork/SPV fixes in `dd7676f`, and the review
-  remediation in `04b3c4a`. It is **not**
+  remediation in `7a216ee`. It is **not**
   independent review.
 
 ## Status

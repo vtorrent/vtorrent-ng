@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `04b3c4a`
+Subject: Independent security review — vTorrent-NG mainnet candidate `7a216ee`
 
 Hello,
 
@@ -18,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `04b3c4aff45f9b0cefd555de7cca6710c53e84cc`
+**Review head:** `7a216eed715391ae7a84179f6b746266763f11ca`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `04b3c4a`. It is not covered by any prior soak: the
+The code under review is `7a216ee`. It is not covered by any prior soak: the
 `6a49727` fleet predates every change below and was interrupted by a host
 restart on 2026-11-16. The eventual shipping image needs its own full window
 after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 code changed after the candidate with
-`git diff --name-only 04b3c4a..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only 7a216ee..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -169,11 +169,18 @@ candidate `ba46fd6`:
   discarded after reproducing the split.
 - `04b3c4a` — independent-context AI review remediation: SPV follows the same
   equal-work rule and rebuilds after lost events, equal-height peers reconcile
-  tips and relay validated forks, future checkpoints no longer block pre-pin
-  reorgs or ban peers, the desktop starts both swap reconcilers, automatic VTR
-  claims retry until expiry, receipts settle across epochs, incentive payments
-  stay owed until six confirmations and are capped, short downloads send a
-  final receipt, and trusted historical SPV headers survive a clock rollback.
+  tips, future checkpoints no longer ban peers, the desktop starts both swap
+  reconcilers, automatic VTR claims retry until expiry, receipts settle across
+  epochs, incentive payments stay owed until six confirmations and are capped,
+  short downloads send a final receipt, and trusted historical SPV headers
+  survive a clock rollback.
+- `7a216ee` — second adversarial pass: removed the fork relay that amplified
+  stateless forks into a ban vector, bounded pre-checkpoint reorgs to a
+  recoverable distance, closed the SPV install race and served headers from the
+  index, required fresh or final BTC evidence for auto-claims, persisted
+  preimages earlier, accepted non-standard true-branch witnesses, protected
+  incentive debt from eviction/removal, kept missing payments pending instead
+  of double-paying, and paced the final receipt past the receiver rate limit.
 
 Five internal AI-assisted supplementary reviews are recorded in
 `docs/2026-11-17_ai-supplementary-review.md`,
@@ -197,7 +204,7 @@ closures in `5cdd580`, the taker-import/checkpoint/CLTV work in `2a25e3f`, the
 release-signing wiring in `1e42381`, the import/receipt/checkpoint fixes
 in `29892b9`, the edge-case hardening in `514fe9f`, the BTC liveness/soak
   tooling in `9533a2c`, the fork/SPV fixes in `dd7676f`, and the review
-  remediation in `04b3c4a`. They are not
+  remediation in `7a216ee`. They are not
 independent review and do not count for this gate.
 
 Earlier in this round, from `b729e36` through `ba46fd6`:
@@ -333,7 +340,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `04b3c4aff45f9b0cefd555de7cca6710c53e84cc`
+- Confirm the review head is still `7a216eed715391ae7a84179f6b746266763f11ca`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.
