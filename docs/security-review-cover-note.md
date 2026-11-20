@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `d790c16`
+Subject: Independent security review — vTorrent-NG mainnet candidate `f8ccbfe`
 
 Hello,
 
@@ -18,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `d790c16b66cf0332b845d4ae9072e9da43c90307`
+**Review head:** `f8ccbfe129b3cc26429f024bdf1075a5ccdb634d`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `d790c16`. It is not covered by any prior soak: the
+The code under review is `f8ccbfe`. It is not covered by any prior soak: the
 `6a49727` fleet predates every change below and was interrupted by a host
 restart on 2026-11-16. The eventual shipping image needs its own full window
 after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 code changed after the candidate with
-`git diff --name-only d790c16..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only f8ccbfe..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -185,8 +185,10 @@ candidate `ba46fd6`:
   (bounded to three bumps), chunked SPV header snapshots with a chain-generation
   check, and pruning of SPV side-branch headers.
 - `d790c16` — persistent incentive-debt snapshot and ledger across graceful
-  restarts, including a persistent process budget; a crash still loses debts
-  accrued since the last shutdown.
+  restarts, including a persistent process budget.
+- `f8ccbfe` — fsynced receipt-backed incentive-account journal; the full
+  account survives SIGKILL and is settled and paid at startup. Bytes after the
+  last peer receipt remain unverified and unrecoverable.
 
 Five internal AI-assisted supplementary reviews are recorded in
 `docs/2026-11-17_ai-supplementary-review.md`,
@@ -210,7 +212,7 @@ closures in `5cdd580`, the taker-import/checkpoint/CLTV work in `2a25e3f`, the
 release-signing wiring in `1e42381`, the import/receipt/checkpoint fixes
 in `29892b9`, the edge-case hardening in `514fe9f`, the BTC liveness/soak
   tooling in `9533a2c`, the fork/SPV fixes in `dd7676f`, and the review
-  remediation in `d790c16`. They are not
+  remediation in `f8ccbfe`. They are not
 independent review and do not count for this gate.
 
 Earlier in this round, from `b729e36` through `ba46fd6`:
@@ -346,7 +348,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `d790c16b66cf0332b845d4ae9072e9da43c90307`
+- Confirm the review head is still `f8ccbfe129b3cc26429f024bdf1075a5ccdb634d`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.
