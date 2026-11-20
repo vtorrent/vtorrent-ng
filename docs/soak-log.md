@@ -3427,3 +3427,7 @@ built as `vtorrent/node:04b3c4a`
 The daily observer is scheduled for 17:25 local (10:25 UTC) and writes to the
 candidate evidence directory. This is a candidate window, not release evidence.
 Any review-driven code change invalidates the image and restarts the clock.
+
+Observation at **2026-11-20T03:02Z** (`+5m`): all three nodes at height 8 with
+the same tip, BTC SPV synced to 976,672 on all three, staking on nodes 2/3,
+RSS 158.7/147.0/138.5 MiB, container restarts 0, and Prometheus 3/3.
