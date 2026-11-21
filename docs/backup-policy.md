@@ -25,7 +25,7 @@ sleep $((RANDOM % 3600))
 # Stop writers so redb is not copied mid-transaction. The seed rejoins after
 # the copy; keep this window short.
 systemctl stop vtorrent || true
-for file in chain.db wallet.json staking.json incentive-journal.jsonl incentive-payment-intents.json incentive-ledger.json incentive-live.json; do
+for file in chain.db wallet.json staking.json incentive-journal.jsonl incentive-payment-intents.json incentive-ledger.json; do
   if [ -f "/var/lib/vtorrent/$file" ]; then
     cp -a "/var/lib/vtorrent/$file" "$STAGE/"
   fi

@@ -5608,6 +5608,7 @@ version = "2.0.0-beta.3"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "bincode",
  "bitcoin",
  "clap",
@@ -5617,6 +5618,7 @@ dependencies = [
  "secp256k1",
  "serde",
  "serde_json",
+ "sha1",
  "sha2",
  "tempfile",
  "tokio",

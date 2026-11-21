@@ -295,6 +295,7 @@ impl Metainfo {
 impl MagnetLink {
     /// Parse a magnet URI (magnet:?xt=urn:btih:...&dn=...&tr=...).
     pub fn parse(uri: &str) -> Result<Self> {
+        const MAX_MAGNET_TRACKERS: usize = 32;
         if !uri.starts_with("magnet:?") {
             return Err(TorrentError::MagnetError("Not a magnet URI".into()));
         }
@@ -337,7 +338,7 @@ impl MagnetLink {
                         }
                     }
                     "dn" => display_name = Some(decoded),
-                    "tr" => trackers.push(decoded),
+                    "tr" if trackers.len() < MAX_MAGNET_TRACKERS => trackers.push(decoded),
                     "xl" => size_hint = decoded.parse().ok(),
                     _ => {}
                 }
@@ -422,12 +423,17 @@ fn get_string_list(dict: &BencodeDict, key: &[u8]) -> Result<Vec<String>> {
 }
 
 fn parse_announce_list(dict: &BencodeDict) -> Vec<Vec<String>> {
+    // A metainfo file is untrusted and a tier list is unbounded in the format.
+    // Bound the parsers before the engine ever iterates the list.
+    const MAX_TIERS: usize = 32;
+    const MAX_TRACKERS_PER_TIER: usize = 32;
     let mut result = Vec::new();
     if let Some(serde_bencode::value::Value::List(tiers)) = dict.get(&b"announce-list".to_vec()) {
-        for tier in tiers {
+        for tier in tiers.iter().take(MAX_TIERS) {
             if let serde_bencode::value::Value::List(urls) = tier {
                 let tier_urls: Vec<String> = urls
                     .iter()
+                    .take(MAX_TRACKERS_PER_TIER)
                     .filter_map(|u| {
                         if let serde_bencode::value::Value::Bytes(b) = u {
                             String::from_utf8(b.clone()).ok()

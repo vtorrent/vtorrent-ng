@@ -386,10 +386,18 @@ pub async fn send_vtr(
         .clone()
         .ok_or_else(|| RpcError::Internal("Change address not set — wallet imported but no change address derived (state inconsistent)".into()))?;
 
-    // Collect all UTXOs from the chain that belong to the hot wallet address.
+    // Collect spendable UTXOs for the hot wallet address. The chain does not
+    // reflect mempool spends, so without this filter a second send before the
+    // first confirms re-selects the same outpoint and is rejected as a
+    // conflict.
     let utxos: Vec<vtorrent_node::chain::Utxo> = {
         let chain = state.chain.lock().await;
-        chain.get_utxos_for_address(&change_address)
+        let mempool = state.mempool.lock().await;
+        chain
+            .get_utxos_for_address(&change_address)
+            .into_iter()
+            .filter(|utxo| !mempool.is_outpoint_spent(&utxo.txid, utxo.vout))
+            .collect()
     };
 
     if utxos.is_empty() {
@@ -529,7 +537,12 @@ pub async fn fund_cold_stake(
         .ok_or_else(|| RpcError::Internal("Change address not set".into()))?;
     let utxos: Vec<vtorrent_node::chain::Utxo> = {
         let chain = state.chain.lock().await;
-        chain.get_utxos_for_address(&change_address)
+        let mempool = state.mempool.lock().await;
+        chain
+            .get_utxos_for_address(&change_address)
+            .into_iter()
+            .filter(|utxo| !mempool.is_outpoint_spent(&utxo.txid, utxo.vout))
+            .collect()
     };
     if utxos.is_empty() {
         return Err(RpcError::BadRequest(format!(
@@ -1059,7 +1072,12 @@ pub async fn preview_payment(
 
     let utxos: Vec<vtorrent_node::chain::Utxo> = {
         let chain = state.chain.lock().await;
-        chain.get_utxos_for_address(&change_address)
+        let mempool = state.mempool.lock().await;
+        chain
+            .get_utxos_for_address(&change_address)
+            .into_iter()
+            .filter(|utxo| !mempool.is_outpoint_spent(&utxo.txid, utxo.vout))
+            .collect()
     };
     if utxos.is_empty() {
         return Err(RpcError::BadRequest(

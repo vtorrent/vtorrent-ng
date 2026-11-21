@@ -1077,6 +1077,43 @@ async fn test_api_key_protects_sensitive_endpoints() {
 }
 
 #[tokio::test]
+async fn test_faucet_is_gated_by_the_api_key_in_every_mode() {
+    // Minting is regtest-only, but the API key is the outer barrier so a single
+    // misconfigured flag cannot expose a coin-minting route unauthenticated.
+    for regtest in [false, true] {
+        let mut state = AppState::new();
+        state.regtest = regtest;
+        state.rpc_api_key = Some("debug-secret".into());
+        let app = build_router(state);
+        for key in [None, Some("wrong")] {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/api/v1/faucet")
+                .header("content-type", "application/json");
+            if let Some(key) = key {
+                request = request.header("x-api-key", key);
+            }
+            let response = app
+                .clone()
+                .oneshot(
+                    request
+                        .body(Body::from(
+                            serde_json::to_vec(&serde_json::json!({
+                                "address": "VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k",
+                                "amount_satoshis": 1_000u64,
+                            }))
+                            .unwrap(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+    }
+}
+
+#[tokio::test]
 async fn test_regtest_debug_routes_require_api_key() {
     for regtest in [false, true] {
         let mut state = AppState::new();

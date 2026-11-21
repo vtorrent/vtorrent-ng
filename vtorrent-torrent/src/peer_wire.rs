@@ -1,6 +1,10 @@
 use crate::error::{Result, TorrentError};
 use serde::{Deserialize, Serialize};
 
+/// Absolute upper bound for a peer-wire frame. Established connections apply a
+/// tighter per-torrent limit; this only bounds the decode buffer.
+pub(crate) const MAX_MESSAGE_LENGTH: usize = 16 * 1024 * 1024;
+
 /// BitTorrent peer wire protocol message types (BEP-3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PeerMessage {
@@ -127,6 +131,15 @@ impl PeerMessage {
     /// Decode a message from a byte buffer (after the handshake).
     /// Returns the message and the number of bytes consumed.
     pub fn decode(buf: &[u8]) -> Result<Option<(Self, usize)>> {
+        Self::decode_with_limit(buf, MAX_MESSAGE_LENGTH)
+    }
+
+    /// Decode with a caller-supplied maximum frame length.
+    ///
+    /// Used by established torrent connections to reject oversized frames before
+    /// the whole payload is buffered. The absolute [`MAX_MESSAGE_LENGTH`] bound
+    /// still applies.
+    pub fn decode_with_limit(buf: &[u8], max_length: usize) -> Result<Option<(Self, usize)>> {
         if buf.len() < 4 {
             return Ok(None); // Need at least the length prefix
         }
@@ -134,12 +147,12 @@ impl PeerMessage {
         let length = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
 
         // Reject absurd lengths so a malicious peer cannot force unbounded
-        // buffering. A piece is at most a few MB; 16 MB is a generous cap.
-        const MAX_MESSAGE_LENGTH: usize = 16 * 1024 * 1024;
-        if length > MAX_MESSAGE_LENGTH {
+        // buffering. The caller may impose a tighter, connection-specific cap.
+        if length > max_length.min(MAX_MESSAGE_LENGTH) {
             return Err(TorrentError::PeerWireError(format!(
                 "message length {} exceeds maximum {}",
-                length, MAX_MESSAGE_LENGTH
+                length,
+                max_length.min(MAX_MESSAGE_LENGTH)
             )));
         }
 

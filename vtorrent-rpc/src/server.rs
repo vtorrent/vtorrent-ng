@@ -229,12 +229,16 @@ pub fn build_router(state: AppState) -> Router {
     // concurrency permits (otherwise 5 keyless requests starve the
     // legitimate wallet owner). Apply the layers after every protected route,
     // including test-only routes, so none bypass authentication.
+    let protected = protected
+        // Minting must never be reachable without the configured API key. The
+        // regtest flag still gates it, but a single misconfigured flag must not
+        // be the only barrier in front of a coin-minting endpoint.
+        .route("/api/v1/faucet", post(faucet));
     let protected = protected.layer(rate).layer(auth);
 
     let public_routes = Router::new()
         .route("/api/v1/blockchain/utxo/:txid/:vout", get(get_txout))
         .route("/api/v1/claim/check", post(check_claim))
-        .route("/api/v1/faucet", post(faucet))
         .layer(middleware::from_fn_with_state(
             Arc::clone(&state.rate_limiter),
             ip_rate_limit,

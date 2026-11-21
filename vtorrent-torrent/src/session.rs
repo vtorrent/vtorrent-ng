@@ -287,6 +287,12 @@ pub struct SessionManager {
 /// vector via repeated `add_torrent` calls.
 pub const MAX_TORRENT_SESSIONS: usize = 64;
 
+/// Maximum *retained* sessions, active or finished. A finished session still
+/// holds its full metainfo (up to 20 MB of piece hashes), and the engine never
+/// removes sessions itself, so without this bound a client could add torrents
+/// that complete and keep every metainfo resident forever.
+pub const MAX_RETAINED_SESSIONS: usize = 256;
+
 impl SessionManager {
     pub fn new() -> Self {
         SessionManager {
@@ -342,6 +348,17 @@ impl SessionManager {
             .count();
         if active >= MAX_TORRENT_SESSIONS {
             // Try to evict the oldest completed session to make room.
+            let oldest_terminal = self
+                .sessions
+                .iter()
+                .filter(|(_, s)| s.state.is_terminal() && !s.has_outstanding_incentives())
+                .min_by_key(|(_, s)| s.last_active)
+                .map(|(id, _)| id.clone())?;
+            self.sessions.remove(&oldest_terminal);
+        }
+        // Bound the retained set even when most sessions are finished: a
+        // finished session keeps its metainfo resident.
+        while self.sessions.len() >= MAX_RETAINED_SESSIONS {
             let oldest_terminal = self
                 .sessions
                 .iter()
@@ -477,6 +494,29 @@ mod tests {
             TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
         assert!(manager.add_session(extra).is_none());
         assert_eq!(manager.len(), MAX_TORRENT_SESSIONS);
+    }
+
+    #[test]
+    fn retained_sessions_are_bounded_even_when_finished() {
+        let mut manager = SessionManager::new();
+        for index in 0..MAX_RETAINED_SESSIONS {
+            let mut session =
+                TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+            session.state = SessionState::Seeding;
+            session.last_active = index as u64;
+            assert!(manager.add_session(session).is_some());
+        }
+        assert_eq!(manager.len(), MAX_RETAINED_SESSIONS);
+        let mut extra =
+            TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+        extra.state = SessionState::Seeding;
+        extra.last_active = u64::MAX;
+        assert!(manager.add_session(extra).is_some());
+        assert_eq!(
+            manager.len(),
+            MAX_RETAINED_SESSIONS,
+            "retained sessions must stay bounded"
+        );
     }
 
     #[test]

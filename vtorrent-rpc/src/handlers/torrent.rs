@@ -99,6 +99,14 @@ pub async fn add_torrent(
         Metainfo::from_bytes(&bytes).map_err(|e| RpcError::BadRequest(e.to_string()))?
     };
 
+    let download_dir = state.download_dir.read().await.clone();
+    if let Err(error) = std::fs::create_dir_all(&download_dir) {
+        return Err(RpcError::Internal(format!(
+            "Could not create download directory {}: {error}",
+            download_dir.display()
+        )));
+    }
+
     let info_hash = hex::encode(metainfo.info_hash);
     let name = metainfo.name.clone();
     let session = TorrentSession::new(metainfo, req.wallet_address);
@@ -122,7 +130,6 @@ pub async fn add_torrent(
         .await
         .insert(session_id.clone(), cancel.clone());
     let sessions = Arc::clone(&state.torrent_sessions);
-    let download_dir = state.download_dir.read().await.clone();
     let limits = Arc::clone(&state.torrent_limits);
     let seed_ratio_target = Arc::clone(&state.seed_ratio_target);
     let local_wif = state.wallet_wif.read().await.clone();

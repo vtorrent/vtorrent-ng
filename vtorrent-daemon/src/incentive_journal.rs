@@ -13,8 +13,12 @@ use std::sync::Mutex;
 use vtorrent_torrent::incentive::{IncentiveJournal, PeerBandwidthAccount};
 
 const VERSION: u8 = 1;
-const MAX_LINES: usize = 4_096;
 const MAX_BYTES: u64 = 1_048_576;
+/// Compact once this many superseded/tombstoned lines have accumulated. The
+/// live record count can exceed any fixed line cap, so the decision must be
+/// relative to the live set; otherwise a journal with more live records than
+/// the cap rewrites itself on every single mutation.
+const COMPACTION_DEAD_LINES: usize = 4_096;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct JournalRecord {
@@ -47,6 +51,10 @@ struct State {
     records: HashMap<String, JournalAccount>,
     emitted_total: u64,
     lines: usize,
+    /// File size after the last compaction (or at open). Used to trigger a
+    /// byte-based compaction only after meaningful growth, never on every
+    /// append once the live record set is larger than `MAX_BYTES`.
+    compacted_bytes: u64,
     poisoned: bool,
 }
 
@@ -66,6 +74,7 @@ impl JsonlJournal {
         let mut records: HashMap<String, JournalAccount> = HashMap::new();
         let mut emitted_total = 0u64;
         let mut lines = 0usize;
+        let mut compacted_bytes = 0u64;
 
         if path.exists() {
             let bytes = std::fs::read(path)?;
@@ -139,6 +148,7 @@ impl JsonlJournal {
                 file.set_len(valid_end as u64)?;
                 file.sync_all()?;
             }
+            compacted_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         }
 
         let mut options = std::fs::OpenOptions::new();
@@ -162,6 +172,7 @@ impl JsonlJournal {
                 records,
                 emitted_total,
                 lines,
+                compacted_bytes,
                 poisoned: false,
             }),
         })
@@ -203,9 +214,11 @@ impl JsonlJournal {
     }
 
     fn maybe_compact(state: &mut State) -> Result<(), String> {
-        if state.lines > MAX_LINES
-            || state.file.metadata().map(|m| m.len()).unwrap_or(0) > MAX_BYTES
-        {
+        let live_lines = state.records.len().saturating_add(1);
+        let dead_lines = state.lines.saturating_sub(live_lines);
+        let file_bytes = state.file.metadata().map(|m| m.len()).unwrap_or(0);
+        let byte_limit = MAX_BYTES.max(state.compacted_bytes.saturating_mul(2));
+        if dead_lines > COMPACTION_DEAD_LINES || file_bytes > byte_limit {
             if let Err(error) = Self::compact(state) {
                 state.poisoned = true;
                 return Err(error);
@@ -235,9 +248,11 @@ impl JsonlJournal {
             deleted: false,
             emitted_total: Some(state.emitted_total),
         };
+        let mut written = 0u64;
         let mut bytes = serde_json::to_vec(&budget).map_err(|error| error.to_string())?;
         bytes.push(b'\n');
         file.write_all(&bytes).map_err(|error| error.to_string())?;
+        written += bytes.len() as u64;
         for account in state.records.values() {
             let record = JournalRecord {
                 version: VERSION,
@@ -251,6 +266,7 @@ impl JsonlJournal {
             let mut bytes = serde_json::to_vec(&record).map_err(|error| error.to_string())?;
             bytes.push(b'\n');
             file.write_all(&bytes).map_err(|error| error.to_string())?;
+            written += bytes.len() as u64;
         }
         file.sync_all().map_err(|error| error.to_string())?;
         std::fs::rename(&temporary, &state.path).map_err(|error| error.to_string())?;
@@ -264,6 +280,7 @@ impl JsonlJournal {
             .open(&state.path)
             .map_err(|error| error.to_string())?;
         state.lines = state.records.len() + 1;
+        state.compacted_bytes = written;
         Ok(())
     }
 }
@@ -275,12 +292,12 @@ impl IncentiveJournal for JsonlJournal {
         peer_address: &str,
         receipt_epoch: u64,
         account: &PeerBandwidthAccount,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let entry = key(&info_hash, peer_address, receipt_epoch);
         if let Some(stored) = state.records.get(&entry) {
             if stored.account.state_version > account.state_version {
-                return Ok(());
+                return Ok(false);
             }
         }
         let record = JournalRecord {
@@ -303,7 +320,7 @@ impl IncentiveJournal for JsonlJournal {
             },
         );
         Self::maybe_compact(&mut state)?;
-        Ok(())
+        Ok(true)
     }
 
     fn remove(
@@ -406,13 +423,57 @@ mod tests {
         let journal = JsonlJournal::open(&path).unwrap();
         let mut newer = account(100);
         newer.state_version = 2;
-        journal.upsert([1u8; 20], "VPeer", 7, &newer).unwrap();
+        assert!(journal.upsert([1u8; 20], "VPeer", 7, &newer).unwrap());
         let mut older = account(999);
         older.state_version = 1;
-        journal.upsert([1u8; 20], "VPeer", 7, &older).unwrap();
+        // A rejected stale write must be distinguishable from a durable one:
+        // the caller treats `true` as "the reservation is persisted".
+        assert!(!journal.upsert([1u8; 20], "VPeer", 7, &older).unwrap());
         let reopened = JsonlJournal::open(&path).unwrap();
         assert_eq!(reopened.accounts()[0].account.unpaid_satoshis, 100);
         assert_eq!(reopened.accounts()[0].account.state_version, 2);
+    }
+
+    #[test]
+    fn a_live_set_larger_than_the_old_line_cap_stops_rewriting() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("journal.jsonl");
+        let journal = JsonlJournal::open(&path).unwrap();
+        // Simulate more live records than the previous fixed line cap: the
+        // compaction decision must be relative to the live set, otherwise every
+        // subsequent mutation rewrites the whole file.
+        for index in 0..(COMPACTION_DEAD_LINES + 32) {
+            let mut peer = [0u8; 20];
+            peer[..8].copy_from_slice(&(index as u64).to_be_bytes());
+            journal
+                .upsert([3u8; 20], &hex::encode(peer), 1, &account(index as u64))
+                .unwrap();
+        }
+        let lines_before = {
+            let state = journal.state.lock().unwrap();
+            state.lines
+        };
+        let rewritten_before = {
+            let state = journal.state.lock().unwrap();
+            state.compacted_bytes
+        };
+        for index in 0..16 {
+            let mut peer = [0u8; 20];
+            peer[..8].copy_from_slice(&(index as u64).to_be_bytes());
+            journal
+                .upsert([3u8; 20], &hex::encode(peer), 1, &account(index as u64 + 1))
+                .unwrap();
+        }
+        let state = journal.state.lock().unwrap();
+        assert_eq!(
+            state.lines,
+            lines_before + 16,
+            "a live set above the old cap must append, not rewrite"
+        );
+        assert_eq!(
+            state.compacted_bytes, rewritten_before,
+            "no compaction should occur without dead lines or real growth"
+        );
     }
 
     #[test]
@@ -440,7 +501,7 @@ mod tests {
         let journal = JsonlJournal::open(&path).unwrap();
         {
             let mut state = journal.state.lock().unwrap();
-            state.lines = MAX_LINES;
+            state.lines = COMPACTION_DEAD_LINES + 2;
         }
         journal
             .upsert([7u8; 20], "VPeer", 9, &account(500))

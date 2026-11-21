@@ -4,6 +4,7 @@ use crate::error::{Result, TorrentError};
 use crate::tracker::tracker_target_allowed;
 use crate::tracker::TrackerPeer;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::time::{Duration, Instant};
 
 /// A 20-byte DHT node id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,7 +236,7 @@ fn parse_compact_peers(data: &[u8]) -> Vec<TrackerPeer> {
 }
 
 use tokio::net::UdpSocket;
-use tokio::time::{timeout, Duration};
+use tokio::time::timeout;
 
 /// Public BitTorrent DHT bootstrap routers.
 pub const DHT_BOOTSTRAP_NODES: &[&str] = &[
@@ -270,7 +271,13 @@ impl DhtClient {
     }
 
     /// Perform an iterative `get_peers` lookup for an info hash.
+    ///
+    /// Bounded in wall-clock time as well as in nodes: trackers are untrusted
+    /// and the engine must notice cancellation instead of spending many minutes
+    /// on an unresponsive DHT.
     pub async fn get_peers(&self, info_hash: &[u8; 20]) -> Result<Vec<TrackerPeer>> {
+        const DHT_LOOKUP_DEADLINE: Duration = Duration::from_secs(30);
+        let deadline = Instant::now() + DHT_LOOKUP_DEADLINE;
         let socket = UdpSocket::bind("0.0.0.0:0")
             .await
             .map_err(|e| TorrentError::TrackerError(e.to_string()))?;
@@ -286,6 +293,10 @@ impl DhtClient {
 
         let mut tid: u16 = 0;
         while !pending.is_empty() && peers.len() < 50 {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
             let node_addr = pending.remove(0);
             if !queried.insert(node_addr) {
                 continue;
@@ -298,7 +309,8 @@ impl DhtClient {
             }
 
             let mut buf = [0u8; 65536];
-            match timeout(Duration::from_secs(3), socket.recv_from(&mut buf)).await {
+            let wait = Duration::from_secs(3).min(remaining);
+            match timeout(wait, socket.recv_from(&mut buf)).await {
                 Ok(Ok((len, src))) => {
                     // Only accept replies from the node we actually queried,
                     // and only when the transaction id matches our query —

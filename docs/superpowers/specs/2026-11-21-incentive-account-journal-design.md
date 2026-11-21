@@ -89,10 +89,17 @@ One background writer owns the file:
   account has no remaining debt.
 - The desktop passes `None`; it does not run the incentive payer.
 
-### Startup recovery
+### Legacy debt snapshot
 
-1. Load the journal and the legacy `incentive-ledger.json` /
-   `incentive-live.json`.
+`incentive-live.json` is the old periodic debt snapshot. It is **not imported**
+any more: merging it renumbered debts, so a stored `ledger\0<id>` payment
+intent could confirm a different debt and replay a payment. If the file exists,
+startup fails closed. Verify `incentive-ledger.json` and
+`incentive-journal.jsonl`, archive or delete the legacy file, and restart.
+
+## Startup recovery
+
+1. Load the journal and the durable `incentive-ledger.json`.
 2. Merge by `(info_hash, peer, receipt_epoch)`. A debt already in the ledger is
    never replaced by the journal snapshot: its pending txid, in-flight marker,
    and remaining unpaid amount are the payment-progress record. The journal is

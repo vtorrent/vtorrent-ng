@@ -1210,25 +1210,16 @@ async fn main() -> anyhow::Result<()> {
         };
         let merged_live = incentive_live_path.exists();
         if merged_live {
-            let mut live = match incentive_ledger::IncentiveLedger::load(&incentive_live_path) {
-                Ok(live) => live,
-                Err(error) => {
-                    tracing::error!("Could not load the live incentive snapshot: {error:#}");
-                    return Err(error);
-                }
-            };
-            ledger.emitted_total = ledger.emitted_total.max(live.emitted_total);
-            for mut debt in live.debts.drain(..) {
-                debt.id = ledger.next_id;
-                ledger.next_id = ledger.next_id.saturating_add(1);
-                ledger.debts.push(debt);
-            }
-            if let Err(error) = std::fs::remove_file(&incentive_live_path) {
-                tracing::warn!("Could not remove the merged live incentive snapshot: {error}");
-            }
-            if let Err(error) = ledger.save(&incentive_ledger_path) {
-                tracing::warn!("Could not save the merged incentive ledger: {error:#}");
-            }
+            // The legacy periodic snapshot is no longer imported. Debts were
+            // renumbered on merge, so a stored `ledger\0<id>` intent could
+            // resolve to a different debt and replay a payment. Fail closed
+            // and require an operator to verify/remove the snapshot.
+            anyhow::bail!(
+                "legacy incentive-live.json is present at {}; this version no longer imports \
+                 the periodic debt snapshot. Verify incentive-ledger.json and \
+                 incentive-journal.jsonl, then remove or archive the legacy file before starting.",
+                incentive_live_path.display()
+            );
         }
         let journal_path = data_dir.join("incentive-journal.jsonl");
         let concrete_journal = match incentive_journal::JsonlJournal::open(&journal_path) {
@@ -1284,7 +1275,6 @@ async fn main() -> anyhow::Result<()> {
                     .is_some()
             };
             let visible = in_chain || in_mempool;
-            let mut updated = false;
             if let Some(id) = intent
                 .account_key
                 .strip_prefix("ledger\u{0}")
@@ -1301,7 +1291,6 @@ async fn main() -> anyhow::Result<()> {
                     if confirmed {
                         confirmed_ledger_intents.push(intent.account_key.clone());
                     }
-                    updated = true;
                 }
             } else if let Some(record) = journal_accounts.iter_mut().find(|record| {
                 record.info_hash == intent.info_hash
@@ -1314,7 +1303,7 @@ async fn main() -> anyhow::Result<()> {
                 if confirmed {
                     record.account.payment_confirmed();
                 }
-                updated = journal_upsert(
+                journal_upsert(
                     &journal,
                     record.info_hash,
                     &record.peer_address,
@@ -1342,7 +1331,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }
-            if confirmed && updated && !intent.account_key.starts_with("ledger\u{0}") {
+            if confirmed && !intent.account_key.starts_with("ledger\u{0}") {
                 if let Err(error) = intent_store.remove(&intent.account_key) {
                     tracing::warn!("Could not remove a confirmed payment intent: {error:#}");
                 }
@@ -1813,8 +1802,11 @@ async fn main() -> anyhow::Result<()> {
                 // Reserve the budget before any payment leaves the process, so
                 // a crash cannot reset the cap below what was already spent.
                 if emitted_total != last_saved_budget {
-                    journal_set_budget(&journal, emitted_total).await;
-                    last_saved_budget = emitted_total;
+                    if journal_set_budget(&journal, emitted_total).await {
+                        last_saved_budget = emitted_total;
+                    } else {
+                        durable = false;
+                    }
                 }
                 if durable {
                     for key in completed_session_intents {
@@ -2029,7 +2021,7 @@ async fn journal_upsert(
     })
     .await
     {
-        Ok(Ok(())) => true,
+        Ok(Ok(written)) => written,
         Ok(Err(error)) => {
             tracing::warn!("Incentive journal write failed: {}", error);
             false
@@ -2063,9 +2055,19 @@ async fn journal_remove(
 async fn journal_set_budget(
     journal: &std::sync::Arc<dyn vtorrent_torrent::incentive::IncentiveJournal>,
     emitted_total: u64,
-) {
+) -> bool {
     let journal = journal.clone();
-    let _ = tokio::task::spawn_blocking(move || journal.set_emitted_total(emitted_total)).await;
+    match tokio::task::spawn_blocking(move || journal.set_emitted_total(emitted_total)).await {
+        Ok(Ok(())) => true,
+        Ok(Err(error)) => {
+            tracing::warn!("Could not persist the incentive budget: {}", error);
+            false
+        }
+        Err(error) => {
+            tracing::warn!("Incentive budget task failed: {}", error);
+            false
+        }
+    }
 }
 
 /// Wait for Ctrl+C or SIGTERM.

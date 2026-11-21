@@ -134,18 +134,25 @@ pub async fn prepare_incentive_payment(
         .clone()
         .ok_or(IncentivePaymentError::NoChangeAddress)?;
 
-    let utxos: Vec<vtorrent_node::chain::Utxo> = {
+    let chain_utxos: Vec<vtorrent_node::chain::Utxo> = {
         let chain = chain.lock().await;
         chain.get_utxos_for_address(&change_address)
+    };
+    let (utxos, fee_rate) = {
+        let mempool = mempool.lock().await;
+        // The chain's UTXO set does not reflect mempool spends. Without this
+        // filter, a second queued incentive payment selects the same outpoint
+        // as an earlier broadcast and is rejected as a mempool conflict until
+        // the earlier payment confirms.
+        let utxos: Vec<_> = chain_utxos
+            .into_iter()
+            .filter(|utxo| !mempool.is_outpoint_spent(&utxo.txid, utxo.vout))
+            .collect();
+        (utxos, mempool.recommended_fee_rate().max(1))
     };
     if utxos.is_empty() {
         return Err(IncentivePaymentError::NoUtxos);
     }
-
-    let fee_rate = {
-        let mempool = mempool.lock().await;
-        mempool.recommended_fee_rate().max(1)
-    };
 
     let tx = build_payment(
         &utxos,

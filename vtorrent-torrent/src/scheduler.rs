@@ -171,6 +171,16 @@ impl PieceTracker {
     }
 }
 
+/// A block currently requested from one peer task.
+#[derive(Debug, Clone, Copy)]
+struct BlockLease {
+    begin: u32,
+    length: u32,
+    /// The scheduler task id, never the remote's self-reported peer id.
+    owner: [u8; 20],
+    leased_at: Instant,
+}
+
 /// Shared scheduler state, coordinated across per-peer tasks.
 #[derive(Debug)]
 pub struct SchedulerState {
@@ -181,12 +191,20 @@ pub struct SchedulerState {
     pub max_pipelined_blocks: usize,
     /// Endgame threshold: when this many pieces remain, request from all peers.
     pub endgame_threshold: usize,
-    /// Blocks currently in flight: piece index -> (begin offset, lease time).
-    /// Leases expire after `BLOCK_LEASE_TIMEOUT` so blocks lost to a choked,
-    /// disconnected, or stalled peer are automatically re-requestable.
-    requested_blocks: HashMap<u32, Vec<(u32, [u8; 20], Instant)>>,
+    /// Blocks currently in flight, keyed by piece index. Each lease expires
+    /// after `BLOCK_LEASE_TIMEOUT` so a block lost to a choked, disconnected,
+    /// or stalled peer is automatically re-requestable.
+    requested_blocks: HashMap<u32, Vec<BlockLease>>,
     pub(crate) writing_pieces: std::collections::HashSet<u32>,
+    /// Bytes currently held by per-peer piece assemblers across all peer
+    /// tasks. Piece data is only verified once the whole piece arrives, so an
+    /// attacker could otherwise make every peer task hold a maximum-size
+    /// partial piece at the same time.
+    assembling_bytes: usize,
 }
+
+/// Aggregate in-flight assembly budget shared by every peer task.
+pub const MAX_ASSEMBLING_BYTES: usize = 64 * 1024 * 1024;
 
 impl SchedulerState {
     pub fn new(piece_count: u32) -> Self {
@@ -197,7 +215,23 @@ impl SchedulerState {
             endgame_threshold: 3,
             requested_blocks: HashMap::new(),
             writing_pieces: std::collections::HashSet::new(),
+            assembling_bytes: 0,
         }
+    }
+
+    /// Reserve assembly budget for a new partial piece.
+    pub fn reserve_assembler(&mut self, piece_len: u64) -> bool {
+        let piece_len = piece_len as usize;
+        if self.assembling_bytes.saturating_add(piece_len) > MAX_ASSEMBLING_BYTES {
+            return false;
+        }
+        self.assembling_bytes += piece_len;
+        true
+    }
+
+    /// Release the assembly budget for a partial piece that was dropped.
+    pub fn release_assembler(&mut self, piece_len: u64) {
+        self.assembling_bytes = self.assembling_bytes.saturating_sub(piece_len as usize);
     }
 
     /// Whether endgame mode is active (few pieces remain).
@@ -211,7 +245,7 @@ impl SchedulerState {
         let mut expired_pieces: Vec<u32> = Vec::new();
         for (piece, leases) in self.requested_blocks.iter_mut() {
             let before = leases.len();
-            leases.retain(|(_, _, leased_at)| now.duration_since(*leased_at) < BLOCK_LEASE_TIMEOUT);
+            leases.retain(|lease| now.duration_since(lease.leased_at) < BLOCK_LEASE_TIMEOUT);
             if leases.len() != before {
                 expired_pieces.push(*piece);
             }
@@ -240,11 +274,16 @@ impl SchedulerState {
         let requested = self.requested_blocks.entry(piece).or_default();
         for block in 0..total_blocks {
             let begin = (block * block_size) as u32;
-            if requested.iter().any(|&(b, _, _)| b == begin) {
+            if requested.iter().any(|lease| lease.begin == begin) {
                 continue;
             }
             let block_len = (len - block * block_size).min(block_size) as u32;
-            requested.push((begin, peer, Instant::now()));
+            requested.push(BlockLease {
+                begin,
+                length: block_len,
+                owner: peer,
+                leased_at: Instant::now(),
+            });
             return Some((piece, begin, block_len));
         }
         // All blocks of this piece are in flight; mark the piece requested so
@@ -256,7 +295,7 @@ impl SchedulerState {
     /// Mark a block as no longer in flight (e.g. on cancel).
     pub fn clear_block(&mut self, piece: u32, begin: u32, peer: [u8; 20]) {
         if let Some(leases) = self.requested_blocks.get_mut(&piece) {
-            leases.retain(|&(b, owner, _)| b != begin || owner != peer);
+            leases.retain(|lease| lease.begin != begin || lease.owner != peer);
             if leases.is_empty() {
                 self.requested_blocks.remove(&piece);
                 self.tracker.clear_requested(piece);
@@ -264,11 +303,17 @@ impl SchedulerState {
         }
     }
 
-    /// Whether a block offset is currently leased to some peer task.
-    pub fn is_block_requested(&self, piece: u32, begin: u32) -> bool {
-        self.requested_blocks
-            .get(&piece)
-            .is_some_and(|leases| leases.iter().any(|(leased, _, _)| *leased == begin))
+    /// Length of a block currently leased to `peer`, if any.
+    ///
+    /// The owner check is the security boundary: a peer may only satisfy a
+    /// block it was actually asked for, with the exact length requested.
+    pub fn requested_block_length(&self, piece: u32, begin: u32, peer: [u8; 20]) -> Option<u32> {
+        self.requested_blocks.get(&piece).and_then(|leases| {
+            leases
+                .iter()
+                .find(|lease| lease.begin == begin && lease.owner == peer)
+                .map(|lease| lease.length)
+        })
     }
 
     /// Mark a piece as fully downloaded, clearing any in-flight block tracking
@@ -391,10 +436,19 @@ mod tests {
         let mut state = SchedulerState::new(1);
         state.tracker.set_peer_bitfield([1u8; 20], &[0x80]);
         let piece_len = |_index: u32| 40 * 1024u64;
-        let (piece, begin, _) = state.next_block(&piece_len, [1u8; 20]).unwrap();
-        assert!(state.is_block_requested(piece, begin));
-        assert!(!state.is_block_requested(piece, begin + 1));
-        assert!(!state.is_block_requested(piece + 1, begin));
+        let peer = [1u8; 20];
+        let (piece, begin, _) = state.next_block(&piece_len, peer).unwrap();
+        assert!(state.requested_block_length(piece, begin, peer).is_some());
+        assert!(state
+            .requested_block_length(piece, begin + 1, peer)
+            .is_none());
+        assert!(state
+            .requested_block_length(piece + 1, begin, peer)
+            .is_none());
+        // Another peer's task must not be able to satisfy this lease.
+        assert!(state
+            .requested_block_length(piece, begin, [2u8; 20])
+            .is_none());
     }
 
     #[test]
@@ -404,13 +458,20 @@ mod tests {
         let piece_len = |_index: u32| 40 * 1024u64;
         let peer_a = [1u8; 20];
         let peer_b = [2u8; 20];
-        let (piece, _, _) = state.next_block(&piece_len, peer_a).unwrap();
+        let (piece, begin_a, _) = state.next_block(&piece_len, peer_a).unwrap();
         let (_, begin_b, _) = state.next_block(&piece_len, peer_b).unwrap();
 
         state.clear_block(piece, begin_b, peer_a);
-        assert!(state.is_block_requested(piece, begin_b));
+        assert!(state
+            .requested_block_length(piece, begin_b, peer_b)
+            .is_some());
         state.clear_block(piece, begin_b, peer_b);
-        assert!(!state.is_block_requested(piece, begin_b));
+        assert!(state
+            .requested_block_length(piece, begin_b, peer_b)
+            .is_none());
+        assert!(state
+            .requested_block_length(piece, begin_a, peer_a)
+            .is_some());
     }
 
     #[test]

@@ -43,10 +43,13 @@ permanently stuck transaction. Receipt-backed accounts are journaled to
 the journal is replayed at startup, converted to payable debt, and paid. Signed
 payment transactions are written to `incentive-payment-intents.json` before
 broadcast; startup confirms, rebroadcasts, or safely releases each reservation.
-The legacy `incentive-live.json` snapshot is still imported for migration. Bytes
-transferred after the last peer receipt are not receipt-verified and are not
-recoverable after a crash. Session eviction and `remove_torrent` refuse while
-debt or an in-flight payment exists.
+The legacy periodic `incentive-live.json` snapshot is **no longer imported**:
+its debts were renumbered on merge, so a stored payment intent could resolve to
+a different debt. Startup fails closed while the file exists; verify
+`incentive-ledger.json` and `incentive-journal.jsonl`, then archive or remove
+it. Bytes transferred after the last peer receipt are not receipt-verified and
+are not recoverable after a crash. Session eviction and `remove_torrent` refuse
+while debt or an in-flight payment exists.
 
 **Desktop backup restriction:** Backup collection takes the BTC state lock and
 includes the initialization record when present. If that record exists but its

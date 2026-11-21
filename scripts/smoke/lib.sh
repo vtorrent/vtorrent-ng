@@ -61,12 +61,20 @@ wait_for_rpc() {
 }
 
 # curl wrapper for a JSON-RPC call.
+#
+# `VTORRENT_RPC_KEY` is forwarded when set. A daemon started with
+# `--rpc-api-key-file` rejects every protected route without it, including the
+# regtest faucet and the debug endpoints these smoke tests drive.
 rpc() {
-    local method="$1" url="$2" data="${3:-}"
+    local method="$1" url="$2" data="${3:-}" auth=()
+    if [[ -n "${VTORRENT_RPC_KEY:-}" ]]; then
+        auth=(-H "X-Api-Key: ${VTORRENT_RPC_KEY}")
+    fi
     if [[ -n "$data" ]]; then
-        curl -s --max-time 10 -X "$method" "$url" -H 'Content-Type: application/json' -d "$data"
+        curl -s --max-time 10 -X "$method" "$url" "${auth[@]}" \
+            -H 'Content-Type: application/json' -d "$data"
     else
-        curl -s --max-time 10 -X "$method" "$url"
+        curl -s --max-time 10 -X "$method" "$url" "${auth[@]}"
     fi
 }
 

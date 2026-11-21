@@ -665,11 +665,20 @@ pub async fn quote_vtr(
     let handle = guard
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    // The chain does not reflect mempool spends; without this filter a second
+    // send before the first confirms re-selects the same outpoint and is
+    // rejected as a conflict.
     let utxos = {
         let chain = handle.rpc_state.chain.lock().await;
+        let mempool = handle.rpc_state.mempool.lock().await;
         let mut utxos = Vec::new();
         for address in &addresses {
-            utxos.extend(chain.get_utxos_for_address(address));
+            utxos.extend(
+                chain
+                    .get_utxos_for_address(address)
+                    .into_iter()
+                    .filter(|utxo| !mempool.is_outpoint_spent(&utxo.txid, utxo.vout)),
+            );
         }
         utxos
     };
@@ -799,11 +808,20 @@ pub async fn send_vtr(
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
 
+    // The chain does not reflect mempool spends; without this filter a second
+    // send before the first confirms re-selects the same outpoint and is
+    // rejected as a conflict.
     let utxos = {
         let chain = handle.rpc_state.chain.lock().await;
+        let mempool = handle.rpc_state.mempool.lock().await;
         let mut utxos = Vec::new();
         for address in &addresses {
-            utxos.extend(chain.get_utxos_for_address(address));
+            utxos.extend(
+                chain
+                    .get_utxos_for_address(address)
+                    .into_iter()
+                    .filter(|utxo| !mempool.is_outpoint_spent(&utxo.txid, utxo.vout)),
+            );
         }
         utxos
     };
@@ -1089,11 +1107,20 @@ pub async fn fund_cold_stake(
         (wifs, addresses, from)
     };
 
+    // The chain does not reflect mempool spends; without this filter a second
+    // send before the first confirms re-selects the same outpoint and is
+    // rejected as a conflict.
     let utxos = {
         let chain = handle.rpc_state.chain.lock().await;
+        let mempool = handle.rpc_state.mempool.lock().await;
         let mut utxos = Vec::new();
         for address in &addresses {
-            utxos.extend(chain.get_utxos_for_address(address));
+            utxos.extend(
+                chain
+                    .get_utxos_for_address(address)
+                    .into_iter()
+                    .filter(|utxo| !mempool.is_outpoint_spent(&utxo.txid, utxo.vout)),
+            );
         }
         utxos
     };
@@ -1953,7 +1980,7 @@ mod tests {
                 }],
                 outputs: vec![TxOutput {
                     value: 10 * COIN,
-                    script_pubkey: script,
+                    script_pubkey: script.clone(),
                 }],
                 lock_time: 1,
                 claim_address: None,
@@ -1962,6 +1989,49 @@ mod tests {
         };
         funding.header.merkle_root = funding.compute_merkle_root();
         chain.add_block(funding).unwrap();
+
+        // A second independent funding block. Sends correctly exclude inputs
+        // already spent in the mempool, so the 2FA assertion below needs a
+        // second spendable coin once the first send is broadcast.
+        let second = {
+            let prev = chain.best_hash().unwrap();
+            let parent = chain
+                .get_header_at_height(chain.best_height())
+                .expect("parent header");
+            let timestamp = parent.timestamp.saturating_add(1);
+            let mut block = Block {
+                header: BlockHeader {
+                    version: 1,
+                    prev_block_hash: prev,
+                    merkle_root: [0; 32],
+                    utxo_root: [0; 32],
+                    timestamp,
+                    bits: GENESIS_BITS,
+                    nonce: 2,
+                    stake_modifier: compute_stake_modifier(parent.stake_modifier, &prev),
+                },
+                transactions: vec![Transaction {
+                    version: 1,
+                    tx_type: TxType::Coinbase,
+                    inputs: vec![TxInput {
+                        prev_txid: [0; 32],
+                        prev_vout: u32::MAX,
+                        script_sig: vec![2],
+                        sequence: u32::MAX,
+                    }],
+                    outputs: vec![TxOutput {
+                        value: 10 * COIN,
+                        script_pubkey: script.clone(),
+                    }],
+                    lock_time: 2,
+                    claim_address: None,
+                    claim_signature: None,
+                }],
+            };
+            block.header.merkle_root = block.compute_merkle_root();
+            block
+        };
+        chain.add_block(second).unwrap();
 
         let chain = Arc::new(tokio::sync::Mutex::new(chain));
         let mempool = Arc::new(tokio::sync::Mutex::new(Mempool::new(10_000)));

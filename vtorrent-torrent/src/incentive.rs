@@ -2,9 +2,11 @@ use serde::{Deserialize, Serialize};
 
 /// Durable per-peer incentive-account journal.
 ///
-/// Implementations must persist the account before returning `Ok`, so a crash
-/// after a receipt cannot silently lose a payable debt. The engine calls this
-/// from a blocking task; implementations may use synchronous file I/O.
+/// Implementations must persist the account before returning `Ok(true)`. A
+/// rejected stale write returns `Ok(false)` when a newer `state_version` is
+/// already durable; callers must not treat that as a successful reservation.
+/// The engine calls this from a blocking task; implementations may use
+/// synchronous file I/O.
 pub trait IncentiveJournal: Send + Sync {
     fn upsert(
         &self,
@@ -12,7 +14,7 @@ pub trait IncentiveJournal: Send + Sync {
         peer_address: &str,
         receipt_epoch: u64,
         account: &PeerBandwidthAccount,
-    ) -> Result<(), String>;
+    ) -> Result<bool, String>;
     fn remove(
         &self,
         info_hash: [u8; 20],
@@ -311,7 +313,14 @@ impl PeerBandwidthAccount {
             // epoch we sign.
             if self.peer_epoch.is_some() {
                 if let Some(agreement) = self.agreed_owed() {
-                    self.settle_agreed(receipt.window_end, agreement.satoshis, agreement.bytes);
+                    // A peer may put the window end up to 600 s in the future.
+                    // Never let that delay our own next settlement.
+                    let settled_at = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
+                        .min(receipt.window_end);
+                    self.settle_agreed(settled_at, agreement.satoshis, agreement.bytes);
                 }
             }
             self.peer_epoch = Some(receipt.epoch);
