@@ -10,7 +10,7 @@ already accepted so it is not re-litigated.
 
 ## Review target
 
-Review the candidate `66bc7053710e3a98393de992e2c7c4e1f8b72f65`. This is the current review head. It is **not**
+Review the candidate `9594df405b1334373ac6b3834eb5e9204454a0d0`. This is the current review head. It is **not**
 covered by any prior soak: the `6a49727` fleet predates the fund-safety and
 recovery changes below and was interrupted by a host restart on 2026-11-16.
 Under the soak provenance policy, the shipping image needs its own full window
@@ -18,8 +18,8 @@ after this review and its fixes settle.
 
 Read this document from the tip of `main`. Confirm that no code changed after
 the candidate with
-`git diff --name-only 66bc705..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
-must return nothing. Check out `66bc705` itself when running the verification
+`git diff --name-only 9594df4..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+must return nothing. Check out `9594df4` itself when running the verification
 commands. The tables below record the earlier deltas. The table after the
 `f8e0162` deltas covers the range from `ba46fd6` to the candidate.
 
@@ -129,6 +129,7 @@ Deltas after `ba46fd6`:
 | `1f5fa81` | Journal replay preserves ledger payment progress, compaction durability, receipt-epoch reconciliation, stale-write versions, and budget-before-emit ordering |
 | `2b65c3a` | Receipt-backed removal guard, poisoned-journal fail-closed behavior, and journal directory fsync |
 | `66bc705` | Reservation rollback on failed durable writes, five-second result draining, and settled-ledger pruning |
+| `9594df4` | Signed payment intents persisted before broadcast, startup confirm/rebroadcast/release reconciliation, and durable intent cleanup |
 
 Deltas after the earlier review head:
 
@@ -180,7 +181,7 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout 66bc7053710e3a98393de992e2c7c4e1f8b72f65
+git checkout 9594df405b1334373ac6b3834eb5e9204454a0d0
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
@@ -188,7 +189,7 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 cargo test --workspace --all-features
 ```
 
-The `66bc705` workspace run passed 54 test groups and 1,503 tests with 0
+The `9594df4` workspace run passed 54 test groups and 1,504 tests with 0
 failures and 11 ignored. CI repeats the `--all-features` suite on every push.
 Set `VTORRENT_TOTP_STATE_DIR` to a fresh directory before running the suite so
 the host-scoped TOTP replay state does not collide with an existing
@@ -303,7 +304,7 @@ Added with `ff148fd` and `35ea52e`:
   release-signing wiring in `1e42381`, the import/receipt/checkpoint fixes in
   `29892b9`, the edge-case hardening in `514fe9f`, the BTC liveness/soak
   tooling in `9533a2c`, the fork/SPV fixes in `dd7676f`, and the review
-  remediation in `66bc705`. It is **not**
+  remediation in `9594df4`. It is **not**
   independent review.
 
 ## Status

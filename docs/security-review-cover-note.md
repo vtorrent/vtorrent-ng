@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `66bc705`
+Subject: Independent security review — vTorrent-NG mainnet candidate `9594df4`
 
 Hello,
 
@@ -18,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `66bc7053710e3a98393de992e2c7c4e1f8b72f65`
+**Review head:** `9594df405b1334373ac6b3834eb5e9204454a0d0`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `66bc705`. It is not covered by any prior soak: the
+The code under review is `9594df4`. It is not covered by any prior soak: the
 `6a49727` fleet predates every change below and was interrupted by a host
 restart on 2026-11-16. The eventual shipping image needs its own full window
 after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 code changed after the candidate with
-`git diff --name-only 66bc705..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only 9594df4..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -198,6 +198,9 @@ candidate `ba46fd6`:
 - `66bc705` — failed durable writes roll back in-flight reservations and the
   budget; payment results drain every five seconds; settled ledger debts are
   pruned once no journal record remains.
+- `9594df4` — the signed payment transaction and txid are persisted before
+  broadcast; startup confirms, rebroadcasts, or safely releases each
+  reservation.
 
 Five internal AI-assisted supplementary reviews are recorded in
 `docs/2026-11-17_ai-supplementary-review.md`,
@@ -221,7 +224,7 @@ closures in `5cdd580`, the taker-import/checkpoint/CLTV work in `2a25e3f`, the
 release-signing wiring in `1e42381`, the import/receipt/checkpoint fixes
 in `29892b9`, the edge-case hardening in `514fe9f`, the BTC liveness/soak
   tooling in `9533a2c`, the fork/SPV fixes in `dd7676f`, and the review
-  remediation in `66bc705`. They are not
+  remediation in `9594df4`. They are not
 independent review and do not count for this gate.
 
 Earlier in this round, from `b729e36` through `ba46fd6`:
@@ -357,7 +360,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `66bc7053710e3a98393de992e2c7c4e1f8b72f65`
+- Confirm the review head is still `9594df405b1334373ac6b3834eb5e9204454a0d0`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.
