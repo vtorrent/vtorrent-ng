@@ -3776,3 +3776,7 @@ On restart:
 - `emitted_total` is the single 0.1 VTR payment, not a repeated amount.
 
 This closes the live SIGKILL verification for the intent-store recovery path.
+
+Observation at **2026-11-21T11:51:49Z** (`+1h`): height 106, all three tips
+identical, BTC SPV synced to 976,897/976,898, staking on nodes 2/3, RSS
+134.8/138.9/139.2 MiB, restarts 0, Prometheus 3/3, zero ERROR/panic lines.
