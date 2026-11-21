@@ -76,6 +76,9 @@ fix was written. Fixes are on `main` after `f9a91a2`.
 | 60 | High | Budget ordering | The durable budget could lag the broadcast, allowing the cap to reset after a crash. | The budget record is fsynced before any payment leaves the process. |
 | 61 | Medium | Journal deletion ordering | Journal removal and ledger debt removal could disagree, resurrecting a paid debt. | Zero debts are retained as a no-repay guard until cleanup; the merge preserves the ledger's progress if a journal tombstone is missing. |
 | 62 | High | In-flight liveness | A crash before the payment result is drained leaves an in-flight marker without a txid; the debt is stuck rather than re-paid. | Residual: the funds are not double-spent, but an operator or restart is required to resolve the stuck reservation. |
+| 63 | Medium | Removal guard | A receipt-backed account could be removed before its next settlement, deferring the debt until a restart. | Session removal and eviction now retain accounts that still hold a peer receipt. |
+| 64 | Medium | Journal poison | A partial append followed by more writes could create a corrupt middle line and block startup. | A write, fsync, or compaction failure poisons the journal; further writes fail until restart, when the torn final line is discarded. |
+| 65 | Low | Journal directory sync | Journal creation and compaction renames were not directory-synced. | The parent directory is fsynced after creation and rename. |
 
 ## Follow-up closures
 
@@ -188,7 +191,7 @@ pass-5 commit:
   tests, lint and production build clean.
 - Clippy: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
   completed clean.
-- Full workspace on the final tree: **1,502 passed, 0 failed, 11 ignored**
+- Full workspace on the final tree: **1,503 passed, 0 failed, 11 ignored**
   across 54 test groups.
 - Container source build: `docker build -f docker/Dockerfile` succeeded;
   `vtorrent-daemon 2.0.0` runs as uid `vtorrent`; image

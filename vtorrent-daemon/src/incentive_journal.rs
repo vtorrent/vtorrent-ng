@@ -47,6 +47,7 @@ struct State {
     records: HashMap<String, JournalAccount>,
     emitted_total: u64,
     lines: usize,
+    poisoned: bool,
 }
 
 pub struct JsonlJournal {
@@ -148,6 +149,12 @@ impl JsonlJournal {
             options.mode(0o600);
         }
         let file = options.open(path)?;
+        // Make the directory entry durable across a power loss.
+        if let Some(parent) = path.parent() {
+            if let Ok(directory) = std::fs::File::open(parent) {
+                let _ = directory.sync_all();
+            }
+        }
         Ok(Self {
             state: Mutex::new(State {
                 path: path.to_path_buf(),
@@ -155,6 +162,7 @@ impl JsonlJournal {
                 records,
                 emitted_total,
                 lines,
+                poisoned: false,
             }),
         })
     }
@@ -177,13 +185,19 @@ impl JsonlJournal {
     }
 
     fn append(state: &mut State, record: &JournalRecord) -> Result<(), String> {
+        if state.poisoned {
+            return Err("incentive journal is poisoned; restart required".into());
+        }
         let mut bytes = serde_json::to_vec(record).map_err(|error| error.to_string())?;
         bytes.push(b'\n');
-        state
-            .file
-            .write_all(&bytes)
-            .map_err(|error| error.to_string())?;
-        state.file.sync_data().map_err(|error| error.to_string())?;
+        if let Err(error) = state.file.write_all(&bytes) {
+            state.poisoned = true;
+            return Err(error.to_string());
+        }
+        if let Err(error) = state.file.sync_data() {
+            state.poisoned = true;
+            return Err(error.to_string());
+        }
         state.lines += 1;
         Ok(())
     }
@@ -192,7 +206,10 @@ impl JsonlJournal {
         if state.lines > MAX_LINES
             || state.file.metadata().map(|m| m.len()).unwrap_or(0) > MAX_BYTES
         {
-            Self::compact(state)?;
+            if let Err(error) = Self::compact(state) {
+                state.poisoned = true;
+                return Err(error);
+            }
         }
         Ok(())
     }
@@ -237,6 +254,11 @@ impl JsonlJournal {
         }
         file.sync_all().map_err(|error| error.to_string())?;
         std::fs::rename(&temporary, &state.path).map_err(|error| error.to_string())?;
+        if let Some(parent) = state.path.parent() {
+            if let Ok(directory) = std::fs::File::open(parent) {
+                let _ = directory.sync_all();
+            }
+        }
         state.file = std::fs::OpenOptions::new()
             .append(true)
             .open(&state.path)
@@ -361,6 +383,20 @@ mod tests {
         reopened.remove([1u8; 20], "VPeer", 7).unwrap();
         let reopened = JsonlJournal::open(&path).unwrap();
         assert!(reopened.accounts().is_empty());
+    }
+
+    #[test]
+    fn a_poisoned_journal_refuses_further_writes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("journal.jsonl");
+        let journal = JsonlJournal::open(&path).unwrap();
+        {
+            let mut state = journal.state.lock().unwrap();
+            state.poisoned = true;
+        }
+        assert!(journal
+            .upsert([1u8; 20], "VPeer", 7, &account(100))
+            .is_err());
     }
 
     #[test]

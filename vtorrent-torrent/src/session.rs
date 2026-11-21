@@ -214,6 +214,7 @@ impl TorrentSession {
                 || a.unpaid_satoshis > 0
                 || a.payment_in_flight
                 || a.pending_payment.is_some()
+                || a.peer_receipt.is_some()
         });
         // If still over limit, remove the least-recently-active accounts —
         // but only those with no pending earnings: evicting an account with
@@ -229,6 +230,8 @@ impl TorrentSession {
                         && a.bytes_downloaded == 0
                         && a.unpaid_satoshis == 0
                         && !a.payment_in_flight
+                        && a.pending_payment.is_none()
+                        && a.peer_receipt.is_none()
                         && a.total_earned_satoshis == a.total_paid_satoshis
                 })
                 .take(excess)
@@ -252,6 +255,7 @@ impl TorrentSession {
             account.unpaid_satoshis > 0
                 || account.payment_in_flight
                 || account.pending_payment.is_some()
+                || account.peer_receipt.is_some()
         })
     }
 
