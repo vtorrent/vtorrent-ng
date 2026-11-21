@@ -3718,3 +3718,20 @@ as `vtorrent/node:9594df4`
 
 This is a candidate window, not release evidence. The independent human review
 and the full 168 hours remain open.
+
+## 2026-11-21 — live recovery drill catches re-emission
+
+An isolated container on `vtorrent/node:9594df4` was used for a startup-recovery
+drill: a regtest wallet was imported and faucet-funded, the daemon was stopped,
+a journal record with a 0.1 VTR unpaid debt was written, and the daemon was
+restarted with auto-unlock.
+
+The journal recovery paid the peer, but the same payment was re-emitted every
+five seconds and the budget was over-counted. Root cause: the emission guard
+used `has_outstanding`, which is true while a pending txid exists; the guard
+must skip pending/in-flight debts. The fix is committed and the drill will be
+re-run on the rebuilt image.
+
+This is not a double spend because the worker rebuilt the identical transaction,
+but it is a correctness and budget bug. The candidate `9594df4` window is not
+valid evidence for the fix.

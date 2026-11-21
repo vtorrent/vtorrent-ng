@@ -84,6 +84,7 @@ fix was written. Fixes are on `main` after `f9a91a2`.
 | 68 | Medium | Ledger growth | Fully settled zero debts remained in the ledger forever. | At startup, zero debts with no matching journal record are pruned; zero debts with a journal record are kept as the no-repay guard until its tombstone is durable. |
 | 69 | High | Payment intent durability | The txid existed only in the process until the next result drain, so a crash could lose the bridge between an in-flight reservation and its transaction. | The worker writes the signed transaction and txid to `incentive-payment-intents.json` (0600, atomic) before mempool admission or broadcast. |
 | 70 | High | Startup intent reconciliation | A restart did not know whether an in-flight account had been broadcast. | Startup checks each intent against the chain/mempool: confirmed intents mark the debt paid, missing ones are rebroadcast from the stored raw transaction, and in-flight accounts with no intent are released as never-broadcast. |
+| 71 | High | Recovered payment re-emission | A recovered ledger debt with a pending txid still satisfied the outstanding predicate, so the five-second loop re-emitted the same payment repeatedly and over-counted the budget. | The emission guard again skips any debt with a pending txid or in-flight marker. The live receipt-recovery drill caught this before release. |
 
 ## Follow-up closures
 

@@ -1578,7 +1578,10 @@ async fn main() -> anyhow::Result<()> {
                 // Pay surviving ledger debts from the previous process.
                 let mut due_ledger_payments = Vec::new();
                 for debt in &mut ledger.debts {
-                    if !debt.has_outstanding() {
+                    if debt.pending_txid.is_some()
+                        || debt.payment_in_flight
+                        || debt.unpaid_satoshis == 0
+                    {
                         continue;
                     }
                     let amount = vtorrent_torrent::payment::capped_payment_amount(
