@@ -44,10 +44,12 @@ receipt-backed accounting between snapshots. A write-ahead obligation log
 
 ### Journal record
 
-`incentive-journal.jsonl`, 0600, append-only newline-delimited JSON:
+`incentive-journal.jsonl`, 0600, append-only newline-delimited JSON. The
+record key is `(info_hash, peer_address, receipt_epoch)` so a re-added torrent
+cannot collide with an older partial debt:
 
 ```json
-{"version":1,"info_hash":"<hex>","peer_address":"V...","saved_at":1795...,"account":{...}}
+{"version":1,"info_hash":"<hex>","peer_address":"V...","receipt_epoch":123,"saved_at":1795...,"account":{...}}
 ```
 
 `account` is the existing `PeerBandwidthAccount` (it already derives
@@ -56,7 +58,7 @@ receipt epoch, peer epoch, `unpaid_satoshis`, `payment_in_flight`, and
 `pending_payment`. A removal is a record with `"deleted":true` for the same
 key.
 
-Last record per `(info_hash, peer_address)` wins on replay. A truncated final
+Last record per `(info_hash, peer_address, receipt_epoch)` wins on replay. A truncated final
 line is ignored; the previous complete record remains authoritative. The file
 is compacted when it exceeds 1 MiB or 4,096 records by atomically writing the
 latest live records to a temporary file and renaming it.
@@ -91,7 +93,11 @@ One background writer owns the file:
 
 1. Load the journal and the legacy `incentive-ledger.json` /
    `incentive-live.json`.
-2. For each persisted account with no live session:
+2. Merge by `(info_hash, peer, receipt_epoch)`. A debt already in the ledger is
+   never replaced by the journal snapshot: its pending txid, in-flight marker,
+   and remaining unpaid amount are the payment-progress record. The journal is
+   a source only for keys the ledger does not already contain.
+3. For each new persisted account with no live session:
    - Convert receipt-backed unsettled bytes into debt with
      `agreed_owed()` + `settle_agreed(now, ...)`.
    - Pay `unpaid_satoshis` through the existing budget/cap path.
@@ -99,11 +105,19 @@ One background writer owns the file:
      Confirmed → remove; present/shallow → keep; missing → keep pending and
      never re-pay.
    - Remove the record only after the payment is final and the debt is zero.
-3. For an account whose `info_hash` is re-added by a torrent, the live session
+4. For an account whose `info_hash` is re-added by a torrent, the live session
    starts fresh. The journal record is paid as an orphan debt; counters are
    **not** reattached across a possible peer-epoch change.
-4. Legacy ledger entries are imported as journal records with a new id/version;
+5. Legacy ledger entries are imported as journal records with a new id/version;
    the legacy files are renamed `.migrated` after the journal is fsynced.
+
+### Ordering and versions
+
+`PeerBandwidthAccount.state_version` increments on every receipt, settlement,
+and payment-state change. The journal rejects an upsert whose version is older
+than the stored record, so a delayed engine clone cannot erase a newer
+in-flight marker. Compaction runs only after the triggering mutation is in the
+in-memory map, so the compacted file always includes it.
 
 ### Budget
 

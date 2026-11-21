@@ -3537,8 +3537,12 @@ The crash window was closed for receipt-verified debt at
 - Every receipt, settlement, and payment state change appends the full
   `PeerBandwidthAccount` to a 0600, fsynced `incentive-journal.jsonl`.
 - A pre-emit in-flight marker is durable before the payment leaves the process.
-- Startup replays the journal, settles receipt-backed bytes into debt, and pays
-  it through the capped budget path.
+- Startup merges the journal into the ledger, preserves a ledger debt's pending
+  txid/in-flight/remaining unpaid, settles only new receipt-backed debt, and
+  pays it through the capped budget path.
+- Journal mutators update memory before compaction, so the record that triggers
+  a compaction is never omitted; per-account `state_version` rejects delayed
+  older writes.
 - Journal and recovered-debt keys include the account's receipt epoch, so a
   re-added torrent cannot collide with an older partial debt.
 - A torn final line is discarded; other corruption fails startup. The legacy
@@ -3549,6 +3553,10 @@ recoverable after a crash. The `review-d790c16` fleet was retired at
 **17:28Z**; logs are archived under
 `/mnt/temp/vtorrent-ng-evidence/soak-d790c16/final/`. The active `vtr-node*`
 fleet was not modified. This window is **not** valid evidence for the new code.
+
+An in-flight marker without a txid after a crash is a stuck reservation, not a
+double payment: the debt is not re-paid automatically. Resolving it needs an
+operator or a restart with a reconciliation pass.
 
 ## 2026-11-21 — durable-journal candidate (`f8ccbfe`)
 

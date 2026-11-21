@@ -12,6 +12,8 @@ use std::io::Write;
 use std::path::Path;
 use vtorrent_torrent::incentive::PeerBandwidthAccount;
 
+use crate::incentive_journal::JournalAccount;
+
 /// One outstanding debt, independent of the live torrent session that produced
 /// it. `id` is stable for the lifetime of the ledger entry so an asynchronous
 /// payment result can find it after other entries are removed.
@@ -125,6 +127,47 @@ impl IncentiveLedger {
     pub fn debt_mut(&mut self, id: u64) -> Option<&mut IncentiveDebt> {
         self.debts.iter_mut().find(|debt| debt.id == id)
     }
+
+    /// Merge replayed journal accounts into the payment queue.
+    ///
+    /// The journal is authoritative for its exact `(info_hash, peer, receipt
+    /// epoch)` key. Receipt-backed but unsettled bytes are converted into debt
+    /// at `now`; a different epoch is a different account and both remain.
+    pub fn merge_journal(&mut self, accounts: Vec<JournalAccount>, now: u64) {
+        let mut by_key: std::collections::HashMap<String, JournalAccount> = accounts
+            .into_iter()
+            .map(|record| {
+                let key = format!(
+                    "{}:{}:{}",
+                    hex::encode(record.info_hash),
+                    record.peer_address,
+                    record.receipt_epoch
+                );
+                (key, record)
+            })
+            .collect();
+        // A ledger debt is the payment-progress record for its key. Never
+        // replace it with the pre-payment journal snapshot: preserve the
+        // pending txid, in-flight marker, and remaining unpaid amount.
+        for debt in &mut self.debts {
+            if let Some(record) = by_key.remove(&debt.key) {
+                if debt.pending_txid.is_none() {
+                    if let Some(pending) = record.account.pending_payment {
+                        debt.pending_txid = Some(pending.txid);
+                        debt.pending_satoshis = pending.satoshis;
+                    }
+                }
+            }
+        }
+        for record in by_key.into_values() {
+            let mut account = record.account;
+            account.receipt_epoch = record.receipt_epoch;
+            if let Some(agreement) = account.agreed_owed() {
+                account.settle_agreed(now, agreement.satoshis, agreement.bytes);
+            }
+            self.add_account(&record.info_hash, &record.peer_address, &account);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -186,5 +229,105 @@ mod tests {
         assert!(debt.pending_txid.is_none());
         debt.confirm_payment(600);
         assert!(!debt.has_outstanding());
+    }
+
+    fn receipt_account() -> PeerBandwidthAccount {
+        use vtorrent_core::receipt::BandwidthReceipt;
+
+        let mut account = PeerBandwidthAccount::new("VPeer".into());
+        account.record_download(1024 * 1024 * 1024);
+        account.peer_epoch = Some(account.receipt_epoch);
+        let receipt = BandwidthReceipt {
+            info_hash: [1u8; 20],
+            window_start: 0,
+            window_end: 300,
+            uploaded_by_me: 1024 * 1024 * 1024,
+            downloaded_by_me: 0,
+            peer: "VUs".into(),
+            signer: "VPeer".into(),
+            settlement_id: 1,
+            epoch: account.receipt_epoch,
+        };
+        assert!(account.record_receipt(receipt));
+        account
+    }
+
+    #[test]
+    fn journal_merge_settles_receipt_backed_bytes_into_debt() {
+        let account = receipt_account();
+        let epoch = account.receipt_epoch;
+        let journal = JournalAccount {
+            info_hash: [1u8; 20],
+            peer_address: "VPeer".into(),
+            receipt_epoch: epoch,
+            account,
+        };
+        let mut ledger = IncentiveLedger::default();
+        ledger.merge_journal(vec![journal], 1_700_000_000);
+        assert_eq!(ledger.debts.len(), 1);
+        assert_eq!(
+            ledger.debts[0].unpaid_satoshis,
+            vtorrent_torrent::incentive::COIN / 2
+        );
+        assert_eq!(
+            ledger.debts[0].key,
+            format!("{}:VPeer:{}", hex::encode([1u8; 20]), epoch)
+        );
+    }
+
+    #[test]
+    fn a_different_receipt_epoch_is_a_separate_debt() {
+        let mut ledger = IncentiveLedger::default();
+        let old = IncentiveDebt {
+            id: 1,
+            key: format!("{}:VPeer:1", hex::encode([1u8; 20])),
+            peer_address: "VPeer".into(),
+            unpaid_satoshis: 100,
+            pending_txid: None,
+            pending_satoshis: 0,
+            payment_in_flight: false,
+        };
+        ledger.debts.push(old);
+        let mut account = receipt_account();
+        account.receipt_epoch = 2;
+        let journal = JournalAccount {
+            info_hash: [1u8; 20],
+            peer_address: "VPeer".into(),
+            receipt_epoch: 2,
+            account,
+        };
+        ledger.merge_journal(vec![journal], 1_700_000_000);
+        assert_eq!(ledger.debts.len(), 2);
+        assert!(ledger.debts.iter().any(|debt| debt.key.ends_with(":1")));
+        assert!(ledger.debts.iter().any(|debt| debt.key.ends_with(":2")));
+    }
+
+    #[test]
+    fn journal_merge_preserves_ledger_payment_progress() {
+        let account = receipt_account();
+        let epoch = account.receipt_epoch;
+        let key = format!("{}:VPeer:{}", hex::encode([1u8; 20]), epoch);
+        let mut ledger = IncentiveLedger::default();
+        ledger.debts.push(IncentiveDebt {
+            id: 7,
+            key: key.clone(),
+            peer_address: "VPeer".into(),
+            unpaid_satoshis: 700,
+            pending_txid: Some([9u8; 32]),
+            pending_satoshis: 400,
+            payment_in_flight: false,
+        });
+        let journal = JournalAccount {
+            info_hash: [1u8; 20],
+            peer_address: "VPeer".into(),
+            receipt_epoch: epoch,
+            account,
+        };
+        ledger.merge_journal(vec![journal], 1_700_000_000);
+        assert_eq!(ledger.debts.len(), 1);
+        assert_eq!(ledger.debts[0].id, 7);
+        assert_eq!(ledger.debts[0].pending_txid, Some([9u8; 32]));
+        assert_eq!(ledger.debts[0].pending_satoshis, 400);
+        assert_eq!(ledger.debts[0].unpaid_satoshis, 700);
     }
 }

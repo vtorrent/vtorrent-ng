@@ -111,6 +111,11 @@ pub struct PeerBandwidthAccount {
     /// mempool, the account becomes payable again.
     #[serde(default)]
     pub pending_payment: Option<PendingPayment>,
+    /// Monotonic version for journal writes. Incremented on every receipt,
+    /// settlement, or payment-state change so an older clone cannot overwrite
+    /// a newer durable record.
+    #[serde(default)]
+    pub state_version: u64,
 }
 
 /// A broadcast incentive payment awaiting on-chain confirmation.
@@ -142,6 +147,7 @@ impl PeerBandwidthAccount {
             unpaid_satoshis: 0,
             payment_in_flight: false,
             pending_payment: None,
+            state_version: 0,
         }
     }
 
@@ -235,6 +241,7 @@ impl PeerBandwidthAccount {
         self.bytes_downloaded = 0;
         self.last_settlement = current_timestamp;
         self.peer_receipt = None;
+        self.state_version = self.state_version.saturating_add(1);
         earned
     }
 
@@ -245,6 +252,7 @@ impl PeerBandwidthAccount {
         self.total_paid_satoshis = self.total_paid_satoshis.saturating_add(paid);
         self.payment_in_flight = false;
         self.pending_payment = None;
+        self.state_version = self.state_version.saturating_add(1);
         self.unpaid_satoshis
     }
 
@@ -259,6 +267,7 @@ impl PeerBandwidthAccount {
             txid,
             satoshis: satoshis.min(self.unpaid_satoshis),
         });
+        self.state_version = self.state_version.saturating_add(1);
     }
 
     /// The pending payment was observed in a confirmed block.
@@ -276,11 +285,13 @@ impl PeerBandwidthAccount {
     /// An operator must resolve a transaction that is permanently stuck.
     pub fn payment_missing(&mut self) {
         self.payment_in_flight = false;
+        self.state_version = self.state_version.saturating_add(1);
     }
 
     /// Clear the in-flight marker after a failed payment so it is retried.
     pub fn payment_failed(&mut self) {
         self.payment_in_flight = false;
+        self.state_version = self.state_version.saturating_add(1);
     }
 
     /// Store a verified peer receipt. Returns false for a replayed id.
@@ -317,6 +328,7 @@ impl PeerBandwidthAccount {
             self.settled_peer_uploaded = receipt.uploaded_by_me.saturating_sub(acknowledged);
             self.last_receipt_id = receipt.settlement_id;
             self.peer_receipt = Some(receipt);
+            self.state_version = self.state_version.saturating_add(1);
             return true;
         }
         if receipt.settlement_id <= self.last_receipt_id {
@@ -324,6 +336,7 @@ impl PeerBandwidthAccount {
         }
         self.last_receipt_id = receipt.settlement_id;
         self.peer_receipt = Some(receipt);
+        self.state_version = self.state_version.saturating_add(1);
         true
     }
 

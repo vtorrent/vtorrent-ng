@@ -69,6 +69,13 @@ fix was written. Fixes are on `main` after `f9a91a2`.
 | 53 | Medium | Incentive persistence | Debt, pending-payment, and budget state were process-local; a restart lost them. | Sessions with outstanding debt are neither evicted nor removed. Receipt-backed accounts are journaled to `incentive-journal.jsonl` as receipts and settlements arrive; startup replays the journal, settles receipt-backed bytes into debt, and pays it. Bytes after the last receipt remain unverified and unrecoverable. |
 | 54 | Medium | SPV rebuild latency | The header snapshot clone held the consensus chain lock for the whole chain, and side-branch headers were retained forever. | The snapshot is taken in 2,048-header chunks with a chain generation check, and the SPV view prunes headers that are not ancestors of the best tip. |
 | 55 | High | Crash durability | A SIGKILL or power loss lost settled debts and receipt-backed accounting because only graceful shutdowns were snapshotted. | The durable account journal persists the full account on each receipt and settlement, fsynced before the debt is treated as payable; pending transactions are checked after restart and never re-paid. |
+| 56 | Critical | Journal/ledger merge | Startup replaced a ledger debt with the journal snapshot, discarding its pending txid/in-flight state and re-paying a recovered debt. | The merge preserves the ledger's payment progress for a matching epoch key; only keys absent from the ledger become new debts. The regression test seeds a pending debt plus a journal record and asserts it survives. |
+| 57 | Critical | Journal compaction | The record that triggered compaction was omitted because the in-memory map was updated after the append/compaction. | Mutators update the record and budget in memory before compaction; a boundary test forces compaction and reopens immediately. |
+| 58 | Critical | Epoch reconciliation | A live account was written under an old debt's epoch, so a partial remainder could be lost or the live debt duplicated. | A live account is written under its own `receipt_epoch`, and the old record is removed only after that write succeeds. |
+| 59 | High | Stale journal writes | A delayed older clone could overwrite a newer in-flight or receipt state. | `state_version` increments on every receipt, settlement, and payment-state change; the journal rejects an older version. |
+| 60 | High | Budget ordering | The durable budget could lag the broadcast, allowing the cap to reset after a crash. | The budget record is fsynced before any payment leaves the process. |
+| 61 | Medium | Journal deletion ordering | Journal removal and ledger debt removal could disagree, resurrecting a paid debt. | Zero debts are retained as a no-repay guard until cleanup; the merge preserves the ledger's progress if a journal tombstone is missing. |
+| 62 | High | In-flight liveness | A crash before the payment result is drained leaves an in-flight marker without a txid; the debt is stuck rather than re-paid. | Residual: the funds are not double-spent, but an operator or restart is required to resolve the stuck reservation. |
 
 ## Follow-up closures
 
@@ -181,7 +188,7 @@ pass-5 commit:
   tests, lint and production build clean.
 - Clippy: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
   completed clean.
-- Full workspace on the final tree: **1,497 passed, 0 failed, 11 ignored**
+- Full workspace on the final tree: **1,502 passed, 0 failed, 11 ignored**
   across 54 test groups.
 - Container source build: `docker build -f docker/Dockerfile` succeeded;
   `vtorrent-daemon 2.0.0` runs as uid `vtorrent`; image

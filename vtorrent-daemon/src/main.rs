@@ -1169,30 +1169,10 @@ async fn main() -> anyhow::Result<()> {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        // The journal is authoritative for keys it contains. Replace any
-        // ledger debt from a previous recovery run so repeated restarts do not
-        // duplicate the same obligation.
-        let journal_keys: std::collections::HashSet<String> = journal_accounts
-            .iter()
-            .map(|record| {
-                format!(
-                    "{}:{}:{}",
-                    hex::encode(record.info_hash),
-                    record.peer_address,
-                    record.receipt_epoch
-                )
-            })
-            .collect();
-        ledger
-            .debts
-            .retain(|debt| !journal_keys.contains(&debt.key));
-        for record in journal_accounts {
-            let mut account = record.account;
-            if let Some(agreement) = account.agreed_owed() {
-                account.settle_agreed(now, agreement.satoshis, agreement.bytes);
-            }
-            ledger.add_account(&record.info_hash, &record.peer_address, &account);
-        }
+        // The journal is authoritative for its exact epoch-scoped keys.
+        // Receipt-backed bytes become payable debt here; a different epoch is
+        // a separate account and both remain.
+        ledger.merge_journal(journal_accounts, now);
         ledger.emitted_total = ledger.emitted_total.max(journal_budget);
         if ledger.emitted_total > journal_budget {
             journal_set_budget(&journal, ledger.emitted_total).await;
@@ -1307,7 +1287,9 @@ async fn main() -> anyhow::Result<()> {
                             debt.confirm_payment(*paid);
                         }
                     }
-                    ledger.debts.retain(|debt| debt.has_outstanding());
+                    // Keep zero debts until the journal cleanup succeeds. If
+                    // the journal tombstone is lost, the ledger debt still
+                    // stops a restart from re-adding and re-paying it.
                     for (_, key, _) in &settled_debts {
                         let mut parts = key.splitn(3, ':');
                         let (Some(info_hex), Some(peer_address), Some(epoch)) =
@@ -1330,8 +1312,22 @@ async fn main() -> anyhow::Result<()> {
                             .await
                             .find_account(&info_hash, peer_address);
                         if let Some(account) = live {
-                            journal_upsert(&journal, info_hash, peer_address, epoch, &account)
-                                .await;
+                            // Never write a live account under an old epoch.
+                            // Persist it under its own epoch, then remove the
+                            // old record only after that write succeeds.
+                            let live_epoch = account.receipt_epoch;
+                            if journal_upsert(
+                                &journal,
+                                info_hash,
+                                peer_address,
+                                live_epoch,
+                                &account,
+                            )
+                            .await
+                                && live_epoch != epoch
+                            {
+                                journal_remove(&journal, info_hash, peer_address, epoch).await;
+                            }
                         } else {
                             journal_remove(&journal, info_hash, peer_address, epoch).await;
                         }
@@ -1342,10 +1338,7 @@ async fn main() -> anyhow::Result<()> {
                 // Pay surviving ledger debts from the previous process.
                 let mut due_ledger_payments = Vec::new();
                 for debt in &mut ledger.debts {
-                    if debt.pending_txid.is_some()
-                        || debt.payment_in_flight
-                        || debt.unpaid_satoshis == 0
-                    {
+                    if !debt.has_outstanding() {
                         continue;
                     }
                     let amount = vtorrent_torrent::payment::capped_payment_amount(
@@ -1518,6 +1511,7 @@ async fn main() -> anyhow::Result<()> {
                                 continue;
                             }
                             account.payment_in_flight = true;
+                            account.state_version = account.state_version.saturating_add(1);
                             emitted_total = emitted_total.saturating_add(amount);
                             journal_updates.push((info_hash, peer_key.clone(), account.clone()));
                             due_payments.push(vtorrent_torrent::payment::PaymentDue {
@@ -1540,6 +1534,9 @@ async fn main() -> anyhow::Result<()> {
                     )
                     .await;
                 }
+                // Reserve the budget before any payment leaves the process, so
+                // a crash cannot reset the cap below what was already spent.
+                journal_set_budget(&journal, emitted_total).await;
                 if durable {
                     for payment in due_payments {
                         payment_sender.emit(payment);
@@ -1549,7 +1546,6 @@ async fn main() -> anyhow::Result<()> {
                         "Skipping incentive payments because an account journal write failed"
                     );
                 }
-                journal_set_budget(&journal, emitted_total).await;
                 if settled > 0 {
                     tracing::info!("Torrent incentive: settled {} peer accounts", settled);
                 }

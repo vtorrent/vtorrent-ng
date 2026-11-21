@@ -185,6 +185,10 @@ impl JsonlJournal {
             .map_err(|error| error.to_string())?;
         state.file.sync_data().map_err(|error| error.to_string())?;
         state.lines += 1;
+        Ok(())
+    }
+
+    fn maybe_compact(state: &mut State) -> Result<(), String> {
         if state.lines > MAX_LINES
             || state.file.metadata().map(|m| m.len()).unwrap_or(0) > MAX_BYTES
         {
@@ -251,6 +255,12 @@ impl IncentiveJournal for JsonlJournal {
         account: &PeerBandwidthAccount,
     ) -> Result<(), String> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let entry = key(&info_hash, peer_address, receipt_epoch);
+        if let Some(stored) = state.records.get(&entry) {
+            if stored.account.state_version > account.state_version {
+                return Ok(());
+            }
+        }
         let record = JournalRecord {
             version: VERSION,
             info_hash: Some(hex::encode(info_hash)),
@@ -262,7 +272,7 @@ impl IncentiveJournal for JsonlJournal {
         };
         Self::append(&mut state, &record)?;
         state.records.insert(
-            key(&info_hash, peer_address, receipt_epoch),
+            entry,
             JournalAccount {
                 info_hash,
                 peer_address: peer_address.to_string(),
@@ -270,6 +280,7 @@ impl IncentiveJournal for JsonlJournal {
                 account: account.clone(),
             },
         );
+        Self::maybe_compact(&mut state)?;
         Ok(())
     }
 
@@ -293,6 +304,7 @@ impl IncentiveJournal for JsonlJournal {
         state
             .records
             .remove(&key(&info_hash, peer_address, receipt_epoch));
+        Self::maybe_compact(&mut state)?;
         Ok(())
     }
 
@@ -309,6 +321,7 @@ impl IncentiveJournal for JsonlJournal {
         };
         Self::append(&mut state, &record)?;
         state.emitted_total = emitted_total;
+        Self::maybe_compact(&mut state)?;
         Ok(())
     }
 
@@ -351,6 +364,22 @@ mod tests {
     }
 
     #[test]
+    fn an_older_account_version_cannot_overwrite_a_newer_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("journal.jsonl");
+        let journal = JsonlJournal::open(&path).unwrap();
+        let mut newer = account(100);
+        newer.state_version = 2;
+        journal.upsert([1u8; 20], "VPeer", 7, &newer).unwrap();
+        let mut older = account(999);
+        older.state_version = 1;
+        journal.upsert([1u8; 20], "VPeer", 7, &older).unwrap();
+        let reopened = JsonlJournal::open(&path).unwrap();
+        assert_eq!(reopened.accounts()[0].account.unpaid_satoshis, 100);
+        assert_eq!(reopened.accounts()[0].account.state_version, 2);
+    }
+
+    #[test]
     fn torn_final_line_is_discarded() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("journal.jsonl");
@@ -366,6 +395,25 @@ mod tests {
         let journal = JsonlJournal::open(&path).unwrap();
         assert_eq!(journal.accounts().len(), 1);
         assert_eq!(journal.accounts()[0].account.unpaid_satoshis, 100);
+    }
+
+    #[test]
+    fn the_record_that_triggers_compaction_is_durable() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("journal.jsonl");
+        let journal = JsonlJournal::open(&path).unwrap();
+        {
+            let mut state = journal.state.lock().unwrap();
+            state.lines = MAX_LINES;
+        }
+        journal
+            .upsert([7u8; 20], "VPeer", 9, &account(500))
+            .unwrap();
+        let reopened = JsonlJournal::open(&path).unwrap();
+        let records = reopened.accounts();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].account.unpaid_satoshis, 500);
+        assert_eq!(records[0].receipt_epoch, 9);
     }
 
     #[test]
