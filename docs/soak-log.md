@@ -3780,3 +3780,7 @@ This closes the live SIGKILL verification for the intent-store recovery path.
 Observation at **2026-11-21T11:51:49Z** (`+1h`): height 106, all three tips
 identical, BTC SPV synced to 976,897/976,898, staking on nodes 2/3, RSS
 134.8/138.9/139.2 MiB, restarts 0, Prometheus 3/3, zero ERROR/panic lines.
+
+Observation at **2026-11-21T14:09:49Z** (`+4h`): height 241, all three tips
+identical, BTC SPV synced to 976,912, staking on nodes 2/3, RSS
+109.8/115.3/114.6 MiB, restarts 0, Prometheus 3/3.
