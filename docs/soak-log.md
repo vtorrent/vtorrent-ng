@@ -3701,3 +3701,20 @@ The final reservation and result-drain fixes were built at
 
 This is a candidate window, not release evidence. The independent human review
 and the full 168 hours remain open.
+
+## 2026-11-21 — payment-intent candidate (`9594df4`)
+
+The durable payment-intent state machine was committed at
+`9594df405b1334373ac6b3834eb5e9204454a0d0` (review docs at `fb89c52`) and built
+as `vtorrent/node:9594df4`
+(`sha256:a93afd6409c391db164a24b2d62f7119ee3ef3870840919c05e6fa552af5febb`).
+
+- Start: **2026-11-21T08:19:05Z**; window ends **2026-11-28T08:19:05Z**
+- Fleet: `review-9594df4`, RPC 23951–23953, Prometheus 23973
+- Evidence: `/mnt/temp/vtorrent-ng-evidence/soak-9594df4/`
+- Initial stable observation at **08:24Z**: height 6 with identical tips,
+  BTC SPV synced to 976,875 on all three, staking on nodes 2/3, RSS
+  149.3/158.2/129.9 MiB, restarts 0, Prometheus 3/3.
+
+This is a candidate window, not release evidence. The independent human review
+and the full 168 hours remain open.
