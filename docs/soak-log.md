@@ -3751,3 +3751,28 @@ The guarded payment loop was built at `vtorrent/node:10c4671`
 
 This is a candidate window, not release evidence. The independent human review
 and the full 168 hours remain open.
+
+## 2026-11-21 — SIGKILL-mid-payment drill (`10c4671`)
+
+An isolated container on the exact candidate image was funded, stopped, given a
+journal debt, and restarted. The payment was killed with SIGKILL immediately
+after the worker logged `Incentive payment ... sent`.
+
+Evidence after the kill:
+
+- ledger debt: `payment_in_flight: true`, `pending_txid: null`,
+  `unpaid_satoshis: 10000000`;
+- `incentive-payment-intents.json` contains the signed raw transaction and txid
+  `8037f4ce...`;
+- the persisted mempool is empty, so the transaction was only in memory.
+
+On restart:
+
+- startup found the intent, saw the transaction was absent from the chain and
+  mempool, and rebroadcast the stored raw transaction;
+- the mempool contains exactly one transaction, the same `8037f4ce...` txid;
+- the ledger debt is `payment_in_flight: false` with that txid pending;
+- no second `Incentive payment ... sent` log occurred;
+- `emitted_total` is the single 0.1 VTR payment, not a repeated amount.
+
+This closes the live SIGKILL verification for the intent-store recovery path.
