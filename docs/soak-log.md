@@ -3729,9 +3729,25 @@ restarted with auto-unlock.
 The journal recovery paid the peer, but the same payment was re-emitted every
 five seconds and the budget was over-counted. Root cause: the emission guard
 used `has_outstanding`, which is true while a pending txid exists; the guard
-must skip pending/in-flight debts. The fix is committed and the drill will be
-re-run on the rebuilt image.
+must skip pending/in-flight debts. The fix is committed at `10c4671`.
 
-This is not a double spend because the worker rebuilt the identical transaction,
-but it is a correctness and budget bug. The candidate `9594df4` window is not
-valid evidence for the fix.
+Rerun on the rebuilt image: exactly **one** `Incentive payment ... sent` log,
+one transaction in the mempool, the ledger debt at
+`payment_in_flight: false` with the txid pending, and `emitted_total` equal to
+the single 0.1 VTR payment. No repeat occurred over the 20-second observation.
+The `9594df4` window is not valid evidence for the fix.
+
+## 2026-11-21 — re-emission fix candidate (`10c4671`)
+
+The guarded payment loop was built at `vtorrent/node:10c4671`
+(`sha256:882065f919dbd4035fd460954035b209c5732b07e5a05b59616513864b3da6cd`).
+
+- Start: **2026-11-21T10:04:54Z**; window ends **2026-11-28T10:04:54Z**
+- Fleet: `review-10c4671`, RPC 23951–23953, Prometheus 23973
+- Evidence: `/mnt/temp/vtorrent-ng-evidence/soak-10c4671/`
+- Initial stable observation at **10:09Z**: height 5 with identical tips,
+  BTC SPV synced to 976,884 on all three, staking on nodes 2/3, RSS
+  134.5/141.6/128.0 MiB, restarts 0, Prometheus 3/3.
+
+This is a candidate window, not release evidence. The independent human review
+and the full 168 hours remain open.
