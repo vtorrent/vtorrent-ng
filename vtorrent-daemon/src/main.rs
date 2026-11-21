@@ -27,6 +27,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 mod config;
+mod incentive_intents;
 mod incentive_journal;
 mod incentive_ledger;
 mod sync_status;
@@ -139,6 +140,21 @@ fn btc_utxo_path(
     hasher.update(seed);
     let wallet_id = hex::encode(&hasher.finalize()[..8]);
     data_dir.join(format!("btc_utxos-{network_label}-{wallet_id}.json"))
+}
+
+fn incentive_debt_identity(key: &str) -> ([u8; 20], u64) {
+    let mut parts = key.splitn(3, ':');
+    let info_hash = parts
+        .next()
+        .and_then(|value| hex::decode(value).ok())
+        .and_then(|bytes| <[u8; 20]>::try_from(bytes).ok())
+        .unwrap_or([0u8; 20]);
+    let _peer = parts.next();
+    let receipt_epoch = parts
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    (info_hash, receipt_epoch)
 }
 
 #[tokio::main]
@@ -1062,42 +1078,108 @@ async fn main() -> anyhow::Result<()> {
     let payment_check_chain = Arc::clone(&rpc_state.chain);
     let payment_check_mempool = Arc::clone(&rpc_state.mempool);
     let payment_tx_submit = rpc_state.tx_submit.clone();
+    let intent_store = Arc::new(incentive_intents::IntentStore::open(
+        &data_dir.join("incentive-payment-intents.json"),
+    )?);
+    let intent_store_for_worker = intent_store.clone();
     let (payment_result_tx, mut payment_result_rx) =
         tokio::sync::mpsc::unbounded_channel::<vtorrent_torrent::payment::PaymentResult>();
     tokio::spawn(async move {
         while let Some(payment) = payment_receiver.recv().await {
             let peer_address = payment.peer_address.clone();
-            let result = vtorrent_wallet_service::build_incentive_payment(
+            let prepared = vtorrent_wallet_service::prepare_incentive_payment(
                 &payment_wif,
                 &payment_change,
                 &payment_chain,
                 &payment_mempool,
-                payment_tx_submit.as_ref(),
                 &vtorrent_wallet_service::IncentivePayment {
-                    peer_address,
+                    peer_address: peer_address.clone(),
                     amount_satoshis: payment.amount_satoshis,
                 },
             )
             .await;
-            match result {
-                Ok(txid) => {
-                    tracing::info!(
-                        "Incentive payment {} sent to {}",
-                        txid,
-                        payment.peer_address
-                    );
-                    let parsed = hex::decode(&txid)
-                        .ok()
-                        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
+            let prepared = match prepared {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    tracing::warn!("Incentive payment failed: {}", error);
                     let _ = payment_result_tx.send(vtorrent_torrent::payment::PaymentResult {
                         account_key: payment.account_key,
                         amount_satoshis: payment.amount_satoshis,
-                        success: parsed.is_some(),
-                        txid: parsed,
+                        success: false,
+                        txid: None,
+                    });
+                    continue;
+                }
+            };
+            let Some(txid) = hex::decode(&prepared.txid)
+                .ok()
+                .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+            else {
+                let _ = payment_result_tx.send(vtorrent_torrent::payment::PaymentResult {
+                    account_key: payment.account_key,
+                    amount_satoshis: payment.amount_satoshis,
+                    success: false,
+                    txid: None,
+                });
+                continue;
+            };
+            let Ok(raw) = serde_json::to_vec(&prepared.tx) else {
+                let _ = payment_result_tx.send(vtorrent_torrent::payment::PaymentResult {
+                    account_key: payment.account_key,
+                    amount_satoshis: payment.amount_satoshis,
+                    success: false,
+                    txid: None,
+                });
+                continue;
+            };
+            let intent = incentive_intents::PaymentIntent {
+                account_key: payment.account_key.clone(),
+                info_hash: payment.info_hash,
+                receipt_epoch: payment.receipt_epoch,
+                peer_address: peer_address.clone(),
+                amount_satoshis: payment.amount_satoshis,
+                txid,
+                raw,
+                created_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+            };
+            if let Err(error) = intent_store_for_worker.put(intent) {
+                tracing::warn!("Could not persist incentive payment intent: {error:#}");
+                let _ = payment_result_tx.send(vtorrent_torrent::payment::PaymentResult {
+                    account_key: payment.account_key,
+                    amount_satoshis: payment.amount_satoshis,
+                    success: false,
+                    txid: None,
+                });
+                continue;
+            }
+            match vtorrent_wallet_service::broadcast_incentive_payment(
+                &payment_chain,
+                &payment_mempool,
+                payment_tx_submit.as_ref(),
+                &prepared.tx,
+                &prepared.txid,
+            )
+            .await
+            {
+                Ok(()) => {
+                    tracing::info!(
+                        "Incentive payment {} sent to {}",
+                        prepared.txid,
+                        payment.peer_address
+                    );
+                    let _ = payment_result_tx.send(vtorrent_torrent::payment::PaymentResult {
+                        account_key: payment.account_key,
+                        amount_satoshis: payment.amount_satoshis,
+                        success: true,
+                        txid: Some(txid),
                     });
                 }
-                Err(e) => {
-                    tracing::warn!("Incentive payment failed: {}", e);
+                Err(error) => {
+                    tracing::warn!("Incentive payment failed: {}", error);
+                    let _ = intent_store_for_worker.remove(&payment.account_key);
                     let _ = payment_result_tx.send(vtorrent_torrent::payment::PaymentResult {
                         account_key: payment.account_key,
                         amount_satoshis: payment.amount_satoshis,
@@ -1157,7 +1239,7 @@ async fn main() -> anyhow::Result<()> {
             }
         };
         let journal_budget = concrete_journal.emitted_total();
-        let journal_accounts = concrete_journal.accounts();
+        let mut journal_accounts = concrete_journal.accounts();
         let journal: std::sync::Arc<dyn vtorrent_torrent::incentive::IncentiveJournal> =
             std::sync::Arc::new(concrete_journal);
         rpc_state
@@ -1169,6 +1251,136 @@ async fn main() -> anyhow::Result<()> {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
+        // Reconcile payments that were in flight when the process died. The
+        // worker persists the signed tx before broadcast, so an intent is the
+        // authoritative bridge between the account reservation and the chain.
+        let startup_intents = intent_store.list();
+        let mut confirmed_ledger_intents = Vec::new();
+        let mut intent_identities = std::collections::HashSet::new();
+        for intent in &startup_intents {
+            intent_identities.insert((
+                intent.info_hash,
+                intent.peer_address.clone(),
+                intent.receipt_epoch,
+            ));
+            let (confirmed, in_chain) = {
+                let chain = rpc_state.chain.lock().await;
+                match chain.get_transaction_owned(&intent.txid) {
+                    Some((_, _, height)) => (
+                        vtorrent_torrent::payment::payment_is_final(chain.best_height(), height),
+                        true,
+                    ),
+                    None => (false, false),
+                }
+            };
+            let in_mempool = if in_chain {
+                true
+            } else {
+                rpc_state
+                    .mempool
+                    .lock()
+                    .await
+                    .get_transaction(&intent.txid)
+                    .is_some()
+            };
+            let visible = in_chain || in_mempool;
+            let mut updated = false;
+            if let Some(id) = intent
+                .account_key
+                .strip_prefix("ledger\u{0}")
+                .and_then(|value| value.parse::<u64>().ok())
+            {
+                if let Some(debt) = ledger.debt_mut(id) {
+                    if confirmed {
+                        debt.confirm_payment(intent.amount_satoshis);
+                    } else {
+                        debt.pending_txid = Some(intent.txid);
+                        debt.pending_satoshis = intent.amount_satoshis;
+                        debt.payment_in_flight = false;
+                    }
+                    if confirmed {
+                        confirmed_ledger_intents.push(intent.account_key.clone());
+                    }
+                    updated = true;
+                }
+            } else if let Some(record) = journal_accounts.iter_mut().find(|record| {
+                record.info_hash == intent.info_hash
+                    && record.peer_address == intent.peer_address
+                    && record.receipt_epoch == intent.receipt_epoch
+            }) {
+                record
+                    .account
+                    .record_payment_broadcast(intent.txid, intent.amount_satoshis);
+                if confirmed {
+                    record.account.payment_confirmed();
+                }
+                updated = journal_upsert(
+                    &journal,
+                    record.info_hash,
+                    &record.peer_address,
+                    record.receipt_epoch,
+                    &record.account,
+                )
+                .await;
+            }
+            if !visible {
+                if let Ok(tx) = intent.transaction() {
+                    if let Err(error) = vtorrent_wallet_service::broadcast_incentive_payment(
+                        rpc_state.chain.as_ref(),
+                        rpc_state.mempool.as_ref(),
+                        rpc_state.tx_submit.as_ref(),
+                        &tx,
+                        &hex::encode(intent.txid),
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            txid = %hex::encode(intent.txid),
+                            "Could not rebroadcast an incentive payment intent: {}",
+                            error
+                        );
+                    }
+                }
+            }
+            if confirmed && updated && !intent.account_key.starts_with("ledger\u{0}") {
+                if let Err(error) = intent_store.remove(&intent.account_key) {
+                    tracing::warn!("Could not remove a confirmed payment intent: {error:#}");
+                }
+            }
+        }
+        // A reservation with no intent was made before the worker persisted the
+        // signed transaction, so it was never broadcast. Release it.
+        for record in &mut journal_accounts {
+            if record.account.payment_in_flight
+                && record.account.pending_payment.is_none()
+                && !intent_identities.contains(&(
+                    record.info_hash,
+                    record.peer_address.clone(),
+                    record.receipt_epoch,
+                ))
+            {
+                record.account.payment_in_flight = false;
+                record.account.state_version = record.account.state_version.saturating_add(1);
+                journal_upsert(
+                    &journal,
+                    record.info_hash,
+                    &record.peer_address,
+                    record.receipt_epoch,
+                    &record.account,
+                )
+                .await;
+            }
+        }
+        for debt in &mut ledger.debts {
+            if debt.payment_in_flight && debt.pending_txid.is_none() {
+                let has_intent = startup_intents
+                    .iter()
+                    .any(|intent| intent.account_key == format!("ledger\u{0}{}", debt.id));
+                if !has_intent {
+                    debt.payment_in_flight = false;
+                }
+            }
+        }
         // The journal is authoritative for its exact epoch-scoped keys.
         // Receipt-backed bytes become payable debt here; a different epoch is
         // a separate account and both remain.
@@ -1196,9 +1408,16 @@ async fn main() -> anyhow::Result<()> {
         }
         if let Err(error) = ledger.save(&incentive_ledger_path) {
             tracing::warn!("Could not save the recovered incentive ledger: {error:#}");
+        } else {
+            for key in confirmed_ledger_intents {
+                if let Err(error) = intent_store.remove(&key) {
+                    tracing::warn!("Could not remove a confirmed payment intent: {error:#}");
+                }
+            }
         }
         let mut emitted_total = ledger.emitted_total;
         let ledger_path = incentive_ledger_path.clone();
+        let intent_store_for_settlement = intent_store.clone();
         // Periodic torrent incentive settlement — runs every 5 minutes.
         let torrent_sessions_for_settlement = Arc::clone(&rpc_state.torrent_sessions);
         tokio::spawn(async move {
@@ -1235,6 +1454,7 @@ async fn main() -> anyhow::Result<()> {
 
                 // Ledger results are keyed by a stable debt id, not a session.
                 let mut ledger_changed = false;
+                let mut completed_ledger_intents = Vec::new();
                 for result in &results {
                     let Some(id) = result
                         .account_key
@@ -1246,6 +1466,7 @@ async fn main() -> anyhow::Result<()> {
                     let Some(debt) = ledger.debt_mut(id) else {
                         continue;
                     };
+                    completed_ledger_intents.push(result.account_key.clone());
                     if result.success {
                         if let Some(txid) = result.txid {
                             debt.pending_txid = Some(txid);
@@ -1370,10 +1591,13 @@ async fn main() -> anyhow::Result<()> {
                     }
                     debt.payment_in_flight = true;
                     emitted_total = emitted_total.saturating_add(amount);
+                    let (info_hash, receipt_epoch) = incentive_debt_identity(&debt.key);
                     due_ledger_payments.push(vtorrent_torrent::payment::PaymentDue {
                         peer_address: debt.peer_address.clone(),
                         amount_satoshis: amount,
                         account_key: format!("ledger\u{0}{}", debt.id),
+                        info_hash,
+                        receipt_epoch,
                     });
                     ledger_changed = true;
                 }
@@ -1387,6 +1611,13 @@ async fn main() -> anyhow::Result<()> {
                     journal_set_budget(&journal, emitted_total).await;
                 }
                 if ledger_durable {
+                    for key in completed_ledger_intents {
+                        if let Err(error) = intent_store_for_settlement.remove(&key) {
+                            tracing::warn!(
+                                "Could not remove a completed ledger payment intent: {error:#}"
+                            );
+                        }
+                    }
                     for payment in due_ledger_payments {
                         payment_sender.emit(payment);
                     }
@@ -1417,6 +1648,7 @@ async fn main() -> anyhow::Result<()> {
 
                 let mut journal_updates = Vec::new();
                 let mut due_payments = Vec::new();
+                let mut completed_session_intents = Vec::new();
                 let mut pending = Vec::new();
                 {
                     let mut guard = torrent_sessions_for_settlement.write().await;
@@ -1445,6 +1677,7 @@ async fn main() -> anyhow::Result<()> {
                                 account.payment_failed();
                             }
                         }
+                        completed_session_intents.push(result.account_key.clone());
                         journal_updates.push((info_hash, peer_key.to_string(), account.clone()));
                     }
                     for session in guard.sessions_mut() {
@@ -1556,6 +1789,8 @@ async fn main() -> anyhow::Result<()> {
                                 peer_address: account.peer_address.clone(),
                                 amount_satoshis: amount,
                                 account_key: format!("{}\u{0}{}", session_id, peer_key),
+                                info_hash,
+                                receipt_epoch: account.receipt_epoch,
                             });
                         }
                     }
@@ -1579,6 +1814,13 @@ async fn main() -> anyhow::Result<()> {
                     last_saved_budget = emitted_total;
                 }
                 if durable {
+                    for key in completed_session_intents {
+                        if let Err(error) = intent_store_for_settlement.remove(&key) {
+                            tracing::warn!(
+                                "Could not remove a completed payment intent: {error:#}"
+                            );
+                        }
+                    }
                     for payment in due_payments {
                         payment_sender.emit(payment);
                     }

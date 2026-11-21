@@ -40,8 +40,10 @@ transaction missing from both chain and mempool stays pending rather than being
 re-paid, because the original can still be mined. An operator must resolve a
 permanently stuck transaction. Receipt-backed accounts are journaled to
 `incentive-journal.jsonl` (0600, fsynced) as receipts and settlements arrive;
-the journal is replayed at startup, converted to payable debt, and paid. The
-legacy `incentive-live.json` snapshot is still imported for migration. Bytes
+the journal is replayed at startup, converted to payable debt, and paid. Signed
+payment transactions are written to `incentive-payment-intents.json` before
+broadcast; startup confirms, rebroadcasts, or safely releases each reservation.
+The legacy `incentive-live.json` snapshot is still imported for migration. Bytes
 transferred after the last peer receipt are not receipt-verified and are not
 recoverable after a crash. Session eviction and `remove_torrent` refuse while
 debt or an in-flight payment exists.

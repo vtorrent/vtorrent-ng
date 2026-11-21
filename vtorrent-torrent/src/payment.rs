@@ -12,6 +12,11 @@ pub struct PaymentDue {
     /// Stable key for the originating incentive account.
     #[serde(default)]
     pub account_key: String,
+    /// Torrent and receipt epoch, used by the payment-intent journal.
+    #[serde(default)]
+    pub info_hash: [u8; 20],
+    #[serde(default)]
+    pub receipt_epoch: u64,
 }
 
 /// Result of a payment attempt, keyed back to its incentive account.
@@ -68,6 +73,8 @@ mod tests {
             peer_address: "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".to_string(),
             amount_satoshis: 50_000_000,
             account_key: "session\u{0}peer".to_string(),
+            info_hash: [1u8; 20],
+            receipt_epoch: 7,
         });
         let payment = receiver.recv().await.unwrap();
         assert_eq!(payment.peer_address, "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT");

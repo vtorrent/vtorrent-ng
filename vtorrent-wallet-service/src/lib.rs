@@ -106,20 +106,23 @@ pub enum IncentivePaymentError {
     Mempool(String),
 }
 
-/// Build, admit, and broadcast a VTR payment for an incentive settlement.
+/// A signed incentive payment that has not yet been admitted or broadcast.
+pub struct PreparedIncentivePayment {
+    pub tx: vtorrent_node::block::Transaction,
+    pub txid: String,
+}
+
+/// Build and sign an incentive payment without admitting or broadcasting it.
 ///
-/// Shared by the daemon's payment channel (and reusable by any frontend that
-/// settles torrent incentives): reads the hot wallet state, builds the tx via
-/// the single `build_payment` path, admits it to the mempool with a chain-
-/// derived fee, and submits it for P2P broadcast. Returns the txid hex.
-pub async fn build_incentive_payment(
+/// The caller must persist the returned transaction and txid before calling
+/// [`broadcast_incentive_payment`], so a crash cannot lose the txid.
+pub async fn prepare_incentive_payment(
     wallet_wif: &tokio::sync::RwLock<Option<zeroize::Zeroizing<String>>>,
     wallet_change_address: &tokio::sync::RwLock<Option<String>>,
     chain: &tokio::sync::Mutex<vtorrent_node::chain::Chain>,
     mempool: &tokio::sync::Mutex<vtorrent_node::mempool::Mempool>,
-    tx_submit: Option<&tokio::sync::mpsc::Sender<vtorrent_node::block::Transaction>>,
     payment: &IncentivePayment,
-) -> Result<String, IncentivePaymentError> {
+) -> Result<PreparedIncentivePayment, IncentivePaymentError> {
     let wif = wallet_wif
         .read()
         .await
@@ -152,8 +155,18 @@ pub async fn build_incentive_payment(
         fee_rate,
         &wif,
     )?;
-
     let txid = hex::encode(tx.txid());
+    Ok(PreparedIncentivePayment { tx, txid })
+}
+
+/// Admit a prepared payment to the mempool and submit it for P2P broadcast.
+pub async fn broadcast_incentive_payment(
+    chain: &tokio::sync::Mutex<vtorrent_node::chain::Chain>,
+    mempool: &tokio::sync::Mutex<vtorrent_node::mempool::Mempool>,
+    tx_submit: Option<&tokio::sync::mpsc::Sender<vtorrent_node::block::Transaction>>,
+    tx: &vtorrent_node::block::Transaction,
+    txid: &str,
+) -> Result<(), IncentivePaymentError> {
     {
         let chain = chain.lock().await;
         let mut mempool = mempool.lock().await;
@@ -162,14 +175,33 @@ pub async fn build_incentive_payment(
             .map_err(|e| IncentivePaymentError::Mempool(e.to_string()))?;
     }
     if let Some(sender) = tx_submit {
-        if sender.try_send(tx).is_err() {
+        if sender.try_send(tx.clone()).is_err() {
             tracing::warn!(
                 txid = %txid,
                 "Incentive payment admitted to mempool but P2P broadcast channel full — tx will relay on next mempool sync",
             );
         }
     }
-    Ok(txid)
+    Ok(())
+}
+
+/// Build, admit, and broadcast a VTR payment for an incentive settlement.
+///
+/// Kept as the simple one-call path for callers that do not need a durable
+/// pre-broadcast intent.
+pub async fn build_incentive_payment(
+    wallet_wif: &tokio::sync::RwLock<Option<zeroize::Zeroizing<String>>>,
+    wallet_change_address: &tokio::sync::RwLock<Option<String>>,
+    chain: &tokio::sync::Mutex<vtorrent_node::chain::Chain>,
+    mempool: &tokio::sync::Mutex<vtorrent_node::mempool::Mempool>,
+    tx_submit: Option<&tokio::sync::mpsc::Sender<vtorrent_node::block::Transaction>>,
+    payment: &IncentivePayment,
+) -> Result<String, IncentivePaymentError> {
+    let prepared =
+        prepare_incentive_payment(wallet_wif, wallet_change_address, chain, mempool, payment)
+            .await?;
+    broadcast_incentive_payment(chain, mempool, tx_submit, &prepared.tx, &prepared.txid).await?;
+    Ok(prepared.txid)
 }
 
 #[cfg(test)]

@@ -75,13 +75,15 @@ fix was written. Fixes are on `main` after `f9a91a2`.
 | 59 | High | Stale journal writes | A delayed older clone could overwrite a newer in-flight or receipt state. | `state_version` increments on every receipt, settlement, and payment-state change; the journal rejects an older version. |
 | 60 | High | Budget ordering | The durable budget could lag the broadcast, allowing the cap to reset after a crash. | The budget record is fsynced before any payment leaves the process. |
 | 61 | Medium | Journal deletion ordering | Journal removal and ledger debt removal could disagree, resurrecting a paid debt. | Zero debts are retained as a no-repay guard until cleanup; the merge preserves the ledger's progress if a journal tombstone is missing. |
-| 62 | High | In-flight liveness | A crash before the payment result is drained leaves an in-flight marker without a txid; the debt is stuck rather than re-paid. | Results are drained every five seconds, shrinking the window; the reservation is still never re-paid. A crash inside that window needs operator resolution. |
+| 62 | High | In-flight liveness | A crash before the payment result is drained leaves an in-flight marker without a txid; the debt is stuck rather than re-paid. | A durable payment-intent store now records the signed transaction and txid before broadcast; startup confirms it, rebroadcasts it, or releases a reservation that never had an intent. Results also drain every five seconds. |
 | 63 | Medium | Removal guard | A receipt-backed account could be removed before its next settlement, deferring the debt until a restart. | Session removal and eviction now retain accounts that still hold a peer receipt. |
 | 64 | Medium | Journal poison | A partial append followed by more writes could create a corrupt middle line and block startup. | A write, fsync, or compaction failure poisons the journal; further writes fail until restart, when the torn final line is discarded. |
 | 65 | Low | Journal directory sync | Journal creation and compaction renames were not directory-synced. | The parent directory is fsynced after creation and rename. |
 | 66 | High | Reservation rollback | A failed journal or ledger write left every account in the batch marked in-flight and consumed budget with no payment sent. | A failed durable write now resets the in-flight markers, removes the reservation from the budget, and journals the reset; a reset write failure is logged and remains fail-closed. |
 | 67 | High | Result latency | Payment results were drained only on the five-minute settlement tick, widening the in-flight-without-txid crash window. | The payment loop runs every five seconds for result draining; settlement still uses the five-minute cadence. |
 | 68 | Medium | Ledger growth | Fully settled zero debts remained in the ledger forever. | At startup, zero debts with no matching journal record are pruned; zero debts with a journal record are kept as the no-repay guard until its tombstone is durable. |
+| 69 | High | Payment intent durability | The txid existed only in the process until the next result drain, so a crash could lose the bridge between an in-flight reservation and its transaction. | The worker writes the signed transaction and txid to `incentive-payment-intents.json` (0600, atomic) before mempool admission or broadcast. |
+| 70 | High | Startup intent reconciliation | A restart did not know whether an in-flight account had been broadcast. | Startup checks each intent against the chain/mempool: confirmed intents mark the debt paid, missing ones are rebroadcast from the stored raw transaction, and in-flight accounts with no intent are released as never-broadcast. |
 
 ## Follow-up closures
 
@@ -194,7 +196,7 @@ pass-5 commit:
   tests, lint and production build clean.
 - Clippy: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
   completed clean.
-- Full workspace on the final tree: **1,503 passed, 0 failed, 11 ignored**
+- Full workspace on the final tree: **1,504 passed, 0 failed, 11 ignored**
   across 54 test groups.
 - Container source build: `docker build -f docker/Dockerfile` succeeded;
   `vtorrent-daemon 2.0.0` runs as uid `vtorrent`; image
