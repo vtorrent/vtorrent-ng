@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `10c4671`
+Subject: Independent security review — vTorrent-NG mainnet candidate `2fdd9aa`
 
 Hello,
 
@@ -18,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `10c467159ecb1d31833e5984b15e03b7e6c4477b`
+**Review head:** `2fdd9aa22ac683a9c2e8e684e915f08f0f1ba1cb`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `10c4671`. It is not covered by any prior soak: the
+The code under review is `2fdd9aa`. It is not covered by any prior soak: the
 `6a49727` fleet predates every change below and was interrupted by a host
 restart on 2026-11-16. The eventual shipping image needs its own full window
 after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 code changed after the candidate with
-`git diff --name-only 10c4671..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only 2fdd9aa..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -202,6 +202,16 @@ candidate `ba46fd6`:
   broadcast; startup confirms, rebroadcasts, or safely releases each
   reservation.
 - `10c4671` — a pending recovered payment is no longer re-emitted every tick;
+- `2fdd9aa` — pass 6. Torrent peer-wire frames are buffered across coalesced
+  reads with bounded per-connection sizes and timeouts; lease keys and block
+  lengths are validated before any credit; tracker, magnet, DHT, assembler, and
+  retained-session resources are bounded. The legacy `incentive-live.json`
+  import fails closed, journal compaction no longer rewrites on every mutation
+  past 4,096 live records, a stale journal write is reported as not durable, a
+  failed budget append rolls back, and an epoch change settles at `min(now,
+  window_end)`. UTXO selection excludes mempool spends in incentive payments,
+  ordinary sends, cold-stake funding, and the desktop paths; the regtest faucet
+  moved to the API-key-protected router.
   the live recovery drill caught the regression.
 
 Five internal AI-assisted supplementary reviews are recorded in
@@ -362,7 +372,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `10c467159ecb1d31833e5984b15e03b7e6c4477b`
+- Confirm the review head is still `2fdd9aa22ac683a9c2e8e684e915f08f0f1ba1cb`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.

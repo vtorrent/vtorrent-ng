@@ -3784,3 +3784,29 @@ identical, BTC SPV synced to 976,897/976,898, staking on nodes 2/3, RSS
 Observation at **2026-11-21T14:09:49Z** (`+4h`): height 241, all three tips
 identical, BTC SPV synced to 976,912, staking on nodes 2/3, RSS
 109.8/115.3/114.6 MiB, restarts 0, Prometheus 3/3.
+
+## 2026-11-21 — pass-6 replacement candidate (`2fdd9aa`)
+
+The `10c4671` window is superseded: the two-process torrent incentive E2E found
+three defects in that image (coalesced peer-wire frames discarded, the default
+download directory never created, and the peer's final receipt dropped at
+completion). See `docs/2026-11-21_ai-supplementary-review-pass6.md`.
+
+The replacement candidate is code head `2fdd9aa`
+(`vtorrent/node:2fdd9aa`, image `sha256:3d7be3e01135d2a37b75215e677086b0f702e94bfaf730cceb19cb2c036cc1f9`). The daemon binary extracted from
+that image hashes to `ec8395573fd4cf2b2d1d19d5d87db732f548b0bbccff1cacddd49c9b790cac95`.
+
+- Start: **2026-11-21T16:56:30Z**; window ends **2026-11-28T16:56:30Z**
+- Fleet: `review-2fdd9aa`, RPC 23951–23953, Prometheus 23973
+- Evidence: `/mnt/temp/vtorrent-ng-evidence/soak-2fdd9aa/`
+- Torrent incentive E2E on the image binary: 12 MiB verified, signed receipt
+  settled, one 585,937-sat payment, graceful restart recovered the same pending
+  txid without repayment.
+
+Verified on this tree: **1,508 passed, 0 failed, 12 ignored** across 55
+groups; 45 desktop tests; `pnpm lint`; Clippy `-D warnings`.
+
+The `review-10c4671` fleet was retired and its final state archived under
+`/mnt/temp/vtorrent-ng-evidence/soak-10c4671/final/`; its evidence directory
+carries `SUPERSEDED.md`. This is still a candidate window, not release
+evidence. The independent human review and the full 168 hours remain open.
