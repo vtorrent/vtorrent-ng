@@ -3529,6 +3529,22 @@ The daily observer runs at 17:25 local (10:25 UTC). This is a candidate window,
 not release evidence. The independent human review and the full 168 hours
 remain open.
 
+## 2026-11-21 — journal failure-mode candidate (`2b65c3a`)
+
+The remaining journal failure-mode findings were fixed at
+`2b65c3a0d9a4b3286c4258d64095dff79faca5e3` (review docs at `194d205`):
+
+- Receipt-backed accounts are retained during session eviction and
+  `remove_torrent`, so a debt cannot be deferred to an unknown restart.
+- A write, fsync, or compaction failure poisons the journal; further writes
+  fail until restart, when a torn final line is discarded. A partial append can
+  no longer become a corrupt middle line.
+- Journal creation and compaction renames fsync the parent directory.
+
+The `review-1f5fa81` fleet was retired at **02:20Z**; logs are archived under
+`/mnt/temp/vtorrent-ng-evidence/soak-1f5fa81/final/`. This window is **not**
+valid evidence for the revised code.
+
 ## 2026-11-21 — durable incentive journal
 
 The crash window was closed for receipt-verified debt at
