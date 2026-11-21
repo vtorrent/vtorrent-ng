@@ -3682,3 +3682,19 @@ The final journal failure-mode fixes were built at
 
 This is a candidate window, not release evidence. The independent human review
 and the full 168 hours remain open.
+
+## 2026-11-21 — reservation-rollback candidate (`66bc705`)
+
+The final reservation and result-drain fixes were built at
+`vtorrent/node:66bc705`
+(`sha256:d068e20c76a7ebdcb1444223791dcc8c6fc0188cf17aa6ad3f3c3aa35a111547`).
+
+- Start: **2026-11-21T07:26:40Z**; window ends **2026-11-28T07:26:40Z**
+- Fleet: `review-66bc705`, RPC 23951–23953, Prometheus 23973
+- Evidence: `/mnt/temp/vtorrent-ng-evidence/soak-66bc705/`
+- Initial stable observation at **07:31Z**: height 7 with identical tips,
+  BTC SPV synced to 976,867 on all three, staking on nodes 2/3, RSS
+  142.7/147.0/129.7 MiB, restarts 0, Prometheus 3/3.
+
+This is a candidate window, not release evidence. The independent human review
+and the full 168 hours remain open.
