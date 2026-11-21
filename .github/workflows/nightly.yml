@@ -32,6 +32,9 @@ jobs:
   btc-spv-regtest:
     name: BTC SPV regtest ignored tests
     runs-on: ubuntu-latest
+    env:
+      VTORRENT_TEST_BTC_CONTAINER: vtr-fundsafety-regtest-nightly
+      VTORRENT_TEST_BTC_PEER: 127.0.0.1:18448
     # These four tests drive a real Bitcoin Core regtest node through Docker.
     # They are #[ignore] because they need that container, which is also why
     # they silently went stale when swap/btc-fund and swap/btc-claim began
@@ -43,7 +46,7 @@ jobs:
 
       - name: Start Bitcoin Core regtest
         run: |
-          docker run -d --name vtr-btc-regtest \
+          docker run -d --name vtr-fundsafety-regtest-nightly \
             -p 127.0.0.1:18443:18443 -p 127.0.0.1:18448:18448 \
             bitcoin/bitcoin:26 \
             -regtest=1 -rpcbind=0.0.0.0 -rpcallowip=172.16.0.0/12 \
@@ -54,14 +57,14 @@ jobs:
       - name: Wait for Bitcoin Core RPC
         run: |
           for _ in $(seq 1 60); do
-            if docker exec vtr-btc-regtest bitcoin-cli -regtest \
+            if docker exec vtr-fundsafety-regtest-nightly bitcoin-cli -regtest \
                 -rpcuser=vtr -rpcpassword=vtrtest getblockchaininfo >/dev/null 2>&1; then
               exit 0
             fi
             sleep 2
           done
           echo "bitcoind did not become ready" >&2
-          docker logs vtr-btc-regtest >&2
+          docker logs vtr-fundsafety-regtest-nightly >&2
           exit 1
 
       - name: Run BTC SPV regtest tests
@@ -71,4 +74,4 @@ jobs:
 
       - name: Stop Bitcoin Core regtest
         if: always()
-        run: docker rm -f vtr-btc-regtest || true
+        run: docker rm -f vtr-fundsafety-regtest-nightly || true
