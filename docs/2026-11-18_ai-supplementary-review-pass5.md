@@ -200,6 +200,10 @@ pass-5 commit:
 - Upstream nightly workflow `44901331677` succeeded, including the real
   Bitcoin Core regtest SPV tests, after correcting the disposable container
   name and `VTORRENT_TEST_BTC_*` environment in `.github/workflows/nightly.yml`.
+- Upstream CI run `44902190674` on `75de4d4` succeeded: all-features workspace
+  tests, default-features workspace tests, the standalone genesis verifier,
+  Clippy, audit, machete, frontend, and the benchmark gate. The tagged desktop
+  build matrix was skipped on the push, as configured.
 - Full workspace on the final tree: **1,504 passed, 0 failed, 11 ignored**
   across 54 test groups.
 - Container source build: `docker build -f docker/Dockerfile` succeeded;
