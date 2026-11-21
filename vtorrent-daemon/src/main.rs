@@ -1172,7 +1172,24 @@ async fn main() -> anyhow::Result<()> {
         // The journal is authoritative for its exact epoch-scoped keys.
         // Receipt-backed bytes become payable debt here; a different epoch is
         // a separate account and both remain.
+        let journal_keys: std::collections::HashSet<String> = journal_accounts
+            .iter()
+            .map(|record| {
+                format!(
+                    "{}:{}:{}",
+                    hex::encode(record.info_hash),
+                    record.peer_address,
+                    record.receipt_epoch
+                )
+            })
+            .collect();
         ledger.merge_journal(journal_accounts, now);
+        // A zero debt with no journal record is fully settled and safe to
+        // prune. A zero debt that still has a journal record is kept as the
+        // no-repay guard until that tombstone is durable.
+        ledger
+            .debts
+            .retain(|debt| debt.has_outstanding() || journal_keys.contains(&debt.key));
         ledger.emitted_total = ledger.emitted_total.max(journal_budget);
         if ledger.emitted_total > journal_budget {
             journal_set_budget(&journal, ledger.emitted_total).await;
@@ -1185,9 +1202,11 @@ async fn main() -> anyhow::Result<()> {
         // Periodic torrent incentive settlement — runs every 5 minutes.
         let torrent_sessions_for_settlement = Arc::clone(&rpc_state.torrent_sessions);
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
-                vtorrent_torrent::incentive::PAYMENT_INTERVAL_SECS,
-            ));
+            // Run the loop frequently so payment results and txids are drained
+            // promptly; `needs_settlement` still enforces the five-minute
+            // settlement cadence.
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+            let mut last_saved_budget = emitted_total;
             loop {
                 tokio::select! {
                     _ = interval.tick() => {}
@@ -1372,8 +1391,27 @@ async fn main() -> anyhow::Result<()> {
                         payment_sender.emit(payment);
                     }
                 } else {
+                    for payment in &due_ledger_payments {
+                        if let Some(id) = payment
+                            .account_key
+                            .strip_prefix("ledger\u{0}")
+                            .and_then(|value| value.parse::<u64>().ok())
+                        {
+                            if let Some(debt) = ledger.debt_mut(id) {
+                                debt.payment_in_flight = false;
+                            }
+                        }
+                        emitted_total = emitted_total.saturating_sub(payment.amount_satoshis);
+                    }
+                    ledger.emitted_total = emitted_total;
+                    if let Err(error) = ledger.save(&ledger_path) {
+                        tracing::warn!(
+                            "Could not save the rolled-back incentive ledger: {error:#}"
+                        );
+                    }
                     tracing::warn!(
-                        "Skipping recovered incentive payments because the ledger write failed"
+                        "Rolled back {} recovered incentive reservations after a ledger write failure",
+                        due_ledger_payments.len()
                     );
                 }
 
@@ -1536,14 +1574,52 @@ async fn main() -> anyhow::Result<()> {
                 }
                 // Reserve the budget before any payment leaves the process, so
                 // a crash cannot reset the cap below what was already spent.
-                journal_set_budget(&journal, emitted_total).await;
+                if emitted_total != last_saved_budget {
+                    journal_set_budget(&journal, emitted_total).await;
+                    last_saved_budget = emitted_total;
+                }
                 if durable {
                     for payment in due_payments {
                         payment_sender.emit(payment);
                     }
                 } else {
+                    let mut resets = Vec::new();
+                    {
+                        let mut guard = torrent_sessions_for_settlement.write().await;
+                        for payment in &due_payments {
+                            let Some((session_id, peer_key)) =
+                                payment.account_key.split_once('\u{0}')
+                            else {
+                                continue;
+                            };
+                            let Ok(session) = guard.get_session_mut(session_id) else {
+                                continue;
+                            };
+                            let info_hash = session.metainfo.info_hash;
+                            let Some(account) = session.incentive_accounts.get_mut(peer_key) else {
+                                continue;
+                            };
+                            account.payment_in_flight = false;
+                            account.state_version = account.state_version.saturating_add(1);
+                            resets.push((info_hash, peer_key.to_string(), account.clone()));
+                        }
+                    }
+                    for payment in &due_payments {
+                        emitted_total = emitted_total.saturating_sub(payment.amount_satoshis);
+                    }
+                    for (info_hash, peer_key, account) in resets {
+                        journal_upsert(
+                            &journal,
+                            info_hash,
+                            &peer_key,
+                            account.receipt_epoch,
+                            &account,
+                        )
+                        .await;
+                    }
                     tracing::warn!(
-                        "Skipping incentive payments because an account journal write failed"
+                        "Rolled back {} incentive reservations after a journal write failure",
+                        due_payments.len()
                     );
                 }
                 if settled > 0 {

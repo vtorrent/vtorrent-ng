@@ -69,9 +69,10 @@ BEP-10, `peer_wire.rs:41`). Use them for a lightweight **receipt** handshake:
   never replaces payment progress with a pre-payment journal snapshot. Journal
   records carry a per-account `state_version`, so a delayed older clone cannot
   overwrite a newer receipt or payment state.
-- An in-flight marker without a transaction id after a crash is a liveness
-  reservation: the debt is not re-paid automatically, but an operator or a
-  restart is required to resolve it.
+- Payment results are drained every five seconds, and a failed durable write
+  rolls back the in-flight markers and the budget reservation. A crash inside
+  the result window can still leave an in-flight marker without a transaction
+  id; it is never re-paid automatically, but an operator must resolve it.
 - A broadcast payment is considered settled only after six confirmations. If it
   disappears from both the chain and the mempool, it stays pending rather than
   being re-paid: the original transaction can still be mined, and paying again
