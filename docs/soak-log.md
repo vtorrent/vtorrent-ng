@@ -3666,3 +3666,19 @@ review docs at `e5bd974`) and built as `vtorrent/node:d790c16`
 The daily observer runs at 17:25 local (10:25 UTC). This is a candidate window,
 not release evidence. The independent human review and the full 168 hours
 remain open.
+
+## 2026-11-21 — journal failure-mode candidate (`2b65c3a`)
+
+The final journal failure-mode fixes were built at
+`vtorrent/node:2b65c3a`
+(`sha256:92b91220c1e140eeb9c5aac10f47466521703ff9b87b99b17e041c41034a7959`).
+
+- Start: **2026-11-21T02:39:46Z**; window ends **2026-11-28T02:39:46Z**
+- Fleet: `review-2b65c3a`, RPC 23951–23953, Prometheus 23973
+- Evidence: `/mnt/temp/vtorrent-ng-evidence/soak-2b65c3a/`
+- Initial stable observation at **02:44Z**: height 6 with identical tips,
+  BTC SPV synced to 976,830 on all three, staking on nodes 2/3, restarts 0,
+  Prometheus 3/3.
+
+This is a candidate window, not release evidence. The independent human review
+and the full 168 hours remain open.
