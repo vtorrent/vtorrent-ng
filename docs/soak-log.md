@@ -3558,6 +3558,46 @@ An in-flight marker without a txid after a crash is a stuck reservation, not a
 double payment: the debt is not re-paid automatically. Resolving it needs an
 operator or a restart with a reconciliation pass.
 
+## 2026-11-21 — journal replay hardening
+
+An adversarial review of the journal integration found critical merge defects.
+The fixes are at `1f5fa814529f92a5fea4f8e15fdb07e0240c3b58`:
+
+- Startup merge preserves a ledger debt's pending txid, in-flight marker, and
+  remaining unpaid amount instead of replacing it with the pre-payment journal
+  snapshot.
+- Compaction now runs after the triggering mutation is in memory, so the record
+  that crosses the threshold is durable.
+- A live account is written under its own receipt epoch, and the old record is
+  removed only after that write succeeds.
+- `PeerBandwidthAccount.state_version` rejects delayed older writes.
+- The budget is fsynced before a payment leaves the process.
+- Zero debts remain as a no-repay guard if a journal tombstone is missing.
+
+The `review-f8ccbfe` fleet was retired at **18:20Z**; logs are archived under
+`/mnt/temp/vtorrent-ng-evidence/soak-f8ccbfe/final/`. This window is **not**
+valid evidence for the revised code. An in-flight reservation without a txid
+remains a liveness residual: it is never re-paid automatically, but an operator
+must resolve it.
+
+## 2026-11-21 — replay-hardening candidate (`1f5fa81`)
+
+The journal replay fixes were committed at
+`1f5fa814529f92a5fea4f8e15fdb07e0240c3b58` (review docs at `f8f365e`) and built
+as `vtorrent/node:1f5fa81`
+(`sha256:7a519f6031f3618bff76ebfffcf3042114c9a5576bfe10b3b175a91f5ea29a1f`).
+
+- Start: **2026-11-21T01:59:42Z**; window ends **2026-11-28T01:59:42Z**
+- Fleet: `review-1f5fa81`, RPC 23951–23953, Prometheus 23973
+- Evidence: `/mnt/temp/vtorrent-ng-evidence/soak-1f5fa81/`
+- Initial stable observation at **02:04Z**: height 7 with identical tips,
+  BTC SPV synced to 976,824 on all three, staking on nodes 2/3, RSS
+  136.9/125.4/130.2 MiB, restarts 0, Prometheus 3/3.
+
+The daily observer runs at 17:25 local (10:25 UTC). This is a candidate window,
+not release evidence. The independent human review and the full 168 hours
+remain open.
+
 ## 2026-11-21 — durable-journal candidate (`f8ccbfe`)
 
 The receipt-backed journal was committed at
