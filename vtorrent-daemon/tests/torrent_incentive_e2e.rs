@@ -274,6 +274,19 @@ async fn serve_peer(
     .await?;
     eprintln!("seeder: sent handshake");
 
+    // Real clients (including vTorrent's own seeder) announce their pieces
+    // immediately after the handshake, *before* the extension handshake. The
+    // engine must not lose this message while it looks for the extension
+    // handshake, or it will never learn that the peer has any piece.
+    let piece_count = config.data.len().div_ceil(PIECE_LENGTH);
+    write_message(
+        &mut stream,
+        &PeerMessage::Bitfield {
+            bits: full_bitfield(piece_count),
+        },
+    )
+    .await?;
+    write_message(&mut stream, &PeerMessage::Unchoke).await?;
     write_message(
         &mut stream,
         &PeerMessage::Extended {
@@ -290,17 +303,7 @@ async fn serve_peer(
         },
     )
     .await?;
-
-    let piece_count = config.data.len().div_ceil(PIECE_LENGTH);
-    write_message(
-        &mut stream,
-        &PeerMessage::Bitfield {
-            bits: full_bitfield(piece_count),
-        },
-    )
-    .await?;
-    write_message(&mut stream, &PeerMessage::Unchoke).await?;
-    eprintln!("seeder: sent extension handshake, address, bitfield, unchoke");
+    eprintln!("seeder: sent bitfield, unchoke, extension handshake, address");
 
     let mut buffer = Vec::new();
     let mut requested = HashSet::new();

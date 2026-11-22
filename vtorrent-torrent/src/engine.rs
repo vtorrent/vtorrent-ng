@@ -748,6 +748,36 @@ struct PeerTaskContext {
     receipt_key: Option<Arc<vtorrent_core::keys::PrivateKey>>,
 }
 
+/// Record a peer's advertised pieces during the handshake phase.
+///
+/// The first valid bitfield wins; a repeated or oversized one is ignored so a
+/// peer cannot rewrite its availability after requests are issued.
+fn record_peer_bitfield(
+    scheduler: &Arc<StdMutex<SchedulerState>>,
+    metainfo: &Metainfo,
+    task_id: [u8; 20],
+    bitfield_seen: &mut bool,
+    bits: &[u8],
+    addr: SocketAddr,
+) {
+    let expected = (metainfo.piece_count as usize).div_ceil(8);
+    if *bitfield_seen || bits.len() > expected {
+        tracing::debug!(
+            "Ignoring invalid or repeated bitfield from {} ({} bytes, expected at most {})",
+            addr,
+            bits.len(),
+            expected
+        );
+        return;
+    }
+    *bitfield_seen = true;
+    scheduler
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .tracker
+        .set_peer_bitfield(task_id, bits);
+}
+
 /// Drive a single peer connection: exchange bitfields, request blocks, and
 /// write verified pieces to disk, coordinated through the shared scheduler.
 async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
@@ -783,6 +813,10 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
     let mut peer_vtr_address: Option<String> = None;
     let mut receipt_id: Option<u8> = None;
     let mut local_address = String::new();
+    // Whether the peer's bitfield has been recorded. Declared before the
+    // extension handshake because a real peer announces its pieces
+    // immediately after the wire handshake, before the extension handshake.
+    let mut bitfield_seen = false;
     {
         let handshake = crate::metadata::build_ut_vtr_handshake(1);
         let _ = conn
@@ -791,7 +825,11 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                 payload: handshake,
             })
             .await;
-        // Read the peer's extension handshake to learn its ut_vtr id.
+        // Read the peer's extension handshake to learn its ut_vtr id. Peers
+        // send their bitfield and unchoke before (or interleaved with) the
+        // extension handshake, so those messages must be recorded here: the
+        // scheduler only requests pieces that at least one peer advertised,
+        // and dropping the bitfield would stall the whole download.
         let mut ut_vtr_id = None;
         for _ in 0..10 {
             match conn.recv().await {
@@ -811,6 +849,25 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                         }
                     }
                     break;
+                }
+                Ok(PeerMessage::Bitfield { bits }) => {
+                    record_peer_bitfield(
+                        &scheduler,
+                        &metainfo,
+                        task_id,
+                        &mut bitfield_seen,
+                        &bits,
+                        addr,
+                    );
+                    continue;
+                }
+                Ok(PeerMessage::Have { index }) => {
+                    scheduler
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .tracker
+                        .set_peer_have(task_id, index);
+                    continue;
                 }
                 Ok(_) => continue,
                 Err(_) => break,
@@ -839,6 +896,25 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                         }
                         break;
                     }
+                    Ok(PeerMessage::Bitfield { bits }) => {
+                        record_peer_bitfield(
+                            &scheduler,
+                            &metainfo,
+                            task_id,
+                            &mut bitfield_seen,
+                            &bits,
+                            addr,
+                        );
+                        continue;
+                    }
+                    Ok(PeerMessage::Have { index }) => {
+                        scheduler
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .tracker
+                            .set_peer_have(task_id, index);
+                        continue;
+                    }
                     Ok(_) => continue,
                     Err(_) => break,
                 }
@@ -866,7 +942,6 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
     let mut downloaded_window: u64 = 0;
     let mut uploaded_window: u64 = 0;
     let mut speed_window_start = std::time::Instant::now();
-    let mut bitfield_seen = false;
     let mut next_receipt = std::time::Instant::now();
     let mut finish_deadline: Option<std::time::Instant> = None;
     let mut last_receipt_at: Option<std::time::Instant> = None;
@@ -954,22 +1029,14 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
         };
         match received {
             Ok(PeerMessage::Bitfield { bits }) => {
-                let expected = (metainfo.piece_count as usize).div_ceil(8);
-                if bitfield_seen || bits.len() > expected {
-                    tracing::debug!(
-                        "Ignoring invalid or repeated bitfield from {} ({} bytes, expected at most {})",
-                        addr,
-                        bits.len(),
-                        expected
-                    );
-                    continue;
-                }
-                bitfield_seen = true;
-                scheduler
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .tracker
-                    .set_peer_bitfield(task_id, &bits);
+                record_peer_bitfield(
+                    &scheduler,
+                    &metainfo,
+                    task_id,
+                    &mut bitfield_seen,
+                    &bits,
+                    addr,
+                );
             }
             Ok(PeerMessage::Have { index }) => {
                 scheduler
