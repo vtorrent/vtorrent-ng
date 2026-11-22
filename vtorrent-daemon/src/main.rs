@@ -542,6 +542,15 @@ async fn main() -> anyhow::Result<()> {
     // Set the torrent download directory under the data dir.
     *rpc_state.download_dir.write().await = data_dir.join("downloads");
 
+    // The torrent tracker/peer policy rejects private and loopback targets by
+    // default, which is correct on mainnet but makes a LAN or container fleet
+    // unreachable. Tie it to the same `--testnet` flag the P2P address book
+    // already uses, so the allowance cannot be enabled alone.
+    if cli.testnet {
+        vtorrent_torrent::tracker::set_allow_private_tracker_targets(true);
+        tracing::info!("Torrent tracker and peer policy accepts private addresses (--testnet)");
+    }
+
     // Inbound seeding. Off unless the operator publishes a port. The registry
     // is shared with the RPC layer so a completed download becomes servable
     // and a removed session stops being served.

@@ -19,6 +19,8 @@
 #   RPC_BASE     first host RPC port; defaults to 23950
 #   P2P_BASE     first host P2P port; unused unless YOU publish it
 #   WAIT_SECS    startup wait per node; defaults to 180
+#   SEED_TORRENT 1 to open the inbound torrent listener on every node
+#                (container-local 22630, announced as candidate<N>:22630)
 #
 # The fleet is not scraped by the production Prometheus and the containers use
 # container-local data directories, so `docker rm -f` discards their chains.
@@ -45,6 +47,7 @@ STAKER_PASSPHRASE="${STAKER_PASSPHRASE:-regtest-only}"
 STAKER_WIF_2="${STAKER_WIF_2:-WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS}"
 STAKER_WIF_3="${STAKER_WIF_3:-WHorCxM7fSQDwTd6W19pdTjSH2nAHrgwEULonwbkDkDw7TdSxTVU}"
 FAUCET_AMOUNT="${FAUCET_AMOUNT:-20000000000}"
+SEED_TORRENT="${SEED_TORRENT:-0}"
 
 DATA_DIR=/tmp/vtr-release-fleet
 
@@ -101,6 +104,13 @@ for i in 1 2 3; do
     )
     if [ "$i" -gt 1 ]; then
         args+=(--seed "candidate1:22526")
+    fi
+    if [ "$SEED_TORRENT" = 1 ]; then
+        # Testnet fleets run on Docker-private addresses; the daemon allows
+        # those for torrents under --testnet. Announce a container-local name so
+        # peers resolve the port from the fleet network, not from the host.
+        args+=(--torrent-listen --torrent-listen-addr 0.0.0.0:22630)
+        args+=(--torrent-announce-port 22630)
     fi
     docker "${args[@]}" >/dev/null
 done
