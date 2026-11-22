@@ -185,6 +185,27 @@ node's current `best_block_hash`. Halt stakers (`staking/stop`) if you suspect
 an attack, coordinate on the private channel, then resume once consensus on
 the canonical tip is reached.
 
+## Procedure: Stuck Torrent Incentive Payment
+
+**Symptom.** The daemon repeats
+`Incentive payment is not in the chain or mempool; keeping it pending to avoid
+a double payment` every 5 seconds; the session's `vtr_paid_satoshis` and
+`vtr_earned_satoshis` stop advancing; `DELETE /api/v1/torrent/:id` returns
+"outstanding incentives".
+
+1. Take the txid from the warning. A 404 from
+   `GET /api/v1/blockchain/tx/<txid>` plus no entry in `GET /api/v1/mempool`
+   confirms the transaction is not visible.
+2. If one of its inputs was spent by a confirmed transaction (for example the
+   node's own coinstake), the payment can never be mined. Before `d5e80e1` the
+   staking loop could do this to its own payment; `d5e80e1` skips staking
+   candidates whose outpoint a mempool transaction already spends.
+3. Preserve `incentive-payment-intents.json`, `incentive-journal.jsonl`,
+   `incentive-ledger.json`, and the daemon log. Do not clear or hand-edit the
+   pending txid: it is the only guard against paying the same obligation twice.
+   Escalate with those files; automatic invalidation of a provably conflicting
+   payment is not implemented.
+
 ## Soak-Specific Ops
 
 - Stack lives in `docker/testnet/docker-compose.yml` on the workstation.

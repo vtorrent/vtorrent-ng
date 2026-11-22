@@ -61,6 +61,34 @@ independent client. It asserts that all pieces verify, that the daemon credits
 exactly the uploaded byte count, that it signs a receipt covering those bytes,
 and that an unknown info-hash is refused.
 
+`vtorrent-daemon/tests/torrent_incentive_e2e.rs` covers the other direction:
+the daemon downloads from a mock seeder that announces its bitfield
+immediately after the wire handshake, then settles the signed receipt and pays
+exactly once across a restart.
+
+### Two fleet nodes, real transfer
+
+1. Start the fleet with `SEED_TORRENT=1`; every node listens on container port
+   22630.
+2. On the first node, place a completed torrent in
+   `/tmp/vtr-release-fleet/downloads/<name>/` with the `.vtorrent-torrent`
+   marker (`v1:<info-hash>`) and a fully set
+   `downloads/<info-hash>.vtorrent` resume bitfield.
+3. Run an HTTP tracker that returns the first node's container address and
+   port.
+4. `POST /api/v1/torrent/add` on the first node and poll
+   `/api/v1/torrent/settings` until `seeded_torrents` is 1.
+5. `POST /api/v1/torrent/add` with the second node's wallet address and poll
+   its session until `downloaded_bytes` equals the torrent size. Compare the
+   file's SHA-256/SHA-1 with the source.
+6. Confirm the first node's `uploaded_bytes` and `vtr_earned_satoshis`, and the
+   second node's `vtr_paid_satoshis` once settlement has run.
+
+On 2026-11-22 this moved 12 MiB between two fleet nodes in **1 second** with a
+matching SHA-1, full upload credit on the seeder, and a 585,937-sat payment
+that was admitted, confirmed at height 4, and finalized at height 9 without a
+stuck-payment warning.
+
 ## Suite results
 
 - Workspace: **1,512 passed, 0 failed, 13 ignored** across 56 groups.

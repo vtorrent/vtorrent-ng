@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `3e8b2cb`
+Subject: Independent security review — vTorrent-NG mainnet candidate `d5e80e1`
 
 Hello,
 
@@ -18,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `3e8b2cb9168983044bde2c1e33f8677e06e587ce`
+**Review head:** `d5e80e19ea3b1a7df835a049629a408cf388c2b2`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `3e8b2cb`. It is not covered by any prior soak: the
+The code under review is `d5e80e1`. It is not covered by any prior soak: the
 `6a49727` fleet predates every change below and was interrupted by a host
 restart on 2026-11-16. The eventual shipping image needs its own full window
 after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 code changed after the candidate with
-`git diff --name-only 3e8b2cb..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only d5e80e1..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -202,6 +202,19 @@ candidate `ba46fd6`:
   broadcast; startup confirms, rebroadcasts, or safely releases each
   reservation.
 - `10c4671` — a pending recovered payment is no longer re-emitted every tick;
+- `d5e80e1` — the staking loop skips outpoints a mempool transaction already
+  spends, so a node cannot invalidate its own incentive payment with the next
+  coinstake; adds a unit test for the filter.
+- `4b34b9e` — desktop torrent settings splits the editable request from the
+  status response carrying `seeding`/`seeded_torrents` (UI only).
+- `04115cb` — the engine records a peer's bitfield and `Have` messages seen
+  while scanning for the BEP-10 extension handshake. A real peer announces its
+  pieces immediately after the wire handshake; dropping that message left the
+  scheduler with no peer availability and it requested nothing. The incentive
+  E2E now announces bitfield-first.
+- `3dd99a0` — testnet fleets accept private torrent tracker/peer targets under
+  the same `--testnet` flag P2P uses, and the fleet script can open the seed
+  listener on every node.
 - `3e8b2cb` — inbound torrent serving. `--torrent-listen` opens a seed
   listener; only held info-hashes are answered and each piece is re-hashed
   before its first block, with connection, request, limiter, and seed-ratio
@@ -379,7 +392,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `3e8b2cb9168983044bde2c1e33f8677e06e587ce`
+- Confirm the review head is still `d5e80e19ea3b1a7df835a049629a408cf388c2b2`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.

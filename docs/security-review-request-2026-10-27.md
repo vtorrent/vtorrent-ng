@@ -10,7 +10,7 @@ already accepted so it is not re-litigated.
 
 ## Review target
 
-Review the candidate `3e8b2cb9168983044bde2c1e33f8677e06e587ce`. This is the current review head. It is **not**
+Review the candidate `d5e80e19ea3b1a7df835a049629a408cf388c2b2`. This is the current review head. It is **not**
 covered by any prior soak: the `6a49727` fleet predates the fund-safety and
 recovery changes below and was interrupted by a host restart on 2026-11-16.
 Under the soak provenance policy, the shipping image needs its own full window
@@ -18,8 +18,8 @@ after this review and its fixes settle.
 
 Read this document from the tip of `main`. Confirm that no code changed after
 the candidate with
-`git diff --name-only 3e8b2cb..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
-must return nothing. Check out `3e8b2cb` itself when running the verification
+`git diff --name-only d5e80e1..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+must return nothing. Check out `d5e80e1` itself when running the verification
 commands. The tables below record the earlier deltas. The table after the
 `f8e0162` deltas covers the range from `ba46fd6` to the candidate.
 
@@ -133,6 +133,10 @@ Deltas after `ba46fd6`:
 | `10c4671` | Stop re-emitting a recovered payment while its txid is pending; live recovery drill regression |
 | `2fdd9aa` | Pass 6: torrent framing/storage/final-receipt fixes from the two-process E2E, journal compaction and migration fail-closed, mempool-aware UTXO selection, faucet authentication |
 | `3e8b2cb` | Inbound torrent serving: opt-in seed listener, verified piece serving, signed receipts, RPC/desktop registration |
+| `3dd99a0` | Private torrent tracker/peer targets under `--testnet`; fleet option to open the seed listener |
+| `04115cb` | Keep a peer bitfield that arrives before the extension handshake; bitfield-first incentive E2E |
+| `4b34b9e` | Desktop torrent settings request/response type split (UI only) |
+| `d5e80e1` | Staking skips outpoints already spent by a mempool transaction; unit test |
 
 Deltas after the earlier review head:
 
@@ -184,7 +188,7 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout 3e8b2cb9168983044bde2c1e33f8677e06e587ce
+git checkout d5e80e19ea3b1a7df835a049629a408cf388c2b2
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
@@ -192,7 +196,7 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 cargo test --workspace --all-features
 ```
 
-The `3e8b2cb` workspace run passed 56 test groups and 1,512 tests with 0
+The `d5e80e1` workspace run passed 56 test groups and 1,513 tests with 0
 failures and 13 ignored. CI repeats the `--all-features` suite on every push.
 Set `VTORRENT_TOTP_STATE_DIR` to a fresh directory before running the suite so
 the host-scoped TOTP replay state does not collide with an existing

@@ -3836,3 +3836,45 @@ port nothing listened on and left completed torrents unservable. See
 
 This is a candidate window, not release evidence. The independent human
 review and the full 168 hours remain open.
+
+## 2026-11-22 — transfer-verified candidate (`d5e80e1`)
+
+Two live fleet transfers exposed defects that the unit suites had missed;
+both were fixed before this window started.
+
+- `04115cb`: a real peer sends its Bitfield immediately after the wire
+  handshake. The engine's handshake scan dropped it while waiting for the
+  extension handshake, and `next_piece` only returns pieces a peer advertised,
+  so it requested nothing. The incentive E2E now announces bitfield-first; it
+  times out after 121 s at zero bytes on the old engine and passes in 26 s with
+  the fix, with the same 585,937-sat payment.
+- `d5e80e1`: an incentive payment admitted to the mempool could then be spent
+  by the node's own next coinstake, evicting it and stranding the intent.
+  Staking candidates now exclude outpoints a mempool transaction already
+  spends. `4b34b9e` is the desktop-only type split for the seeder status
+  fields; `3dd99a0` lets `--testnet` fleets resolve private torrent targets.
+
+- Candidate: **2026-11-22T15:26:17Z** to **2026-11-29T15:26:17Z**,
+  `vtorrent/node:d5e80e1`, image ID
+  `sha256:1be6bef5dac7a4dbef2f0109d700d95b9b200ea631f17d31a5c01eb24535efb5`.
+- Binary extracted from the image:
+  `8b40acec7630a21fbe8715e228eb14b68c054188f60984aff4f6b3154ddc59b6`.
+- Workspace **1,513 passed, 0 failed, 13 ignored** (56 groups); desktop 45,
+  `tsc --noEmit`, lint, and Clippy clean. Both ignored E2Es pass on the image
+  binary.
+- Every node runs `--torrent-listen` on container port 22630 and reports
+  `seeding: true`.
+- Live transfer: node2 served 12 MiB to node3 in **1 second** with a matching
+  SHA-1; node2 credited 12,582,912 uploaded bytes and 1,171,875 satoshis
+  earned; node3 settled 585,937 satoshis, broadcast payment `2497a30e...`, and
+  it confirmed at height 4 and became final at height 9. No stuck-payment
+  warnings. Evidence: `/mnt/temp/vtorrent-ng-evidence/soak-d5e80e1/transfer/`.
+- Fleet `review-d5e80e1`, RPC 23951–23953, Prometheus 23973, health observer
+  `25 17 * * *`, evidence `/mnt/temp/vtorrent-ng-evidence/soak-d5e80e1/`.
+- Superseded verification deployments, neither a recorded window:
+  `review-3dd99a0` (downloader lost the peer bitfield) and `review-4b34b9e`
+  (payment evicted by the node's own coinstake); their evidence directories
+  carry the corresponding notes.
+
+This is a candidate window, not release evidence. The independent human
+review and the full 168 hours remain open.

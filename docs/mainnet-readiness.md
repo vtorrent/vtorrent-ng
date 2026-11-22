@@ -38,7 +38,9 @@ principal only; network fees are additional. A payment remains an outstanding
 debt until six confirmations; a shallow reorg keeps it pending, and a
 transaction missing from both chain and mempool stays pending rather than being
 re-paid, because the original can still be mined. An operator must resolve a
-permanently stuck transaction. Receipt-backed accounts are journaled to
+permanently stuck transaction. The staking loop skips any coin a mempool
+transaction already spends, so a node cannot invalidate its own incentive
+payment with its next coinstake. Receipt-backed accounts are journaled to
 `incentive-journal.jsonl` (0600, fsynced) as receipts and settlements arrive;
 the journal is replayed at startup, converted to payable debt, and paid. Signed
 payment transactions are written to `incentive-payment-intents.json` before
