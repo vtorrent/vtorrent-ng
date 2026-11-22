@@ -91,11 +91,14 @@ export interface TorrentSession {
   vtrSettledPaidSatoshis: number
 }
 
-export interface TorrentSettings {
+export interface TorrentSettingsUpdate {
   downloadDir: string
   downloadLimitBytesPerSec: number
   uploadLimitBytesPerSec: number
   seedRatioTarget: number
+}
+
+export interface TorrentSettings extends TorrentSettingsUpdate {
   /** Whether this node accepts inbound torrent connections. */
   seeding: boolean
   /** Completed torrents currently served to inbound peers. */
@@ -214,7 +217,7 @@ export async function getTorrentSettings(): Promise<TorrentSettings> {
   return camel(await rpcGet<unknown>('/api/v1/torrent/settings')) as TorrentSettings
 }
 
-export async function setTorrentSettings(settings: TorrentSettings): Promise<TorrentSettings> {
+export async function setTorrentSettings(settings: TorrentSettingsUpdate): Promise<TorrentSettings> {
   if (isTauri()) {
     return camel(await tauriInvoke<TorrentSettings>('set_torrent_settings', {
       downloadDir: settings.downloadDir,
