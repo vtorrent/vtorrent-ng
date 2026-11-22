@@ -40,7 +40,9 @@ transaction missing from both chain and mempool stays pending rather than being
 re-paid, because the original can still be mined. An operator must resolve a
 permanently stuck transaction. The staking loop skips any coin a mempool
 transaction already spends, so a node cannot invalidate its own incentive
-payment with its next coinstake. Receipt-backed accounts are journaled to
+payment with its next coinstake. The payment builder refuses to spend the last
+staking-eligible UTXO: a node that both stakes and pays incentives must keep a
+second spendable coin, or its payments fail closed until one is funded. Receipt-backed accounts are journaled to
 `incentive-journal.jsonl` (0600, fsynced) as receipts and settlements arrive;
 the journal is replayed at startup, converted to payable debt, and paid. Signed
 payment transactions are written to `incentive-payment-intents.json` before
@@ -53,7 +55,11 @@ it. Bytes transferred after the last peer receipt are not receipt-verified and
 are not recoverable after a crash. Session eviction and `remove_torrent` refuse
 while debt or an in-flight payment exists.
 
-**Inbound torrent seeding:** off by default. `--torrent-listen` opens
+**Inbound torrent seeding:** off by default. Torrent sessions are in-memory;
+after a restart, re-add each torrent to resume serving. BEP-10 is required, but
+BEP-10 alone does not pay: a client that never sends a `ut_vtr_receipt` can still
+download, so the payment is voluntary after the fact. Keep an upload limit and
+treat `vtr_earned_satoshis` as a measure, not a guarantee. `--torrent-listen` opens
 `--torrent-listen-addr` (default `0.0.0.0:22630`) to inbound peers, and a
 completed torrent is registered for serving when the download finishes. Use
 `--torrent-announce-port` when a NAT maps a different public port. The seeder

@@ -41,7 +41,7 @@ disk < 85%, no crash-looping units.
 |---|---|---|
 | `DaemonDown` (>2m) | process crash / OOM / host reboot | `systemctl status vtorrent -l`; check `journalctl -u vtorrent -n 100`. Restart: `systemctl restart vtorrent`. If OOM-killed repeatedly, check memory trend in Grafana before restarting. |
 | `PeerCountZero` (>5m) | peer lost connectivity, or remote seed down | From each side: `curl -s -H "X-API-Key: $(cat /etc/vtorrent/rpc-api-key)" localhost:22525/api/v1/peers`. Test cross-connectivity: from seed1 `nc -zv 2.29.8.113 22526`. If ufw dropped rules after a host reboot: re-apply `ufw allow 22526/tcp`. If the other seed is the dead one, see *Seed failover*. |
-| `HeightStalled` | staking stopped fleet-wide, or mempool poisoning | Check latest block age vs Grafana. Verify a staker is alive: `curl -s -H "X-API-Key: $(cat /etc/vtorrent/rpc-api-key)" localhost:22525/api/v1/staking/status`. Inspect recent daemon log for "Rejected block" lines — if one node rejects all blocks, capture its log and restart it last. |
+| `HeightStalled` | staking stopped fleet-wide, mempool poisoning, or the only stake coin is committed to a pending incentive payment | Check latest block age vs Grafana. If the node is the only staker, confirm it has a spendable coin that is not the pending payment's input. Verify a staker is alive: `curl -s -H "X-API-Key: $(cat /etc/vtorrent/rpc-api-key)" localhost:22525/api/v1/staking/status`. Inspect recent daemon log for "Rejected block" lines — if one node rejects all blocks, capture its log and restart it last. |
 | `StakingStopped` | wallet locked / UTXO spent / passphrase cleared | `POST /api/v1/staking/start` with address+passphrase after unlocking. |
 | `HostDiskFull` (<15%) | chain.db growth or journald bloat | `du -sh /var/lib/vtorrent/*`; `journalctl --vacuum-size=200M`. Do NOT delete chain.db (see *Chain-state recovery*). |
 | `HostOutOfMemory` | leak or co-tenant | `systemctl status vtorrent` for oom score; consider restarting the daemon during a quiet window. |
@@ -199,7 +199,9 @@ a double payment` every 5 seconds; the session's `vtr_paid_satoshis` and
 2. If one of its inputs was spent by a confirmed transaction (for example the
    node's own coinstake), the payment can never be mined. Before `d5e80e1` the
    staking loop could do this to its own payment; `d5e80e1` skips staking
-   candidates whose outpoint a mempool transaction already spends.
+   candidates whose outpoint a mempool transaction already spends, and the
+   payment builder refuses to spend the last staking-eligible UTXO. A staking
+   node needs a second spendable coin to pay incentives.
 3. Preserve `incentive-payment-intents.json`, `incentive-journal.jsonl`,
    `incentive-ledger.json`, and the daemon log. Do not clear or hand-edit the
    pending txid: it is the only guard against paying the same obligation twice.

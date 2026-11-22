@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `d5e80e1`
+Subject: Independent security review — vTorrent-NG mainnet candidate `17db693`
 
 Hello,
 
@@ -18,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `d5e80e19ea3b1a7df835a049629a408cf388c2b2`
+**Review head:** `17db693b2a0470db47e9693dd07dbe024542f404`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `d5e80e1`. It is not covered by any prior soak: the
+The code under review is `17db693`. It is not covered by any prior soak: the
 `6a49727` fleet predates every change below and was interrupted by a host
 restart on 2026-11-16. The eventual shipping image needs its own full window
 after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 code changed after the candidate with
-`git diff --name-only d5e80e1..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only 17db693..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -202,6 +202,16 @@ candidate `ba46fd6`:
   broadcast; startup confirms, rebroadcasts, or safely releases each
   reservation.
 - `10c4671` — a pending recovered payment is no longer re-emitted every tick;
+- `17db693` — pass 7. Each partially downloaded piece is assembled by exactly
+  one owning task, blocks are leased only to peers that advertised the piece,
+  and received/expired leases no longer wedge the pipeline. The seeder
+  rate-limits receipts, binds them to the torrent's info-hash, caps inbound
+  frames, serves only requested byte ranges with a real duplicate window,
+  cancels open connections on removal, registers post-engine magnet metadata,
+  and announces promptly with a random peer id. The payment builder protects
+  the last staking-eligible UTXO and the staking loop re-checks it under
+  chain+mempool locks; disputed receipts are cleared; the RPC/desktop
+  lifecycle guards are aligned.
 - `d5e80e1` — the staking loop skips outpoints a mempool transaction already
   spends, so a node cannot invalidate its own incentive payment with the next
   coinstake; adds a unit test for the filter.
@@ -392,7 +402,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `d5e80e19ea3b1a7df835a049629a408cf388c2b2`
+- Confirm the review head is still `17db693b2a0470db47e9693dd07dbe024542f404`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.

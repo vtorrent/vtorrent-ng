@@ -3878,3 +3878,42 @@ both were fixed before this window started.
 
 This is a candidate window, not release evidence. The independent human
 review and the full 168 hours remain open.
+
+## 2026-11-23 — pass-7 candidate (`17db693`)
+
+AI pass 7 found a **critical pre-existing multi-peer download defect** and a
+set of remote-resource and lifecycle issues in the new seeder. Fixes are in
+`17db693`; see `docs/2026-11-22_ai-supplementary-review-pass7.md`.
+
+- With two peers, blocks of one piece were leased to both tasks, each with a
+  private assembler, so a piece could never complete. Pieces are now owned by
+  one task; leases are peer-aware; received/expired leases no longer wedge the
+  pipeline; verification and disk failures re-fetch the piece.
+- Seeder: receipt flood throttled, receipt info-hash bound, inbound frames
+  capped at 256 KiB, ranged block reads with a real 10 s duplicate window,
+  open connections cancelled on DELETE, post-engine magnet metainfo
+  registered, prompt announces with random peer ids, packed peer bitfields.
+- Payments: non-staking coins are preferred; a payment cannot spend the last
+  staking-eligible UTXO; the staking loop re-checks the outpoint under
+  chain+mempool locks; disputed receipts are cleared.
+- Candidate: **2026-11-22T17:28:51Z** to **2026-11-29T17:28:51Z**,
+  `vtorrent/node:17db693`, image ID
+  `sha256:76b6b3f96015147b763b25788640f105eb6600b33b2f7c5feaf60e5d155dd9ba`,
+  binary `3dfe526952a3b850abe21b7516ad10076ebaafd8b2aedc980411d3764f611d73`.
+- Workspace **1,518 passed, 0 failed, 13 ignored** (56 groups); torrent lib
+  140; RPC 215; desktop 34; Clippy and lint clean. Both ignored E2Es pass on
+  the image binary.
+- Live **two-seeder** transfer: 12 MiB in **1 second** from node1 + node2 with
+  a matching SHA-1; node1 served 4,980,736 bytes and node2 7,602,176 bytes, so
+  every piece completed in one owning task. node2 earned 708,007 sats; node3
+  paid it 354,003 sats from a **0.5 VTR non-staking coin** (payment
+  `bd3add87...`, confirmed at height 4, final at height 9) while staking blocks
+  at heights 5–7. Evidence:
+  `/mnt/temp/vtorrent-ng-evidence/soak-17db693/transfer-two-peer/`.
+- Fleet `review-17db693`, RPC 23951–23953, Prometheus 23973, health observer
+  `25 17 * * *`, evidence `/mnt/temp/vtorrent-ng-evidence/soak-17db693/`.
+- The `d5e80e1` fleet was retired at height 102 with zero restarts; its
+  evidence is archived with `SUPERSEDED.md`.
+
+This is a candidate window, not release evidence. The independent human
+review and the full 168 hours remain open.
