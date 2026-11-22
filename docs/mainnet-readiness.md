@@ -51,6 +51,18 @@ it. Bytes transferred after the last peer receipt are not receipt-verified and
 are not recoverable after a crash. Session eviction and `remove_torrent` refuse
 while debt or an in-flight payment exists.
 
+**Inbound torrent seeding:** off by default. `--torrent-listen` opens
+`--torrent-listen-addr` (default `0.0.0.0:22630`) to inbound peers, and a
+completed torrent is registered for serving when the download finishes. Use
+`--torrent-announce-port` when a NAT maps a different public port. The seeder
+re-hashes every piece against the metainfo before its first block is sent, only
+answers info-hashes it holds, caps concurrent connections
+(`--torrent-max-connections`, default 32), honours the upload limiter and the
+seed-ratio target, and signs a bandwidth receipt per connection with the hot
+wallet once it is unlocked. Without an unlocked wallet it uploads bytes that no
+peer running this software can verify or pay for, so unlock before serving. Do
+not enable it for content you are not entitled to distribute.
+
 **Desktop backup restriction:** Backup collection takes the BTC state lock and
 includes the initialization record when present. If that record exists but its
 state file is missing, backup fails instead of omitting the state. Automatic

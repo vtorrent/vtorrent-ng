@@ -320,7 +320,14 @@ Add a torrent by magnet link or .torrent file.
 
 ### DELETE /api/v1/torrent/:id
 
-Remove a torrent session.
+Remove a torrent session and stop serving it to inbound peers.
+
+### GET /api/v1/torrent/settings
+
+Returns the download directory, rate limits, seed-ratio target, and whether
+this node accepts inbound connections (`seeding`) plus how many completed
+torrents it currently serves (`seeded_torrents`). Inbound seeding is opt-in
+(`--torrent-listen`) and off by default.
 
 ---
 

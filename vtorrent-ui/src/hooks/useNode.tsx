@@ -96,6 +96,10 @@ export interface TorrentSettings {
   downloadLimitBytesPerSec: number
   uploadLimitBytesPerSec: number
   seedRatioTarget: number
+  /** Whether this node accepts inbound torrent connections. */
+  seeding: boolean
+  /** Completed torrents currently served to inbound peers. */
+  seededTorrents: number
 }
 
 export interface DexOrder {

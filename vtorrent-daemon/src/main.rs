@@ -542,6 +542,58 @@ async fn main() -> anyhow::Result<()> {
     // Set the torrent download directory under the data dir.
     *rpc_state.download_dir.write().await = data_dir.join("downloads");
 
+    // Inbound seeding. Off unless the operator publishes a port. The registry
+    // is shared with the RPC layer so a completed download becomes servable
+    // and a removed session stops being served.
+    if cli.torrent_listen {
+        let listen_addr: std::net::SocketAddr = cli.torrent_listen_addr.parse().map_err(|e| {
+            anyhow::anyhow!(
+                "Invalid --torrent-listen-addr {}: {}",
+                cli.torrent_listen_addr,
+                e
+            )
+        })?;
+        if let Some(port) = cli.torrent_announce_port {
+            if port == 0 {
+                anyhow::bail!("--torrent-announce-port must be between 1 and 65535");
+            }
+        }
+        let registry = std::sync::Arc::new(vtorrent_torrent::seed::SeederRegistry::new());
+        *rpc_state.torrent_seeder.write().await = Some(std::sync::Arc::clone(&registry));
+        let seeder_state = vtorrent_torrent::seed::SeederState {
+            registry,
+            sessions: std::sync::Arc::clone(&rpc_state.torrent_sessions),
+            limits: std::sync::Arc::clone(&rpc_state.torrent_limits),
+            seed_ratio_target: std::sync::Arc::clone(&rpc_state.seed_ratio_target),
+            // The hot wallet is restored locked, so the signing key is read
+            // from shared state per receipt: it starts working after unlock
+            // and stops when the wallet is locked again.
+            wallet_wif: std::sync::Arc::clone(&rpc_state.wallet_wif),
+            our_peer_id: [0x2du8; 20],
+            cancel: tokio_util::sync::CancellationToken::new(),
+        };
+        let seeder_config = vtorrent_torrent::seed::SeederConfig {
+            listen_addr,
+            advertised_port: cli.torrent_announce_port,
+            max_connections: cli.torrent_max_connections.clamp(1, 1024),
+        };
+        tokio::spawn(async move {
+            if let Err(error) =
+                vtorrent_torrent::seed::run_seeder(seeder_config, seeder_state).await
+            {
+                tracing::error!("Torrent seeder failed: {}", error);
+            }
+        });
+        tracing::info!(
+            "Torrent seeder signs receipts with the hot wallet once it is unlocked; \
+             without an unlocked wallet it uploads but peers cannot verify payment"
+        );
+    } else if cli.torrent_announce_port.is_some() {
+        tracing::warn!(
+            "--torrent-announce-port is ignored without --torrent-listen; no port is published"
+        );
+    }
+
     // Initialize the Bitcoin SPV wallet from the seed, if provided.
     if let Some(seed_hex) = &cli.btc_seed {
         let seed_bytes = hex::decode(seed_hex)

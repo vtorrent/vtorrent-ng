@@ -76,6 +76,9 @@ pub struct AppState {
     /// Cancellation tokens for active torrent engine tasks, keyed by session id.
     pub torrent_cancels:
         Arc<RwLock<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>>,
+    /// Inbound seeder registry when the operator enabled `--torrent-listen`.
+    /// Registered torrents are served to inbound peers.
+    pub torrent_seeder: Arc<RwLock<Option<Arc<vtorrent_torrent::seed::SeederRegistry>>>>,
     /// SPV header chain for light-client verification.
     pub spv_chain: Arc<RwLock<SpvChain>>,
     pub stake_proofs: Arc<RwLock<std::collections::HashMap<[u8; 32], StakeProof>>>,
@@ -212,6 +215,7 @@ impl AppState {
             torrent_limits: Arc::new(vtorrent_torrent::limits::TorrentRateLimiter::new(0, 0)),
             seed_ratio_target: Arc::new(RwLock::new(0.0)),
             torrent_cancels: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            torrent_seeder: Arc::new(RwLock::new(None)),
             spv_chain: Arc::new(RwLock::new(SpvChain::new())),
             stake_proofs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             btc_wallet: Arc::new(RwLock::new(None)),
@@ -280,6 +284,7 @@ impl AppState {
             torrent_limits: Arc::new(vtorrent_torrent::limits::TorrentRateLimiter::new(0, 0)),
             seed_ratio_target: Arc::new(RwLock::new(0.0)),
             torrent_cancels: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            torrent_seeder: Arc::new(RwLock::new(None)),
             spv_chain: Arc::new(RwLock::new(SpvChain::new())),
             stake_proofs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             btc_wallet: Arc::new(RwLock::new(None)),

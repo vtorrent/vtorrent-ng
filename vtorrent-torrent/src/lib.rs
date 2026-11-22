@@ -19,6 +19,7 @@ pub mod metainfo;
 pub mod payment;
 pub mod peer_wire;
 pub mod scheduler;
+pub mod seed;
 pub mod session;
 pub mod tracker;
 pub mod udp;

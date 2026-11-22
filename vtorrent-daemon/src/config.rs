@@ -141,6 +141,27 @@ pub struct Cli {
     #[arg(long, default_value_t = 100_000_000)]
     pub torrent_incentive_payment_cap_sats: u64,
 
+    /// Accept inbound BitTorrent connections and serve downloaded torrents.
+    ///
+    /// Off by default: this publishes a listening port and makes the node
+    /// reachable by arbitrary clients, which is an operator decision. Serve
+    /// only torrents you hold the rights to distribute.
+    #[arg(long, default_value_t = false)]
+    pub torrent_listen: bool,
+
+    /// Address the torrent seeder binds, e.g. `0.0.0.0:22630`.
+    #[arg(long, default_value = "0.0.0.0:22630", value_name = "ADDR")]
+    pub torrent_listen_addr: String,
+
+    /// Port advertised to trackers when it differs from the bound port
+    /// (port-forwarding or NAT).
+    #[arg(long, value_name = "PORT")]
+    pub torrent_announce_port: Option<u16>,
+
+    /// Maximum simultaneous inbound torrent connections.
+    #[arg(long, default_value_t = 32)]
+    pub torrent_max_connections: usize,
+
     /// Optional API key required for sensitive RPC endpoints.
     ///
     /// Read from the environment rather than argv so it is not exposed in the

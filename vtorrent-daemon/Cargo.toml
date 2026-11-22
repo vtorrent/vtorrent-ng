@@ -27,6 +27,7 @@ vtorrent-wallet-service = { path = "../vtorrent-wallet-service" }
 
 # Async runtime
 tokio             = { version = "1", features = ["full"] }
+tokio-util        = { workspace = true }
 
 # CLI argument parsing
 clap              = { version = "4", features = ["derive", "env"] }

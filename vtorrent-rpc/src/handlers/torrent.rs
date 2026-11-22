@@ -46,6 +46,11 @@ pub async fn list_torrent_sessions(
 pub async fn get_torrent_settings(
     State(state): State<Arc<AppState>>,
 ) -> RpcResult<Json<TorrentSettingsResponse>> {
+    let seeder = state.torrent_seeder.read().await.clone();
+    let (seeding, seeded_torrents) = match seeder {
+        Some(seeder) => (true, seeder.len().await),
+        None => (false, 0),
+    };
     Ok(Json(TorrentSettingsResponse {
         download_dir: state
             .download_dir
@@ -56,6 +61,8 @@ pub async fn get_torrent_settings(
         download_limit_bytes_per_sec: state.torrent_limits.download_rate(),
         upload_limit_bytes_per_sec: state.torrent_limits.upload_rate(),
         seed_ratio_target: *state.seed_ratio_target.read().await,
+        seeding,
+        seeded_torrents,
     }))
 }
 
@@ -109,7 +116,7 @@ pub async fn add_torrent(
 
     let info_hash = hex::encode(metainfo.info_hash);
     let name = metainfo.name.clone();
-    let session = TorrentSession::new(metainfo, req.wallet_address);
+    let session = TorrentSession::new(metainfo.clone(), req.wallet_address);
     let session_id = state
         .torrent_sessions
         .write()
@@ -130,21 +137,47 @@ pub async fn add_torrent(
         .await
         .insert(session_id.clone(), cancel.clone());
     let sessions = Arc::clone(&state.torrent_sessions);
+    // If inbound seeding is enabled, publish this torrent as soon as the
+    // engine completes. The engine flips the session to `Seeding` and returns,
+    // so registration has to happen outside it.
+    let seeder = state.torrent_seeder.read().await.clone();
+    let seeder_info_hash = metainfo.info_hash;
+    let seeder_metainfo = metainfo.clone();
+    let seeder_session_id = session_id.clone();
+    let seeder_download_dir = download_dir.clone();
     let limits = Arc::clone(&state.torrent_limits);
     let seed_ratio_target = Arc::clone(&state.seed_ratio_target);
     let local_wif = state.wallet_wif.read().await.clone();
     let sid = session_id.clone();
+    let engine_sessions = Arc::clone(&sessions);
     tokio::spawn(async move {
         vtorrent_torrent::engine::run_engine(
             sid,
-            sessions,
-            download_dir,
+            engine_sessions.clone(),
+            download_dir.clone(),
             limits,
             seed_ratio_target,
             cancel,
             local_wif,
         )
         .await;
+        if let Some(seeder) = seeder {
+            let complete = engine_sessions
+                .read()
+                .await
+                .get_session(&seeder_session_id)
+                .map(|session| session.is_complete())
+                .unwrap_or(false);
+            if complete {
+                seeder
+                    .register(seeder_session_id, seeder_metainfo, seeder_download_dir)
+                    .await;
+                tracing::info!(
+                    info_hash = %hex::encode(seeder_info_hash),
+                    "Torrent complete; now serving it to inbound peers"
+                );
+            }
+        }
     });
 
     Ok(Json(AddTorrentResponse {
@@ -167,10 +200,16 @@ pub async fn remove_torrent(
             "Session has unpaid or in-flight incentive payments; retry after settlement".into(),
         ));
     }
+    let info_hash = session.metainfo.info_hash;
     sessions.remove_session(&id);
     drop(sessions);
     if let Some(cancel) = state.torrent_cancels.write().await.remove(&id) {
         cancel.cancel();
+    }
+    // Stop serving it immediately, even if the engine task is still winding
+    // down: the session it would read from is gone.
+    if let Some(seeder) = state.torrent_seeder.read().await.clone() {
+        seeder.unregister(&info_hash).await;
     }
     Ok(Json(
         json!({ "success": true, "message": format!("Session {} removed", id) }),

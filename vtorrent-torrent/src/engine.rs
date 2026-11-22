@@ -379,6 +379,62 @@ impl PeerConnection {
         })
     }
 
+    /// Accept an inbound peer and perform the server side of the handshake.
+    ///
+    /// The inbound peer chooses the torrent in its handshake, so the caller
+    /// looks up the session and either replies with the matching info-hash or
+    /// drops the connection. Nothing is sent back until `info_hash` is known to
+    /// belong to a torrent we actually hold.
+    pub async fn accept(mut stream: TcpStream) -> Result<([u8; 20], [u8; 20], Self)> {
+        let mut buf = [0u8; 68];
+        tokio::time::timeout(PEER_CONNECT_TIMEOUT, stream.read_exact(&mut buf))
+            .await
+            .map_err(|_| TorrentError::PeerWireError("peer handshake read timed out".into()))?
+            .map_err(|e| TorrentError::PeerWireError(e.to_string()))?;
+        let (hs, _) = PeerMessage::decode_handshake(&buf)?
+            .ok_or_else(|| TorrentError::PeerWireError("incomplete handshake".into()))?;
+        let (info_hash, peer_id, reserved) = match hs {
+            PeerMessage::Handshake {
+                info_hash,
+                peer_id,
+                reserved,
+            } => (info_hash, peer_id, reserved),
+            _ => return Err(TorrentError::PeerWireError("expected handshake".into())),
+        };
+        // Refuse to talk to a client that does not advertise BEP-10: without
+        // the extension handshake there is no VTR address and no receipt, so
+        // such a peer could only ever consume upload bandwidth unpaid.
+        if reserved[5] & 0x10 == 0 {
+            return Err(TorrentError::PeerWireError(
+                "peer does not support the extension protocol".into(),
+            ));
+        }
+        Ok((
+            info_hash,
+            peer_id,
+            Self {
+                stream,
+                remote_peer_id: peer_id,
+                read_buf: Vec::new(),
+                read_pos: 0,
+                max_message_len: MAX_MESSAGE_LENGTH,
+            },
+        ))
+    }
+
+    /// Complete an inbound handshake by echoing `info_hash` and our peer id.
+    pub async fn accept_reply(&mut self, info_hash: [u8; 20], our_peer_id: [u8; 20]) -> Result<()> {
+        let reply = PeerMessage::Handshake {
+            info_hash,
+            peer_id: our_peer_id,
+            reserved: EXTENSION_RESERVED,
+        };
+        tokio::time::timeout(PEER_CONNECT_TIMEOUT, self.stream.write_all(&reply.encode()))
+            .await
+            .map_err(|_| TorrentError::PeerWireError("peer handshake write timed out".into()))?
+            .map_err(|e| TorrentError::PeerWireError(e.to_string()))
+    }
+
     /// Tighten the maximum frame size for this connection. Never raises the
     /// absolute wire limit.
     pub fn set_max_message_len(&mut self, max: usize) {

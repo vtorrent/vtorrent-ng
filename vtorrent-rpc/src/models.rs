@@ -300,6 +300,10 @@ pub struct TorrentSettingsResponse {
     pub download_limit_bytes_per_sec: u64,
     pub upload_limit_bytes_per_sec: u64,
     pub seed_ratio_target: f64,
+    /// Whether this node accepts inbound torrent connections.
+    pub seeding: bool,
+    /// Number of completed torrents currently served to inbound peers.
+    pub seeded_torrents: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

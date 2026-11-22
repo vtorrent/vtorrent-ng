@@ -156,6 +156,7 @@ pub async fn add_torrent(
 
     let info_hash = hex::encode(metainfo.info_hash);
     let name = metainfo.name.clone();
+    let seeder_metainfo = metainfo.clone();
     let session = TorrentSession::new(metainfo, wallet_address);
 
     let guard = state.node.lock().await;
@@ -188,10 +189,16 @@ pub async fn add_torrent(
     let seed_ratio_target = Arc::clone(&handle.rpc_state.seed_ratio_target);
     let local_wif = handle.rpc_state.wallet_wif.read().await.clone();
     let sid = session_id.clone();
+    // Same registration as the daemon: a completed torrent becomes servable
+    // when the operator enabled inbound seeding for this node.
+    let seeder = handle.rpc_state.torrent_seeder.read().await.clone();
+    let seeder_download_dir = download_dir.clone();
+    let engine_sessions = Arc::clone(&sessions);
+    let engine_session_id = session_id.clone();
     tokio::spawn(async move {
         vtorrent_torrent::engine::run_engine(
-            sid,
-            sessions,
+            sid.clone(),
+            engine_sessions.clone(),
             download_dir,
             limits,
             seed_ratio_target,
@@ -199,6 +206,19 @@ pub async fn add_torrent(
             local_wif,
         )
         .await;
+        if let Some(seeder) = seeder {
+            let complete = engine_sessions
+                .read()
+                .await
+                .get_session(&sid)
+                .map(|session| session.is_complete())
+                .unwrap_or(false);
+            if complete {
+                seeder
+                    .register(engine_session_id, seeder_metainfo, seeder_download_dir)
+                    .await;
+            }
+        }
     });
 
     Ok(AddTorrentResult {
