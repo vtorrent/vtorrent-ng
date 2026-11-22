@@ -14,6 +14,20 @@ use crate::{
 use super::Node;
 use vtorrent_core::time::now_timestamp_u32;
 
+/// Drop staking candidates whose outpoint a mempool transaction already
+/// spends. Spending one in a coinstake would invalidate that transaction and
+/// evict it, which can strand an incentive payment that the daemon just
+/// broadcast.
+fn exclude_mempool_spent(
+    utxos: Vec<crate::chain::Utxo>,
+    mempool: &crate::mempool::Mempool,
+) -> Vec<crate::chain::Utxo> {
+    utxos
+        .into_iter()
+        .filter(|utxo| !mempool.is_outpoint_spent(&utxo.txid, utxo.vout))
+        .collect()
+}
+
 impl Node {
     /// Attempt to produce a new PoS block.
     pub(crate) async fn attempt_stake(&mut self) -> Result<()> {
@@ -67,6 +81,15 @@ impl Node {
                 tip_is_bootstrap,
                 params,
             )
+        };
+        // A mempool transaction — for example an incentive payment — may
+        // already spend one of these outpoints. Staking it would make our own
+        // block spend the same coin, evicting that transaction from every
+        // mempool and stranding its payment intent. Skip committed coins until
+        // the transaction confirms or is invalidated.
+        let stake_utxos = {
+            let mempool = self.mempool.lock().await;
+            exclude_mempool_spent(stake_utxos, &mempool)
         };
         if let Some(staking) = self.staking.as_mut() {
             staking.bootstrap_exempt = tip_is_bootstrap;
@@ -209,5 +232,53 @@ impl Node {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::block::{Transaction, TxInput, TxOutput, TxType};
+
+    fn utxo(txid_byte: u8) -> crate::chain::Utxo {
+        crate::chain::Utxo {
+            txid: [txid_byte; 32],
+            vout: 0,
+            value: 100_000_000,
+            script_pubkey: vec![0x76, 0xa9, 0x14, 0x00, 0x88, 0xac],
+            height: 1,
+            timestamp: 0,
+        }
+    }
+
+    #[test]
+    fn staking_skips_a_coin_that_a_mempool_payment_already_spends() {
+        let mut mempool = crate::mempool::Mempool::new(16);
+        mempool
+            .add_transaction_with_fee(
+                Transaction {
+                    version: 1,
+                    tx_type: TxType::Standard,
+                    inputs: vec![TxInput {
+                        prev_txid: [1u8; 32],
+                        prev_vout: 0,
+                        script_sig: vec![],
+                        sequence: 0xFFFF_FFFF,
+                    }],
+                    outputs: vec![TxOutput {
+                        value: 99_000_000,
+                        script_pubkey: vec![0x76, 0xa9, 0x14, 0x07, 0x88, 0xac],
+                    }],
+                    lock_time: 0,
+                    claim_address: None,
+                    claim_signature: None,
+                },
+                1_000,
+            )
+            .expect("mempool accepts the test transaction");
+
+        let candidates = exclude_mempool_spent(vec![utxo(1), utxo(2)], &mempool);
+        assert_eq!(candidates.len(), 1, "the spent coin must not be staked");
+        assert_eq!(candidates[0].txid, [2u8; 32]);
     }
 }
