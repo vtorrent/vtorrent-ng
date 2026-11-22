@@ -263,6 +263,61 @@ pub async fn read_piece_from_disk(
     Some(out)
 }
 
+/// Read one byte range of a piece, without materialising the whole piece.
+///
+/// The caller must have verified the piece first. This keeps block serving
+/// proportional to the requested block instead of re-reading a multi-megabyte
+/// piece for every 16 KiB request.
+pub async fn read_block_from_disk(
+    metainfo: &Metainfo,
+    download_dir: &std::path::Path,
+    piece_index: u32,
+    begin: u32,
+    length: u32,
+) -> Option<Vec<u8>> {
+    if length == 0 {
+        return None;
+    }
+    let layout = FileLayout::new(&metainfo.files, metainfo.piece_length);
+    let base = safe_directory(download_dir, std::slice::from_ref(&metainfo.name), false).await?;
+    let piece_len = piece_length(metainfo, piece_index);
+    let block_start = begin as u64;
+    let block_end = block_start.checked_add(length as u64)?;
+    if block_end > piece_len {
+        return None;
+    }
+    let mut out = Vec::with_capacity(length as usize);
+    let mut cursor = 0u64;
+    for (file_index, file_offset, byte_count) in layout.piece_segment_ranges(piece_index, piece_len)
+    {
+        let segment_start = cursor;
+        let segment_end = cursor.checked_add(byte_count)?;
+        cursor = segment_end;
+        let want_start = block_start.max(segment_start);
+        let want_end = block_end.min(segment_end);
+        if want_start >= want_end {
+            continue;
+        }
+        let offset = file_offset.checked_add(want_start - segment_start)?;
+        let count = (want_end - want_start) as usize;
+        let file = &metainfo.files[file_index];
+        let path = safe_file_path(&base, &file.path, false).await?;
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+        let mut options = tokio::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        options.custom_flags(libc::O_NOFOLLOW);
+        let mut f = options.open(&path).await.ok()?;
+        if f.seek(std::io::SeekFrom::Start(offset)).await.is_err() {
+            return None;
+        }
+        let mut buf = vec![0u8; count];
+        f.read_exact(&mut buf).await.ok()?;
+        out.extend_from_slice(&buf);
+    }
+    (out.len() == length as usize).then_some(out)
+}
+
 async fn safe_directory(
     base: &std::path::Path,
     components: &[String],
@@ -631,5 +686,54 @@ mod adoption_tests {
         assert!(adopt_existing_torrent(&fixture(1), &root).await.is_err());
         assert!(!root.join("payload/.vtorrent-torrent").exists());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_block_can_span_files_without_reading_the_whole_piece() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("multi");
+        std::fs::create_dir_all(&base).unwrap();
+        let a: Vec<u8> = (0..10).collect();
+        let b: Vec<u8> = (100..110).collect();
+        std::fs::write(base.join("a"), &a).unwrap();
+        std::fs::write(base.join("b"), &b).unwrap();
+        let piece0: Vec<u8> = [a.as_slice(), &b[..6]].concat();
+        let piece1 = b[6..].to_vec();
+        let metainfo = Metainfo {
+            info_hash: [7; 20],
+            name: "multi".into(),
+            total_size: 20,
+            piece_length: 16,
+            piece_count: 2,
+            pieces: vec![Sha1::digest(&piece0).into(), Sha1::digest(&piece1).into()],
+            announce: None,
+            announce_list: vec![],
+            files: vec![
+                TorrentFile {
+                    path: vec!["a".into()],
+                    length: 10,
+                    md5sum: None,
+                },
+                TorrentFile {
+                    path: vec!["b".into()],
+                    length: 10,
+                    md5sum: None,
+                },
+            ],
+            created_at: None,
+            comment: None,
+            is_private: false,
+        };
+
+        let block = read_block_from_disk(&metainfo, dir.path(), 0, 8, 6)
+            .await
+            .expect("block spanning both files");
+        assert_eq!(block, [&a[8..10], &b[..4]].concat());
+        assert!(
+            read_block_from_disk(&metainfo, dir.path(), 0, 14, 4)
+                .await
+                .is_none(),
+            "a block past the end of the piece must be rejected"
+        );
     }
 }

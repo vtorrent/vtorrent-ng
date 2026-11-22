@@ -100,6 +100,8 @@ pub enum IncentivePaymentError {
     NoChangeAddress,
     #[error("no UTXOs available for wallet address")]
     NoUtxos,
+    #[error("payment would spend the last staking-eligible coin; fund a separate payment coin")]
+    StakeReserved,
     #[error("tx build failed: {0}")]
     Build(#[from] vtorrent_wallet::error::WalletError),
     #[error("mempool rejected payment: {0}")]
@@ -122,6 +124,7 @@ pub async fn prepare_incentive_payment(
     chain: &tokio::sync::Mutex<vtorrent_node::chain::Chain>,
     mempool: &tokio::sync::Mutex<vtorrent_node::mempool::Mempool>,
     payment: &IncentivePayment,
+    staking_address: Option<&str>,
 ) -> Result<PreparedIncentivePayment, IncentivePaymentError> {
     let wif = wallet_wif
         .read()
@@ -134,11 +137,33 @@ pub async fn prepare_incentive_payment(
         .clone()
         .ok_or(IncentivePaymentError::NoChangeAddress)?;
 
-    let chain_utxos: Vec<vtorrent_node::chain::Utxo> = {
+    // A payment must not spend the node's last staking-eligible coin. If it
+    // did, the staking loop would skip it (the mempool already spends it) and
+    // a single-UTXO staker would stop producing blocks until the payment
+    // confirmed — which needs a staker that no longer exists.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as u32;
+    let (chain_utxos, stakeable) = {
         let chain = chain.lock().await;
-        chain.get_utxos_for_address(&change_address)
+        let params = chain.next_block_params(now);
+        let utxos = chain.get_utxos_for_address(&change_address);
+        let stakeable: std::collections::HashSet<([u8; 32], u32)> = match staking_address {
+            Some(address) => chain
+                .get_utxos_for_staking_address(address)
+                .into_iter()
+                .filter(|utxo| {
+                    vtorrent_node::consensus::is_stakeable_with(&params, utxo)
+                        && vtorrent_node::consensus::stake_age_eligible(&params, utxo, now)
+                })
+                .map(|utxo| (utxo.txid, utxo.vout))
+                .collect(),
+            None => std::collections::HashSet::new(),
+        };
+        (utxos, stakeable)
     };
-    let (utxos, fee_rate) = {
+    let (utxos, fee_rate, available_stakeable) = {
         let mempool = mempool.lock().await;
         // The chain's UTXO set does not reflect mempool spends. Without this
         // filter, a second queued incentive payment selects the same outpoint
@@ -148,20 +173,53 @@ pub async fn prepare_incentive_payment(
             .into_iter()
             .filter(|utxo| !mempool.is_outpoint_spent(&utxo.txid, utxo.vout))
             .collect();
-        (utxos, mempool.recommended_fee_rate().max(1))
+        let available_stakeable: std::collections::HashSet<([u8; 32], u32)> = utxos
+            .iter()
+            .map(|utxo| (utxo.txid, utxo.vout))
+            .filter(|outpoint| stakeable.contains(outpoint))
+            .collect();
+        (
+            utxos,
+            mempool.recommended_fee_rate().max(1),
+            available_stakeable,
+        )
     };
     if utxos.is_empty() {
         return Err(IncentivePaymentError::NoUtxos);
     }
 
+    // Prefer coins that can never be staked. A small payment coin can pay
+    // without touching the staking reserve; only fall back to stakeable coins
+    // when the non-staking coins cannot cover the payment.
+    let non_stake: Vec<_> = utxos
+        .iter()
+        .filter(|utxo| !available_stakeable.contains(&(utxo.txid, utxo.vout)))
+        .cloned()
+        .collect();
+    let non_stake_value: u64 = non_stake.iter().map(|utxo| utxo.value).sum();
+    let use_stake = non_stake_value < payment.amount_satoshis.saturating_add(10_000);
+    let candidates = if use_stake { &utxos } else { &non_stake };
     let tx = build_payment(
-        &utxos,
+        candidates,
         &payment.peer_address,
         &change_address,
         payment.amount_satoshis,
         fee_rate,
         &wif,
     )?;
+    if use_stake && !available_stakeable.is_empty() {
+        let selected: std::collections::HashSet<([u8; 32], u32)> = tx
+            .inputs
+            .iter()
+            .map(|input| (input.prev_txid, input.prev_vout))
+            .collect();
+        if available_stakeable
+            .iter()
+            .all(|outpoint| selected.contains(outpoint))
+        {
+            return Err(IncentivePaymentError::StakeReserved);
+        }
+    }
     let txid = hex::encode(tx.txid());
     Ok(PreparedIncentivePayment { tx, txid })
 }
@@ -204,9 +262,15 @@ pub async fn build_incentive_payment(
     tx_submit: Option<&tokio::sync::mpsc::Sender<vtorrent_node::block::Transaction>>,
     payment: &IncentivePayment,
 ) -> Result<String, IncentivePaymentError> {
-    let prepared =
-        prepare_incentive_payment(wallet_wif, wallet_change_address, chain, mempool, payment)
-            .await?;
+    let prepared = prepare_incentive_payment(
+        wallet_wif,
+        wallet_change_address,
+        chain,
+        mempool,
+        payment,
+        None,
+    )
+    .await?;
     broadcast_incentive_payment(chain, mempool, tx_submit, &prepared.tx, &prepared.txid).await?;
     Ok(prepared.txid)
 }

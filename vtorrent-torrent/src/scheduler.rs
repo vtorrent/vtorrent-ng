@@ -17,8 +17,11 @@ pub struct PieceTracker {
     have: Vec<bool>,
     /// Pieces currently requested/in-flight (index -> true).
     requested: Vec<bool>,
-    /// Per-peer bitfields: peer_id -> set of piece indices the peer has.
-    peer_pieces: HashMap<[u8; 20], Vec<bool>>,
+    /// Per-peer bitfields as packed bits: peer_id -> pieces the peer has.
+    ///
+    /// Packed, not one byte per piece: 200 peers on a 1M-piece torrent would
+    /// otherwise cost 200 MB just for availability.
+    peer_pieces: HashMap<[u8; 20], Vec<u8>>,
 }
 
 impl PieceTracker {
@@ -66,58 +69,63 @@ impl PieceTracker {
         }
     }
 
+    fn bitfield_len(&self) -> usize {
+        (self.piece_count as usize).div_ceil(8)
+    }
+
+    fn bits_have(bits: &[u8], index: u32, piece_count: u32) -> bool {
+        let index = index as usize;
+        if index >= piece_count as usize {
+            return false;
+        }
+        bits.get(index / 8)
+            .is_some_and(|byte| byte & (0x80 >> (index % 8)) != 0)
+    }
+
     /// Record a peer's bitfield.
     pub fn set_peer_bitfield(&mut self, peer_id: [u8; 20], bits: &[u8]) {
-        let mut have = vec![false; self.piece_count as usize];
-        for (i, byte) in bits.iter().enumerate() {
-            for bit in 0..8 {
-                let idx = i * 8 + bit;
-                if idx < have.len() && (byte & (0x80 >> bit)) != 0 {
-                    have[idx] = true;
-                }
-            }
+        let len = self.bitfield_len();
+        let mut have = vec![0u8; len];
+        for (dst, src) in have.iter_mut().zip(bits.iter()) {
+            *dst = *src;
         }
         self.peer_pieces.insert(peer_id, have);
     }
 
     /// Record a peer's `Have` message.
     pub fn set_peer_have(&mut self, peer_id: [u8; 20], index: u32) {
+        let len = self.bitfield_len();
         let entry = self
             .peer_pieces
             .entry(peer_id)
-            .or_insert_with(|| vec![false; self.piece_count as usize]);
-        if (index as usize) < entry.len() {
-            entry[index as usize] = true;
+            .or_insert_with(|| vec![0u8; len]);
+        if (index as usize) < self.piece_count as usize {
+            entry[index as usize / 8] |= 0x80 >> (index % 8);
         }
     }
 
     /// Count how many peers have a given piece.
     pub fn peer_count_for(&self, index: u32) -> usize {
+        let piece_count = self.piece_count;
         self.peer_pieces
             .values()
-            .filter(|bits| bits.get(index as usize).copied().unwrap_or(false))
+            .filter(|bits| Self::bits_have(bits, index, piece_count))
             .count()
     }
 
-    /// Select the next piece to download: the rarest piece we don't have and
-    /// haven't already requested, preferring pieces at least one peer has.
-    pub fn next_piece(&self) -> Option<u32> {
-        let mut best: Option<(usize, u32)> = None;
-        for index in 0..self.piece_count {
-            if self.have[index as usize] || self.requested[index as usize] {
-                continue;
-            }
-            let count = self.peer_count_for(index);
-            if count == 0 {
-                continue;
-            }
-            match best {
-                None => best = Some((count, index)),
-                Some((best_count, _)) if count < best_count => best = Some((count, index)),
-                _ => {}
-            }
-        }
-        best.map(|(_, index)| index)
+    /// Whether this specific peer advertised the piece.
+    pub fn peer_has_piece(&self, peer: &[u8; 20], index: u32) -> bool {
+        self.peer_pieces
+            .get(peer)
+            .is_some_and(|bits| Self::bits_have(bits, index, self.piece_count))
+    }
+
+    pub fn piece_count(&self) -> u32 {
+        self.piece_count
+    }
+
+    pub fn is_requested(&self, index: u32) -> bool {
+        (index as usize) < self.requested.len() && self.requested[index as usize]
     }
 
     /// Whether all pieces are downloaded.
@@ -179,6 +187,9 @@ struct BlockLease {
     /// The scheduler task id, never the remote's self-reported peer id.
     owner: [u8; 20],
     leased_at: Instant,
+    /// A block that arrived is held in that task's assembler. It must keep its
+    /// lease (so it is not re-requested) but no longer counts as in flight.
+    received: bool,
 }
 
 /// Shared scheduler state, coordinated across per-peer tasks.
@@ -195,6 +206,12 @@ pub struct SchedulerState {
     /// after `BLOCK_LEASE_TIMEOUT` so a block lost to a choked, disconnected,
     /// or stalled peer is automatically re-requestable.
     requested_blocks: HashMap<u32, Vec<BlockLease>>,
+    /// The task assembling each partially downloaded piece.
+    ///
+    /// Piece blocks live in that task's local assembler, so exactly one task
+    /// may own a piece. Leasing blocks of one piece to two tasks would leave
+    /// each assembler with a subset and the piece would never complete.
+    piece_owner: HashMap<u32, [u8; 20]>,
     pub(crate) writing_pieces: std::collections::HashSet<u32>,
     /// Bytes currently held by per-peer piece assemblers across all peer
     /// tasks. Piece data is only verified once the whole piece arrives, so an
@@ -214,6 +231,7 @@ impl SchedulerState {
             max_pipelined_blocks: 5,
             endgame_threshold: 3,
             requested_blocks: HashMap::new(),
+            piece_owner: HashMap::new(),
             writing_pieces: std::collections::HashSet::new(),
             assembling_bytes: 0,
         }
@@ -242,23 +260,72 @@ impl SchedulerState {
     /// Drop expired leases and unmark their pieces so they can be re-picked.
     fn purge_expired_leases(&mut self) {
         let now = Instant::now();
-        let mut expired_pieces: Vec<u32> = Vec::new();
+        let mut released_pieces: Vec<u32> = Vec::new();
         for (piece, leases) in self.requested_blocks.iter_mut() {
-            let before = leases.len();
-            leases.retain(|lease| now.duration_since(lease.leased_at) < BLOCK_LEASE_TIMEOUT);
-            if leases.len() != before {
-                expired_pieces.push(*piece);
+            leases.retain(|lease| {
+                // A received block is in the owner's assembler and must keep
+                // its lease so it is never re-requested. Only a block that
+                // never arrived becomes requestable again.
+                lease.received || now.duration_since(lease.leased_at) < BLOCK_LEASE_TIMEOUT
+            });
+            if leases.is_empty() {
+                released_pieces.push(*piece);
             }
         }
         self.requested_blocks.retain(|_, leases| !leases.is_empty());
-        for piece in expired_pieces {
+        for piece in released_pieces {
+            self.piece_owner.remove(&piece);
             self.tracker.clear_requested(piece);
         }
     }
 
+    /// Pick a piece this peer can make progress on.
+    ///
+    /// Prefer a piece the peer already owns, so its assembler can finish.
+    /// Otherwise choose the rarest unowned, unrequested piece this peer
+    /// advertised. Never lease a block of a piece the calling peer did not
+    /// advertise: a well-behaved peer would ignore it and the block would be
+    /// stuck until its lease expired.
+    fn select_piece(&self, peer: &[u8; 20]) -> Option<u32> {
+        let mut owned: Option<(usize, u32)> = None;
+        for (index, owner) in &self.piece_owner {
+            if owner != peer || self.tracker.has_piece(*index) {
+                continue;
+            }
+            let count = self.tracker.peer_count_for(*index);
+            if owned.is_none_or(|(best, _)| count < best) {
+                owned = Some((count, *index));
+            }
+        }
+        if let Some((_, index)) = owned {
+            return Some(index);
+        }
+
+        let mut best: Option<(usize, u32)> = None;
+        for index in 0..self.tracker.piece_count() {
+            if self.tracker.has_piece(index)
+                || self.tracker.is_requested(index)
+                || self.piece_owner.contains_key(&index)
+                || !self.tracker.peer_has_piece(peer, index)
+            {
+                continue;
+            }
+            let count = self.tracker.peer_count_for(index);
+            if count == 0 {
+                continue;
+            }
+            match best {
+                None => best = Some((count, index)),
+                Some((best_count, _)) if count < best_count => best = Some((count, index)),
+                _ => {}
+            }
+        }
+        best.map(|(_, index)| index)
+    }
+
     /// Select the next block to request: (piece, begin, length).
     ///
-    /// Picks the rarest piece we don't have, then the next unrequested block
+    /// Picks a piece this peer can serve, then the next unrequested block
     /// within that piece. `piece_len` maps a piece index to its byte length.
     /// Returns `None` when no block is available.
     pub fn next_block(
@@ -267,7 +334,8 @@ impl SchedulerState {
         peer: [u8; 20],
     ) -> Option<(u32, u32, u32)> {
         self.purge_expired_leases();
-        let piece = self.tracker.next_piece()?;
+        let piece = self.select_piece(&peer)?;
+        self.piece_owner.entry(piece).or_insert(peer);
         let len = piece_len(piece);
         let block_size = self.block_size as u64;
         let total_blocks = len.div_ceil(block_size);
@@ -283,13 +351,67 @@ impl SchedulerState {
                 length: block_len,
                 owner: peer,
                 leased_at: Instant::now(),
+                received: false,
             });
+            self.tracker.mark_requested(piece);
             return Some((piece, begin, block_len));
         }
-        // All blocks of this piece are in flight; mark the piece requested so
-        // next_piece skips it until a lease expires or the piece completes.
+        // All blocks of this piece are already leased or received.
         self.tracker.mark_requested(piece);
         None
+    }
+
+    /// Mark that a leased block actually arrived and is held by the owner.
+    pub fn mark_received(&mut self, piece: u32, begin: u32, peer: [u8; 20]) -> bool {
+        if let Some(leases) = self.requested_blocks.get_mut(&piece) {
+            if let Some(lease) = leases
+                .iter_mut()
+                .find(|lease| lease.begin == begin && lease.owner == peer)
+            {
+                lease.received = true;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Unreceived blocks leased to one task, i.e. its real pipeline depth.
+    pub fn outstanding_for(&self, peer: [u8; 20]) -> usize {
+        self.requested_blocks
+            .values()
+            .flatten()
+            .filter(|lease| lease.owner == peer && !lease.received)
+            .count()
+    }
+
+    /// Expire stale leases, then return this task's real pipeline depth.
+    pub fn refresh_outstanding(&mut self, peer: [u8; 20]) -> usize {
+        self.purge_expired_leases();
+        self.outstanding_for(peer)
+    }
+
+    /// Release every piece a task was assembling, making its blocks requestable
+    /// by another task. Called when the task exits.
+    pub fn release_owned(&mut self, peer: [u8; 20]) {
+        let owned: Vec<u32> = self
+            .piece_owner
+            .iter()
+            .filter(|(_, owner)| **owner == peer)
+            .map(|(piece, _)| *piece)
+            .collect();
+        for piece in owned {
+            self.requested_blocks.remove(&piece);
+            self.piece_owner.remove(&piece);
+            self.tracker.clear_requested(piece);
+        }
+    }
+
+    /// Drop all tracking for one piece so it can be fetched again after a
+    /// verification or disk-write failure.
+    pub fn clear_piece(&mut self, piece: u32) {
+        self.requested_blocks.remove(&piece);
+        self.piece_owner.remove(&piece);
+        self.tracker.clear_requested(piece);
     }
 
     /// Mark a block as no longer in flight (e.g. on cancel).
@@ -298,6 +420,7 @@ impl SchedulerState {
             leases.retain(|lease| lease.begin != begin || lease.owner != peer);
             if leases.is_empty() {
                 self.requested_blocks.remove(&piece);
+                self.piece_owner.remove(&piece);
                 self.tracker.clear_requested(piece);
             }
         }
@@ -321,6 +444,7 @@ impl SchedulerState {
     pub fn mark_have(&mut self, index: u32) {
         self.tracker.mark_have(index);
         self.requested_blocks.remove(&index);
+        self.piece_owner.remove(&index);
     }
 
     /// Whether the piece is already on disk.
@@ -350,24 +474,74 @@ mod tests {
 
     #[test]
     fn test_rarest_first() {
-        let mut tracker = PieceTracker::new(4);
+        let mut state = SchedulerState::new(4);
         // Peer A has pieces 0,1,2,3 (all).
-        tracker.set_peer_bitfield([1u8; 20], &[0xF0]);
+        state.tracker.set_peer_bitfield([1u8; 20], &[0xF0]);
         // Peer B has pieces 0,1,2 but not 3.
-        tracker.set_peer_bitfield([2u8; 20], &[0xE0]);
+        state.tracker.set_peer_bitfield([2u8; 20], &[0xE0]);
         // Piece 3 is rarest (1 peer) vs pieces 0,1,2 (2 peers).
-        assert_eq!(tracker.next_piece(), Some(3));
+        assert_eq!(state.select_piece(&[1u8; 20]), Some(3));
     }
 
     #[test]
     fn test_skips_have_and_requested() {
-        let mut tracker = PieceTracker::new(4);
-        tracker.set_peer_bitfield([1u8; 20], &[0xF0]);
-        tracker.mark_have(0);
-        tracker.mark_requested(1);
+        let mut state = SchedulerState::new(4);
+        state.tracker.set_peer_bitfield([1u8; 20], &[0xF0]);
+        state.tracker.mark_have(0);
+        state.tracker.mark_requested(1);
         // Pieces 0 (have) and 1 (requested) are skipped; 2 and 3 are tied.
-        let next = tracker.next_piece().unwrap();
+        let next = state.select_piece(&[1u8; 20]).unwrap();
         assert!(next == 2 || next == 3);
+    }
+
+    #[test]
+    fn a_piece_is_owned_by_one_peer_until_released() {
+        let mut state = SchedulerState::new(2);
+        state.tracker.set_peer_bitfield([1u8; 20], &[0xC0]);
+        state.tracker.set_peer_bitfield([2u8; 20], &[0xC0]);
+        let len = |_: u32| 32 * 1024u64;
+
+        // Peer 1 takes piece 0 and leases its first block.
+        let (piece, _, _) = state.next_block(&len, [1u8; 20]).unwrap();
+        assert_eq!(piece, 0);
+        // Peer 2 must not lease a block of peer 1's piece; it takes piece 1.
+        let (other, _, _) = state.next_block(&len, [2u8; 20]).unwrap();
+        assert_eq!(other, 1);
+
+        // Releasing peer 1's ownership lets peer 2 take the piece.
+        state.release_owned([1u8; 20]);
+        assert!(!state.piece_owner.contains_key(&0));
+    }
+
+    #[test]
+    fn a_peer_is_only_leased_pieces_it_advertised() {
+        let mut state = SchedulerState::new(2);
+        // Peer 1 has only piece 0; peer 2 only piece 1.
+        state.tracker.set_peer_bitfield([1u8; 20], &[0x80]);
+        state.tracker.set_peer_bitfield([2u8; 20], &[0x40]);
+        let len = |_: u32| 32 * 1024u64;
+        let (piece, _, _) = state.next_block(&len, [1u8; 20]).unwrap();
+        assert_eq!(piece, 0, "a peer must not be asked for a piece it lacks");
+    }
+
+    #[test]
+    fn received_blocks_keep_their_lease_but_leave_the_pipeline() {
+        let mut state = SchedulerState::new(1);
+        state.tracker.set_peer_bitfield([1u8; 20], &[0x80]);
+        let len = |_: u32| 32 * 1024u64;
+        let (piece, begin, _) = state.next_block(&len, [1u8; 20]).unwrap();
+        assert_eq!(state.outstanding_for([1u8; 20]), 1);
+        assert!(state.mark_received(piece, begin, [1u8; 20]));
+        assert_eq!(
+            state.outstanding_for([1u8; 20]),
+            0,
+            "a received block must free pipeline capacity"
+        );
+        assert_eq!(
+            state.requested_block_length(piece, begin, [1u8; 20]),
+            Some(16 * 1024),
+            "the lease stays so the block cannot be re-requested"
+        );
     }
 
     #[test]
@@ -453,24 +627,29 @@ mod tests {
 
     #[test]
     fn cancel_only_clears_the_owners_lease() {
-        let mut state = SchedulerState::new(1);
-        state.tracker.set_peer_bitfield([1u8; 20], &[0x80]);
+        let mut state = SchedulerState::new(2);
+        state.tracker.set_peer_bitfield([1u8; 20], &[0xC0]);
+        state.tracker.set_peer_bitfield([2u8; 20], &[0xC0]);
         let piece_len = |_index: u32| 40 * 1024u64;
         let peer_a = [1u8; 20];
         let peer_b = [2u8; 20];
-        let (piece, begin_a, _) = state.next_block(&piece_len, peer_a).unwrap();
-        let (_, begin_b, _) = state.next_block(&piece_len, peer_b).unwrap();
+        // Each task owns a different piece, so their assemblers cannot split
+        // one piece between them.
+        let (piece_a, begin_a, _) = state.next_block(&piece_len, peer_a).unwrap();
+        let (piece_b, begin_b, _) = state.next_block(&piece_len, peer_b).unwrap();
+        assert_ne!(piece_a, piece_b);
 
-        state.clear_block(piece, begin_b, peer_a);
+        // Another task cannot cancel this task's lease.
+        state.clear_block(piece_a, begin_a, peer_b);
         assert!(state
-            .requested_block_length(piece, begin_b, peer_b)
+            .requested_block_length(piece_a, begin_a, peer_a)
             .is_some());
-        state.clear_block(piece, begin_b, peer_b);
+        state.clear_block(piece_a, begin_a, peer_a);
         assert!(state
-            .requested_block_length(piece, begin_b, peer_b)
+            .requested_block_length(piece_a, begin_a, peer_a)
             .is_none());
         assert!(state
-            .requested_block_length(piece, begin_a, peer_a)
+            .requested_block_length(piece_b, begin_b, peer_b)
             .is_some());
     }
 

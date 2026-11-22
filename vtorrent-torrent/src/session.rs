@@ -1,5 +1,7 @@
 use crate::error::{Result, TorrentError};
-use crate::incentive::{aggregate_summary, IncentiveSummary, PeerBandwidthAccount};
+use crate::incentive::{
+    aggregate_summary, IncentiveSummary, PeerBandwidthAccount, MIN_PAYMENT_BYTES,
+};
 use crate::metainfo::Metainfo;
 use crate::tracker::TrackerPeer;
 use serde::{Deserialize, Serialize};
@@ -163,14 +165,16 @@ impl TorrentSession {
     ///
     /// A peer id is attacker-chosen until it presents a VTR address, so an
     /// unbounded map is a trivial memory-exhaustion vector. Unpayable accounts
-    /// are evicted first; if every account is payable and holds unsettled
-    /// bytes, new ids are simply not tracked.
+    /// are evicted first, then accounts with negligible traffic that hold no
+    /// receipt or debt. Without the second tier, an Internet peer could fill
+    /// the map with valid addresses and one-byte transfers and permanently
+    /// disable accounting for the torrent.
     fn account_for(&mut self, peer_address: &str) -> Option<&mut PeerBandwidthAccount> {
         self.evict_stale_accounts();
         if !self.incentive_accounts.contains_key(peer_address)
             && self.incentive_accounts.len() >= MAX_INCENTIVE_ACCOUNTS
         {
-            let victim = self
+            let unpayable = self
                 .incentive_accounts
                 .iter()
                 .filter(|(addr, a)| {
@@ -180,6 +184,21 @@ impl TorrentSession {
                 })
                 .min_by_key(|(_, a)| a.last_active)
                 .map(|(addr, _)| addr.clone());
+            let victim = unpayable.or_else(|| {
+                self.incentive_accounts
+                    .iter()
+                    .filter(|(_, a)| {
+                        a.unpaid_satoshis == 0
+                            && !a.payment_in_flight
+                            && a.pending_payment.is_none()
+                            && a.peer_receipt.is_none()
+                            && a.total_bytes_uploaded
+                                .saturating_add(a.total_bytes_downloaded)
+                                < MIN_PAYMENT_BYTES
+                    })
+                    .min_by_key(|(_, a)| a.last_active)
+                    .map(|(addr, _)| addr.clone())
+            });
             match victim {
                 Some(addr) => {
                     self.incentive_accounts.remove(&addr);
@@ -582,5 +601,38 @@ mod tests {
         assert!(session
             .incentive_accounts
             .contains_key("VH6w62jDRYpYHjR2eJjFzXRC4MQvvs93a6"));
+    }
+
+    #[test]
+    fn valid_accounts_with_negligible_traffic_are_evictable_at_the_cap() {
+        let mut session =
+            TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+        let address = |index: u64| {
+            let mut hash160 = [0u8; 20];
+            hash160[..8].copy_from_slice(&index.to_be_bytes());
+            vtorrent_core::address::Address::from_hash160(&hash160, 70)
+                .expect("valid address")
+                .to_string()
+        };
+        for index in 0..MAX_INCENTIVE_ACCOUNTS as u64 {
+            session.record_upload(&address(index), 1);
+        }
+        assert_eq!(
+            session.incentive_accounts.len(),
+            MAX_INCENTIVE_ACCOUNTS,
+            "precondition: the map is exactly at the cap"
+        );
+
+        let newcomer = address(MAX_INCENTIVE_ACCOUNTS as u64 + 1);
+        session.record_upload(&newcomer, 1);
+        assert!(
+            session.incentive_accounts.contains_key(&newcomer),
+            "a new valid peer must still get an account at the cap"
+        );
+        assert_eq!(
+            session.incentive_accounts.len(),
+            MAX_INCENTIVE_ACCOUNTS,
+            "eviction must keep the map bounded"
+        );
     }
 }

@@ -5,6 +5,27 @@ use serde::{Deserialize, Serialize};
 /// tighter per-torrent limit; this only bounds the decode buffer.
 pub(crate) const MAX_MESSAGE_LENGTH: usize = 16 * 1024 * 1024;
 
+/// Largest frame accepted on an established connection.
+///
+/// Blocks are 16 KiB in practice, extension messages are a few KiB, and the
+/// largest legitimate bitfield for a metainfo-sized torrent is 128 KiB. This
+/// is deliberately independent of the torrent's piece length: a peer must not
+/// be able to pin a multi-megabyte receive buffer by declaring a piece-sized
+/// frame it was never asked for.
+pub(crate) const MAX_INBOUND_FRAME: usize = 256 * 1024;
+
+/// Generate a random 20-byte peer id for handshakes and tracker announces.
+///
+/// A fixed id collides with other processes (and with the node's own seeder
+/// entry) on trackers keyed by peer id, especially behind NAT.
+pub fn random_peer_id() -> [u8; 20] {
+    use rand::RngCore;
+    let mut id = [0u8; 20];
+    id[..8].copy_from_slice(b"-VT0001-");
+    rand::thread_rng().fill_bytes(&mut id[8..]);
+    id
+}
+
 /// BitTorrent peer wire protocol message types (BEP-3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PeerMessage {

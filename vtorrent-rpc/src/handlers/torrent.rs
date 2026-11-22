@@ -116,18 +116,31 @@ pub async fn add_torrent(
 
     let info_hash = hex::encode(metainfo.info_hash);
     let name = metainfo.name.clone();
+    // A seeding session must advertise a payable address; peers validate it
+    // and an empty or malformed value makes every receipt unverifiable.
+    if state.torrent_seeder.read().await.is_some() {
+        vtorrent_core::address::validate_p2pkh(req.wallet_address.trim())
+            .map_err(|error| RpcError::BadRequest(format!("invalid wallet_address: {error}")))?;
+    }
     let session = TorrentSession::new(metainfo.clone(), req.wallet_address);
-    let session_id = state
-        .torrent_sessions
-        .write()
-        .await
-        .add_session(session)
-        .ok_or_else(|| {
+    let session_id = {
+        let mut sessions = state.torrent_sessions.write().await;
+        // The seeder registry is keyed by info-hash; two sessions for the same
+        // torrent would alias one registry entry and make deletion ambiguous.
+        let duplicate = sessions
+            .list_sessions()
+            .iter()
+            .any(|existing| existing.metainfo.info_hash == metainfo.info_hash);
+        if duplicate {
+            return Err(RpcError::BadRequest("Torrent is already added".into()));
+        }
+        sessions.add_session(session).ok_or_else(|| {
             RpcError::BadRequest(format!(
                 "Too many active torrent sessions (max {})",
                 vtorrent_torrent::session::MAX_TORRENT_SESSIONS
             ))
-        })?;
+        })?
+    };
 
     // Spawn the download engine for this session.
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -141,8 +154,6 @@ pub async fn add_torrent(
     // engine completes. The engine flips the session to `Seeding` and returns,
     // so registration has to happen outside it.
     let seeder = state.torrent_seeder.read().await.clone();
-    let seeder_info_hash = metainfo.info_hash;
-    let seeder_metainfo = metainfo.clone();
     let seeder_session_id = session_id.clone();
     let seeder_download_dir = download_dir.clone();
     let limits = Arc::clone(&state.torrent_limits);
@@ -162,20 +173,45 @@ pub async fn add_torrent(
         )
         .await;
         if let Some(seeder) = seeder {
-            let complete = engine_sessions
-                .read()
-                .await
-                .get_session(&seeder_session_id)
-                .map(|session| session.is_complete())
-                .unwrap_or(false);
-            if complete {
+            // Read the metainfo *after* the engine: a magnet link starts with
+            // an empty stub and is only filled in once BEP-9 metadata arrives.
+            // Registering the captured stub would report a seed that serves
+            // nothing (and a failed magnet has total_size 0, which would make
+            // `is_complete` trivially true).
+            let completed = {
+                let guard = engine_sessions.read().await;
+                guard
+                    .get_session(&seeder_session_id)
+                    .ok()
+                    .and_then(|session| {
+                        let metainfo = &session.metainfo;
+                        let usable = session.is_complete()
+                            && metainfo.total_size > 0
+                            && metainfo.piece_count > 0
+                            && metainfo.pieces.len() == metainfo.piece_count as usize;
+                        usable.then(|| metainfo.clone())
+                    })
+            };
+            if let Some(metainfo) = completed {
+                let info_hash = metainfo.info_hash;
                 seeder
-                    .register(seeder_session_id, seeder_metainfo, seeder_download_dir)
+                    .register(seeder_session_id.clone(), metainfo, seeder_download_dir)
                     .await;
-                tracing::info!(
-                    info_hash = %hex::encode(seeder_info_hash),
-                    "Torrent complete; now serving it to inbound peers"
-                );
+                // A DELETE can land between the completeness check and the
+                // registration. Undo the entry if the session is already gone.
+                if engine_sessions
+                    .read()
+                    .await
+                    .get_session(&seeder_session_id)
+                    .is_ok()
+                {
+                    tracing::info!(
+                        info_hash = %hex::encode(info_hash),
+                        "Torrent complete; now serving it to inbound peers"
+                    );
+                } else {
+                    seeder.unregister(&info_hash).await;
+                }
             }
         }
     });

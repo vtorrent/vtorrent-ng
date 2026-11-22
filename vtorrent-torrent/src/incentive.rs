@@ -296,6 +296,17 @@ impl PeerBandwidthAccount {
         self.state_version = self.state_version.saturating_add(1);
     }
 
+    /// Drop a receipt that could not be agreed on.
+    ///
+    /// A disputed receipt is not a liability: no payment is made without an
+    /// agreement. Keeping it forever would block settlement and session
+    /// removal, so a later cumulative receipt is allowed to re-anchor.
+    pub fn clear_disputed_receipt(&mut self) {
+        if self.peer_receipt.take().is_some() {
+            self.state_version = self.state_version.saturating_add(1);
+        }
+    }
+
     /// Store a verified peer receipt. Returns false for a replayed id.
     pub fn record_receipt(&mut self, receipt: vtorrent_core::receipt::BandwidthReceipt) -> bool {
         if self

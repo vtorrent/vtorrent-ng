@@ -20,7 +20,7 @@
 #   P2P_BASE     first host P2P port; unused unless YOU publish it
 #   WAIT_SECS    startup wait per node; defaults to 180
 #   SEED_TORRENT 1 to open the inbound torrent listener on every node
-#                (container-local 22630, announced as candidate<N>:22630)
+#                (container-local 22630; a tracker records the source IP+port)
 #
 # The fleet is not scraped by the production Prometheus and the containers use
 # container-local data directories, so `docker rm -f` discards their chains.
@@ -140,6 +140,7 @@ commit=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)
 code_commit=$CODE_COMMIT
 created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 btc_peer=$BTC_PEER
+seed_torrent=$SEED_TORRENT
 rpc_ports=$(seq -s, $((RPC_BASE + 1)) $((RPC_BASE + 3)))
 allocator=${ALLOCATOR[*]}
 secret_dir=$SECRET_DIR

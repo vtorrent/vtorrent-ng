@@ -129,6 +129,11 @@ impl Node {
             return Ok(());
         };
 
+        // Record the coin this kernel will spend. A payment can be admitted
+        // after the candidate snapshot; re-check under the same locks that add
+        // the block so it cannot be evicted by this coinstake.
+        let stake_outpoint = (kernel.0.txid, kernel.0.vout);
+        use crate::chain::BlockAcceptance;
         let block_opt = {
             let mut chain = self.chain.lock().await;
             if chain.best_hash() != Some(best_hash) {
@@ -153,9 +158,33 @@ impl Node {
             let timestamp = block.header.timestamp;
             let size_bytes = serde_json::to_vec(&block).map(|v| v.len()).unwrap_or(0);
             let block_arc = std::sync::Arc::new(block);
+            let confirmed: Vec<[u8; 32]> =
+                block_arc.transactions.iter().map(|tx| tx.txid()).collect();
+            // Hold chain then mempool across the check and the add. The
+            // payment worker takes the same order, so once both are held no
+            // payment can be admitted for the staking coin before this block
+            // spends it.
             let acceptance = {
                 let mut chain = self.chain.lock().await;
+                if chain.best_hash() != Some(best_hash) {
+                    return Ok(());
+                }
+                let mut mp = self.mempool.lock().await;
+                if mp.is_outpoint_spent(&stake_outpoint.0, stake_outpoint.1) {
+                    tracing::warn!(
+                        coin = %format!(
+                            "{}:{}",
+                            hex::encode(stake_outpoint.0),
+                            stake_outpoint.1
+                        ),
+                        "Skipping stake: a mempool transaction already spends the selected coin"
+                    );
+                    return Ok(());
+                }
                 let result = chain.add_block((*block_arc).clone())?;
+                if let BlockAcceptance::MainChain { utxos_removed, .. } = &result {
+                    mp.handle_confirmed_block(&confirmed, utxos_removed);
+                }
                 tracing::info!(
                     "Staked new block {} at height {}",
                     hex::encode(block_hash),
@@ -165,7 +194,6 @@ impl Node {
             };
 
             // Emit NewBlock event (carries UTXO diff for BlockStore persistence)
-            use crate::chain::BlockAcceptance;
             if let BlockAcceptance::MainChain {
                 height,
                 utxos_added,
@@ -174,12 +202,6 @@ impl Node {
             } = acceptance
             {
                 self.cache_stake_proof(block_hash, proof).await;
-                {
-                    let confirmed: Vec<[u8; 32]> =
-                        block_arc.transactions.iter().map(|tx| tx.txid()).collect();
-                    let mut mp = self.mempool.lock().await;
-                    mp.handle_confirmed_block(&confirmed, &utxos_removed);
-                }
                 self.emit(NodeEvent::NewBlock {
                     height,
                     hash: block_hash,

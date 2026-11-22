@@ -34,6 +34,10 @@ pub struct TorrentSettingsResult {
     pub download_limit_bytes_per_sec: u64,
     pub upload_limit_bytes_per_sec: u64,
     pub seed_ratio_target: f64,
+    /// Whether this node accepts inbound torrent connections.
+    pub seeding: bool,
+    /// Completed torrents currently served to inbound peers.
+    pub seeded_torrents: usize,
 }
 
 #[tauri::command]
@@ -54,11 +58,18 @@ pub async fn get_torrent_settings(
     let download_limit_bytes_per_sec = handle.rpc_state.torrent_limits.download_rate();
     let upload_limit_bytes_per_sec = handle.rpc_state.torrent_limits.upload_rate();
     let seed_ratio_target = *handle.rpc_state.seed_ratio_target.read().await;
+    let seeder = handle.rpc_state.torrent_seeder.read().await.clone();
+    let (seeding, seeded_torrents) = match seeder {
+        Some(seeder) => (true, seeder.len().await),
+        None => (false, 0),
+    };
     Ok(TorrentSettingsResult {
         download_dir,
         download_limit_bytes_per_sec,
         upload_limit_bytes_per_sec,
         seed_ratio_target,
+        seeding,
+        seeded_torrents,
     })
 }
 
@@ -156,25 +167,28 @@ pub async fn add_torrent(
 
     let info_hash = hex::encode(metainfo.info_hash);
     let name = metainfo.name.clone();
-    let seeder_metainfo = metainfo.clone();
     let session = TorrentSession::new(metainfo, wallet_address);
 
     let guard = state.node.lock().await;
     let handle = guard
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
-    let session_id = handle
-        .rpc_state
-        .torrent_sessions
-        .write()
-        .await
-        .add_session(session)
-        .ok_or_else(|| {
+    let session_id = {
+        let mut sessions = handle.rpc_state.torrent_sessions.write().await;
+        let duplicate = sessions
+            .list_sessions()
+            .iter()
+            .any(|existing| hex::encode(existing.metainfo.info_hash) == info_hash);
+        if duplicate {
+            return Err(TauriError::InvalidInput("Torrent is already added".into()));
+        }
+        sessions.add_session(session).ok_or_else(|| {
             TauriError::InvalidInput(format!(
                 "Too many active torrent sessions (max {})",
                 vtorrent_torrent::session::MAX_TORRENT_SESSIONS
             ))
-        })?;
+        })?
+    };
 
     let cancel = tokio_util::sync::CancellationToken::new();
     handle
@@ -207,16 +221,36 @@ pub async fn add_torrent(
         )
         .await;
         if let Some(seeder) = seeder {
-            let complete = engine_sessions
-                .read()
-                .await
-                .get_session(&sid)
-                .map(|session| session.is_complete())
-                .unwrap_or(false);
-            if complete {
+            // A magnet link starts with a stub metainfo and is only filled in
+            // by the engine's BEP-9 fetch. Register the session's current
+            // metainfo, not the copy captured before the engine ran.
+            let completed = {
+                let guard = engine_sessions.read().await;
+                guard
+                    .get_session(&engine_session_id)
+                    .ok()
+                    .and_then(|session| {
+                        let metainfo = &session.metainfo;
+                        let usable = session.is_complete()
+                            && metainfo.total_size > 0
+                            && metainfo.piece_count > 0
+                            && metainfo.pieces.len() == metainfo.piece_count as usize;
+                        usable.then(|| metainfo.clone())
+                    })
+            };
+            if let Some(metainfo) = completed {
+                let info_hash = metainfo.info_hash;
                 seeder
-                    .register(engine_session_id, seeder_metainfo, seeder_download_dir)
+                    .register(engine_session_id.clone(), metainfo, seeder_download_dir)
                     .await;
+                if engine_sessions
+                    .read()
+                    .await
+                    .get_session(&engine_session_id)
+                    .is_err()
+                {
+                    seeder.unregister(&info_hash).await;
+                }
             }
         }
     });
@@ -237,12 +271,25 @@ pub async fn remove_torrent(state: tauri::State<'_, AppState>, id: String) -> Re
     if let Some(cancel) = handle.rpc_state.torrent_cancels.write().await.remove(&id) {
         cancel.cancel();
     }
-    handle
-        .rpc_state
-        .torrent_sessions
-        .write()
-        .await
-        .remove_session(&id)
-        .ok_or_else(|| TauriError::Torrent(format!("Session {} not found", id)))?;
+    let info_hash = {
+        let mut sessions = handle.rpc_state.torrent_sessions.write().await;
+        let session = sessions
+            .get_session(&id)
+            .map_err(|_| TauriError::Torrent(format!("Session {} not found", id)))?;
+        if session.has_outstanding_incentives() {
+            return Err(TauriError::InvalidInput(
+                "Session has unpaid or in-flight incentive payments; retry after settlement".into(),
+            ));
+        }
+        let info_hash = session.metainfo.info_hash;
+        sessions
+            .remove_session(&id)
+            .ok_or_else(|| TauriError::Torrent(format!("Session {} not found", id)))?;
+        info_hash
+    };
+    // Stop serving immediately, exactly like the RPC path.
+    if let Some(seeder) = handle.rpc_state.torrent_seeder.read().await.clone() {
+        seeder.unregister(&info_hash).await;
+    }
     Ok(())
 }

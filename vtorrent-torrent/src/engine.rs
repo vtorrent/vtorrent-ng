@@ -1,7 +1,7 @@
 //! Torrent download/upload engine: piece assembly, file layout, peer I/O.
 
 use crate::engine_disk::{
-    piece_length, piece_on_disk_matches, read_piece_from_disk, resume_file_path,
+    piece_length, piece_on_disk_matches, read_block_from_disk, resume_file_path,
     write_piece_to_disk,
 };
 use crate::error::{Result, TorrentError};
@@ -299,6 +299,28 @@ impl Drop for AssemblyBudget {
     }
 }
 
+/// Releases per-piece ownership held by a peer task when it exits, so another
+/// task can fetch a piece whose partial assembler was lost.
+struct PieceOwnership {
+    scheduler: Arc<StdMutex<SchedulerState>>,
+    task_id: [u8; 20],
+}
+
+impl PieceOwnership {
+    fn new(scheduler: Arc<StdMutex<SchedulerState>>, task_id: [u8; 20]) -> Self {
+        Self { scheduler, task_id }
+    }
+}
+
+impl Drop for PieceOwnership {
+    fn drop(&mut self) {
+        self.scheduler
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .release_owned(self.task_id);
+    }
+}
+
 /// Timeouts for the peer-wire socket. A malicious tracker or peer must not be
 /// able to pin a task forever in connect, handshake, or write.
 const PEER_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -528,7 +550,7 @@ pub async fn run_engine(
     const MAX_TRACKER_ATTEMPTS: usize = 8;
     const ANNOUNCE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
     let announce_deadline = tokio::time::Instant::now() + ANNOUNCE_DEADLINE;
-    let peer_id = [0x2du8; 20]; // "-VT0001-" style peer id
+    let peer_id = crate::peer_wire::random_peer_id(); // unique per session/process
     let trackers: Vec<String> = trackers.into_iter().take(MAX_TRACKER_ATTEMPTS).collect();
     let mut peers = match tokio::time::timeout_at(
         announce_deadline,
@@ -799,11 +821,10 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
         Ok(c) => c,
         Err(_) => return,
     };
-    // The torrent's own piece size and bitfield size bound every real frame.
-    // Keep a margin for extension payloads and reject anything larger before
-    // it can be buffered.
-    let piece_bytes = metainfo.piece_length.max(16 * 1024) as usize;
-    conn.set_max_message_len(piece_bytes.saturating_add(64 * 1024));
+    // A download connection receives blocks (16 KiB) and small control or
+    // extension messages. A bitfield for a metainfo-sized torrent is at most
+    // 128 KiB; never size the inbound buffer by the piece length.
+    conn.set_max_message_len(crate::peer_wire::MAX_INBOUND_FRAME);
 
     // Send our (empty) bitfield and interested.
     let _ = conn.send(&PeerMessage::Bitfield { bits: vec![] }).await;
@@ -817,6 +838,10 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
     // extension handshake because a real peer announces its pieces
     // immediately after the wire handshake, before the extension handshake.
     let mut bitfield_seen = false;
+    // One deadline for the whole discovery phase. Each `recv` has its own
+    // 180 s deadline, and a peer that sends one keepalive per window could
+    // otherwise stretch ten messages per loop into tens of minutes.
+    let handshake_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     {
         let handshake = crate::metadata::build_ut_vtr_handshake(1);
         let _ = conn
@@ -832,8 +857,12 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
         // and dropping the bitfield would stall the whole download.
         let mut ut_vtr_id = None;
         for _ in 0..10 {
-            match conn.recv().await {
-                Ok(PeerMessage::Extended { id: 0, payload }) => {
+            let message = match tokio::time::timeout_at(handshake_deadline, conn.recv()).await {
+                Ok(Ok(message)) => message,
+                Ok(Err(_)) | Err(_) => break,
+            };
+            match message {
+                PeerMessage::Extended { id: 0, payload } => {
                     if let Some(Ok(Value::Dict(d))) =
                         crate::bencode_guard::parse_untrusted::<Value>(&payload)
                     {
@@ -850,7 +879,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     }
                     break;
                 }
-                Ok(PeerMessage::Bitfield { bits }) => {
+                PeerMessage::Bitfield { bits } => {
                     record_peer_bitfield(
                         &scheduler,
                         &metainfo,
@@ -861,7 +890,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     );
                     continue;
                 }
-                Ok(PeerMessage::Have { index }) => {
+                PeerMessage::Have { index } => {
                     scheduler
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
@@ -869,8 +898,16 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                         .set_peer_have(task_id, index);
                     continue;
                 }
-                Ok(_) => continue,
-                Err(_) => break,
+                PeerMessage::Extended { payload, .. } => {
+                    // Some peers send the address before their extension
+                    // handshake. Keep it rather than discarding it and making
+                    // the transfer unpayable.
+                    if let Ok(address) = crate::metadata::parse_ut_vtr_address(&payload) {
+                        peer_vtr_address = Some(address);
+                    }
+                    continue;
+                }
+                _ => continue,
             }
         }
         if let Some(id) = ut_vtr_id {
@@ -889,14 +926,18 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                 })
                 .await;
             for _ in 0..10 {
-                match conn.recv().await {
-                    Ok(PeerMessage::Extended { id: rid, payload }) if rid == id => {
+                let message = match tokio::time::timeout_at(handshake_deadline, conn.recv()).await {
+                    Ok(Ok(message)) => message,
+                    Ok(Err(_)) | Err(_) => break,
+                };
+                match message {
+                    PeerMessage::Extended { id: rid, payload } if rid == id => {
                         if let Ok(addr) = crate::metadata::parse_ut_vtr_address(&payload) {
                             peer_vtr_address = Some(addr);
                         }
                         break;
                     }
-                    Ok(PeerMessage::Bitfield { bits }) => {
+                    PeerMessage::Bitfield { bits } => {
                         record_peer_bitfield(
                             &scheduler,
                             &metainfo,
@@ -907,7 +948,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                         );
                         continue;
                     }
-                    Ok(PeerMessage::Have { index }) => {
+                    PeerMessage::Have { index } => {
                         scheduler
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
@@ -915,18 +956,21 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                             .set_peer_have(task_id, index);
                         continue;
                     }
-                    Ok(_) => continue,
-                    Err(_) => break,
+                    _ => continue,
                 }
             }
         }
     }
 
-    // Track in-flight blocks for this peer.
-    let mut in_flight: usize = 0;
-    // Track partial piece assembly across multiple blocks.
+    // Track in-flight blocks for this peer (recomputed from the scheduler at
+    // the top of every loop iteration).
+    let mut in_flight: usize;
+    // Track partial piece assembly across multiple blocks. Each piece is owned
+    // by exactly one task; this map only ever holds pieces this task owns.
     let mut assemblers: std::collections::HashMap<u32, PieceAssembler> =
         std::collections::HashMap::new();
+    // Release our pieces if this task exits for any reason.
+    let _ownership = PieceOwnership::new(Arc::clone(&scheduler), task_id);
     // Releases every assembly-budget reservation still held when this peer task
     // exits. Without this, a task that ends mid-piece (cancellation, timeout,
     // error) would charge the shared budget forever and starve later pieces.
@@ -951,6 +995,13 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
         if cancel.is_cancelled() {
             break;
         }
+        // Recompute from the scheduler. A lease that expired, was satisfied by
+        // another task, or completed must not leave this task's pipeline
+        // permanently full.
+        in_flight = scheduler
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .refresh_outstanding(task_id);
 
         if std::time::Instant::now() >= next_receipt {
             if send_bandwidth_receipt(
@@ -1130,31 +1181,30 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     .tracker
                     .has_piece(index);
                 if have_piece {
-                    if let Some(piece_data) =
-                        read_piece_from_disk(&metainfo, &download_dir, index).await
+                    // Serve only the requested range. Reading the whole piece
+                    // per block would let one peer multiply disk I/O by the
+                    // piece size.
+                    if let Some(block) =
+                        read_block_from_disk(&metainfo, &download_dir, index, begin, length).await
                     {
-                        let end = (begin as usize + length as usize).min(piece_data.len());
-                        if begin as usize <= end {
-                            let block = piece_data[begin as usize..end].to_vec();
-                            let _ = conn
-                                .send(&PeerMessage::Piece {
-                                    index,
-                                    begin,
-                                    data: block.clone(),
-                                })
-                                .await;
-                            uploaded_window = uploaded_window.saturating_add(block.len() as u64);
-                            let mut guard = sessions.write().await;
-                            if let Ok(s) = guard.get_session_mut(&session_id) {
-                                // Accounting keys must be unique per task. The
-                                // remote id is self-reported and can collide.
-                                let peer_key = peer_vtr_address
-                                    .clone()
-                                    .unwrap_or_else(|| hex::encode(task_id));
-                                s.record_upload(&peer_key, block.len() as u64);
-                            }
-                            limits.consume_upload(block.len() as u64, &cancel).await;
+                        let _ = conn
+                            .send(&PeerMessage::Piece {
+                                index,
+                                begin,
+                                data: block.clone(),
+                            })
+                            .await;
+                        uploaded_window = uploaded_window.saturating_add(block.len() as u64);
+                        let mut guard = sessions.write().await;
+                        if let Ok(s) = guard.get_session_mut(&session_id) {
+                            // Accounting keys must be unique per task. The
+                            // remote id is self-reported and can collide.
+                            let peer_key = peer_vtr_address
+                                .clone()
+                                .unwrap_or_else(|| hex::encode(task_id));
+                            s.record_upload(&peer_key, block.len() as u64);
                         }
+                        limits.consume_upload(block.len() as u64, &cancel).await;
                     }
                 }
                 outstanding_served.fetch_sub(1, Ordering::SeqCst);
@@ -1194,12 +1244,13 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     );
                     continue;
                 }
-                in_flight = in_flight.saturating_sub(1);
-                // NOTE: the block's in-flight lease is intentionally kept until
-                // the piece completes (`mark_have`) or the lease expires. The
-                // block data lives only in this peer task's assembler, so
-                // clearing the lease here would cause the same block to be
-                // re-requested (and rejected as a duplicate) forever.
+                // Mark the lease satisfied. It stays in the scheduler so the
+                // block is never re-requested, but it no longer counts against
+                // this task's pipeline.
+                scheduler
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .mark_received(index, begin, task_id);
                 let piece_len = piece_length(&metainfo, index);
                 // Cap concurrent assemblers per peer to prevent memory exhaustion
                 // from a malicious peer sending blocks for many different pieces.
@@ -1278,8 +1329,26 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                                     limits
                                         .consume_download(piece_data.len() as u64, &cancel)
                                         .await;
+                                } else {
+                                    tracing::warn!(
+                                        piece = index,
+                                        "Could not write a verified piece to disk; re-fetching it"
+                                    );
+                                    scheduler
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .clear_piece(index);
                                 }
                             }
+                        } else {
+                            tracing::warn!(
+                                piece = index,
+                                "Peer sent a piece that failed SHA-1 verification; re-fetching it"
+                            );
+                            scheduler
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .clear_piece(index);
                         }
                     }
                     if assemblers.remove(&index).is_some() {
@@ -1430,10 +1499,11 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                 &sessions,
             )
             .await;
-            // Keep the connection readable for a short grace period. The peer
-            // may send its own final receipt only after ours, and dropping it
-            // would leave the last settlement window unpayable.
-            finish_deadline = Some(std::time::Instant::now() + std::time::Duration::from_secs(10));
+            // The seeder sends cumulative receipts at most every 30 s. Keep the
+            // connection readable for longer than that so its final receipt can
+            // cover the last window; 10 s would leave it unpaid on a normal
+            // completion.
+            finish_deadline = Some(std::time::Instant::now() + std::time::Duration::from_secs(35));
         }
     }
 }

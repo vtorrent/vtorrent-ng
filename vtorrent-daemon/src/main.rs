@@ -567,6 +567,9 @@ async fn main() -> anyhow::Result<()> {
                 anyhow::bail!("--torrent-announce-port must be between 1 and 65535");
             }
         }
+        // Bind before publishing the registry: a bind failure must fail
+        // startup, not report `seeding: true` while accepting nothing.
+        let listener = vtorrent_torrent::seed::bind_seeder(listen_addr).await?;
         let registry = std::sync::Arc::new(vtorrent_torrent::seed::SeederRegistry::new());
         *rpc_state.torrent_seeder.write().await = Some(std::sync::Arc::clone(&registry));
         let seeder_state = vtorrent_torrent::seed::SeederState {
@@ -578,7 +581,7 @@ async fn main() -> anyhow::Result<()> {
             // from shared state per receipt: it starts working after unlock
             // and stops when the wallet is locked again.
             wallet_wif: std::sync::Arc::clone(&rpc_state.wallet_wif),
-            our_peer_id: [0x2du8; 20],
+            our_peer_id: vtorrent_torrent::peer_wire::random_peer_id(),
             cancel: tokio_util::sync::CancellationToken::new(),
         };
         let seeder_config = vtorrent_torrent::seed::SeederConfig {
@@ -588,7 +591,7 @@ async fn main() -> anyhow::Result<()> {
         };
         tokio::spawn(async move {
             if let Err(error) =
-                vtorrent_torrent::seed::run_seeder(seeder_config, seeder_state).await
+                vtorrent_torrent::seed::run_seeder(listener, seeder_config, seeder_state).await
             {
                 tracing::error!("Torrent seeder failed: {}", error);
             }
@@ -1138,6 +1141,7 @@ async fn main() -> anyhow::Result<()> {
     let payment_mempool = Arc::clone(&rpc_state.mempool);
     let payment_check_chain = Arc::clone(&rpc_state.chain);
     let payment_check_mempool = Arc::clone(&rpc_state.mempool);
+    let payment_staking_address = Arc::clone(&rpc_state.staking_address);
     let payment_tx_submit = rpc_state.tx_submit.clone();
     let intent_store = Arc::new(incentive_intents::IntentStore::open(
         &data_dir.join("incentive-payment-intents.json"),
@@ -1148,6 +1152,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         while let Some(payment) = payment_receiver.recv().await {
             let peer_address = payment.peer_address.clone();
+            let staking_address = payment_staking_address.read().await.clone();
             let prepared = vtorrent_wallet_service::prepare_incentive_payment(
                 &payment_wif,
                 &payment_change,
@@ -1157,6 +1162,7 @@ async fn main() -> anyhow::Result<()> {
                     peer_address: peer_address.clone(),
                     amount_satoshis: payment.amount_satoshis,
                 },
+                staking_address.as_deref(),
             )
             .await;
             let prepared = match prepared {
@@ -1814,6 +1820,17 @@ async fn main() -> anyhow::Result<()> {
                                     account.clone(),
                                 ));
                                 settled += 1;
+                            } else if account.peer_receipt.is_some() {
+                                tracing::warn!(
+                                    peer = %account.peer_address,
+                                    "Disputed incentive receipt; clearing it so a later cumulative receipt can settle"
+                                );
+                                account.clear_disputed_receipt();
+                                journal_updates.push((
+                                    info_hash,
+                                    peer_key.clone(),
+                                    account.clone(),
+                                ));
                             } else {
                                 tracing::debug!(
                                     peer = %account.peer_address,
