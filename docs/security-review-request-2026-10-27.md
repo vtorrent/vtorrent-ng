@@ -10,7 +10,7 @@ already accepted so it is not re-litigated.
 
 ## Review target
 
-Review the candidate `2fdd9aa22ac683a9c2e8e684e915f08f0f1ba1cb`. This is the current review head. It is **not**
+Review the candidate `3e8b2cb9168983044bde2c1e33f8677e06e587ce`. This is the current review head. It is **not**
 covered by any prior soak: the `6a49727` fleet predates the fund-safety and
 recovery changes below and was interrupted by a host restart on 2026-11-16.
 Under the soak provenance policy, the shipping image needs its own full window
@@ -18,8 +18,8 @@ after this review and its fixes settle.
 
 Read this document from the tip of `main`. Confirm that no code changed after
 the candidate with
-`git diff --name-only 2fdd9aa..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
-must return nothing. Check out `2fdd9aa` itself when running the verification
+`git diff --name-only 3e8b2cb..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+must return nothing. Check out `3e8b2cb` itself when running the verification
 commands. The tables below record the earlier deltas. The table after the
 `f8e0162` deltas covers the range from `ba46fd6` to the candidate.
 
@@ -132,6 +132,7 @@ Deltas after `ba46fd6`:
 | `9594df4` | Signed payment intents persisted before broadcast, startup confirm/rebroadcast/release reconciliation, and durable intent cleanup |
 | `10c4671` | Stop re-emitting a recovered payment while its txid is pending; live recovery drill regression |
 | `2fdd9aa` | Pass 6: torrent framing/storage/final-receipt fixes from the two-process E2E, journal compaction and migration fail-closed, mempool-aware UTXO selection, faucet authentication |
+| `3e8b2cb` | Inbound torrent serving: opt-in seed listener, verified piece serving, signed receipts, RPC/desktop registration |
 
 Deltas after the earlier review head:
 
@@ -183,7 +184,7 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout 2fdd9aa22ac683a9c2e8e684e915f08f0f1ba1cb
+git checkout 3e8b2cb9168983044bde2c1e33f8677e06e587ce
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
@@ -191,8 +192,8 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 cargo test --workspace --all-features
 ```
 
-The `2fdd9aa` workspace run passed 55 test groups and 1,508 tests with 0
-failures and 12 ignored. CI repeats the `--all-features` suite on every push.
+The `3e8b2cb` workspace run passed 56 test groups and 1,512 tests with 0
+failures and 13 ignored. CI repeats the `--all-features` suite on every push.
 Set `VTORRENT_TOTP_STATE_DIR` to a fresh directory before running the suite so
 the host-scoped TOTP replay state does not collide with an existing
 installation. The ignored Bitcoin Core reorg tests are documented in

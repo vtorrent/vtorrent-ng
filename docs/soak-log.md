@@ -3810,3 +3810,29 @@ The `review-10c4671` fleet was retired and its final state archived under
 `/mnt/temp/vtorrent-ng-evidence/soak-10c4671/final/`; its evidence directory
 carries `SUPERSEDED.md`. This is still a candidate window, not release
 evidence. The independent human review and the full 168 hours remain open.
+
+## 2026-11-22 — inbound seeding candidate (`3e8b2cb`)
+
+Inbound serving is implemented. The engine was outbound-only: it announced a
+port nothing listened on and left completed torrents unservable. See
+`docs/torrent-seeding.md`.
+
+- `vtorrent-torrent::seed` accepts inbound peers behind `--torrent-listen`
+  (off by default), serves only held info-hashes, re-hashes each piece before
+  its first block, caps connections and in-flight requests, honours the upload
+  limiter and seed ratio, and signs a cumulative receipt per connection.
+- Replacement candidate: **2026-11-22T02:15:32Z** to
+  **2026-11-29T02:15:32Z**, `vtorrent/node:3e8b2cb` (`sha256:ed7be9eb5d63b00e8bdb34c24576f270c33ebf8d7a4ff3b16c77d8abfaba67ec`).
+- Binary extracted from the image: `558a8e205bd744e00e27c162eba6d842d5be9e529c56c302e2b96f56eebe9ec8`.
+- Both ignored E2Es pass on that binary: inbound seeder serves 6 MiB over 24
+  verified pieces and signs a receipt covering every byte; the download path
+  still pays 585,937 satoshis exactly once.
+- Workspace **1,512 passed, 0 failed, 13 ignored** (56 groups); 135 torrent,
+  215 RPC, 34 desktop; Clippy and lint clean.
+- The `2fdd9aa` fleet was retired at height 550 with identical tips and
+  archived under `/mnt/temp/vtorrent-ng-evidence/soak-2fdd9aa/final/`.
+- Fleet `review-3e8b2cb`, RPC 23951–23953, Prometheus 23973, evidence
+  `/mnt/temp/vtorrent-ng-evidence/soak-3e8b2cb/`. Converged at height 4.
+
+This is a candidate window, not release evidence. The independent human
+review and the full 168 hours remain open.

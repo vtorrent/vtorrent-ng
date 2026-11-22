@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `2fdd9aa`
+Subject: Independent security review — vTorrent-NG mainnet candidate `3e8b2cb`
 
 Hello,
 
@@ -18,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `2fdd9aa22ac683a9c2e8e684e915f08f0f1ba1cb`
+**Review head:** `3e8b2cb9168983044bde2c1e33f8677e06e587ce`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `2fdd9aa`. It is not covered by any prior soak: the
+The code under review is `3e8b2cb`. It is not covered by any prior soak: the
 `6a49727` fleet predates every change below and was interrupted by a host
 restart on 2026-11-16. The eventual shipping image needs its own full window
 after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 code changed after the candidate with
-`git diff --name-only 2fdd9aa..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only 3e8b2cb..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -202,6 +202,13 @@ candidate `ba46fd6`:
   broadcast; startup confirms, rebroadcasts, or safely releases each
   reservation.
 - `10c4671` — a pending recovered payment is no longer re-emitted every tick;
+- `3e8b2cb` — inbound torrent serving. `--torrent-listen` opens a seed
+  listener; only held info-hashes are answered and each piece is re-hashed
+  before its first block, with connection, request, limiter, and seed-ratio
+  bounds. The seeder signs a cumulative receipt per connection, records the
+  peer's receipt in the same incentive account and journal, and refuses peers
+  without BEP-10. RPC and desktop register completed torrents and stop serving
+  a removed session; `GET /api/v1/torrent/settings` reports seeder status.
 - `2fdd9aa` — pass 6. Torrent peer-wire frames are buffered across coalesced
   reads with bounded per-connection sizes and timeouts; lease keys and block
   lengths are validated before any credit; tracker, magnet, DHT, assembler, and
@@ -372,7 +379,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `2fdd9aa22ac683a9c2e8e684e915f08f0f1ba1cb`
+- Confirm the review head is still `3e8b2cb9168983044bde2c1e33f8677e06e587ce`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.
