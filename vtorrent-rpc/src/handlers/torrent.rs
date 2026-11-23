@@ -119,7 +119,20 @@ pub async fn add_torrent(
     // Receipts are signed with this wallet and addressed back to it. Peers
     // reject an empty or malformed value, and an empty address also lets a
     // leecher avoid ever being payable.
-    let wallet_address = req.wallet_address.trim().to_owned();
+    let requested_address = req.wallet_address.trim();
+    let wallet_address = if requested_address.is_empty() {
+        // The web UI does not know the wallet address until unlock. Use the
+        // hot wallet's change address so adding a torrent still works there;
+        // it is the same address the engine signs and addresses receipts with.
+        state
+            .wallet_change_address
+            .read()
+            .await
+            .clone()
+            .unwrap_or_default()
+    } else {
+        requested_address.to_owned()
+    };
     vtorrent_core::address::validate_p2pkh(&wallet_address)
         .map_err(|error| RpcError::BadRequest(format!("invalid wallet_address: {error}")))?;
     let session = TorrentSession::new(metainfo.clone(), wallet_address);
@@ -194,25 +207,37 @@ pub async fn add_torrent(
             };
             if let Some(metainfo) = completed {
                 let info_hash = metainfo.info_hash;
-                seeder
-                    .register(seeder_session_id.clone(), metainfo, seeder_download_dir)
+                let registered = seeder
+                    .register_if_live(
+                        seeder_session_id.clone(),
+                        metainfo,
+                        seeder_download_dir,
+                        &engine_sessions,
+                    )
                     .await;
-                // A DELETE can land between the completeness check and the
-                // registration. Undo the entry if the session is already gone.
-                if engine_sessions
-                    .read()
-                    .await
-                    .get_session(&seeder_session_id)
-                    .is_ok()
-                {
-                    tracing::info!(
-                        info_hash = %hex::encode(info_hash),
-                        "Torrent complete; now serving it to inbound peers"
-                    );
+                if registered {
+                    // A DELETE can land between the completeness check and the
+                    // registration. Undo the entry if the session is already gone.
+                    if engine_sessions
+                        .read()
+                        .await
+                        .get_session(&seeder_session_id)
+                        .is_ok()
+                    {
+                        tracing::info!(
+                            info_hash = %hex::encode(info_hash),
+                            "Torrent complete; now serving it to inbound peers"
+                        );
+                    } else {
+                        seeder
+                            .unregister_session(&info_hash, &seeder_session_id)
+                            .await;
+                    }
                 } else {
-                    seeder
-                        .unregister_session(&info_hash, &seeder_session_id)
-                        .await;
+                    tracing::debug!(
+                        info_hash = %hex::encode(info_hash),
+                        "A newer session is already serving this torrent"
+                    );
                 }
             }
         }

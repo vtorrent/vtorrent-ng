@@ -167,12 +167,26 @@ pub async fn add_torrent(
 
     let info_hash = hex::encode(metainfo.info_hash);
     let name = metainfo.name.clone();
-    let session = TorrentSession::new(metainfo, wallet_address);
 
     let guard = state.node.lock().await;
     let handle = guard
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    let requested_address = wallet_address.trim();
+    let wallet_address = if requested_address.is_empty() {
+        handle
+            .rpc_state
+            .wallet_change_address
+            .read()
+            .await
+            .clone()
+            .unwrap_or_default()
+    } else {
+        requested_address.to_owned()
+    };
+    vtorrent_core::address::validate_p2pkh(&wallet_address)
+        .map_err(|error| TauriError::InvalidInput(format!("invalid wallet_address: {error}")))?;
+    let session = TorrentSession::new(metainfo, wallet_address);
     let session_id = {
         let mut sessions = handle.rpc_state.torrent_sessions.write().await;
         let duplicate = sessions
@@ -240,14 +254,20 @@ pub async fn add_torrent(
             };
             if let Some(metainfo) = completed {
                 let info_hash = metainfo.info_hash;
-                seeder
-                    .register(engine_session_id.clone(), metainfo, seeder_download_dir)
+                let registered = seeder
+                    .register_if_live(
+                        engine_session_id.clone(),
+                        metainfo,
+                        seeder_download_dir,
+                        &engine_sessions,
+                    )
                     .await;
-                if engine_sessions
-                    .read()
-                    .await
-                    .get_session(&engine_session_id)
-                    .is_err()
+                if registered
+                    && engine_sessions
+                        .read()
+                        .await
+                        .get_session(&engine_session_id)
+                        .is_err()
                 {
                     seeder
                         .unregister_session(&info_hash, &engine_session_id)

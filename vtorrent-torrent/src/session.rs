@@ -11,6 +11,10 @@ use uuid::Uuid;
 /// Maximum number of incentive accounts per session to prevent memory
 /// exhaustion from unbounded peer tracking.
 const MAX_INCENTIVE_ACCOUNTS: usize = 10_000;
+/// An idle, debt-free account with no receipt may be evicted even if its
+/// current settlement window is large (for example a peer that never sends a
+/// receipt, so the window is never reset by settlement).
+const ACCOUNT_IDLE_EVICT_SECS: u64 = 3_600;
 
 /// The state of a torrent session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,6 +175,10 @@ impl TorrentSession {
     /// disable accounting for the torrent.
     fn account_for(&mut self, peer_address: &str) -> Option<&mut PeerBandwidthAccount> {
         self.evict_stale_accounts();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         if !self.incentive_accounts.contains_key(peer_address)
             && self.incentive_accounts.len() >= MAX_INCENTIVE_ACCOUNTS
         {
@@ -188,15 +196,23 @@ impl TorrentSession {
                 self.incentive_accounts
                     .iter()
                     .filter(|(_, a)| {
-                        a.unpaid_satoshis == 0
+                        // Dust is not a payable liability. A receipt only
+                        // blocks eviction when it agrees to a positive amount;
+                        // a zero or disputed receipt must not pin the map.
+                        a.unpaid_satoshis < MIN_PAYMENT_SATS
                             && !a.payment_in_flight
                             && a.pending_payment.is_none()
-                            && a.peer_receipt.is_none()
-                            // Current settlement window, not lifetime totals:
-                            // a fully settled long-lived peer must stay
-                            // evictable or the map fossilizes at the cap.
-                            && a.bytes_uploaded.saturating_add(a.bytes_downloaded)
+                            && a
+                                .agreed_owed()
+                                .is_none_or(|agreed| agreed.satoshis == 0)
+                            // Current settlement window, or an idle account
+                            // whose window was never reset because no receipt
+                            // arrived. Lifetime totals are deliberately not
+                            // used or a popular settled peer becomes immortal.
+                            && (a.bytes_uploaded.saturating_add(a.bytes_downloaded)
                                 < MIN_PAYMENT_BYTES
+                                || now.saturating_sub(a.last_active)
+                                    >= ACCOUNT_IDLE_EVICT_SECS)
                     })
                     .min_by_key(|(_, a)| a.last_active)
                     .map(|(addr, _)| addr.clone())
@@ -228,14 +244,19 @@ impl TorrentSession {
         if self.incentive_accounts.len() <= MAX_INCENTIVE_ACCOUNTS {
             return;
         }
-        // First pass: remove accounts with no activity
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        // First pass: remove accounts with no activity or liability. Dust and
+        // zero/disputed receipts are not liabilities.
         self.incentive_accounts.retain(|_, a| {
             a.bytes_uploaded > 0
                 || a.bytes_downloaded > 0
-                || a.unpaid_satoshis > 0
+                || a.unpaid_satoshis >= MIN_PAYMENT_SATS
                 || a.payment_in_flight
                 || a.pending_payment.is_some()
-                || a.peer_receipt.is_some()
+                || a.agreed_owed().is_some_and(|agreed| agreed.satoshis > 0)
         });
         // If still over limit, remove the least-recently-active accounts —
         // but only those with no pending earnings: evicting an account with
@@ -247,12 +268,12 @@ impl TorrentSession {
             let to_remove: Vec<String> = entries
                 .into_iter()
                 .filter(|(_, a)| {
-                    a.bytes_uploaded == 0
-                        && a.bytes_downloaded == 0
-                        && a.unpaid_satoshis == 0
+                    a.unpaid_satoshis < MIN_PAYMENT_SATS
                         && !a.payment_in_flight
                         && a.pending_payment.is_none()
-                        && a.peer_receipt.is_none()
+                        && a.agreed_owed().is_none_or(|agreed| agreed.satoshis == 0)
+                        && (a.bytes_uploaded == 0 && a.bytes_downloaded == 0
+                            || now.saturating_sub(a.last_active) >= ACCOUNT_IDLE_EVICT_SECS)
                         && a.total_earned_satoshis == a.total_paid_satoshis
                 })
                 .take(excess)
@@ -273,8 +294,9 @@ impl TorrentSession {
     /// payment awaiting confirmation.
     pub fn has_outstanding_incentives(&self) -> bool {
         self.incentive_accounts.values().any(|account| {
-            // Dust below the payment minimum is written off by the settlement
-            // loop and must not block removal forever.
+            // Dust below the payment minimum is not payable and must not
+            // block removal forever; it accumulates until it is payable or the
+            // account is evicted/removed.
             account.unpaid_satoshis >= MIN_PAYMENT_SATS
                 || account.payment_in_flight
                 || account.pending_payment.is_some()

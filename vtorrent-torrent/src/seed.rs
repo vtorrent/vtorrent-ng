@@ -51,9 +51,37 @@ const CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// Tracker announces attempted per torrent, bounded like the downloader.
 const MAX_TRACKER_ATTEMPTS: usize = 8;
 /// Receipts from one peer are verified at most this often, across reconnects.
-const PEER_RECEIPT_INTERVAL: Duration = Duration::from_secs(30);
+const PEER_RECEIPT_INTERVAL: Duration = Duration::from_secs(25);
 /// Concurrent connections one source IP may hold.
 const MAX_CONNECTIONS_PER_IP: usize = 8;
+
+/// Read the engine's verified resume bitfield for a completed torrent.
+///
+/// The engine writes this file only after each bit has been verified against
+/// the data. Registration itself is gated on the session being complete, so
+/// trusting these bits is equivalent to trusting the download that produced
+/// the files. Any piece not in the file is still hashed on its first request.
+async fn resume_verified(metainfo: &Metainfo, download_dir: &std::path::Path) -> HashSet<u32> {
+    let mut verified = HashSet::new();
+    let Ok(bytes) = tokio::fs::read(crate::engine_disk::resume_file_path(
+        download_dir,
+        &metainfo.info_hash,
+    ))
+    .await
+    else {
+        return verified;
+    };
+    let count = metainfo.piece_count as usize;
+    for (index, byte) in bytes.iter().enumerate() {
+        for bit in 0..8 {
+            let piece = index * 8 + bit;
+            if piece < count && byte & (0x80 >> bit) != 0 {
+                verified.insert(piece as u32);
+            }
+        }
+    }
+    verified
+}
 
 /// A torrent this node can serve.
 struct SeedTorrent {
@@ -66,19 +94,29 @@ struct SeedTorrent {
     /// Pieces that failed verification, with a retry deadline. Without this a
     /// corrupt piece re-read the whole piece on every distinct block request.
     failed: StdMutex<HashMap<u32, std::time::Instant>>,
+    /// Bound concurrent whole-piece verification reads. Each permit can hold
+    /// one piece-sized buffer, so this is the real memory bound on the
+    /// first-request path.
+    verify_limit: tokio::sync::Semaphore,
     /// Cancelled when the torrent is unregistered, so an in-flight connection
     /// stops serving immediately instead of holding an `Arc` forever.
     cancel: CancellationToken,
 }
 
 impl SeedTorrent {
-    fn new(session_id: String, metainfo: Metainfo, download_dir: PathBuf) -> Self {
+    fn new(
+        session_id: String,
+        metainfo: Metainfo,
+        download_dir: PathBuf,
+        verified: HashSet<u32>,
+    ) -> Self {
         Self {
             session_id,
             metainfo,
             download_dir,
-            verified: StdMutex::new(HashSet::new()),
+            verified: StdMutex::new(verified),
             failed: StdMutex::new(HashMap::new()),
+            verify_limit: tokio::sync::Semaphore::new(4),
             cancel: CancellationToken::new(),
         }
     }
@@ -104,6 +142,21 @@ impl SeedTorrent {
                 .unwrap_or_else(|error| error.into_inner());
             if failed.get(&index).is_some_and(|until| *until > now) {
                 return false;
+            }
+        }
+        // At most four pieces are read and hashed at once. Waiters re-check
+        // the cache after acquiring the permit, so concurrent first requests
+        // for the same piece hash it once.
+        let Ok(_permit) = self.verify_limit.acquire().await else {
+            return false;
+        };
+        {
+            let verified = self
+                .verified
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if verified.contains(&index) {
+                return true;
             }
         }
         let Some(expected) = self.metainfo.pieces.get(index as usize) else {
@@ -182,10 +235,69 @@ impl SeederRegistry {
     /// completion is not a no-op against the old session id.
     pub async fn register(&self, session_id: String, metainfo: Metainfo, download_dir: PathBuf) {
         let info_hash = metainfo.info_hash;
-        let new = Arc::new(SeedTorrent::new(session_id, metainfo, download_dir));
+        let verified = resume_verified(&metainfo, &download_dir).await;
+        let new = Arc::new(SeedTorrent::new(
+            session_id,
+            metainfo,
+            download_dir,
+            verified,
+        ));
         let mut entries = self.entries.write().await;
         if let Some(old) = entries.insert(info_hash, new) {
             old.cancel.cancel();
+        }
+    }
+
+    /// Register only if no *live* session with a different id owns the
+    /// info-hash. A completion callback that read a session before a
+    /// remove/re-add must not replace the newer session's entry.
+    pub async fn register_if_live(
+        &self,
+        session_id: String,
+        metainfo: Metainfo,
+        download_dir: PathBuf,
+        sessions: &RwLock<SessionManager>,
+    ) -> bool {
+        let info_hash = metainfo.info_hash;
+        let verified = resume_verified(&metainfo, &download_dir).await;
+        let new = Arc::new(SeedTorrent::new(
+            session_id.clone(),
+            metainfo,
+            download_dir,
+            verified,
+        ));
+        let mut entries = self.entries.write().await;
+        if let Some(existing) = entries.get(&info_hash) {
+            if existing.session_id != session_id
+                && sessions
+                    .read()
+                    .await
+                    .get_session(&existing.session_id)
+                    .is_ok()
+            {
+                return false;
+            }
+        }
+        if let Some(old) = entries.insert(info_hash, new) {
+            old.cancel.cancel();
+        }
+        true
+    }
+
+    /// Drop entries whose session no longer exists (evicted terminal sessions).
+    pub async fn retain_sessions(&self, live: &HashSet<String>) {
+        let mut entries = self.entries.write().await;
+        let mut removed = Vec::new();
+        entries.retain(|_, torrent| {
+            if live.contains(&torrent.session_id) {
+                true
+            } else {
+                removed.push(torrent.cancel.clone());
+                false
+            }
+        });
+        for token in removed {
+            token.cancel();
         }
     }
 
@@ -266,6 +378,27 @@ pub struct SeederState {
     pub cancel: CancellationToken,
 }
 
+/// Aggregate IPv6 sources by /64 so one host cannot rotate addresses inside
+/// its own prefix to bypass the per-IP cap.
+fn connection_ip_key(ip: std::net::IpAddr) -> std::net::IpAddr {
+    match ip {
+        std::net::IpAddr::V6(v6) => {
+            let segments = v6.segments();
+            std::net::IpAddr::V6(std::net::Ipv6Addr::new(
+                segments[0],
+                segments[1],
+                segments[2],
+                segments[3],
+                0,
+                0,
+                0,
+                0,
+            ))
+        }
+        ip => ip,
+    }
+}
+
 /// Releases one per-IP connection slot when a task ends, including on panic.
 struct IpConnectionSlot {
     counts: Arc<StdMutex<HashMap<std::net::IpAddr, usize>>>,
@@ -320,6 +453,7 @@ pub async fn run_seeder(
         advertised_port,
         state.our_peer_id,
         Arc::clone(&state.registry),
+        Arc::clone(&state.sessions),
         state.cancel.clone(),
     );
 
@@ -350,7 +484,7 @@ pub async fn run_seeder(
             drop(permit);
             continue;
         }
-        let ip = addr.ip();
+        let ip = connection_ip_key(addr.ip());
         {
             let mut counts = per_ip.lock().unwrap_or_else(|e| e.into_inner());
             let count = counts.entry(ip).or_insert(0);
@@ -388,11 +522,23 @@ fn spawn_tracker_announces(
     port: u16,
     peer_id: [u8; 20],
     registry: Arc<SeederRegistry>,
+    sessions: Arc<RwLock<SessionManager>>,
     cancel: CancellationToken,
 ) {
     tokio::spawn(async move {
         let mut announced: HashMap<[u8; 20], std::time::Instant> = HashMap::new();
         loop {
+            // Evicted sessions must not be announced forever. Prune the
+            // registry before taking the announce snapshot.
+            let live_sessions: HashSet<String> = {
+                let guard = sessions.read().await;
+                guard
+                    .list_sessions()
+                    .iter()
+                    .map(|session| session.id.clone())
+                    .collect()
+            };
+            registry.retain_sessions(&live_sessions).await;
             let torrents = registry.snapshot().await;
             let now = std::time::Instant::now();
             for torrent in &torrents {
@@ -505,6 +651,7 @@ async fn serve_connection(stream: TcpStream, addr: SocketAddr, state: SeederStat
             .unwrap_or_default()
     };
     let mut peer_address: Option<String> = None;
+    let mut last_peer_receipt_at: Option<std::time::Instant> = None;
     let mut peer_ut_vtr_id: Option<u8> = None;
     let mut peer_receipt_id: Option<u8> = None;
     let mut address_sent = false;
@@ -640,13 +787,16 @@ async fn serve_connection(stream: TcpStream, addr: SocketAddr, state: SeederStat
                 // it, now that we know it.
                 if !address_sent {
                     if let Some(id) = peer_ut_vtr_id {
-                        let _ = conn
+                        if conn
                             .send(&PeerMessage::Extended {
                                 id,
                                 payload: build_ut_vtr_address(&our_address),
                             })
-                            .await;
-                        address_sent = true;
+                            .await
+                            .is_ok()
+                        {
+                            address_sent = true;
+                        }
                     }
                 }
             }
@@ -657,11 +807,15 @@ async fn serve_connection(stream: TcpStream, addr: SocketAddr, state: SeederStat
                     let Some(peer) = peer_address.as_deref() else {
                         continue;
                     };
-                    // ECDSA + journal fsync are expensive. Ratchet per peer
-                    // address, not per connection, so reconnecting cannot
-                    // reset the budget. The map only holds addresses active
-                    // in the last window.
+                    // Bound verification both per connection and per address.
+                    // A peer that rotates its self-asserted address on one
+                    // connection must not get a fresh ECDSA/fsync budget.
                     let now = std::time::Instant::now();
+                    if last_peer_receipt_at
+                        .is_some_and(|last| now.duration_since(last) < PEER_RECEIPT_INTERVAL)
+                    {
+                        continue;
+                    }
                     {
                         let mut seen = state
                             .receipt_throttle
@@ -675,10 +829,17 @@ async fn serve_connection(stream: TcpStream, addr: SocketAddr, state: SeederStat
                             continue;
                         }
                         if seen.len() >= 10_000 {
-                            seen.clear();
+                            if let Some(oldest) = seen
+                                .iter()
+                                .min_by_key(|(_, at)| **at)
+                                .map(|(address, _)| address.clone())
+                            {
+                                seen.remove(&oldest);
+                            }
                         }
                         seen.insert(peer.to_string(), now);
                     }
+                    last_peer_receipt_at = Some(now);
                     record_peer_receipt(
                         &state,
                         &torrent.session_id,
@@ -689,12 +850,16 @@ async fn serve_connection(stream: TcpStream, addr: SocketAddr, state: SeederStat
                     )
                     .await;
                 } else if let Ok(address) = metadata::parse_ut_vtr_address(&payload) {
-                    tracing::debug!(peer = %addr, %address, "Inbound peer identified");
-                    peer_address = Some(address);
-                    // Sign promptly: a fast download can finish before the
-                    // periodic tick, and a peer that never receives a receipt
-                    // can never verify what it owes us.
-                    next_receipt = std::time::Instant::now();
+                    // One identity per connection. A later address is ignored;
+                    // otherwise a peer could rotate the throttle key at will.
+                    if peer_address.is_none() {
+                        tracing::debug!(peer = %addr, %address, "Inbound peer identified");
+                        peer_address = Some(address);
+                        // Sign promptly: a fast download can finish before the
+                        // periodic tick, and a peer that never receives a
+                        // receipt can never verify what it owes us.
+                        next_receipt = std::time::Instant::now();
+                    }
                 }
             }
             PeerMessage::Request {
@@ -770,17 +935,12 @@ async fn serve_connection(stream: TcpStream, addr: SocketAddr, state: SeederStat
                     }
                 }
             }
-            PeerMessage::Cancel { index, begin, .. } => {
-                served_requests
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .retain(|(piece, start, _), _| *piece != index || *start != begin);
-            }
             PeerMessage::KeepAlive
             | PeerMessage::Interested
             | PeerMessage::NotInterested
             | PeerMessage::Choke
             | PeerMessage::Unchoke
+            | PeerMessage::Cancel { .. }
             | PeerMessage::Have { .. }
             | PeerMessage::Bitfield { .. }
             | PeerMessage::Handshake { .. }
@@ -1003,6 +1163,7 @@ mod tests {
             "session".into(),
             metainfo([3u8; 20], data),
             dir.path().into(),
+            HashSet::new(),
         ));
         let base = dir.path().join("seed-test");
         std::fs::create_dir_all(&base).unwrap();
@@ -1026,6 +1187,7 @@ mod tests {
             "session".into(),
             metainfo([3u8; 20], data),
             dir.path().into(),
+            HashSet::new(),
         ));
         assert!(
             !fresh.verified_piece(0).await,

@@ -479,7 +479,14 @@ impl SchedulerState {
 
     /// Drop all tracking for one piece so it can be fetched again after a
     /// verification or disk-write failure.
-    pub fn clear_piece(&mut self, piece: u32) {
+    pub fn clear_piece(&mut self, piece: u32, task: [u8; 20]) {
+        if self
+            .piece_owner
+            .get(&piece)
+            .is_none_or(|owner| owner.task != task)
+        {
+            return;
+        }
         self.requested_blocks.remove(&piece);
         self.piece_owner.remove(&piece);
         self.tracker.clear_requested(piece);

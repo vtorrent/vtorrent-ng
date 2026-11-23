@@ -209,14 +209,33 @@ pub async fn prepare_incentive_payment(
         )
         .map_err(IncentivePaymentError::from)
     };
+    // When the payment must use stakeable coins, keep the largest one as the
+    // staking reserve. Otherwise the largest-first wallet selector could spend
+    // the node's main stake coin and leave only a tiny eligible coin, reducing
+    // its staking weight. A smaller stake coin may pay; if it cannot, the
+    // payment fails closed.
+    let largest_stakeable = if available_stakeable.len() > 1 {
+        utxos
+            .iter()
+            .filter(|utxo| available_stakeable.contains(&(utxo.txid, utxo.vout)))
+            .max_by_key(|utxo| utxo.value)
+            .map(|utxo| (utxo.txid, utxo.vout))
+    } else {
+        None
+    };
+    let fallback: Vec<_> = utxos
+        .iter()
+        .filter(|utxo| Some((utxo.txid, utxo.vout)) != largest_stakeable)
+        .cloned()
+        .collect();
     let (tx, used_stake) = if non_stake.is_empty() {
-        (build(&utxos)?, true)
+        (build(&fallback)?, true)
     } else {
         match build(&non_stake) {
             Ok(tx) => (tx, false),
             Err(IncentivePaymentError::Build(
                 vtorrent_wallet::error::WalletError::InsufficientFunds { .. },
-            )) => (build(&utxos)?, true),
+            )) => (build(&fallback)?, true),
             Err(error) => return Err(error),
         }
     };

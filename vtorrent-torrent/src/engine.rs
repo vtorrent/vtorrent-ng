@@ -559,7 +559,13 @@ pub async fn run_engine(
     .await
     {
         Ok(Some(p)) => p,
-        Ok(None) => return,
+        Ok(None) => {
+            let mut guard = sessions.write().await;
+            if let Ok(s) = guard.get_session_mut(&session_id) {
+                s.state = SessionState::Stopped;
+            }
+            return;
+        }
         Err(_) => {
             tracing::warn!("Torrent tracker announce timed out; continuing without peers");
             Vec::new()
@@ -597,15 +603,21 @@ pub async fn run_engine(
         let magnet_announce = metainfo.announce.clone();
         let magnet_announce_list = metainfo.announce_list.clone();
         let metadata_deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-        for peer in peers.iter().take(8) {
-            if !peer_target_allowed(peer, crate::tracker::private_targets_allowed()) {
-                continue;
-            }
+        for peer in peers
+            .iter()
+            .filter(|peer| peer_target_allowed(peer, crate::tracker::private_targets_allowed()))
+            .take(8)
+        {
             let addr: SocketAddr = match format!("{}:{}", peer.ip, peer.port).parse() {
                 Ok(a) => a,
                 Err(_) => continue,
             };
-            if let Ok(mut conn) = PeerConnection::connect(addr, metainfo.info_hash, peer_id).await {
+            let connected = tokio::time::timeout_at(
+                metadata_deadline,
+                PeerConnection::connect(addr, metainfo.info_hash, peer_id),
+            )
+            .await;
+            if let Ok(Ok(mut conn)) = connected {
                 let fetched = tokio::time::timeout_at(
                     metadata_deadline,
                     fetch_metadata_from_peer(&mut conn, metainfo.info_hash),
@@ -633,6 +645,14 @@ pub async fn run_engine(
             if let Ok(s) = guard.get_session_mut(&session_id) {
                 s.metainfo = metainfo.clone();
             }
+        }
+        if metainfo.pieces.is_empty() || metainfo.piece_count == 0 || metainfo.total_size == 0 {
+            tracing::warn!("Magnet metadata fetch failed; stopping the session");
+            let mut guard = sessions.write().await;
+            if let Ok(s) = guard.get_session_mut(&session_id) {
+                s.state = SessionState::Stopped;
+            }
+            return;
         }
     }
 
@@ -757,7 +777,8 @@ pub async fn run_engine(
         let mut guard = sessions.write().await;
         if let Ok(s) = guard.get_session_mut(&shared_session_id) {
             s.bytes_downloaded = downloaded;
-            s.state = if downloaded >= shared_metainfo.total_size {
+            s.state = if shared_metainfo.total_size > 0 && downloaded >= shared_metainfo.total_size
+            {
                 SessionState::Seeding
             } else {
                 SessionState::Stopped
@@ -888,7 +909,9 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     {
                         if let Some(Value::Dict(m)) = d.get(b"m".as_slice()) {
                             if let Some(Value::Int(id)) = m.get(b"ut_vtr".as_slice()) {
-                                ut_vtr_id = Some(*id as u8);
+                                if (1..=u8::MAX as i64).contains(id) {
+                                    ut_vtr_id = Some(*id as u8);
+                                }
                             }
                             if let Some(Value::Int(id)) = m.get(b"ut_vtr_receipt".as_slice()) {
                                 if (1..=u8::MAX as i64).contains(id) {
@@ -946,6 +969,11 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                 })
                 .await;
             for _ in 0..10 {
+                // A peer may have sent its address before its extension
+                // handshake; do not wait for a second copy.
+                if peer_vtr_address.is_some() {
+                    break;
+                }
                 let message = match tokio::time::timeout_at(handshake_deadline, conn.recv()).await {
                     Ok(Ok(message)) => message,
                     Ok(Err(_)) | Err(_) => break,
@@ -1017,6 +1045,15 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
     // A peer that repeatedly serves a piece whose SHA-1 fails is corrupt or
     // malicious; retrying it forever only burns bandwidth and CPU.
     let mut hash_failures: u32 = 0;
+    // A swarm that keeps the socket alive but never completes a piece must not
+    // hold an active session forever. This is global progress, not per-peer.
+    let mut last_have_count = scheduler
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .tracker
+        .have_count();
+    let mut last_piece_at = std::time::Instant::now();
+    const NO_PROGRESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
 
     loop {
         if cancel.is_cancelled() {
@@ -1081,6 +1118,23 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
             // cover the last window; 10 s would leave it unpaid on a normal
             // completion.
             finish_deadline = Some(std::time::Instant::now() + std::time::Duration::from_secs(35));
+        }
+        if finish_deadline.is_none() {
+            let have = scheduler
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .tracker
+                .have_count();
+            if have > last_have_count {
+                last_have_count = have;
+                last_piece_at = std::time::Instant::now();
+            } else if last_piece_at.elapsed() >= NO_PROGRESS_TIMEOUT {
+                tracing::warn!(
+                    peer = %addr,
+                    "Torrent made no verified progress for 15 minutes; stopping this peer task"
+                );
+                break;
+            }
         }
 
         if std::time::Instant::now() >= next_receipt {
@@ -1156,7 +1210,16 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     Err(_) => break,
                 }
             }
-            None => conn.recv().await,
+            None => {
+                // A task with no remaining work can be waiting while another
+                // task completes the torrent. A 10 s slice lets the top-of-loop
+                // completion/cancel check run instead of blocking for the full
+                // 180 s receive deadline.
+                match tokio::time::timeout(std::time::Duration::from_secs(10), conn.recv()).await {
+                    Ok(result) => result,
+                    Err(_) => continue,
+                }
+            }
         };
         match received {
             Ok(PeerMessage::Bitfield { bits }) => {
@@ -1214,14 +1277,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     // Evict expired entries opportunistically so the map stays
                     // bounded under adversarial request patterns.
                     inflight.retain(|_, deadline| *deadline > std::time::Instant::now());
-                    let now = std::time::Instant::now();
-                    match inflight.get(&key) {
-                        Some(deadline) if *deadline > now => true,
-                        _ => {
-                            inflight.insert(key, now + REQUEST_DEDUPE_WINDOW);
-                            false
-                        }
-                    }
+                    inflight.contains_key(&key)
                 };
                 if is_duplicate {
                     tracing::trace!("Dropping duplicate in-flight request {:?}", key);
@@ -1253,6 +1309,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     }
                 };
                 if ratio_reached {
+                    outstanding_served.fetch_sub(1, Ordering::SeqCst);
                     continue;
                 }
                 let have_piece = scheduler
@@ -1267,24 +1324,33 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     if let Some(block) =
                         read_block_from_disk(&metainfo, &download_dir, index, begin, length).await
                     {
-                        let _ = conn
+                        if conn
                             .send(&PeerMessage::Piece {
                                 index,
                                 begin,
                                 data: block.clone(),
                             })
-                            .await;
-                        uploaded_window = uploaded_window.saturating_add(block.len() as u64);
-                        let mut guard = sessions.write().await;
-                        if let Ok(s) = guard.get_session_mut(&session_id) {
-                            // Accounting keys must be unique per task. The
-                            // remote id is self-reported and can collide.
-                            let peer_key = peer_vtr_address
-                                .clone()
-                                .unwrap_or_else(|| hex::encode(task_id));
-                            s.record_upload(&peer_key, block.len() as u64);
+                            .await
+                            .is_ok()
+                        {
+                            // Only a delivered block gets a dedupe tombstone and
+                            // is credited. A failed read/send must be retryable.
+                            served_requests
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .insert(key, std::time::Instant::now() + REQUEST_DEDUPE_WINDOW);
+                            uploaded_window = uploaded_window.saturating_add(block.len() as u64);
+                            let mut guard = sessions.write().await;
+                            if let Ok(s) = guard.get_session_mut(&session_id) {
+                                // Accounting keys must be unique per task. The
+                                // remote id is self-reported and can collide.
+                                let peer_key = peer_vtr_address
+                                    .clone()
+                                    .unwrap_or_else(|| hex::encode(task_id));
+                                s.record_upload(&peer_key, block.len() as u64);
+                            }
+                            limits.consume_upload(block.len() as u64, &cancel).await;
                         }
-                        limits.consume_upload(block.len() as u64, &cancel).await;
                     }
                 }
                 outstanding_served.fetch_sub(1, Ordering::SeqCst);
@@ -1357,7 +1423,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     .entry(index)
                     .or_insert_with(|| PieceAssembler::new(index, piece_len));
                 let accepted = asm.add_block(begin, data);
-                if accepted {
+                let marked = if accepted {
                     // Mark the lease satisfied only now that the block is
                     // actually held. If the assembler cap or budget rejected
                     // it, leaving the lease unreceived lets it expire and be
@@ -1365,9 +1431,11 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     scheduler
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .mark_received(index, begin, task_id);
-                }
-                if asm.is_complete() {
+                        .mark_received(index, begin, task_id)
+                } else {
+                    true
+                };
+                if marked && asm.is_complete() {
                     if let Some(expected) = metainfo.pieces.get(index as usize) {
                         if asm.verify(expected) {
                             if let Some(piece_data) = asm.assemble() {
@@ -1428,7 +1496,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                                     scheduler
                                         .lock()
                                         .unwrap_or_else(|e| e.into_inner())
-                                        .clear_piece(index);
+                                        .clear_piece(index, task_id);
                                 }
                             }
                         } else {
@@ -1441,7 +1509,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                             scheduler
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner())
-                                .clear_piece(index);
+                                .clear_piece(index, task_id);
                             if hash_failures >= 3 {
                                 tracing::warn!(
                                     peer = %addr,
@@ -1454,6 +1522,14 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     if assemblers.remove(&index).is_some() {
                         assembly.release(piece_len);
                     }
+                }
+                if !marked {
+                    // The piece was reclaimed and now belongs to another task.
+                    // Do not keep an unowned assembler or write its result.
+                    if assemblers.remove(&index).is_some() {
+                        assembly.release(piece_len);
+                    }
+                    continue;
                 }
             }
             Ok(PeerMessage::Extended { id, payload }) if id == crate::metadata::OUR_RECEIPT_ID => {
@@ -1477,6 +1553,11 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     continue;
                 };
                 let receipt = &envelope.receipt;
+                // A receipt claiming no bytes in either direction proves
+                // nothing and must not be stored or journaled.
+                if receipt.uploaded_by_me == 0 && receipt.downloaded_by_me == 0 {
+                    continue;
+                }
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
