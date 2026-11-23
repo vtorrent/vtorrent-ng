@@ -5,6 +5,7 @@ use crate::{
     error::{Result, TauriError},
     state::AppState,
 };
+use vtorrent_torrent::session::TorrentSession;
 
 #[derive(Debug, Serialize)]
 pub struct TorrentResult {
@@ -284,6 +285,15 @@ pub async fn add_torrent(
     })
 }
 
+fn ensure_torrent_removable(session: &TorrentSession) -> Result<()> {
+    if session.has_outstanding_incentives() {
+        return Err(TauriError::Torrent(
+            "Session has unpaid or in-flight incentive payments; settle them before removal".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn remove_torrent(state: tauri::State<'_, AppState>, id: String) -> Result<()> {
     let guard = state.node.lock().await;
@@ -298,9 +308,10 @@ pub async fn remove_torrent(state: tauri::State<'_, AppState>, id: String) -> Re
         let session = sessions
             .get_session(&id)
             .map_err(|_| TauriError::Torrent(format!("Session {} not found", id)))?;
-        // The desktop node has no settlement/payment loop, so a stored receipt
-        // is not an in-flight payment the user can wait out. Blocking removal
-        // would strand the session forever.
+        // The desktop node has no settlement/payment loop. Refuse removal
+        // rather than silently discarding a receipt-backed debt; the user
+        // must settle or explicitly write it off first.
+        ensure_torrent_removable(session)?;
         let info_hash = session.metainfo.info_hash;
         sessions
             .remove_session(&id)
@@ -312,4 +323,58 @@ pub async fn remove_torrent(state: tauri::State<'_, AppState>, id: String) -> Re
         seeder.unregister_session(&info_hash, &id).await;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vtorrent_torrent::incentive::MIN_PAYMENT_SATS;
+    use vtorrent_torrent::metainfo::{Metainfo, TorrentFile};
+
+    fn test_metainfo() -> Metainfo {
+        Metainfo {
+            info_hash: [0xCD; 20],
+            name: "desktop-removal-guard.iso".into(),
+            total_size: 1024 * 1024,
+            piece_length: 262144,
+            piece_count: 4,
+            pieces: Vec::new(),
+            announce: None,
+            announce_list: Vec::new(),
+            files: vec![TorrentFile {
+                path: vec!["desktop-removal-guard.iso".into()],
+                length: 1024 * 1024,
+                md5sum: None,
+            }],
+            created_at: None,
+            comment: None,
+            is_private: false,
+        }
+    }
+
+    #[test]
+    fn a_payable_account_blocks_removal() {
+        let mut session =
+            TorrentSession::new(test_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+        session.record_download("VH6w62jDRYpYHjR2eJjFzXRC4MQvvs93a6", 1);
+        session
+            .incentive_accounts
+            .get_mut("VH6w62jDRYpYHjR2eJjFzXRC4MQvvs93a6")
+            .unwrap()
+            .unpaid_satoshis = MIN_PAYMENT_SATS;
+        assert!(ensure_torrent_removable(&session).is_err());
+    }
+
+    #[test]
+    fn dust_only_account_is_removable() {
+        let mut session =
+            TorrentSession::new(test_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+        session.record_download("VH6w62jDRYpYHjR2eJjFzXRC4MQvvs93a6", 1);
+        session
+            .incentive_accounts
+            .get_mut("VH6w62jDRYpYHjR2eJjFzXRC4MQvvs93a6")
+            .unwrap()
+            .unpaid_satoshis = MIN_PAYMENT_SATS - 1;
+        assert!(ensure_torrent_removable(&session).is_ok());
+    }
 }

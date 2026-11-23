@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::Path;
-use vtorrent_torrent::incentive::PeerBandwidthAccount;
+use vtorrent_torrent::incentive::{PeerBandwidthAccount, MIN_PAYMENT_SATS};
 
 use crate::incentive_journal::JournalAccount;
 
@@ -41,6 +41,15 @@ impl IncentiveDebt {
 
     pub fn has_outstanding(&self) -> bool {
         self.unpaid_satoshis > 0 || self.pending_txid.is_some() || self.payment_in_flight
+    }
+
+    /// Whether this debt should block removal of its live session. Dust below
+    /// the payment minimum is not payable and must remain removable; a pending
+    /// or in-flight payment always blocks.
+    pub fn blocks_removal(&self) -> bool {
+        self.unpaid_satoshis >= MIN_PAYMENT_SATS
+            || self.pending_txid.is_some()
+            || self.payment_in_flight
     }
 }
 
@@ -128,6 +137,16 @@ impl IncentiveLedger {
         self.debts.iter_mut().find(|debt| debt.id == id)
     }
 
+    /// Whether this torrent still has an outstanding ledger debt. Removing the
+    /// live session must not erase an obligation that already moved into the
+    /// durable ledger.
+    pub fn has_outstanding_for_info_hash(&self, info_hash: &[u8; 20]) -> bool {
+        let prefix = format!("{}:", hex::encode(info_hash));
+        self.debts
+            .iter()
+            .any(|debt| debt.blocks_removal() && debt.key.starts_with(&prefix))
+    }
+
     /// Merge replayed journal accounts into the payment queue.
     ///
     /// The journal is authoritative for its exact `(info_hash, peer, receipt
@@ -210,6 +229,29 @@ mod tests {
         ledger.add_account(&[1u8; 20], "VPeer", &account);
         assert_eq!(ledger.debts[0].pending_txid, Some([9u8; 32]));
         assert_eq!(ledger.debts[0].pending_satoshis, 900);
+        assert!(ledger.debts[0].blocks_removal());
+    }
+
+    #[test]
+    fn outstanding_debt_blocks_removal_for_the_same_info_hash() {
+        let mut ledger = IncentiveLedger::default();
+        let mut account = PeerBandwidthAccount::new("VPeer".into());
+        account.unpaid_satoshis = MIN_PAYMENT_SATS;
+        ledger.add_account(&[3u8; 20], "VPeer", &account);
+        assert!(ledger.has_outstanding_for_info_hash(&[3u8; 20]));
+        assert!(!ledger.has_outstanding_for_info_hash(&[4u8; 20]));
+        ledger.debts[0].confirm_payment(MIN_PAYMENT_SATS);
+        assert!(!ledger.has_outstanding_for_info_hash(&[3u8; 20]));
+    }
+
+    #[test]
+    fn dust_below_the_payment_minimum_does_not_block_removal() {
+        let mut ledger = IncentiveLedger::default();
+        let mut account = PeerBandwidthAccount::new("VPeer".into());
+        account.unpaid_satoshis = MIN_PAYMENT_SATS - 1;
+        ledger.add_account(&[5u8; 20], "VPeer", &account);
+        assert!(ledger.debts[0].has_outstanding());
+        assert!(!ledger.has_outstanding_for_info_hash(&[5u8; 20]));
     }
 
     #[test]

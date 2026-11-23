@@ -254,6 +254,11 @@ pub async fn remove_torrent(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> RpcResult<Json<Value>> {
+    let removal_guard = state
+        .torrent_removal_guard
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
     let mut sessions = state.torrent_sessions.write().await;
     let Some(session) = sessions.get_session(&id).ok() else {
         return Err(RpcError::NotFound(format!("Session {} not found", id)));
@@ -262,6 +267,11 @@ pub async fn remove_torrent(
         return Err(RpcError::BadRequest(
             "Session has unpaid or in-flight incentive payments; retry after settlement".into(),
         ));
+    }
+    if let Some(guard) = removal_guard {
+        if let Err(reason) = guard(session) {
+            return Err(RpcError::BadRequest(reason));
+        }
     }
     let info_hash = session.metainfo.info_hash;
     sessions.remove_session(&id);
@@ -279,4 +289,53 @@ pub async fn remove_torrent(
     Ok(Json(
         json!({ "success": true, "message": format!("Session {} removed", id) }),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vtorrent_torrent::metainfo::{Metainfo, TorrentFile};
+    use vtorrent_torrent::session::TorrentSession;
+
+    fn test_metainfo() -> Metainfo {
+        Metainfo {
+            info_hash: [0xAB; 20],
+            name: "removal-guard-test.iso".into(),
+            total_size: 1024 * 1024,
+            piece_length: 262144,
+            piece_count: 4,
+            pieces: Vec::new(),
+            announce: None,
+            announce_list: Vec::new(),
+            files: vec![TorrentFile {
+                path: vec!["removal-guard-test.iso".into()],
+                length: 1024 * 1024,
+                md5sum: None,
+            }],
+            created_at: None,
+            comment: None,
+            is_private: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn removal_is_refused_when_the_ledger_guard_reports_debt() {
+        let state = Arc::new(AppState::new());
+        let session =
+            TorrentSession::new(test_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+        let id = session.id.clone();
+        state.torrent_sessions.write().await.add_session(session);
+
+        let guard: crate::state::TorrentRemovalGuard =
+            Arc::new(|_| Err("outstanding ledger debt".into()));
+        *state.torrent_removal_guard.lock().unwrap() = Some(guard);
+
+        let result = remove_torrent(State(Arc::clone(&state)), Path(id.clone())).await;
+
+        assert!(result.is_err(), "the ledger guard must block removal");
+        assert!(
+            state.torrent_sessions.read().await.get_session(&id).is_ok(),
+            "the session must survive a refused removal"
+        );
+    }
 }

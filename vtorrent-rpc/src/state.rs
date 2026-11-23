@@ -49,6 +49,13 @@ pub struct BtcSyncHealth {
     pub configured: AtomicBool,
 }
 
+/// Ledger-aware removal check installed by the daemon.
+pub type TorrentRemovalGuard =
+    Arc<dyn Fn(&vtorrent_torrent::session::TorrentSession) -> Result<(), String> + Send + Sync>;
+
+/// Shared slot for the optional removal guard.
+pub type TorrentRemovalGuardSlot = std::sync::Mutex<Option<TorrentRemovalGuard>>;
+
 /// Shared application state for the RPC API server.
 ///
 /// `chain` and `mempool` use `Arc<Mutex<...>>` so they can be shared directly
@@ -79,6 +86,10 @@ pub struct AppState {
     /// Inbound seeder registry when the operator enabled `--torrent-listen`.
     /// Registered torrents are served to inbound peers.
     pub torrent_seeder: Arc<RwLock<Option<Arc<vtorrent_torrent::seed::SeederRegistry>>>>,
+    /// Optional ledger-aware guard for torrent removal. The daemon installs a
+    /// check against its durable incentive ledger; the desktop has no ledger
+    /// and falls back to the session's own outstanding-incentive check.
+    pub torrent_removal_guard: Arc<TorrentRemovalGuardSlot>,
     /// SPV header chain for light-client verification.
     pub spv_chain: Arc<RwLock<SpvChain>>,
     pub stake_proofs: Arc<RwLock<std::collections::HashMap<[u8; 32], StakeProof>>>,
@@ -216,6 +227,7 @@ impl AppState {
             seed_ratio_target: Arc::new(RwLock::new(0.0)),
             torrent_cancels: Arc::new(RwLock::new(std::collections::HashMap::new())),
             torrent_seeder: Arc::new(RwLock::new(None)),
+            torrent_removal_guard: Arc::new(std::sync::Mutex::new(None)),
             spv_chain: Arc::new(RwLock::new(SpvChain::new())),
             stake_proofs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             btc_wallet: Arc::new(RwLock::new(None)),
@@ -285,6 +297,7 @@ impl AppState {
             seed_ratio_target: Arc::new(RwLock::new(0.0)),
             torrent_cancels: Arc::new(RwLock::new(std::collections::HashMap::new())),
             torrent_seeder: Arc::new(RwLock::new(None)),
+            torrent_removal_guard: Arc::new(std::sync::Mutex::new(None)),
             spv_chain: Arc::new(RwLock::new(SpvChain::new())),
             stake_proofs: Arc::new(RwLock::new(std::collections::HashMap::new())),
             btc_wallet: Arc::new(RwLock::new(None)),

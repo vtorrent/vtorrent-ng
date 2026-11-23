@@ -1263,6 +1263,26 @@ async fn main() -> anyhow::Result<()> {
 
     let incentive_ledger_path = data_dir.join("incentive-ledger.json");
     let incentive_live_path = data_dir.join("incentive-live.json");
+    {
+        let removal_ledger_path = incentive_ledger_path.clone();
+        let removal_guard: vtorrent_rpc::state::TorrentRemovalGuard =
+            std::sync::Arc::new(move |session| {
+                let ledger = incentive_ledger::IncentiveLedger::load(&removal_ledger_path)
+                    .map_err(|error| format!("Could not read the incentive ledger: {error:#}"))?;
+                if ledger.has_outstanding_for_info_hash(&session.metainfo.info_hash) {
+                    Err(
+                    "Session has an outstanding incentive ledger debt; settle it before removal"
+                        .into(),
+                )
+                } else {
+                    Ok(())
+                }
+            });
+        *rpc_state
+            .torrent_removal_guard
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(removal_guard);
+    }
     let mut incentive_shutdown_tx: Option<
         tokio::sync::mpsc::Sender<tokio::sync::oneshot::Sender<()>>,
     > = None;
