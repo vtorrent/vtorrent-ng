@@ -4080,3 +4080,42 @@ earned credit. Details in `docs/2026-11-23_ai-supplementary-review-pass10.md`.
 
 This is a candidate window, not release evidence. The independent human
 review and the full 168 hours remain open.
+
+## 2026-11-23 — pass-11 candidate (`e091936`)
+
+The canonical CI failed only `Cargo Audit`. The release lock had two
+vulnerabilities: **RUSTSEC-2026-0594** (`cookie 0.18.2`, private cookie nonces
+can repeat in forked processes) and **RUSTSEC-2026-0592** (`url 2.5.8`, stack
+overflow in `Url::origin()` on nested `blob:` URLs). Pass 11 updates the lock
+to `cookie 0.18.3` and `url 2.5.9`; `form_urlencoded` follows at 1.2.3. Details
+in `docs/2026-11-23_ai-supplementary-review-pass11.md`.
+
+- `cargo audit --file release/Cargo.lock` exits 0 with no vulnerabilities.
+  Five allowed warnings remain: `bincode` (accepted), `chrono`,
+  `proc-macro-error`, `glib`, and `rand`.
+- Candidate: **2026-11-23T14:30:53Z** to **2026-11-30T14:30:53Z**,
+  `vtorrent/node:e091936`, image ID
+  `sha256:7449a432d9cc4760fdcc4ac4e4f8bea249c13376035fed24452d2174ad82a589`,
+  binary `b7d24f475700e38893266528690f0ffc78604e47ba279981e7b1f68e88030055`.
+- Both ignored E2Es pass on the image binary: seeder 2.26 s; incentive
+  26.31 s, paying 585,937 sats once. The full workspace suite passed **1,528
+  tests, 0 failed, 13 ignored** (56 groups, rc=0).
+- Live removal on `review-e091936`: node3 downloaded the 12 MiB; 184 DELETE
+  attempts returned **400 “Session has unpaid or in-flight incentive
+  payments”** while the 585,937-sat debt was outstanding; after settlement
+  the DELETE returned **200** at 14:38:23Z. Payment `2497a30e...` confirmed.
+  The 400 was the session-level guard; the ledger-file backstop remains
+  unit-tested for the pass-9 zero-account case.
+- The live transfer was served by node2 (matching SHA-1); node1 did not
+  register because its wallet was locked and the empty-address fallback still
+  returns the raw validation error. The pass-8 split remains the live
+  multi-peer proof.
+- Health: heights 10/10/10, same tip `a9204ca4ee17...`, restarts 0/0/0,
+  Prometheus 3/3.
+- Fleet `review-e091936`, RPC 23951–23953, Prometheus 23973, evidence
+  `/mnt/temp/vtorrent-ng-evidence/soak-e091936/`.
+- The `review-d376506` fleet was retired at height 129; its window does not
+  count. The `vtr-node*` production soak was not touched.
+
+This is a candidate window, not release evidence. The independent human
+review and the full 168 hours remain open.

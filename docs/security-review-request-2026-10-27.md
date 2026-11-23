@@ -10,17 +10,18 @@ already accepted so it is not re-litigated.
 
 ## Review target
 
-Review the code candidate `d376506e4cf7bdf7f493353c4c93d3ed96bdad0d`. This is
+Review the code candidate `e0919364bd3409e43a81016fc25b4300f80f71d6`. This is
 the current code candidate; the docs tip is a docs-only child of it. The
-exact-image window `review-d376506` started at 2026-11-23T12:21:34Z and is in
-progress; the `review-22056d4` and `review-ef1d1a1` windows were retired and
-do not count. Under the soak provenance policy, the shipping image needs its
-own full 168-hour window after this review and its fixes settle.
+exact-image window `review-e091936` started at 2026-11-23T14:30:53Z and is in
+progress; the `review-d376506`, `review-22056d4`, and `review-ef1d1a1` windows
+were retired and do not count. Under the soak provenance policy, the shipping
+image needs its own full 168-hour window after this review and its fixes
+settle.
 
 Read this document from the tip of `main`. Confirm that no code changed after
 the candidate with
-`git diff --name-only d376506..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
-must return nothing. Check out `d376506` itself when running the verification
+`git diff --name-only e091936..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+must return nothing. Check out `e091936` itself when running the verification
 commands; read the docs from the tip that contains this package. The tables below record the earlier deltas. The table after the
 `f8e0162` deltas covers the range from `ba46fd6` to the candidate.
 
@@ -142,6 +143,7 @@ Deltas after `ba46fd6`:
 | `ef1d1a1` | Pass 8: lost-block/stall/completion fixes, BEP-10 id direction, per-peer receipt throttle, per-IP cap, non-stake payment fallback, dust and lifecycle follow-ons |
 | `22056d4` | Pass 9: empty-address fallback, 10 s receive slices and progress watchdog, per-connection+per-address receipt throttle, Cancel-safe tombstones, bounded verified-piece semaphore, current-window/idle eviction, no periodic dust write-off, registry pruning, magnet Stopped, largest-stake reserve, owner-scoped clear_piece, upload dedupe/counter, tracker-init Stopped, IPv6 /64 cap, early address/ID edges |
 | `d376506` | Pass 10: ledger-aware torrent-removal guard, desktop receipt-removal guard, dust-preserving ledger policy, live DELETE refusal/release; follow-ups for the node1 empty-address error and a live ledger-backstop case |
+| `e091936` | Pass 11: release-lock audit fixes for RUSTSEC-2026-0594 (`cookie 0.18.3`) and RUSTSEC-2026-0592 (`url 2.5.9`); `cargo audit` clean; exact-image live DELETE refusal/release; follow-ups for node1 empty-address, live ledger backstop, zero-fee policy, and desktop settle/write-off |
 
 Deltas after the earlier review head:
 
@@ -193,7 +195,7 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout d376506e4cf7bdf7f493353c4c93d3ed96bdad0d
+git checkout e0919364bd3409e43a81016fc25b4300f80f71d6
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
@@ -201,7 +203,7 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 cargo test --workspace --all-features
 ```
 
-The `d376506` workspace run passed 56 test groups and 1,528 tests with 0
+The `e091936` workspace run passed 56 test groups and 1,528 tests with 0
 failures and 13 ignored. CI repeats the `--all-features` suite on every push.
 Set `VTORRENT_TOTP_STATE_DIR` to a fresh directory before running the suite so
 the host-scoped TOTP replay state does not collide with an existing

@@ -166,7 +166,13 @@ settlement. The live transfer was served by node2 (matching SHA-1); node1 did
 not register because its wallet was locked and the empty-address fallback
 returned a raw validation error. The pass-8 split remains the multi-peer
 proof; add a clear wallet-locked/no-change-address error and a desktop
-add-torrent E2E.
+
+On the pass-11 candidate (`e091936`) the release lock is updated for the
+`cookie` and `url` advisories; `cargo audit` is clean. The exact-image live
+transfer was served by node2; node1's locked wallet still returns the raw
+empty-address error. The live DELETE was refused 184 times while the
+585,937-sat debt was outstanding and succeeded after settlement. The pass-8
+split remains the multi-peer proof.
 
 ## Suite results
 

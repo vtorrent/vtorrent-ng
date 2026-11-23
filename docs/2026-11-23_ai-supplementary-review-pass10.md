@@ -1,5 +1,9 @@
 # AI supplementary security review — pass 10
 
+> **Pass-11 follow-up.** The release-lock audit fix in
+> `docs/2026-11-23_ai-supplementary-review-pass11.md` retires the
+> `review-d376506` window; it does not count toward the 168 hours.
+
 **Date:** 2026-11-23
 **Reviewed head:** `22056d4fc6a22731636ad05c457c42c1632c54f4` (pass 9)
 **Fix commit:** `d376506e4cf7bdf7f493353c4c93d3ed96bdad0d`
