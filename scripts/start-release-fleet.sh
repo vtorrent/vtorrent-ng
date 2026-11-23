@@ -146,6 +146,20 @@ allocator=${ALLOCATOR[*]}
 secret_dir=$SECRET_DIR
 EOF
 
+# Record the actual runtime shape and binary digest. The image tag/commit alone
+# does not prove which arguments or listener ports the fleet used.
+daemon_sha256=$(docker run --rm --entrypoint sha256sum "$IMAGE" /usr/local/bin/vtorrent-daemon 2>/dev/null | awk '{print $1}')
+echo "daemon_sha256=${daemon_sha256:-unknown}" >> "$EVIDENCE/deployment.txt"
+if [ "$SEED_TORRENT" = 1 ]; then
+    echo "torrent_port=22630" >> "$EVIDENCE/deployment.txt"
+else
+    echo "torrent_port=disabled" >> "$EVIDENCE/deployment.txt"
+fi
+for i in 1 2 3; do
+    cmd=$(docker inspect "${NAME}-${i}" --format '{{json .Config.Cmd}}' 2>/dev/null || echo unknown)
+    echo "node${i}_cmd=${cmd}" >> "$EVIDENCE/deployment.txt"
+done
+
 # A scrape config that shows the fleet exactly as the production rules expect.
 cat > "$EVIDENCE/prometheus.yml" <<EOF
 global:

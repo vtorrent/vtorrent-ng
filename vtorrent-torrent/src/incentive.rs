@@ -296,6 +296,23 @@ impl PeerBandwidthAccount {
         self.state_version = self.state_version.saturating_add(1);
     }
 
+    /// Write off a residual debt that is below the economic payment minimum.
+    ///
+    /// Such a debt can never be paid (the fee exceeds it) and otherwise blocks
+    /// session deletion and eviction forever. Returns the amount written off.
+    pub fn write_off_dust(&mut self, minimum_satoshis: u64) -> u64 {
+        if self.payment_in_flight || self.pending_payment.is_some() {
+            return 0;
+        }
+        if self.unpaid_satoshis == 0 || self.unpaid_satoshis >= minimum_satoshis {
+            return 0;
+        }
+        let dust = self.unpaid_satoshis;
+        self.unpaid_satoshis = 0;
+        self.state_version = self.state_version.saturating_add(1);
+        dust
+    }
+
     /// Drop a receipt that could not be agreed on.
     ///
     /// A disputed receipt is not a liability: no payment is made without an
@@ -1017,5 +1034,22 @@ mod tests {
         assert!(account.record_receipt(receipt));
         assert_eq!(account.unpaid_satoshis, COIN);
         assert_eq!(account.total_paid_satoshis, 0);
+    }
+
+    #[test]
+    fn dust_below_the_payment_minimum_is_written_off() {
+        let mut account = PeerBandwidthAccount::new("VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+        account.unpaid_satoshis = 100;
+        assert_eq!(account.write_off_dust(MIN_PAYMENT_SATS), 100);
+        assert_eq!(account.unpaid_satoshis, 0);
+
+        // A payable amount and a pending payment are untouched.
+        account.unpaid_satoshis = MIN_PAYMENT_SATS;
+        assert_eq!(account.write_off_dust(MIN_PAYMENT_SATS), 0);
+        assert_eq!(account.unpaid_satoshis, MIN_PAYMENT_SATS);
+        account.unpaid_satoshis = 1;
+        account.payment_in_flight = true;
+        assert_eq!(account.write_off_dust(MIN_PAYMENT_SATS), 0);
+        assert_eq!(account.unpaid_satoshis, 1);
     }
 }

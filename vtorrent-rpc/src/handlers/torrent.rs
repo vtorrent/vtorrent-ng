@@ -116,13 +116,13 @@ pub async fn add_torrent(
 
     let info_hash = hex::encode(metainfo.info_hash);
     let name = metainfo.name.clone();
-    // A seeding session must advertise a payable address; peers validate it
-    // and an empty or malformed value makes every receipt unverifiable.
-    if state.torrent_seeder.read().await.is_some() {
-        vtorrent_core::address::validate_p2pkh(req.wallet_address.trim())
-            .map_err(|error| RpcError::BadRequest(format!("invalid wallet_address: {error}")))?;
-    }
-    let session = TorrentSession::new(metainfo.clone(), req.wallet_address);
+    // Receipts are signed with this wallet and addressed back to it. Peers
+    // reject an empty or malformed value, and an empty address also lets a
+    // leecher avoid ever being payable.
+    let wallet_address = req.wallet_address.trim().to_owned();
+    vtorrent_core::address::validate_p2pkh(&wallet_address)
+        .map_err(|error| RpcError::BadRequest(format!("invalid wallet_address: {error}")))?;
+    let session = TorrentSession::new(metainfo.clone(), wallet_address);
     let session_id = {
         let mut sessions = state.torrent_sessions.write().await;
         // The seeder registry is keyed by info-hash; two sessions for the same
@@ -210,7 +210,9 @@ pub async fn add_torrent(
                         "Torrent complete; now serving it to inbound peers"
                     );
                 } else {
-                    seeder.unregister(&info_hash).await;
+                    seeder
+                        .unregister_session(&info_hash, &seeder_session_id)
+                        .await;
                 }
             }
         }
@@ -245,7 +247,9 @@ pub async fn remove_torrent(
     // Stop serving it immediately, even if the engine task is still winding
     // down: the session it would read from is gone.
     if let Some(seeder) = state.torrent_seeder.read().await.clone() {
-        seeder.unregister(&info_hash).await;
+        // Only remove this session's entry; a concurrent re-add may have
+        // registered a newer one for the same info-hash.
+        seeder.unregister_session(&info_hash, &id).await;
     }
     Ok(Json(
         json!({ "success": true, "message": format!("Session {} removed", id) }),

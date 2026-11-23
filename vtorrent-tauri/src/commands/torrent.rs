@@ -249,7 +249,9 @@ pub async fn add_torrent(
                     .get_session(&engine_session_id)
                     .is_err()
                 {
-                    seeder.unregister(&info_hash).await;
+                    seeder
+                        .unregister_session(&info_hash, &engine_session_id)
+                        .await;
                 }
             }
         }
@@ -276,11 +278,9 @@ pub async fn remove_torrent(state: tauri::State<'_, AppState>, id: String) -> Re
         let session = sessions
             .get_session(&id)
             .map_err(|_| TauriError::Torrent(format!("Session {} not found", id)))?;
-        if session.has_outstanding_incentives() {
-            return Err(TauriError::InvalidInput(
-                "Session has unpaid or in-flight incentive payments; retry after settlement".into(),
-            ));
-        }
+        // The desktop node has no settlement/payment loop, so a stored receipt
+        // is not an in-flight payment the user can wait out. Blocking removal
+        // would strand the session forever.
         let info_hash = session.metainfo.info_hash;
         sessions
             .remove_session(&id)
@@ -289,7 +289,7 @@ pub async fn remove_torrent(state: tauri::State<'_, AppState>, id: String) -> Re
     };
     // Stop serving immediately, exactly like the RPC path.
     if let Some(seeder) = handle.rpc_state.torrent_seeder.read().await.clone() {
-        seeder.unregister(&info_hash).await;
+        seeder.unregister_session(&info_hash, &id).await;
     }
     Ok(())
 }

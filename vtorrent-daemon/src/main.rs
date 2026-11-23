@@ -582,6 +582,9 @@ async fn main() -> anyhow::Result<()> {
             // and stops when the wallet is locked again.
             wallet_wif: std::sync::Arc::clone(&rpc_state.wallet_wif),
             our_peer_id: vtorrent_torrent::peer_wire::random_peer_id(),
+            receipt_throttle: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
             cancel: tokio_util::sync::CancellationToken::new(),
         };
         let seeder_config = vtorrent_torrent::seed::SeederConfig {
@@ -1836,6 +1839,28 @@ async fn main() -> anyhow::Result<()> {
                                     peer = %account.peer_address,
                                     "Withholding incentive settlement: no matching signed receipt"
                                 );
+                            }
+                        }
+                        // A residual below the economic payment minimum can
+                        // never be paid. Writing it off keeps it from blocking
+                        // deletion or session eviction forever.
+                        if account.unpaid_satoshis > 0
+                            && account.unpaid_satoshis
+                                < vtorrent_torrent::incentive::MIN_PAYMENT_SATS
+                        {
+                            let dust = account
+                                .write_off_dust(vtorrent_torrent::incentive::MIN_PAYMENT_SATS);
+                            if dust > 0 {
+                                tracing::debug!(
+                                    peer = %account.peer_address,
+                                    dust,
+                                    "Writing off sub-minimum incentive dust"
+                                );
+                                journal_updates.push((
+                                    info_hash,
+                                    peer_key.clone(),
+                                    account.clone(),
+                                ));
                             }
                         }
                         if account.unpaid_satoshis > 0

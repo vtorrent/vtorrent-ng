@@ -19,7 +19,9 @@ use crate::engine::PeerConnection;
 use crate::engine_disk::{piece_length, read_block_from_disk, read_piece_from_disk};
 use crate::error::{Result, TorrentError};
 use crate::limits::TorrentRateLimiter;
-use crate::metadata::{self, build_ut_vtr_address, build_ut_vtr_handshake};
+use crate::metadata::{
+    self, build_ut_vtr_address, build_ut_vtr_handshake, OUR_RECEIPT_ID, OUR_UT_VTR_ID,
+};
 use crate::metainfo::Metainfo;
 use crate::peer_wire::PeerMessage;
 use crate::session::SessionManager;
@@ -48,8 +50,10 @@ const RECEIPT_RETRY: Duration = Duration::from_secs(1);
 const CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// Tracker announces attempted per torrent, bounded like the downloader.
 const MAX_TRACKER_ATTEMPTS: usize = 8;
-/// Receipts from one peer are verified at most this often.
+/// Receipts from one peer are verified at most this often, across reconnects.
 const PEER_RECEIPT_INTERVAL: Duration = Duration::from_secs(30);
+/// Concurrent connections one source IP may hold.
+const MAX_CONNECTIONS_PER_IP: usize = 8;
 
 /// A torrent this node can serve.
 struct SeedTorrent {
@@ -59,6 +63,9 @@ struct SeedTorrent {
     /// Pieces already verified against the metainfo, so repeated block
     /// requests for the same piece hash it once.
     verified: StdMutex<HashSet<u32>>,
+    /// Pieces that failed verification, with a retry deadline. Without this a
+    /// corrupt piece re-read the whole piece on every distinct block request.
+    failed: StdMutex<HashMap<u32, std::time::Instant>>,
     /// Cancelled when the torrent is unregistered, so an in-flight connection
     /// stops serving immediately instead of holding an `Arc` forever.
     cancel: CancellationToken,
@@ -71,11 +78,14 @@ impl SeedTorrent {
             metainfo,
             download_dir,
             verified: StdMutex::new(HashSet::new()),
+            failed: StdMutex::new(HashMap::new()),
             cancel: CancellationToken::new(),
         }
     }
 
-    /// Whether the piece on disk matches its metainfo hash, caching success.
+    /// Whether the piece on disk matches its metainfo hash, caching success
+    /// and briefly caching failure so a corrupt piece cannot force a full read
+    /// and hash on every block request.
     async fn verified_piece(&self, index: u32) -> bool {
         {
             let verified = self
@@ -86,14 +96,26 @@ impl SeedTorrent {
                 return true;
             }
         }
+        let now = std::time::Instant::now();
+        {
+            let failed = self
+                .failed
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if failed.get(&index).is_some_and(|until| *until > now) {
+                return false;
+            }
+        }
         let Some(expected) = self.metainfo.pieces.get(index as usize) else {
             return false;
         };
         let Some(data) = read_piece_from_disk(&self.metainfo, &self.download_dir, index).await
         else {
+            self.note_failure(index);
             return false;
         };
         if data.len() != piece_length(&self.metainfo, index) as usize {
+            self.note_failure(index);
             return false;
         }
         if Sha1::digest(&data).as_slice() != expected.as_slice() {
@@ -101,13 +123,25 @@ impl SeedTorrent {
                 piece = index,
                 "Refusing to seed a piece whose bytes do not match the metainfo"
             );
+            self.note_failure(index);
             return false;
         }
+        self.failed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&index);
         self.verified
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .insert(index);
         true
+    }
+
+    fn note_failure(&self, index: u32) {
+        self.failed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(index, std::time::Instant::now() + Duration::from_secs(60));
     }
 
     /// Read one requested block, verifying the whole piece first.
@@ -141,12 +175,18 @@ impl SeederRegistry {
         Self::default()
     }
 
-    /// Register a torrent we hold. Idempotent for the same info-hash.
+    /// Register a torrent we hold.
+    ///
+    /// Replaces a stale entry for the same info-hash (for example one left by
+    /// a session that was evicted and then re-added) so the new session's
+    /// completion is not a no-op against the old session id.
     pub async fn register(&self, session_id: String, metainfo: Metainfo, download_dir: PathBuf) {
+        let info_hash = metainfo.info_hash;
+        let new = Arc::new(SeedTorrent::new(session_id, metainfo, download_dir));
         let mut entries = self.entries.write().await;
-        entries
-            .entry(metainfo.info_hash)
-            .or_insert_with(|| Arc::new(SeedTorrent::new(session_id, metainfo, download_dir)));
+        if let Some(old) = entries.insert(info_hash, new) {
+            old.cancel.cancel();
+        }
     }
 
     /// Stop serving a torrent, including on connections already open.
@@ -154,6 +194,22 @@ impl SeederRegistry {
         let mut entries = self.entries.write().await;
         if let Some(torrent) = entries.remove(info_hash) {
             torrent.cancel.cancel();
+        }
+    }
+
+    /// Stop serving only if the entry still belongs to `session_id`.
+    ///
+    /// Removal and registration can race: an unconditional unregister would
+    /// cancel a newer session that re-added the same torrent.
+    pub async fn unregister_session(&self, info_hash: &[u8; 20], session_id: &str) {
+        let mut entries = self.entries.write().await;
+        let matches = entries
+            .get(info_hash)
+            .is_some_and(|torrent| torrent.session_id == session_id);
+        if matches {
+            if let Some(torrent) = entries.remove(info_hash) {
+                torrent.cancel.cancel();
+            }
         }
     }
 
@@ -204,7 +260,28 @@ pub struct SeederState {
     /// unlocked and stops signing when it is locked again.
     pub wallet_wif: Arc<RwLock<Option<zeroize::Zeroizing<String>>>>,
     pub our_peer_id: [u8; 20],
+    /// Last accepted receipt per peer address, shared across that peer's
+    /// connections so reconnecting cannot reset the 30 s verification budget.
+    pub receipt_throttle: Arc<StdMutex<HashMap<String, std::time::Instant>>>,
     pub cancel: CancellationToken,
+}
+
+/// Releases one per-IP connection slot when a task ends, including on panic.
+struct IpConnectionSlot {
+    counts: Arc<StdMutex<HashMap<std::net::IpAddr, usize>>>,
+    ip: std::net::IpAddr,
+}
+
+impl Drop for IpConnectionSlot {
+    fn drop(&mut self) {
+        let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(count) = counts.get_mut(&self.ip) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                counts.remove(&self.ip);
+            }
+        }
+    }
 }
 
 /// Bind the inbound listener.
@@ -247,6 +324,8 @@ pub async fn run_seeder(
     );
 
     let slots = Arc::new(tokio::sync::Semaphore::new(config.max_connections.max(1)));
+    let per_ip: Arc<StdMutex<HashMap<std::net::IpAddr, usize>>> =
+        Arc::new(StdMutex::new(HashMap::new()));
     loop {
         let permit = match slots.clone().acquire_owned().await {
             Ok(permit) => permit,
@@ -271,8 +350,24 @@ pub async fn run_seeder(
             drop(permit);
             continue;
         }
+        let ip = addr.ip();
+        {
+            let mut counts = per_ip.lock().unwrap_or_else(|e| e.into_inner());
+            let count = counts.entry(ip).or_insert(0);
+            if *count >= MAX_CONNECTIONS_PER_IP {
+                tracing::debug!(peer = %addr, "Refusing torrent peer: per-IP connection cap");
+                drop(permit);
+                continue;
+            }
+            *count += 1;
+        }
+        let ip_slot = IpConnectionSlot {
+            counts: Arc::clone(&per_ip),
+            ip,
+        };
         let state = state.clone();
         tokio::spawn(async move {
+            let _ip_slot = ip_slot;
             if let Err(error) = serve_connection(stream, addr, state).await {
                 tracing::debug!(peer = %addr, "Inbound torrent peer ended: {}", error);
             }
@@ -384,30 +479,21 @@ async fn serve_connection(stream: TcpStream, addr: SocketAddr, state: SeederStat
     // inbound buffering independently of the torrent's piece size.
     conn.set_max_message_len(crate::peer_wire::MAX_INBOUND_FRAME);
 
-    // Announce the pieces the engine already verified when it finished the
-    // download. Re-hashing a whole large torrent here would stall the first
-    // inbound peer; each piece is still verified lazily before its first block
-    // is served, so a corrupted file cannot be uploaded as valid.
-    let mut bits = vec![0u8; (torrent.metainfo.piece_count as usize).div_ceil(8)];
-    if let Ok(resume) = tokio::fs::read(crate::engine_disk::resume_file_path(
-        &torrent.download_dir,
-        &torrent.metainfo.info_hash,
-    ))
-    .await
-    {
-        for (index, byte) in resume.iter().take(bits.len()).enumerate() {
-            bits[index] = *byte;
-        }
-    } else {
-        // No resume file: all bits stay clear, and pieces are granted as they
-        // verify when requested.
-        tracing::debug!("Seeding a torrent with no verified resume bitfield");
+    // Registration only happens for a complete session, so every piece was
+    // verified when the download finished. Advertise all of them. Each piece
+    // is still re-hashed before its first block, so a file corrupted after
+    // registration is refused rather than served. Deriving the bitfield from a
+    // missing resume file would advertise nothing and hide the whole torrent.
+    let piece_count = torrent.metainfo.piece_count as usize;
+    let mut bits = vec![0u8; piece_count.div_ceil(8)];
+    for index in 0..piece_count {
+        bits[index / 8] |= 0x80 >> (index % 8);
     }
     conn.send(&PeerMessage::Bitfield { bits }).await?;
     conn.send(&PeerMessage::Unchoke).await?;
     conn.send(&PeerMessage::Extended {
         id: 0,
-        payload: build_ut_vtr_handshake(1),
+        payload: build_ut_vtr_handshake(OUR_UT_VTR_ID),
     })
     .await?;
 
@@ -418,22 +504,17 @@ async fn serve_connection(stream: TcpStream, addr: SocketAddr, state: SeederStat
             .map(|session| session.wallet_address.clone())
             .unwrap_or_default()
     };
-    conn.send(&PeerMessage::Extended {
-        id: 1,
-        payload: build_ut_vtr_address(&our_address),
-    })
-    .await?;
-
     let mut peer_address: Option<String> = None;
-    let mut receipt_id: Option<u8> = None;
+    let mut peer_ut_vtr_id: Option<u8> = None;
+    let mut peer_receipt_id: Option<u8> = None;
+    let mut address_sent = false;
     let mut last_receipt_at: Option<std::time::Instant> = None;
     // Recently served requests. A re-request inside the window is dropped
     // instead of being counted and re-read, so a peer cannot inflate the
     // receipt with duplicates by replaying the same Request. Bounded per
     // connection: entries expire, and a flood clears the map.
-    let served_requests: StdMutex<HashMap<(u32, u32), std::time::Instant>> =
+    let served_requests: StdMutex<HashMap<(u32, u32, u32), std::time::Instant>> =
         StdMutex::new(HashMap::new());
-    let mut last_peer_receipt_at: Option<std::time::Instant> = None;
     // One epoch per connection. A fresh epoch on every receipt would make the
     // receiver treat each one as a peer restart and defeat its settlement-id
     // monotonicity guard.
@@ -458,9 +539,11 @@ async fn serve_connection(stream: TcpStream, addr: SocketAddr, state: SeederStat
                 .await
                 .as_deref()
                 .and_then(|wif| PrivateKey::from_wif(wif).ok());
-            if let (Some(key), Some(id), Some(peer)) =
-                (receipt_key.as_ref(), receipt_id, peer_address.as_deref())
-            {
+            if let (Some(key), Some(id), Some(peer)) = (
+                receipt_key.as_ref(),
+                peer_receipt_id,
+                peer_address.as_deref(),
+            ) {
                 // The receiver drops receipts inside a 30 s window, so only
                 // report when the total advanced and that window has passed.
                 let due =
@@ -541,27 +624,61 @@ async fn serve_connection(stream: TcpStream, addr: SocketAddr, state: SeederStat
                     crate::bencode_guard::parse_untrusted::<Value>(&payload)
                 {
                     if let Some(Value::Dict(map)) = dict.get(b"m".as_slice()) {
+                        if let Some(Value::Int(id)) = map.get(b"ut_vtr".as_slice()) {
+                            if (1..=u8::MAX as i64).contains(id) {
+                                peer_ut_vtr_id = Some(*id as u8);
+                            }
+                        }
                         if let Some(Value::Int(id)) = map.get(b"ut_vtr_receipt".as_slice()) {
                             if (1..=u8::MAX as i64).contains(id) {
-                                receipt_id = Some(*id as u8);
+                                peer_receipt_id = Some(*id as u8);
                             }
                         }
                     }
                 }
+                // Send our address on the id the PEER advertised for receiving
+                // it, now that we know it.
+                if !address_sent {
+                    if let Some(id) = peer_ut_vtr_id {
+                        let _ = conn
+                            .send(&PeerMessage::Extended {
+                                id,
+                                payload: build_ut_vtr_address(&our_address),
+                            })
+                            .await;
+                        address_sent = true;
+                    }
+                }
             }
             PeerMessage::Extended { id, payload } => {
-                if Some(id) == receipt_id {
-                    // Receipt verification is ECDSA over attacker-supplied
-                    // bytes and each accepted receipt is journaled. The
-                    // download path rate-limits the same flow; the seeder must
-                    // too, or one connection can force a verify + fsync per
-                    // frame.
-                    if last_peer_receipt_at
-                        .is_some_and(|last| last.elapsed() < PEER_RECEIPT_INTERVAL)
-                    {
+                // A peer sends receipts to us on the id WE advertised, not on
+                // the id it advertised for receiving.
+                if id == OUR_RECEIPT_ID {
+                    let Some(peer) = peer_address.as_deref() else {
                         continue;
+                    };
+                    // ECDSA + journal fsync are expensive. Ratchet per peer
+                    // address, not per connection, so reconnecting cannot
+                    // reset the budget. The map only holds addresses active
+                    // in the last window.
+                    let now = std::time::Instant::now();
+                    {
+                        let mut seen = state
+                            .receipt_throttle
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner());
+                        seen.retain(|_, at| now.duration_since(*at) < PEER_RECEIPT_INTERVAL);
+                        if seen
+                            .get(peer)
+                            .is_some_and(|at| now.duration_since(*at) < PEER_RECEIPT_INTERVAL)
+                        {
+                            continue;
+                        }
+                        if seen.len() >= 10_000 {
+                            seen.clear();
+                        }
+                        seen.insert(peer.to_string(), now);
                     }
-                    last_peer_receipt_at = Some(std::time::Instant::now());
                     record_peer_receipt(
                         &state,
                         &torrent.session_id,
@@ -600,10 +717,9 @@ async fn serve_connection(stream: TcpStream, addr: SocketAddr, state: SeederStat
                         // window rather than grow without bound.
                         served.clear();
                     }
-                    if served.contains_key(&(index, begin)) {
+                    if served.contains_key(&(index, begin, length)) {
                         continue;
                     }
-                    served.insert((index, begin), now + Duration::from_secs(10));
                 }
                 if seeding_ratio_reached(&state, &torrent.session_id).await {
                     continue;
@@ -637,6 +753,13 @@ async fn serve_connection(stream: TcpStream, addr: SocketAddr, state: SeederStat
                         .await
                         .is_ok()
                     {
+                        served_requests
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .insert(
+                                (index, begin, length),
+                                std::time::Instant::now() + Duration::from_secs(10),
+                            );
                         uploaded = uploaded.saturating_add(block.len() as u64);
                         record_upload(&state, &torrent.session_id, &peer_key, block.len() as u64)
                             .await;
@@ -647,12 +770,17 @@ async fn serve_connection(stream: TcpStream, addr: SocketAddr, state: SeederStat
                     }
                 }
             }
+            PeerMessage::Cancel { index, begin, .. } => {
+                served_requests
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .retain(|(piece, start, _), _| *piece != index || *start != begin);
+            }
             PeerMessage::KeepAlive
             | PeerMessage::Interested
             | PeerMessage::NotInterested
             | PeerMessage::Choke
             | PeerMessage::Unchoke
-            | PeerMessage::Cancel { .. }
             | PeerMessage::Have { .. }
             | PeerMessage::Bitfield { .. }
             | PeerMessage::Handshake { .. }
@@ -708,6 +836,11 @@ async fn record_peer_receipt(
         return;
     };
     let receipt = &envelope.receipt;
+    // A zero-value receipt proves nothing and must not pin the session as
+    // "outstanding incentives"; a remote peer can mint these for free.
+    if receipt.uploaded_by_me == 0 && receipt.downloaded_by_me == 0 {
+        return;
+    }
     // A receipt is bound to one torrent's transfer. Accepting one signed for a
     // different info-hash would corrupt this account's baselines and journal
     // the state under the wrong key.
@@ -837,6 +970,29 @@ mod tests {
         assert!(registry.get(&[2u8; 20]).await.is_none());
         registry.unregister(&[1u8; 20]).await;
         assert!(registry.is_empty().await);
+    }
+
+    #[tokio::test]
+    async fn re_registration_replaces_a_stale_session_and_unregister_is_session_keyed() {
+        let registry = SeederRegistry::new();
+        let dir = tempfile::tempdir().unwrap();
+        let meta = metainfo([5u8; 20], b"abcdef");
+        registry
+            .register("old".into(), meta.clone(), dir.path().into())
+            .await;
+        registry
+            .register("new".into(), meta.clone(), dir.path().into())
+            .await;
+        let entry = registry.get(&[5u8; 20]).await.unwrap();
+        assert_eq!(entry.session_id, "new");
+
+        registry.unregister_session(&[5u8; 20], "old").await;
+        assert!(
+            registry.get(&[5u8; 20]).await.is_some(),
+            "a stale session must not remove the newer entry"
+        );
+        registry.unregister_session(&[5u8; 20], "new").await;
+        assert!(registry.get(&[5u8; 20]).await.is_none());
     }
 
     #[tokio::test]

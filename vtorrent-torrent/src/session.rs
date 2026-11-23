@@ -1,6 +1,6 @@
 use crate::error::{Result, TorrentError};
 use crate::incentive::{
-    aggregate_summary, IncentiveSummary, PeerBandwidthAccount, MIN_PAYMENT_BYTES,
+    aggregate_summary, IncentiveSummary, PeerBandwidthAccount, MIN_PAYMENT_BYTES, MIN_PAYMENT_SATS,
 };
 use crate::metainfo::Metainfo;
 use crate::tracker::TrackerPeer;
@@ -192,8 +192,10 @@ impl TorrentSession {
                             && !a.payment_in_flight
                             && a.pending_payment.is_none()
                             && a.peer_receipt.is_none()
-                            && a.total_bytes_uploaded
-                                .saturating_add(a.total_bytes_downloaded)
+                            // Current settlement window, not lifetime totals:
+                            // a fully settled long-lived peer must stay
+                            // evictable or the map fossilizes at the cap.
+                            && a.bytes_uploaded.saturating_add(a.bytes_downloaded)
                                 < MIN_PAYMENT_BYTES
                     })
                     .min_by_key(|(_, a)| a.last_active)
@@ -271,10 +273,17 @@ impl TorrentSession {
     /// payment awaiting confirmation.
     pub fn has_outstanding_incentives(&self) -> bool {
         self.incentive_accounts.values().any(|account| {
-            account.unpaid_satoshis > 0
+            // Dust below the payment minimum is written off by the settlement
+            // loop and must not block removal forever.
+            account.unpaid_satoshis >= MIN_PAYMENT_SATS
                 || account.payment_in_flight
                 || account.pending_payment.is_some()
-                || account.peer_receipt.is_some()
+                // A stored receipt is only a liability if it actually agrees
+                // to a positive amount. A zero-value receipt must not let a
+                // remote peer pin the session.
+                || account
+                    .agreed_owed()
+                    .is_some_and(|agreed| agreed.satoshis > 0)
         })
     }
 
@@ -601,6 +610,78 @@ mod tests {
         assert!(session
             .incentive_accounts
             .contains_key("VH6w62jDRYpYHjR2eJjFzXRC4MQvvs93a6"));
+    }
+
+    #[test]
+    fn a_settled_account_with_large_lifetime_history_is_evictable() {
+        let mut session =
+            TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+        let address = |index: u64| {
+            let mut hash160 = [0u8; 20];
+            hash160[..8].copy_from_slice(&index.to_be_bytes());
+            vtorrent_core::address::Address::from_hash160(&hash160, 70)
+                .expect("valid address")
+                .to_string()
+        };
+        // A long-lived peer with >10 MB of lifetime traffic, then a settlement
+        // resets the current window.
+        let settled = address(0);
+        session.record_upload(&settled, MIN_PAYMENT_BYTES + 1);
+        {
+            let account = session.incentive_accounts.get_mut(&settled).unwrap();
+            assert!(account.total_bytes_uploaded > MIN_PAYMENT_BYTES);
+            account.settle_agreed(1, 0, 0);
+            // Make it the unambiguous LRU victim (all test accounts share a
+            // wall-clock second, so last_active would otherwise tie).
+            account.last_active = 1;
+            assert_eq!(account.bytes_uploaded, 0);
+        }
+        for index in 1..MAX_INCENTIVE_ACCOUNTS as u64 {
+            session.record_upload(&address(index), 1);
+        }
+        let newcomer = address(MAX_INCENTIVE_ACCOUNTS as u64 + 1);
+        session.record_upload(&newcomer, 1);
+        assert!(
+            session.incentive_accounts.contains_key(&newcomer),
+            "lifetime history must not make an old account immortal"
+        );
+        assert!(
+            !session.incentive_accounts.contains_key(&settled),
+            "the settled, idle account should be the eviction victim"
+        );
+    }
+
+    #[test]
+    fn dust_debt_and_zero_value_receipts_do_not_block_removal() {
+        let mut session =
+            TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+        let peer = "VH6w62jDRYpYHjR2eJjFzXRC4MQvvs93a6".to_string();
+        session.record_download(&peer, 1);
+        let wallet_address = session.wallet_address.clone();
+        {
+            let account = session.incentive_accounts.get_mut(&peer).unwrap();
+            account.unpaid_satoshis = 100; // below the payment minimum
+        }
+        assert!(!session.has_outstanding_incentives());
+        {
+            let account = session.incentive_accounts.get_mut(&peer).unwrap();
+            account.unpaid_satoshis = 0;
+            account.record_receipt(vtorrent_core::receipt::BandwidthReceipt {
+                info_hash: [0u8; 20],
+                window_start: 0,
+                window_end: 1,
+                uploaded_by_me: 0,
+                downloaded_by_me: 0,
+                peer: wallet_address,
+                signer: peer.clone(),
+                settlement_id: 1,
+                epoch: 1,
+            });
+        }
+        assert!(
+            !session.has_outstanding_incentives(),
+            "a zero-value receipt must not pin the session"
+        );
     }
 
     #[test]

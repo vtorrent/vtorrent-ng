@@ -17,6 +17,8 @@
 //! the tracker/peer policy rejects loopback targets exactly as in production:
 //!
 //! ```text
+//! VTORRENT_E2E_DAEMON_BIN=/path/to/vtorrent-daemon \
+//! VTORRENT_E2E_DAEMON_SHA256=<sha256> \
 //! unshare -rn sh -c '
 //!   ip link set lo up
 //!   ip addr add 8.8.8.8/32 dev lo
@@ -594,21 +596,21 @@ async fn seeder_serves_a_verified_torrent_to_an_inbound_peer() {
         .expect("IPv4 VTORRENT_E2E_PUBLIC_IP");
     let daemon_bin = PathBuf::from(
         std::env::var("VTORRENT_E2E_DAEMON_BIN")
-            .unwrap_or_else(|_| "/mnt/temp/vtorrent-ng-e2e/vtorrent-daemon-2fdd9aa".to_string()),
+            .expect("set VTORRENT_E2E_DAEMON_BIN to the exact candidate daemon binary"),
     );
     assert!(
         daemon_bin.is_file(),
         "daemon binary not found: {}",
         daemon_bin.display()
     );
-    if let Ok(expected) = std::env::var("VTORRENT_E2E_DAEMON_SHA256") {
-        let digest = sha2::Sha256::digest(std::fs::read(&daemon_bin).expect("read daemon binary"));
-        assert_eq!(
-            hex::encode(digest),
-            expected.to_ascii_lowercase(),
-            "daemon binary does not match the expected candidate image"
-        );
-    }
+    let expected = std::env::var("VTORRENT_E2E_DAEMON_SHA256")
+        .expect("set VTORRENT_E2E_DAEMON_SHA256 to the candidate binary's sha256");
+    let digest = sha2::Sha256::digest(std::fs::read(&daemon_bin).expect("read daemon binary"));
+    assert_eq!(
+        hex::encode(digest),
+        expected.to_ascii_lowercase(),
+        "daemon binary does not match the expected candidate image"
+    );
 
     let workdir =
         PathBuf::from(std::env::var("VTORRENT_E2E_WORKDIR").unwrap_or_else(|_| {

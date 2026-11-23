@@ -1,7 +1,8 @@
 //! Manual end-to-end test for the torrent incentive settlement path.
 //!
 //! This test runs the **exact daemon binary** named by
-//! `VTORRENT_E2E_DAEMON_BIN` (the candidate image's binary) against a
+//! `VTORRENT_E2E_DAEMON_BIN` and requires its digest in
+//! `VTORRENT_E2E_DAEMON_SHA256` (the candidate image's binary) against a
 //! protocol-faithful seeder process. The seeder serves a real 12 MiB torrent
 //! over the production peer-wire codec, advertises its VTR address through the
 //! `ut_vtr` extension, and signs a real `BandwidthReceipt` after the daemon has
@@ -699,21 +700,21 @@ async fn torrent_incentive_receipt_settles_pays_and_restart_does_not_repay() {
         .expect("IPv4 VTORRENT_E2E_PUBLIC_IP");
     let daemon_bin = PathBuf::from(
         std::env::var("VTORRENT_E2E_DAEMON_BIN")
-            .unwrap_or_else(|_| "/mnt/temp/vtorrent-ng-e2e/vtorrent-daemon-10c4671".to_string()),
+            .expect("set VTORRENT_E2E_DAEMON_BIN to the exact candidate daemon binary"),
     );
     assert!(
         daemon_bin.is_file(),
         "daemon binary not found: {}",
         daemon_bin.display()
     );
-    if let Ok(expected) = std::env::var("VTORRENT_E2E_DAEMON_SHA256") {
-        let digest = sha2::Sha256::digest(std::fs::read(&daemon_bin).expect("read daemon binary"));
-        assert_eq!(
-            hex::encode(digest),
-            expected.to_ascii_lowercase(),
-            "daemon binary does not match the expected candidate image"
-        );
-    }
+    let expected = std::env::var("VTORRENT_E2E_DAEMON_SHA256")
+        .expect("set VTORRENT_E2E_DAEMON_SHA256 to the candidate binary's sha256");
+    let digest = sha2::Sha256::digest(std::fs::read(&daemon_bin).expect("read daemon binary"));
+    assert_eq!(
+        hex::encode(digest),
+        expected.to_ascii_lowercase(),
+        "daemon binary does not match the expected candidate image"
+    );
 
     let workdir = PathBuf::from(
         std::env::var("VTORRENT_E2E_WORKDIR")

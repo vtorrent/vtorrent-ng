@@ -188,26 +188,39 @@ pub async fn prepare_incentive_payment(
         return Err(IncentivePaymentError::NoUtxos);
     }
 
-    // Prefer coins that can never be staked. A small payment coin can pay
-    // without touching the staking reserve; only fall back to stakeable coins
-    // when the non-staking coins cannot cover the payment.
+    // Prefer coins that can never be staked. Try the non-staking subset first;
+    // if it cannot cover the payment, fall back to all coins and apply the
+    // reserve check to the actual inputs. A value heuristic here would reject
+    // payable cases (the wallet selects largest-first, so a large stake coin
+    // can be chosen even when a smaller non-staking coin would suffice).
     let non_stake: Vec<_> = utxos
         .iter()
         .filter(|utxo| !available_stakeable.contains(&(utxo.txid, utxo.vout)))
         .cloned()
         .collect();
-    let non_stake_value: u64 = non_stake.iter().map(|utxo| utxo.value).sum();
-    let use_stake = non_stake_value < payment.amount_satoshis.saturating_add(10_000);
-    let candidates = if use_stake { &utxos } else { &non_stake };
-    let tx = build_payment(
-        candidates,
-        &payment.peer_address,
-        &change_address,
-        payment.amount_satoshis,
-        fee_rate,
-        &wif,
-    )?;
-    if use_stake && !available_stakeable.is_empty() {
+    let build = |candidates: &[vtorrent_node::chain::Utxo]| {
+        build_payment(
+            candidates,
+            &payment.peer_address,
+            &change_address,
+            payment.amount_satoshis,
+            fee_rate,
+            &wif,
+        )
+        .map_err(IncentivePaymentError::from)
+    };
+    let (tx, used_stake) = if non_stake.is_empty() {
+        (build(&utxos)?, true)
+    } else {
+        match build(&non_stake) {
+            Ok(tx) => (tx, false),
+            Err(IncentivePaymentError::Build(
+                vtorrent_wallet::error::WalletError::InsufficientFunds { .. },
+            )) => (build(&utxos)?, true),
+            Err(error) => return Err(error),
+        }
+    };
+    if used_stake && !available_stakeable.is_empty() {
         let selected: std::collections::HashSet<([u8; 32], u32)> = tx
             .inputs
             .iter()
@@ -253,7 +266,9 @@ pub async fn broadcast_incentive_payment(
 /// Build, admit, and broadcast a VTR payment for an incentive settlement.
 ///
 /// Kept as the simple one-call path for callers that do not need a durable
-/// pre-broadcast intent.
+/// pre-broadcast intent. It does **not** apply the staking-coin reserve; the
+/// daemon must use [`prepare_incentive_payment`] with the staking address so a
+/// payment cannot spend the last spendable stake coin.
 pub async fn build_incentive_payment(
     wallet_wif: &tokio::sync::RwLock<Option<zeroize::Zeroizing<String>>>,
     wallet_change_address: &tokio::sync::RwLock<Option<String>>,

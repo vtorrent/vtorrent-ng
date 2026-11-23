@@ -3,6 +3,14 @@
 use crate::error::{Result, TorrentError};
 use serde_bencode::value::Value;
 
+/// Extension IDs this implementation advertises for receiving.
+///
+/// BEP-10 IDs are per direction: a peer sends to us on the IDs we advertise,
+/// while we send to it on the IDs it advertises. Keep these separate from the
+/// peer's advertised IDs.
+pub const OUR_UT_VTR_ID: u8 = 1;
+pub const OUR_RECEIPT_ID: u8 = 2;
+
 /// Build the extension handshake dict: `{ "m": { "ut_metadata": id }, "metadata_size": n }`.
 pub fn build_extension_handshake(ut_metadata_id: u8, metadata_size: u64) -> Vec<u8> {
     let mut m = std::collections::HashMap::new();

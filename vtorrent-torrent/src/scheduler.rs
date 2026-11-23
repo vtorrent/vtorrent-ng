@@ -113,6 +113,11 @@ impl PieceTracker {
             .count()
     }
 
+    /// Forget a peer's availability when its task exits.
+    pub fn remove_peer(&mut self, peer: &[u8; 20]) {
+        self.peer_pieces.remove(peer);
+    }
+
     /// Whether this specific peer advertised the piece.
     pub fn peer_has_piece(&self, peer: &[u8; 20], index: u32) -> bool {
         self.peer_pieces
@@ -192,6 +197,15 @@ struct BlockLease {
     received: bool,
 }
 
+/// One task's ownership of a partially assembled piece.
+#[derive(Debug, Clone, Copy)]
+struct PieceOwner {
+    task: [u8; 20],
+    /// Last time a block for this piece was accepted into the owner's
+    /// assembler. An owner that stops making progress is reclaimed.
+    last_progress: Instant,
+}
+
 /// Shared scheduler state, coordinated across per-peer tasks.
 #[derive(Debug)]
 pub struct SchedulerState {
@@ -211,7 +225,13 @@ pub struct SchedulerState {
     /// Piece blocks live in that task's local assembler, so exactly one task
     /// may own a piece. Leasing blocks of one piece to two tasks would leave
     /// each assembler with a subset and the piece would never complete.
-    piece_owner: HashMap<u32, [u8; 20]>,
+    piece_owner: HashMap<u32, PieceOwner>,
+    /// Pieces reclaimed from a stalled owner. The owning task drains its own
+    /// entries so it drops the local assembler and releases the assembly
+    /// budget; otherwise a choked peer could pin both forever.
+    reclaimed: Vec<(u32, [u8; 20])>,
+    /// (piece, peer) pairs a peer stalled, with the time it may retry them.
+    stalled: HashMap<(u32, [u8; 20]), Instant>,
     pub(crate) writing_pieces: std::collections::HashSet<u32>,
     /// Bytes currently held by per-peer piece assemblers across all peer
     /// tasks. Piece data is only verified once the whole piece arrives, so an
@@ -223,6 +243,12 @@ pub struct SchedulerState {
 /// Aggregate in-flight assembly budget shared by every peer task.
 pub const MAX_ASSEMBLING_BYTES: usize = 64 * 1024 * 1024;
 
+/// An owned piece that accepts no block for this long is reclaimed from its
+/// task, so a choking or silent peer cannot pin it indefinitely.
+pub const PIECE_STALL_TIMEOUT: Duration = Duration::from_secs(180);
+/// A peer that stalled a piece is not offered it again for this long.
+const PIECE_STALL_COOLDOWN: Duration = Duration::from_secs(60);
+
 impl SchedulerState {
     pub fn new(piece_count: u32) -> Self {
         Self {
@@ -232,6 +258,8 @@ impl SchedulerState {
             endgame_threshold: 3,
             requested_blocks: HashMap::new(),
             piece_owner: HashMap::new(),
+            reclaimed: Vec::new(),
+            stalled: HashMap::new(),
             writing_pieces: std::collections::HashSet::new(),
             assembling_bytes: 0,
         }
@@ -277,6 +305,28 @@ impl SchedulerState {
             self.piece_owner.remove(&piece);
             self.tracker.clear_requested(piece);
         }
+
+        // A received block keeps its lease forever, which is correct for
+        // avoiding re-requests but lets a peer that delivers one block and
+        // then chokes pin the piece to its task. Reclaim pieces with no
+        // accepted block for the stall window and cool the peer down so it is
+        // not immediately handed the same piece again.
+        let stalled: Vec<(u32, [u8; 20])> = self
+            .piece_owner
+            .iter()
+            .filter(|(_, owner)| now.duration_since(owner.last_progress) >= PIECE_STALL_TIMEOUT)
+            .map(|(piece, owner)| (*piece, owner.task))
+            .collect();
+        for (piece, task) in stalled {
+            self.piece_owner.remove(&piece);
+            self.requested_blocks.remove(&piece);
+            self.tracker.clear_requested(piece);
+            self.reclaimed.push((piece, task));
+            self.stalled
+                .insert((piece, task), now + PIECE_STALL_COOLDOWN);
+            tracing::debug!(piece, "Reclaiming a stalled piece from its peer task");
+        }
+        self.stalled.retain(|_, until| *until > now);
     }
 
     /// Pick a piece this peer can make progress on.
@@ -289,7 +339,7 @@ impl SchedulerState {
     fn select_piece(&self, peer: &[u8; 20]) -> Option<u32> {
         let mut owned: Option<(usize, u32)> = None;
         for (index, owner) in &self.piece_owner {
-            if owner != peer || self.tracker.has_piece(*index) {
+            if owner.task != *peer || self.tracker.has_piece(*index) {
                 continue;
             }
             let count = self.tracker.peer_count_for(*index);
@@ -307,6 +357,10 @@ impl SchedulerState {
                 || self.tracker.is_requested(index)
                 || self.piece_owner.contains_key(&index)
                 || !self.tracker.peer_has_piece(peer, index)
+                || self
+                    .stalled
+                    .get(&(index, *peer))
+                    .is_some_and(|until| *until > Instant::now())
             {
                 continue;
             }
@@ -335,7 +389,10 @@ impl SchedulerState {
     ) -> Option<(u32, u32, u32)> {
         self.purge_expired_leases();
         let piece = self.select_piece(&peer)?;
-        self.piece_owner.entry(piece).or_insert(peer);
+        self.piece_owner.entry(piece).or_insert(PieceOwner {
+            task: peer,
+            last_progress: Instant::now(),
+        });
         let len = piece_len(piece);
         let block_size = self.block_size as u64;
         let total_blocks = len.div_ceil(block_size);
@@ -369,6 +426,9 @@ impl SchedulerState {
                 .find(|lease| lease.begin == begin && lease.owner == peer)
             {
                 lease.received = true;
+                if let Some(owner) = self.piece_owner.get_mut(&piece) {
+                    owner.last_progress = Instant::now();
+                }
                 return true;
             }
         }
@@ -384,19 +444,30 @@ impl SchedulerState {
             .count()
     }
 
-    /// Expire stale leases, then return this task's real pipeline depth.
-    pub fn refresh_outstanding(&mut self, peer: [u8; 20]) -> usize {
+    /// Expire stale leases, then return this task's real pipeline depth and
+    /// any of its pieces the scheduler reclaimed from a stall.
+    pub fn refresh_outstanding(&mut self, peer: [u8; 20]) -> (usize, Vec<u32>) {
         self.purge_expired_leases();
-        self.outstanding_for(peer)
+        let reclaimed: Vec<u32> = self
+            .reclaimed
+            .iter()
+            .filter(|(_, task)| *task == peer)
+            .map(|(piece, _)| *piece)
+            .collect();
+        self.reclaimed.retain(|(_, task)| *task != peer);
+        (self.outstanding_for(peer), reclaimed)
     }
 
     /// Release every piece a task was assembling, making its blocks requestable
     /// by another task. Called when the task exits.
     pub fn release_owned(&mut self, peer: [u8; 20]) {
+        self.tracker.remove_peer(&peer);
+        self.reclaimed.retain(|(_, task)| *task != peer);
+        self.stalled.retain(|(_, task), _| *task != peer);
         let owned: Vec<u32> = self
             .piece_owner
             .iter()
-            .filter(|(_, owner)| **owner == peer)
+            .filter(|(_, owner)| owner.task == peer)
             .map(|(piece, _)| *piece)
             .collect();
         for piece in owned {
@@ -412,12 +483,16 @@ impl SchedulerState {
         self.requested_blocks.remove(&piece);
         self.piece_owner.remove(&piece);
         self.tracker.clear_requested(piece);
+        self.stalled.retain(|(index, _), _| *index != piece);
     }
 
     /// Mark a block as no longer in flight (e.g. on cancel).
     pub fn clear_block(&mut self, piece: u32, begin: u32, peer: [u8; 20]) {
         if let Some(leases) = self.requested_blocks.get_mut(&piece) {
-            leases.retain(|lease| lease.begin != begin || lease.owner != peer);
+            // A received block is already in the owner's assembler. A remote
+            // Cancel must not orphan it or let another task re-lease the
+            // piece while that data is still held.
+            leases.retain(|lease| lease.begin != begin || lease.owner != peer || lease.received);
             if leases.is_empty() {
                 self.requested_blocks.remove(&piece);
                 self.piece_owner.remove(&piece);
@@ -445,6 +520,7 @@ impl SchedulerState {
         self.tracker.mark_have(index);
         self.requested_blocks.remove(&index);
         self.piece_owner.remove(&index);
+        self.stalled.retain(|(piece, _), _| *piece != index);
     }
 
     /// Whether the piece is already on disk.
@@ -520,8 +596,31 @@ mod tests {
         state.tracker.set_peer_bitfield([1u8; 20], &[0x80]);
         state.tracker.set_peer_bitfield([2u8; 20], &[0x40]);
         let len = |_: u32| 32 * 1024u64;
-        let (piece, _, _) = state.next_block(&len, [1u8; 20]).unwrap();
-        assert_eq!(piece, 0, "a peer must not be asked for a piece it lacks");
+        // Ask the peer that has only piece 1. The old scheduler would pick
+        // the rarest (or first) piece 0 and lease it to this peer.
+        let (piece, _, _) = state.next_block(&len, [2u8; 20]).unwrap();
+        assert_eq!(piece, 1, "a peer must not be asked for a piece it lacks");
+    }
+
+    #[test]
+    fn a_stalled_owner_is_reclaimed_and_the_peer_is_cooled_down() {
+        let mut state = SchedulerState::new(2);
+        state.tracker.set_peer_bitfield([1u8; 20], &[0xC0]);
+        let len = |_: u32| 32 * 1024u64;
+        let peer = [1u8; 20];
+        let (piece, begin, _) = state.next_block(&len, peer).unwrap();
+        assert!(state.mark_received(piece, begin, peer));
+
+        // Pretend the accepted block was long ago and the peer then choked.
+        state.piece_owner.get_mut(&piece).unwrap().last_progress =
+            Instant::now() - PIECE_STALL_TIMEOUT - Duration::from_secs(1);
+        let (_, reclaimed) = state.refresh_outstanding(peer);
+        assert!(reclaimed.contains(&piece));
+        assert!(!state.piece_owner.contains_key(&piece));
+
+        // The stalled peer is not immediately handed the same piece again.
+        let next = state.select_piece(&peer);
+        assert_ne!(next, Some(piece));
     }
 
     #[test]
@@ -541,6 +640,14 @@ mod tests {
             state.requested_block_length(piece, begin, [1u8; 20]),
             Some(16 * 1024),
             "the lease stays so the block cannot be re-requested"
+        );
+        // A remote Cancel for a block already delivered must not orphan the
+        // stored block or hand the piece to another task while it is held.
+        state.clear_block(piece, begin, [1u8; 20]);
+        assert_eq!(
+            state.requested_block_length(piece, begin, [1u8; 20]),
+            Some(16 * 1024),
+            "a received lease cannot be cancelled by the peer"
         );
     }
 

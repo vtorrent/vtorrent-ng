@@ -592,7 +592,12 @@ pub async fn run_engine(
     // If this is a magnet link (no pieces), fetch the info dict from a peer.
     let mut metainfo = metainfo;
     if metainfo.pieces.is_empty() {
-        for peer in &peers {
+        // The info dict has no tracker list; keep the magnet's own trackers so
+        // the completed torrent can still announce itself after registration.
+        let magnet_announce = metainfo.announce.clone();
+        let magnet_announce_list = metainfo.announce_list.clone();
+        let metadata_deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        for peer in peers.iter().take(8) {
             if !peer_target_allowed(peer, crate::tracker::private_targets_allowed()) {
                 continue;
             }
@@ -601,11 +606,26 @@ pub async fn run_engine(
                 Err(_) => continue,
             };
             if let Ok(mut conn) = PeerConnection::connect(addr, metainfo.info_hash, peer_id).await {
-                if let Some(full) = fetch_metadata_from_peer(&mut conn, metainfo.info_hash).await {
+                let fetched = tokio::time::timeout_at(
+                    metadata_deadline,
+                    fetch_metadata_from_peer(&mut conn, metainfo.info_hash),
+                )
+                .await;
+                if let Ok(Some(full)) = fetched {
                     metainfo = full;
                     break;
                 }
             }
+            if tokio::time::Instant::now() >= metadata_deadline {
+                tracing::warn!("Magnet metadata fetch timed out; continuing without peers");
+                break;
+            }
+        }
+        if metainfo.announce.is_none() {
+            metainfo.announce = magnet_announce;
+        }
+        if metainfo.announce_list.is_empty() {
+            metainfo.announce_list = magnet_announce_list;
         }
         // Persist the fetched metainfo back into the session.
         {
@@ -729,10 +749,10 @@ pub async fn run_engine(
             .have_bytes(&|index| piece_length(&shared_metainfo, index))
     };
 
-    // Final state update. Note: "Seeding" here only marks the download as
-    // complete — the peer tasks have all exited, so nothing is actually
-    // serving uploads. A real seeder requires re-announcing and accepting
-    // inbound connections (not yet implemented).
+    // Final state update. "Seeding" marks a complete download (the RPC or
+    // desktop layer registers it with the inbound seeder). An incomplete
+    // engine has no running peer tasks, so "Stopped" is terminal and must not
+    // consume one of the active-session slots forever.
     {
         let mut guard = sessions.write().await;
         if let Ok(s) = guard.get_session_mut(&shared_session_id) {
@@ -740,7 +760,7 @@ pub async fn run_engine(
             s.state = if downloaded >= shared_metainfo.total_size {
                 SessionState::Seeding
             } else {
-                SessionState::Downloading
+                SessionState::Stopped
             };
             s.last_active = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -832,7 +852,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
 
     // Exchange VTR addresses via the ut_vtr extension (BEP-10).
     let mut peer_vtr_address: Option<String> = None;
-    let mut receipt_id: Option<u8> = None;
+    let mut peer_receipt_id: Option<u8> = None;
     let mut local_address = String::new();
     // Whether the peer's bitfield has been recorded. Declared before the
     // extension handshake because a real peer announces its pieces
@@ -843,7 +863,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
     // otherwise stretch ten messages per loop into tens of minutes.
     let handshake_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     {
-        let handshake = crate::metadata::build_ut_vtr_handshake(1);
+        let handshake = crate::metadata::build_ut_vtr_handshake(crate::metadata::OUR_UT_VTR_ID);
         let _ = conn
             .send(&PeerMessage::Extended {
                 id: 0,
@@ -872,7 +892,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                             }
                             if let Some(Value::Int(id)) = m.get(b"ut_vtr_receipt".as_slice()) {
                                 if (1..=u8::MAX as i64).contains(id) {
-                                    receipt_id = Some(*id as u8);
+                                    peer_receipt_id = Some(*id as u8);
                                 }
                             }
                         }
@@ -931,11 +951,15 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     Ok(Err(_)) | Err(_) => break,
                 };
                 match message {
-                    PeerMessage::Extended { id: rid, payload } if rid == id => {
+                    // The peer sends its address to us on the id WE
+                    // advertised. Parse the payload instead of matching the
+                    // peer's own id, which is only for our outbound address.
+                    PeerMessage::Extended { payload, .. } => {
                         if let Ok(addr) = crate::metadata::parse_ut_vtr_address(&payload) {
                             peer_vtr_address = Some(addr);
+                            break;
                         }
-                        break;
+                        continue;
                     }
                     PeerMessage::Bitfield { bits } => {
                         record_peer_bitfield(
@@ -990,6 +1014,9 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
     let mut finish_deadline: Option<std::time::Instant> = None;
     let mut last_receipt_at: Option<std::time::Instant> = None;
     let mut last_sent_receipt_at: Option<std::time::Instant> = None;
+    // A peer that repeatedly serves a piece whose SHA-1 fails is corrupt or
+    // malicious; retrying it forever only burns bandwidth and CPU.
+    let mut hash_failures: u32 = 0;
 
     loop {
         if cancel.is_cancelled() {
@@ -998,17 +1025,70 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
         // Recompute from the scheduler. A lease that expired, was satisfied by
         // another task, or completed must not leave this task's pipeline
         // permanently full.
-        in_flight = scheduler
+        let (depth, reclaimed) = scheduler
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .refresh_outstanding(task_id);
+        in_flight = depth;
+        for piece in reclaimed {
+            // The scheduler reclaimed this piece from us after a stall. Drop
+            // the partial assembler so another peer can fetch the piece and
+            // release the budget it held.
+            if assemblers.remove(&piece).is_some() {
+                assembly.release(piece_length(&metainfo, piece));
+            }
+        }
+
+        // Check completion before blocking on a read. A task with no remaining
+        // work and a silent peer would otherwise wait for the 180 s receive
+        // timeout before finalizing, delaying seeder registration and the
+        // session state transition.
+        if finish_deadline.is_none()
+            && scheduler
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .tracker
+                .is_complete()
+        {
+            // A short download can finish before the next periodic tick. Send
+            // one final cumulative receipt so the transfer is payable.
+            // The receiver drops receipts within 30 s of the previous one, so
+            // wait out that window before closing; otherwise the final receipt
+            // is silently discarded.
+            if let Some(last) = last_sent_receipt_at {
+                let elapsed = last.elapsed();
+                if elapsed < std::time::Duration::from_secs(30) {
+                    let wait = std::time::Duration::from_secs(30) - elapsed;
+                    tokio::select! {
+                        _ = tokio::time::sleep(wait) => {}
+                        _ = cancel.cancelled() => break,
+                    }
+                }
+            }
+            send_bandwidth_receipt(
+                &mut conn,
+                metainfo.info_hash,
+                receipt_key.as_deref(),
+                peer_receipt_id,
+                peer_vtr_address.as_deref(),
+                &local_address,
+                &session_id,
+                &sessions,
+            )
+            .await;
+            // The seeder sends cumulative receipts at most every 30 s. Keep the
+            // connection readable for longer than that so its final receipt can
+            // cover the last window; 10 s would leave it unpaid on a normal
+            // completion.
+            finish_deadline = Some(std::time::Instant::now() + std::time::Duration::from_secs(35));
+        }
 
         if std::time::Instant::now() >= next_receipt {
             if send_bandwidth_receipt(
                 &mut conn,
                 metainfo.info_hash,
                 receipt_key.as_deref(),
-                receipt_id,
+                peer_receipt_id,
                 peer_vtr_address.as_deref(),
                 &local_address,
                 &session_id,
@@ -1244,13 +1324,6 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     );
                     continue;
                 }
-                // Mark the lease satisfied. It stays in the scheduler so the
-                // block is never re-requested, but it no longer counts against
-                // this task's pipeline.
-                scheduler
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .mark_received(index, begin, task_id);
                 let piece_len = piece_length(&metainfo, index);
                 // Cap concurrent assemblers per peer to prevent memory exhaustion
                 // from a malicious peer sending blocks for many different pieces.
@@ -1263,6 +1336,10 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                         "Peer sent block for piece {} but assembler cap reached",
                         index
                     );
+                    scheduler
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clear_block(index, begin, task_id);
                     continue;
                 }
                 if !assemblers.contains_key(&index) && !assembly.reserve(piece_len) {
@@ -1270,12 +1347,26 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                         "Peer sent block for piece {} but the shared assembly budget is full",
                         index
                     );
+                    scheduler
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clear_block(index, begin, task_id);
                     continue;
                 }
                 let asm = assemblers
                     .entry(index)
                     .or_insert_with(|| PieceAssembler::new(index, piece_len));
-                asm.add_block(begin, data);
+                let accepted = asm.add_block(begin, data);
+                if accepted {
+                    // Mark the lease satisfied only now that the block is
+                    // actually held. If the assembler cap or budget rejected
+                    // it, leaving the lease unreceived lets it expire and be
+                    // requested again instead of losing the block forever.
+                    scheduler
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .mark_received(index, begin, task_id);
+                }
                 if asm.is_complete() {
                     if let Some(expected) = metainfo.pieces.get(index as usize) {
                         if asm.verify(expected) {
@@ -1341,14 +1432,23 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                                 }
                             }
                         } else {
+                            hash_failures = hash_failures.saturating_add(1);
                             tracing::warn!(
                                 piece = index,
+                                failures = hash_failures,
                                 "Peer sent a piece that failed SHA-1 verification; re-fetching it"
                             );
                             scheduler
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner())
                                 .clear_piece(index);
+                            if hash_failures >= 3 {
+                                tracing::warn!(
+                                    peer = %addr,
+                                    "Dropping peer after repeated corrupt pieces"
+                                );
+                                break;
+                            }
                         }
                     }
                     if assemblers.remove(&index).is_some() {
@@ -1356,7 +1456,7 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     }
                 }
             }
-            Ok(PeerMessage::Extended { id, payload }) if Some(id) == receipt_id => {
+            Ok(PeerMessage::Extended { id, payload }) if id == crate::metadata::OUR_RECEIPT_ID => {
                 let Some(peer_addr) = peer_vtr_address.as_ref() else {
                     continue;
                 };
@@ -1364,7 +1464,11 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                 // One receipt per 30s per peer is far above the 5-minute
                 // settlement cadence and bounds CPU per connection.
                 if let Some(last) = last_receipt_at {
-                    if last.elapsed() < std::time::Duration::from_secs(30) {
+                    // The seeder sends at most every 30 s. A 25 s receiver
+                    // window absorbs timer drift so a receipt sent 30 s after
+                    // the previous send is not dropped because it arrived a
+                    // little under 30 s after the previous arrival.
+                    if last.elapsed() < std::time::Duration::from_secs(25) {
                         continue;
                     }
                 }
@@ -1461,49 +1565,9 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     }
                 }
             }
+            Ok(PeerMessage::KeepAlive) => {}
             Ok(_) => continue,
             Err(_) => break,
-        }
-
-        // Stop when complete.
-        if finish_deadline.is_none()
-            && scheduler
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .tracker
-                .is_complete()
-        {
-            // A short download can finish before the next periodic tick. Send
-            // one final cumulative receipt so the transfer is payable.
-            // The receiver drops receipts within 30 s of the previous one, so
-            // wait out that window before closing; otherwise the final receipt
-            // is silently discarded.
-            if let Some(last) = last_sent_receipt_at {
-                let elapsed = last.elapsed();
-                if elapsed < std::time::Duration::from_secs(30) {
-                    let wait = std::time::Duration::from_secs(30) - elapsed;
-                    tokio::select! {
-                        _ = tokio::time::sleep(wait) => {}
-                        _ = cancel.cancelled() => break,
-                    }
-                }
-            }
-            send_bandwidth_receipt(
-                &mut conn,
-                metainfo.info_hash,
-                receipt_key.as_deref(),
-                receipt_id,
-                peer_vtr_address.as_deref(),
-                &local_address,
-                &session_id,
-                &sessions,
-            )
-            .await;
-            // The seeder sends cumulative receipts at most every 30 s. Keep the
-            // connection readable for longer than that so its final receipt can
-            // cover the last window; 10 s would leave it unpaid on a normal
-            // completion.
-            finish_deadline = Some(std::time::Instant::now() + std::time::Duration::from_secs(35));
         }
     }
 }
@@ -1589,6 +1653,8 @@ async fn fetch_metadata_from_peer(
 ) -> Option<Metainfo> {
     use crate::metadata;
     use sha1::{Digest as _, Sha1};
+
+    conn.set_max_message_len(crate::peer_wire::MAX_INBOUND_FRAME);
 
     // Send the extension handshake (id 0) advertising ut_metadata id 1.
     let handshake = metadata::build_extension_handshake(1, 0);
