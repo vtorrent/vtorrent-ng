@@ -313,14 +313,22 @@ Add a torrent by magnet link or .torrent file.
 **Request:**
 ```json
 {
-  "magnet": "magnet:?xt=...",
-  "download_path": "/path/to/downloads"
+  "source": "<base64 .torrent bytes, or magnet:?xt=...>",
+  "source_type": "file",
+  "wallet_address": "V..."
 }
 ```
 
+`source_type` is `file` or `magnet`. `wallet_address` is required and must be a
+valid VTR P2PKH address; it is the address the engine signs and addresses
+bandwidth receipts with. A duplicate live info-hash is rejected, and a seeding
+session with a malformed address is rejected.
+
 ### DELETE /api/v1/torrent/:id
 
-Remove a torrent session and stop serving it to inbound peers.
+Remove a torrent session and stop serving it to inbound peers. Refused while
+the session has unpaid or in-flight incentive payments; see the on-call
+runbook for the stuck-payment procedure.
 
 ### GET /api/v1/torrent/settings
 

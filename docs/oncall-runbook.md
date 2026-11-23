@@ -191,7 +191,7 @@ the canonical tip is reached.
 `Incentive payment is not in the chain or mempool; keeping it pending to avoid
 a double payment` every 5 seconds; the session's `vtr_paid_satoshis` and
 `vtr_earned_satoshis` stop advancing; `DELETE /api/v1/torrent/:id` returns
-"outstanding incentives".
+`Session has unpaid or in-flight incentive payments; retry after settlement`.
 
 1. Take the txid from the warning. A 404 from
    `GET /api/v1/blockchain/tx/<txid>` plus no entry in `GET /api/v1/mempool`

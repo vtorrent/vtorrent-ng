@@ -20,7 +20,9 @@ vtorrent-daemon \
 
 A completed torrent is registered automatically. `GET /api/v1/torrent/settings`
 reports `seeding: true` and `seeded_torrents`. `DELETE /api/v1/torrent/:id`
-removes a session, cancels its open connections, and stops serving it.
+removes a session, cancels its open connections, and stops serving it. The RPC
+refuses the request while the session has unpaid or in-flight incentive
+payments; see the on-call runbook.
 
 On a staking node, keep a second spendable coin. The payment builder refuses to
 spend the last staking-eligible UTXO: doing so would stop the node from staking
@@ -36,10 +38,11 @@ locked wallet can only upload bytes no VTorrent peer can verify or pay for.
 | Limit | Value |
 |---|---|
 | Concurrent inbound connections | `--torrent-max-connections` (default 32) |
+| Concurrent connections per source IP | 8 |
 | Largest block served | 32 KiB |
 | Largest inbound frame | 256 KiB |
 | Idle connection timeout | 300 s |
-| Peer receipt verification | at most every 30 s per connection |
+| Peer receipt verification | at most every 30 s per peer address, across reconnects |
 | Our receipt cadence | when the reported total advances, at most every 30 s |
 | Tracker re-announce | every 30 minutes, checked every 60 s |
 
@@ -50,15 +53,17 @@ targets are refused unless explicitly permitted for local testing).
 Requests are handled serially per connection and answered from the requested
 byte range. A piece is read and SHA-1 verified in full on its first request;
 later blocks read only their own range, so a 16 KiB request cannot force a
-whole multi-megabyte piece read.
+whole multi-megabyte piece read. Success is cached for the process; a failure
+is cached for 60 s so a corrupt piece cannot be re-read once per request.
 
 ## Fail-closed behaviour
 
 - An info-hash that is not registered is refused before any disk read.
 - Every piece is SHA-1 verified against the metainfo before its first block is
-  sent; a piece that no longer matches is never served. Verification results
-  are cached for the process lifetime, so a file modified after verification is
-  not re-checked (protect the download directory).
+  sent; a piece that no longer matches is never served. Successful
+  verification is cached for the process lifetime, so a file modified after
+  verification is not re-checked (protect the download directory); failures
+  are retried after 60 s.
 - A peer that does not advertise BEP-10 is refused. BEP-10 support alone does
   not pay: a client that never sends a `ut_vtr_receipt` address can still
   download, so the payment is voluntary after the fact. Set an upload limit and
@@ -90,6 +95,20 @@ the daemon downloads from a mock seeder that announces its bitfield
 immediately after the wire handshake, then settles the signed receipt and pays
 exactly once across a restart.
 
+Both tests **require** the candidate binary and its digest; they fail rather
+than falling back to an old binary:
+
+```bash
+VTORRENT_E2E_DAEMON_BIN=/path/to/vtorrent-daemon \
+VTORRENT_E2E_DAEMON_SHA256=<sha256> \
+unshare -rn sh -c '
+  ip link set lo up
+  ip addr add 8.8.8.8/32 dev lo
+  exec target/debug/deps/torrent_seeder_e2e-<hash> --ignored --nocapture
+'
+```
+
+
 ### Two fleet nodes, real transfer
 
 1. Start the fleet with `SEED_TORRENT=1`; every node listens on container port
@@ -99,8 +118,10 @@ exactly once across a restart.
    `.vtorrent-torrent` marker (`v1:<info-hash>`) into it, and copy a fully set
    `downloads/<info-hash>.vtorrent` resume bitfield. Use `docker cp` or
    `docker exec`; the paths are container-local.
-3. Run an HTTP tracker that returns the first node's container address and
-   port.
+3. Run an HTTP tracker where the containers can reach it (the Docker host
+   gateway or an in-network container) that returns the first node's container
+   address and port. A tracker bound only to `127.0.0.1` is unreachable from
+   the containers, and 22630 is container-local, not published to the host.
 4. `POST /api/v1/torrent/add` on the first node (with
    `-H "X-Api-Key: $(cat <key>)"` when the RPC key is enabled) and poll
    `/api/v1/torrent/settings` until `seeded_torrents` is 1.
@@ -115,15 +136,16 @@ On 2026-11-22 a single seeder moved 12 MiB in **1 second** with a matching
 SHA-1, full upload credit, and a 585,937-sat payment confirmed at height 4 and
 final at height 9.
 
-On 2026-11-23 a **two-seeder** run moved the same torrent in 1 second: node1
-served 4,980,736 bytes and node2 7,602,176 bytes, proving each piece was
-assembled by one owning task. node3 paid node2 354,003 sats from a 0.5 VTR
-non-staking coin while continuing to stake through heights 5–7.
+On 2026-11-23 a **two-seeder** run moved the same torrent in 1 second from both
+peers: node1 served 4,456,448 bytes and node2 8,126,464 bytes, proving each
+piece was assembled by one owning task. node2 registered after 36 s (the
+completion check fires at the top of the peer loop); node3 paid it 378,417 sats
+from a 0.5 VTR non-staking coin while staking through heights 4–8.
 
 ## Suite results
 
-- Workspace: **1,518 passed, 0 failed, 13 ignored** across 56 groups.
-- Torrent lib: 140 passed, including the seeder and scheduler regressions.
+- Workspace: **1,523 passed, 0 failed, 13 ignored** across 56 groups.
+- Torrent lib: 145 passed, including the seeder and scheduler regressions.
 - RPC: 215 passed. Desktop: 34 passed.
 - Both ignored E2Es pass on one release binary: the inbound seeder serves
   6 MiB over 24 verified pieces and signs a receipt covering all of them, and

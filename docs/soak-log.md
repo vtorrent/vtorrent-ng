@@ -3912,8 +3912,55 @@ set of remote-resource and lifecycle issues in the new seeder. Fixes are in
   `/mnt/temp/vtorrent-ng-evidence/soak-17db693/transfer-two-peer/`.
 - Fleet `review-17db693`, RPC 23951–23953, Prometheus 23973, health observer
   `25 17 * * *`, evidence `/mnt/temp/vtorrent-ng-evidence/soak-17db693/`.
-- The `d5e80e1` fleet was retired at height 102 with zero restarts; its
-  evidence is archived with `SUPERSEDED.md`.
+- The `d5e80e1` fleet's last clean, tip-agreeing observation was height 102;
+  it was retired while the final snapshot showed 117/117/118 (a block in
+  flight), with zero restarts. Its evidence is archived with `SUPERSEDED.md`.
+
+This is a candidate window, not release evidence. The independent human
+review and the full 168 hours remain open.
+
+## 2026-11-23 — pass-8 candidate (`ef1d1a1`)
+
+AI pass 8 reviewed the pass-7 fixes and found a critical lost-block path, an
+ownership stall, a completion-latency defect, the BEP-10 id-direction
+inversion, a receipt-throttle bypass, and lifecycle/accounting follow-ons.
+Fixes are in `ef1d1a1`; details in
+`docs/2026-11-23_ai-supplementary-review-pass8.md`.
+
+- Scheduler: mark a block received only after the assembler accepts it and
+  clear it on cap/budget rejection; per-piece progress deadline with reclaim
+  and a per-peer cooldown; check completion at the top of the peer loop
+  (observed live: a completed second seeder registered in 36 s instead of
+  waiting 180 s); three-strike corrupt-peer drop; magnet metadata deadline and
+  tracker preservation; `Stopped` for incomplete runs; 25 s receipt window;
+  ignore a Cancel for a received block.
+- Seeder: per-address receipt throttle, correct BEP-10 direction, zero-value
+  receipt rejection, per-IP connection cap, dedupe only after a successful
+  send with Cancel handling, all-piece bitfield, 60 s negative verification
+  cache, session-keyed register/unregister.
+- Payments: non-staking-first builder with an `InsufficientFunds` fallback,
+  dust write-off, current-window eviction, RPC address trim/validation, and the
+  desktop remove guard removed (no desktop settlement loop).
+- Candidate: **2026-11-23T03:05:42Z** to **2026-11-30T03:05:42Z**,
+  `vtorrent/node:ef1d1a1`, image ID
+  `sha256:187ca4716ca47e7ab561be296d8ad1a1e4ba4819340030658027c0d905b16c94`,
+  binary `81ef84e97e39e6a829791d2757da2baacdacc177ee785864533f38f6988593b5`.
+- Workspace **1,523 passed, 0 failed, 13 ignored** (56 groups); torrent lib
+  145; RPC 215; desktop 34; Clippy clean. Both ignored E2Es pass on the image
+  binary.
+- Live **two-seeder** transfer: both seeders registered before the download
+  (node2 after 36 s); node3 downloaded 12 MiB in 1 second from both
+  (4,456,448 bytes from node1, 8,126,464 from node2) with a matching SHA-1.
+  node2 earned 756,835 sats; node3 paid it 378,417 sats from a 0.5 VTR
+  non-staking coin (payment `6f47d4f2...`, confirmed at height 4, final at
+  height 9) while staking blocks at heights 4, 6, 7, and 8. Evidence:
+  `/mnt/temp/vtorrent-ng-evidence/soak-ef1d1a1/transfer-two-peer/`.
+- Fleet `review-ef1d1a1`, RPC 23951–23953, Prometheus 23973, health observer
+  `25 17 * * *`, evidence `/mnt/temp/vtorrent-ng-evidence/soak-ef1d1a1/`.
+- The `17db693` fleet was retired at height 526 (tips agree, zero restarts).
+  The short `16f9a32` deployment exposed the completion-latency defect and was
+  retired at height 20. Both are archived as superseded and do not count
+  toward the 168 hours.
 
 This is a candidate window, not release evidence. The independent human
 review and the full 168 hours remain open.

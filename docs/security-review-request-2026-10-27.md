@@ -10,7 +10,7 @@ already accepted so it is not re-litigated.
 
 ## Review target
 
-Review the candidate `17db693b2a0470db47e9693dd07dbe024542f404`. This is the current review head. It is **not**
+Review the candidate `ef1d1a1fb43008f031687cb0a6ccda6e64395d17`. This is the current review head. It is **not**
 covered by any prior soak: the `6a49727` fleet predates the fund-safety and
 recovery changes below and was interrupted by a host restart on 2026-11-16.
 Under the soak provenance policy, the shipping image needs its own full window
@@ -18,8 +18,8 @@ after this review and its fixes settle.
 
 Read this document from the tip of `main`. Confirm that no code changed after
 the candidate with
-`git diff --name-only 17db693..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
-must return nothing. Check out `17db693` itself when running the verification
+`git diff --name-only ef1d1a1..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+must return nothing. Check out `ef1d1a1` itself when running the verification
 commands. The tables below record the earlier deltas. The table after the
 `f8e0162` deltas covers the range from `ba46fd6` to the candidate.
 
@@ -138,6 +138,7 @@ Deltas after `ba46fd6`:
 | `4b34b9e` | Desktop torrent settings request/response type split (UI only) |
 | `d5e80e1` | Staking skips outpoints already spent by a mempool transaction; unit test |
 | `17db693` | Pass 7: single-owner piece assembly, peer-aware leases, receipt bounds, session-cancelled serving, magnet registration, staking/payment protection, RPC/desktop guards |
+| `ef1d1a1` | Pass 8: lost-block/stall/completion fixes, BEP-10 id direction, per-peer receipt throttle, per-IP cap, non-stake payment fallback, dust and lifecycle follow-ons |
 
 Deltas after the earlier review head:
 
@@ -189,7 +190,7 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout 17db693b2a0470db47e9693dd07dbe024542f404
+git checkout ef1d1a1fb43008f031687cb0a6ccda6e64395d17
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
@@ -197,7 +198,7 @@ cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-pro
 cargo test --workspace --all-features
 ```
 
-The `17db693` workspace run passed 56 test groups and 1,518 tests with 0
+The `ef1d1a1` workspace run passed 56 test groups and 1,523 tests with 0
 failures and 13 ignored. CI repeats the `--all-features` suite on every push.
 Set `VTORRENT_TOTP_STATE_DIR` to a fresh directory before running the suite so
 the host-scoped TOTP replay state does not collide with an existing

@@ -13,7 +13,9 @@ the settlement/journal path it depends on.
 RPC/desktop/operations) and returned severity-ranked findings with file/line
 references. The author reviewed the receipts/announce/lifecycle paths directly
 and triaged every finding, discarding duplicates and false positives. All code
-changes below were made after triage and are covered by tests. No reviewer saw
+changes below were made after triage; the verification section lists the
+coverage, and pass 8 adds the missing regressions and corrects two
+overstatements. No reviewer saw
 or edited the running fleet.
 
 This is an AI-assisted supplement. It does **not** satisfy the independent human
@@ -88,7 +90,10 @@ security-review gate, and the 168-hour exact-image soak remains open.
    - RPC and Tauri check completeness, register, then re-check the session and
      unregister if it disappeared. Duplicate info-hashes are rejected so one
      registry entry cannot alias two sessions.
-   - The Tauri remove path now mirrors the RPC guard and unregisters.
+   - The Tauri remove path unregisters. It was initially given the RPC's
+     outstanding-incentive guard; pass 8 removed that guard because the
+     desktop has no settlement/payment loop and the guard only dead-ended
+     removal.
 
 7. **Magnet downloads registered the pre-engine stub metainfo.** `add_torrent`
    captured the stub (zero pieces, possibly zero size) before `run_engine`; for
@@ -185,7 +190,9 @@ security-review gate, and the 168-hour exact-image soak remains open.
   staking blocks at heights 5–7. Evidence:
   `/mnt/temp/vtorrent-ng-evidence/soak-17db693/transfer-two-peer/`.
 - Window: 2026-11-22T17:28:51Z to 2026-11-29T17:28:51Z; the `d5e80e1` fleet
-  was retired at height 102 with zero restarts and is archived as superseded.
+  had its last clean, tip-agreeing observation at height 102 and was retired
+  while the final snapshot showed heights 117/117/118 (a block in flight), with
+  zero restarts; it is archived as superseded.
 
 ## Artefacts
 
@@ -193,3 +200,32 @@ security-review gate, and the 168-hour exact-image soak remains open.
 - Prior pass: `docs/2026-11-21_ai-supplementary-review-pass6.md`.
 - Review request and cover note are repointed to the new head once the image
   and replacement window are published.
+
+## Corrections after pass 8
+
+Pass 8 reviewed these fixes and found several follow-ons. This section records
+where the text above overstated the result; the fixes are in
+`docs/2026-11-23_ai-supplementary-review-pass8.md`.
+
+- "Covered by tests" was too strong. The pass-7 delta added scheduler, eviction,
+  disk-range, and staking-helper tests, but no automated multi-peer E2E and no
+  tests for the receipt flood, frame cap, receipt binding, magnet registration,
+  DELETE-vs-open-connection, or the staking/payment reserve. Pass 8 adds the
+  missing regressions where practical and documents the manual coverage.
+- The Tauri remove guard was a desktop regression, not a fix: the desktop runs
+  no settlement/payment loop, so a stored receipt would block removal forever.
+  Pass 8 removed the guard (the unregister remains).
+- The 35 s final-receipt grace raced the receiver's 30 s window. Pass 8 uses a
+  25 s receiver window so a 30 s sender cadence is not dropped by timer drift.
+- The 10,000-account eviction predicate used lifetime bytes, so settled peers
+  were immortal. Pass 8 uses the current settlement window and added a
+  settled-account test.
+- The "peer availability" scheduler test asked a peer that had the piece, so it
+  passed on the pre-fix code. Pass 8 asks a peer that lacks the piece.
+- The pass-7 ownership could be pinned by one received block; pass 8 adds a
+  progress deadline, reclaim, and per-peer cooldown.
+- `d5e80e1` was retired while the final snapshot showed heights 117/117/118
+  (a block in flight); 102 was the last clean, tip-agreeing observation.
+- `docs/rpc-api.md`'s torrent-add schema and the DELETE refusal text were wrong;
+  both are corrected in pass 8, as is the runbook's quoted DELETE error.
+

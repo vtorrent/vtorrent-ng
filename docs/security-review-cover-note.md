@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `17db693`
+Subject: Independent security review — vTorrent-NG mainnet candidate `ef1d1a1`
 
 Hello,
 
@@ -18,17 +18,17 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `17db693b2a0470db47e9693dd07dbe024542f404`
+**Review head:** `ef1d1a1fb43008f031687cb0a6ccda6e64395d17`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `17db693`. It is not covered by any prior soak: the
+The code under review is `ef1d1a1`. It is not covered by any prior soak: the
 `6a49727` fleet predates every change below and was interrupted by a host
 restart on 2026-11-16. The eventual shipping image needs its own full window
 after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 code changed after the candidate with
-`git diff --name-only 17db693..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+`git diff --name-only ef1d1a1..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
 must return nothing. Check out the candidate itself when running the
 verification commands.
 
@@ -202,16 +202,28 @@ candidate `ba46fd6`:
   broadcast; startup confirms, rebroadcasts, or safely releases each
   reservation.
 - `10c4671` — a pending recovered payment is no longer re-emitted every tick;
+- `ef1d1a1` — pass 8. A block is marked received only after the assembler
+  accepts it; owned pieces have a progress deadline with reclaim and cooldown;
+  completion is checked at the top of the peer loop; a corrupt peer is dropped
+  after three failures. BEP-10 ids are used per direction, receipts are
+  throttled per peer address, inbound frames are capped, zero-value receipts
+  are ignored, a per-IP connection cap is enforced, and a complete session
+  advertises all pieces. Payments prefer non-staking coins, refuse to spend
+  every available staking-eligible coin, write off dust, evict by the current
+  settlement window, and the RPC validates and trims the wallet address. The
+  desktop remove guard for a daemon-only settlement loop is removed. The
+  manual E2Es now require the candidate binary and digest.
 - `17db693` — pass 7. Each partially downloaded piece is assembled by exactly
   one owning task, blocks are leased only to peers that advertised the piece,
   and received/expired leases no longer wedge the pipeline. The seeder
   rate-limits receipts, binds them to the torrent's info-hash, caps inbound
   frames, serves only requested byte ranges with a real duplicate window,
   cancels open connections on removal, registers post-engine magnet metadata,
-  and announces promptly with a random peer id. The payment builder protects
-  the last staking-eligible UTXO and the staking loop re-checks it under
-  chain+mempool locks; disputed receipts are cleared; the RPC/desktop
-  lifecycle guards are aligned.
+  and announces promptly with a random peer id. The payment builder refuses to
+  spend every available staking-eligible coin, and the staking loop re-checks
+  the selected outpoint under chain+mempool locks; disputed receipts are
+  cleared. The RPC lifecycle guard is in place; the desktop remove path no
+  longer applies that daemon-only guard (the desktop runs no settlement loop).
 - `d5e80e1` — the staking loop skips outpoints a mempool transaction already
   spends, so a node cannot invalidate its own incentive payment with the next
   coinstake; adds a unit test for the filter.
@@ -230,8 +242,9 @@ candidate `ba46fd6`:
   before its first block, with connection, request, limiter, and seed-ratio
   bounds. The seeder signs a cumulative receipt per connection, records the
   peer's receipt in the same incentive account and journal, and refuses peers
-  without BEP-10. RPC and desktop register completed torrents and stop serving
-  a removed session; `GET /api/v1/torrent/settings` reports seeder status.
+  without BEP-10. The RPC registers completed torrents and stops serving a
+  removed session; the desktop path is wired but the desktop does not start a
+  listener. `GET /api/v1/torrent/settings` reports seeder status.
 - `2fdd9aa` — pass 6. Torrent peer-wire frames are buffered across coalesced
   reads with bounded per-connection sizes and timeouts; lease keys and block
   lengths are validated before any credit; tracker, magnet, DHT, assembler, and
@@ -402,7 +415,7 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `17db693b2a0470db47e9693dd07dbe024542f404`
+- Confirm the review head is still `ef1d1a1fb43008f031687cb0a6ccda6e64395d17`
   or update it; the scope document and this note must name the same commit. Do
   not substitute a later local commit without updating both documents and the
   soak provenance.
