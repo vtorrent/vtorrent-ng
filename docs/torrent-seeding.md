@@ -136,11 +136,28 @@ On 2026-11-22 a single seeder moved 12 MiB in **1 second** with a matching
 SHA-1, full upload credit, and a 585,937-sat payment confirmed at height 4 and
 final at height 9.
 
-On 2026-11-23 a **two-seeder** run moved the same torrent in 1 second from both
-peers: node1 served 4,456,448 bytes and node2 8,126,464 bytes, proving each
-piece was assembled by one owning task. node2 registered after 36 s (the
-completion check fires at the top of the peer loop); node3 paid it 378,417 sats
-from a 0.5 VTR non-staking coin while staking through heights 4–8.
+On 2026-11-23 a **two-seeder** run on `ef1d1a1` moved the same torrent in
+1 second from both peers: node1 served 4,456,448 bytes and node2 8,126,464
+bytes, proving each piece was assembled by one owning task. node2 registered
+after 36 s, which is the 35 s final-receipt grace; node3's silent-peer task
+finalized **178 s** after its last block, which pass 9 fixes with 10 s receive
+slices. node3 paid node2 378,417 sats from a 0.5 VTR non-staking coin while
+staking through heights 4–8 on the final chain (the status snapshot counts 5
+attempts; one block was orphaned).
+
+On the pass-9 candidate (`22056d4`) the same two-seeder run served the whole
+12 MiB from node2; node1 served 0 to node3 and only 16 KiB to a direct probe.
+The first task completed before the second peer task requested anything, so the
+live run did not reproduce the split. The pass-9 scheduler ownership tests pass
+and the pass-8 split remains the live multi-peer proof. A forced split with
+complementary half-files was rejected because the engine correctly refuses to
+register an incomplete seed session. node3 downloaded 12 MiB in 1 s, finalized
+~33 s after the add (the final-receipt grace), paid 585,937 sats (tx
+`f3b1bd0a...`, height 4), and staked at height 4 while the payment was in
+flight. A second torrent was used to test the rate-limit split; its first
+session was manually deleted, which cleared the seeder's unsettled 1,171,875-sat
+credit — the documented manual-removal residual. The first torrent is the clean
+payment proof.
 
 ## Suite results
 

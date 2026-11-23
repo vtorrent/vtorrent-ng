@@ -1,5 +1,10 @@
 # AI supplementary security review — pass 8
 
+> **Superseded by pass 9 (`22056d4`).** This report is retained for history.
+> The `review-ef1d1a1` fleet was retired and its window does not count. The
+> current candidate is documented in
+> `docs/2026-11-23_ai-supplementary-review-pass9.md`.
+
 **Date:** 2026-11-23
 **Review head:** `17db693b2a0470db47e9693dd07dbe024542f404`
 **Fixes committed:** `ef1d1a1fb43008f031687cb0a6ccda6e64395d17`
@@ -211,19 +216,30 @@ security-review gate, and the 168-hour exact-image soak remains open.
 - Both ignored torrent E2Es pass on the image binary: the seeder serves 6 MiB
   and signs a receipt; the downloader pays 585,937 satoshis once.
 - Live **two-seeder** transfer on `review-ef1d1a1`: both seeders registered
-  before the download (node2 after 36 s, confirming the completion-check fix);
+  before the download (node2 after 36 s; the 36 s is the final-receipt grace,
+  and a silent-peer task on node3 finalized 178 s later — pass 9 fixes that);
   node3 downloaded 12 MiB in 1 second from both peers, split 4,456,448 bytes
   from node1 and 8,126,464 from node2, with a matching SHA-1. node2 earned
   756,835 sats; node3 paid it **378,417 sats** from a 0.5 VTR non-staking coin
   (payment `6f47d4f2...`, confirmed at height 4, final at height 9) while
   staking blocks at heights 4, 6, 7, and 8. Evidence:
   `/mnt/temp/vtorrent-ng-evidence/soak-ef1d1a1/transfer-two-peer/`.
-- Window: 2026-11-23T03:05:42Z to 2026-11-30T03:05:42Z.
+- Window: 2026-11-23T03:05:42Z to 2026-11-30T03:05:42Z. Retired; it does not
+  count after pass 9 superseded `ef1d1a1`.
 
 ## Artefacts
 
 - Reviewed head `17db693`; pass-8 fixes committed as `ef1d1a1`.
 - Prior pass: `docs/2026-11-22_ai-supplementary-review-pass7.md`.
 - The `review-17db693` and `review-16f9a32` windows are superseded by these
-  fixes and archived; neither counts toward the 168 hours. The current window
-  is `review-ef1d1a1`.
+  fixes and archived; neither counts toward the 168 hours. The
+  `review-ef1d1a1` window was retired when pass 9 superseded this candidate;
+  it does not count. The current window is `review-22056d4`.
+
+## Pass-9 correction
+
+The pass-8 report's claim that node2's 36 s registration confirmed the
+completion fix is wrong: 36 s is the 35 s final-receipt grace, and node3's
+silent-peer task finalized **178 s** after its last block. The pass-9 review
+adds 10 s receive slices and a 15-minute no-verified-progress watchdog; see
+`docs/2026-11-23_ai-supplementary-review-pass9.md`.

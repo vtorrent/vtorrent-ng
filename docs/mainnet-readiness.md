@@ -128,6 +128,12 @@ snapshot, two-person review, and an explicit decision for each record.
       See `docs/superpowers/specs/2026-09-21-genesis-bootstrap-and-stakeable-script-design.md`.
 - [ ] **External security review** — **brief finalized, not yet commissioned**:
       `docs/security-review-brief.md` (scope, deliverables, 2-phase engagement).
+      **Current candidate (2026-11-23):** `22056d4`; package
+      `docs/security-review-request-2026-10-27.md`; image
+      `vtorrent/node:22056d4`; exact-image window `review-22056d4` started
+      2026-11-23T06:26:05Z and is in progress. The pass-9 AI supplement is
+      `docs/2026-11-23_ai-supplementary-review-pass9.md`. The independent human
+      review is not yet commissioned.
       The proposed immutable delivery is
       `dd98176fcb6eb724e0753df8ee47dba40df9dc22` (`bab2456` plus the Playwright
       E2E setup, the live cold-stake browser test, the Vite dev-origin CORS
@@ -245,6 +251,18 @@ window ran on, and that commit must equal the release commit.
       this candidate. Sign-off requires manual evidence review. Later commits
       are not covered by this window; the shipping image needs its own full
       window under the soak provenance policy.
+- [~] **Pass-9 candidate window (`22056d4`)** — image
+      `vtorrent/node:22056d4` (ID
+      `sha256:390da969fab0e254f38cbc6bbb4bd85d76a5c5d4e376d6e174f994d66e147b9b`),
+      window `2026-11-23T06:26:05Z` → `2026-11-30T06:26:05Z`, three nodes,
+      restarts 0, heights agree, Prometheus 3/3. In progress. The first live
+      torrent paid 585,937 sats (height 4) and node3 staked 10 blocks with the
+      200 VTR principal preserved. A second torrent's manual DELETE reproduced
+      the unsettled-account removal residual; the live multi-peer split was
+      not repeated (single-peer race), so the pass-8 split remains the
+      multi-peer proof. The `review-ef1d1a1` window is retired and does not
+      count. Sign-off requires manual evidence review. See `docs/soak-log.md`
+      2026-11-23 and `docs/2026-11-23_ai-supplementary-review-pass9.md`.
 - [x] **Staking soak**: at least one node staked continuously and produced
       blocks at the expected ~60s average over the full 7-day window
       (`2026-09-29T13:36:22Z` → `2026-10-06T13:36:22Z`): node1 staked 1441

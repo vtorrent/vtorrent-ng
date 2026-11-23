@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `ef1d1a1`
+Subject: Independent security review — vTorrent-NG mainnet candidate `22056d4`
 
 Hello,
 
@@ -18,19 +18,23 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review head:** `ef1d1a1fb43008f031687cb0a6ccda6e64395d17`
+**Review docs:** the `main` tip that contains this note (a docs-only child of
+the code candidate)
+**Code candidate:** `22056d4fc6a22731636ad05c457c42c1632c54f4`
+**Image:** `vtorrent/node:22056d4`, ID
+`sha256:390da969fab0e254f38cbc6bbb4bd85d76a5c5d4e376d6e174f994d66e147b9b`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `ef1d1a1`. It is not covered by any prior soak: the
-`6a49727` fleet predates every change below and was interrupted by a host
-restart on 2026-11-16. The eventual shipping image needs its own full window
-after this review and its fixes settle.
+The code under review is `22056d4`. The exact-image window `review-22056d4`
+started at 2026-11-23T06:26:05Z and is in progress; the `review-ef1d1a1`
+window was retired and does not count. The shipping image needs its own full
+168-hour window after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 code changed after the candidate with
-`git diff --name-only ef1d1a1..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
-must return nothing. Check out the candidate itself when running the
-verification commands.
+`git diff --name-only 22056d4..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+must return nothing. Check out `22056d4` itself when running the verification
+commands.
 
 That document lists the exact hashes, the verification commands, and what we
 consider in scope. Nothing is required beyond a clone and a Rust toolchain; no
@@ -213,6 +217,18 @@ candidate `ba46fd6`:
   settlement window, and the RPC validates and trims the wallet address. The
   desktop remove guard for a daemon-only settlement loop is removed. The
   manual E2Es now require the candidate binary and digest.
+- `22056d4` — pass 9. An empty web/RPC wallet address falls back to the
+  unlocked hot wallet's change address; each peer receive is sliced to 10 s
+  and a 15-minute no-verified-progress watchdog stops a stalled download. The
+  seeder throttles receipts per connection and per address, keeps Cancel-proof
+  tombstones, trusts verified resume pieces and bounds other verification,
+  prunes evicted registry entries, and aggregates IPv6 per /64. Payments
+  preserve the largest stakeable outpoint, treat dust/zero/disputed receipts
+  as evictable, and remove the periodic dust write-off. The scheduler scopes
+  piece clearing to its owner, the engine drops a stale assembler after losing
+  ownership, and the magnet/tracker-init paths end `Stopped`. The pass-9 live
+  transfer paid 585,937 sats; a manual session DELETE reproduced the
+  unsettled-account removal residual.
 - `17db693` — pass 7. Each partially downloaded piece is assembled by exactly
   one owning task, blocks are leased only to peers that advertised the piece,
   and received/expired leases no longer wedge the pipeline. The seeder
@@ -415,12 +431,16 @@ Thank you.
 
 ## Before sending
 
-- Confirm the review head is still `ef1d1a1fb43008f031687cb0a6ccda6e64395d17`
-  or update it; the scope document and this note must name the same commit. Do
-  not substitute a later local commit without updating both documents and the
-  soak provenance.
-- Do not describe the interrupted `6a49727` fleet as covering this head. The
-  shipping image needs its own 168-hour window after the review and its fixes
-  settle.
+- Confirm the code candidate is still
+  `22056d4fc6a22731636ad05c457c42c1632c54f4` and the docs tip is the commit
+  that publishes this note; the scope document and this note must name the same
+  code candidate. Do not substitute a later local commit without updating both
+  documents and the soak provenance. Docs-only commits after `22056d4` must
+  leave `git diff --name-only 22056d4..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`
+  empty.
+- The `review-22056d4` window is the exact-image window and is in progress;
+  the `review-ef1d1a1` window was retired and does not count. Do not describe
+  the interrupted `6a49727` fleet as covering this head. The shipping image
+  needs its own 168-hour window after the review and its fixes settle.
 - Decide who receives it. Sending it is the step that actually opens the gate —
   drafting it does not.

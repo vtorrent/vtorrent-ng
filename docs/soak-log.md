@@ -3929,11 +3929,12 @@ Fixes are in `ef1d1a1`; details in
 
 - Scheduler: mark a block received only after the assembler accepts it and
   clear it on cap/budget rejection; per-piece progress deadline with reclaim
-  and a per-peer cooldown; check completion at the top of the peer loop
-  (observed live: a completed second seeder registered in 36 s instead of
-  waiting 180 s); three-strike corrupt-peer drop; magnet metadata deadline and
-  tracker preservation; `Stopped` for incomplete runs; 25 s receipt window;
-  ignore a Cancel for a received block.
+  and a per-peer cooldown; check completion at the top of the peer loop (the
+  pass-8 live node2 registration at 36 s was the 35 s final-receipt grace; a
+  silent-peer task finalized 178 s later, so pass 9 adds 10 s receive slices
+  and a watchdog); three-strike corrupt-peer drop; magnet metadata deadline
+  and tracker preservation; `Stopped` for incomplete runs; 25 s receipt
+  window; ignore a Cancel for a received block.
 - Seeder: per-address receipt throttle, correct BEP-10 direction, zero-value
   receipt rejection, per-IP connection cap, dedupe only after a successful
   send with Cancel handling, all-piece bitfield, 60 s negative verification
@@ -3949,18 +3950,89 @@ Fixes are in `ef1d1a1`; details in
   145; RPC 215; desktop 34; Clippy clean. Both ignored E2Es pass on the image
   binary.
 - Live **two-seeder** transfer: both seeders registered before the download
-  (node2 after 36 s); node3 downloaded 12 MiB in 1 second from both
-  (4,456,448 bytes from node1, 8,126,464 from node2) with a matching SHA-1.
+  (node2 after 36 s, which is the final-receipt grace); node3 downloaded
+  12 MiB in 1 second from both (4,456,448 bytes from node1, 8,126,464 from
+  node2) with a matching SHA-1. The silent-peer task finalized 178 s later —
+  the completion check did not wake a blocked receive; pass 9 fixes it.
   node2 earned 756,835 sats; node3 paid it 378,417 sats from a 0.5 VTR
   non-staking coin (payment `6f47d4f2...`, confirmed at height 4, final at
-  height 9) while staking blocks at heights 4, 6, 7, and 8. Evidence:
+  height 9) while staking at heights 4, 6, 7, and 8 on the final chain (the
+  status snapshot counts 5 attempts; one block was orphaned). Evidence:
   `/mnt/temp/vtorrent-ng-evidence/soak-ef1d1a1/transfer-two-peer/`.
 - Fleet `review-ef1d1a1`, RPC 23951–23953, Prometheus 23973, health observer
   `25 17 * * *`, evidence `/mnt/temp/vtorrent-ng-evidence/soak-ef1d1a1/`.
+  Retired at height 197 (tips agree, restarts 0); its window does not count.
 - The `17db693` fleet was retired at height 526 (tips agree, zero restarts).
   The short `16f9a32` deployment exposed the completion-latency defect and was
   retired at height 20. Both are archived as superseded and do not count
   toward the 168 hours.
+
+This is a candidate window, not release evidence. The independent human
+review and the full 168 hours remain open.
+
+## 2026-11-23 — pass-9 candidate (`22056d4`)
+
+AI pass 9 reviewed the pass-8 fixes and found a broken web/RPC add path, an
+incomplete completion wakeup, two seeder receipt/replay amplification paths,
+and lifecycle/accounting follow-ons. Fixes are in `22056d4`; details in
+`docs/2026-11-23_ai-supplementary-review-pass9.md`.
+
+- RPC/desktop: an empty wallet address falls back to the unlocked hot wallet's
+  change address, is validated and trimmed; the web add path works again.
+- Completion: each receive is sliced to 10 s, and a 15-minute no-verified-
+  progress watchdog stops a stalled download. The pass-8 live node3 task that
+  finalized **178 s** after its last block is the fixed case; the pass-9 first
+  torrent finalized ~33 s after the add, the 35 s final-receipt grace.
+- Seeder: receipt throttle per connection and per peer address, one address per
+  connection, oldest eviction, 25 s window; `Cancel` no longer erases a
+  served-block tombstone; verified resume pieces are trusted and other pieces
+  verify under a four-permit semaphore; registry entries are pruned with their
+  sessions; IPv6 per-IP limits aggregate by /64.
+- Payments/lifecycle: dust and zero/disputed receipts no longer block account
+  eviction; an idle account is evictable; the periodic dust write-off is
+  removed; the largest stakeable outpoint is preserved when a payment must use
+  stakeable coins.
+- Scheduler/engine: owner-scoped `clear_piece`, a stale assembler is dropped
+  after a lost ownership race, the upload tombstone is inserted only after a
+  successful send, the outstanding-request counter is fixed on the seed-ratio
+  path, a failed magnet/tracker init ends `Stopped`, and early address/ID edges
+  are handled.
+- Candidate: **2026-11-23T06:26:05Z** to **2026-11-30T06:26:05Z**,
+  `vtorrent/node:22056d4`, image ID
+  `sha256:390da969fab0e254f38cbc6bbb4bd85d76a5c5d4e376d6e174f994d66e147b9b`,
+  binary `b04131819f8c8062b47c803f3ed6df62facf277d041a8d0c15b425b3ae3ee177`.
+- Workspace **1,523 passed, 0 failed, 13 ignored** (56 groups); torrent lib
+  145; RPC 215; desktop 34; Clippy clean. Both ignored E2Es pass on the image
+  binary.
+- Live **first torrent** on `review-22056d4`: node2 served all 12,582,912
+  bytes; node1 served 0 to node3. node3 downloaded in ~1 s and finalized at
+  06:28:20Z; node2's session settled 1,171,875 sats of earned credit; node3
+  paid **585,937 sats** (tx `f3b1bd0a...`, height 4); node2's transaction
+  list shows the 585,937-sat receive (balance 200.006072 VTR including the
+  200 VTR allocation and stake rewards). node3 staked height 4 at 06:27:59Z
+  while the payment was in flight, then staked through height 17 (one
+  height-11 block orphaned by a depth-1 reorg). At capture: 10 blocks staked,
+  200 VTR immature, 49,413,063 sats eligible; the 200 VTR principal was
+  preserved.
+- Live **second torrent**: node1 served all 12,582,912 bytes, node2 0. The
+  engine's second peer task lost the start race; the first task completed the
+  torrent single-handedly. The test manually DELETEd the first downloader
+  session, which cleared the unpaid account: node1's seeder session still shows
+  1,171,875 sats of settled earned credit and 0 paid; node3 shows 0 paid and 0
+  owed. This is the documented manual-removal residual, not a clean payment
+  run. The first torrent is the clean proof.
+- The live pass-9 run did **not** reproduce the multi-peer split. The pass-8
+  split (4,456,448 bytes from node1, 8,126,464 from node2) remains the live
+  proof; the pass-9 scheduler ownership tests pass. A forced complementary-half
+  test was rejected because the engine correctly refuses to register an
+  incomplete seed session.
+- Health at 06:41:12Z: heights 16/16/16, same tip `4b557b58...`, restarts
+  0/0/0, Prometheus 3/3, health observer `25 17 * * *`.
+- Fleet `review-22056d4`, RPC 23951–23953, Prometheus 23973, evidence
+  `/mnt/temp/vtorrent-ng-evidence/soak-22056d4/`.
+- The `review-ef1d1a1` fleet was retired at height 197 (tips agree, restarts
+  0); its window does not count. The `vtr-node*` production soak was not
+  touched.
 
 This is a candidate window, not release evidence. The independent human
 review and the full 168 hours remain open.
