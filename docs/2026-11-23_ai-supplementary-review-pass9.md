@@ -1,5 +1,9 @@
 # AI supplementary security review — pass 9
 
+> **Pass-10 follow-up.** The manual-removal residual in this report is fixed by
+> the ledger-aware guard in
+> `docs/2026-11-23_ai-supplementary-review-pass10.md`.
+
 **Date:** 2026-11-23
 **Reviewed head:** `ef1d1a1fb43008f031687cb0a6ccda6e64395d17` (pass 8)
 **Shipping code candidate:** `22056d4fc6a22731636ad05c457c42c1632c54f4`

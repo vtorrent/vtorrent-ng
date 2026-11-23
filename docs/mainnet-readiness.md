@@ -128,12 +128,12 @@ snapshot, two-person review, and an explicit decision for each record.
       See `docs/superpowers/specs/2026-09-21-genesis-bootstrap-and-stakeable-script-design.md`.
 - [ ] **External security review** — **brief finalized, not yet commissioned**:
       `docs/security-review-brief.md` (scope, deliverables, 2-phase engagement).
-      **Current candidate (2026-11-23):** `22056d4`; package
+      **Current candidate (2026-11-23):** `d376506`; package
       `docs/security-review-request-2026-10-27.md`; image
-      `vtorrent/node:22056d4`; exact-image window `review-22056d4` started
-      2026-11-23T06:26:05Z and is in progress. The pass-9 AI supplement is
-      `docs/2026-11-23_ai-supplementary-review-pass9.md`. The independent human
-      review is not yet commissioned.
+      `vtorrent/node:d376506`; exact-image window `review-d376506` started
+      2026-11-23T12:21:34Z and is in progress. The pass-10 AI supplement is
+      `docs/2026-11-23_ai-supplementary-review-pass10.md`. The independent
+      human review is not yet commissioned.
       The proposed immutable delivery is
       `dd98176fcb6eb724e0753df8ee47dba40df9dc22` (`bab2456` plus the Playwright
       E2E setup, the live cold-stake browser test, the Vite dev-origin CORS
@@ -261,8 +261,21 @@ window ran on, and that commit must equal the release commit.
       the unsettled-account removal residual; the live multi-peer split was
       not repeated (single-peer race), so the pass-8 split remains the
       multi-peer proof. The `review-ef1d1a1` window is retired and does not
-      count. Sign-off requires manual evidence review. See `docs/soak-log.md`
-      2026-11-23 and `docs/2026-11-23_ai-supplementary-review-pass9.md`.
+      count. The manual-removal residual is fixed in pass 10; this pass-9
+      window is retired and does not count. Sign-off requires manual evidence
+- [~] **Pass-10 candidate window (`d376506`)** — image
+      `vtorrent/node:d376506` (ID
+      `sha256:131f4639db614b4c7a3a17575e061f31f98bbe83ebf864188872a7c7f6358718`),
+      window `2026-11-23T12:21:34Z` → `2026-11-30T12:21:34Z`, three nodes,
+      restarts 0, heights agree, Prometheus 3/3. In progress. The live DELETE
+      was refused 164 times while the 585,937-sat debt was outstanding, then
+      succeeded after settlement; node2 received 585,937 sats; node3 staked 7
+      blocks with the 200 VTR principal preserved. The live transfer was
+      single-seeder (node1's wallet was locked and the empty-address fallback
+      returned a raw validation error); the pass-8 split remains the
+      multi-peer proof. The `review-22056d4` window is retired. Sign-off
+      requires manual evidence review. See `docs/soak-log.md` 2026-11-23 and
+      `docs/2026-11-23_ai-supplementary-review-pass10.md`.
 - [x] **Staking soak**: at least one node staked continuously and produced
       blocks at the expected ~60s average over the full 7-day window
       (`2026-09-29T13:36:22Z` → `2026-10-06T13:36:22Z`): node1 staked 1441

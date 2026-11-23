@@ -4020,7 +4020,9 @@ and lifecycle/accounting follow-ons. Fixes are in `22056d4`; details in
   session, which cleared the unpaid account: node1's seeder session still shows
   1,171,875 sats of settled earned credit and 0 paid; node3 shows 0 paid and 0
   owed. This is the documented manual-removal residual, not a clean payment
-  run. The first torrent is the clean proof.
+  run. The first torrent is the clean proof. Pass 10 adds a ledger-aware
+  removal guard; the `review-22056d4` window is retired when the pass-10 image
+  replaces it.
 - The live pass-9 run did **not** reproduce the multi-peer split. The pass-8
   split (4,456,448 bytes from node1, 8,126,464 from node2) remains the live
   proof; the pass-9 scheduler ownership tests pass. A forced complementary-half
@@ -4031,6 +4033,48 @@ and lifecycle/accounting follow-ons. Fixes are in `22056d4`; details in
 - Fleet `review-22056d4`, RPC 23951–23953, Prometheus 23973, evidence
   `/mnt/temp/vtorrent-ng-evidence/soak-22056d4/`.
 - The `review-ef1d1a1` fleet was retired at height 197 (tips agree, restarts
+  0); its window does not count. The `vtr-node*` production soak was not
+  touched.
+
+This is a candidate window, not release evidence. The independent human
+review and the full 168 hours remain open.
+
+## 2026-11-23 — pass-10 candidate (`d376506`)
+
+Pass 10 closes the manual-removal residual the pass-9 live run reproduced:
+a downloader session could be DELETEd after its receipt settled into the
+durable ledger, clearing the payer's debt while the seeder still reported the
+earned credit. Details in `docs/2026-11-23_ai-supplementary-review-pass10.md`.
+
+- The daemon installs a `TorrentRemovalGuard` on the shared RPC state. It
+  reads `incentive-ledger.json` and refuses removal while the same info hash
+  has an unpaid, pending, or in-flight debt at or above `MIN_PAYMENT_SATS`;
+  dust stays removable. The desktop/Tauri path refuses a payable receipt
+  instead of discarding it.
+- Candidate: **2026-11-23T12:21:34Z** to **2026-11-30T12:21:34Z**,
+  `vtorrent/node:d376506`, image ID
+  `sha256:131f4639db614b4c7a3a17575e061f31f98bbe83ebf864188872a7c7f6358718`,
+  binary `3c7e965360030bec92cb14920f51d76267602d5ee33f49900603b764085813ac`.
+- Workspace **1,528 passed, 0 failed, 13 ignored** (56 groups); torrent lib
+  145; RPC 216; desktop 36; Clippy clean. Both ignored E2Es pass on the image
+  binary.
+- Live removal on `review-d376506`: node3 downloaded the 12 MiB, then 164
+  DELETE attempts returned **400 “Session has unpaid or in-flight incentive
+  payments”** while the 585,937-sat debt was outstanding; after settlement
+  the DELETE returned **200** at 12:30:53Z. The payment was broadcast at
+  12:25:26Z and confirmed at height 7. The 400 was the session-level guard;
+  the ledger-file backstop is unit-tested for the pass-9 zero-account case.
+- The live transfer was served by node2 (matching SHA-1); node1 did not
+  register because its wallet was locked and the empty-address fallback
+  returned a raw validation error. The pass-8 split remains the live
+  multi-peer proof; add a clear wallet-locked/no-change-address error and a
+  desktop add-torrent E2E.
+- node3 staked 7 blocks at capture; the 200 VTR principal was preserved in
+  the payment change and the 0.5 VTR faucet coin remained unspent. Health:
+  heights 12/12/12, same tip `ed7d712a...`, restarts 0/0/0, Prometheus 3/3.
+- Fleet `review-d376506`, RPC 23951–23953, Prometheus 23973, evidence
+  `/mnt/temp/vtorrent-ng-evidence/soak-d376506/`.
+- The `review-22056d4` fleet was retired at height 347 (tips agree, restarts
   0); its window does not count. The `vtr-node*` production soak was not
   touched.
 

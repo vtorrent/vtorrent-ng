@@ -157,13 +157,22 @@ register an incomplete seed session. node3 downloaded 12 MiB in 1 s, finalized
 flight. A second torrent was used to test the rate-limit split; its first
 session was manually deleted, which cleared the seeder's unsettled 1,171,875-sat
 credit — the documented manual-removal residual. The first torrent is the clean
-payment proof.
+payment proof. Pass 10 now refuses removal when the durable incentive ledger
+still has an outstanding debt for that torrent; the desktop guard retains the
+session and its debt instead of discarding it.
+On the pass-10 candidate the live removal test returned 400 for 164 DELETE
+attempts while the 585,937-sat debt was outstanding, then 200 after
+settlement. The live transfer was served by node2 (matching SHA-1); node1 did
+not register because its wallet was locked and the empty-address fallback
+returned a raw validation error. The pass-8 split remains the multi-peer
+proof; add a clear wallet-locked/no-change-address error and a desktop
+add-torrent E2E.
 
 ## Suite results
 
-- Workspace: **1,523 passed, 0 failed, 13 ignored** across 56 groups.
+- Workspace: **1,528 passed, 0 failed, 13 ignored** across 56 groups.
 - Torrent lib: 145 passed, including the seeder and scheduler regressions.
-- RPC: 215 passed. Desktop: 34 passed.
+- RPC: 216 passed. Desktop: 36 passed.
 - Both ignored E2Es pass on one release binary: the inbound seeder serves
   6 MiB over 24 verified pieces and signs a receipt covering all of them, and
   the download path still pays a seeder exactly 585,937 satoshis.

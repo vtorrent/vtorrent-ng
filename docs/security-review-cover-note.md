@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `22056d4`
+Subject: Independent security review — vTorrent-NG mainnet candidate `d376506`
 
 Hello,
 
@@ -20,20 +20,21 @@ write or previously review this code to look at it with fresh eyes.
 **Repository:** https://github.com/vtorrent/vtorrent-ng
 **Review docs:** the `main` tip that contains this note (a docs-only child of
 the code candidate)
-**Code candidate:** `22056d4fc6a22731636ad05c457c42c1632c54f4`
-**Image:** `vtorrent/node:22056d4`, ID
-`sha256:390da969fab0e254f38cbc6bbb4bd85d76a5c5d4e376d6e174f994d66e147b9b`
+**Code candidate:** `d376506e4cf7bdf7f493353c4c93d3ed96bdad0d`
+**Image:** `vtorrent/node:d376506`, ID
+`sha256:131f4639db614b4c7a3a17575e061f31f98bbe83ebf864188872a7c7f6358718`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `22056d4`. The exact-image window `review-22056d4`
-started at 2026-11-23T06:26:05Z and is in progress; the `review-ef1d1a1`
-window was retired and does not count. The shipping image needs its own full
-168-hour window after this review and its fixes settle.
+The code under review is `d376506`. The exact-image window
+`review-d376506` started at 2026-11-23T12:21:34Z and is in progress; the
+`review-22056d4` and `review-ef1d1a1` windows were retired and do not count.
+The shipping image needs its own full 168-hour window after this review and
+its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 code changed after the candidate with
-`git diff --name-only 22056d4..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
-must return nothing. Check out `22056d4` itself when running the verification
+`git diff --name-only d376506..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
+must return nothing. Check out `d376506` itself when running the verification
 commands.
 
 That document lists the exact hashes, the verification commands, and what we
@@ -229,6 +230,16 @@ candidate `ba46fd6`:
   ownership, and the magnet/tracker-init paths end `Stopped`. The pass-9 live
   transfer paid 585,937 sats; a manual session DELETE reproduced the
   unsettled-account removal residual.
+- `d376506` — pass 10. The daemon installs a ledger-aware torrent-removal
+  guard: it reads the durable incentive ledger and refuses removal while the
+  same info hash has an unpaid, pending, or in-flight debt at or above
+  `MIN_PAYMENT_SATS`; dust stays removable. The desktop path refuses a payable
+  receipt instead of discarding it. The live DELETE was refused 164 times
+  while a 585,937-sat debt was outstanding and succeeded after settlement.
+  The live transfer was single-seeder because node1's wallet was locked and
+  the empty-address fallback returned a raw validation error; a clear error
+  and a desktop add-torrent E2E are follow-ups. The pass-8 split remains the
+  live multi-peer proof.
 - `17db693` — pass 7. Each partially downloaded piece is assembled by exactly
   one owning task, blocks are leased only to peers that advertised the piece,
   and received/expired leases no longer wedge the pipeline. The seeder
@@ -432,15 +443,16 @@ Thank you.
 ## Before sending
 
 - Confirm the code candidate is still
-  `22056d4fc6a22731636ad05c457c42c1632c54f4` and the docs tip is the commit
+  `d376506e4cf7bdf7f493353c4c93d3ed96bdad0d` and the docs tip is the commit
   that publishes this note; the scope document and this note must name the same
   code candidate. Do not substitute a later local commit without updating both
-  documents and the soak provenance. Docs-only commits after `22056d4` must
-  leave `git diff --name-only 22056d4..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`
+  documents and the soak provenance. Docs-only commits after `d376506` must
+  leave `git diff --name-only d376506..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`
   empty.
-- The `review-22056d4` window is the exact-image window and is in progress;
-  the `review-ef1d1a1` window was retired and does not count. Do not describe
-  the interrupted `6a49727` fleet as covering this head. The shipping image
-  needs its own 168-hour window after the review and its fixes settle.
+- The `review-d376506` window is the exact-image window and is in progress;
+  the `review-22056d4` and `review-ef1d1a1` windows were retired and do not
+  count. Do not describe the interrupted `6a49727` fleet as covering this
+  head. The shipping image needs its own 168-hour window after the review and
+  its fixes settle.
 - Decide who receives it. Sending it is the step that actually opens the gate —
   drafting it does not.
