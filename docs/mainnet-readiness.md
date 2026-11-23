@@ -281,6 +281,12 @@ window ran on, and that commit must equal the release commit.
       (`2f8602d`) — staking had been wedged permanently; also fixed the
       migrate tool's bogus-key extraction (compact-size prefix + pubkey
       validation, `436eb09`).
+- [ ] **Legacy wallet differential check**: run
+      `VTORRENT_WALLET_PASSPHRASE='...' scripts/wallet-import-check.sh <wallet.dat>`
+      against representative owner-supplied wallets with `db5.3_dump` on
+      `PATH`. The committed parser fixtures are synthetic; the 2026-08-30
+      rehearsal is separate evidence. Record the tool version, record counts,
+      and `PASS` output without the wallet or WIFs.
 - [x] **Upgrade/downgrade drill**: 2026-08-24 on soak `vtr-node3` — binary
       swapped under the running container, restarted: chain state loaded from
       disk ("Resuming from persisted chain"), peers re-established, fleet tip
