@@ -4246,6 +4246,9 @@ count.
 - First scheduled cron observation at **17:25Z**: height 13, tips agree,
   staking on nodes 2/3, Prometheus 3/3, range 9/9 with zero down samples, and
   the watchdog heartbeat updated.
+- Second scheduled cron observation at **23:25Z**: height 365, tips agree,
+  staking on nodes 2/3, Prometheus 3/3, range 225/225 with zero down samples,
+  heartbeat updated.
 - Canonical CI for `a0724dd` is run `45445768245`: all jobs success; the
 tag-only desktop matrix was skipped on the push.
 - Fleet `review-a0724dd`, RPC 23951–23953, Prometheus 23973, evidence
