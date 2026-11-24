@@ -193,6 +193,22 @@ impl PeerBandwidthAccount {
         calculate_owed_for_bytes(self.bytes_downloaded)
     }
 
+    /// Whether this account is a removal/eviction liability.
+    ///
+    /// Un-receipted bytes count: a downloader can finish in the final-receipt
+    /// grace window, or the seeder can never send a receipt, and the raw byte
+    /// counters are the only record of the obligation. Sub-minimum dust is not
+    /// a liability; a pending or in-flight payment always is.
+    pub fn blocks_removal(&self) -> bool {
+        self.unpaid_satoshis >= MIN_PAYMENT_SATS
+            || self.payment_in_flight
+            || self.pending_payment.is_some()
+            || self
+                .agreed_owed()
+                .is_some_and(|agreed| agreed.satoshis >= MIN_PAYMENT_SATS)
+            || self.calculate_owed() >= MIN_PAYMENT_SATS
+    }
+
     /// Check if a settlement is due based on bytes transferred or time elapsed.
     pub fn needs_settlement(&self, current_timestamp: u64) -> bool {
         let time_elapsed = current_timestamp.saturating_sub(self.last_settlement);

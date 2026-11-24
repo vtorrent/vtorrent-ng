@@ -293,20 +293,9 @@ impl TorrentSession {
     /// Whether removing this session would discard an incentive debt or a
     /// payment awaiting confirmation.
     pub fn has_outstanding_incentives(&self) -> bool {
-        self.incentive_accounts.values().any(|account| {
-            // Dust below the payment minimum is not payable and must not
-            // block removal forever; it accumulates until it is payable or the
-            // account is evicted/removed.
-            account.unpaid_satoshis >= MIN_PAYMENT_SATS
-                || account.payment_in_flight
-                || account.pending_payment.is_some()
-                // A stored receipt is only a liability if it actually agrees
-                // to a positive amount. A zero-value receipt must not let a
-                // remote peer pin the session.
-                || account
-                    .agreed_owed()
-                    .is_some_and(|agreed| agreed.satoshis > 0)
-        })
+        self.incentive_accounts
+            .values()
+            .any(|account| account.blocks_removal())
     }
 
     /// Format downloaded bytes as human-readable.
@@ -736,6 +725,74 @@ mod tests {
             session.incentive_accounts.len(),
             MAX_INCENTIVE_ACCOUNTS,
             "eviction must keep the map bounded"
+        );
+    }
+
+    #[test]
+    fn un_receipted_pending_debt_blocks_removal() {
+        let mut session =
+            TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+        let peer = "VH6w62jDRYpYHjR2eJjFzXRC4MQvvs93a6".to_string();
+        session.record_download(&peer, 1024 * 1024 * 1024);
+        assert!(
+            session.has_outstanding_incentives(),
+            "a positive un-receipted pending debt must block removal"
+        );
+    }
+
+    #[test]
+    fn positive_dust_receipt_does_not_block_removal() {
+        let mut session =
+            TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+        let peer = "VH6w62jDRYpYHjR2eJjFzXRC4MQvvs93a6".to_string();
+        session.record_download(&peer, 1_000);
+        let wallet_address = session.wallet_address.clone();
+        session
+            .incentive_accounts
+            .get_mut(&peer)
+            .unwrap()
+            .record_receipt(vtorrent_core::receipt::BandwidthReceipt {
+                info_hash: [0u8; 20],
+                window_start: 0,
+                window_end: 1,
+                uploaded_by_me: 1_000,
+                downloaded_by_me: 0,
+                peer: wallet_address,
+                signer: peer.clone(),
+                settlement_id: 1,
+                epoch: 1,
+            });
+        assert!(
+            !session.has_outstanding_incentives(),
+            "a positive sub-minimum receipt must not pin the session"
+        );
+    }
+
+    #[test]
+    fn add_session_does_not_evict_pending_unreceipted_debt() {
+        let mut manager = SessionManager::new();
+        for index in 0..(MAX_RETAINED_SESSIONS - 1) {
+            let mut session =
+                TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+            session.state = SessionState::Seeding;
+            session.last_active = 100 + index as u64;
+            manager.add_session(session);
+        }
+        let mut pending =
+            TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+        pending.state = SessionState::Seeding;
+        pending.last_active = 0;
+        pending.record_download("VH6w62jDRYpYHjR2eJjFzXRC4MQvvs93a6", 1024 * 1024 * 1024);
+        let pending_id = pending.id.clone();
+        manager.add_session(pending);
+        let mut newcomer =
+            TorrentSession::new(make_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+        newcomer.state = SessionState::Seeding;
+        newcomer.last_active = 1_000;
+        manager.add_session(newcomer);
+        assert!(
+            manager.sessions.contains_key(&pending_id),
+            "a pending un-receipted debt must not be evicted at the retained-session cap"
         );
     }
 }
