@@ -4,6 +4,7 @@
 #   SOAK_NAME=review-9533a2c SOAK_RPC_BASE=23950 \
 #   SOAK_API_KEY_FILE=target/review-9533a2c-secrets/api-key \
 #   SOAK_EVIDENCE=/mnt/temp/vtorrent-ng-evidence/soak-9533a2c \
+#   SOAK_NTFY_URL=https://ntfy.sh/... SOAK_DEADMAN_URL=https://hc-ping.com/... \
 #   scripts/soak-observe-candidate.sh [window_start_epoch]
 #
 # Read-only. Appends a markdown block to $SOAK_EVIDENCE/observations.md and
@@ -85,8 +86,60 @@ done
         2>/dev/null || echo 0)"
     echo "- Prometheus targets up: \`${up}/3\`."
     [[ "$up" == "3" ]] || fail=1
+
+    # A daily point-in-time sample cannot see a node that was down between
+    # runs. Query the whole window at 5-minute resolution and reject any down
+    # sample or a coverage gap (Prometheus itself unavailable / data lost).
+    range_json="$(curl -fsS --max-time 20 --get \
+        --data-urlencode 'query=up{job="vtorrent-daemon"}' \
+        --data-urlencode "start=${window_start}" \
+        --data-urlencode "end=${now_epoch}" \
+        --data-urlencode 'step=300' \
+        "${prom}/api/v1/query_range" 2>/dev/null)" || range_json='{"data":{"result":[]}}'
+    range="$(python3 -c '
+import json, sys
+start, end, step = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
+result = json.load(sys.stdin)["data"]["result"]
+series = len(result)
+expected = ((end - start) // step + 1) * series
+values = [v for s in result for _, v in s["values"]]
+down = sum(1 for v in values if v == "0")
+print(series, expected, len(values), down, expected - len(values))
+' "$window_start" "$now_epoch" 300 <<<"$range_json" 2>/dev/null || echo "0 0 0 0 0")"
+    read -r series expected got down gap <<<"$range"
+    echo "- Prometheus range (\`${since_iso}\` to \`${now_iso}\`, 5 min step): series \`${series}\`, samples \`${got}/${expected}\`, down \`${down}\`, missing \`${gap}\`."
+    if [[ "$series" != "3" ]]; then
+        echo "- Prometheus range is incomplete: expected 3 candidate series."
+        fail=1
+    fi
+    if (( down > 0 )); then
+        echo "- **Down samples detected in the window**; this observation fails."
+        fail=1
+    fi
+    if (( expected > 0 && got * 100 < expected * 95 )); then
+        echo "- **Coverage gap exceeds 5%** (Prometheus unavailable or data lost)."
+        fail=1
+    fi
     echo "- Container restarts must all be \`0\`; any nonzero exits this check."
 } >> "$out"
+
+if [[ "$fail" -ne 0 ]]; then
+    if [[ -n "${SOAK_NTFY_URL:-}" ]]; then
+        curl -fsS -m 10 \
+            -H "Title: vTorrent candidate soak observation failed" \
+            -H "Priority: high" \
+            -H "Tags: warning" \
+            -d "candidate=${name}; see ${out}" \
+            "$SOAK_NTFY_URL" >/dev/null || true
+    fi
+else
+    date +%s > "$evidence/last-observation-epoch"
+    if [[ -n "${SOAK_DEADMAN_URL:-}" ]]; then
+        # A successful run pings the external dead-man check. If the cron stops
+        # running, the missing ping is what raises the alert.
+        curl -fsS -m 10 "$SOAK_DEADMAN_URL" >/dev/null || true
+    fi
+fi
 
 sed -n "/candidate observation (${name}, +${elapsed}h)/,\$p" "$out" | tail -20
 exit "$fail"

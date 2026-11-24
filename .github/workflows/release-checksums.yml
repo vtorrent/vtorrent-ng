@@ -16,10 +16,26 @@ jobs:
   checksums:
     name: Publish SHA256SUMS
     runs-on: ubuntu-latest
+    # Requires a protected environment (reviewers / deployment branches) so a
+    # compromised token cannot publish or sign a release on its own. Configure
+    # `release` in the repository settings before enabling signing.
+    environment: release
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Verify the tag is on main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor HEAD FETCH_HEAD; then
+            echo "release tag $GITHUB_REF_NAME points at $(git rev-parse HEAD), which is not on main" >&2
+            exit 1
+          fi
 
       - name: Generate and verify checksums
         env:

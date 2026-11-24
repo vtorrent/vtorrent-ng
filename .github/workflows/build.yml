@@ -7,6 +7,7 @@ on:
       - 'v*'
   pull_request:
     branches: [main]
+  workflow_dispatch:
   schedule:
     # Weekly dependency vulnerability scan (Monday at 03:23 UTC).
     - cron: '23 3 * * 1'
@@ -177,11 +178,32 @@ jobs:
         working-directory: vtorrent-ui
         run: pnpm build
 
+  # ─── Daemon image ───────────────────────────────────────────────────────────
+  # Build the shipping daemon image from the tracked lockfile with no layer
+  # cache. The image ID is the evidence; a locally rebuilt matching ID is
+  # recorded in the release window.
+  docker-image:
+    name: Docker Image (no-cache)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build daemon image without cache
+        run: |
+          docker build --no-cache --progress=plain \
+            -t "vtorrent/node:${GITHUB_SHA}" \
+            -f docker/Dockerfile .
+      - name: Record image ID
+        run: |
+          docker image inspect --format '{{.Id}}' "vtorrent/node:${GITHUB_SHA}" \
+            | tee image-id.txt
+          sha256sum release/Cargo.lock | tee release-lock.sha256
+
   # ─── Desktop builds ─────────────────────────────────────────────────────────
   build-desktop:
     name: Build (${{ matrix.platform }})
     needs: [test, quality, security-audit, machete, bench-gate, frontend]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     permissions:
       contents: write
     strategy:
