@@ -53,39 +53,14 @@ const PEER_RECEIPT_INTERVAL: Duration = Duration::from_secs(25);
 /// Concurrent connections one source IP may hold.
 const MAX_CONNECTIONS_PER_IP: usize = 8;
 
-/// Read the engine's verified resume bitfield for a completed torrent.
-///
-/// The engine writes this file only after each bit has been verified against
-/// the data. Registration itself is gated on the session being complete, so
-/// trusting these bits is equivalent to trusting the download that produced
-/// the files. Any piece not in the file is still hashed on its first request.
-async fn resume_verified(metainfo: &Metainfo, download_dir: &std::path::Path) -> HashSet<u32> {
-    let mut verified = HashSet::new();
-    let Ok(bytes) = tokio::fs::read(crate::engine_disk::resume_file_path(
-        download_dir,
-        &metainfo.info_hash,
-    ))
-    .await
-    else {
-        return verified;
-    };
-    let count = metainfo.piece_count as usize;
-    for (index, byte) in bytes.iter().enumerate() {
-        for bit in 0..8 {
-            let piece = index * 8 + bit;
-            if piece < count && byte & (0x80 >> bit) != 0 {
-                verified.insert(piece as u32);
-            }
-        }
-    }
-    verified
-}
-
 /// A torrent this node can serve.
 struct SeedTorrent {
     session_id: String,
     metainfo: Metainfo,
     download_dir: PathBuf,
+    /// When this entry was registered. Used to avoid pruning an entry whose
+    /// session was added after the announce loop took its liveness snapshot.
+    registered_at: std::time::Instant,
     /// Pieces already verified against the metainfo, so repeated block
     /// requests for the same piece hash it once.
     verified: StdMutex<HashSet<u32>>,
@@ -112,6 +87,7 @@ impl SeedTorrent {
             session_id,
             metainfo,
             download_dir,
+            registered_at: std::time::Instant::now(),
             verified: StdMutex::new(verified),
             failed: StdMutex::new(HashMap::new()),
             verify_limit: tokio::sync::Semaphore::new(4),
@@ -233,12 +209,14 @@ impl SeederRegistry {
     /// completion is not a no-op against the old session id.
     pub async fn register(&self, session_id: String, metainfo: Metainfo, download_dir: PathBuf) {
         let info_hash = metainfo.info_hash;
-        let verified = resume_verified(&metainfo, &download_dir).await;
+        // Resume bits are untrusted input here: they can be stale, corrupt, or
+        // belong to a different download. Start empty and hash every piece on
+        // its first request instead of serving unverified bytes.
         let new = Arc::new(SeedTorrent::new(
             session_id,
             metainfo,
             download_dir,
-            verified,
+            HashSet::new(),
         ));
         let mut entries = self.entries.write().await;
         if let Some(old) = entries.insert(info_hash, new) {
@@ -257,12 +235,11 @@ impl SeederRegistry {
         sessions: &RwLock<SessionManager>,
     ) -> bool {
         let info_hash = metainfo.info_hash;
-        let verified = resume_verified(&metainfo, &download_dir).await;
         let new = Arc::new(SeedTorrent::new(
             session_id.clone(),
             metainfo,
             download_dir,
-            verified,
+            HashSet::new(),
         ));
         let mut entries = self.entries.write().await;
         if let Some(existing) = entries.get(&info_hash) {
@@ -283,11 +260,20 @@ impl SeederRegistry {
     }
 
     /// Drop entries whose session no longer exists (evicted terminal sessions).
-    pub async fn retain_sessions(&self, live: &HashSet<String>) {
+    ///
+    /// `registered_before` must be captured before the caller snapshots the
+    /// live session ids. An entry registered after that point belongs to a
+    /// session that was not in the snapshot and must survive this pass; the
+    /// next scan (60 s later) will prune it if the session is still absent.
+    pub async fn retain_sessions(
+        &self,
+        live: &HashSet<String>,
+        registered_before: std::time::Instant,
+    ) {
         let mut entries = self.entries.write().await;
         let mut removed = Vec::new();
         entries.retain(|_, torrent| {
-            if live.contains(&torrent.session_id) {
+            if live.contains(&torrent.session_id) || torrent.registered_at >= registered_before {
                 true
             } else {
                 removed.push(torrent.cancel.clone());
@@ -377,10 +363,15 @@ pub struct SeederState {
 }
 
 /// Aggregate IPv6 sources by /64 so one host cannot rotate addresses inside
-/// its own prefix to bypass the per-IP cap.
+/// its own prefix to bypass the per-IP cap. IPv4-mapped addresses
+/// (`::ffff:a.b.c.d`) are folded back to IPv4 before aggregation; otherwise
+/// every mapped source would share the all-zero /64 bucket.
 fn connection_ip_key(ip: std::net::IpAddr) -> std::net::IpAddr {
     match ip {
         std::net::IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return std::net::IpAddr::V4(v4);
+            }
             let segments = v6.segments();
             std::net::IpAddr::V6(std::net::Ipv6Addr::new(
                 segments[0],
@@ -527,7 +518,10 @@ fn spawn_tracker_announces(
         let mut announced: HashMap<[u8; 20], std::time::Instant> = HashMap::new();
         loop {
             // Evicted sessions must not be announced forever. Prune the
-            // registry before taking the announce snapshot.
+            // registry before taking the announce snapshot. Capture the cutoff
+            // before reading sessions: an entry registered after this instant
+            // belongs to a session that could not have been in the snapshot.
+            let prune_cutoff = std::time::Instant::now();
             let live_sessions: HashSet<String> = {
                 let guard = sessions.read().await;
                 guard
@@ -536,7 +530,7 @@ fn spawn_tracker_announces(
                     .map(|session| session.id.clone())
                     .collect()
             };
-            registry.retain_sessions(&live_sessions).await;
+            registry.retain_sessions(&live_sessions, prune_cutoff).await;
             let torrents = registry.snapshot().await;
             let now = std::time::Instant::now();
             for torrent in &torrents {
@@ -1150,6 +1144,73 @@ mod tests {
         );
         registry.unregister_session(&[5u8; 20], "new").await;
         assert!(registry.get(&[5u8; 20]).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn retain_sessions_does_not_prune_entries_registered_after_the_snapshot() {
+        let registry = SeederRegistry::new();
+        let dir = tempfile::tempdir().unwrap();
+        let cutoff = std::time::Instant::now();
+        registry
+            .register(
+                "new".into(),
+                metainfo([6u8; 20], b"abcdef"),
+                dir.path().into(),
+            )
+            .await;
+        registry.retain_sessions(&HashSet::new(), cutoff).await;
+        assert!(
+            registry.get(&[6u8; 20]).await.is_some(),
+            "an entry registered after the liveness snapshot must survive"
+        );
+        registry
+            .retain_sessions(&HashSet::new(), std::time::Instant::now())
+            .await;
+        assert!(registry.is_empty().await);
+    }
+
+    #[test]
+    fn ipv4_mapped_sources_use_their_ipv4_key() {
+        let mapped: std::net::IpAddr = "::ffff:203.0.113.7".parse().unwrap();
+        assert_eq!(
+            connection_ip_key(mapped),
+            "203.0.113.7".parse::<std::net::IpAddr>().unwrap()
+        );
+        let first = connection_ip_key("::ffff:203.0.113.7".parse().unwrap());
+        let second = connection_ip_key("::ffff:203.0.113.8".parse().unwrap());
+        assert_ne!(first, second, "mapped IPv4 peers must not share a bucket");
+        let v6 = connection_ip_key("2001:db8:1:2:3:4:5:6".parse().unwrap());
+        let same_prefix = connection_ip_key("2001:db8:1:2:ffff::1".parse().unwrap());
+        assert_eq!(v6, same_prefix, "native IPv6 still aggregates by /64");
+    }
+
+    #[tokio::test]
+    async fn resume_bits_do_not_mark_unverified_pieces_as_have() {
+        let dir = tempfile::tempdir().unwrap();
+        let info_hash = [7u8; 20];
+        let data = b"the real content of this torrent";
+        // A stale or malicious resume file claims every piece is present, but
+        // the data directory is empty. The seeder must hash on first request
+        // instead of trusting the bitfield.
+        std::fs::write(
+            crate::engine_disk::resume_file_path(dir.path(), &info_hash),
+            [0xffu8; 8],
+        )
+        .unwrap();
+        let registry = SeederRegistry::new();
+        registry
+            .register(
+                "session".into(),
+                metainfo(info_hash, data),
+                dir.path().into(),
+            )
+            .await;
+        let entry = registry.get(&info_hash).await.unwrap();
+        assert!(
+            !entry.verified_piece(0).await,
+            "a resume bit without matching data must not be served"
+        );
+        assert!(entry.block(0, 0, 8).await.is_none());
     }
 
     #[tokio::test]

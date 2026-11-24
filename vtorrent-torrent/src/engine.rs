@@ -86,6 +86,44 @@ const MAX_ASSEMBLER_BYTES: usize = 8 * 1024 * 1024;
 const MIN_ASSEMBLERS: usize = 8;
 const MAX_ASSEMBLERS: usize = 64;
 
+/// A peer that keeps the socket alive but stops transferring useful data must
+/// not hold an active session forever. Whole verified pieces and accepted
+/// partial blocks both count as progress, so a slow peer filling one large
+/// piece is not stopped mid-piece.
+struct ProgressWatchdog {
+    last_have: u64,
+    last_accepted_bytes: u64,
+    last_progress_at: std::time::Instant,
+    timeout: std::time::Duration,
+}
+
+impl ProgressWatchdog {
+    fn new(
+        have: u64,
+        accepted_bytes: u64,
+        now: std::time::Instant,
+        timeout: std::time::Duration,
+    ) -> Self {
+        Self {
+            last_have: have,
+            last_accepted_bytes: accepted_bytes,
+            last_progress_at: now,
+            timeout,
+        }
+    }
+
+    /// Returns false when neither a verified piece nor a new partial block has
+    /// arrived within the timeout.
+    fn observe(&mut self, have: u64, accepted_bytes: u64, now: std::time::Instant) -> bool {
+        if have > self.last_have || accepted_bytes > self.last_accepted_bytes {
+            self.last_have = have;
+            self.last_accepted_bytes = accepted_bytes;
+            self.last_progress_at = now;
+        }
+        now.duration_since(self.last_progress_at) < self.timeout
+    }
+}
+
 /// Assembles blocks into a full piece and verifies its SHA1.
 pub struct PieceAssembler {
     expected_length: u64,
@@ -1044,14 +1082,19 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
     // malicious; retrying it forever only burns bandwidth and CPU.
     let mut hash_failures: u32 = 0;
     // A swarm that keeps the socket alive but never completes a piece must not
-    // hold an active session forever. This is global progress, not per-peer.
-    let mut last_have_count = scheduler
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .tracker
-        .have_count();
-    let mut last_piece_at = std::time::Instant::now();
-    const NO_PROGRESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
+    // hold an active session forever. This is global progress, not per-peer;
+    // accepted partial blocks count so a large piece is not mistaken for idle.
+    let mut watchdog = ProgressWatchdog::new(
+        scheduler
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .tracker
+            .have_count() as u64,
+        0,
+        std::time::Instant::now(),
+        std::time::Duration::from_secs(900),
+    );
+    let mut accepted_bytes: u64 = 0;
 
     loop {
         if cancel.is_cancelled() {
@@ -1123,13 +1166,10 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                 .unwrap_or_else(|e| e.into_inner())
                 .tracker
                 .have_count();
-            if have > last_have_count {
-                last_have_count = have;
-                last_piece_at = std::time::Instant::now();
-            } else if last_piece_at.elapsed() >= NO_PROGRESS_TIMEOUT {
+            if !watchdog.observe(have as u64, accepted_bytes, std::time::Instant::now()) {
                 tracing::warn!(
                     peer = %addr,
-                    "Torrent made no verified progress for 15 minutes; stopping this peer task"
+                    "Torrent made no verified or partial progress for 15 minutes; stopping this peer task"
                 );
                 break;
             }
@@ -1406,7 +1446,11 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                 let asm = assemblers
                     .entry(index)
                     .or_insert_with(|| PieceAssembler::new(index, piece_len));
+                let block_len = data.len() as u64;
                 let accepted = asm.add_block(begin, data);
+                if accepted {
+                    accepted_bytes = accepted_bytes.saturating_add(block_len);
+                }
                 let marked = if accepted {
                     // Mark the lease satisfied only now that the block is
                     // actually held. If the assembler cap or budget rejected
@@ -1932,6 +1976,30 @@ mod tests {
         let mut out = [0u8; 20];
         out.copy_from_slice(&digest);
         out
+    }
+
+    #[test]
+    fn watchdog_treats_partial_piece_progress_as_activity() {
+        let timeout = std::time::Duration::from_secs(900);
+        let start = std::time::Instant::now();
+        let mut watchdog = ProgressWatchdog::new(0, 0, start, timeout);
+
+        assert!(
+            watchdog.observe(0, 4096, start + std::time::Duration::from_secs(899)),
+            "accepted blocks reset the idle timer even before the piece completes"
+        );
+        assert!(
+            watchdog.observe(0, 4096, start + std::time::Duration::from_secs(901)),
+            "the timeout is measured from the last accepted block"
+        );
+        assert!(
+            !watchdog.observe(0, 4096, start + std::time::Duration::from_secs(1799)),
+            "no whole piece and no new bytes for 15 minutes must time out"
+        );
+        assert!(
+            watchdog.observe(1, 4096, start + std::time::Duration::from_secs(1800)),
+            "a completed piece also counts as progress"
+        );
     }
 
     #[test]

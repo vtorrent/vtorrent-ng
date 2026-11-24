@@ -55,6 +55,9 @@ struct CommitScratch {
 /// Maturity classification for a staking UTXO.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UtxoMaturity {
+    /// Below the consensus minimum stake amount; never stakeable regardless
+    /// of age.
+    BelowMinimum,
     Immature,
     Eligible,
     Expired,
@@ -71,6 +74,25 @@ pub fn classify_utxo_age(age_seconds: u64, min_stake_age: u64, max_stake_age: u6
     }
 }
 
+/// Classify a staking output by amount and age.
+///
+/// The amount is checked first: an output below `MIN_STAKE_AMOUNT` can never
+/// produce a stake kernel, so reporting it as eligible would overstate the
+/// stake weight and the expected reward.
+pub fn classify_utxo_for_staking(
+    value: u64,
+    age_seconds: u64,
+    min_stake_amount: u64,
+    min_stake_age: u64,
+    max_stake_age: u64,
+) -> UtxoMaturity {
+    if value < min_stake_amount {
+        UtxoMaturity::BelowMinimum
+    } else {
+        classify_utxo_age(age_seconds, min_stake_age, max_stake_age)
+    }
+}
+
 /// Read-only maturity snapshot for the staking readiness UI.
 #[derive(Debug, Clone, Default)]
 pub struct StakingSnapshot {
@@ -78,11 +100,14 @@ pub struct StakingSnapshot {
     pub total_satoshis: u64,
     pub eligible_utxos: usize,
     pub eligible_satoshis: u64,
+    pub below_minimum_utxos: usize,
+    pub below_minimum_satoshis: u64,
     pub immature_utxos: usize,
     pub immature_satoshis: u64,
     pub expired_utxos: usize,
     pub expired_satoshis: u64,
     pub next_maturity_at: Option<u32>,
+    pub min_stake_amount: u64,
     pub min_stake_age: u64,
     pub max_stake_age: u64,
 }
@@ -91,6 +116,7 @@ pub struct StakingSnapshot {
 pub fn staking_snapshot(chain: &crate::chain::Chain, address: &str, now: u32) -> StakingSnapshot {
     let params = chain.params();
     let mut snapshot = StakingSnapshot {
+        min_stake_amount: params.min_stake_amount,
         min_stake_age: params.min_stake_age,
         max_stake_age: params.max_stake_age,
         ..StakingSnapshot::default()
@@ -99,7 +125,18 @@ pub fn staking_snapshot(chain: &crate::chain::Chain, address: &str, now: u32) ->
         snapshot.total_utxos += 1;
         snapshot.total_satoshis = snapshot.total_satoshis.saturating_add(utxo.value);
         let age = now.saturating_sub(utxo.timestamp) as u64;
-        match classify_utxo_age(age, params.min_stake_age, params.max_stake_age) {
+        match classify_utxo_for_staking(
+            utxo.value,
+            age,
+            params.min_stake_amount,
+            params.min_stake_age,
+            params.max_stake_age,
+        ) {
+            UtxoMaturity::BelowMinimum => {
+                snapshot.below_minimum_utxos += 1;
+                snapshot.below_minimum_satoshis =
+                    snapshot.below_minimum_satoshis.saturating_add(utxo.value);
+            }
             UtxoMaturity::Eligible => {
                 snapshot.eligible_utxos += 1;
                 snapshot.eligible_satoshis = snapshot.eligible_satoshis.saturating_add(utxo.value);
@@ -1216,7 +1253,25 @@ mod conflict_tests {
 
 #[cfg(test)]
 mod maturity_tests {
-    use super::{classify_utxo_age, UtxoMaturity};
+    use super::{classify_utxo_age, classify_utxo_for_staking, UtxoMaturity};
+
+    #[test]
+    fn below_minimum_outputs_are_never_eligible() {
+        let min = crate::consensus::MIN_STAKE_AMOUNT;
+        assert_eq!(
+            classify_utxo_for_staking(min - 1, 10_000, min, 60, 100),
+            UtxoMaturity::BelowMinimum,
+            "age must not make a sub-minimum output stakeable"
+        );
+        assert_eq!(
+            classify_utxo_for_staking(min, 10_000, min, 60, 100),
+            UtxoMaturity::Expired
+        );
+        assert_eq!(
+            classify_utxo_for_staking(min, 60, min, 60, 100),
+            UtxoMaturity::Eligible
+        );
+    }
 
     #[test]
     fn classify_utxo_age_boundaries() {
