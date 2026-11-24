@@ -63,8 +63,11 @@ code-freeze/evidence/release gates. The independent human review and the
   candidate containers (no restart policy) exited; they were restarted at
   `13:31Z` at height 295 with the same tip, wallets unlocked, staking resumed,
   and Prometheus 3/3. The 168-hour clock was restarted at `13:33Z`. The
-  production `vtr-node*` containers restarted under their own policy and were
-  replaying the store; they were not modified by any drill command.
+  production `vtr-node*` containers restarted under their own policy and
+  replayed the store; they were healthy again at 13:58Z (height 102815, tips
+  agree, connections 2/1/1). They were not modified by any drill command, but
+  the restart broke their continuous uptime and is recorded for their own
+  sign-off.
   A live 12 MiB transfer then paid **585,937 sats** from node3's 0.5 VTR
   non-stakeable coin (`4e268baa…:0`), not the 200 VTR stake output
   (`eebf9d9ed5…:1`, still unspent), fee 1,000 sats. Before finality DELETE

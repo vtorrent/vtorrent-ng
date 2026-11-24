@@ -4175,8 +4175,10 @@ staking status, and a deterministic two-peer split test.
   was restarted at **13:33:00Z**. Docker snap refreshes were held to prevent a
   recurrence. See
   `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/WINDOW-RESTART.md`. The
-  production fleet was replaying its store after the restart; it must be
-  confirmed caught up before its soak is treated as continuous.
+  production fleet replayed its store and was healthy again at 13:58Z: all
+  three nodes at height 102815, tips agree, connections 2/1/1. The Docker
+  restart broke its continuous 8-day uptime; its sign-off must record the
+  interruption.
 - Live 12 MiB transfer paid **585,937 sats** from node3's 0.5 VTR non-stakeable
   coin (`4e268baa…:0`); the 200 VTR stake output (`eebf9d9ed5…:1`) remained
   unspent, and the fee was 1,000 sats. Before finality DELETE returned 400;
