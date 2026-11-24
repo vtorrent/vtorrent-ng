@@ -39,6 +39,7 @@ impl IncentiveDebt {
         self.payment_in_flight = false;
     }
 
+    #[cfg(test)]
     pub fn has_outstanding(&self) -> bool {
         self.unpaid_satoshis > 0 || self.pending_txid.is_some() || self.payment_in_flight
     }

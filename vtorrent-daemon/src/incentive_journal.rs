@@ -403,6 +403,20 @@ mod tests {
     }
 
     #[test]
+    fn pending_account_blocks_removal() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("journal.jsonl");
+        let journal = JsonlJournal::open(&path).unwrap();
+        let mut pending = PeerBandwidthAccount::new("VPeer".into());
+        pending.record_download(1024 * 1024 * 1024);
+        journal.upsert([9u8; 20], "VPeer", 1, &pending).unwrap();
+        assert!(journal
+            .accounts()
+            .iter()
+            .any(|record| { record.info_hash == [9u8; 20] && record.account.blocks_removal() }));
+    }
+
+    #[test]
     fn a_poisoned_journal_refuses_further_writes() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("journal.jsonl");

@@ -1263,26 +1263,6 @@ async fn main() -> anyhow::Result<()> {
 
     let incentive_ledger_path = data_dir.join("incentive-ledger.json");
     let incentive_live_path = data_dir.join("incentive-live.json");
-    {
-        let removal_ledger_path = incentive_ledger_path.clone();
-        let removal_guard: vtorrent_rpc::state::TorrentRemovalGuard =
-            std::sync::Arc::new(move |session| {
-                let ledger = incentive_ledger::IncentiveLedger::load(&removal_ledger_path)
-                    .map_err(|error| format!("Could not read the incentive ledger: {error:#}"))?;
-                if ledger.has_outstanding_for_info_hash(&session.metainfo.info_hash) {
-                    Err(
-                    "Session has an outstanding incentive ledger debt; settle it before removal"
-                        .into(),
-                )
-                } else {
-                    Ok(())
-                }
-            });
-        *rpc_state
-            .torrent_removal_guard
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = Some(removal_guard);
-    }
     let mut incentive_shutdown_tx: Option<
         tokio::sync::mpsc::Sender<tokio::sync::oneshot::Sender<()>>,
     > = None;
@@ -1312,22 +1292,60 @@ async fn main() -> anyhow::Result<()> {
             );
         }
         let journal_path = data_dir.join("incentive-journal.jsonl");
-        let concrete_journal = match incentive_journal::JsonlJournal::open(&journal_path) {
-            Ok(journal) => journal,
-            Err(error) => {
-                tracing::error!("Could not open the incentive journal: {error:#}");
-                return Err(error);
-            }
-        };
+        let concrete_journal =
+            std::sync::Arc::new(match incentive_journal::JsonlJournal::open(&journal_path) {
+                Ok(journal) => journal,
+                Err(error) => {
+                    tracing::error!("Could not open the incentive journal: {error:#}");
+                    return Err(error);
+                }
+            });
         let journal_budget = concrete_journal.emitted_total();
         let mut journal_accounts = concrete_journal.accounts();
         let journal: std::sync::Arc<dyn vtorrent_torrent::incentive::IncentiveJournal> =
-            std::sync::Arc::new(concrete_journal);
+            concrete_journal.clone();
         rpc_state
             .torrent_sessions
             .write()
             .await
             .set_journal(journal.clone());
+        let removal_ledger_path = incentive_ledger_path.clone();
+        let removal_journal = concrete_journal.clone();
+        let removal_guard: vtorrent_rpc::state::TorrentRemovalGuard =
+            std::sync::Arc::new(move |session| {
+                let info_hash = session.metainfo.info_hash;
+                if removal_journal
+                    .accounts()
+                    .into_iter()
+                    .any(|record| record.info_hash == info_hash && record.account.blocks_removal())
+                {
+                    return Err(
+                        "Session has an outstanding incentive debt; settle it before removal"
+                            .into(),
+                    );
+                }
+                let ledger = incentive_ledger::IncentiveLedger::load(&removal_ledger_path)
+                    .map_err(|error| {
+                        tracing::error!(
+                            error = %error,
+                            path = %removal_ledger_path.display(),
+                            "Could not read the incentive ledger for torrent removal"
+                        );
+                        "Session incentive state is unavailable; retry after settlement".to_string()
+                    })?;
+                if ledger.has_outstanding_for_info_hash(&info_hash) {
+                    Err(
+                        "Session has an outstanding incentive ledger debt; settle it before removal"
+                            .into(),
+                    )
+                } else {
+                    Ok(())
+                }
+            });
+        *rpc_state
+            .torrent_removal_guard
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(removal_guard);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -1480,7 +1498,7 @@ async fn main() -> anyhow::Result<()> {
         // no-repay guard until that tombstone is durable.
         ledger
             .debts
-            .retain(|debt| debt.has_outstanding() || journal_keys.contains(&debt.key));
+            .retain(|debt| debt.blocks_removal() || journal_keys.contains(&debt.key));
         ledger.emitted_total = ledger.emitted_total.max(journal_budget);
         if ledger.emitted_total > journal_budget {
             journal_set_budget(&journal, ledger.emitted_total).await;
