@@ -79,9 +79,10 @@ code-freeze/evidence/release gates. The independent human review and the
 - Production signing key/certificate: not generated; authorization required.
 - Height-10,000 checkpoint publication: after launch.
 - Release-artifact rollback drill: **partial** — the rebuilt `v2.0.0-beta.3`
-  binary loaded a pass-13 chain with a P2CS output at height 6, and a fresh
-  candidate data dir produced genesis + height 1. The P2CS coinstake rejection
-  and multi-node reorg legs remain open; see
+  binary accepted a pass-13 chain with a P2CS output and a P2CS coinstake at
+  height 10; a fresh candidate data dir produced genesis + height 1. P2CS is
+  not the rollback blocker; the batch governance/state-rent path and a
+  multi-node reorg remain open. See
   `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/rollback-drill/DRILL.md`.
 
 ## Evidence

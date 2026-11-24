@@ -370,10 +370,10 @@ window ran on, and that commit must equal the release commit.
       `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/`.
 - [ ] **Rollback drill on the candidate image**: **partial (2026-11-24)**. A
       rebuilt `v2.0.0-beta.3` binary loaded a pass-13 chain containing a P2CS
-      output at height 6, and a fresh candidate data dir produced genesis +
-      height 1. The remaining incompatible-output leg (a P2CS coinstake block)
-      and a multi-node fleet reorg are still open. See
-      `docs/mainnet-launch-runbook.md` §6 and
+      output and a P2CS coinstake block at height 10; both were accepted, and a
+      fresh candidate data dir produced genesis + height 1. P2CS is not the
+      rollback blocker. The batch governance/state-rent path and a multi-node
+      fleet reorg remain open. See `docs/mainnet-launch-runbook.md` §6 and
       `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/rollback-drill/DRILL.md`.
 - [x] **Release notes drafted** — `docs/release-notes-beta.3.md` (finalized,
       Addendum 4 covers the soak + memory work + P0 fixes).

@@ -132,14 +132,14 @@ component-level active soak passed. The header retention bound is covered by an 
   young); coordinate a restart with a corrected binary. Record the decision in
   `docs/soak-log.md`.
 - **Drill status (2026-11-24): PARTIAL.** A disposable single-node drill
-  loaded a pass-13 chain containing a P2CS output with the rebuilt
-  `v2.0.0-beta.3` binary and accepted height 6; a fresh candidate data dir
-  produced genesis `36ca792a…` and mined height 1. The store is readable across
-  the versions and a simple binary rollback works at the acceptance layer. The
-  remaining incompatible-output leg is a **P2CS coinstake block** (the funded
-  output was below 1 VTR) and a multi-node fleet reorg during rollback. See
-  `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/rollback-drill/DRILL.md`. The
-  gate is not closed until those run on a disposable fleet.
+  loaded a pass-13 chain containing a P2CS output and a P2CS coinstake block
+  (height 10) with the rebuilt `v2.0.0-beta.3` binary; both were accepted. A
+  fresh candidate data dir produced genesis `36ca792a…` and mined height 1. The
+  store is readable across the versions and P2CS is **not** the rollback
+  blocker. The remaining incompatible-output target is the batch's
+  **governance/state-rent** path, plus a multi-node fleet reorg during rollback.
+  See `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/rollback-drill/DRILL.md`.
+  The gate is not closed until those run on a disposable fleet.
 - **Batch**: the batch replayed offline to an identical tip hash on the
   pre-batch chain (`docs/soak-log.md`, 2026-10-08/09). Reverting the binary is
   safe only while no OP_RETURN/P2CS output exists and the reverted binary
