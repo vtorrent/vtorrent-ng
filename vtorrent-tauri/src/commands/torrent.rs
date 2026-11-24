@@ -174,19 +174,28 @@ pub async fn add_torrent(
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
     let requested_address = wallet_address.trim();
+    let hot_address = handle.rpc_state.wallet_change_address.read().await.clone();
     let wallet_address = if requested_address.is_empty() {
-        handle
-            .rpc_state
-            .wallet_change_address
-            .read()
-            .await
-            .clone()
-            .unwrap_or_default()
+        match hot_address.as_deref() {
+            Some(address) => address.to_owned(),
+            None => {
+                return Err(TauriError::InvalidInput(
+                    "wallet is locked or no wallet is imported; unlock/import a wallet or provide wallet_address".into(),
+                ))
+            }
+        }
     } else {
         requested_address.to_owned()
     };
     vtorrent_core::address::validate_p2pkh(&wallet_address)
         .map_err(|error| TauriError::InvalidInput(format!("invalid wallet_address: {error}")))?;
+    if let Some(hot_address) = hot_address {
+        if wallet_address != hot_address {
+            return Err(TauriError::InvalidInput(
+                "wallet_address must match the unlocked hot wallet; unlock that wallet or omit wallet_address".into(),
+            ));
+        }
+    }
     let session = TorrentSession::new(metainfo, wallet_address);
     let session_id = {
         let mut sessions = handle.rpc_state.torrent_sessions.write().await;
@@ -300,9 +309,6 @@ pub async fn remove_torrent(state: tauri::State<'_, AppState>, id: String) -> Re
     let handle = guard
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
-    if let Some(cancel) = handle.rpc_state.torrent_cancels.write().await.remove(&id) {
-        cancel.cancel();
-    }
     let info_hash = {
         let mut sessions = handle.rpc_state.torrent_sessions.write().await;
         let session = sessions
@@ -318,6 +324,9 @@ pub async fn remove_torrent(state: tauri::State<'_, AppState>, id: String) -> Re
             .ok_or_else(|| TauriError::Torrent(format!("Session {} not found", id)))?;
         info_hash
     };
+    if let Some(cancel) = handle.rpc_state.torrent_cancels.write().await.remove(&id) {
+        cancel.cancel();
+    }
     // Stop serving immediately, exactly like the RPC path.
     if let Some(seeder) = handle.rpc_state.torrent_seeder.read().await.clone() {
         seeder.unregister_session(&info_hash, &id).await;

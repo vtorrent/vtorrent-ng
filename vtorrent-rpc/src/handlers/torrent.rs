@@ -120,21 +120,28 @@ pub async fn add_torrent(
     // reject an empty or malformed value, and an empty address also lets a
     // leecher avoid ever being payable.
     let requested_address = req.wallet_address.trim();
+    let hot_address = state.wallet_change_address.read().await.clone();
     let wallet_address = if requested_address.is_empty() {
-        // The web UI does not know the wallet address until unlock. Use the
-        // hot wallet's change address so adding a torrent still works there;
-        // it is the same address the engine signs and addresses receipts with.
-        state
-            .wallet_change_address
-            .read()
-            .await
-            .clone()
-            .unwrap_or_default()
+        match hot_address.as_deref() {
+            Some(address) => address.to_owned(),
+            None => {
+                return Err(RpcError::BadRequest(
+                    "wallet is locked or no wallet is imported; unlock/import a wallet or provide wallet_address".into(),
+                ))
+            }
+        }
     } else {
         requested_address.to_owned()
     };
     vtorrent_core::address::validate_p2pkh(&wallet_address)
         .map_err(|error| RpcError::BadRequest(format!("invalid wallet_address: {error}")))?;
+    if let Some(hot_address) = hot_address {
+        if wallet_address != hot_address {
+            return Err(RpcError::BadRequest(
+                "wallet_address must match the unlocked hot wallet; unlock that wallet or omit wallet_address".into(),
+            ));
+        }
+    }
     let session = TorrentSession::new(metainfo.clone(), wallet_address);
     let session_id = {
         let mut sessions = state.torrent_sessions.write().await;
@@ -269,8 +276,16 @@ pub async fn remove_torrent(
         ));
     }
     if let Some(guard) = removal_guard {
-        if let Err(reason) = guard(session) {
-            return Err(RpcError::BadRequest(reason));
+        let session = session.clone();
+        let result = tokio::task::spawn_blocking(move || guard(&session)).await;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(reason)) => return Err(RpcError::BadRequest(reason)),
+            Err(error) => {
+                return Err(RpcError::Internal(format!(
+                    "torrent removal guard failed: {error}"
+                )))
+            }
         }
     }
     let info_hash = session.metainfo.info_hash;
