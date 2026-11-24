@@ -360,12 +360,14 @@ window ran on, and that commit must equal the release commit.
       (`sha256 8c9993fd…`, 2026-10-08). **Pinned**: `rust-toolchain.toml`
       (1.90.0) + Docker base images by digest. `Cargo.lock` is gitignored
       (workspace-library pattern); release builds should archive the lock used.
-- [ ] **Pass-13 candidate reproducibility**: the 2026-10-08 check covers an
-      older binary. The launch candidate needs two clean `--no-cache` builds
-      from the same commit with the same `release/Cargo.lock` (record its
-      SHA-256 and `git status --porcelain`), producing the same daemon binary
-      and Docker image ID. Archive both build logs and the extracted binary
-      hash in the pass-13 evidence directory.
+- [x] **Pass-13 candidate reproducibility**: two clean `--no-cache` builds
+      from `80f9eef` produced the identical daemon binary
+      `37e9d585ca450968d585aa6c48f7fec2fa0bde918bce582cdc9074429cd56f90`.
+      The Docker image IDs (`sha256:637002a7…` deployed, `sha256:da36f55f…`
+      repro) differ only in Docker build metadata. The tracked lock SHA-256
+      (`54eee2eb…`), clean worktree status, both build logs, and the CI
+      `Docker Image (no-cache)` job are recorded in
+      `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/`.
 - [ ] **Rollback drill on the candidate image**: the completed drill was only a
       binary swap. On a disposable regtest fleet, exercise (a) reverting to the
       prior image while no OP_RETURN/P2CS output exists, (b) a reorg back to the

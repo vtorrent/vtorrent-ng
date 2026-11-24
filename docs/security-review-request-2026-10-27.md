@@ -234,8 +234,10 @@ without them; the full workspace suite requires the desktop libraries.
 
 The `e091936` workspace run passed 56 test groups and 1,528 tests with 0
 failures and 13 ignored. The pass-13 candidate `80f9eef` passed **57 groups and
-1,544 tests, 0 failed, 13 ignored** on the tracked release lock. CI repeats the
-`--all-features` suite on every push.
+1,544 tests, 0 failed, 13 ignored** on the tracked release lock. Canonical CI
+run **45357625083** on the docs-only child `cd0e975` passed every job,
+including the no-cache Docker image build. CI repeats the `--all-features`
+suite on every push.
 Set `VTORRENT_TOTP_STATE_DIR` to a fresh directory before running the suite so
 the host-scoped TOTP replay state does not collide with an existing
 installation. The ignored Bitcoin Core reorg tests are documented in

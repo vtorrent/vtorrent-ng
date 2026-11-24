@@ -4154,6 +4154,9 @@ staking status, and a deterministic two-peer split test.
   the same tip, staking on nodes 2/3, restarts 0/0/0, Prometheus 3/3, RSS
   90.9/90.0/87.2 MiB. The +0h Prometheus range check predates the first
   scrape; subsequent observations cover the window.
+- `+1h` observation (09:13Z): heights 55/55/55, same tip, restarts 0/0/0,
+  Prometheus 3/3, RSS 154.1/169.3/168.7 MiB, zero down samples. The three
+  missing range samples are the pre-first-scrape step (one per series).
 - Observation cron runs every 6 hours; `scripts/soak-watchdog.sh` runs hourly
   and alerts if the observation is older than 12 hours. The helper rejects
   down samples and coverage gaps over 5%.
@@ -4163,7 +4166,10 @@ staking status, and a deterministic two-peer split test.
   at 6 confirmations the journal showed `unpaid=0` and DELETE returned 200.
   This exercises the structural reserve and the live journal guard. Proof:
   `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/live-payment/PROOF.md`.
-- Canonical CI is run `45356087098` for `9f7ffeb`; the local suite, audit, image
+- Canonical CI run **45357625083** (`cd0e975`, docs-only child of `80f9eef`)
+  passed all jobs: Rust tests (all-features and default), format/Clippy, audit,
+  Machete, benchmark gate, frontend, and the no-cache Docker image build. The
+  tag-only desktop matrix was skipped on the push. The local suite, audit, image
   builds, both E2Es, and the live proof are green.
 - Fleet `review-80f9eef`, RPC 23951–23953, Prometheus 23973, evidence
   `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/`. The `review-e091936` fleet was

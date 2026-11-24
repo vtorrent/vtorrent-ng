@@ -44,14 +44,20 @@ code-freeze/evidence/release gates. The independent human review and the
   paying 585,937 sats once; both pass.
 - Live fleet `review-80f9eef`: three nodes at height 3 with agreeing tips,
   staking on nodes 2/3, restarts 0/0/0, Prometheus 3/3 at the +0h observation.
+  At +1h they were at height 55 with the same tip, RSS 154/169/169 MiB, and
+  zero down samples.
   A live 12 MiB transfer then paid **585,937 sats** from node3's 0.5 VTR
   non-stakeable coin (`4e268baa…:0`), not the 200 VTR stake output
   (`eebf9d9ed5…:1`, still unspent), fee 1,000 sats. Before finality DELETE
   returned 400 from the journal/session liability; at 6 confirmations the
   journal showed `unpaid=0` and DELETE returned 200. See
   `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/live-payment/PROOF.md`.
-- Canonical CI run `45356087098` is queued for `9f7ffeb`; the local suite,
-  audit, image builds, both E2Es, and the live payment/removal proof are green.
+- Canonical CI run **45357625083** (`cd0e975`, docs-only child of `80f9eef`):
+  **all jobs success** — Rust tests (all-features + default), format/Clippy,
+  audit, Machete, benchmark gate, frontend, and the new no-cache Docker image
+  job. The tag-only desktop matrix was correctly skipped on a push. The local
+  suite, audit, image builds, both E2Es, and the live payment/removal proof are
+  green.
 
 ## Remaining gates
 
