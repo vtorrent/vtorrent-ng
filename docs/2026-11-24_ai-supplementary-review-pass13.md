@@ -6,7 +6,11 @@
 **Image:** `vtorrent/node:80f9eef`, ID
 `sha256:637002a7da23217d7cd276b2b5dfaf74b9e16280abb122a5707297f7ff56dd84`
 **Extracted binary:** `37e9d585ca450968d585aa6c48f7fec2fa0bde918bce582cdc9074429cd56f90`
-**Window:** `2026-11-24T08:18:28Z` to `2026-12-01T08:18:28Z` (`review-80f9eef`)
+**Window:** `2026-11-24T13:33:00Z` to `2026-12-01T13:33:00Z` (`review-80f9eef`).
+The original `08:18:28Z` clock was interrupted by a host Docker snap
+auto-refresh at `13:18:37Z`; the fleet was restarted, staking re-enabled, and
+the 168-hour clock restarted. See
+`/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/WINDOW-RESTART.md`.
 
 **Scope.** This pass fixes the four pass-12 criticals and the concrete
 follow-ups: the automatic and manual stake reserve, the live-journal removal
@@ -55,6 +59,12 @@ code-freeze/evidence/release gates. The independent human review and the
   zero down samples. The **first scheduled cron observation** ran at 11:25Z
   (+3h): heights 184/184/184, 111/114 range samples, zero down samples, and the
   watchdog heartbeat updated — closing the prior missing-first-observation gap.
+  At `13:18:37Z` a host **Docker snap auto-refresh** restarted the daemon. The
+  candidate containers (no restart policy) exited; they were restarted at
+  `13:31Z` at height 295 with the same tip, wallets unlocked, staking resumed,
+  and Prometheus 3/3. The 168-hour clock was restarted at `13:33Z`. The
+  production `vtr-node*` containers restarted under their own policy and were
+  replaying the store; they were not modified by any drill command.
   A live 12 MiB transfer then paid **585,937 sats** from node3's 0.5 VTR
   non-stakeable coin (`4e268baa…:0`), not the 200 VTR stake output
   (`eebf9d9ed5…:1`, still unspent), fee 1,000 sats. Before finality DELETE
@@ -71,9 +81,10 @@ code-freeze/evidence/release gates. The independent human review and the
 ## Remaining gates
 
 - Independent human security review: not yet commissioned.
-- Exact-image 168-hour window: **in progress** (`2026-11-24T08:18:28Z` to
-  `2026-12-01T08:18:28Z`); not release evidence until it completes and is
-  signed off.
+- Exact-image 168-hour window: **in progress** from the restarted clock
+  `2026-11-24T13:33:00Z` to `2026-12-01T13:33:00Z`; not release evidence until
+  it completes and is signed off. The earlier 08:18 clock is invalid due to the
+  Docker snap refresh.
 - Real legacy `wallet.dat` differential and multi-key DEX/swap/claim E2E:
   open.
 - Active swap/HTLC validation: the real-bitcoind swap and reorg suite is green;

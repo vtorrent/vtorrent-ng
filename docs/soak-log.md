@@ -4136,10 +4136,12 @@ binding, legacy-import BTC state/default-key binding, seeder IPv4-mapped keys,
 the prune race, partial-piece watchdog, resume-bit distrust, sub-minimum
 staking status, and a deterministic two-peer split test.
 
-- Candidate: **2026-11-24T08:18:28Z** to **2026-12-01T08:18:28Z**,
+- Candidate: **2026-11-24T13:33:00Z** to **2026-12-01T13:33:00Z**,
   `vtorrent/node:80f9eef`, image ID
   `sha256:637002a7da23217d7cd276b2b5dfaf74b9e16280abb122a5707297f7ff56dd84`,
   binary `37e9d585ca450968d585aa6c48f7fec2fa0bde918bce582cdc9074429cd56f90`.
+  The original 08:18:28Z clock was interrupted by a Docker snap refresh; see
+  the restart note below.
 - Two clean `--no-cache` builds from `80f9eef` produced the identical daemon
   binary. The Docker image IDs differ only in build metadata
   (`sha256:637002a7…` deployed, `sha256:da36f55f…` repro).
@@ -4164,6 +4166,17 @@ staking status, and a deterministic two-peer split test.
   184/184/184, tips agree, staking on nodes 2/3, restarts 0/0/0, Prometheus
   3/3, 111/114 samples with zero down samples, and the heartbeat updated. The
   prior window's missing-first-observation gap is not repeated.
+- **Docker snap refresh / window restart (13:18:37Z).** The host's `snap`
+  auto-refresh restarted Docker revision 3681. The candidate containers (no
+  restart policy) exited with code 255; the production `vtr-node*` containers
+  restarted under their own policy. The candidate fleet was restarted at
+  13:31Z at height 295 with the same tip; node 2/3 wallets were unlocked and
+  staking resumed, and Prometheus returned 3/3 at 13:32:44Z. The 168-hour clock
+  was restarted at **13:33:00Z**. Docker snap refreshes were held to prevent a
+  recurrence. See
+  `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/WINDOW-RESTART.md`. The
+  production fleet was replaying its store after the restart; it must be
+  confirmed caught up before its soak is treated as continuous.
 - Live 12 MiB transfer paid **585,937 sats** from node3's 0.5 VTR non-stakeable
   coin (`4e268baa…:0`); the 200 VTR stake output (`eebf9d9ed5…:1`) remained
   unspent, and the fee was 1,000 sats. Before finality DELETE returned 400;

@@ -270,11 +270,14 @@ window ran on, and that commit must equal the release commit.
       `sha256:637002a7da23217d7cd276b2b5dfaf74b9e16280abb122a5707297f7ff56dd84`),
       extracted binary
       `37e9d585ca450968d585aa6c48f7fec2fa0bde918bce582cdc9074429cd56f90`,
-      window `2026-11-24T08:18:28Z` → `2026-12-01T08:18:28Z`. In progress; the
-      observation helper checks 5-minute `up` samples, down samples, and
+      window `2026-11-24T13:33:00Z` → `2026-12-01T13:33:00Z`. In progress; the
+      original 08:18:28Z clock was interrupted by a host Docker snap
+      auto-refresh at 13:18:37Z, and the fleet/clock were restarted at 13:33Z.
+      The observation helper checks 5-minute `up` samples, down samples, and
       coverage gaps, and an hourly watchdog alerts if the observation is stale.
-      See `docs/2026-11-24_ai-supplementary-review-pass13.md`. This window
-      replaces `review-e091936`; do not count any earlier window.
+      See `docs/2026-11-24_ai-supplementary-review-pass13.md` and
+      `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/WINDOW-RESTART.md`. This
+      window replaces `review-e091936`; do not count any earlier window.
 - [x] **Staking soak**: at least one node staked continuously and produced
       blocks at the expected ~60s average over the full 7-day window
       (`2026-09-29T13:36:22Z` → `2026-10-06T13:36:22Z`): node1 staked 1441
