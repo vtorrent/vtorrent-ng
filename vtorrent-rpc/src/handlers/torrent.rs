@@ -143,15 +143,27 @@ pub async fn add_torrent(
 
     let info_hash = hex::encode(metainfo.info_hash);
     let name = metainfo.name.clone();
-    // Receipts are signed with this wallet and addressed back to it. Peers
-    // reject an empty or malformed value, and an empty address also lets a
-    // leecher avoid ever being payable.
+    // Receipts are signed with this wallet and addressed back to it. A locked
+    // hot wallet has an address but no signing key; accepting the address would
+    // produce receipts the engine can never sign. Require the live key here.
+    if !state.is_wallet_unlocked().await {
+        return Err(RpcError::BadRequest(
+            "wallet is locked or no wallet is imported; unlock the wallet before adding a torrent"
+                .into(),
+        ));
+    }
     let requested_address = req.wallet_address.trim();
     let hot_address = state.wallet_change_address.read().await.clone();
     let wallet_address = resolve_torrent_wallet_address(requested_address, hot_address.as_deref())
         .map_err(RpcError::BadRequest)?;
     vtorrent_core::address::validate_p2pkh(&wallet_address)
         .map_err(|error| RpcError::BadRequest(format!("invalid wallet_address: {error}")))?;
+    let live_wif = state.wallet_wif.read().await.clone();
+    if live_wif.is_none() {
+        return Err(RpcError::BadRequest(
+            "wallet signing key is not loaded; unlock the wallet before adding a torrent".into(),
+        ));
+    }
     let session = TorrentSession::new(metainfo.clone(), wallet_address);
     let session_id = {
         let mut sessions = state.torrent_sessions.write().await;
@@ -431,6 +443,30 @@ mod tests {
             state.torrent_sessions.read().await.get_session(&id).is_ok(),
             "the session must survive the refused removal"
         );
+    }
+
+    #[tokio::test]
+    async fn add_torrent_requires_an_unlocked_signing_wallet() {
+        let state = Arc::new(AppState::new());
+        let address = "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT";
+        *state.wallet_change_address.write().await = Some(address.into());
+
+        let result = add_torrent(
+            State(Arc::clone(&state)),
+            Json(AddTorrentRequest {
+                source: "magnet:?xt=urn:btih:0000000000000000000000000000000000000000&dn=test"
+                    .into(),
+                source_type: "magnet".into(),
+                wallet_address: address.into(),
+            }),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "a locked wallet has no signing key for incentive receipts"
+        );
+        assert!(state.torrent_sessions.read().await.is_empty());
     }
 
     #[tokio::test]

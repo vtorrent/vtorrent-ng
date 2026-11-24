@@ -40,7 +40,7 @@ function formatDuration(seconds: number): string {
 type ActionStatus = 'idle' | 'loading' | 'success' | 'error'
 
 export default function StakingPage() {
-  const { keys, totalBalance } = useWallet()
+  const { keys, totalBalance, defaultAddress } = useWallet()
   const { data: status, loading, error, refresh } = useStakingStatus(8_000)
   const { data: node, loading: nodeLoading, error: nodeError } = useNodeInfo(10_000)
 
@@ -58,9 +58,11 @@ export default function StakingPage() {
   const minStakeAge = status?.minStakeAgeSeconds ?? 6 * 60 * 60
   const maxStakeAge = status?.maxStakeAgeSeconds ?? 6 * 24 * 60 * 60
 
-  // Default to first key if none selected
+  // Prefer the backend default (the imported key after a legacy import), not
+  // the first generated key.
   const addressOptions = keys.map(k => k.address)
-  const effectiveAddress = selectedAddress || addressOptions[0] || ''
+  const effectiveAddress =
+    selectedAddress || defaultAddress || addressOptions[0] || ''
 
   const handleStart = async () => {
     if (!effectiveAddress) {

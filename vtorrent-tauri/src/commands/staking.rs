@@ -46,9 +46,21 @@ pub async fn start_staking(
         return Err(TauriError::WalletLocked);
     }
     let imported = staking_wif.is_some();
+    let mut selected_owned = imported;
     let wif = match staking_wif {
         Some(wif) => Some(zeroize::Zeroizing::new(wif)),
-        None => handle.rpc_state.wallet_wif.read().await.clone(),
+        None => {
+            let guard = state.wallet.lock().map_err(|_| TauriError::WalletLocked)?;
+            let wallet = guard.as_ref().ok_or(TauriError::WalletNotInitialized)?;
+            let wif = wallet.wif_for_address(&address).ok_or_else(|| {
+                TauriError::InvalidInput(
+                    "staking address is not owned by this wallet; select a wallet address or provide a staking key"
+                        .into(),
+                )
+            })?;
+            selected_owned = true;
+            Some(zeroize::Zeroizing::new(wif.to_string()))
+        }
     };
 
     if let Some(tx) = &handle.rpc_state.staking_control {
@@ -79,7 +91,7 @@ pub async fn start_staking(
 
     let blocks_staked = *handle.rpc_state.blocks_staked.read().await;
     let wallet_address = handle.rpc_state.wallet_change_address.read().await.clone();
-    let owned = wallet_address.as_deref() == Some(address.as_str()) || imported;
+    let owned = selected_owned || wallet_address.as_deref() == Some(address.as_str()) || imported;
     let warning = if owned {
         None
     } else {

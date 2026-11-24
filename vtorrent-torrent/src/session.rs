@@ -188,6 +188,7 @@ impl TorrentSession {
                 .filter(|(addr, a)| {
                     a.unpaid_satoshis == 0
                         && !a.payment_in_flight
+                        && !a.blocks_removal_at(now)
                         && vtorrent_core::address::Address::parse(addr).is_err()
                 })
                 .min_by_key(|(_, a)| a.last_active)
@@ -202,6 +203,7 @@ impl TorrentSession {
                         a.unpaid_satoshis < MIN_PAYMENT_SATS
                             && !a.payment_in_flight
                             && a.pending_payment.is_none()
+                            && !a.blocks_removal_at(now)
                             && a
                                 .agreed_owed()
                                 .is_none_or(|agreed| agreed.satoshis == 0)
@@ -271,6 +273,7 @@ impl TorrentSession {
                     a.unpaid_satoshis < MIN_PAYMENT_SATS
                         && !a.payment_in_flight
                         && a.pending_payment.is_none()
+                        && !a.blocks_removal_at(now)
                         && a.agreed_owed().is_none_or(|agreed| agreed.satoshis == 0)
                         && (a.bytes_uploaded == 0 && a.bytes_downloaded == 0
                             || now.saturating_sub(a.last_active) >= ACCOUNT_IDLE_EVICT_SECS)
@@ -293,9 +296,14 @@ impl TorrentSession {
     /// Whether removing this session would discard an incentive debt or a
     /// payment awaiting confirmation.
     pub fn has_outstanding_incentives(&self) -> bool {
+        self.has_outstanding_incentives_at(crate::incentive::now_secs())
+    }
+
+    /// Time-aware form used by the eviction and removal paths.
+    pub fn has_outstanding_incentives_at(&self, now: u64) -> bool {
         self.incentive_accounts
             .values()
-            .any(|account| account.blocks_removal())
+            .any(|account| account.blocks_removal_at(now))
     }
 
     /// Format downloaded bytes as human-readable.

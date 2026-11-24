@@ -125,15 +125,24 @@ where
         &[vtorrent_node::chain::Utxo],
     ) -> Result<vtorrent_node::block::Transaction, IncentivePaymentError>,
 {
+    let reserve: std::collections::HashSet<([u8; 32], u32)> = structural_stakeable
+        .iter()
+        .filter(|outpoint| {
+            utxos
+                .iter()
+                .any(|utxo| (utxo.txid, utxo.vout) == **outpoint)
+        })
+        .copied()
+        .collect();
     let non_stake: Vec<_> = utxos
         .iter()
-        .filter(|utxo| !structural_stakeable.contains(&(utxo.txid, utxo.vout)))
+        .filter(|utxo| !reserve.contains(&(utxo.txid, utxo.vout)))
         .cloned()
         .collect();
-    let largest_stakeable = if structural_stakeable.len() > 1 {
+    let largest_stakeable = if reserve.len() > 1 {
         utxos
             .iter()
-            .filter(|utxo| structural_stakeable.contains(&(utxo.txid, utxo.vout)))
+            .filter(|utxo| reserve.contains(&(utxo.txid, utxo.vout)))
             .max_by_key(|utxo| utxo.value)
             .map(|utxo| (utxo.txid, utxo.vout))
     } else {
@@ -155,20 +164,27 @@ where
             Err(error) => return Err(error),
         }
     };
-    if used_stake && !structural_stakeable.is_empty() {
-        let selected: std::collections::HashSet<([u8; 32], u32)> = tx
-            .inputs
-            .iter()
-            .map(|input| (input.prev_txid, input.prev_vout))
-            .collect();
-        if structural_stakeable
-            .iter()
-            .all(|outpoint| selected.contains(outpoint))
-        {
-            return Err(IncentivePaymentError::StakeReserved);
-        }
+    if used_stake && !reserve.is_empty() && spends_entire_reserve(&tx, &reserve) {
+        return Err(IncentivePaymentError::StakeReserved);
     }
     Ok((tx, used_stake))
+}
+
+/// Whether `tx` would spend every structural stake outpoint available to it.
+///
+/// Callers must pass the structural set intersected with the transaction's
+/// spendable inputs. A structural outpoint that is already mempool-spent is not
+/// available and must not weaken the check.
+pub fn spends_entire_reserve(
+    tx: &vtorrent_node::block::Transaction,
+    structural_stakeable: &std::collections::HashSet<([u8; 32], u32)>,
+) -> bool {
+    !structural_stakeable.is_empty()
+        && structural_stakeable.iter().all(|outpoint| {
+            tx.inputs
+                .iter()
+                .any(|input| (input.prev_txid, input.prev_vout) == *outpoint)
+        })
 }
 
 /// Return the outpoints that can ever stake for `staking_address`.
@@ -201,20 +217,29 @@ pub fn select_reserved_utxo<'a>(
     structural_stakeable: &std::collections::HashSet<([u8; 32], u32)>,
     min_value: u64,
 ) -> Option<&'a vtorrent_node::chain::Utxo> {
+    let reserve: std::collections::HashSet<([u8; 32], u32)> = structural_stakeable
+        .iter()
+        .filter(|outpoint| {
+            utxos
+                .iter()
+                .any(|utxo| (utxo.txid, utxo.vout) == **outpoint)
+        })
+        .copied()
+        .collect();
     let eligible = |utxo: &&vtorrent_node::chain::Utxo| utxo.value >= min_value;
     if let Some(utxo) = utxos
         .iter()
-        .filter(|utxo| eligible(utxo) && !structural_stakeable.contains(&(utxo.txid, utxo.vout)))
+        .filter(|utxo| eligible(utxo) && !reserve.contains(&(utxo.txid, utxo.vout)))
         .max_by_key(|utxo| utxo.value)
     {
         return Some(utxo);
     }
-    if structural_stakeable.len() <= 1 {
+    if reserve.len() <= 1 {
         return None;
     }
     let largest = utxos
         .iter()
-        .filter(|utxo| eligible(utxo) && structural_stakeable.contains(&(utxo.txid, utxo.vout)))
+        .filter(|utxo| eligible(utxo) && reserve.contains(&(utxo.txid, utxo.vout)))
         .max_by_key(|utxo| utxo.value)
         .map(|utxo| (utxo.txid, utxo.vout));
     utxos
@@ -434,6 +459,81 @@ mod tests {
                 .iter()
                 .any(|input| (input.prev_txid, input.prev_vout) == (stake.txid, stake.vout)),
             "the structurally stakeable coin must be preserved"
+        );
+    }
+
+    #[test]
+    fn mempool_spent_stake_outpoint_does_not_bypass_reserve() {
+        let stake = utxo_at([3u8; 32], 0, 20_000_000_000);
+        let change = utxo_at([4u8; 32], 0, 40_000_000);
+        let already_spent = utxo_at([5u8; 32], 0, 20_000_000_000);
+        let utxos = vec![stake.clone(), change];
+        let structural = std::collections::HashSet::from([
+            (stake.txid, stake.vout),
+            (already_spent.txid, already_spent.vout),
+        ]);
+        let result = build_with_reserve(&utxos, &structural, |candidates| {
+            build_payment(
+                candidates,
+                "VQ2BZDB3MzX5CEKVCoFJpzqw4eisdEMJHh",
+                "VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k",
+                60_000_000,
+                1,
+                "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS",
+            )
+            .map_err(IncentivePaymentError::from)
+        });
+        assert!(
+            matches!(result, Err(IncentivePaymentError::StakeReserved)),
+            "a stale structural entry must not weaken the reserve check"
+        );
+    }
+
+    #[test]
+    fn select_reserved_utxo_ignores_structural_outpoints_not_in_candidates() {
+        let stake = utxo_at([6u8; 32], 0, 20_000_000_000);
+        let change = utxo_at([7u8; 32], 0, 40_000_000);
+        let already_spent = utxo_at([8u8; 32], 0, 20_000_000_000);
+        let structural = std::collections::HashSet::from([
+            (stake.txid, stake.vout),
+            (already_spent.txid, already_spent.vout),
+        ]);
+        let candidates = [stake, change];
+        let selected = select_reserved_utxo(&candidates, &structural, 60_000_000);
+        assert!(
+            selected.is_none(),
+            "the only available stake outpoint must not fund the swap"
+        );
+    }
+
+    #[test]
+    fn multiple_available_stake_coins_preserve_the_largest() {
+        let largest = utxo_at([9u8; 32], 0, 20_000_000_000);
+        let smaller = utxo_at([10u8; 32], 0, 10_000_000_000);
+        let change = utxo_at([11u8; 32], 0, 40_000_000);
+        let utxos = vec![largest.clone(), smaller, change];
+        let structural = std::collections::HashSet::from([
+            (largest.txid, largest.vout),
+            (utxos[1].txid, utxos[1].vout),
+        ]);
+        let (tx, used_stake) = build_with_reserve(&utxos, &structural, |candidates| {
+            build_payment(
+                candidates,
+                "VQ2BZDB3MzX5CEKVCoFJpzqw4eisdEMJHh",
+                "VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k",
+                60_000_000,
+                1,
+                "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS",
+            )
+            .map_err(IncentivePaymentError::from)
+        })
+        .unwrap();
+        assert!(used_stake);
+        assert!(
+            !tx.inputs
+                .iter()
+                .any(|input| (input.prev_txid, input.prev_vout) == (largest.txid, largest.vout)),
+            "the largest available stake coin must be preserved"
         );
     }
 

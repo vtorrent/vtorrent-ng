@@ -38,6 +38,17 @@ pub const VTR_PER_GB_DOWNLOADED: f64 = 0.5; // 0.5 VTR per GB downloaded from in
 pub const MIN_PAYMENT_BYTES: u64 = 10 * 1024 * 1024; // Minimum 10 MB before payment is triggered
 pub const PAYMENT_INTERVAL_SECS: u64 = 300; // Payment settled every 5 minutes
 pub const COIN: u64 = 100_000_000; // 1 VTR = 100,000,000 satoshis
+/// How long un-receipted raw bytes or earned upload credit may block removal
+/// while the peer has time to send a receipt. Receipt-backed debts are not
+/// time-limited.
+pub const UNRECEIPTED_DEBT_GRACE_SECS: u64 = 60 * 60;
+
+pub(crate) fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
 /// Smallest debt worth an on-chain payment. Below this the fixed transaction
 /// fee dwarfs the payment, so the debt accumulates instead of retrying forever.
 pub const MIN_PAYMENT_SATS: u64 = 10_000;
@@ -157,12 +168,14 @@ impl PeerBandwidthAccount {
     pub fn record_upload(&mut self, bytes: u64) {
         self.bytes_uploaded = self.bytes_uploaded.saturating_add(bytes);
         self.total_bytes_uploaded = self.total_bytes_uploaded.saturating_add(bytes);
+        self.last_active = now_secs();
     }
 
     /// Record bytes downloaded from this peer.
     pub fn record_download(&mut self, bytes: u64) {
         self.bytes_downloaded = self.bytes_downloaded.saturating_add(bytes);
         self.total_bytes_downloaded = self.total_bytes_downloaded.saturating_add(bytes);
+        self.last_active = now_secs();
     }
 
     /// Update the last-activity timestamp.
@@ -195,18 +208,33 @@ impl PeerBandwidthAccount {
 
     /// Whether this account is a removal/eviction liability.
     ///
-    /// Un-receipted bytes count: a downloader can finish in the final-receipt
-    /// grace window, or the seeder can never send a receipt, and the raw byte
-    /// counters are the only record of the obligation. Sub-minimum dust is not
-    /// a liability; a pending or in-flight payment always is.
+    /// Receipt-backed obligations (unpaid, in-flight, pending, agreed) always
+    /// block. Un-receipted raw bytes and earned-but-unreceipted upload credit
+    /// block only for a bounded grace after the last activity; after that the
+    /// peer has had ample time to send a receipt, and holding the session
+    /// forever would make it undeletable. A disputed receipt is cleared by the
+    /// settlement loop but the raw bytes remain, so the grace is what lets an
+    /// operator remove it.
     pub fn blocks_removal(&self) -> bool {
-        self.unpaid_satoshis >= MIN_PAYMENT_SATS
+        self.blocks_removal_at(now_secs())
+    }
+
+    /// Time-aware form of [`Self::blocks_removal`].
+    pub fn blocks_removal_at(&self, now: u64) -> bool {
+        if self.unpaid_satoshis >= MIN_PAYMENT_SATS
             || self.payment_in_flight
             || self.pending_payment.is_some()
             || self
                 .agreed_owed()
                 .is_some_and(|agreed| agreed.satoshis >= MIN_PAYMENT_SATS)
-            || self.calculate_owed() >= MIN_PAYMENT_SATS
+        {
+            return true;
+        }
+        let recent = self.last_active == 0
+            || now.saturating_sub(self.last_active) <= UNRECEIPTED_DEBT_GRACE_SECS;
+        recent
+            && (self.calculate_owed() >= MIN_PAYMENT_SATS
+                || self.calculate_earned() >= MIN_PAYMENT_SATS)
     }
 
     /// Check if a settlement is due based on bytes transferred or time elapsed.
@@ -749,6 +777,24 @@ mod tests {
         assert_eq!(summary.uploaded_display(), "2.00 GB");
         assert_eq!(summary.downloaded_display(), "512.00 MB");
     }
+    #[test]
+    fn un_receipted_debt_is_time_bounded() {
+        let mut account = PeerBandwidthAccount::new("VQ2BZDB3MzX5CEKVCoFJpzqw4eisdEMJHh".into());
+        account.record_download(300 * 1024);
+        let now = account.last_active;
+        assert!(account.blocks_removal_at(now));
+        assert!(!account.blocks_removal_at(now + UNRECEIPTED_DEBT_GRACE_SECS + 1));
+    }
+
+    #[test]
+    fn earned_credit_is_time_bounded() {
+        let mut account = PeerBandwidthAccount::new("VQ2BZDB3MzX5CEKVCoFJpzqw4eisdEMJHh".into());
+        account.record_upload(200 * 1024);
+        let now = account.last_active;
+        assert!(account.blocks_removal_at(now));
+        assert!(!account.blocks_removal_at(now + UNRECEIPTED_DEBT_GRACE_SECS + 1));
+    }
+
     #[test]
     fn test_receipt_agreement_within_tolerance_pays_minimum() {
         const GB: u64 = 1024 * 1024 * 1024;

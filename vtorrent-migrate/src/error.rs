@@ -35,6 +35,9 @@ pub enum MigrateError {
     #[error("Wallet contains too many master keys: {0}")]
     ExcessiveMasterKeys(usize),
 
+    #[error("Wallet contains {failed} encrypted key(s) that no master key could decrypt (of {total}); refusing a partial import")]
+    PartialKeyExtraction { total: usize, failed: usize },
+
     #[error("Wallet requires 2FA OTP code")]
     OtpRequired,
 

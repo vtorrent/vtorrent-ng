@@ -11,6 +11,12 @@ const tauriInvoke: InvokeFn | null = isTauri()
   ? (cmd, args) => invokeTauri(cmd, args)
   : null
 
+function nodeStartError(message: string, cause: unknown): Error {
+  const error = new Error(message) as Error & { cause?: unknown }
+  error.cause = cause
+  return error
+}
+
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (tauriInvoke) {
     return tauriInvoke(cmd, args) as Promise<T>
@@ -330,7 +336,10 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         seeds: net?.seeds ?? [],
       })
     } catch (e) {
-      console.warn('start_node failed (may already be running):', e)
+      throw nodeStartError(
+        `Wallet unlocked, but the node failed to start: ${formatInvokeError(e, 'start_node failed')}`,
+        e
+      )
     }
   }, [])
 
@@ -360,7 +369,10 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         seeds: net?.seeds ?? [],
       })
     } catch (e) {
-      console.warn('start_node failed after wallet creation:', e)
+      throw nodeStartError(
+        `Wallet created, but the node failed to start: ${formatInvokeError(e, 'start_node failed')}`,
+        e
+      )
     }
   }, [])
 

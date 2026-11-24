@@ -561,6 +561,18 @@ impl Wallet {
         self.data.default_address.as_deref()
     }
 
+    /// Get the WIF private key for a specific wallet address.
+    ///
+    /// Used by desktop staking so a manually selected imported key is signed
+    /// with its own WIF rather than the default key.
+    pub fn wif_for_address(&self, address: &str) -> Option<&str> {
+        self.data
+            .keys
+            .iter()
+            .find(|key| key.address == address)
+            .map(|key| key.wif.as_str())
+    }
+
     /// Get the WIF private key for the default address.
     ///
     /// Used by the Tauri `send_vtr` command to sign transactions.
@@ -1037,6 +1049,27 @@ mod tests {
             initial_count + 1,
             "Duplicate import should be ignored"
         );
+    }
+
+    #[test]
+    fn wif_for_address_returns_the_selected_key() {
+        let mut wallet = Wallet::create("test-pass").expect("Create failed");
+        let generated_addr = wallet.default_address().unwrap().to_string();
+        let generated_wif = wallet.get_default_wif().unwrap().to_string();
+
+        let other = Wallet::create("other-pass").expect("Create failed");
+        let other_addr = other.default_address().unwrap().to_string();
+        let other_wif = other.data.keys[0].wif.clone();
+        let imported = wallet
+            .import_wif(&other_wif, Some(&other_addr))
+            .expect("Import failed");
+
+        assert_eq!(
+            wallet.wif_for_address(&generated_addr),
+            Some(generated_wif.as_str())
+        );
+        assert_eq!(wallet.wif_for_address(&imported), Some(other_wif.as_str()));
+        assert!(wallet.wif_for_address("Vmissing").is_none());
     }
 
     #[test]

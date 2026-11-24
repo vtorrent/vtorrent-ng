@@ -173,6 +173,12 @@ pub async fn add_torrent(
     let handle = guard
         .as_ref()
         .ok_or_else(|| TauriError::NodeError("Node not running".into()))?;
+    if !handle.rpc_state.is_wallet_unlocked().await {
+        return Err(TauriError::InvalidInput(
+            "wallet is locked or no wallet is imported; unlock the wallet before adding a torrent"
+                .into(),
+        ));
+    }
     let requested_address = wallet_address.trim();
     let hot_address = handle.rpc_state.wallet_change_address.read().await.clone();
     let wallet_address = if requested_address.is_empty() {
@@ -201,6 +207,11 @@ pub async fn add_torrent(
     };
     vtorrent_core::address::validate_p2pkh(&wallet_address)
         .map_err(|error| TauriError::InvalidInput(format!("invalid wallet_address: {error}")))?;
+    if handle.rpc_state.wallet_wif.read().await.is_none() {
+        return Err(TauriError::InvalidInput(
+            "wallet signing key is not loaded; unlock the wallet before adding a torrent".into(),
+        ));
+    }
     let session = TorrentSession::new(metainfo, wallet_address);
     let session_id = {
         let mut sessions = handle.rpc_state.torrent_sessions.write().await;

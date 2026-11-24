@@ -308,13 +308,25 @@ pub async fn open_wallet(
     passphrase: String,
     otp_code: Option<String>,
 ) -> Result<WalletInfo> {
-    let _node_guard = ensure_node_stopped(state.inner())?;
+    let path = std::path::PathBuf::from(&wallet_path);
+    ensure_wallet_path_allowed(state.inner(), &path)?;
+
+    // Locking clears the in-memory wallet but leaves the node running. Allow
+    // reopening the same wallet while the node runs; switching to a different
+    // wallet file still requires a stopped node.
+    let node_guard = state.node.lock().await;
+    if node_guard.is_some() {
+        let current = state.wallet_path.lock().unwrap().clone();
+        if current.as_deref() != Some(path.as_path()) {
+            return Err(TauriError::NodeError(
+                "Stop the node before switching wallets".into(),
+            ));
+        }
+    }
     state.cold_stake_scripts.lock().unwrap().clear();
     state.prepared_sends.lock().unwrap().clear();
     let passphrase = zeroize::Zeroizing::new(passphrase);
     let otp_code = otp_code.map(zeroize::Zeroizing::new);
-    let path = std::path::PathBuf::from(&wallet_path);
-    ensure_wallet_path_allowed(state.inner(), &path)?;
 
     let wallet = Wallet::load(
         &path,
@@ -329,6 +341,16 @@ pub async fn open_wallet(
 
     *state.wallet.lock().unwrap() = Some(wallet);
     *state.wallet_path.lock().unwrap() = Some(path);
+
+    if let Some(handle) = node_guard.as_ref() {
+        handle.rpc_state.lock_wallet().await;
+        if let Some(control) = &handle.rpc_state.staking_control {
+            let _ = control
+                .send(vtorrent_node::staking::StakingCommand::Stop)
+                .await;
+        }
+        state.sync_swap_wallet(&handle.rpc_state).await?;
+    }
 
     Ok(WalletInfo {
         is_unlocked: true,
@@ -932,6 +954,36 @@ pub async fn send_vtr(
         return Err(TauriError::InvalidInput(
             "Send quote does not match the requested recipient or amount".into(),
         ));
+    }
+
+    // A quote is signed when it is prepared; staking may start or the staking
+    // address may change before the send. Re-check the current reserve against
+    // the quote's fixed inputs instead of trusting the state at quote time.
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+        let staking_address = handle.rpc_state.staking_address.read().await.clone();
+        let structural = {
+            let chain = handle.rpc_state.chain.lock().await;
+            vtorrent_wallet_service::structural_stakeable(&chain, staking_address.as_deref(), now)
+        };
+        let available: std::collections::HashSet<([u8; 32], u32)> = structural
+            .iter()
+            .filter(|outpoint| {
+                utxos
+                    .iter()
+                    .any(|utxo| (utxo.txid, utxo.vout) == **outpoint)
+            })
+            .copied()
+            .collect();
+        if vtorrent_wallet_service::spends_entire_reserve(&tx, &available) {
+            return Err(TauriError::InvalidInput(
+                "The stake reserve changed since this quote was prepared; review a new quote"
+                    .into(),
+            ));
+        }
     }
 
     let txid = hex::encode(tx.txid());

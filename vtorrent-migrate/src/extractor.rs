@@ -145,7 +145,7 @@ pub(crate) fn extract_from_records(
         let mut ordered_ids: Vec<u32> = master_keys.keys().copied().collect();
         ordered_ids.sort_unstable();
 
-        let mut decrypted_master: Option<DecryptedMasterKey> = None;
+        let mut decrypted_masters: Vec<DecryptedMasterKey> = Vec::new();
         for id in &ordered_ids {
             let mkey = &master_keys[id];
             // OTP-enabled wallets (keyOTP record) never store the raw
@@ -160,53 +160,61 @@ pub(crate) fn extract_from_records(
                     candidates.push(zeroize::Zeroizing::new(mixed));
                 }
             }
-            let mut works = false;
             for candidate in &candidates {
                 let Ok(master) = decrypt_master_key(mkey, candidate) else {
                     continue;
                 };
-                works = encrypted_keys.iter().any(|ckey_rec| {
+                // Keep every master that can unlock at least one ckey. A
+                // rotated wallet can hold ckeys under different masters.
+                if encrypted_keys.iter().any(|ckey_rec| {
                     decrypt_private_key(
                         &ckey_rec.encrypted_private_key,
                         &ckey_rec.public_key,
                         &master,
                     )
                     .is_ok()
-                });
-                if works {
-                    decrypted_master = Some(master);
+                }) {
+                    decrypted_masters.push(master);
                     break;
                 }
             }
-            if works {
-                break;
-            }
         }
-        let decrypted_master = decrypted_master.ok_or(MigrateError::IncorrectPassphrase)?;
+        if decrypted_masters.is_empty() {
+            return Err(MigrateError::IncorrectPassphrase);
+        }
 
-        let mut decrypted_any = false;
+        let total = encrypted_keys.len();
+        let mut failed = 0;
         for ckey_rec in &encrypted_keys {
-            if let Ok(privkey_bytes) = decrypt_private_key(
-                &ckey_rec.encrypted_private_key,
-                &ckey_rec.public_key,
-                &decrypted_master,
-            ) {
-                decrypted_any = true;
+            let decrypted = decrypted_masters.iter().find_map(|master| {
+                decrypt_private_key(
+                    &ckey_rec.encrypted_private_key,
+                    &ckey_rec.public_key,
+                    master,
+                )
+                .ok()
+            });
+            if let Some(privkey_bytes) = decrypted {
                 if let Some(extracted) = derive_extracted_key(
                     &ckey_rec.public_key,
                     &privkey_bytes,
                     KeySource::DecryptedFromMasterKey,
                 ) {
                     extracted_keys.push(extracted);
+                } else {
+                    failed += 1;
                 }
+            } else {
+                failed += 1;
             }
         }
 
         // A wrong passphrase produces a garbage master key, so every ckey
         // fails its secp256k1 scalar check. Report an incorrect passphrase
-        // instead of returning an empty (but "successful") extraction.
-        if !decrypted_any {
-            return Err(MigrateError::IncorrectPassphrase);
+        // instead of returning an empty (but "successful") extraction. A
+        // partial extraction is refused rather than silently dropping keys.
+        if failed > 0 {
+            return Err(MigrateError::PartialKeyExtraction { total, failed });
         }
     }
 
@@ -492,6 +500,147 @@ mod tests {
                 .to_wif(vtorrent_core::network::legacy::SECRET_KEY_PREFIX)
         );
         assert!(extract_from_records(&records, Some("wrong")).is_err());
+    }
+
+    fn encrypted_master_record(passphrase: &str, salt: &[u8]) -> ([u8; 32], Vec<u8>) {
+        use cbc::cipher::{BlockEncryptMut, KeyIvInit};
+        use cbc::Encryptor;
+
+        let derived = crate::crypter::derive_key_scrypt(passphrase.as_bytes(), salt).unwrap();
+        let master_key: [u8; 32] = derived[..32].try_into().unwrap();
+        let master_iv: [u8; 16] = derived[32..48].try_into().unwrap();
+        let mut master_buf = vec![0u8; 48];
+        master_buf[..32].copy_from_slice(&master_key);
+        let encrypted_master = Encryptor::<aes::Aes256>::new(&master_key.into(), &master_iv.into())
+            .encrypt_padded_mut::<cbc::cipher::block_padding::Pkcs7>(&mut master_buf, 32)
+            .unwrap()
+            .to_vec();
+        let mut mkey_value = vec![encrypted_master.len() as u8];
+        mkey_value.extend_from_slice(&encrypted_master);
+        mkey_value.push(salt.len() as u8);
+        mkey_value.extend_from_slice(salt);
+        mkey_value.extend_from_slice(&2u32.to_le_bytes());
+        mkey_value.extend_from_slice(&0u32.to_le_bytes());
+        mkey_value.push(0);
+        (master_key, mkey_value)
+    }
+
+    fn encrypted_ckey_record(
+        master_key: &[u8; 32],
+        secret_bytes: [u8; 32],
+    ) -> (secp256k1::PublicKey, Vec<u8>, Vec<u8>) {
+        use cbc::cipher::{BlockEncryptMut, KeyIvInit};
+        use cbc::Encryptor;
+        use secp256k1::{Secp256k1, SecretKey};
+
+        let secret = SecretKey::from_slice(&secret_bytes).unwrap();
+        let pubkey = secp256k1::PublicKey::from_secret_key(&Secp256k1::new(), &secret)
+            .serialize()
+            .to_vec();
+        let iv_hash = vtorrent_core::crypto::sha256d(&pubkey);
+        let ckey_iv: [u8; 16] = iv_hash[..16].try_into().unwrap();
+        let mut ckey_buf = vec![0u8; 48];
+        ckey_buf[..32].copy_from_slice(&secret.secret_bytes());
+        let encrypted_ckey = Encryptor::<aes::Aes256>::new(&(*master_key).into(), &ckey_iv.into())
+            .encrypt_padded_mut::<cbc::cipher::block_padding::Pkcs7>(&mut ckey_buf, 32)
+            .unwrap()
+            .to_vec();
+        let mut ckey_value = vec![encrypted_ckey.len() as u8];
+        ckey_value.extend_from_slice(&encrypted_ckey);
+        let mut ckey_key = vec![4u8];
+        ckey_key.extend_from_slice(b"ckey");
+        ckey_key.push(pubkey.len() as u8);
+        ckey_key.extend_from_slice(&pubkey);
+        (
+            secp256k1::PublicKey::from_slice(&pubkey).unwrap(),
+            ckey_key,
+            ckey_value,
+        )
+    }
+
+    #[test]
+    fn extracts_ckeys_under_multiple_master_keys() {
+        let passphrase = "multiple master keys";
+        let (master0, mkey0) = encrypted_master_record(passphrase, &[0x11; 8]);
+        let (master1, mkey1) = encrypted_master_record(passphrase, &[0x22; 8]);
+        let (pub0, ckey0_key, ckey0_value) = encrypted_ckey_record(&master0, [0x42; 32]);
+        let (pub1, ckey1_key, ckey1_value) = encrypted_ckey_record(&master1, [0x43; 32]);
+
+        let mut mkey0_key = vec![4u8];
+        mkey0_key.extend_from_slice(b"mkey");
+        mkey0_key.extend_from_slice(&0u32.to_le_bytes());
+        let mut mkey1_key = vec![4u8];
+        mkey1_key.extend_from_slice(b"mkey");
+        mkey1_key.extend_from_slice(&1u32.to_le_bytes());
+
+        let records = vec![
+            RawRecord {
+                key_data: mkey0_key,
+                value_data: mkey0,
+            },
+            RawRecord {
+                key_data: mkey1_key,
+                value_data: mkey1,
+            },
+            RawRecord {
+                key_data: ckey0_key,
+                value_data: ckey0_value,
+            },
+            RawRecord {
+                key_data: ckey1_key,
+                value_data: ckey1_value,
+            },
+        ];
+        let extraction = extract_from_records(&records, Some(passphrase)).unwrap();
+        assert_eq!(extraction.keys.len(), 2);
+        let addresses: Vec<String> = extraction
+            .keys
+            .iter()
+            .map(|key| key.legacy_address.clone())
+            .collect();
+        for pubkey in [pub0, pub1] {
+            let expected = vtorrent_core::address::Address::from_pubkey(
+                &pubkey,
+                true,
+                vtorrent_core::network::legacy::PUBKEY_ADDRESS_PREFIX,
+            )
+            .to_string();
+            assert!(addresses.contains(&expected));
+        }
+    }
+
+    #[test]
+    fn refuses_a_partial_multi_master_extraction() {
+        let passphrase = "multiple master keys";
+        let (master0, mkey0) = encrypted_master_record(passphrase, &[0x33; 8]);
+        let (missing_master, _) = encrypted_master_record(passphrase, &[0x44; 8]);
+        let (_, ckey0_key, ckey0_value) = encrypted_ckey_record(&master0, [0x52; 32]);
+        let (_, missing_key, missing_value) = encrypted_ckey_record(&missing_master, [0x53; 32]);
+
+        let mut mkey0_key = vec![4u8];
+        mkey0_key.extend_from_slice(b"mkey");
+        mkey0_key.extend_from_slice(&0u32.to_le_bytes());
+        let records = vec![
+            RawRecord {
+                key_data: mkey0_key,
+                value_data: mkey0,
+            },
+            RawRecord {
+                key_data: ckey0_key,
+                value_data: ckey0_value,
+            },
+            RawRecord {
+                key_data: missing_key,
+                value_data: missing_value,
+            },
+        ];
+        assert!(matches!(
+            extract_from_records(&records, Some(passphrase)),
+            Err(MigrateError::PartialKeyExtraction {
+                total: 2,
+                failed: 1
+            })
+        ));
     }
 
     #[test]
