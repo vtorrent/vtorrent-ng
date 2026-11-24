@@ -263,9 +263,25 @@ export default function ImportWizardPage() {
               <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-emerald-500/10 border border-emerald-500/20 mb-4">
                 <CheckCircle size={28} className="text-emerald-400" />
               </div>
-              <h2 className="text-lg font-semibold text-white">Import Successful</h2>
-              <p className="text-gray-400 text-sm mt-1">Your legacy VTR keys have been imported</p>
+              <h2 className="text-lg font-semibold text-white">
+                {result.nodeError ? 'Import Complete — Node Offline' : 'Import Successful'}
+              </h2>
+              <p className="text-gray-400 text-sm mt-1">
+                {result.nodeError
+                  ? 'Your legacy VTR keys were imported'
+                  : 'Your legacy VTR keys have been imported'}
+              </p>
             </div>
+
+            {result.nodeError && (
+              <div className="bg-red-900/15 border border-red-800/30 rounded-lg p-3 mb-5 flex gap-3">
+                <AlertTriangle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
+                <p className="text-red-300/80 text-xs">
+                  The wallet was imported, but the node did not start: {result.nodeError}.
+                  Restart the app or start the node before sending, swapping, or claiming.
+                </p>
+              </div>
+            )}
 
             {/* Stats */}
             <div className="grid grid-cols-2 gap-3 mb-5">
@@ -304,7 +320,12 @@ export default function ImportWizardPage() {
             <div className="space-y-2 mb-5">
               <p className="text-xs text-gray-500 font-medium">Imported Addresses</p>
               {result.addresses.map(addr => (
-                <div key={addr} className="address-mono text-xs">{addr}</div>
+                <div key={addr} className="address-mono text-xs">
+                  {addr}
+                  {addr === result.defaultAddress && (
+                    <span className="ml-2 text-emerald-400">(default)</span>
+                  )}
+                </div>
               ))}
             </div>
 

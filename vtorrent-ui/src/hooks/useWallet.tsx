@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react'
-import { isTauri, tauriInvoke as invokeTauri } from '../api'
+import { formatInvokeError, isTauri, tauriInvoke as invokeTauri } from '../api'
 
 // ─── Tauri IPC bridge ─────────────────────────────────────────────────────────
 // In the Tauri desktop app, `invoke` calls the Rust backend directly.
@@ -98,9 +98,11 @@ interface WalletContextType extends WalletState {
 export interface ImportResult {
   keysFound: number
   addresses: string[]
+  defaultAddress: string
   hadEncryption: boolean
   had2FA: boolean
   claimableBalance: number
+  nodeError?: string
 }
 
 // ─── Tauri response types (snake_case from Rust) ──────────────────────────────
@@ -116,6 +118,7 @@ interface TauriWalletInfo {
 interface TauriImportResult {
   keys_found: number
   addresses: string[]
+  default_address: string
   had_encryption: boolean
   had_2fa: boolean
   claimable_balance: number
@@ -174,6 +177,7 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
       return {
         keys_found: addrs.length,
         addresses: addrs,
+        default_address: addrs[0],
         had_encryption: !!(args?.passphrase),
         had_2fa: false,
         claimable_balance: Math.floor(Math.random() * 10_000_000_000),
@@ -376,7 +380,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     const addrInfos = await invoke<TauriAddressInfo[]>('get_addresses')
     const keys: WalletKey[] = addrInfos.map(mapAddress)
 
-    const defaultAddr = result.addresses[0] ?? null
+    const defaultAddr = result.default_address
 
     setState({
       isUnlocked: true,
@@ -387,22 +391,26 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     })
 
     // Register the imported WIF with the RPC hot wallet so send_vtr works.
-    // Also start the node so the UI gets live data immediately.
+    // Also start the node so the UI gets live data immediately. A node start
+    // failure is surfaced on the result screen instead of being swallowed.
+    let nodeError: string | undefined
     try {
       await invoke('start_node', {
         stakingAddress: defaultAddr,
         dataDir: null,
       })
     } catch (e) {
-      console.warn('start_node failed after import (may already be running):', e)
+      nodeError = formatInvokeError(e, 'Node failed to start after import')
     }
 
     return {
       keysFound: result.keys_found,
       addresses: result.addresses,
+      defaultAddress: defaultAddr,
       hadEncryption: result.had_encryption,
       had2FA: result.had_2fa,
       claimableBalance: result.claimable_balance,
+      nodeError,
     }
   }, [])
 

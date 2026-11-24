@@ -522,6 +522,40 @@ impl Wallet {
         self.data.keys.iter().map(|k| k.address.as_str()).collect()
     }
 
+    /// Set the default (receive) address to an existing key.
+    ///
+    /// Used after a legacy import so the returned default address, the UI,
+    /// `authorize_wallet`, and the swap identity all name the same key.
+    pub fn set_default_address(&mut self, address: &str) -> Result<()> {
+        if !self.data.keys.iter().any(|key| key.address == address) {
+            return Err(WalletError::KeyNotFound(address.to_string()));
+        }
+        self.data.default_address = Some(address.to_string());
+        self.data.last_modified = unix_now();
+        Ok(())
+    }
+
+    /// WIF used to derive the app's BTC wallet seed when no mnemonic exists.
+    ///
+    /// This is the first non-imported key (the key generated with the wallet),
+    /// not necessarily the current default address. Legacy import rebinds the
+    /// VTR default to an imported key but must not change the already-created
+    /// BTC state's seed.
+    pub fn btc_identity_wif(&self) -> Option<&str> {
+        self.data
+            .keys
+            .iter()
+            .find(|key| !key.is_legacy_import)
+            .or_else(|| {
+                let default_addr = self.data.default_address.as_deref()?;
+                self.data
+                    .keys
+                    .iter()
+                    .find(|key| key.address == default_addr)
+            })
+            .map(|key| key.wif.as_str())
+    }
+
     /// Get the default (receive) address.
     pub fn default_address(&self) -> Option<&str> {
         self.data.default_address.as_deref()
@@ -1003,6 +1037,35 @@ mod tests {
             initial_count + 1,
             "Duplicate import should be ignored"
         );
+    }
+
+    #[test]
+    fn import_rebinds_default_without_changing_btc_identity() {
+        let mut wallet = Wallet::create("test-pass").expect("Create failed");
+        let generated_wif = wallet.get_default_wif().unwrap().to_string();
+        assert_eq!(wallet.btc_identity_wif().unwrap(), generated_wif);
+
+        let other = Wallet::create("other-pass").expect("Create failed");
+        let other_addr = other.default_address().unwrap().to_string();
+        let other_wif = other.data.keys[0].wif.clone();
+        let imported = wallet
+            .import_wif(&other_wif, Some(&other_addr))
+            .expect("Import failed");
+        wallet
+            .set_default_address(&imported)
+            .expect("Rebind failed");
+
+        assert_eq!(wallet.default_address(), Some(imported.as_str()));
+        assert_eq!(wallet.get_default_wif().unwrap(), other_wif.as_str());
+        assert_eq!(
+            wallet.btc_identity_wif().unwrap(),
+            generated_wif,
+            "BTC state is keyed by the generated key, not the imported default"
+        );
+        assert!(matches!(
+            wallet.set_default_address("Vmissing"),
+            Err(WalletError::KeyNotFound(_))
+        ));
     }
 
     #[test]

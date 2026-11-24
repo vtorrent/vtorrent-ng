@@ -120,6 +120,7 @@ fn ensure_wallet_path_allowed(state: &AppState, path: &std::path::Path) -> Resul
 pub struct ImportResult {
     pub keys_found: usize,
     pub addresses: Vec<String>,
+    pub default_address: String,
     pub had_encryption: bool,
     pub had_2fa: bool,
     pub claimable_balance: u64,
@@ -428,10 +429,32 @@ pub fn import_legacy_wallet(
     for key in &extraction.keys {
         let addr = new_wallet
             .import_wif(&key.wif, Some(&key.legacy_address))
-            .map_err(TauriError::from)?;
-        addresses.push(addr.to_string());
+            .map_err(TauriError::from)?
+            .to_string();
+        if !addresses.contains(&addr) {
+            addresses.push(addr);
+        }
     }
 
+    // The UI, `authorize_wallet`, and the swap identity must all use the same
+    // key. Bind the first imported legacy address instead of leaving the
+    // generated, unfunded primary address as the default.
+    let default_address = addresses
+        .first()
+        .cloned()
+        .ok_or_else(|| TauriError::Migration("No keys found in wallet.dat".into()))?;
+    new_wallet
+        .set_default_address(&default_address)
+        .map_err(TauriError::from)?;
+
+    {
+        use zeroize::Zeroizing;
+        let seed = Zeroizing::new(
+            crate::commands::node::wallet_btc_seed(&new_wallet)
+                .ok_or_else(|| TauriError::Wallet("Imported wallet has no BTC seed".into()))?,
+        );
+        crate::commands::node::create_initial_btc_states(&path, &seed)?;
+    }
     new_wallet.save(&path).map_err(TauriError::from)?;
 
     let claimable_balance = lookup_snapshot_balances(&addresses);
@@ -442,6 +465,7 @@ pub fn import_legacy_wallet(
     Ok(ImportResult {
         keys_found: extraction.keys.len(),
         addresses,
+        default_address,
         had_encryption: extraction.was_encrypted,
         had_2fa: extraction.had_2fa,
         claimable_balance,

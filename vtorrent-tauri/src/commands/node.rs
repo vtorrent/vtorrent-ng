@@ -53,7 +53,7 @@ pub(crate) fn wallet_btc_seed(wallet: &vtorrent_wallet::wallet::Wallet) -> Optio
         .and_then(|m| m.to_seed().ok())
         .map(|s| *s)
         .or_else(|| {
-            let wif = wallet.get_default_wif()?;
+            let wif = wallet.btc_identity_wif()?;
             let mut hasher = Sha512::new();
             hasher.update(b"vtorrent-ng-btc-seed-v1");
             hasher.update(wif.as_bytes());
@@ -786,6 +786,46 @@ mod tests {
             let opened =
                 vtorrent_btc::wallet::BtcWallet::with_persistence(seed, network, path).unwrap();
             drop(opened);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn imported_wallet_rebind_keeps_openable_btc_state() {
+        use vtorrent_wallet::wallet::Wallet;
+
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-tauri-import-btc-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wallet_path = dir.join("wallet.vtr");
+        let mut wallet = Wallet::create("test-pass").unwrap();
+        let seed_before = wallet_btc_seed(&wallet).unwrap();
+
+        let other = Wallet::create("other-pass").unwrap();
+        let imported = wallet
+            .import_wif(
+                other.get_default_wif().unwrap(),
+                Some(other.default_address().unwrap()),
+            )
+            .unwrap();
+        wallet.set_default_address(&imported).unwrap();
+
+        let seed_after = wallet_btc_seed(&wallet).unwrap();
+        assert_eq!(
+            seed_after, seed_before,
+            "rebinding the VTR default must not move the BTC state"
+        );
+        create_initial_btc_states(&wallet_path, &seed_after).unwrap();
+        for network in [bitcoin::Network::Bitcoin, bitcoin::Network::Regtest] {
+            let path = btc_utxo_path(Some(&wallet_path), network, &seed_after);
+            assert!(path.exists());
+            vtorrent_btc::wallet::BtcWallet::with_persistence(seed_after, network, path).unwrap();
         }
         std::fs::remove_dir_all(dir).unwrap();
     }
