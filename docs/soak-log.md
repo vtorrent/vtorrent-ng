@@ -4114,8 +4114,55 @@ in `docs/2026-11-23_ai-supplementary-review-pass11.md`.
   Prometheus 3/3.
 - Fleet `review-e091936`, RPC 23951–23953, Prometheus 23973, evidence
   `/mnt/temp/vtorrent-ng-evidence/soak-e091936/`.
+- Correction (2026-11-24): the live payment paid the **1,000-sat fee floor**,
+  not zero. It spent the `85a4…:1` 200 VTR stake output (200 VTR + 1,934 sats
+  reward); outputs were 585,937 sats and 19,999,414,997 sats change, leaving
+  exactly 1,000 sats. Spending the stake output reset that coin's age. Pass 13
+  adds the structural stake reserve. The `review-e091936` window is also
+  invalidated by the pass-13 code changes; do not count it as release
+  evidence.
 - The `review-d376506` fleet was retired at height 129; its window does not
   count. The `vtr-node*` production soak was not touched.
 
 This is a candidate window, not release evidence. The independent human
 review and the full 168 hours remain open.
+
+## 2026-11-24 — pass-13 candidate (`80f9eef`)
+
+The pass-13 remediation fixes the pass-12 findings: structural stake reserve
+(automatic and manual sends, with cold-stake funding as an explicit restake
+exemption), live-journal removal guard and pending-debt eviction, payout-address
+binding, legacy-import BTC state/default-key binding, seeder IPv4-mapped keys,
+the prune race, partial-piece watchdog, resume-bit distrust, sub-minimum
+staking status, and a deterministic two-peer split test.
+
+- Candidate: **2026-11-24T08:18:28Z** to **2026-12-01T08:18:28Z**,
+  `vtorrent/node:80f9eef`, image ID
+  `sha256:637002a7da23217d7cd276b2b5dfaf74b9e16280abb122a5707297f7ff56dd84`,
+  binary `37e9d585ca450968d585aa6c48f7fec2fa0bde918bce582cdc9074429cd56f90`.
+- Two clean `--no-cache` builds from `80f9eef` produced the identical daemon
+  binary. The Docker image IDs differ only in build metadata
+  (`sha256:637002a7…` deployed, `sha256:da36f55f…` repro).
+- `cargo audit --file release/Cargo.lock`: 0 vulnerabilities, 5 allowed
+  warnings. `release/Cargo.lock` SHA-256
+  `54eee2eba3c75463de94c86ee29ca9da4be2c8ac990d7fc0045581347346b67d`.
+- Full workspace suite: **57 groups, 1,544 passed, 0 failed, 13 ignored**
+  (`cargo test --workspace --all-features`, release lock).
+- Both ignored E2Es pass on the image binary: seeder **2.15 s**; incentive
+  **26.29 s**, paying 585,937 sats once.
+- Initial observation at **2026-11-24T08:18:28Z** (`+0h`): heights 3/3/3 with
+  the same tip, staking on nodes 2/3, restarts 0/0/0, Prometheus 3/3, RSS
+  90.9/90.0/87.2 MiB. The +0h Prometheus range check predates the first
+  scrape; subsequent observations cover the window.
+- Observation cron runs every 6 hours; `scripts/soak-watchdog.sh` runs hourly
+  and alerts if the observation is older than 12 hours. The helper rejects
+  down samples and coverage gaps over 5%.
+- Live stake-reserve payment proof and the canonical CI run are still to be
+  recorded in this window.
+- Fleet `review-80f9eef`, RPC 23951–23953, Prometheus 23973, evidence
+  `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/`. The `review-e091936` fleet was
+  retired and its window does not count. The `vtr-node*` production soak was
+  not touched.
+
+This is a candidate window, not release evidence. The independent human review
+and the full 168 hours remain open.

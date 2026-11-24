@@ -54,7 +54,7 @@ the pass-8 split remains the live multi-peer proof.
 | Five `cargo audit` warnings | `bincode` is the documented accepted risk; `chrono`, `proc-macro-error`, `glib`, and `rand` are transitive and should be assessed in the review package. They do not fail the audit. |
 | Node1 locked-wallet/empty-address error | The live transfer remains single-seeder; return a clear wallet-locked/no-change-address error and add a desktop add-torrent E2E. The pass-8 split remains the live multi-peer proof. |
 | Live ledger-backstop case | The live 400 was the session guard; the ledger-file guard is unit-tested. A future live test should clear the session account after settlement and confirm the file guard still blocks. |
-| Zero-fee incentive payment policy | The live payment still spends its full input with zero fee; confirm whether intentional or add a fee floor. |
+| Incentive payment fee and stake age | Corrected: the live payment paid the **1,000-sat** fee floor, not zero. Input `85a4…:1` was the 200 VTR stake output (200 VTR + 1,934 sats reward); outputs were 585,937 sats to node2 and 19,999,414,997 sats change, leaving exactly 1,000 sats fee (20,000,001,934 − 585,937 − 19,999,414,997). Spending that output reset the only stake coin's age. The pass-13 structural reserve prevents a payment from spending the last structural stake outpoint. |
 | Desktop settle/write-off UX | The removal guard prevents silent loss but can retain a session indefinitely on a desktop with no settlement loop. |
 | Independent human review and exact-image 168 h | The pass-10 window is retired; the pass-11 window must run its own 168 hours. |
 

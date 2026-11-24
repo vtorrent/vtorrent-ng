@@ -128,27 +128,15 @@ snapshot, two-person review, and an explicit decision for each record.
       See `docs/superpowers/specs/2026-09-21-genesis-bootstrap-and-stakeable-script-design.md`.
 - [ ] **External security review** — **brief finalized, not yet commissioned**:
       `docs/security-review-brief.md` (scope, deliverables, 2-phase engagement).
-      **Current candidate (2026-11-23):** `e091936`; package
-      `docs/security-review-request-2026-10-27.md`; image
-      `vtorrent/node:e091936`; exact-image window `review-e091936` started
-      2026-11-23T14:30:53Z and is in progress. The pass-11 AI supplement is
-      `docs/2026-11-23_ai-supplementary-review-pass11.md`. The independent
-      human review is not yet commissioned.
-      The proposed immutable delivery is
-      `dd98176fcb6eb724e0753df8ee47dba40df9dc22` (`bab2456` plus the Playwright
-      E2E setup, the live cold-stake browser test, the Vite dev-origin CORS
-      allowance, the Tauri path capability fix, the durable cold-stake registry
-      persistence fix, the desktop restart/persistence parity fixes, the
-      wallet-path confinement, import overwrite guard, version bump, IPC error
-      surfacing, and staking ownership warnings, the live desktop journey,
-      restart, and BTC discovery evidence, and the whole-project review
-      remediation in `8ba6331`/`9a22bcd`, the taker-side claim RPC in `c292fc4`,
-      and the four-peer memory target in `dd98176`),
-      which includes the governance,
-      reorg, and stake-proof service repairs, the real-bitcoind SPV and swap
-      tests, and the independent genesis verifier. The review covers wallet
-      encryption (Argon2id + ChaCha20-Poly1305), consensus and governance,
-      the stake-proof service, RPC auth, and the atomic-swap HTLC flow.
+      **Current candidate (2026-11-24):** pass 13 (`80f9eef` + docs tip);
+      package `docs/security-review-request-2026-10-27.md`; exact image and
+      window in `docs/2026-11-24_ai-supplementary-review-pass13.md`. The
+      pass-11 `review-e091936` window is invalidated by the pass-13 code
+      changes and does not count. The pass-11 and pass-13 AI supplements are
+      supplementary only. The independent human review is not yet
+      commissioned. The review covers wallet encryption (Argon2id +
+      ChaCha20-Poly1305), consensus and governance, the stake-proof service,
+      RPC auth, and the atomic-swap HTLC flow.
 
 ## 2. Testnet Soak
 
@@ -266,20 +254,27 @@ window ran on, and that commit must equal the release commit.
 - [~] **Pass-10 candidate window (`d376506`)** — retired by pass 11; its
       168-hour window does not count. The live evidence remains in
       `docs/soak-log.md` and `docs/2026-11-23_ai-supplementary-review-pass10.md`.
-- [~] **Pass-11 candidate window (`e091936`)** — image
-      `vtorrent/node:e091936` (ID
+- [~] **Pass-11 candidate window (`e091936`)** — **retired by pass 13; does
+      not count.** Image `vtorrent/node:e091936` (ID
       `sha256:7449a432d9cc4760fdcc4ac4e4f8bea249c13376035fed24452d2174ad82a589`),
-      window `2026-11-23T14:30:53Z` → `2026-11-30T14:30:53Z`, three nodes,
-      restarts 0, heights agree, Prometheus 3/3. In progress. The release lock
-      is updated for RUSTSEC-2026-0594 (`cookie 0.18.3`) and
-      RUSTSEC-2026-0592 (`url 2.5.9`); `cargo audit` is clean. The live DELETE
+      window `2026-11-23T14:30:53Z` → `2026-11-30T14:30:53Z`. The live DELETE
       was refused 184 times while the 585,937-sat debt was outstanding, then
       succeeded after settlement; node2 served the full transfer. The live
-      transfer was single-seeder (node1's locked wallet still returns the raw
-      empty-address error); the pass-8 split remains the multi-peer proof. The
-      `review-d376506` window is retired. Sign-off requires manual evidence
-      review. See `docs/soak-log.md` 2026-11-23 and
+      transfer was single-seeder (node1's locked wallet returned the raw
+      empty-address error); the pass-8 split remains the multi-peer proof.
+      Correction: the payment paid the **1,000-sat** fee floor, not zero, and
+      spent the 200 VTR stake output `85a4…:1`, resetting its age. The
+      `review-d376506` window is retired. See `docs/soak-log.md` 2026-11-23 and
       `docs/2026-11-23_ai-supplementary-review-pass11.md`.
+- [~] **Pass-13 candidate window** — image `vtorrent/node:80f9eef` (ID
+      `sha256:637002a7da23217d7cd276b2b5dfaf74b9e16280abb122a5707297f7ff56dd84`),
+      extracted binary
+      `37e9d585ca450968d585aa6c48f7fec2fa0bde918bce582cdc9074429cd56f90`,
+      window `2026-11-24T08:18:28Z` → `2026-12-01T08:18:28Z`. In progress; the
+      observation helper checks 5-minute `up` samples, down samples, and
+      coverage gaps, and an hourly watchdog alerts if the observation is stale.
+      See `docs/2026-11-24_ai-supplementary-review-pass13.md`. This window
+      replaces `review-e091936`; do not count any earlier window.
 - [x] **Staking soak**: at least one node staked continuously and produced
       blocks at the expected ~60s average over the full 7-day window
       (`2026-09-29T13:36:22Z` → `2026-10-06T13:36:22Z`): node1 staked 1441
@@ -365,6 +360,19 @@ window ran on, and that commit must equal the release commit.
       (`sha256 8c9993fd…`, 2026-10-08). **Pinned**: `rust-toolchain.toml`
       (1.90.0) + Docker base images by digest. `Cargo.lock` is gitignored
       (workspace-library pattern); release builds should archive the lock used.
+- [ ] **Pass-13 candidate reproducibility**: the 2026-10-08 check covers an
+      older binary. The launch candidate needs two clean `--no-cache` builds
+      from the same commit with the same `release/Cargo.lock` (record its
+      SHA-256 and `git status --porcelain`), producing the same daemon binary
+      and Docker image ID. Archive both build logs and the extracted binary
+      hash in the pass-13 evidence directory.
+- [ ] **Rollback drill on the candidate image**: the completed drill was only a
+      binary swap. On a disposable regtest fleet, exercise (a) reverting to the
+      prior image while no OP_RETURN/P2CS output exists, (b) a reorg back to the
+      prior tip, and (c) the new-genesis restart path after an incompatible
+      output exists. Record the accepted/rejected block evidence. Until this
+      runs, the rollback gate is open even though the launch runbook describes
+      the procedure.
 - [x] **Release notes drafted** — `docs/release-notes-beta.3.md` (finalized,
       Addendum 4 covers the soak + memory work + P0 fixes).
 - [ ] **Release signing** — minisign over `SHA256SUMS` plus Apple/Windows
@@ -559,7 +567,7 @@ actions, operator approval.
 | Blocker | Owner | Notes |
 |---|---|---|
 | External security review not scheduled | Lead | Required before final v2.0.0 |
-| `bincode` 1.x unmaintained in the daemon graph | Code | `RUSTSEC-2025-0141`, warning only, no known exploit. **Accepted and frozen for the launch cut (2026-11-07; re-confirmed 2026-11-09). There is no 2.x migration to make.** bincode 2.0.1 was the last real release and bincode 3.0.0 is a tombstone that publishes only a README and a compile error, so upgrading gains no maintenance. The crate is also not just a wire format here: `txid`, block `hash`, `sighash`, and the stored chain bytes are SHA256 over bincode 1.x output, and `scripts/verify-genesis.py` re-implements that encoding independently to check genesis. Any change of serializer or configuration changes those hashes and therefore needs a new genesis and a coordinated fork, not a dependency bump. Compensating controls: pinned `=1.3.3`, every remote decode goes through the capped `decode_v2` helper, the frame codec rejects payloads above `MAX_PAYLOAD_SIZE`, and the amplification case is covered by `test_decode_v2_rejects_oversized_declared_length`. Retained as a documented residual risk; if an exploitable advisory appears, the response is a consensus change with a fresh genesis. See `docs/soak-log.md` 2026-11-02. |
+| `bincode` 1.x unmaintained in the daemon graph | Code | `RUSTSEC-2025-0141`, warning only, no known exploit. **Accepted and frozen for the launch cut (2026-11-07; re-confirmed 2026-11-09). There is no 2.x migration to make.** bincode 2.0.1 was the last real release and bincode 3.0.0 is a tombstone that publishes only a README and a compile error, so upgrading gains no maintenance. The crate is also not just a wire format here: `txid`, block `hash`, `sighash`, and the stored chain bytes are SHA256 over bincode 1.x output, and `scripts/verify-genesis.py` re-implements that encoding independently to check genesis. Any change of serializer or configuration changes those hashes and therefore needs a new genesis and a coordinated fork, not a dependency bump. Compensating controls: pinned `=1.3.3`, every remote decode goes through the capped `decode_v2` helper, the frame codec rejects payloads above `MAX_PAYLOAD_SIZE`, and the amplification case is covered by `test_decode_v2_rejects_oversized_declared_length`. Retained as a documented residual risk; if an exploitable advisory appears, the response is a consensus change with a fresh genesis. See `docs/soak-log.md` 2026-11-02. Current `cargo audit --file release/Cargo.lock` result: **0 vulnerabilities, 5 allowed warnings**; the other four (`chrono`, `rand` 0.7.3, `glib`, `proc-macro-error`) are desktop, migration-tool, or build-time only and are not in the daemon graph. See `docs/security-review-request-2026-10-27.md` §Dependency audit warnings. |
 | Atomic-swap confirmation and full recovery | Code | Timing, reservations, encrypted recovery, per-chain observations, automatic BTC monitoring, and fee-approved VTR refund replacement have local fixes. BTC refund fee replacement is intentionally unsupported (a safety interlock, not a gap). Adversarial multi-node validation remains open in `docs/security-review-2026-09-05.md` |
 
 ## Known Issues (found during soak/E2E, 2026-08-24)

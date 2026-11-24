@@ -1,6 +1,6 @@
 # Independent security review request
 
-Updated 2026-11-23. This package requests an independent human security review.
+Updated 2026-11-24. This package requests an independent human security review.
 The prior internal model review in `docs/2026-10-26_security-vtorrent-report.md`
 does not satisfy the independence gate.
 
@@ -10,20 +10,26 @@ already accepted so it is not re-litigated.
 
 ## Review target
 
-Review the code candidate `e0919364bd3409e43a81016fc25b4300f80f71d6`. This is
-the current code candidate; the docs tip is a docs-only child of it. The
-exact-image window `review-e091936` started at 2026-11-23T14:30:53Z and is in
-progress; the `review-d376506`, `review-22056d4`, and `review-ef1d1a1` windows
-were retired and do not count. Under the soak provenance policy, the shipping
-image needs its own full 168-hour window after this review and its fixes
-settle.
+Review the code candidate `80f9eef02ec81b848d212deb5073ef477e18d6dc`. This is
+the pass-13 remediation on top of `e091936`; the docs tip is a docs-only child
+of it. The exact-image window for this candidate is recorded in
+`docs/2026-11-24_ai-supplementary-review-pass13.md`; the `review-e091936`
+window is invalidated by the pass-13 code changes and does not count. The
+`review-d376506`, `review-22056d4`, `review-ef1d1a1`, `review-17db693`, and
+`review-16f9a32` windows were retired and do not count. Under the soak
+provenance policy, the shipping image needs its own full 168-hour window after
+this review and its fixes settle.
 
-Read this document from the tip of `main`. Confirm that no code changed after
-the candidate with
-`git diff --name-only e091936..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
-must return nothing. Check out `e091936` itself when running the verification
-commands; read the docs from the tip that contains this package. The tables below record the earlier deltas. The table after the
-`f8e0162` deltas covers the range from `ba46fd6` to the candidate.
+Read this document from the tip of `main`. Confirm that no non-doc file changed
+after the candidate with
+`git diff --name-only 80f9eef..HEAD -- . ':(exclude)docs/**'`, which must
+return nothing. This pathspec includes the Rust workspace, `release/Cargo.lock`,
+the UI lockfiles and config, `docker/Dockerfile`, `.github/workflows/`, and
+toolchain files; the earlier glob pattern missed all of those. Check out the
+candidate itself when running the verification commands; read the docs from the
+tip that contains this package. The tables below record the earlier deltas. The
+table after the `f8e0162` deltas covers the range from `ba46fd6` to the
+candidate.
 
 The deltas added after `dd98176` are the reason this request was refreshed; the
 original 2026-10-27 scope predates them.
@@ -143,7 +149,19 @@ Deltas after `ba46fd6`:
 | `ef1d1a1` | Pass 8: lost-block/stall/completion fixes, BEP-10 id direction, per-peer receipt throttle, per-IP cap, non-stake payment fallback, dust and lifecycle follow-ons |
 | `22056d4` | Pass 9: empty-address fallback, 10 s receive slices and progress watchdog, per-connection+per-address receipt throttle, Cancel-safe tombstones, bounded verified-piece semaphore, current-window/idle eviction, no periodic dust write-off, registry pruning, magnet Stopped, largest-stake reserve, owner-scoped clear_piece, upload dedupe/counter, tracker-init Stopped, IPv6 /64 cap, early address/ID edges |
 | `d376506` | Pass 10: ledger-aware torrent-removal guard, desktop receipt-removal guard, dust-preserving ledger policy, live DELETE refusal/release; follow-ups for the node1 empty-address error and a live ledger-backstop case |
-| `e091936` | Pass 11: release-lock audit fixes for RUSTSEC-2026-0594 (`cookie 0.18.3`) and RUSTSEC-2026-0592 (`url 2.5.9`); `cargo audit` clean; exact-image live DELETE refusal/release; follow-ups for node1 empty-address, live ledger backstop, zero-fee policy, and desktop settle/write-off |
+| `e091936` | Pass 11: release-lock audit fixes for RUSTSEC-2026-0594 (`cookie 0.18.3`) and RUSTSEC-2026-0592 (`url 2.5.9`); `cargo audit` clean; exact-image live DELETE refusal/release; follow-ups for node1 empty-address, live ledger backstop, fee-floor/stake-age, and desktop settle/write-off |
+| `0f02ef5` | Pass 13: canonical torrent block geometry |
+| `83f1b08` | Pass 13: pending incentive debt is a removal liability and eviction input |
+| `f772993` | Pass 13: removal guard consults the live incentive journal |
+| `f14bcf0` | Pass 13: torrent payout addresses are bound to the wallet; Tauri removal checks the guard before cancelling |
+| `3891ff5` | Pass 13: reserve structurally stakeable coins regardless of age in incentive payments |
+| `123673d` | Pass 13: apply the stake reserve to manual sends, cold-stake funding, and swap HTLC funding |
+| `4402f7a` | Pass 13: legacy import creates BTC state and binds the default address to the imported key |
+| `0af5546` | Pass 13: seeder IPv4-mapped keys, prune race, partial-piece watchdog, resume-bit distrust, sub-minimum staking status |
+| `001c05e` | Pass 13: deterministic two-peer split regression |
+| `b96091c` | Pass 13: require an unlocked hot wallet that owns the torrent payout address |
+| `0960fa7` | Pass 13: run the removal guard outside the session lock and re-check debt |
+| `80f9eef` | Pass 13: keep the cold-stake funding path as an explicit restake exemption from the hot-wallet reserve |
 
 Deltas after the earlier review head:
 
@@ -195,16 +213,29 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout e0919364bd3409e43a81016fc25b4300f80f71d6
+git checkout 80f9eef02ec81b848d212deb5073ef477e18d6dc
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
+cp release/Cargo.lock Cargo.lock
+cargo audit --file release/Cargo.lock
+cargo test --locked --workspace --all-features
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/proof/Cargo.toml --target-dir target
 cargo run --offline --manifest-path docs/whole-project-review-2026-10-28/rpc-proof/Cargo.toml --target-dir target
-cargo test --workspace --all-features
 ```
 
+`release/Cargo.lock` is the tracked lockfile; the workspace `Cargo.lock` is
+gitignored. Copy it before testing so the audited dependency graph is the graph
+under test. Linux desktop builds need the Tauri system prerequisites:
+`libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, `libappindicator3-dev`,
+`librsvg2-dev`, `libssl-dev`, and `patchelf` (or the distribution equivalents).
+A daemon-focused review can run
+`cargo test --locked -p vtorrent-daemon -p vtorrent-rpc -p vtorrent-wallet ...`
+without them; the full workspace suite requires the desktop libraries.
+
 The `e091936` workspace run passed 56 test groups and 1,528 tests with 0
-failures and 13 ignored. CI repeats the `--all-features` suite on every push.
+failures and 13 ignored. The pass-13 candidate `80f9eef` passed **57 groups and
+1,544 tests, 0 failed, 13 ignored** on the tracked release lock. CI repeats the
+`--all-features` suite on every push.
 Set `VTORRENT_TOTP_STATE_DIR` to a fresh directory before running the suite so
 the host-scoped TOTP replay state does not collide with an existing
 installation. The ignored Bitcoin Core reorg tests are documented in
@@ -320,6 +351,33 @@ Added with `ff148fd` and `35ea52e`:
   tooling in `9533a2c`, the fork/SPV fixes in `dd7676f`, and the review
   remediation in `10c4671`. It is **not**
   independent review.
+- `docs/2026-11-23_ai-supplementary-review-pass11.md` for the release-lock
+  audit fixes (`cookie 0.18.3`, `url 2.5.9`), the exact-image transfer/DELETE
+  evidence, and the corrected 1,000-sat fee record. It is **not** independent
+  review.
+- `docs/2026-11-24_ai-supplementary-review-pass12.md` for the read-only
+  four-reviewer pass that produced the remediation list, and
+  `docs/2026-11-24_ai-supplementary-review-pass13.md` for the fixes, the exact
+  image/binary, the new window, and the remaining release gates. Neither is
+  independent human review.
+
+## Dependency audit warnings
+
+`cargo audit --file release/Cargo.lock` exits 0 with **zero vulnerabilities**
+and **five allowed warnings**. Only `bincode` is reachable from the daemon
+release graph; the other four are desktop, migration-tool, or build-time only.
+
+| Advisory | Crate | Kind | Reachability from `vtorrent-daemon` |
+|---|---|---|---|
+| `RUSTSEC-2025-0141` | `bincode` 1.3.3 | unmaintained | **Yes** — direct dependency of `vtorrent-node`, `vtorrent-p2p`, `vtorrent-rpc`, `vtorrent-spv`, `vtorrent-torrent`, `vtorrent-cli`, `vtorrent-daemon`. Accepted as a wire/persistence-format compatibility risk; see `docs/mainnet-readiness.md`. |
+| `RUSTSEC-2026-0543` | `chrono` 0.4.45 | unmaintained | No — `tauri-utils` → `serde_with` → `chrono`; desktop shell only. |
+| `RUSTSEC-2026-0097` | `rand` 0.7.3 | unsound with a custom logger | No — `vtorrent-snapshot` → `rusty-leveldb`; migration tool only. |
+| `RUSTSEC-2024-0429` | `glib` 0.18.5 | unsound iterator impls | No — Tauri GTK/WebKit stack; desktop only. |
+| `RUSTSEC-2024-0370` | `proc-macro-error` 1.0.4 | unmaintained | No — build-time only via `glib-macros` / `gtk3-macros`; not linked into the daemon. |
+
+`cargo audit` does not fail the build on these warnings. CI runs the audit on
+every push against the tracked `release/Cargo.lock` and fails only on
+vulnerabilities.
 
 ## Status
 

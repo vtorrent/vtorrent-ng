@@ -5,6 +5,13 @@ consensus-batch decision, the coordinated upgrade, verification, and rollback.
 Companion to `docs/mainnet-readiness.md` (checklist) and
 `docs/oncall-runbook.md` (ongoing ops).
 
+> **Current candidate (pass 13).** The launch candidate is the pass-13
+> remediation (`80f9eef` plus the docs/review package). It supersedes the
+> historical `70ea7b9`/`e091936` baselines named below. The exact image, binary
+> digest, window, and evidence are recorded in
+> `docs/2026-11-24_ai-supplementary-review-pass13.md`. Do not launch from an
+> older image or count an older window.
+
 ## 1. Launch parameters (verify before launch)
 
 | Parameter | Value | Source |
@@ -22,7 +29,7 @@ Companion to `docs/mainnet-readiness.md` (checklist) and
 | Min stake | 1 VTR | `consensus.rs:43` |
 | Max supply | 20,000,000 VTR | `consensus.rs:46` |
 | DNS seeds | seed1/2/3.vtorrent.org + `bootstrap/peers.txt` | `docs/dns-seeds.md` |
-| Review candidate source | `70ea7b9` (`bab2456` plus Playwright E2E setup, Vite dev-origin CORS allowance, Tauri path capability fix, durable cold-stake registry fix, desktop restart/persistence parity fixes, wallet-path/IPC hardening, and staking ownership warnings) | `docs/security-review-brief.md` |
+| Review candidate source | Pass-13 candidate (`80f9eef` + docs tip); see the current-candidate note | `docs/2026-11-24_ai-supplementary-review-pass13.md` |
 | Post-review mainnet fixes | `1901bb9`, `513efde`, `c465d1b` (BTC SPV peer agreement and failover; five-peer headroom and in-cycle retry); `7ec3b2f` (BTC SPV health metrics and stale-scan alert); `2c381fa` (persistent compact-filter peer cache); `aeb103a` (four fresh-review BTC findings); `8639a7f` (restart lineage); `c3b3847` (hide restored outputs); `287a505` (stuck-scan alert); `c3a79fa` (partial-scan/restart lock); `5f4c788` (canonical txid); `8ba6331` (whole-project remediation); `9a22bcd` (release lockfile); `c292fc4` (taker-side external VTR claim RPC); `dd98176` (four-peer target and 256 MiB steady RSS policy) | `docs/btc-spv-soak-plan.md` |
 
 **Genesis is deterministic** and embeds the legacy snapshot (59,375 addresses,
@@ -34,12 +41,16 @@ at launch.
 ## 2. Pre-launch gate (all must be green)
 
 1. **External security review** complete; findings fixed with regression tests
-   (`docs/security-review-brief.md`, pinned to `70ea7b9`; include the `1901bb9`, `513efde`, `c465d1b`, `7ec3b2f`, `2c381fa`, `aeb103a`, `8639a7f`, `c3b3847`, `287a505`, `c3a79fa`, `5f4c788`, `8ba6331`, `9a22bcd`, and `c292fc4` mainnet fix deltas). The fresh internal review in `docs/2026-10-26_security-vtorrent-report.md` does not satisfy the independent third-party gate.
+   against the pass-13 candidate (`docs/security-review-request-2026-10-27.md`;
+   include the pass-12/13 deltas in that document). The fresh internal review in
+   `docs/2026-10-26_security-vtorrent-report.md` and the AI supplementary passes
+   do not satisfy the independent third-party gate.
 2. **Review candidate selected** (§3): the current build includes the
-   consensus batch; launch on the candidate commit and image after review, not
-   beta.3.
-3. **Fresh 7-day soak green** on the review candidate (window
-   `2026-10-21T02:47:54Z` → `2026-10-28T02:47:54Z`; `docs/soak-log.md`).
+   consensus batch; launch on the pass-13 candidate commit and exact image
+   after review, not beta.3.
+3. **Fresh 7-day soak green** on the pass-13 review candidate (the window and
+   image are recorded in `docs/2026-11-24_ai-supplementary-review-pass13.md`;
+   `docs/soak-log.md`).
 4. **`mainnet-readiness.md`** §1–§4 all `[x]` (except items explicitly deferred).
 
 ## 3. Consensus-batch decision
@@ -47,19 +58,15 @@ at launch.
 The current build already includes the consensus batch (OP_RETURN exclusion,
 cold staking, governance, state rent) and the governance and proof-service
 repairs. The core soak fleet runs `vtorrent/node:batch-e7691fb` with BTC SPV
-disabled. The review candidate `70ea7b9` is `bab2456` plus the Playwright browser
-E2E setup, the Vite dev-origin CORS allowance, the Tauri path capability fix,
-the durable cold-stake registry persistence fix, the desktop
-restart/persistence parity fixes, the wallet-path confinement, import
-overwrite guard, version bump, IPC error surfacing, and staking ownership
-warnings, and the live desktop journey, restart, and BTC discovery evidence. It
-adds the BTC wallet birthday flag,
-desktop commands, health-field updates, the shared BTC sync loop, desktop chain
-persistence, and the cold-stake/BTC/compact-block/desktop hardening from the
-adversarial review; rebuild the release image from it. The frontier-model review's ten findings and three follow-up concerns are addressed across `61f4be4`, `cb765ce`, `f272e64`, `3975693`, `6f82b63`, `07a6881`, `326ce27`, `39da204`, `afe5974`, and `2287026`; verified 2FA enrollment, the torrent control availability, the reviewed send quote, verified encrypted backup and restore, the guided swap workspace, the staking readiness assistant, the activity and recovery center, the cold-stake delegation wizard, node settings and diagnostics, torrent controls and reward accounting, and navigation grouping and accessibility improvements, the external review remediation, the activity journal, and the icon-label audit are in `70ea7b9`. The external review should verify them. The fresh 7-day soak
-started 2026-10-21T02:47:54Z. Launch on that candidate build after the external
-review and the soak. Do not launch on beta.3; it predates the governance and
-proof-service repairs.
+disabled. The launch candidate is the pass-13 build (see the current-candidate note),
+which includes the consensus batch and the pass-12/13 remediation: structural
+stake reserve, live-journal removal guard, canonical torrent block geometry,
+payout binding, legacy-import BTC state/default-key binding, seeder/watchdog
+hardening, and the deterministic two-peer regression. It supersedes
+`70ea7b9` and `e091936`; rebuild the release image from the exact commit in
+`docs/2026-11-24_ai-supplementary-review-pass13.md`. The independent review
+must verify the pass-13 deltas, not only the historical baseline. Do not launch
+on beta.3; it predates the governance and proof-service repairs.
 
 Swaps are enabled at mainnet launch. The repaired BTC SPV probe has completed
 mainnet-scale header sync and a 100,001-block scan, and
@@ -74,10 +81,17 @@ component-level active soak passed. The header retention bound is covered by an 
    message match the signed parameters, rebuild, and record the genesis hash +
    the daemon binary sha256. Do not change either value; the independent
    verifier and the snapshot commitment depend on them.
-2. **Build & sign the release**: tag `v2.0.0`, run the desktop matrix, publish
-   with checksums (`docs/release-notes-*.md`). Run
-   `python3 scripts/verify-genesis.py` and record the output with the release
-   checksums.
+2. **Build & sign the release**: tag `v2.0.0` from a commit on `main`, run the
+   desktop matrix, publish with checksums (`docs/release-notes-*.md`). Before
+   tagging, dispatch `Build vTorrent Desktop Client` on the candidate commit
+   (`workflow_dispatch`) and confirm all four desktop jobs, the frontend jobs,
+   the audit, the image build, and the Rust suites are green. Attach only the
+   desktop assets produced by that run for the same commit. The checksum job
+   runs in the protected `release` environment and rejects a tag whose commit
+   is not on `main`. Run `python3 scripts/verify-genesis.py` and record the
+   output with the release checksums. Do not generate a production signing key
+   or certificate without explicit authorization; if signing is enabled,
+   `release/minisign.pub` must be committed and the secret configured first.
 3. **Bring up the seeds first**: deploy the launch binary to seed1/2/3; verify
    they agree on the genesis hash and connect.
 4. **Publish bootstrap**: update `bootstrap/peers.txt` and the DNS seeds
@@ -103,8 +117,8 @@ component-level active soak passed. The header retention bound is covered by an 
 - All seeds report the **same genesis hash** and advance together.
 - The independent genesis verifier passes
   (`python3 scripts/verify-genesis.py`).
-- The deployed image and commit match the build that passed the external
-  review (release image rebuilt from `70ea7b9`).
+- The deployed image and commit match the exact pass-13 candidate and the
+  reviewed image digest.
 - Block cadence ~60 s; no sustained divergence.
 - A legacy claim succeeds end-to-end (rehearsed on regtest).
 - RPC reachable, auth enforced, rate limiting active.
@@ -117,6 +131,15 @@ component-level active soak passed. The header retention bound is covered by an 
 - **After blocks exist**: a bad launch is a **new genesis** (the chain is
   young); coordinate a restart with a corrected binary. Record the decision in
   `docs/soak-log.md`.
+- **Drill status (2026-11-24): OPEN.** The last completed drill was a binary
+  swap, not the new-genesis/revert/reorg path. Before launch, run the drill on
+  a disposable regtest fleet with the candidate image: (a) revert to the prior
+  image while no OP_RETURN/P2CS output exists and confirm every post-upgrade
+  block is still accepted, (b) force a reorg back to the prior tip and confirm
+  the store/UTXO reconciliation, and (c) create an incompatible output and
+  confirm the reverted image rejects it, then perform the new-genesis restart.
+  Record the accepted/rejected block evidence in the pass-13 evidence
+  directory. This gate is not satisfied by the 168-hour soak.
 - **Batch**: the batch replayed offline to an identical tip hash on the
   pre-batch chain (`docs/soak-log.md`, 2026-10-08/09). Reverting the binary is
   safe only while no OP_RETURN/P2CS output exists and the reverted binary

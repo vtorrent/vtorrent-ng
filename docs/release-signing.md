@@ -50,6 +50,25 @@ scripts/verify-release.sh ./release-assets
 The script checks every entry in `SHA256SUMS` and, when requested, verifies
 `SHA256SUMS.minisig` against the public key before trusting any asset.
 
+## Trust boundary and CI protection
+
+The checksum job does not build the desktop assets; it hashes the files attached
+to the published release. Minisign authenticates the contents of `SHA256SUMS` at
+signing time, not who built the assets. The workflow therefore:
+
+- runs in the protected GitHub `release` environment, so publishing requires
+  the environment's reviewers/deployment rules; and
+- verifies that the release tag commit is an ancestor of `origin/main` before
+  generating or signing checksums.
+
+These checks stop a stray token from publishing a release from an unmerged
+commit, but they do not prove that an attached installer came from the
+`build-desktop` job. Until same-run build attestation is added, the release
+operator must attach only assets produced by `build-desktop` for the same tag
+and commit, and record the workflow run ID with the release. The daemon image is
+built separately by the `docker-image` CI job from `release/Cargo.lock`; its
+image ID is the comparison point for the local clean rebuild.
+
 ## Platform code signing
 
 Minisign does not make macOS or Windows trust the installer. Those require:

@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `e091936`
+Subject: Independent security review — vTorrent-NG mainnet candidate `80f9eef`
 
 Hello,
 
@@ -20,22 +20,24 @@ write or previously review this code to look at it with fresh eyes.
 **Repository:** https://github.com/vtorrent/vtorrent-ng
 **Review docs:** the `main` tip that contains this note (a docs-only child of
 the code candidate)
-**Code candidate:** `e0919364bd3409e43a81016fc25b4300f80f71d6`
-**Image:** `vtorrent/node:e091936`, ID
-`sha256:7449a432d9cc4760fdcc4ac4e4f8bea249c13376035fed24452d2174ad82a589`
+**Code candidate:** `80f9eef02ec81b848d212deb5073ef477e18d6dc`
+**Image:** `vtorrent/node:80f9eef`, ID
+`sha256:637002a7da23217d7cd276b2b5dfaf74b9e16280abb122a5707297f7ff56dd84`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `e091936`. The exact-image window
-`review-e091936` started at 2026-11-23T14:30:53Z and is in progress; the
-`review-d376506`, `review-22056d4`, and `review-ef1d1a1` windows were retired
-and do not count. The shipping image needs its own full 168-hour window after
-this review and its fixes settle.
+The code under review is `80f9eef`. The exact-image window for this candidate
+is recorded in `docs/2026-11-24_ai-supplementary-review-pass13.md`; the
+`review-e091936` window is invalidated by the pass-13 code changes and does not
+count. The `review-d376506`, `review-22056d4`, and `review-ef1d1a1` windows
+were retired and do not count. The shipping image needs its own full 168-hour
+window after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
-code changed after the candidate with
-`git diff --name-only e091936..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`, which
-must return nothing. Check out `e091936` itself when running the verification
-commands.
+non-doc file changed after the candidate with
+`git diff --name-only 80f9eef..HEAD -- . ':(exclude)docs/**'`, which must
+return nothing. This includes the Rust workspace, `release/Cargo.lock`, the UI
+lockfiles and config, `docker/Dockerfile`, `.github/workflows/`, and toolchain
+files. Check out the candidate itself when running the verification commands.
 
 That document lists the exact hashes, the verification commands, and what we
 consider in scope. Nothing is required beyond a clone and a Rust toolchain; no
@@ -247,8 +249,17 @@ candidate `ba46fd6`:
   times while the 585,937-sat debt was outstanding and succeeded after
   settlement. The live transfer was again single-seeder because node1's
   locked wallet returns the raw empty-address error; the pass-8 split remains
-  the multi-peer proof. The live ledger-backstop case, zero-fee policy, and
-  desktop settle/write-off path remain follow-ups.
+  the multi-peer proof. Correction: the payment paid the **1,000-sat fee
+  floor**, not zero, and spent the 200 VTR stake output `85a4…:1`, resetting
+  its age. The ledger-backstop case and desktop settle/write-off path remain
+  follow-ups.
+- Pass 13 — the current remediation. The structural stake reserve (automatic
+  and manual paths), live-journal removal guard, pending-debt eviction input,
+  canonical torrent block geometry, payout-address binding, legacy-import BTC
+  state/default-key binding, seeder IPv4-mapped keys, prune race, partial-piece
+  watchdog, resume-bit distrust, sub-minimum staking status, and a deterministic
+  two-peer split regression. The `review-e091936` window is invalidated by these
+  code changes and is not release evidence.
 - `17db693` — pass 7. Each partially downloaded piece is assembled by exactly
   one owning task, blocks are leased only to peers that advertised the piece,
   and received/expired leases no longer wedge the pipeline. The seeder
@@ -424,6 +435,11 @@ Changes already described in the earlier package, up to `f8e0162`:
 - `bincode` 1.x is unmaintained (`RUSTSEC-2025-0141`, warning only, no known
   exploit). Replacing it is a wire-format compatibility change, recorded as
   accepted risk for this launch.
+- The other four audit warnings (`chrono` via the Tauri/serde stack, `rand`
+  0.7.3 via `rusty-leveldb` in `vtorrent-snapshot`, `glib` in the Tauri GTK
+  stack, and `proc-macro-error` in the desktop build macros) are not in the
+  daemon release graph. The full five-warning reachability table is in
+  `docs/security-review-request-2026-10-27.md` §Dependency audit warnings.
 - The 256 MiB RSS budget assumes three pinned glibc allocator variables; without
   them a BTC-enabled fleet peaked at 279.7 MiB. That is a deployment
   requirement, not a code defect.
@@ -452,16 +468,18 @@ Thank you.
 ## Before sending
 
 - Confirm the code candidate is still
-  `e0919364bd3409e43a81016fc25b4300f80f71d6` and the docs tip is the commit
+  `80f9eef02ec81b848d212deb5073ef477e18d6dc` and the docs tip is the commit
   that publishes this note; the scope document and this note must name the same
   code candidate. Do not substitute a later local commit without updating both
-  documents and the soak provenance. Docs-only commits after `e091936` must
-  leave `git diff --name-only e091936..HEAD -- '*.rs' '*.toml' '*.ts' '*.tsx'`
-  empty.
-- The `review-e091936` window is the exact-image window and is in progress;
-  the `review-d376506`, `review-22056d4`, and `review-ef1d1a1` windows were
-  retired and do not count. Do not describe the interrupted `6a49727` fleet
-  as covering this head. The shipping image needs its own 168-hour window
-  after the review and its fixes settle.
+  documents and the soak provenance. Docs-only commits after the candidate must
+  leave
+  `git diff --name-only 80f9eef..HEAD -- . ':(exclude)docs/**'` empty.
+- The pass-13 exact-image window is recorded in
+  `docs/2026-11-24_ai-supplementary-review-pass13.md`. The `review-e091936`
+  window is invalidated by the pass-13 code changes and does not count; the
+  `review-d376506`, `review-22056d4`, and `review-ef1d1a1` windows were
+  retired. Do not describe the interrupted `6a49727` fleet as covering this
+  head. The shipping image needs its own 168-hour window after the review and
+  its fixes settle.
 - Decide who receives it. Sending it is the step that actually opens the gate —
   drafting it does not.
