@@ -4166,6 +4166,12 @@ staking status, and a deterministic two-peer split test.
   at 6 confirmations the journal showed `unpaid=0` and DELETE returned 200.
   This exercises the structural reserve and the live journal guard. Proof:
   `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/live-payment/PROOF.md`.
+- Real-bitcoind BTC SPV/HTLC suite passed on a disposable regtest container
+  (release build): multi-node HTLC swap settled (VTR funding `2e03ceff…`, BTC
+  funding `985261bf…`, BTC claim `660d9421…`, VTR claim `c4adc742…`), the
+  reorged-out funding output was dropped, two independent daemons agreed on a
+  tip and reorg, and an uncovered reorg across restart kept a confirmed send
+  held. Logs are in `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/`.
 - Canonical CI run **45357625083** (`cd0e975`, docs-only child of `80f9eef`)
   passed all jobs: Rust tests (all-features and default), format/Clippy, audit,
   Machete, benchmark gate, frontend, and the no-cache Docker image build. The

@@ -42,6 +42,13 @@ code-freeze/evidence/release gates. The independent human review and the
   (`sha256:637002a7…` deployed, `sha256:da36f55f…` repro).
 - E2Es on the extracted image binary: seeder **2.15 s**, incentive **26.29 s**,
   paying 585,937 sats once; both pass.
+- Real-bitcoind BTC SPV/HTLC suite on a disposable regtest container (release
+  build, `VTORRENT_TEST_BTC_CONTAINER` selected explicitly): all four tests
+  pass — the multi-node HTLC swap settled (VTR funding `2e03ceff…`, BTC funding
+  `985261bf…`, BTC claim `660d9421…`, VTR claim `c4adc742…`), a reorged-out
+  funding output was dropped and the balance returned to zero, two independent
+  daemons agreed on a tip and reorg with the funding re-included, and an
+  uncovered reorg across restart kept a confirmed send held.
 - Live fleet `review-80f9eef`: three nodes at height 3 with agreeing tips,
   staking on nodes 2/3, restarts 0/0/0, Prometheus 3/3 at the +0h observation.
   At +1h they were at height 55 with the same tip, RSS 154/169/169 MiB, and
@@ -67,7 +74,8 @@ code-freeze/evidence/release gates. The independent human review and the
   signed off.
 - Real legacy `wallet.dat` differential and multi-key DEX/swap/claim E2E:
   open.
-- Active swap/HTLC adversarial validation: open.
+- Active swap/HTLC validation: the real-bitcoind swap and reorg suite is green;
+  a mainnet-scale adversarial swap soak remains open.
 - Production signing key/certificate: not generated; authorization required.
 - Height-10,000 checkpoint publication: after launch.
 - Release-artifact rollback drill (new-genesis/revert/reorg): open; procedure
