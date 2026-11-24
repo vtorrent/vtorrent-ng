@@ -4157,8 +4157,14 @@ staking status, and a deterministic two-peer split test.
 - Observation cron runs every 6 hours; `scripts/soak-watchdog.sh` runs hourly
   and alerts if the observation is older than 12 hours. The helper rejects
   down samples and coverage gaps over 5%.
-- Live stake-reserve payment proof and the canonical CI run are still to be
-  recorded in this window.
+- Live 12 MiB transfer paid **585,937 sats** from node3's 0.5 VTR non-stakeable
+  coin (`4e268baa…:0`); the 200 VTR stake output (`eebf9d9ed5…:1`) remained
+  unspent, and the fee was 1,000 sats. Before finality DELETE returned 400;
+  at 6 confirmations the journal showed `unpaid=0` and DELETE returned 200.
+  This exercises the structural reserve and the live journal guard. Proof:
+  `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/live-payment/PROOF.md`.
+- Canonical CI is run `45356087098` for `9f7ffeb`; the local suite, audit, image
+  builds, both E2Es, and the live proof are green.
 - Fleet `review-80f9eef`, RPC 23951–23953, Prometheus 23973, evidence
   `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/`. The `review-e091936` fleet was
   retired and its window does not count. The `vtr-node*` production soak was
