@@ -1,4 +1,5 @@
 use crate::error::{Result, TorrentError};
+use crate::metainfo::Metainfo;
 use serde::{Deserialize, Serialize};
 
 /// Absolute upper bound for a peer-wire frame. Established connections apply a
@@ -13,6 +14,27 @@ pub(crate) const MAX_MESSAGE_LENGTH: usize = 16 * 1024 * 1024;
 /// be able to pin a multi-megabyte receive buffer by declaring a piece-sized
 /// frame it was never asked for.
 pub(crate) const MAX_INBOUND_FRAME: usize = 256 * 1024;
+
+/// Canonical BitTorrent block size used by the scheduler and both upload paths.
+pub const BLOCK_SIZE: u32 = 16 * 1024;
+
+/// Validate a block request against the scheduler's canonical block geometry.
+///
+/// The scheduler issues 16 KiB blocks aligned to the piece start. Accepting
+/// arbitrary lengths/offsets lets a peer turn each frame into an independent
+/// disk open/seek/read, so the upload paths must reject anything else before
+/// touching the file.
+pub fn valid_block_request(metainfo: &Metainfo, index: u32, begin: u32, length: u32) -> bool {
+    if index >= metainfo.piece_count || length == 0 || length > BLOCK_SIZE {
+        return false;
+    }
+    let piece_len = crate::engine_disk::piece_length(metainfo, index);
+    if piece_len == 0 || u64::from(begin) >= piece_len || !begin.is_multiple_of(BLOCK_SIZE) {
+        return false;
+    }
+    let expected = (piece_len - u64::from(begin)).min(u64::from(BLOCK_SIZE)) as u32;
+    length == expected
+}
 
 /// Generate a random 20-byte peer id for handshakes and tracker announces.
 ///
@@ -350,6 +372,58 @@ impl Default for PeerChokeState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metainfo::TorrentFile;
+
+    fn test_metainfo(piece_count: u32, piece_length: u64, total_size: u64) -> Metainfo {
+        Metainfo {
+            info_hash: [0x51; 20],
+            name: "block-geometry-test".into(),
+            total_size,
+            piece_length,
+            piece_count,
+            pieces: Vec::new(),
+            announce: None,
+            announce_list: Vec::new(),
+            files: vec![TorrentFile {
+                path: vec!["block-geometry-test".into()],
+                length: total_size,
+                md5sum: None,
+            }],
+            created_at: None,
+            comment: None,
+            is_private: false,
+        }
+    }
+
+    #[test]
+    fn valid_block_requests_are_canonical() {
+        let m = test_metainfo(48, 262_144, 12 * 1024 * 1024);
+        assert!(valid_block_request(&m, 0, 0, BLOCK_SIZE));
+        assert!(!valid_block_request(&m, 0, 1, BLOCK_SIZE));
+        assert!(!valid_block_request(&m, 0, 0, 1));
+        assert!(!valid_block_request(&m, 0, 0, 2 * BLOCK_SIZE));
+        assert!(valid_block_request(&m, 47, 0, BLOCK_SIZE));
+        assert!(valid_block_request(&m, 47, 245_760, BLOCK_SIZE));
+        assert!(!valid_block_request(&m, 47, 262_144, BLOCK_SIZE));
+        assert!(!valid_block_request(&m, 48, 0, BLOCK_SIZE));
+        assert!(!valid_block_request(&m, 0, 0, 0));
+
+        let short = test_metainfo(48, 262_144, 12 * 1024 * 1024 - 8_000);
+        let last_len = 12 * 1024 * 1024 - 8_000 - 47 * 262_144;
+        let last_block = (last_len / 16_384) * 16_384;
+        assert!(valid_block_request(
+            &short,
+            47,
+            last_block as u32,
+            (last_len - last_block) as u32
+        ));
+        assert!(!valid_block_request(
+            &short,
+            47,
+            last_block as u32,
+            BLOCK_SIZE
+        ));
+    }
 
     #[test]
     fn test_encode_decode_choke() {

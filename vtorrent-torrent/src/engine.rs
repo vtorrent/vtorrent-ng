@@ -6,7 +6,7 @@ use crate::engine_disk::{
 };
 use crate::error::{Result, TorrentError};
 use crate::metainfo::{Metainfo, TorrentFile};
-use crate::peer_wire::{PeerMessage, MAX_MESSAGE_LENGTH};
+use crate::peer_wire::{valid_block_request, PeerMessage, MAX_MESSAGE_LENGTH};
 use crate::scheduler::SchedulerState;
 use crate::session::{SessionManager, SessionState};
 use crate::tracker::{tracker_target_allowed_with, AnnounceEvent, AnnounceRequest, HttpTracker};
@@ -15,7 +15,6 @@ use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 struct PieceWriteClaim {
@@ -1033,7 +1032,6 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
     let served_requests: std::sync::Mutex<
         std::collections::HashMap<(u32, u32, u32), std::time::Instant>,
     > = std::sync::Mutex::new(std::collections::HashMap::new());
-    let outstanding_served = std::sync::atomic::AtomicUsize::new(0);
     // Rolling-window counters for speed estimation.
     let mut downloaded_window: u64 = 0;
     let mut uploaded_window: u64 = 0;
@@ -1253,16 +1251,11 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                 begin,
                 length,
             }) => {
-                // ── Request sanity limits (upload-bandwidth protection) ──
-                // A single socket must not be able to extract unlimited
-                // redundant upload bandwidth.
-                const MAX_SERVED_BLOCK: u32 = 32 * 1024;
-                const MAX_OUTSTANDING_PER_PEER: usize = 64;
-
-                // Reject requests for blocks larger than a sane maximum —
-                // real clients request 16 KiB blocks.
-                if length == 0 || length > MAX_SERVED_BLOCK {
-                    tracing::debug!("Rejecting oversized request (len {}) from peer", length);
+                // Reject non-canonical block geometry before any disk access.
+                if !valid_block_request(&metainfo, index, begin, length) {
+                    tracing::debug!(
+                        "Rejecting non-canonical request ({index},{begin},{length}) from peer"
+                    );
                     continue;
                 }
 
@@ -1284,13 +1277,6 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     continue;
                 }
 
-                let outstanding = outstanding_served.fetch_add(1, Ordering::SeqCst);
-                if outstanding >= MAX_OUTSTANDING_PER_PEER {
-                    outstanding_served.fetch_sub(1, Ordering::SeqCst);
-                    tracing::debug!("Peer has too many outstanding requests; dropping");
-                    continue;
-                }
-
                 // Serve the requested block if we hold the piece.
                 let ratio_reached = {
                     let target = *seed_ratio_target.read().await;
@@ -1309,7 +1295,6 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                     }
                 };
                 if ratio_reached {
-                    outstanding_served.fetch_sub(1, Ordering::SeqCst);
                     continue;
                 }
                 let have_piece = scheduler
@@ -1353,7 +1338,6 @@ async fn run_peer_task(addr: SocketAddr, ctx: PeerTaskContext) {
                         }
                     }
                 }
-                outstanding_served.fetch_sub(1, Ordering::SeqCst);
             }
             Ok(PeerMessage::Cancel { index, begin, .. }) => {
                 scheduler

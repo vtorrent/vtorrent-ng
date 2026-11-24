@@ -10,9 +10,9 @@
 //!   arbitrary info-hash handshake cannot make us read the disk;
 //! - every piece is re-hashed against the metainfo before its first block is
 //!   sent, so a corrupted or truncated file is never served as valid;
-//! - requests are bounded by connection count, per-connection outstanding
-//!   requests, duplicate suppression, the shared upload limiter, and the
-//!   session's seed-ratio target;
+//! - requests are bounded by connection count, canonical block geometry,
+//!   duplicate suppression, the shared upload limiter, and the session's
+//!   seed-ratio target;
 //! - the listener is opt-in and must be enabled explicitly by the operator.
 
 use crate::engine::PeerConnection;
@@ -23,7 +23,7 @@ use crate::metadata::{
     self, build_ut_vtr_address, build_ut_vtr_handshake, OUR_RECEIPT_ID, OUR_UT_VTR_ID,
 };
 use crate::metainfo::Metainfo;
-use crate::peer_wire::PeerMessage;
+use crate::peer_wire::{valid_block_request, PeerMessage};
 use crate::session::SessionManager;
 use crate::tracker::{tracker_target_allowed_with, AnnounceEvent, AnnounceRequest, HttpTracker};
 use serde_bencode::value::Value;
@@ -38,8 +38,6 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use vtorrent_core::keys::PrivateKey;
 
-/// Largest block we will serve. Real clients request 16 KiB.
-const MAX_SERVED_BLOCK: u32 = 32 * 1024;
 /// How often we re-announce to trackers while seeding.
 const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(1_800);
 /// How often the announce task looks for newly registered torrents.
@@ -867,8 +865,7 @@ async fn serve_connection(stream: TcpStream, addr: SocketAddr, state: SeederStat
                 begin,
                 length,
             } => {
-                if length == 0 || length > MAX_SERVED_BLOCK || index >= torrent.metainfo.piece_count
-                {
+                if !valid_block_request(&torrent.metainfo, index, begin, length) {
                     continue;
                 }
                 {
