@@ -4203,6 +4203,10 @@ staking status, and a deterministic two-peer split test.
   new genesis. See
   `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/rollback-drill/DRILL.md` and
   `rollback-reorg/MIXED-FLEET.md`.
+- Fleet-level active swap soak: **60/60 cycles passed** against a disposable
+  real-bitcoind container, 24–27 s per cycle. Each cycle completed the
+  two-daemon HTLC swap, BTC claim, and VTR claim. See
+  `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/fleet-swap-soak/SUMMARY.md`.
 - Canonical CI run **45357625083** (`cd0e975`, docs-only child of `80f9eef`)
   passed all jobs: Rust tests (all-features and default), format/Clippy, audit,
   Machete, benchmark gate, frontend, and the no-cache Docker image build. The

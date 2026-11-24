@@ -73,8 +73,10 @@ Swaps are enabled at mainnet launch. The repaired BTC SPV probe has completed
 mainnet-scale header sync and a 100,001-block scan, and
 `taker_claims_vtr_on_a_separate_node` validates the taker claim on a second
 VTR node. The `9a22bcd` 24 h probe completed with zero scan errors; the final source
-`dd98176` uses four peers and a 256 MiB steady-state alert. a fleet-level active swap soak remains open. A 60-cycle
-component-level active soak passed. The header retention bound is covered by an 870,000-header test.
+`dd98176` uses four peers and a 256 MiB steady-state alert. The **60-cycle
+fleet-level active swap soak passed 60/60** against real Bitcoin Core regtest
+on 2026-11-24; the component-level soak also passed. The header retention
+bound is covered by an 870,000-header test.
 
 ## 4. Launch procedure
 

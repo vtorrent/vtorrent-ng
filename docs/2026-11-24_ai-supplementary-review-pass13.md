@@ -53,6 +53,10 @@ code-freeze/evidence/release gates. The independent human review and the
   funding output was dropped and the balance returned to zero, two independent
   daemons agreed on a tip and reorg with the funding re-included, and an
   uncovered reorg across restart kept a confirmed send held.
+- **Fleet-level active swap soak: 60/60 cycles passed** against a disposable
+  real-bitcoind container, 24–27 s per cycle. Each cycle completed the
+  two-daemon HTLC swap, BTC claim, and VTR claim. Logs:
+  `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/fleet-swap-soak/`.
 - Live fleet `review-80f9eef`: three nodes at height 3 with agreeing tips,
   staking on nodes 2/3, restarts 0/0/0, Prometheus 3/3 at the +0h observation.
   At +1h they were at height 55 with the same tip, RSS 154/169/169 MiB, and
@@ -90,8 +94,9 @@ code-freeze/evidence/release gates. The independent human review and the
   Docker snap refresh.
 - Real legacy `wallet.dat` differential and multi-key DEX/swap/claim E2E:
   open.
-- Active swap/HTLC validation: the real-bitcoind swap and reorg suite is green;
-  a mainnet-scale adversarial swap soak remains open.
+- Active swap/HTLC validation: the real-bitcoind swap/reorg suite and the
+  **60/60-cycle fleet-level active swap soak** are green. A mainnet-scale
+  adversarial campaign remains a residual monitoring item.
 - Production signing key/certificate: not generated; authorization required.
 - Height-10,000 checkpoint publication: after launch.
 - Release-artifact rollback drill: **complete (rollback unsafe after an

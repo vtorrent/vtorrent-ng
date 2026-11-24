@@ -498,8 +498,9 @@ actions, operator approval.
       four-peer target; a three-node release fleet settled at 237/233 MB after
       scan, below the revised 256 MiB steady-state alert. A separate taker VTR node now broadcasts and
       confirms the claim in `taker_claims_vtr_on_a_separate_node`; the maker
-      recognizes the external claim. A 60-cycle one-hour active soak passed with
-      no failures; a fleet-level soak after rebuild remains a launch gate.
+      recognizes the external claim. A 60-cycle one-hour component-level soak
+      passed with no failures; the pass-13 **fleet-level 60-cycle soak passed
+      60/60** against real Bitcoin Core regtest on 2026-11-24.
       Focused release-mode refund tests pass; production-image refund timing is
       an accepted deferred check. Set
       `--btc-birthday` to the wallet creation height to scan funds older than
