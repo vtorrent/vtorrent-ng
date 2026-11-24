@@ -276,18 +276,24 @@ pub async fn remove_torrent(
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .clone();
-    let mut sessions = state.torrent_sessions.write().await;
-    let Some(session) = sessions.get_session(&id).ok() else {
-        return Err(RpcError::NotFound(format!("Session {} not found", id)));
+    // Snapshot the session without holding a lock across the guard's journal
+    // and ledger I/O. The guard may block on disk; holding the sessions write
+    // lock there would stall every other torrent operation.
+    let snapshot = {
+        let sessions = state.torrent_sessions.read().await;
+        let session = sessions
+            .get_session(&id)
+            .map_err(|_| RpcError::NotFound(format!("Session {id} not found")))?;
+        session.clone()
     };
-    if session.has_outstanding_incentives() {
+    if snapshot.has_outstanding_incentives() {
         return Err(RpcError::BadRequest(
             "Session has unpaid or in-flight incentive payments; retry after settlement".into(),
         ));
     }
+    let info_hash = snapshot.metainfo.info_hash;
     if let Some(guard) = removal_guard {
-        let session = session.clone();
-        let result = tokio::task::spawn_blocking(move || guard(&session)).await;
+        let result = tokio::task::spawn_blocking(move || guard(&snapshot)).await;
         match result {
             Ok(Ok(())) => {}
             Ok(Err(reason)) => return Err(RpcError::BadRequest(reason)),
@@ -298,7 +304,18 @@ pub async fn remove_torrent(
             }
         }
     }
-    let info_hash = session.metainfo.info_hash;
+    // Re-check after the guard: a receipt may have arrived while the guard was
+    // reading. The peer task updates the session account before journaling, so
+    // this check sees any receipt that landed during the I/O.
+    let mut sessions = state.torrent_sessions.write().await;
+    let Some(session) = sessions.get_session(&id).ok() else {
+        return Err(RpcError::NotFound(format!("Session {id} not found")));
+    };
+    if session.has_outstanding_incentives() {
+        return Err(RpcError::BadRequest(
+            "Session has unpaid or in-flight incentive payments; retry after settlement".into(),
+        ));
+    }
     sessions.remove_session(&id);
     drop(sessions);
     if let Some(cancel) = state.torrent_cancels.write().await.remove(&id) {
@@ -319,6 +336,7 @@ pub async fn remove_torrent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vtorrent_torrent::incentive::MIN_PAYMENT_SATS;
     use vtorrent_torrent::metainfo::{Metainfo, TorrentFile};
     use vtorrent_torrent::session::TorrentSession;
 
@@ -358,6 +376,61 @@ mod tests {
             "ownership cannot be checked while the wallet is locked"
         );
         assert!(resolve_torrent_wallet_address("", None).is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn receipt_during_the_guard_blocks_removal() {
+        let state = Arc::new(AppState::new());
+        let session =
+            TorrentSession::new(test_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+        let id = session.id.clone();
+        state.torrent_sessions.write().await.add_session(session);
+
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let started_tx = std::sync::Mutex::new(Some(started_tx));
+        let release_rx = std::sync::Mutex::new(Some(release_rx));
+        let guard: crate::state::TorrentRemovalGuard = Arc::new(move |_| {
+            if let Some(tx) = started_tx.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+            if let Some(rx) = release_rx.lock().unwrap().take() {
+                let _ = rx.blocking_recv();
+            }
+            Ok(())
+        });
+        *state.torrent_removal_guard.lock().unwrap() = Some(guard);
+
+        let removal = {
+            let state = Arc::clone(&state);
+            let id = id.clone();
+            tokio::spawn(async move { remove_torrent(State(state), Path(id)).await })
+        };
+        started_rx.await.unwrap();
+
+        // A receipt lands while the guard is running. The post-guard re-check
+        // must see the new debt and refuse the removal.
+        {
+            let mut sessions = state.torrent_sessions.write().await;
+            let session = sessions.get_session_mut(&id).unwrap();
+            session.record_download("VH6w62jDRYpYHjR2eJjFzJxRC4MQvvs93a6", 1);
+            session
+                .incentive_accounts
+                .get_mut("VH6w62jDRYpYHjR2eJjFzJxRC4MQvvs93a6")
+                .unwrap()
+                .unpaid_satoshis = MIN_PAYMENT_SATS;
+        }
+        release_tx.send(()).unwrap();
+
+        let result = removal.await.unwrap();
+        assert!(
+            result.is_err(),
+            "debt that arrived during the guard must block removal"
+        );
+        assert!(
+            state.torrent_sessions.read().await.get_session(&id).is_ok(),
+            "the session must survive the refused removal"
+        );
     }
 
     #[tokio::test]
