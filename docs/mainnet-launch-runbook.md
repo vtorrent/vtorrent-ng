@@ -55,10 +55,11 @@ at launch.
 
 ## 3. Consensus-batch decision
 
-The current build already includes the consensus batch (OP_RETURN exclusion,
-cold staking, governance, state rent) and the governance and proof-service
-repairs. The core soak fleet runs `vtorrent/node:batch-e7691fb` with BTC SPV
-disabled. The launch candidate is the pass-13 build (see the current-candidate note),
+The current build includes the consensus batch's **OP_RETURN UTXO exclusion**
+and **cold staking (P2CS)**, plus the governance and proof-service repairs.
+Governance and state rent are **later deployments** and are not active in this
+launch (`docs/consensus-batch-activation-plan.md` §7). The core soak fleet runs
+`vtorrent/node:batch-e7691fb` with BTC SPV disabled. The launch candidate is the pass-13 build (see the current-candidate note),
 which includes the consensus batch and the pass-12/13 remediation: structural
 stake reserve, live-journal removal guard, canonical torrent block geometry,
 payout binding, legacy-import BTC state/default-key binding, seeder/watchdog
@@ -131,15 +132,20 @@ component-level active soak passed. The header retention bound is covered by an 
 - **After blocks exist**: a bad launch is a **new genesis** (the chain is
   young); coordinate a restart with a corrected binary. Record the decision in
   `docs/soak-log.md`.
-- **Drill status (2026-11-24): PARTIAL.** A disposable single-node drill
-  loaded a pass-13 chain containing a P2CS output and a P2CS coinstake block
-  (height 10) with the rebuilt `v2.0.0-beta.3` binary; both were accepted. A
-  fresh candidate data dir produced genesis `36ca792a…` and mined height 1. The
-  store is readable across the versions and P2CS is **not** the rollback
-  blocker. The remaining incompatible-output target is the batch's
-  **governance/state-rent** path, plus a multi-node fleet reorg during rollback.
-  See `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/rollback-drill/DRILL.md`.
-  The gate is not closed until those run on a disposable fleet.
+- **Drill status (2026-11-24): PARTIAL — incompatible output proven.** A
+  disposable single-node drill exercised the rollback path:
+  - beta.3 accepted a pass-13 chain with a P2CS output and a P2CS coinstake at
+    height 10;
+  - a fresh candidate data dir produced genesis `36ca792a…` and height 1;
+  - after the candidate mined a **data-carrier OP_RETURN** at height 11, beta.3
+    rejected the block with a UTXO-root mismatch
+    (`e1c58635…` vs `f6326f37…`) and truncated its store to height 10.
+
+  Governance and state rent are **not in the launch batch**
+  (`docs/consensus-batch-activation-plan.md` §7), so they are not the rollback
+  target. The remaining operational item is a **multi-node fleet reorg during
+  rollback**. See
+  `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/rollback-drill/DRILL.md`.
 - **Batch**: the batch replayed offline to an identical tip hash on the
   pre-batch chain (`docs/soak-log.md`, 2026-10-08/09). Reverting the binary is
   safe only while no OP_RETURN/P2CS output exists and the reverted binary

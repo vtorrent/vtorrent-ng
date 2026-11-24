@@ -78,11 +78,12 @@ code-freeze/evidence/release gates. The independent human review and the
   a mainnet-scale adversarial swap soak remains open.
 - Production signing key/certificate: not generated; authorization required.
 - Height-10,000 checkpoint publication: after launch.
-- Release-artifact rollback drill: **partial** — the rebuilt `v2.0.0-beta.3`
-  binary accepted a pass-13 chain with a P2CS output and a P2CS coinstake at
-  height 10; a fresh candidate data dir produced genesis + height 1. P2CS is
-  not the rollback blocker; the batch governance/state-rent path and a
-  multi-node reorg remain open. See
+- Release-artifact rollback drill: **incompatible output proven.** Beta.3
+  accepted a P2CS output and P2CS coinstake at height 10; a fresh candidate
+  data dir produced genesis + height 1. A data-carrier OP_RETURN at height 11
+  was rejected by beta.3 with a UTXO-root mismatch and the store truncated to
+  height 10. Governance/state rent are not in the launch batch. The remaining
+  operational item is a multi-node fleet reorg during rollback. See
   `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/rollback-drill/DRILL.md`.
 
 ## Evidence

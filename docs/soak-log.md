@@ -4172,11 +4172,13 @@ staking status, and a deterministic two-peer split test.
   reorged-out funding output was dropped, two independent daemons agreed on a
   tip and reorg, and an uncovered reorg across restart kept a confirmed send
   held. Logs are in `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/`.
-- Partial rollback drill on a disposable single node: a rebuilt
-  `v2.0.0-beta.3` binary accepted a pass-13 chain containing a P2CS output and
-  a P2CS coinstake block at height 10, and a fresh candidate data dir produced
-  genesis `36ca792a…` plus height 1. P2CS is not the rollback blocker; the
-  batch governance/state-rent path and multi-node reorg legs remain open. See
+- Rollback drill on a disposable single node: beta.3 accepted a pass-13 chain
+  with a P2CS output and P2CS coinstake at height 10, and a fresh candidate data
+  dir produced genesis `36ca792a…` plus height 1. A data-carrier OP_RETURN at
+  height 11 was **rejected** by beta.3 with a UTXO-root mismatch
+  (`e1c58635…` vs `f6326f37…`), and the store truncated to height 10. This
+  proves the rollback incompatibility. Governance/state rent are not in the
+  launch batch; a multi-node fleet reorg during rollback remains open. See
   `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/rollback-drill/DRILL.md`.
 - Canonical CI run **45357625083** (`cd0e975`, docs-only child of `80f9eef`)
   passed all jobs: Rust tests (all-features and default), format/Clippy, audit,
