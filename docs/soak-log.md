@@ -4122,7 +4122,8 @@ in `docs/2026-11-23_ai-supplementary-review-pass11.md`.
   invalidated by the pass-13 code changes; do not count it as release
   evidence.
 - The `review-d376506` fleet was retired at height 129; its window does not
-  count. The `vtr-node*` production soak was not touched.
+  count. The `vtr-node*` production soak was not touched during pass 11; it was
+  later restarted by the Docker snap refresh (see the pass-13 entry).
 
 This is a candidate window, not release evidence. The independent human
 review and the full 168 hours remain open.
@@ -4183,7 +4184,8 @@ staking status, and a deterministic two-peer split test.
   coin (`4e268baa…:0`); the 200 VTR stake output (`eebf9d9ed5…:1`) remained
   unspent, and the fee was 1,000 sats. Before finality DELETE returned 400;
   at 6 confirmations the journal showed `unpaid=0` and DELETE returned 200.
-  This exercises the structural reserve and the live journal guard. Proof:
+  This exercises the structural reserve and the live **session** guard; the
+  journal-only guard remains unit-tested. Proof:
   `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/live-payment/PROOF.md`.
 - Real-bitcoind BTC SPV/HTLC suite passed on a disposable regtest container
   (release build): multi-node HTLC swap settled (VTR funding `2e03ceff…`, BTC
@@ -4216,6 +4218,37 @@ staking status, and a deterministic two-peer split test.
   `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/`. The `review-e091936` fleet was
   retired and its window does not count. The `vtr-node*` production soak was
   not touched.
+
+This is a candidate window, not release evidence. The independent human review
+and the full 168 hours remain open.
+
+## 2026-11-24 — pass-14 candidate (`a0724dd`)
+
+The pass-14 AI review found a critical manual-send reserve bypass (a mempool-spent
+structural outpoint weakened the reserve check), a quote-time reserve bypass, a
+locked/imported torrent payout key gap, a desktop staking key mismatch, a
+multi-master legacy import drop, a permanent un-receipted-debt pin, a desktop
+lock/unlock lockout, and pre-pass-13 import startup failures. The pass-14 fixes
+are in `a0724dd`; the pass-13 `review-80f9eef` window is retired and does not
+count.
+
+- Candidate: **2026-11-24T17:14:00Z** to **2026-12-01T17:14:00Z**,
+  `vtorrent/node:a0724dd`, image ID
+  `sha256:569c59327deb126387ebde1decd96bce2689418283862c2162c6eca26803e658`,
+  binary `d89ba0886eeab563b253c6a66d7512ca1e2d94688736a61816e95f2c08c26e3c`.
+- Two clean `--no-cache` builds produced the **same image ID and binary**.
+- Full workspace suite: **57 groups, 1,553 passed, 0 failed, 13 ignored**.
+- Both ignored E2Es pass on the image binary: seeder **2.12 s**; incentive
+  **26.28 s**, paying 585,937 sats once.
+- Initial observation at **17:14Z**: heights 2/2/2 with the same tip, staking
+  on nodes 2/3, restarts 0/0/0, Prometheus 3/3, range 3/3 with zero down
+  samples.
+- Canonical CI for `a0724dd` is run `45445768245` (in progress).
+- Fleet `review-a0724dd`, RPC 23951–23953, Prometheus 23973, evidence
+  `/mnt/temp/vtorrent-ng-evidence/soak-a0724dd/`.
+- Open before release: pre-pass-13 BTC-state repair, force/write-off for
+  disputed agreed debt, desktop matrix on a candidate tag, and a fresh
+  real-bitcoind/60-cycle swap run on `a0724dd`.
 
 This is a candidate window, not release evidence. The independent human review
 and the full 168 hours remain open.

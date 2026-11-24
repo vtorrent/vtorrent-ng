@@ -28,9 +28,11 @@ the canonical chain (`e12a953d…`), with 0 errors. P2CS changes `is_stakeable`
 and the coinstake rule only for P2CS UTXOs, of which none exist pre-launch.
 
 **Consequence:** P2CS can be adopted via a coordinated upgrade (no fresh
-genesis). OP_RETURN exclusion needs a **fresh genesis** (or a redesigned
-predicate that distinguishes the genesis distribution OP_RETURNs from
-data-carrier OP_RETURNs) — do not ship it as a no-op.
+genesis). The **first** OP_RETURN attempt needed a fresh genesis; the current
+predicate excludes only data-carrier OP_RETURNs and retains the genesis
+distribution, and its no-op replay is verified above. The batch can therefore
+be adopted unconditionally after the no-op scan in §3. The failed first attempt
+is historical; do not reuse its predicate.
 
 ## 3. Verify the no-op (required before activation)
 

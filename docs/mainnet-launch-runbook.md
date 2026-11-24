@@ -5,12 +5,11 @@ consensus-batch decision, the coordinated upgrade, verification, and rollback.
 Companion to `docs/mainnet-readiness.md` (checklist) and
 `docs/oncall-runbook.md` (ongoing ops).
 
-> **Current candidate (pass 13).** The launch candidate is the pass-13
-> remediation (`80f9eef` plus the docs/review package). It supersedes the
-> historical `70ea7b9`/`e091936` baselines named below. The exact image, binary
-> digest, window, and evidence are recorded in
-> `docs/2026-11-24_ai-supplementary-review-pass13.md`. Do not launch from an
-> older image or count an older window.
+> **Current candidate (pass 14).** The launch candidate is the pass-14
+> remediation (`a0724dd`), which supersedes the reviewed `80f9eef` baseline. The
+> exact image, binary digest, window, and evidence are recorded in
+> `docs/2026-11-24_ai-supplementary-review-pass14.md` and the pass-14 evidence
+> directory. Do not launch from an older image or count an older window.
 
 ## 1. Launch parameters (verify before launch)
 
@@ -29,7 +28,7 @@ Companion to `docs/mainnet-readiness.md` (checklist) and
 | Min stake | 1 VTR | `consensus.rs:43` |
 | Max supply | 20,000,000 VTR | `consensus.rs:46` |
 | DNS seeds | seed1/2/3.vtorrent.org + `bootstrap/peers.txt` | `docs/dns-seeds.md` |
-| Review candidate source | Pass-13 candidate (`80f9eef` + docs tip); see the current-candidate note | `docs/2026-11-24_ai-supplementary-review-pass13.md` |
+| Review candidate source | Pass-14 candidate (`a0724dd` + docs tip); see the current-candidate note | `docs/2026-11-24_ai-supplementary-review-pass14.md` |
 | Post-review mainnet fixes | `1901bb9`, `513efde`, `c465d1b` (BTC SPV peer agreement and failover; five-peer headroom and in-cycle retry); `7ec3b2f` (BTC SPV health metrics and stale-scan alert); `2c381fa` (persistent compact-filter peer cache); `aeb103a` (four fresh-review BTC findings); `8639a7f` (restart lineage); `c3b3847` (hide restored outputs); `287a505` (stuck-scan alert); `c3a79fa` (partial-scan/restart lock); `5f4c788` (canonical txid); `8ba6331` (whole-project remediation); `9a22bcd` (release lockfile); `c292fc4` (taker-side external VTR claim RPC); `dd98176` (four-peer target and 256 MiB steady RSS policy) | `docs/btc-spv-soak-plan.md` |
 
 **Genesis is deterministic** and embeds the legacy snapshot (59,375 addresses,
@@ -86,10 +85,13 @@ bound is covered by an 870,000-header test.
    verifier and the snapshot commitment depend on them.
 2. **Build & sign the release**: tag `v2.0.0` from a commit on `main`, run the
    desktop matrix, publish with checksums (`docs/release-notes-*.md`). Before
-   tagging, dispatch `Build vTorrent Desktop Client` on the candidate commit
-   (`workflow_dispatch`) and confirm all four desktop jobs, the frontend jobs,
-   the audit, the image build, and the Rust suites are green. Attach only the
-   desktop assets produced by that run for the same commit. The checksum job
+   the final tag, create a temporary candidate tag (for example
+   `v2.0.0-rc1`) on the candidate and push it; the tag workflow builds the
+   desktop matrix. Do **not** dispatch the workflow from `main`: `tauri-action`
+   uses `github.ref_name` and would create a draft release named `main`.
+   Confirm all four desktop jobs, the frontend jobs, the audit, the image
+   build, and the Rust suites are green. Attach only the desktop assets
+   produced by that tag run for the same commit. The checksum job
    runs in the protected `release` environment and rejects a tag whose commit
    is not on `main`. Run `python3 scripts/verify-genesis.py` and record the
    output with the release checksums. Do not generate a production signing key

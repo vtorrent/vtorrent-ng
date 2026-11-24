@@ -10,8 +10,8 @@ already accepted so it is not re-litigated.
 
 ## Review target
 
-Review the code candidate `80f9eef02ec81b848d212deb5073ef477e18d6dc`. This is
-the pass-13 remediation on top of `e091936`; the docs tip is a docs-only child
+Review the code candidate `a0724dd2386f5b122d0114ab281c0bbaad6aa7ac`. This is
+the pass-14 remediation on top of `80f9eef`; the docs tip is a docs-only child
 of it. The exact-image window for this candidate is recorded in
 `docs/2026-11-24_ai-supplementary-review-pass13.md`; the `review-e091936`
 window is invalidated by the pass-13 code changes and does not count. The
@@ -22,7 +22,7 @@ this review and its fixes settle.
 
 Read this document from the tip of `main`. Confirm that no non-doc file changed
 after the candidate with
-`git diff --name-only 80f9eef..HEAD -- . ':(exclude)docs/**'`, which must
+`git diff --name-only a0724dd..HEAD -- . ':(exclude)docs/**'`, which must
 return nothing. This pathspec includes the Rust workspace, `release/Cargo.lock`,
 the UI lockfiles and config, `docker/Dockerfile`, `.github/workflows/`, and
 toolchain files; the earlier glob pattern missed all of those. Check out the
@@ -162,6 +162,7 @@ Deltas after `ba46fd6`:
 | `b96091c` | Pass 13: require an unlocked hot wallet that owns the torrent payout address |
 | `0960fa7` | Pass 13: run the removal guard outside the session lock and re-check debt |
 | `80f9eef` | Pass 13: keep the cold-stake funding path as an explicit restake exemption from the hot-wallet reserve |
+| `a0724dd` | Pass 14: reserve intersection and quote revalidation, unlocked-WIF torrent payout, desktop staking key binding, multi-master legacy extraction, bounded un-receipted debt, same-wallet lock/unlock, surfaced node-start errors |
 
 Deltas after the earlier review head:
 
@@ -213,7 +214,7 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout 80f9eef02ec81b848d212deb5073ef477e18d6dc
+git checkout a0724dd2386f5b122d0114ab281c0bbaad6aa7ac
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cp release/Cargo.lock Cargo.lock
@@ -233,8 +234,8 @@ A daemon-focused review can run
 without them; the full workspace suite requires the desktop libraries.
 
 The `e091936` workspace run passed 56 test groups and 1,528 tests with 0
-failures and 13 ignored. The pass-13 candidate `80f9eef` passed **57 groups and
-1,544 tests, 0 failed, 13 ignored** on the tracked release lock. Canonical CI
+failures and 13 ignored. The pass-14 candidate `a0724dd` passed **57 groups and 1,553 tests, 0 failed,
+13 ignored** on the tracked release lock. Canonical CI
 run **45357625083** on the docs-only child `cd0e975` passed every job,
 including the no-cache Docker image build. CI repeats the `--all-features`
 suite on every push.

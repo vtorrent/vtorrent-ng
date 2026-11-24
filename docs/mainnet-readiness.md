@@ -128,11 +128,11 @@ snapshot, two-person review, and an explicit decision for each record.
       See `docs/superpowers/specs/2026-09-21-genesis-bootstrap-and-stakeable-script-design.md`.
 - [ ] **External security review** — **brief finalized, not yet commissioned**:
       `docs/security-review-brief.md` (scope, deliverables, 2-phase engagement).
-      **Current candidate (2026-11-24):** pass 13 (`80f9eef` + docs tip);
+      **Current candidate (2026-11-24):** pass 14 (`a0724dd` + docs tip);
       package `docs/security-review-request-2026-10-27.md`; exact image and
-      window in `docs/2026-11-24_ai-supplementary-review-pass13.md`. The
-      pass-11 `review-e091936` window is invalidated by the pass-13 code
-      changes and does not count. The pass-11 and pass-13 AI supplements are
+      window in `docs/2026-11-24_ai-supplementary-review-pass14.md`. The
+      pass-11 `review-e091936` and pass-13 `review-80f9eef` windows are
+      invalidated by later code changes and do not count. The pass-11 and pass-13 AI supplements are
       supplementary only. The independent human review is not yet
       commissioned. The review covers wallet encryption (Argon2id +
       ChaCha20-Poly1305), consensus and governance, the stake-proof service,
@@ -233,12 +233,11 @@ window ran on, and that commit must equal the release commit.
       `6a49727`, image `vtorrent/node:release-candidate-6a49727`, window
       `2026-11-13T19:20:15Z` → `2026-11-20T19:20:15Z`. Three nodes, allocator
       variables pinned, two nodes staking, BTC mainnet SPV, Prometheus on
-      `:23973` with 16 healthy rules. In progress. The prior `b729e36` fleet was
-      retired at height 2,503 with zero BTC scan errors and no alerts; its
-      evidence remains at `/tmp/opencode/release-b729e36/` but does not cover
-      this candidate. Sign-off requires manual evidence review. Later commits
-      are not covered by this window; the shipping image needs its own full
-      window under the soak provenance policy.
+      `:23973` with 16 healthy rules. **Retired/superseded; this window does not count.**
+      The prior `b729e36` fleet was retired at height 2,503 with zero BTC scan
+      errors and no alerts; its evidence remains at `/tmp/opencode/release-b729e36/`
+      but does not cover this candidate. Later commits are not covered by this
+      window; the shipping image needs its own full window.
 - [~] **Pass-9 candidate window (`22056d4`)** — image
       `vtorrent/node:22056d4` (ID
       `sha256:390da969fab0e254f38cbc6bbb4bd85d76a5c5d4e376d6e174f994d66e147b9b`),
@@ -266,18 +265,26 @@ window ran on, and that commit must equal the release commit.
       spent the 200 VTR stake output `85a4…:1`, resetting its age. The
       `review-d376506` window is retired. See `docs/soak-log.md` 2026-11-23 and
       `docs/2026-11-23_ai-supplementary-review-pass11.md`.
-- [~] **Pass-13 candidate window** — image `vtorrent/node:80f9eef` (ID
+- [~] **Pass-13 candidate window** — **retired by pass 14; does not count.**
+      Image `vtorrent/node:80f9eef` (ID
       `sha256:637002a7da23217d7cd276b2b5dfaf74b9e16280abb122a5707297f7ff56dd84`),
       extracted binary
       `37e9d585ca450968d585aa6c48f7fec2fa0bde918bce582cdc9074429cd56f90`,
-      window `2026-11-24T13:33:00Z` → `2026-12-01T13:33:00Z`. In progress; the
-      original 08:18:28Z clock was interrupted by a host Docker snap
-      auto-refresh at 13:18:37Z, and the fleet/clock were restarted at 13:33Z.
+      window `2026-11-24T13:33:00Z` → `2026-12-01T13:33:00Z`. It was interrupted
+      by a host Docker snap auto-refresh and then invalidated by the pass-14
+      code changes.
       The observation helper checks 5-minute `up` samples, down samples, and
       coverage gaps, and an hourly watchdog alerts if the observation is stale.
       See `docs/2026-11-24_ai-supplementary-review-pass13.md` and
-      `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/WINDOW-RESTART.md`. This
-      window replaces `review-e091936`; do not count any earlier window.
+      `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/WINDOW-RESTART.md`.
+- [~] **Pass-14 candidate window** — image `vtorrent/node:a0724dd` (ID
+      `sha256:569c59327deb126387ebde1decd96bce2689418283862c2162c6eca26803e658`),
+      binary `d89ba0886eeab563b253c6a66d7512ca1e2d94688736a61816e95f2c08c26e3c`,
+      window `2026-11-24T17:14:00Z` → `2026-12-01T17:14:00Z`. In progress; the
+      observation helper checks 5-minute `up` samples, down samples, and
+      coverage gaps, and an hourly watchdog alerts if the observation is stale.
+      See `docs/2026-11-24_ai-supplementary-review-pass14.md`. This window
+      replaces `review-80f9eef`; do not count any earlier window.
 - [x] **Staking soak**: at least one node staked continuously and produced
       blocks at the expected ~60s average over the full 7-day window
       (`2026-09-29T13:36:22Z` → `2026-10-06T13:36:22Z`): node1 staked 1441
@@ -363,14 +370,15 @@ window ran on, and that commit must equal the release commit.
       (`sha256 8c9993fd…`, 2026-10-08). **Pinned**: `rust-toolchain.toml`
       (1.90.0) + Docker base images by digest. `Cargo.lock` is gitignored
       (workspace-library pattern); release builds should archive the lock used.
-- [x] **Pass-13 candidate reproducibility**: two clean `--no-cache` builds
-      from `80f9eef` produced the identical daemon binary
-      `37e9d585ca450968d585aa6c48f7fec2fa0bde918bce582cdc9074429cd56f90`.
-      The Docker image IDs (`sha256:637002a7…` deployed, `sha256:da36f55f…`
-      repro) differ only in Docker build metadata. The tracked lock SHA-256
-      (`54eee2eb…`), clean worktree status, both build logs, and the CI
-      `Docker Image (no-cache)` job are recorded in
-      `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/`.
+- [x] **Pass-14 candidate reproducibility**: two clean `--no-cache` builds
+      from `a0724dd` produced the identical daemon binary
+      `d89ba0886eeab563b253c6a66d7512ca1e2d94688736a61816e95f2c08c26e3c`
+      and the same image ID
+      `sha256:569c59327deb126387ebde1decd96bce2689418283862c2162c6eca26803e658`.
+      Both clean builds produced the same image ID in this run. The tracked
+      lock SHA-256 (`54eee2eb…`), clean worktree status, both build logs, and
+      the CI `Docker Image (no-cache)` job are recorded in
+      `/mnt/temp/vtorrent-ng-evidence/soak-a0724dd/`.
 - [x] **Rollback drill on the candidate image**: **complete (2026-11-24)**.
       Beta.3 accepted a P2CS output/P2CS coinstake at height 10, and a fresh
       candidate data dir produced genesis + height 1. A data-carrier OP_RETURN

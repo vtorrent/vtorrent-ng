@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `80f9eef`
+Subject: Independent security review — vTorrent-NG mainnet candidate `a0724dd`
 
 Hello,
 
@@ -20,27 +20,29 @@ write or previously review this code to look at it with fresh eyes.
 **Repository:** https://github.com/vtorrent/vtorrent-ng
 **Review docs:** the `main` tip that contains this note (a docs-only child of
 the code candidate)
-**Code candidate:** `80f9eef02ec81b848d212deb5073ef477e18d6dc`
-**Image:** `vtorrent/node:80f9eef`, ID
-`sha256:637002a7da23217d7cd276b2b5dfaf74b9e16280abb122a5707297f7ff56dd84`
+**Code candidate:** `a0724dd2386f5b122d0114ab281c0bbaad6aa7ac`
+**Image:** `vtorrent/node:a0724dd`, ID
+`sha256:569c59327deb126387ebde1decd96bce2689418283862c2162c6eca26803e658`
 **Scope:** `docs/security-review-request-2026-10-27.md` in that tree
 
-The code under review is `80f9eef`. The exact-image window for this candidate
-is recorded in `docs/2026-11-24_ai-supplementary-review-pass13.md`; the
-`review-e091936` window is invalidated by the pass-13 code changes and does not
-count. The `review-d376506`, `review-22056d4`, and `review-ef1d1a1` windows
+The code under review is `a0724dd`. The exact-image window for this candidate
+is `2026-11-24T17:14:00Z` to `2026-12-01T17:14:00Z` (`review-a0724dd`), recorded
+in `docs/2026-11-24_ai-supplementary-review-pass14.md`; the `review-80f9eef`
+window is invalidated by the pass-14 code changes and does not count. The `review-d376506`, `review-22056d4`, and `review-ef1d1a1` windows
 were retired and do not count. The shipping image needs its own full 168-hour
 window after this review and its fixes settle.
 
 Read this note and the scope document from the tip of `main`. Confirm that no
 non-doc file changed after the candidate with
-`git diff --name-only 80f9eef..HEAD -- . ':(exclude)docs/**'`, which must
+`git diff --name-only a0724dd..HEAD -- . ':(exclude)docs/**'`, which must
 return nothing. This includes the Rust workspace, `release/Cargo.lock`, the UI
 lockfiles and config, `docker/Dockerfile`, `.github/workflows/`, and toolchain
 files. Check out the candidate itself when running the verification commands.
 
 That document lists the exact hashes, the verification commands, and what we
-consider in scope. Nothing is required beyond a clone and a Rust toolchain; no
+consider in scope. The Rust suite needs only a clone and a Rust toolchain; desktop builds need
+the GTK/WebKit prerequisites listed in the scope document, and the ignored
+real-Bitcoin tests need a disposable Bitcoin Core regtest container. No
 credentials or live infrastructure access are needed.
 
 **What changed since the last review round.** The earlier review covered up to
@@ -260,6 +262,15 @@ candidate `ba46fd6`:
   watchdog, resume-bit distrust, sub-minimum staking status, and a deterministic
   two-peer split regression. The `review-e091936` window is invalidated by these
   code changes and is not release evidence.
+- Pass 14 — the current remediation. The review found a manual-send reserve
+  bypass when a structural outpoint is mempool-spent, a quote-time reserve
+  bypass, a locked/imported torrent payout key gap, a desktop staking key
+  mismatch, a multi-master legacy import drop, a permanent un-receipted-debt
+  pin, a desktop lock/unlock lockout, and pre-pass-13 import startup failures.
+  The fixes are in `a0724dd`: reserve intersection and quote revalidation,
+  unlocked-WIF torrent add, default-key staking, all-master extraction,
+  bounded debt grace, same-wallet lock/unlock, and surfaced node-start errors.
+  The `review-80f9eef` window is invalidated by these changes.
 - `17db693` — pass 7. Each partially downloaded piece is assembled by exactly
   one owning task, blocks are leased only to peers that advertised the piece,
   and received/expired leases no longer wedge the pipeline. The seeder
@@ -468,12 +479,12 @@ Thank you.
 ## Before sending
 
 - Confirm the code candidate is still
-  `80f9eef02ec81b848d212deb5073ef477e18d6dc` and the docs tip is the commit
+  `a0724dd2386f5b122d0114ab281c0bbaad6aa7ac` and the docs tip is the commit
   that publishes this note; the scope document and this note must name the same
   code candidate. Do not substitute a later local commit without updating both
   documents and the soak provenance. Docs-only commits after the candidate must
   leave
-  `git diff --name-only 80f9eef..HEAD -- . ':(exclude)docs/**'` empty.
+  `git diff --name-only a0724dd..HEAD -- . ':(exclude)docs/**'` empty.
 - The pass-13 exact-image window is recorded in
   `docs/2026-11-24_ai-supplementary-review-pass13.md`. The `review-e091936`
   window is invalidated by the pass-13 code changes and does not count; the
