@@ -371,15 +371,18 @@ window ran on, and that commit must equal the release commit.
       (`54eee2eb…`), clean worktree status, both build logs, and the CI
       `Docker Image (no-cache)` job are recorded in
       `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/`.
-- [ ] **Rollback drill on the candidate image**: **partial (2026-11-24)**.
-      Beta.3 accepted a P2CS output and P2CS coinstake at height 10, and a
-      fresh candidate data dir produced genesis + height 1. A data-carrier
-      **OP_RETURN at height 11 was rejected** by beta.3 with a UTXO-root mismatch
-      (`e1c58635…` vs `f6326f37…`); it truncated to height 10. This proves the
-      real rollback incompatibility. Governance/state rent are not in the
-      launch batch. The remaining operational item is a multi-node fleet reorg
-      during rollback. See `docs/mainnet-launch-runbook.md` §6 and
-      `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/rollback-drill/DRILL.md`.
+- [x] **Rollback drill on the candidate image**: **complete (2026-11-24)**.
+      Beta.3 accepted a P2CS output/P2CS coinstake at height 10, and a fresh
+      candidate data dir produced genesis + height 1. A data-carrier OP_RETURN
+      at height 11 was rejected by beta.3 with a UTXO-root mismatch; a
+      candidate-only fleet reorged depth 4 on reconnect; a mixed-version fleet
+      did not converge at height 21 (candidate `4ad7c207…` vs beta.3
+      `93e60b55…`) because beta.3 lacks the equal-work lower-hash tie-break.
+      Result: rollback after an incompatible output or equal-work fork requires
+      a coordinated re-upgrade or new genesis. Governance/state rent are not in
+      the launch batch. See `docs/mainnet-launch-runbook.md` §6,
+      `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/rollback-drill/DRILL.md`, and
+      `rollback-reorg/MIXED-FLEET.md`.
 - [x] **Release notes drafted** — `docs/release-notes-beta.3.md` (finalized,
       Addendum 4 covers the soak + memory work + P0 fixes).
 - [ ] **Release signing** — minisign over `SHA256SUMS` plus Apple/Windows

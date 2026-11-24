@@ -4191,14 +4191,18 @@ staking status, and a deterministic two-peer split test.
   reorged-out funding output was dropped, two independent daemons agreed on a
   tip and reorg, and an uncovered reorg across restart kept a confirmed send
   held. Logs are in `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/`.
-- Rollback drill on a disposable single node: beta.3 accepted a pass-13 chain
-  with a P2CS output and P2CS coinstake at height 10, and a fresh candidate data
-  dir produced genesis `36ca792a…` plus height 1. A data-carrier OP_RETURN at
-  height 11 was **rejected** by beta.3 with a UTXO-root mismatch
-  (`e1c58635…` vs `f6326f37…`), and the store truncated to height 10. This
-  proves the rollback incompatibility. Governance/state rent are not in the
-  launch batch; a multi-node fleet reorg during rollback remains open. See
-  `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/rollback-drill/DRILL.md`.
+- Rollback drill on disposable fleets: beta.3 accepted a pass-13 chain with a
+  P2CS output/coinstake at height 10, and a fresh candidate data dir produced
+  genesis `36ca792a…` plus height 1. A data-carrier OP_RETURN at height 11 was
+  **rejected** by beta.3 with a UTXO-root mismatch (`e1c58635…` vs
+  `f6326f37…`) and its store truncated to height 10. A candidate-only
+  three-node fleet reorged depth 4 on reconnect; a mixed-version fleet did not
+  converge at height 21 (candidate `4ad7c207…` vs beta.3 `93e60b55…`) because
+  beta.3 lacks the equal-work lower-hash tie-break. Rollback after an
+  incompatible output or equal-work fork requires a coordinated re-upgrade or
+  new genesis. See
+  `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/rollback-drill/DRILL.md` and
+  `rollback-reorg/MIXED-FLEET.md`.
 - Canonical CI run **45357625083** (`cd0e975`, docs-only child of `80f9eef`)
   passed all jobs: Rust tests (all-features and default), format/Clippy, audit,
   Machete, benchmark gate, frontend, and the no-cache Docker image build. The
