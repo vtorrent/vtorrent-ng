@@ -108,6 +108,69 @@ pub enum IncentivePaymentError {
     Mempool(String),
 }
 
+/// Build a payment while reserving structurally stakeable coins.
+///
+/// `structural_stakeable` is the set of outpoints that can ever stake
+/// (`is_stakeable_with`, independent of current age). The builder tries the
+/// truly non-stakeable coins first; if they cannot cover the amount, it
+/// excludes the largest structural stake coin and fails closed if the payment
+/// would still spend every structural stake outpoint.
+pub fn build_with_reserve<F>(
+    utxos: &[vtorrent_node::chain::Utxo],
+    structural_stakeable: &std::collections::HashSet<([u8; 32], u32)>,
+    build: F,
+) -> Result<(vtorrent_node::block::Transaction, bool), IncentivePaymentError>
+where
+    F: Fn(
+        &[vtorrent_node::chain::Utxo],
+    ) -> Result<vtorrent_node::block::Transaction, IncentivePaymentError>,
+{
+    let non_stake: Vec<_> = utxos
+        .iter()
+        .filter(|utxo| !structural_stakeable.contains(&(utxo.txid, utxo.vout)))
+        .cloned()
+        .collect();
+    let largest_stakeable = if structural_stakeable.len() > 1 {
+        utxos
+            .iter()
+            .filter(|utxo| structural_stakeable.contains(&(utxo.txid, utxo.vout)))
+            .max_by_key(|utxo| utxo.value)
+            .map(|utxo| (utxo.txid, utxo.vout))
+    } else {
+        None
+    };
+    let fallback: Vec<_> = utxos
+        .iter()
+        .filter(|utxo| Some((utxo.txid, utxo.vout)) != largest_stakeable)
+        .cloned()
+        .collect();
+    let (tx, used_stake) = if non_stake.is_empty() {
+        (build(&fallback)?, true)
+    } else {
+        match build(&non_stake) {
+            Ok(tx) => (tx, false),
+            Err(IncentivePaymentError::Build(
+                vtorrent_wallet::error::WalletError::InsufficientFunds { .. },
+            )) => (build(&fallback)?, true),
+            Err(error) => return Err(error),
+        }
+    };
+    if used_stake && !structural_stakeable.is_empty() {
+        let selected: std::collections::HashSet<([u8; 32], u32)> = tx
+            .inputs
+            .iter()
+            .map(|input| (input.prev_txid, input.prev_vout))
+            .collect();
+        if structural_stakeable
+            .iter()
+            .all(|outpoint| selected.contains(outpoint))
+        {
+            return Err(IncentivePaymentError::StakeReserved);
+        }
+    }
+    Ok((tx, used_stake))
+}
+
 /// A signed incentive payment that has not yet been admitted or broadcast.
 pub struct PreparedIncentivePayment {
     pub tx: vtorrent_node::block::Transaction,
@@ -153,10 +216,7 @@ pub async fn prepare_incentive_payment(
             Some(address) => chain
                 .get_utxos_for_staking_address(address)
                 .into_iter()
-                .filter(|utxo| {
-                    vtorrent_node::consensus::is_stakeable_with(&params, utxo)
-                        && vtorrent_node::consensus::stake_age_eligible(&params, utxo, now)
-                })
+                .filter(|utxo| vtorrent_node::consensus::is_stakeable_with(&params, utxo))
                 .map(|utxo| (utxo.txid, utxo.vout))
                 .collect(),
             None => std::collections::HashSet::new(),
@@ -188,16 +248,7 @@ pub async fn prepare_incentive_payment(
         return Err(IncentivePaymentError::NoUtxos);
     }
 
-    // Prefer coins that can never be staked. Try the non-staking subset first;
-    // if it cannot cover the payment, fall back to all coins and apply the
-    // reserve check to the actual inputs. A value heuristic here would reject
-    // payable cases (the wallet selects largest-first, so a large stake coin
-    // can be chosen even when a smaller non-staking coin would suffice).
-    let non_stake: Vec<_> = utxos
-        .iter()
-        .filter(|utxo| !available_stakeable.contains(&(utxo.txid, utxo.vout)))
-        .cloned()
-        .collect();
+    let structural_stakeable = available_stakeable;
     let build = |candidates: &[vtorrent_node::chain::Utxo]| {
         build_payment(
             candidates,
@@ -209,49 +260,7 @@ pub async fn prepare_incentive_payment(
         )
         .map_err(IncentivePaymentError::from)
     };
-    // When the payment must use stakeable coins, keep the largest one as the
-    // staking reserve. Otherwise the largest-first wallet selector could spend
-    // the node's main stake coin and leave only a tiny eligible coin, reducing
-    // its staking weight. A smaller stake coin may pay; if it cannot, the
-    // payment fails closed.
-    let largest_stakeable = if available_stakeable.len() > 1 {
-        utxos
-            .iter()
-            .filter(|utxo| available_stakeable.contains(&(utxo.txid, utxo.vout)))
-            .max_by_key(|utxo| utxo.value)
-            .map(|utxo| (utxo.txid, utxo.vout))
-    } else {
-        None
-    };
-    let fallback: Vec<_> = utxos
-        .iter()
-        .filter(|utxo| Some((utxo.txid, utxo.vout)) != largest_stakeable)
-        .cloned()
-        .collect();
-    let (tx, used_stake) = if non_stake.is_empty() {
-        (build(&fallback)?, true)
-    } else {
-        match build(&non_stake) {
-            Ok(tx) => (tx, false),
-            Err(IncentivePaymentError::Build(
-                vtorrent_wallet::error::WalletError::InsufficientFunds { .. },
-            )) => (build(&fallback)?, true),
-            Err(error) => return Err(error),
-        }
-    };
-    if used_stake && !available_stakeable.is_empty() {
-        let selected: std::collections::HashSet<([u8; 32], u32)> = tx
-            .inputs
-            .iter()
-            .map(|input| (input.prev_txid, input.prev_vout))
-            .collect();
-        if available_stakeable
-            .iter()
-            .all(|outpoint| selected.contains(outpoint))
-        {
-            return Err(IncentivePaymentError::StakeReserved);
-        }
-    }
+    let (tx, _used_stake) = build_with_reserve(&utxos, &structural_stakeable, build)?;
     let txid = hex::encode(tx.txid());
     Ok(PreparedIncentivePayment { tx, txid })
 }
@@ -314,7 +323,7 @@ mod tests {
     use super::*;
     use vtorrent_node::chain::Utxo;
 
-    fn utxo(value: u64) -> Utxo {
+    fn utxo_at(txid: [u8; 32], vout: u32, value: u64) -> Utxo {
         let wif = "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS";
         let key = vtorrent_core::keys::PrivateKey::from_wif(wif).unwrap();
         let pubkey = key.public_key().unwrap();
@@ -324,14 +333,18 @@ mod tests {
             vtorrent_core::network::legacy::PUBKEY_ADDRESS_PREFIX,
         );
         Utxo {
-            txid: [9u8; 32],
-            vout: 0,
+            txid,
+            vout,
             value,
             script_pubkey: vtorrent_wallet::tx_builder::p2pkh_script_pubkey(&address.to_string())
                 .unwrap(),
             height: 1,
             timestamp: 0,
         }
+    }
+
+    fn utxo(value: u64) -> Utxo {
+        utxo_at([9u8; 32], 0, value)
     }
 
     #[test]
@@ -351,6 +364,33 @@ mod tests {
             fee >= MIN_ABSOLUTE_FEE_SATS,
             "fee {} below relay floor",
             fee
+        );
+    }
+
+    #[test]
+    fn immature_stake_coin_is_reserved_for_incentive_payment() {
+        let stake = utxo_at([1u8; 32], 0, 20_000_000_000);
+        let change = utxo_at([2u8; 32], 0, 50_000_000);
+        let utxos = vec![stake.clone(), change];
+        let structural = std::collections::HashSet::from([(stake.txid, stake.vout)]);
+        let (tx, used_stake) = build_with_reserve(&utxos, &structural, |candidates| {
+            build_payment(
+                candidates,
+                "VQ2BZDB3MzX5CEKVCoFJpzqw4eisdEMJHh",
+                "VDR9EJdwPbfqER4L8rSQ85bpyYAtn7Q41k",
+                585_937,
+                1,
+                "WKDp3QTHd1wVakAcMe3MgHo4zz791x3x34awrvUpY5ojoqPWdFfS",
+            )
+            .map_err(IncentivePaymentError::from)
+        })
+        .unwrap();
+        assert!(!used_stake);
+        assert!(
+            !tx.inputs
+                .iter()
+                .any(|input| (input.prev_txid, input.prev_vout) == (stake.txid, stake.vout)),
+            "the structurally stakeable coin must be preserved"
         );
     }
 
