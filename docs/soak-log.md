@@ -4172,6 +4172,11 @@ staking status, and a deterministic two-peer split test.
   reorged-out funding output was dropped, two independent daemons agreed on a
   tip and reorg, and an uncovered reorg across restart kept a confirmed send
   held. Logs are in `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/`.
+- Partial rollback drill on a disposable single node: a rebuilt
+  `v2.0.0-beta.3` binary loaded the pass-13 chain containing a P2CS output at
+  height 6, and a fresh candidate data dir produced genesis `36ca792a…` plus
+  height 1. The P2CS coinstake rejection and multi-node reorg legs remain open.
+  See `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/rollback-drill/DRILL.md`.
 - Canonical CI run **45357625083** (`cd0e975`, docs-only child of `80f9eef`)
   passed all jobs: Rust tests (all-features and default), format/Clippy, audit,
   Machete, benchmark gate, frontend, and the no-cache Docker image build. The

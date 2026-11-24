@@ -131,15 +131,15 @@ component-level active soak passed. The header retention bound is covered by an 
 - **After blocks exist**: a bad launch is a **new genesis** (the chain is
   young); coordinate a restart with a corrected binary. Record the decision in
   `docs/soak-log.md`.
-- **Drill status (2026-11-24): OPEN.** The last completed drill was a binary
-  swap, not the new-genesis/revert/reorg path. Before launch, run the drill on
-  a disposable regtest fleet with the candidate image: (a) revert to the prior
-  image while no OP_RETURN/P2CS output exists and confirm every post-upgrade
-  block is still accepted, (b) force a reorg back to the prior tip and confirm
-  the store/UTXO reconciliation, and (c) create an incompatible output and
-  confirm the reverted image rejects it, then perform the new-genesis restart.
-  Record the accepted/rejected block evidence in the pass-13 evidence
-  directory. This gate is not satisfied by the 168-hour soak.
+- **Drill status (2026-11-24): PARTIAL.** A disposable single-node drill
+  loaded a pass-13 chain containing a P2CS output with the rebuilt
+  `v2.0.0-beta.3` binary and accepted height 6; a fresh candidate data dir
+  produced genesis `36ca792a…` and mined height 1. The store is readable across
+  the versions and a simple binary rollback works at the acceptance layer. The
+  remaining incompatible-output leg is a **P2CS coinstake block** (the funded
+  output was below 1 VTR) and a multi-node fleet reorg during rollback. See
+  `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/rollback-drill/DRILL.md`. The
+  gate is not closed until those run on a disposable fleet.
 - **Batch**: the batch replayed offline to an identical tip hash on the
   pre-batch chain (`docs/soak-log.md`, 2026-10-08/09). Reverting the binary is
   safe only while no OP_RETURN/P2CS output exists and the reverted binary

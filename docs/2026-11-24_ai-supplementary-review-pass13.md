@@ -78,8 +78,11 @@ code-freeze/evidence/release gates. The independent human review and the
   a mainnet-scale adversarial swap soak remains open.
 - Production signing key/certificate: not generated; authorization required.
 - Height-10,000 checkpoint publication: after launch.
-- Release-artifact rollback drill (new-genesis/revert/reorg): open; procedure
-  and status in `docs/mainnet-launch-runbook.md` §6.
+- Release-artifact rollback drill: **partial** — the rebuilt `v2.0.0-beta.3`
+  binary loaded a pass-13 chain with a P2CS output at height 6, and a fresh
+  candidate data dir produced genesis + height 1. The P2CS coinstake rejection
+  and multi-node reorg legs remain open; see
+  `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/rollback-drill/DRILL.md`.
 
 ## Evidence
 

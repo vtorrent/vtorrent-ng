@@ -368,13 +368,13 @@ window ran on, and that commit must equal the release commit.
       (`54eee2eb…`), clean worktree status, both build logs, and the CI
       `Docker Image (no-cache)` job are recorded in
       `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/`.
-- [ ] **Rollback drill on the candidate image**: the completed drill was only a
-      binary swap. On a disposable regtest fleet, exercise (a) reverting to the
-      prior image while no OP_RETURN/P2CS output exists, (b) a reorg back to the
-      prior tip, and (c) the new-genesis restart path after an incompatible
-      output exists. Record the accepted/rejected block evidence. Until this
-      runs, the rollback gate is open even though the launch runbook describes
-      the procedure.
+- [ ] **Rollback drill on the candidate image**: **partial (2026-11-24)**. A
+      rebuilt `v2.0.0-beta.3` binary loaded a pass-13 chain containing a P2CS
+      output at height 6, and a fresh candidate data dir produced genesis +
+      height 1. The remaining incompatible-output leg (a P2CS coinstake block)
+      and a multi-node fleet reorg are still open. See
+      `docs/mainnet-launch-runbook.md` §6 and
+      `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/rollback-drill/DRILL.md`.
 - [x] **Release notes drafted** — `docs/release-notes-beta.3.md` (finalized,
       Addendum 4 covers the soak + memory work + P0 fixes).
 - [ ] **Release signing** — minisign over `SHA256SUMS` plus Apple/Windows
