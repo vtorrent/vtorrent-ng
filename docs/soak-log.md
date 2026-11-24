@@ -4160,6 +4160,10 @@ staking status, and a deterministic two-peer split test.
 - Observation cron runs every 6 hours; `scripts/soak-watchdog.sh` runs hourly
   and alerts if the observation is older than 12 hours. The helper rejects
   down samples and coverage gaps over 5%.
+- The **first scheduled cron observation** ran at **11:25Z (+3h)**: heights
+  184/184/184, tips agree, staking on nodes 2/3, restarts 0/0/0, Prometheus
+  3/3, 111/114 samples with zero down samples, and the heartbeat updated. The
+  prior window's missing-first-observation gap is not repeated.
 - Live 12 MiB transfer paid **585,937 sats** from node3's 0.5 VTR non-stakeable
   coin (`4e268baa…:0`); the 200 VTR stake output (`eebf9d9ed5…:1`) remained
   unspent, and the fee was 1,000 sats. Before finality DELETE returned 400;

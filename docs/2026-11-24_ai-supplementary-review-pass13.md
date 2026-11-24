@@ -52,7 +52,9 @@ code-freeze/evidence/release gates. The independent human review and the
 - Live fleet `review-80f9eef`: three nodes at height 3 with agreeing tips,
   staking on nodes 2/3, restarts 0/0/0, Prometheus 3/3 at the +0h observation.
   At +1h they were at height 55 with the same tip, RSS 154/169/169 MiB, and
-  zero down samples.
+  zero down samples. The **first scheduled cron observation** ran at 11:25Z
+  (+3h): heights 184/184/184, 111/114 range samples, zero down samples, and the
+  watchdog heartbeat updated — closing the prior missing-first-observation gap.
   A live 12 MiB transfer then paid **585,937 sats** from node3's 0.5 VTR
   non-stakeable coin (`4e268baa…:0`), not the 200 VTR stake output
   (`eebf9d9ed5…:1`, still unspent), fee 1,000 sats. Before finality DELETE
