@@ -8,7 +8,9 @@
 **New window:** `2026-11-24T17:14:00Z` to `2026-12-01T17:14:00Z` (`review-a0724dd`)
 **Validation:** full suite 57 groups, 1,553 passed, 0 failed, 13 ignored;
 two clean builds produced the same image ID and binary; both E2Es pass on the
-image binary (2.12 s seeder, 26.28 s incentive).
+image binary (2.12 s seeder, 26.28 s incentive); canonical CI run
+`45445768245` passed every job, with the tag-only desktop matrix skipped on the
+push.
 **Docs tip reviewed:** `05b125d` (plus later docs-only commits)
 **Reviewers:** four independent read-only passes — consensus/wallet/BTC,
 torrent/incentives/seeder, desktop/RPC/UI, and release/evidence.
