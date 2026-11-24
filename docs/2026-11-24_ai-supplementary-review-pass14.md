@@ -10,7 +10,10 @@
 two clean builds produced the same image ID and binary; both E2Es pass on the
 image binary (2.12 s seeder, 26.28 s incentive); canonical CI run
 `45445768245` passed every job, with the tag-only desktop matrix skipped on the
-push.
+push. Fresh real-bitcoind evidence on `a0724dd`: all four release-mode tests
+passed and the fleet-level soak passed **60/60 cycles** (host release build
+`a42b4355…`). The `v2.0.0-rc1` candidate tag run `45510052112` is building the
+desktop matrix; the tag creates a draft release only.
 **Docs tip reviewed:** `05b125d` (plus later docs-only commits)
 **Reviewers:** four independent read-only passes — consensus/wallet/BTC,
 torrent/incentives/seeder, desktop/RPC/UI, and release/evidence.
@@ -115,9 +118,7 @@ Still pending before a new candidate:
   start failure is surfaced, but there is no in-app repair yet).
 - A force-remove/write-off surface for disputed agreed debt.
 - The desktop matrix on a tag and the workflow dispatch/tag-ancestry fixes.
-- A fresh real-bitcoind four-test run and 60-cycle soak against `a0724dd`; the
-  recorded swap evidence used `80f9eef` source (the pass-14 changes affect
-  wallet reserve/selection, so this rerun is still advisable).
+- The desktop matrix result (tag run `45510052112`).
 - The pass-14 report is the review record; the new window is not release
   evidence until it completes and is signed off.
 

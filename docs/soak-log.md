@@ -4250,9 +4250,12 @@ count.
 tag-only desktop matrix was skipped on the push.
 - Fleet `review-a0724dd`, RPC 23951–23953, Prometheus 23973, evidence
   `/mnt/temp/vtorrent-ng-evidence/soak-a0724dd/`.
+- Fresh real-bitcoind evidence on `a0724dd`: all four release-mode tests passed
+  and the fleet-level soak passed **60/60 cycles** (host release build
+  `a42b4355…`). The candidate tag `v2.0.0-rc1` run `45510052112` is building
+  the desktop matrix.
 - Open before release: pre-pass-13 BTC-state repair, force/write-off for
-  disputed agreed debt, desktop matrix on a candidate tag, and a fresh
-  real-bitcoind/60-cycle swap run on `a0724dd`.
+  disputed agreed debt, and the desktop matrix result.
 
 This is a candidate window, not release evidence. The independent human review
 and the full 168 hours remain open.
