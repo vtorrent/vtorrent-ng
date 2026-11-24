@@ -69,7 +69,7 @@ code-freeze/evidence/release gates. The independent human review and the
 
 ## Evidence
 
-- `/mnt/temp/vtorrent-ng-evidence/soak-{{IMAGE_TAG}}/` — deployment, window,
+- `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/` — deployment, window,
   observations, E2E logs, workspace log, canonical CI/audit logs, image IDs,
   binary digest, and the review artifact/patch.
 - `docs/2026-11-24_ai-supplementary-review-pass12.md` — the findings this pass
