@@ -687,15 +687,28 @@ pub async fn quote_vtr(
         mempool.recommended_fee_rate().max(1)
     };
     let wif_refs: Vec<&str> = wifs.iter().map(|wif| wif.as_str()).collect();
-    let tx = vtorrent_wallet_service::build_payment_with_keys(
-        &utxos,
-        &to_address,
-        &from_address,
-        amount_satoshis,
-        fee_rate,
-        &wif_refs,
-    )
-    .map_err(|e| TauriError::NodeError(format!("Transaction build failed: {}", e)))?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as u32;
+    let staking_address = handle.rpc_state.staking_address.read().await.clone();
+    let structural = {
+        let chain = handle.rpc_state.chain.lock().await;
+        vtorrent_wallet_service::structural_stakeable(&chain, staking_address.as_deref(), now)
+    };
+    let (tx, _used_stake) =
+        vtorrent_wallet_service::build_with_reserve(&utxos, &structural, |candidates| {
+            vtorrent_wallet_service::build_payment_with_keys(
+                candidates,
+                &to_address,
+                &from_address,
+                amount_satoshis,
+                fee_rate,
+                &wif_refs,
+            )
+            .map_err(vtorrent_wallet_service::IncentivePaymentError::from)
+        })
+        .map_err(|e| TauriError::NodeError(format!("Transaction build failed: {}", e)))?;
 
     let input_total: u64 = tx
         .inputs
@@ -857,19 +870,32 @@ pub async fn send_vtr(
             .tx
     } else {
         let wif_refs: Vec<&str> = wifs.iter().map(|wif| wif.as_str()).collect();
-        vtorrent_wallet_service::build_payment_with_keys(
-            &utxos,
-            &to_address,
-            &from_address,
-            amount_satoshis,
-            fee_rate,
-            &wif_refs,
-        )
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+        let staking_address = handle.rpc_state.staking_address.read().await.clone();
+        let structural = {
+            let chain = handle.rpc_state.chain.lock().await;
+            vtorrent_wallet_service::structural_stakeable(&chain, staking_address.as_deref(), now)
+        };
+        vtorrent_wallet_service::build_with_reserve(&utxos, &structural, |candidates| {
+            vtorrent_wallet_service::build_payment_with_keys(
+                candidates,
+                &to_address,
+                &from_address,
+                amount_satoshis,
+                fee_rate,
+                &wif_refs,
+            )
+            .map_err(vtorrent_wallet_service::IncentivePaymentError::from)
+        })
         .map_err(|e| {
             let message = format!("Transaction build failed: {}", e);
             crate::activity_journal::record_failed(state.inner(), &message);
             TauriError::NodeError(message)
         })?
+        .0
     };
 
     let recipient_script = vtorrent_wallet::tx_builder::p2pkh_script_pubkey(&to_address)
@@ -1129,19 +1155,32 @@ pub async fn fund_cold_stake(
         mempool.recommended_fee_rate().max(1)
     };
     let wif_refs: Vec<&str> = wifs.iter().map(|wif| wif.as_str()).collect();
-    let tx = vtorrent_wallet_service::build_payment_to_script_with_keys(
-        &utxos,
-        script,
-        &from_address,
-        amount_satoshis,
-        fee_rate,
-        &wif_refs,
-    )
-    .map_err(|e| {
-        let message = format!("Cold-stake funding build failed: {e}");
-        crate::activity_journal::record_failed(state.inner(), &message);
-        TauriError::NodeError(message)
-    })?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as u32;
+    let staking_address = handle.rpc_state.staking_address.read().await.clone();
+    let structural = {
+        let chain = handle.rpc_state.chain.lock().await;
+        vtorrent_wallet_service::structural_stakeable(&chain, staking_address.as_deref(), now)
+    };
+    let (tx, _used_stake) =
+        vtorrent_wallet_service::build_with_reserve(&utxos, &structural, |candidates| {
+            vtorrent_wallet_service::build_payment_to_script_with_keys(
+                candidates,
+                script.clone(),
+                &from_address,
+                amount_satoshis,
+                fee_rate,
+                &wif_refs,
+            )
+            .map_err(vtorrent_wallet_service::IncentivePaymentError::from)
+        })
+        .map_err(|e| {
+            let message = format!("Cold-stake funding build failed: {e}");
+            crate::activity_journal::record_failed(state.inner(), &message);
+            TauriError::NodeError(message)
+        })?;
     let txid = hex::encode(tx.txid());
     {
         let chain = handle.rpc_state.chain.lock().await;

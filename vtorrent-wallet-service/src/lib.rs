@@ -171,6 +171,58 @@ where
     Ok((tx, used_stake))
 }
 
+/// Return the outpoints that can ever stake for `staking_address`.
+///
+/// Age is deliberately ignored: a freshly created or immature stake coin is
+/// still the main stake coin and must be reserved by payments.
+pub fn structural_stakeable(
+    chain: &vtorrent_node::chain::Chain,
+    staking_address: Option<&str>,
+    now: u32,
+) -> std::collections::HashSet<([u8; 32], u32)> {
+    let params = chain.next_block_params(now);
+    staking_address
+        .map(|address| chain.get_utxos_for_staking_address(address))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|utxo| vtorrent_node::consensus::is_stakeable_with(&params, utxo))
+        .map(|utxo| (utxo.txid, utxo.vout))
+        .collect()
+}
+
+/// Pick one funding outpoint while keeping the structural stake reserve.
+///
+/// Non-stakeable coins are always preferred. If the amount can only be funded
+/// from stakeable coins, the largest eligible one is preserved and the next
+/// largest is used. With a single structural stake outpoint the selection
+/// fails closed.
+pub fn select_reserved_utxo<'a>(
+    utxos: &'a [vtorrent_node::chain::Utxo],
+    structural_stakeable: &std::collections::HashSet<([u8; 32], u32)>,
+    min_value: u64,
+) -> Option<&'a vtorrent_node::chain::Utxo> {
+    let eligible = |utxo: &&vtorrent_node::chain::Utxo| utxo.value >= min_value;
+    if let Some(utxo) = utxos
+        .iter()
+        .filter(|utxo| eligible(utxo) && !structural_stakeable.contains(&(utxo.txid, utxo.vout)))
+        .max_by_key(|utxo| utxo.value)
+    {
+        return Some(utxo);
+    }
+    if structural_stakeable.len() <= 1 {
+        return None;
+    }
+    let largest = utxos
+        .iter()
+        .filter(|utxo| eligible(utxo) && structural_stakeable.contains(&(utxo.txid, utxo.vout)))
+        .max_by_key(|utxo| utxo.value)
+        .map(|utxo| (utxo.txid, utxo.vout));
+    utxos
+        .iter()
+        .filter(|utxo| eligible(utxo) && Some((utxo.txid, utxo.vout)) != largest)
+        .max_by_key(|utxo| utxo.value)
+}
+
 /// A signed incentive payment that has not yet been admitted or broadcast.
 pub struct PreparedIncentivePayment {
     pub tx: vtorrent_node::block::Transaction,
@@ -210,17 +262,8 @@ pub async fn prepare_incentive_payment(
         .as_secs() as u32;
     let (chain_utxos, stakeable) = {
         let chain = chain.lock().await;
-        let params = chain.next_block_params(now);
         let utxos = chain.get_utxos_for_address(&change_address);
-        let stakeable: std::collections::HashSet<([u8; 32], u32)> = match staking_address {
-            Some(address) => chain
-                .get_utxos_for_staking_address(address)
-                .into_iter()
-                .filter(|utxo| vtorrent_node::consensus::is_stakeable_with(&params, utxo))
-                .map(|utxo| (utxo.txid, utxo.vout))
-                .collect(),
-            None => std::collections::HashSet::new(),
-        };
+        let stakeable = structural_stakeable(&chain, staking_address, now);
         (utxos, stakeable)
     };
     let (utxos, fee_rate, available_stakeable) = {

@@ -154,15 +154,27 @@ pub async fn match_dex_order_with_wif(
     // A fixed 10,000-satoshi fee is intentionally conservative for the custom
     // script size and is recorded as an authoritative local mempool fee.
     const FUNDING_FEE_SATOSHIS: u64 = vtorrent_node::atomic_swap::VTR_HTLC_FEE_SATOSHIS;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as u32;
+    let staking_address = state.staking_address.read().await.clone();
     let funding_utxo = {
         let chain = state.chain.lock().await;
         let mempool = state.mempool.lock().await;
-        chain
+        let candidates: Vec<_> = chain
             .get_utxos_for_address(&wallet_address)
             .into_iter()
             .filter(|utxo| !mempool.is_outpoint_spent(&utxo.txid, utxo.vout))
-            .filter(|utxo| utxo.value >= order.vtr_amount.saturating_add(FUNDING_FEE_SATOSHIS))
-            .max_by_key(|utxo| utxo.value)
+            .collect();
+        let structural =
+            vtorrent_wallet_service::structural_stakeable(&chain, staking_address.as_deref(), now);
+        vtorrent_wallet_service::select_reserved_utxo(
+            &candidates,
+            &structural,
+            order.vtr_amount.saturating_add(FUNDING_FEE_SATOSHIS),
+        )
+        .cloned()
     };
     let Some(funding_utxo) = funding_utxo else {
         state

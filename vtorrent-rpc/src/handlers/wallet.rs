@@ -415,23 +415,36 @@ pub async fn send_vtr(
         let mempool = state.mempool.lock().await;
         mempool.recommended_fee_rate().max(1)
     };
-    let tx = vtorrent_wallet_service::build_payment(
-        &utxos,
-        &req.to_address,
-        &change_address,
-        req.amount_satoshis,
-        fee_rate,
-        &wif,
-    )
-    .map_err(|e| {
-        RpcError::BadRequest(format!(
-            "Transaction build failed ({} inputs, {} sats to {}): {}",
-            utxos.len(),
-            req.amount_satoshis,
-            truncate_chars(&req.to_address, 64),
-            e
-        ))
-    })?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as u32;
+    let staking_address = state.staking_address.read().await.clone();
+    let structural = {
+        let chain = state.chain.lock().await;
+        vtorrent_wallet_service::structural_stakeable(&chain, staking_address.as_deref(), now)
+    };
+    let (tx, _used_stake) =
+        vtorrent_wallet_service::build_with_reserve(&utxos, &structural, |candidates| {
+            vtorrent_wallet_service::build_payment(
+                candidates,
+                &req.to_address,
+                &change_address,
+                req.amount_satoshis,
+                fee_rate,
+                &wif,
+            )
+            .map_err(vtorrent_wallet_service::IncentivePaymentError::from)
+        })
+        .map_err(|e| {
+            RpcError::BadRequest(format!(
+                "Transaction build failed ({} inputs, {} sats to {}): {}",
+                utxos.len(),
+                req.amount_satoshis,
+                truncate_chars(&req.to_address, 64),
+                e
+            ))
+        })?;
 
     let txid = hex::encode(tx.txid());
     // Actual fee = selected inputs − outputs. Summing the whole wallet UTXO
@@ -554,15 +567,28 @@ pub async fn fund_cold_stake(
         let mempool = state.mempool.lock().await;
         mempool.recommended_fee_rate().max(1)
     };
-    let tx = vtorrent_wallet_service::build_payment_to_script(
-        &utxos,
-        script,
-        &change_address,
-        req.amount_satoshis,
-        fee_rate,
-        &wif,
-    )
-    .map_err(|e| RpcError::BadRequest(format!("Cold-stake funding build failed: {e}")))?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as u32;
+    let staking_address = state.staking_address.read().await.clone();
+    let structural = {
+        let chain = state.chain.lock().await;
+        vtorrent_wallet_service::structural_stakeable(&chain, staking_address.as_deref(), now)
+    };
+    let (tx, _used_stake) =
+        vtorrent_wallet_service::build_with_reserve(&utxos, &structural, |candidates| {
+            vtorrent_wallet_service::build_payment_to_script(
+                candidates,
+                script.clone(),
+                &change_address,
+                req.amount_satoshis,
+                fee_rate,
+                &wif,
+            )
+            .map_err(vtorrent_wallet_service::IncentivePaymentError::from)
+        })
+        .map_err(|e| RpcError::BadRequest(format!("Cold-stake funding build failed: {e}")))?;
     let txid = hex::encode(tx.txid());
     let fee_satoshis: u64 = tx
         .inputs
