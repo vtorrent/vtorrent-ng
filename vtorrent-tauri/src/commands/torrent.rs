@@ -180,22 +180,27 @@ pub async fn add_torrent(
             Some(address) => address.to_owned(),
             None => {
                 return Err(TauriError::InvalidInput(
-                    "wallet is locked or no wallet is imported; unlock/import a wallet or provide wallet_address".into(),
+                    "wallet is locked or no wallet is imported; unlock/import a wallet before adding a torrent".into(),
                 ))
             }
         }
     } else {
-        requested_address.to_owned()
+        match hot_address.as_deref() {
+            Some(hot) if requested_address == hot => requested_address.to_owned(),
+            Some(_) => {
+                return Err(TauriError::InvalidInput(
+                    "wallet_address must match the unlocked hot wallet; unlock that wallet or omit wallet_address".into(),
+                ))
+            }
+            None => {
+                return Err(TauriError::InvalidInput(
+                    "wallet is locked or no wallet is imported; unlock/import the wallet that owns wallet_address so receipts can be signed".into(),
+                ))
+            }
+        }
     };
     vtorrent_core::address::validate_p2pkh(&wallet_address)
         .map_err(|error| TauriError::InvalidInput(format!("invalid wallet_address: {error}")))?;
-    if let Some(hot_address) = hot_address {
-        if wallet_address != hot_address {
-            return Err(TauriError::InvalidInput(
-                "wallet_address must match the unlocked hot wallet; unlock that wallet or omit wallet_address".into(),
-            ));
-        }
-    }
     let session = TorrentSession::new(metainfo, wallet_address);
     let session_id = {
         let mut sessions = handle.rpc_state.torrent_sessions.write().await;

@@ -87,6 +87,33 @@ pub async fn set_torrent_settings(
     get_torrent_settings(State(state)).await
 }
 
+/// Resolve the wallet address a torrent session will be paid at.
+///
+/// Receipts are signed with the unlocked hot wallet, so accepting an address
+/// the hot key does not own would produce unpayable receipts. When the wallet
+/// is locked there is no key to check against, so a caller-supplied address is
+/// refused rather than trusted.
+fn resolve_torrent_wallet_address(requested: &str, hot: Option<&str>) -> Result<String, String> {
+    let requested = requested.trim();
+    if requested.is_empty() {
+        return hot.map(str::to_owned).ok_or_else(|| {
+            "wallet is locked or no wallet is imported; unlock/import a wallet before adding a torrent"
+                .to_string()
+        });
+    }
+    match hot {
+        Some(hot) if requested == hot => Ok(requested.to_owned()),
+        Some(_) => Err(
+            "wallet_address must match the unlocked hot wallet; unlock that wallet or omit wallet_address"
+                .to_string(),
+        ),
+        None => Err(
+            "wallet is locked or no wallet is imported; unlock/import the wallet that owns wallet_address so receipts can be signed"
+                .to_string(),
+        ),
+    }
+}
+
 pub async fn add_torrent(
     State(state): State<Arc<AppState>>,
     Json(req): Json<AddTorrentRequest>,
@@ -121,27 +148,10 @@ pub async fn add_torrent(
     // leecher avoid ever being payable.
     let requested_address = req.wallet_address.trim();
     let hot_address = state.wallet_change_address.read().await.clone();
-    let wallet_address = if requested_address.is_empty() {
-        match hot_address.as_deref() {
-            Some(address) => address.to_owned(),
-            None => {
-                return Err(RpcError::BadRequest(
-                    "wallet is locked or no wallet is imported; unlock/import a wallet or provide wallet_address".into(),
-                ))
-            }
-        }
-    } else {
-        requested_address.to_owned()
-    };
+    let wallet_address = resolve_torrent_wallet_address(requested_address, hot_address.as_deref())
+        .map_err(RpcError::BadRequest)?;
     vtorrent_core::address::validate_p2pkh(&wallet_address)
         .map_err(|error| RpcError::BadRequest(format!("invalid wallet_address: {error}")))?;
-    if let Some(hot_address) = hot_address {
-        if wallet_address != hot_address {
-            return Err(RpcError::BadRequest(
-                "wallet_address must match the unlocked hot wallet; unlock that wallet or omit wallet_address".into(),
-            ));
-        }
-    }
     let session = TorrentSession::new(metainfo.clone(), wallet_address);
     let session_id = {
         let mut sessions = state.torrent_sessions.write().await;
@@ -331,6 +341,23 @@ mod tests {
             comment: None,
             is_private: false,
         }
+    }
+
+    #[test]
+    fn torrent_wallet_address_must_match_the_unlocked_hot_wallet() {
+        let hot = "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT";
+        let other = "VH6w62jDRYpYHjR2eJjFzJxRC4MQvvs93a6";
+        assert_eq!(resolve_torrent_wallet_address("", Some(hot)).unwrap(), hot);
+        assert_eq!(resolve_torrent_wallet_address(hot, Some(hot)).unwrap(), hot);
+        assert!(
+            resolve_torrent_wallet_address(other, Some(hot)).is_err(),
+            "a foreign address would produce receipts the hot key cannot sign"
+        );
+        assert!(
+            resolve_torrent_wallet_address(other, None).is_err(),
+            "ownership cannot be checked while the wallet is locked"
+        );
+        assert!(resolve_torrent_wallet_address("", None).is_err());
     }
 
     #[tokio::test]
