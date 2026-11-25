@@ -2143,6 +2143,42 @@ mod tests {
     }
 
     #[test]
+    fn checked_open_runs_its_check_after_acquiring_and_retains_the_writer_lock() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-checked-lock-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        UtxoSet::new().save(&path).unwrap();
+
+        let wallet = BtcWallet::with_persistence_checked(
+            [7; 64],
+            bitcoin::Network::Regtest,
+            path.clone(),
+            || {
+                let error = crate::utxo::lock_state_path(&path)
+                    .expect_err("the check must run while the wallet holds its writer lock");
+                assert!(crate::repair::is_writer_contention(&error), "{error}");
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        let error = crate::utxo::lock_state_path(&path)
+            .expect_err("the opened wallet must retain its writer lock");
+        assert!(crate::repair::is_writer_contention(&error), "{error}");
+
+        drop(wallet);
+        crate::utxo::lock_state_path(&path).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn a_second_writer_cannot_open_the_same_state() {
         let dir = std::env::temp_dir().join(format!(
             "vtr-btc-single-writer-{}-{}",

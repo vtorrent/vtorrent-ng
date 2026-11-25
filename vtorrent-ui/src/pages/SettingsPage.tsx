@@ -10,7 +10,7 @@ import {
   ShieldAlert,
 } from 'lucide-react'
 import { formatInvokeError, isTauri } from '../api'
-import { useWallet } from '../hooks/useWallet'
+import BtcRepairCard from '../components/BtcRepairCard'
 import {
   getDiagnostics,
   restartApp,
@@ -37,13 +37,6 @@ export default function SettingsPage() {
   const [diagBusy, setDiagBusy] = useState(false)
   const [diagError, setDiagError] = useState('')
   const [copied, setCopied] = useState<string | null>(null)
-  const { repairBtcState } = useWallet()
-  const [btcRepairPassphrase, setBtcRepairPassphrase] = useState('')
-  const [btcRepairOtp, setBtcRepairOtp] = useState('')
-  const [btcRepairAttest, setBtcRepairAttest] = useState(false)
-  const [btcRepairBusy, setBtcRepairBusy] = useState(false)
-  const [btcRepairMessage, setBtcRepairMessage] = useState('')
-  const [btcRepairError, setBtcRepairError] = useState('')
 
   const peerValue = peerDraft ?? appInfo?.btcPeer ?? ''
 
@@ -92,31 +85,6 @@ export default function SettingsPage() {
       await restartApp()
     } catch (error) {
       setPeerError(formatInvokeError(error, 'Could not restart the app'))
-    }
-  }
-
-  const handleBtcRepair = async () => {
-    if (!btcRepairAttest) {
-      setBtcRepairError('Confirm that this wallet has no prior BTC history first.')
-      return
-    }
-    setBtcRepairBusy(true)
-    setBtcRepairMessage('')
-    setBtcRepairError('')
-    try {
-      const message = await repairBtcState(
-        btcRepairPassphrase,
-        btcRepairOtp || undefined,
-        true
-      )
-      setBtcRepairMessage(message)
-      setBtcRepairPassphrase('')
-      setBtcRepairOtp('')
-      setBtcRepairAttest(false)
-    } catch (error) {
-      setBtcRepairError(formatInvokeError(error, 'BTC state repair failed'))
-    } finally {
-      setBtcRepairBusy(false)
     }
   }
 
@@ -254,59 +222,7 @@ export default function SettingsPage() {
         )}
       </div>
 
-      <div className="card space-y-3">
-        <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2">
-          <ShieldAlert size={15} className="text-amber-400" /> Legacy BTC state repair
-        </h2>
-        <p className="text-xs text-gray-500">
-          Only for a wallet imported before the BTC-state fix that now reports a
-          missing BTC state. This attests that the wallet has no prior BTC
-          history and creates fresh mainnet and regtest state. It refuses to
-          overwrite an existing state.
-        </p>
-        <input
-          type="password"
-          value={btcRepairPassphrase}
-          onChange={e => setBtcRepairPassphrase(e.target.value)}
-          placeholder="Wallet passphrase"
-          className="input text-xs w-full"
-          autoComplete="current-password"
-        />
-        <input
-          type="text"
-          value={btcRepairOtp}
-          onChange={e => setBtcRepairOtp(e.target.value)}
-          placeholder="2FA code (if enabled)"
-          className="input text-xs w-full"
-          autoComplete="one-time-code"
-        />
-        <label className="flex items-start gap-2 text-xs text-gray-400">
-          <input
-            type="checkbox"
-            checked={btcRepairAttest}
-            onChange={e => setBtcRepairAttest(e.target.checked)}
-            className="mt-0.5"
-          />
-          I attest this wallet has no prior BTC history or outstanding BTC sends.
-        </label>
-        <button
-          onClick={handleBtcRepair}
-          disabled={btcRepairBusy || !btcRepairPassphrase || !btcRepairAttest}
-          className="btn-secondary text-xs flex items-center gap-1.5"
-        >
-          <RotateCcw size={13} /> {btcRepairBusy ? 'Repairing…' : 'Repair BTC state'}
-        </button>
-        {btcRepairMessage && (
-          <p className="text-xs text-emerald-400 flex items-center gap-1.5">
-            <CheckCircle size={13} /> {btcRepairMessage}
-          </p>
-        )}
-        {btcRepairError && (
-          <p className="text-xs text-red-400 flex items-center gap-1.5">
-            <AlertCircle size={13} /> {btcRepairError}
-          </p>
-        )}
-      </div>
+      <BtcRepairCard />
 
       <div className="card space-y-3">
         <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2">

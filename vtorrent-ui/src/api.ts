@@ -53,6 +53,36 @@ export function formatInvokeError(error: unknown, fallback: string): string {
   return fallback
 }
 
+export type BtcRecoveryKind = 'pending_repair' | 'assisted_recovery' | 'missing_state'
+
+const BTC_RECOVERY_TYPES: Record<string, BtcRecoveryKind> = {
+  BtcRepairPending: 'pending_repair',
+  BtcAssistedRecovery: 'assisted_recovery',
+  BtcStateMissing: 'missing_state',
+}
+
+/**
+ * Classify a rejected start_node/unlock call so the UI can offer BTC repair
+ * instead of treating the node failure as a passphrase problem.
+ */
+export function btcRecoveryKind(error: unknown): BtcRecoveryKind | null {
+  const seen = new Set<unknown>()
+  let current = error
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current)
+    const record = current as Record<string, unknown>
+    const type = record.type
+    if (
+      typeof type === 'string' &&
+      Object.prototype.hasOwnProperty.call(BTC_RECOVERY_TYPES, type)
+    ) {
+      return BTC_RECOVERY_TYPES[type]
+    }
+    current = (current as { cause?: unknown }).cause
+  }
+  return null
+}
+
 // ─── Generic fetch helpers ─────────────────────────────────────────────────────
 
 export async function rpcGet<T>(path: string): Promise<T> {

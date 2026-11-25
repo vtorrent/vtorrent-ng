@@ -34,6 +34,15 @@ pub enum TauriError {
     #[error("Not found: {0}")]
     NotFound(String),
 
+    #[error("BTC repair pending: {0}")]
+    BtcRepairPending(String),
+
+    #[error("BTC assisted recovery required: {0}")]
+    BtcAssistedRecovery(String),
+
+    #[error("BTC state missing: {0}")]
+    BtcStateMissing(String),
+
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
 
@@ -67,6 +76,33 @@ impl From<vtorrent_rpc::error::RpcError> for TauriError {
             RpcError::Internal(message) => Self::Internal(message),
             RpcError::WalletLocked => Self::WalletLocked,
             RpcError::NodeError(message) => Self::NodeError(message),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn btc_recovery_errors_serialize_with_stable_type_tags() {
+        for (error, tag) in [
+            (
+                TauriError::BtcRepairPending("pending".into()),
+                "BtcRepairPending",
+            ),
+            (
+                TauriError::BtcAssistedRecovery("conflict".into()),
+                "BtcAssistedRecovery",
+            ),
+            (
+                TauriError::BtcStateMissing("missing".into()),
+                "BtcStateMissing",
+            ),
+        ] {
+            let value = serde_json::to_value(error).unwrap();
+            assert_eq!(value["type"], tag);
+            assert!(value["message"].is_string());
         }
     }
 }

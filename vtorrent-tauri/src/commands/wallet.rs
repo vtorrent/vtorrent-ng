@@ -431,6 +431,7 @@ pub fn import_legacy_wallet(
         ));
     }
     let _node_guard = ensure_node_stopped(state.inner())?;
+    let _selection = state.lock_wallet_selection()?;
     state.cold_stake_scripts.lock().unwrap().clear();
     state.prepared_sends.lock().unwrap().clear();
     let wallet_dat_base64 = zeroize::Zeroizing::new(wallet_dat_base64);
@@ -452,7 +453,6 @@ pub fn import_legacy_wallet(
         return Err(TauriError::Migration("No keys found in wallet.dat".into()));
     }
 
-    let _selection = state.lock_wallet_selection()?;
     let path = std::path::PathBuf::from(&new_wallet_path);
     ensure_wallet_path_allowed(state.inner(), &path)?;
     ensure_wallet_parent(&path)?;
@@ -546,8 +546,10 @@ pub fn repair_btc_state(
             hook();
         }
     }
-    paths.run(&wallet_id).map_err(btc_repair_error)?;
-    Ok("BTC state created for mainnet and regtest; restart the node".into())
+    paths
+        .run(&wallet_id)
+        .map_err(|error| btc_repair_error(error, &paths))?;
+    Ok("BTC state is ready for mainnet and regtest; restart the node".into())
 }
 
 fn authorize_btc_repair(
@@ -580,15 +582,25 @@ fn authorize_btc_repair(
     Ok((paths, crate::commands::node::btc_wallet_id(&seed)))
 }
 
-fn btc_repair_error(error: std::io::Error) -> TauriError {
+fn btc_repair_error(
+    error: std::io::Error,
+    paths: &vtorrent_btc::repair::RepairPaths,
+) -> TauriError {
     if vtorrent_btc::repair::requires_assisted_recovery(&error) {
-        TauriError::Wallet(format!(
+        TauriError::BtcAssistedRecovery(format!(
             "BTC state conflicts with this repair; preserve all files and use assisted recovery: {error}"
         ))
-    } else if error.kind() == std::io::ErrorKind::WouldBlock {
-        TauriError::Wallet(format!(
-            "BTC state is in use by a running node or another writer; stop it and retry the repair: {error}"
-        ))
+    } else if vtorrent_btc::repair::is_writer_contention(&error) {
+        match paths.ensure_idle() {
+            Err(pending) if vtorrent_btc::repair::is_repair_pending(&pending) => {
+                TauriError::BtcRepairPending(format!(
+                    "A BTC repair is pending but its writer is still active; wait for it to finish, then retry the authenticated repair: {error}"
+                ))
+            }
+            _ => TauriError::Wallet(format!(
+                "BTC state is in use by a running node or another writer; stop it and retry the repair: {error}"
+            )),
+        }
     } else {
         TauriError::Io(format!("BTC repair failed: {error}"))
     }
@@ -1709,6 +1721,78 @@ mod tests {
         ))
     }
 
+    fn arm_selection_probe(state: &AppState) -> std::sync::mpsc::Receiver<()> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        *state.selection_probe.lock().unwrap() = Some(sender);
+        receiver
+    }
+
+    fn wait_for_selection_attempt(state: &AppState, receiver: &std::sync::mpsc::Receiver<()>) {
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the command must acquire the wallet selection guard");
+        *state.selection_probe.lock().unwrap() = None;
+    }
+
+    struct ReleaseOnPanic<'a> {
+        barrier: &'a std::sync::Barrier,
+        armed: bool,
+    }
+
+    impl Drop for ReleaseOnPanic<'_> {
+        fn drop(&mut self) {
+            if self.armed {
+                self.barrier.wait();
+            }
+        }
+    }
+
+    /// Run a repair paused after authorization and invoke `attempt` while its
+    /// selection guard is held. `attempt` must release the barrier when done.
+    fn with_paused_repair(
+        state: &tauri::State<'_, AppState>,
+        passphrase: &str,
+        attempt: impl FnOnce(&std::sync::Barrier),
+    ) -> String {
+        use std::sync::{Arc, Barrier};
+        let authorized = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        {
+            let authorized = Arc::clone(&authorized);
+            let release = Arc::clone(&release);
+            *state.repair_authorized_hook.lock().unwrap() = Some(Box::new(move || {
+                authorized.wait();
+                release.wait();
+            }));
+        }
+        std::thread::scope(|scope| {
+            let repair = scope.spawn({
+                let state = state.clone();
+                let passphrase = passphrase.to_owned();
+                move || repair_btc_state(state, passphrase, None, true)
+            });
+            authorized.wait();
+            let mut fallback = ReleaseOnPanic {
+                barrier: release.as_ref(),
+                armed: true,
+            };
+            attempt(&release);
+            fallback.armed = false;
+            repair.join().unwrap().unwrap()
+        })
+    }
+
+    fn assert_repair_states(wallet_path: &std::path::Path, seed: &[u8; 64]) {
+        for network in [bitcoin::Network::Bitcoin, bitcoin::Network::Regtest] {
+            let path = crate::commands::node::btc_utxo_path(Some(wallet_path), network, seed);
+            assert!(path.is_file(), "missing {}", path.display());
+            assert_eq!(
+                std::fs::read(path.with_extension("initialized")).unwrap(),
+                b"vtorrent-btc-initialized-v1\n"
+            );
+        }
+    }
+
     #[test]
     fn repair_authorization_failures_create_no_intent() {
         use vtorrent_wallet::otp::TotpSecret;
@@ -1773,16 +1857,49 @@ mod tests {
         assert!(matches!(error, TauriError::InvalidInput(_)), "{error}");
         assert_untouched("a false attestation");
 
+        // Failed authorization must not rewrite existing states or a pending record.
+        crate::commands::node::create_initial_btc_states(&path, &seed).unwrap();
+        std::fs::write(&intent, b"pending-intent-bytes").unwrap();
+        let snapshot = || {
+            let mut entries: Vec<(String, Vec<u8>)> = std::fs::read_dir(&dir)
+                .unwrap()
+                .map(|entry| entry.unwrap())
+                .filter(|entry| entry.path().is_file())
+                .map(|entry| {
+                    (
+                        entry.file_name().to_string_lossy().into_owned(),
+                        std::fs::read(entry.path()).unwrap(),
+                    )
+                })
+                .collect();
+            entries.sort();
+            entries
+        };
+        let before = snapshot();
+        for (passphrase, otp, attest) in [
+            ("wrong-pass", Some("000000"), true),
+            ("test-pass", None, true),
+            ("test-pass", Some("000000"), false),
+        ] {
+            assert!(repair_btc_state(
+                state.clone(),
+                passphrase.into(),
+                otp.map(str::to_owned),
+                attest
+            )
+            .is_err());
+            assert_eq!(
+                snapshot(),
+                before,
+                "failed authorization changed wallet files"
+            );
+        }
+
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn authorized_repair_stays_bound_to_the_authenticated_wallet() {
-        use std::sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc, Barrier,
-        };
-
+    #[test]
+    fn authorized_repair_stays_bound_to_the_authenticated_wallet() {
         let app = tauri::test::mock_builder()
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
@@ -1802,60 +1919,37 @@ mod tests {
         *state.wallet_path.lock().unwrap() = Some(first_path.clone());
         state.set_app_data_dir(dir.clone());
 
-        let authorized = Arc::new(Barrier::new(2));
-        let checked = Arc::new(Barrier::new(2));
-        let switch_blocked = Arc::new(AtomicBool::new(false));
-        {
-            let authorized = Arc::clone(&authorized);
-            let checked = Arc::clone(&checked);
-            *state.repair_authorized_hook.lock().unwrap() = Some(Box::new(move || {
-                authorized.wait();
-                checked.wait();
-            }));
-        }
-
-        let message = std::thread::scope(|scope| {
-            let repair = scope.spawn({
-                let state = state.clone();
-                move || repair_btc_state(state, "first-pass".into(), None, true)
+        let message = with_paused_repair(&state, "first-pass", |release| {
+            let receiver = arm_selection_probe(state.inner());
+            std::thread::scope(|scope| {
+                let switch = scope.spawn({
+                    let state = state.clone();
+                    let second_path = second_path.to_string_lossy().into_owned();
+                    move || {
+                        tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .unwrap()
+                            .block_on(open_wallet(state, second_path, "second-pass".into(), None))
+                    }
+                });
+                wait_for_selection_attempt(state.inner(), &receiver);
+                assert_eq!(
+                    state.wallet_path.lock().unwrap().as_deref(),
+                    Some(first_path.as_path()),
+                    "open_wallet changed the selection before repair released it"
+                );
+                release.wait();
+                switch.join().unwrap().unwrap();
             });
-            authorized.wait();
-            switch_blocked.store(state.try_lock_wallet_selection().is_err(), Ordering::SeqCst);
-            checked.wait();
-            repair.join().unwrap().unwrap()
         });
         assert!(message.contains("restart the node"));
-        assert!(
-            switch_blocked.load(Ordering::SeqCst),
-            "a wallet selection change must not enter during an authorized repair"
-        );
-        assert_eq!(
-            state.wallet_path.lock().unwrap().as_deref(),
-            Some(first_path.as_path()),
-            "the repair must not change the selected wallet"
-        );
-
-        open_wallet(
-            state.clone(),
-            second_path.to_string_lossy().into_owned(),
-            "second-pass".into(),
-            None,
-        )
-        .await
-        .unwrap();
         assert_eq!(
             state.wallet_path.lock().unwrap().as_deref(),
             Some(second_path.as_path())
         );
-
+        assert_repair_states(&first_path, &first_seed);
         for network in [bitcoin::Network::Bitcoin, bitcoin::Network::Regtest] {
-            let repaired =
-                crate::commands::node::btc_utxo_path(Some(&first_path), network, &first_seed);
-            assert!(
-                repaired.is_file(),
-                "the authorized repair did not create {}",
-                repaired.display()
-            );
             let untouched =
                 crate::commands::node::btc_utxo_path(Some(&second_path), network, &second_seed);
             assert!(
@@ -1888,7 +1982,11 @@ mod tests {
             crate::commands::node::btc_utxo_path(Some(&path), bitcoin::Network::Bitcoin, &seed);
         let held = vtorrent_btc::utxo::lock_state_path(&mainnet).unwrap();
         let error = repair_btc_state(state.clone(), "test-pass".into(), None, true).unwrap_err();
-        assert!(error.to_string().contains("in use"), "{error}");
+        assert!(matches!(error, TauriError::Wallet(_)), "{error:?}");
+        assert!(
+            error.to_string().contains("stop it and retry the repair"),
+            "{error}"
+        );
         assert!(
             !mainnet.with_extension("repair-pending").exists(),
             "a refused repair must not publish an intent"
@@ -1896,7 +1994,8 @@ mod tests {
         drop(held);
 
         let message = repair_btc_state(state.clone(), "test-pass".into(), None, true).unwrap();
-        assert!(message.contains("restart the node"));
+        assert!(message.contains("ready"));
+        assert!(!message.contains("created"), "{message}");
         for network in [bitcoin::Network::Bitcoin, bitcoin::Network::Regtest] {
             let state_path = crate::commands::node::btc_utxo_path(Some(&path), network, &seed);
             assert!(state_path.exists(), "missing {}", state_path.display());
@@ -1906,7 +2005,13 @@ mod tests {
         }
         let error = repair_btc_state(state.clone(), "test-pass".into(), None, true).unwrap_err();
         assert!(
-            error.to_string().contains("assisted recovery"),
+            matches!(error, TauriError::BtcAssistedRecovery(_)),
+            "{error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("preserve all files and use assisted recovery"),
             "an existing state must require review: {error}"
         );
         assert!(
@@ -1917,12 +2022,156 @@ mod tests {
     }
 
     #[test]
-    fn startup_waits_for_an_authorized_repair() {
-        use std::sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc, Barrier,
-        };
+    fn repair_success_with_totp_consumes_the_step_and_reports_ready() {
+        use totp_rs::{Algorithm, TOTP};
+        use vtorrent_wallet::otp::TotpSecret;
 
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+        let dir = unique_wallet_dir("repair-totp-ok");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wallet.vtr");
+        let mut wallet = Wallet::create("test-pass").unwrap();
+        let config = wallet.enable_2fa().unwrap();
+        let secret = TotpSecret::from_base32(&config.secret_base32()).unwrap();
+        let enrollment_code = secret.current_code().unwrap();
+        assert!(wallet.confirm_pending_2fa(&enrollment_code).unwrap());
+        wallet.save(&path).unwrap();
+        let seed = crate::commands::node::wallet_btc_seed(&wallet).unwrap();
+        *state.wallet.lock().unwrap() = Some(wallet);
+        *state.wallet_path.lock().unwrap() = Some(path.clone());
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let totp = TOTP::new(
+            Algorithm::SHA1,
+            6,
+            1,
+            30,
+            secret.as_bytes().to_vec(),
+            Some("vTorrent".into()),
+            "vTorrent-Wallet".into(),
+        )
+        .unwrap();
+        let repair_code = totp.generate((now / 30 + 1) * 30);
+
+        let message = repair_btc_state(
+            state.clone(),
+            "test-pass".into(),
+            Some(repair_code.clone()),
+            true,
+        )
+        .unwrap();
+        assert!(message.contains("ready"), "{message}");
+        assert!(!message.contains("created"), "{message}");
+        assert_repair_states(&path, &seed);
+
+        let error = repair_btc_state(state.clone(), "test-pass".into(), Some(repair_code), true)
+            .unwrap_err();
+        assert!(matches!(error, TauriError::Unauthorized(_)), "{error:?}");
+        assert!(error.to_string().contains("already been used"), "{error}");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn contended_repair_with_a_pending_record_reports_the_pending_class() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+        let dir = unique_wallet_dir("repair-contended");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wallet.vtr");
+        let wallet = Wallet::create("test-pass").unwrap();
+        wallet.save(&path).unwrap();
+        let seed = crate::commands::node::wallet_btc_seed(&wallet).unwrap();
+        *state.wallet.lock().unwrap() = Some(wallet);
+        *state.wallet_path.lock().unwrap() = Some(path.clone());
+
+        let mainnet =
+            crate::commands::node::btc_utxo_path(Some(&path), bitcoin::Network::Bitcoin, &seed);
+        let regtest =
+            crate::commands::node::btc_utxo_path(Some(&path), bitcoin::Network::Regtest, &seed);
+        let intent = mainnet.with_extension("repair-pending");
+        std::fs::write(&intent, b"pending").unwrap();
+        let main_lock = vtorrent_btc::utxo::lock_state_path(&mainnet).unwrap();
+        let reg_lock = vtorrent_btc::utxo::lock_state_path(&regtest).unwrap();
+        let error = repair_btc_state(state.clone(), "test-pass".into(), None, true).unwrap_err();
+        assert!(
+            matches!(error, TauriError::BtcRepairPending(_)),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().contains("wait for it to finish"),
+            "{error}"
+        );
+        drop(main_lock);
+        drop(reg_lock);
+        std::fs::remove_file(&intent).unwrap();
+
+        let main_lock = vtorrent_btc::utxo::lock_state_path(&mainnet).unwrap();
+        let reg_lock = vtorrent_btc::utxo::lock_state_path(&regtest).unwrap();
+        let error = repair_btc_state(state.clone(), "test-pass".into(), None, true).unwrap_err();
+        assert!(matches!(error, TauriError::Wallet(_)), "{error:?}");
+        assert!(
+            error.to_string().contains("stop it and retry the repair"),
+            "{error}"
+        );
+        drop(main_lock);
+        drop(reg_lock);
+        assert!(!mainnet.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn repair_error_classes_use_wrapper_text_and_variants() {
+        let dir = unique_wallet_dir("repair-error-classes");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mainnet = dir.join("btc_utxos-mainnet-0000000000000000.json");
+        let regtest = dir.join("btc_utxos-regtest-0000000000000000.json");
+        let paths = vtorrent_btc::repair::RepairPaths::new(mainnet.clone(), regtest).unwrap();
+        std::fs::write(mainnet.with_extension("repair-pending"), b"pending").unwrap();
+
+        let error = btc_repair_error(std::io::Error::from_raw_os_error(33), &paths);
+        assert!(
+            matches!(error, TauriError::BtcRepairPending(_)),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().contains("wait for it to finish"),
+            "{error}"
+        );
+
+        std::fs::remove_file(mainnet.with_extension("repair-pending")).unwrap();
+        let error = btc_repair_error(std::io::Error::from(std::io::ErrorKind::WouldBlock), &paths);
+        assert!(matches!(error, TauriError::Wallet(_)), "{error:?}");
+        assert!(
+            error.to_string().contains("stop it and retry the repair"),
+            "{error}"
+        );
+
+        std::fs::write(dir.join("btc_utxos.json"), b"legacy").unwrap();
+        let assisted = paths.run(&[0u8; 32]).unwrap_err();
+        assert!(vtorrent_btc::repair::requires_assisted_recovery(&assisted));
+        let error = btc_repair_error(assisted, &paths);
+        assert!(
+            matches!(error, TauriError::BtcAssistedRecovery(_)),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("preserve all files"), "{error}");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn startup_waits_for_an_authorized_repair() {
         let app = tauri::test::mock_builder()
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
@@ -1937,68 +2186,199 @@ mod tests {
         *state.wallet.lock().unwrap() = Some(wallet);
         *state.wallet_path.lock().unwrap() = Some(path.clone());
 
-        let authorized = Arc::new(Barrier::new(2));
-        let attempted = Arc::new(Barrier::new(2));
-        let checked = Arc::new(Barrier::new(2));
-        let release = Arc::new(Barrier::new(3));
-        let startup_blocked = Arc::new(AtomicBool::new(false));
-        let startup_opened = Arc::new(AtomicBool::new(false));
-        {
-            let authorized = Arc::clone(&authorized);
-            let release = Arc::clone(&release);
-            *state.repair_authorized_hook.lock().unwrap() = Some(Box::new(move || {
-                authorized.wait();
-                release.wait();
-            }));
-        }
-
-        std::thread::scope(|scope| {
-            let repair = scope.spawn({
-                let state = state.clone();
-                move || repair_btc_state(state, "test-pass".into(), None, true)
-            });
-            authorized.wait();
-            let startup = scope.spawn({
-                let state = state.clone();
-                let attempted = Arc::clone(&attempted);
-                let checked = Arc::clone(&checked);
-                let release = Arc::clone(&release);
-                let startup_blocked = Arc::clone(&startup_blocked);
-                let startup_opened = Arc::clone(&startup_opened);
-                let path = path.clone();
-                move || {
-                    attempted.wait();
-                    startup_blocked
-                        .store(state.try_lock_wallet_selection().is_err(), Ordering::SeqCst);
-                    checked.wait();
-                    release.wait();
-                    let _selection = state.lock_wallet_selection().unwrap();
-                    let mut opened = true;
-                    for network in [bitcoin::Network::Bitcoin, bitcoin::Network::Regtest] {
-                        opened &= crate::commands::node::open_btc_wallet_for_startup(
-                            &path, &seed, network,
-                        )
-                        .is_ok();
+        let message = with_paused_repair(&state, "test-pass", |release| {
+            let receiver = arm_selection_probe(state.inner());
+            std::thread::scope(|scope| {
+                let startup = scope.spawn({
+                    let state = state.clone();
+                    move || {
+                        let mut opened = true;
+                        for network in [bitcoin::Network::Bitcoin, bitcoin::Network::Regtest] {
+                            opened &= crate::commands::node::load_btc_wallet_for_node(
+                                state.inner(),
+                                network,
+                            )
+                            .map(|loaded| loaded.is_some())
+                            .unwrap_or(false);
+                        }
+                        opened
                     }
-                    startup_opened.store(opened, Ordering::SeqCst);
-                }
+                });
+                wait_for_selection_attempt(state.inner(), &receiver);
+                release.wait();
+                assert!(
+                    startup.join().unwrap(),
+                    "startup must open both networks after the repair completes"
+                );
             });
-            attempted.wait();
-            checked.wait();
-            release.wait();
-            let message = repair.join().unwrap().unwrap();
-            assert!(message.contains("restart the node"));
-            startup.join().unwrap();
         });
+        assert!(message.contains("restart the node"));
+        assert_repair_states(&path, &seed);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
-        assert!(
-            startup_blocked.load(Ordering::SeqCst),
-            "startup must not enter while an authorized repair holds the wallet"
+    #[test]
+    fn create_wallet_waits_for_an_authorized_repair() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+        let dir = unique_wallet_dir("repair-create-race");
+        std::fs::create_dir_all(&dir).unwrap();
+        let first_path = dir.join("first.vtr");
+        let created_path = dir.join("created.vtr");
+        let first = Wallet::create("first-pass").unwrap();
+        first.save(&first_path).unwrap();
+        let first_seed = crate::commands::node::wallet_btc_seed(&first).unwrap();
+        *state.wallet.lock().unwrap() = Some(first);
+        *state.wallet_path.lock().unwrap() = Some(first_path.clone());
+        state.set_app_data_dir(dir.clone());
+
+        let message = with_paused_repair(&state, "first-pass", |release| {
+            let receiver = arm_selection_probe(state.inner());
+            std::thread::scope(|scope| {
+                let command = scope.spawn({
+                    let state = state.clone();
+                    let created_path = created_path.to_string_lossy().into_owned();
+                    move || create_wallet(state, "new-pass".into(), created_path)
+                });
+                wait_for_selection_attempt(state.inner(), &receiver);
+                assert_eq!(
+                    state.wallet_path.lock().unwrap().as_deref(),
+                    Some(first_path.as_path()),
+                    "create_wallet changed the selection before repair released it"
+                );
+                release.wait();
+                command.join().unwrap().unwrap();
+            });
+        });
+        assert!(message.contains("restart the node"));
+        assert_eq!(
+            state.wallet_path.lock().unwrap().as_deref(),
+            Some(created_path.as_path())
         );
-        assert!(
-            startup_opened.load(Ordering::SeqCst),
-            "startup must open both networks after the repair completes"
+        assert!(created_path.exists());
+        assert_repair_states(&first_path, &first_seed);
+        let created_seed = {
+            let guard = state.wallet.lock().unwrap();
+            crate::commands::node::wallet_btc_seed(guard.as_ref().unwrap()).unwrap()
+        };
+        assert_repair_states(&created_path, &created_seed);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn import_legacy_wallet_waits_for_an_authorized_repair() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+        let dir = unique_wallet_dir("repair-import-race");
+        std::fs::create_dir_all(&dir).unwrap();
+        let first_path = dir.join("first.vtr");
+        let imported_path = dir.join("imported.vtr");
+        let first = Wallet::create("first-pass").unwrap();
+        first.save(&first_path).unwrap();
+        let first_seed = crate::commands::node::wallet_btc_seed(&first).unwrap();
+        *state.wallet.lock().unwrap() = Some(first);
+        *state.wallet_path.lock().unwrap() = Some(first_path.clone());
+        state.set_app_data_dir(dir.clone());
+        let payload = B64.encode(b"not a berkeley wallet");
+
+        let message = with_paused_repair(&state, "first-pass", |release| {
+            let receiver = arm_selection_probe(state.inner());
+            std::thread::scope(|scope| {
+                let command = scope.spawn({
+                    let state = state.clone();
+                    let imported_path = imported_path.to_string_lossy().into_owned();
+                    move || {
+                        import_legacy_wallet(state, payload, None, "new-pass".into(), imported_path)
+                    }
+                });
+                wait_for_selection_attempt(state.inner(), &receiver);
+                assert_eq!(
+                    state.wallet_path.lock().unwrap().as_deref(),
+                    Some(first_path.as_path()),
+                    "import changed the selection before repair released it"
+                );
+                release.wait();
+                let error = command.join().unwrap().unwrap_err();
+                assert!(matches!(error, TauriError::Migration(_)), "{error:?}");
+            });
+        });
+        assert!(message.contains("restart the node"));
+        assert_eq!(
+            state.wallet_path.lock().unwrap().as_deref(),
+            Some(first_path.as_path())
         );
+        assert!(!imported_path.exists());
+        assert_repair_states(&first_path, &first_seed);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn restore_backup_waits_for_an_authorized_repair() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+        let dir = unique_wallet_dir("repair-restore-race");
+        let source = dir.join("source");
+        let target = dir.join("target");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+
+        let source_path = source.join("wallet.vtr");
+        let source_wallet = Wallet::create("source-pass").unwrap();
+        source_wallet.save(&source_path).unwrap();
+        *state.wallet.lock().unwrap() = Some(source_wallet);
+        *state.wallet_path.lock().unwrap() = Some(source_path);
+        state.set_app_data_dir(source.clone());
+        let backup =
+            crate::commands::backup::create_backup(state.clone(), "source-pass".into(), None)
+                .unwrap();
+        let encoded = B64.encode(std::fs::read(backup.path).unwrap());
+
+        let first_path = dir.join("first.vtr");
+        let first = Wallet::create("first-pass").unwrap();
+        first.save(&first_path).unwrap();
+        let first_seed = crate::commands::node::wallet_btc_seed(&first).unwrap();
+        *state.wallet.lock().unwrap() = Some(first);
+        *state.wallet_path.lock().unwrap() = Some(first_path.clone());
+        state.set_app_data_dir(target.clone());
+
+        let message = with_paused_repair(&state, "first-pass", |release| {
+            let receiver = arm_selection_probe(state.inner());
+            std::thread::scope(|scope| {
+                let command = scope.spawn({
+                    let state = state.clone();
+                    move || {
+                        crate::commands::backup::restore_backup(
+                            state,
+                            encoded,
+                            "source-pass".into(),
+                            None,
+                            false,
+                        )
+                    }
+                });
+                wait_for_selection_attempt(state.inner(), &receiver);
+                assert_eq!(
+                    state.wallet_path.lock().unwrap().as_deref(),
+                    Some(first_path.as_path()),
+                    "restore changed the selection before repair released it"
+                );
+                release.wait();
+                command.join().unwrap().unwrap();
+            });
+        });
+        assert!(message.contains("restart the node"));
+        assert!(target.join("wallet.vtr").exists());
+        assert!(state.wallet_path.lock().unwrap().is_none());
+        assert_repair_states(&first_path, &first_seed);
         let _ = std::fs::remove_dir_all(dir);
     }
 

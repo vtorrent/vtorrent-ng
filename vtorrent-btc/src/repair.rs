@@ -52,6 +52,26 @@ struct AssistedRecovery {
     source: io::Error,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("BTC repair is pending; resume with wallet-owner authorization")]
+struct PendingRepair;
+
+/// True when a writer lock is contended.
+///
+/// Windows returns `ERROR_LOCK_VIOLATION` (33) from `fs2`; do not depend on
+/// std's error-kind mapping for that case. The raw value is checked on every
+/// target, but the wallet lock path never produces it on Unix.
+pub fn is_writer_contention(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::WouldBlock || error.raw_os_error() == Some(33)
+}
+
+/// True for the pending-record refusal returned by [`RepairPaths::ensure_idle`].
+pub fn is_repair_pending(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|cause| cause.is::<PendingRepair>())
+}
+
 /// True for an ownership conflict or invalid journal that another authenticated retry cannot fix.
 pub fn requires_assisted_recovery(error: &io::Error) -> bool {
     error
@@ -456,9 +476,7 @@ impl RepairPaths {
     /// Check while holding the network writer lock before opening either state.
     pub fn ensure_idle(&self) -> io::Result<()> {
         if present(&self.intent())? {
-            return Err(invalid(
-                "BTC repair is pending; resume with wallet-owner authorization",
-            ));
+            return Err(io::Error::new(io::ErrorKind::InvalidData, PendingRepair));
         }
         Ok(())
     }
@@ -752,6 +770,29 @@ mod tests {
         assert!(
             verify_artifact(&path, ROLES[0], &other_operation, artifact, current_volume).is_err()
         );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn pending_and_contention_errors_are_typed() {
+        let (dir, paths) = fixture("classes");
+        fs::write(paths.intent(), b"pending").unwrap();
+        let pending = paths.ensure_idle().unwrap_err();
+        assert!(is_repair_pending(&pending), "{pending}");
+        assert!(!requires_assisted_recovery(&pending), "{pending}");
+        assert!(!is_writer_contention(&pending), "{pending}");
+
+        let unix_contention = io::Error::from(io::ErrorKind::WouldBlock);
+        assert!(is_writer_contention(&unix_contention));
+        assert!(!is_repair_pending(&unix_contention));
+
+        let windows_contention = io::Error::from_raw_os_error(33);
+        assert!(is_writer_contention(&windows_contention));
+
+        let other = io::Error::from(io::ErrorKind::PermissionDenied);
+        assert!(!is_writer_contention(&other));
+        assert!(!is_repair_pending(&other));
+
         fs::remove_dir_all(dir).unwrap();
     }
 
