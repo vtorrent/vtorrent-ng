@@ -25,7 +25,10 @@ mod test_hooks {
     /// Exit status used by the interruption child so the parent can prove the
     /// requested persistent step was reached instead of a clean completion.
     pub(super) const EXIT_CODE: i32 = 86;
+    pub(super) const CHILD_ENV: &str = "VTR_REPAIR_CHILD";
+    pub(super) const INTERRUPT_CHILD: &str = "interrupt";
     pub(super) const INTERRUPT_ENV: &str = "VTR_REPAIR_INTERRUPT";
+    pub(super) const OPERATION_ENV: &str = "VTR_REPAIR_OPERATION_FILE";
 
     pub(super) const STAGE_CREATED: &str = "stage-created";
     pub(super) const STAGED_MAINNET_MARKER: &str = "staged-mainnet-marker";
@@ -71,6 +74,10 @@ mod test_hooks {
         STAGE_REMOVED,
     ];
 
+    fn interrupt_child() -> bool {
+        std::env::var(CHILD_ENV).ok().as_deref() == Some(INTERRUPT_CHILD)
+    }
+
     fn interrupt_request() -> Option<&'static str> {
         static REQUEST: OnceLock<Option<String>> = OnceLock::new();
         REQUEST
@@ -78,8 +85,31 @@ mod test_hooks {
             .as_deref()
     }
 
+    thread_local! {
+        static CURRENT_OPERATION: Cell<Option<[u8; 16]>> = const { Cell::new(None) };
+    }
+
+    pub(super) fn operation(operation: &[u8; 16]) {
+        CURRENT_OPERATION.with(|current| current.set(Some(*operation)));
+    }
+
+    pub(super) fn record_operation() {
+        let Some(path) = std::env::var_os(OPERATION_ENV) else {
+            return;
+        };
+        if let Some(operation) = CURRENT_OPERATION.with(Cell::get) {
+            let _ = std::fs::write(path, operation);
+        }
+    }
+
     pub(super) fn after(point: &str) {
+        // Only the explicit interrupt child may terminate at a point. An
+        // inherited VTR_REPAIR_INTERRUPT must never kill a test process.
+        if !interrupt_child() {
+            return;
+        }
         if interrupt_request() == Some(point) {
+            record_operation();
             std::process::exit(EXIT_CODE);
         }
     }
@@ -663,6 +693,8 @@ impl RepairPaths {
         if intent.version != 2 || intent.wallet != *wallet_id {
             return Err(invalid("BTC repair record version or wallet mismatch"));
         }
+        #[cfg(test)]
+        test_hooks::operation(&intent.operation);
         let stage = self.stage(&intent.operation);
         if !fs::symlink_metadata(&stage)
             .map_err(|e| validation("BTC repair staging directory", e))?
@@ -719,9 +751,28 @@ impl RepairPaths {
         sync_dir(self.dir())?;
         #[cfg(test)]
         test_hooks::after(test_hooks::RETIREMENT_SYNCED);
-        let _ = fs::remove_dir(stage);
+        // Cleanup is best-effort: both final states, both markers, and the
+        // retired intent are already durable. A leftover empty private stage is
+        // inert debris and never authorizes a later repair.
+        let removed = match fs::remove_dir(&stage) {
+            Ok(()) => true,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+            Err(error) => {
+                tracing::warn!(
+                    stage = %stage.display(),
+                    %error,
+                    "could not remove the empty BTC repair staging directory"
+                );
+                false
+            }
+        };
+        if removed {
+            sync_dir(self.dir())?;
+        }
         #[cfg(test)]
-        test_hooks::after(test_hooks::STAGE_REMOVED);
+        if removed {
+            test_hooks::after(test_hooks::STAGE_REMOVED);
+        }
         Ok(())
     }
     fn intent(&self) -> PathBuf {
@@ -729,6 +780,8 @@ impl RepairPaths {
     }
     fn prepare(&self, wallet_id: &[u8; 32]) -> io::Result<PathBuf> {
         let operation = rand::random();
+        #[cfg(test)]
+        test_hooks::operation(&operation);
         let stage = self.stage(&operation);
         let mut builder = fs::DirBuilder::new();
         #[cfg(unix)]
@@ -806,9 +859,10 @@ mod tests {
     }
 
     const SEED: [u8; 64] = [7; 64];
-    const CHILD_ENV: &str = "VTR_REPAIR_CHILD";
+    const CHILD_ENV: &str = test_hooks::CHILD_ENV;
     const CHILD_DIR_ENV: &str = "VTR_REPAIR_CHILD_DIR";
     const RESUME_REFUSAL_ENV: &str = "VTR_REPAIR_ALLOW_REFUSAL";
+    const CHILD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
     fn paths_for(dir: &Path) -> RepairPaths {
         RepairPaths::new(
@@ -825,7 +879,7 @@ mod tests {
 
     fn run_child_mode(mode: &str) {
         match mode {
-            "interrupt" => {
+            test_hooks::INTERRUPT_CHILD => {
                 let paths = child_paths();
                 paths.run(&ID).unwrap();
                 panic!("repair completed without reaching the requested interruption point");
@@ -833,7 +887,10 @@ mod tests {
             "resume" => {
                 let allow_refusal = std::env::var_os(RESUME_REFUSAL_ENV).is_some();
                 match child_paths().run(&ID) {
-                    Ok(()) => println!("REPAIR_RESUME=completed"),
+                    Ok(()) => {
+                        test_hooks::record_operation();
+                        println!("REPAIR_RESUME=completed");
+                    }
                     Err(error) if allow_refusal && requires_assisted_recovery(&error) => {
                         println!("REPAIR_RESUME=refused");
                     }
@@ -859,6 +916,9 @@ mod tests {
             .args(["--exact", test, "--nocapture"])
             .env(CHILD_ENV, mode)
             .env(CHILD_DIR_ENV, dir)
+            .env_remove(test_hooks::INTERRUPT_ENV)
+            .env_remove(RESUME_REFUSAL_ENV)
+            .env_remove(test_hooks::OPERATION_ENV)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit());
@@ -871,6 +931,7 @@ mod tests {
         dir: &Path,
         interrupt: Option<&str>,
         allow_refusal: bool,
+        operation_file: Option<&Path>,
     ) -> std::process::Output {
         let mut command = std::process::Command::new(std::env::current_exe().unwrap());
         command
@@ -889,16 +950,307 @@ mod tests {
         } else {
             command.env_remove(RESUME_REFUSAL_ENV);
         }
+        match operation_file {
+            Some(path) => command.env(test_hooks::OPERATION_ENV, path),
+            None => command.env_remove(test_hooks::OPERATION_ENV),
+        };
         let child = crate::utxo::fork_gate::GATE.spawn(|| command.spawn().unwrap());
-        child.wait_with_output().unwrap()
+        wait_with_output_bounded(child)
     }
 
-    fn published_files(paths: &RepairPaths) -> Vec<(PathBuf, Vec<u8>)> {
+    fn wait_with_output_bounded(child: std::process::Child) -> std::process::Output {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            let output = child.wait_with_output().unwrap();
+            let _ = done_tx.send(output);
+        });
+        match done_rx.recv_timeout(CHILD_TIMEOUT) {
+            Ok(output) => {
+                waiter.join().unwrap();
+                output
+            }
+            Err(_) => panic!("child process did not finish within {CHILD_TIMEOUT:?}"),
+        }
+    }
+
+    fn wait_bounded(mut child: std::process::Child) -> std::process::ExitStatus {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            let status = child.wait().unwrap();
+            let _ = done_tx.send(status);
+        });
+        match done_rx.recv_timeout(CHILD_TIMEOUT) {
+            Ok(status) => {
+                waiter.join().unwrap();
+                status
+            }
+            Err(_) => panic!("child process did not exit within {CHILD_TIMEOUT:?}"),
+        }
+    }
+
+    fn exists_strict(path: &Path) -> bool {
+        match fs::symlink_metadata(path) {
+            Ok(_) => true,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => panic!("cannot inspect {}: {error}", path.display()),
+        }
+    }
+
+    fn published_indices(paths: &RepairPaths) -> Vec<usize> {
+        paths
+            .targets()
+            .iter()
+            .enumerate()
+            .filter(|(_, path)| exists_strict(path))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    fn published_files(paths: &RepairPaths) -> Vec<(usize, PathBuf, Vec<u8>)> {
         paths
             .targets()
             .into_iter()
-            .filter_map(|path| fs::read(&path).ok().map(|bytes| (path, bytes)))
+            .enumerate()
+            .filter_map(|(index, path)| {
+                if exists_strict(&path) {
+                    Some((index, path.clone(), fs::read(&path).unwrap()))
+                } else {
+                    None
+                }
+            })
             .collect()
+    }
+
+    fn staging_dirs(dir: &Path) -> Vec<PathBuf> {
+        let mut stages: Vec<PathBuf> = fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.is_dir()
+                    && path
+                        .file_name()
+                        .is_some_and(|name| name.to_string_lossy().starts_with(".btc-repair-"))
+            })
+            .collect();
+        stages.sort();
+        stages
+    }
+
+    fn staged_roles(stage: &Path) -> Vec<&'static str> {
+        let names: Vec<String> = fs::read_dir(stage)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        for name in &names {
+            assert!(
+                fs::symlink_metadata(stage.join(name)).unwrap().is_file(),
+                "staging entry {name} is not a regular file"
+            );
+            assert!(
+                ROLES.contains(&name.as_str()) || name == "intent",
+                "unexpected staging entry {name}"
+            );
+        }
+        ROLES
+            .iter()
+            .copied()
+            .filter(|role| names.iter().any(|name| name == role))
+            .collect()
+    }
+
+    struct ExpectedState {
+        intent: bool,
+        stage: Option<(Vec<&'static str>, bool)>,
+        published: Vec<usize>,
+    }
+
+    fn expected_state(point: &str) -> ExpectedState {
+        use test_hooks::*;
+        let roles = |count: usize| ROLES[..count].to_vec();
+        let from = |first: usize| ROLES[first..].to_vec();
+        match point {
+            STAGE_CREATED => ExpectedState {
+                intent: false,
+                stage: Some((vec![], false)),
+                published: vec![],
+            },
+            STAGED_MAINNET_MARKER => ExpectedState {
+                intent: false,
+                stage: Some((roles(1), false)),
+                published: vec![],
+            },
+            STAGED_MAINNET_STATE => ExpectedState {
+                intent: false,
+                stage: Some((roles(2), false)),
+                published: vec![],
+            },
+            STAGED_REGTEST_MARKER => ExpectedState {
+                intent: false,
+                stage: Some((roles(3), false)),
+                published: vec![],
+            },
+            STAGED_REGTEST_STATE => ExpectedState {
+                intent: false,
+                stage: Some((roles(4), false)),
+                published: vec![],
+            },
+            DRAFT_INTENT | STAGE_SYNCED | WALLET_DIR_SYNCED => ExpectedState {
+                intent: false,
+                stage: Some((roles(4), true)),
+                published: vec![],
+            },
+            INTENT_PUBLISHED | PUBLISH_SYNCED | RESUME_SYNCED => ExpectedState {
+                intent: true,
+                stage: Some((roles(4), false)),
+                published: vec![],
+            },
+            MAINNET_MARKER_PUBLISHED => ExpectedState {
+                intent: true,
+                stage: Some((from(1), false)),
+                published: vec![0],
+            },
+            MAINNET_STATE_PUBLISHED => ExpectedState {
+                intent: true,
+                stage: Some((from(2), false)),
+                published: vec![0, 1],
+            },
+            REGTEST_MARKER_PUBLISHED => ExpectedState {
+                intent: true,
+                stage: Some((from(3), false)),
+                published: vec![0, 1, 2],
+            },
+            REGTEST_STATE_PUBLISHED => ExpectedState {
+                intent: true,
+                stage: Some((from(4), false)),
+                published: vec![0, 1, 2, 3],
+            },
+            MOVES_SYNCED | STAGE_MOVES_SYNCED => ExpectedState {
+                intent: true,
+                stage: Some((vec![], false)),
+                published: vec![0, 1, 2, 3],
+            },
+            INTENT_RETIRED | RETIREMENT_SYNCED => ExpectedState {
+                intent: false,
+                stage: Some((vec![], false)),
+                published: vec![0, 1, 2, 3],
+            },
+            STAGE_REMOVED => ExpectedState {
+                intent: false,
+                stage: None,
+                published: vec![0, 1, 2, 3],
+            },
+            other => panic!("unknown interruption point {other}"),
+        }
+    }
+
+    fn read_operation(path: &Path) -> [u8; 16] {
+        let bytes = fs::read(path).unwrap_or_else(|error| {
+            panic!("missing operation capture {}: {error}", path.display())
+        });
+        let Ok(operation) = bytes.as_slice().try_into() else {
+            panic!(
+                "operation capture {} has {} bytes",
+                path.display(),
+                bytes.len()
+            );
+        };
+        operation
+    }
+
+    fn assert_expected_interrupt_state(
+        point: &str,
+        dir: &Path,
+        paths: &RepairPaths,
+        operation_file: &Path,
+    ) {
+        let expected = expected_state(point);
+        let operation = read_operation(operation_file);
+        assert_eq!(
+            exists_strict(&paths.intent()),
+            expected.intent,
+            "{point}: intent presence"
+        );
+        let stages = staging_dirs(dir);
+        match &expected.stage {
+            None => assert!(stages.is_empty(), "{point}: unexpected staging {stages:?}"),
+            Some((roles, draft)) => {
+                assert_eq!(
+                    stages.len(),
+                    1,
+                    "{point}: expected exactly one staging directory"
+                );
+                let stage = &stages[0];
+                assert_eq!(
+                    stage.file_name().unwrap().to_string_lossy().into_owned(),
+                    format!(".btc-repair-{}", hex::encode(operation)),
+                    "{point}: staging directory does not match the captured operation"
+                );
+                assert_eq!(staged_roles(stage), *roles, "{point}: staged roles");
+                assert_eq!(
+                    exists_strict(&stage.join("intent")),
+                    *draft,
+                    "{point}: draft intent presence"
+                );
+            }
+        }
+        assert_eq!(
+            published_indices(paths),
+            expected.published,
+            "{point}: published targets"
+        );
+        if expected.intent {
+            let intent: Intent =
+                serde_json::from_slice(&fs::read(paths.intent()).unwrap()).unwrap();
+            assert_eq!(
+                intent.operation, operation,
+                "{point}: intent operation does not match the captured operation"
+            );
+        }
+    }
+
+    fn assert_target_provenance(paths: &RepairPaths, operation: &[u8; 16]) {
+        for (role, target) in ROLES.iter().zip(paths.targets()) {
+            inspect_tagged(&target, role, operation).unwrap_or_else(|error| {
+                panic!(
+                    "{} does not carry the expected operation tag: {error}",
+                    target.display()
+                )
+            });
+        }
+    }
+
+    fn assert_completed_repair_refuses(paths: &RepairPaths) {
+        let error = paths.run(&ID).unwrap_err();
+        assert!(requires_assisted_recovery(&error), "{error}");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "BTC repair preflight: BTC file {} already exists; preserve files; assisted recovery required",
+                paths.targets()[0].display()
+            ),
+            "unexpected completed-repair refusal"
+        );
+    }
+
+    fn assert_empty_state_and_markers(paths: &RepairPaths) {
+        let expected = UtxoSet::new().serialized().unwrap();
+        for (state, marker) in [
+            (&paths.mainnet, paths.mainnet.with_extension("initialized")),
+            (&paths.regtest, paths.regtest.with_extension("initialized")),
+        ] {
+            assert_eq!(
+                fs::read(state).unwrap(),
+                expected,
+                "{} is not the empty attested state",
+                state.display()
+            );
+            assert_eq!(
+                fs::read(&marker).unwrap(),
+                INITIALIZED,
+                "{} is not the initialization marker",
+                marker.display()
+            );
+        }
     }
 
     fn tree_snapshot(dir: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
@@ -919,16 +1271,11 @@ mod tests {
     }
 
     fn staging_present(dir: &Path) -> bool {
-        fs::read_dir(dir).unwrap().any(|entry| {
-            entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".btc-repair-")
-        })
+        !staging_dirs(dir).is_empty()
     }
 
     fn open_both_after_repair(paths: &RepairPaths) {
+        assert_empty_state_and_markers(paths);
         for (network, path) in [
             (bitcoin::Network::Bitcoin, &paths.mainnet),
             (bitcoin::Network::Regtest, &paths.regtest),
@@ -1156,6 +1503,7 @@ mod tests {
     fn publishes_both_states_once() {
         let (dir, paths) = fixture("fresh");
         paths.run(&ID).unwrap();
+        assert_empty_state_and_markers(&paths);
         for path in [&paths.mainnet, &paths.regtest] {
             assert!(path.is_file());
             assert_eq!(
@@ -1170,7 +1518,7 @@ mod tests {
         ] {
             crate::wallet::BtcWallet::with_persistence([0; 64], network, path.clone()).unwrap();
         }
-        assert!(paths.run(&ID).is_err());
+        assert_completed_repair_refuses(&paths);
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1184,8 +1532,16 @@ mod tests {
 
         for point in test_hooks::ALL_POINTS {
             let (dir, paths) = fixture(&format!("exit-{point}"));
+            let operation_file = dir.with_extension("operation");
 
-            let output = run_repair_child(TEST, "interrupt", &dir, Some(point), false);
+            let output = run_repair_child(
+                TEST,
+                test_hooks::INTERRUPT_CHILD,
+                &dir,
+                Some(point),
+                false,
+                Some(&operation_file),
+            );
             assert_eq!(
                 output.status.code(),
                 Some(test_hooks::EXIT_CODE),
@@ -1194,13 +1550,16 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
 
-            let published = published_files(&paths);
+            let interrupted_operation = read_operation(&operation_file);
+            assert_expected_interrupt_state(point, &dir, &paths, &operation_file);
             if paths.intent().exists() {
                 let error = paths.ensure_idle().unwrap_err();
                 assert!(is_repair_pending(&error), "{point}: {error}");
             } else {
                 paths.ensure_idle().unwrap();
             }
+            let published = published_files(&paths);
+            let intent_at_interrupt = expected_state(point).intent;
             let before = tree_snapshot(&dir);
 
             let retired = matches!(
@@ -1209,7 +1568,8 @@ mod tests {
                     | test_hooks::RETIREMENT_SYNCED
                     | test_hooks::STAGE_REMOVED
             );
-            let output = run_repair_child(TEST, "resume", &dir, None, retired);
+            let output =
+                run_repair_child(TEST, "resume", &dir, None, retired, Some(&operation_file));
             let stdout = String::from_utf8_lossy(&output.stdout);
             assert!(
                 output.status.success(),
@@ -1226,16 +1586,35 @@ mod tests {
                     before,
                     "{point}: a refused repeat changed wallet files"
                 );
+                assert_eq!(
+                    read_operation(&operation_file),
+                    interrupted_operation,
+                    "{point}: a refused repeat started a new operation"
+                );
+                assert_target_provenance(&paths, &interrupted_operation);
             } else {
                 assert!(
                     stdout.contains("REPAIR_RESUME=completed"),
                     "{point}: resume did not complete: {stdout}"
                 );
-                for (path, bytes) in &published {
+                let resumed_operation = read_operation(&operation_file);
+                if intent_at_interrupt {
+                    assert_eq!(
+                        resumed_operation, interrupted_operation,
+                        "{point}: resume did not use the captured intent"
+                    );
+                } else {
+                    assert_ne!(
+                        resumed_operation, interrupted_operation,
+                        "{point}: resume adopted the orphan operation"
+                    );
+                }
+                assert_target_provenance(&paths, &resumed_operation);
+                for (index, path, bytes) in &published {
                     assert_eq!(
                         &fs::read(path).unwrap(),
                         bytes,
-                        "{point}: {} was rewritten after publication",
+                        "{point}: target {index} {} was rewritten after publication",
                         path.display()
                     );
                 }
@@ -1248,15 +1627,15 @@ mod tests {
             open_both_after_repair(&paths);
 
             let before_repeat = tree_snapshot(&dir);
-            let error = paths.run(&ID).unwrap_err();
-            assert!(requires_assisted_recovery(&error), "{point}: {error}");
+            assert_completed_repair_refuses(&paths);
             assert_eq!(
                 tree_snapshot(&dir),
                 before_repeat,
                 "{point}: a refused repeat request changed wallet files"
             );
 
-            fs::remove_dir_all(dir).unwrap();
+            fs::remove_dir_all(&dir).unwrap();
+            let _ = fs::remove_file(&operation_file);
         }
     }
 
@@ -1301,16 +1680,16 @@ mod tests {
         assert!(!staging_present(&dir));
 
         let _ = child.kill();
-        assert!(!child.wait().unwrap().success());
-        reader.join().unwrap();
         drop(child.stdin.take());
+        assert!(!wait_bounded(child).success());
+        reader.join().unwrap();
 
         for path in [&paths.mainnet, &paths.regtest] {
             drop(lock_state_path(path).unwrap());
         }
         paths.run(&ID).unwrap();
         open_both_after_repair(&paths);
-        assert!(requires_assisted_recovery(&paths.run(&ID).unwrap_err()));
+        assert_completed_repair_refuses(&paths);
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -1373,5 +1752,92 @@ mod tests {
         paths.run(&ID).unwrap();
         open_both_after_repair(&paths);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn orphan_stage_is_not_adopted_or_cleaned_up() {
+        const TEST: &str = "repair::tests::orphan_stage_is_not_adopted_or_cleaned_up";
+        if let Some(mode) = std::env::var_os(CHILD_ENV) {
+            run_child_mode(mode.to_str().unwrap());
+            return;
+        }
+
+        let (dir, paths) = fixture("orphan-stage");
+        let operation_file = dir.with_extension("operation");
+        let output = run_repair_child(
+            TEST,
+            test_hooks::INTERRUPT_CHILD,
+            &dir,
+            Some(test_hooks::STAGED_MAINNET_STATE),
+            false,
+            Some(&operation_file),
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(test_hooks::EXIT_CODE),
+            "orphan interruption was not reached; stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let orphan_operation = read_operation(&operation_file);
+        assert_expected_interrupt_state(
+            test_hooks::STAGED_MAINNET_STATE,
+            &dir,
+            &paths,
+            &operation_file,
+        );
+
+        let stages = staging_dirs(&dir);
+        assert_eq!(stages.len(), 1, "expected one orphan stage");
+        let orphan_stage = stages[0].clone();
+        let orphan_state = orphan_stage.join("mainnet-state");
+        inspect_tagged(&orphan_state, "mainnet-state", &orphan_operation).unwrap();
+        let mutated = b"mutated orphan state\n".to_vec();
+        fs::write(&orphan_state, &mutated).unwrap();
+        assert_eq!(fs::read(&orphan_state).unwrap(), mutated);
+        inspect_tagged(&orphan_state, "mainnet-state", &orphan_operation).unwrap();
+        let orphan_before = tree_snapshot(&orphan_stage);
+
+        let output = run_repair_child(TEST, "resume", &dir, None, false, Some(&operation_file));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "resume failed; stdout: {stdout}; stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            stdout.contains("REPAIR_RESUME=completed"),
+            "resume did not complete: {stdout}"
+        );
+
+        let resumed_operation = read_operation(&operation_file);
+        assert_ne!(resumed_operation, orphan_operation);
+        assert_eq!(
+            tree_snapshot(&orphan_stage),
+            orphan_before,
+            "the orphan stage was changed or adopted"
+        );
+        assert_eq!(fs::read(&orphan_state).unwrap(), mutated);
+        inspect_tagged(&orphan_state, "mainnet-state", &orphan_operation).unwrap();
+        assert_target_provenance(&paths, &resumed_operation);
+        for (role, target) in ROLES.iter().zip(paths.targets()) {
+            assert!(
+                inspect_tagged(&target, role, &orphan_operation).is_err(),
+                "{} carries the orphan operation tag",
+                target.display()
+            );
+        }
+
+        open_both_after_repair(&paths);
+        let before_repeat = tree_snapshot(&dir);
+        assert_completed_repair_refuses(&paths);
+        assert_eq!(
+            tree_snapshot(&dir),
+            before_repeat,
+            "a refused repeat changed the orphan or final state"
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
+        let _ = fs::remove_file(&operation_file);
     }
 }

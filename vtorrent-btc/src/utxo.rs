@@ -167,6 +167,8 @@ pub(crate) mod fork_gate {
         }
 
         pub(crate) fn spawn<T>(&'static self, spawn: impl FnOnce() -> T) -> T {
+            const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
             struct Release(&'static Gate);
 
             impl Drop for Release {
@@ -177,9 +179,20 @@ pub(crate) mod fork_gate {
                 }
             }
 
+            let deadline = std::time::Instant::now() + LOCK_WAIT;
             let mut state = self.state.lock().unwrap();
             while state.holders > 0 {
-                state = self.wake.wait(state).unwrap();
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                assert!(
+                    !remaining.is_zero(),
+                    "fork gate: state locks were held for more than {LOCK_WAIT:?}"
+                );
+                let (next, wait) = self.wake.wait_timeout(state, remaining).unwrap();
+                state = next;
+                assert!(
+                    !wait.timed_out() || state.holders == 0,
+                    "fork gate: state locks were held for more than {LOCK_WAIT:?}"
+                );
             }
             state.spawning = true;
             drop(state);
@@ -208,6 +221,9 @@ pub type StateLock = std::fs::File;
 
 /// In test builds the lock also holds the fork gate, so a child can only be
 /// forked when no writer lock is open. Production builds use `File` directly.
+///
+/// `file` must stay before `_gate`: fields drop in declaration order, so the
+/// lock file closes before the gate allows another fork.
 #[cfg(test)]
 pub struct StateLock {
     file: std::fs::File,
