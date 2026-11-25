@@ -1851,6 +1851,22 @@ mod tests {
         }
     }
 
+    fn snapshot_wallet_files(dir: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .filter(|entry| entry.path().is_file())
+            .map(|entry| {
+                (
+                    entry.file_name().to_string_lossy().into_owned(),
+                    std::fs::read(entry.path()).unwrap(),
+                )
+            })
+            .collect();
+        entries.sort();
+        entries
+    }
+
     #[test]
     fn repair_authorization_failures_create_no_intent() {
         use vtorrent_wallet::otp::TotpSecret;
@@ -2063,6 +2079,7 @@ mod tests {
                 crate::commands::node::open_btc_wallet_for_startup(&path, &seed, network).unwrap();
             drop(opened);
         }
+        let completed = snapshot_wallet_files(&dir);
         let error = repair_btc_state(state.clone(), "test-pass".into(), None, true).unwrap_err();
         assert!(
             matches!(error, TauriError::BtcAssistedRecovery(_)),
@@ -2077,6 +2094,20 @@ mod tests {
         assert!(
             repair_btc_state(state.clone(), "test-pass".into(), None, false).is_err(),
             "repair requires an explicit attestation"
+        );
+        assert_eq!(
+            snapshot_wallet_files(&dir),
+            completed,
+            "a refused repeat request changed wallet files"
+        );
+        assert!(!mainnet.with_extension("repair-pending").exists());
+        assert!(
+            !std::fs::read_dir(&dir).unwrap().any(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".btc-repair-")),
+            "a completed repair left staging behind"
         );
         let _ = std::fs::remove_dir_all(dir);
     }

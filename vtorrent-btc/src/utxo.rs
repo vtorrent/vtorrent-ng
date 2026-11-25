@@ -125,12 +125,113 @@ fn sync_parent(path: &Path) -> std::io::Result<()> {
     std::fs::File::open(parent)?.sync_all()
 }
 
+/// Test-only serialization between state locks and child-process forks.
+///
+/// On Unix a file lock belongs to the open file description, so forking while
+/// another test thread holds a state lock copies that descriptor into the
+/// child. The child then keeps the lock alive after the holder drops it, until
+/// the child execs. A child forked only while no state lock is held cannot
+/// capture one, which keeps unrelated parallel tests deterministic.
+#[cfg(test)]
+pub(crate) mod fork_gate {
+    use std::sync::{Condvar, Mutex};
+
+    struct State {
+        holders: usize,
+        spawning: bool,
+    }
+
+    pub(crate) struct Gate {
+        state: Mutex<State>,
+        wake: Condvar,
+    }
+
+    impl Gate {
+        pub(crate) const fn new() -> Self {
+            Self {
+                state: Mutex::new(State {
+                    holders: 0,
+                    spawning: false,
+                }),
+                wake: Condvar::new(),
+            }
+        }
+
+        pub(crate) fn hold(&'static self) -> Guard {
+            let mut state = self.state.lock().unwrap();
+            while state.spawning {
+                state = self.wake.wait(state).unwrap();
+            }
+            state.holders += 1;
+            Guard { gate: self }
+        }
+
+        pub(crate) fn spawn<T>(&'static self, spawn: impl FnOnce() -> T) -> T {
+            struct Release(&'static Gate);
+
+            impl Drop for Release {
+                fn drop(&mut self) {
+                    let mut state = self.0.state.lock().unwrap();
+                    state.spawning = false;
+                    self.0.wake.notify_all();
+                }
+            }
+
+            let mut state = self.state.lock().unwrap();
+            while state.holders > 0 {
+                state = self.wake.wait(state).unwrap();
+            }
+            state.spawning = true;
+            drop(state);
+            let _release = Release(self);
+            spawn()
+        }
+    }
+
+    pub(crate) struct Guard {
+        gate: &'static Gate,
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let mut state = self.gate.state.lock().unwrap();
+            state.holders -= 1;
+            self.gate.wake.notify_all();
+        }
+    }
+
+    pub(crate) static GATE: Gate = Gate::new();
+}
+
+#[cfg(not(test))]
+pub type StateLock = std::fs::File;
+
+/// In test builds the lock also holds the fork gate, so a child can only be
+/// forked when no writer lock is open. Production builds use `File` directly.
+#[cfg(test)]
+pub struct StateLock {
+    file: std::fs::File,
+    _gate: fork_gate::Guard,
+}
+
+#[cfg(test)]
+impl std::fmt::Debug for StateLock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StateLock")
+            .field("file", &self.file)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Acquire the single-writer lock for a wallet-state path.
 ///
 /// The OS releases the lock when the file is dropped or the process exits, so a
 /// crash cannot leave a stale lock.
-pub fn lock_state_path(path: &Path) -> std::io::Result<std::fs::File> {
+pub fn lock_state_path(path: &Path) -> std::io::Result<StateLock> {
     use fs2::FileExt;
+
+    #[cfg(test)]
+    let gate = fork_gate::GATE.hold();
 
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if !metadata.file_type().is_file() => {
@@ -185,6 +286,8 @@ pub fn lock_state_path(path: &Path) -> std::io::Result<std::fs::File> {
             },
         )
     })?;
+    #[cfg(test)]
+    let file = StateLock { file, _gate: gate };
     Ok(file)
 }
 

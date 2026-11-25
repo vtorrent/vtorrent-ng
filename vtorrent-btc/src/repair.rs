@@ -15,6 +15,123 @@ const ROLES: [&str; 4] = [
     "regtest-state",
 ];
 
+/// Test-only seams. None of this module, its call sites, or its environment
+/// variable exists in a production build because it is compiled out with
+/// `cfg(test)`.
+#[cfg(test)]
+mod test_hooks {
+    use std::{cell::Cell, sync::OnceLock};
+
+    /// Exit status used by the interruption child so the parent can prove the
+    /// requested persistent step was reached instead of a clean completion.
+    pub(super) const EXIT_CODE: i32 = 86;
+    pub(super) const INTERRUPT_ENV: &str = "VTR_REPAIR_INTERRUPT";
+
+    pub(super) const STAGE_CREATED: &str = "stage-created";
+    pub(super) const STAGED_MAINNET_MARKER: &str = "staged-mainnet-marker";
+    pub(super) const STAGED_MAINNET_STATE: &str = "staged-mainnet-state";
+    pub(super) const STAGED_REGTEST_MARKER: &str = "staged-regtest-marker";
+    pub(super) const STAGED_REGTEST_STATE: &str = "staged-regtest-state";
+    pub(super) const DRAFT_INTENT: &str = "draft-intent";
+    pub(super) const STAGE_SYNCED: &str = "stage-synced";
+    pub(super) const WALLET_DIR_SYNCED: &str = "wallet-dir-synced";
+    pub(super) const INTENT_PUBLISHED: &str = "intent-published";
+    pub(super) const PUBLISH_SYNCED: &str = "publish-synced";
+    pub(super) const RESUME_SYNCED: &str = "resume-synced";
+    pub(super) const MAINNET_MARKER_PUBLISHED: &str = "mainnet-marker-published";
+    pub(super) const MAINNET_STATE_PUBLISHED: &str = "mainnet-state-published";
+    pub(super) const REGTEST_MARKER_PUBLISHED: &str = "regtest-marker-published";
+    pub(super) const REGTEST_STATE_PUBLISHED: &str = "regtest-state-published";
+    pub(super) const MOVES_SYNCED: &str = "moves-synced";
+    pub(super) const STAGE_MOVES_SYNCED: &str = "stage-moves-synced";
+    pub(super) const INTENT_RETIRED: &str = "intent-retired";
+    pub(super) const RETIREMENT_SYNCED: &str = "retirement-synced";
+    pub(super) const STAGE_REMOVED: &str = "stage-removed";
+
+    pub(super) const ALL_POINTS: [&str; 20] = [
+        STAGE_CREATED,
+        STAGED_MAINNET_MARKER,
+        STAGED_MAINNET_STATE,
+        STAGED_REGTEST_MARKER,
+        STAGED_REGTEST_STATE,
+        DRAFT_INTENT,
+        STAGE_SYNCED,
+        WALLET_DIR_SYNCED,
+        INTENT_PUBLISHED,
+        PUBLISH_SYNCED,
+        RESUME_SYNCED,
+        MAINNET_MARKER_PUBLISHED,
+        MAINNET_STATE_PUBLISHED,
+        REGTEST_MARKER_PUBLISHED,
+        REGTEST_STATE_PUBLISHED,
+        MOVES_SYNCED,
+        STAGE_MOVES_SYNCED,
+        INTENT_RETIRED,
+        RETIREMENT_SYNCED,
+        STAGE_REMOVED,
+    ];
+
+    fn interrupt_request() -> Option<&'static str> {
+        static REQUEST: OnceLock<Option<String>> = OnceLock::new();
+        REQUEST
+            .get_or_init(|| std::env::var(INTERRUPT_ENV).ok())
+            .as_deref()
+    }
+
+    pub(super) fn after(point: &str) {
+        if interrupt_request() == Some(point) {
+            std::process::exit(EXIT_CODE);
+        }
+    }
+
+    thread_local! {
+        static UNSUPPORTED_NO_REPLACE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(super) fn unsupported_no_replace() -> bool {
+        UNSUPPORTED_NO_REPLACE.with(|armed| armed.get())
+    }
+
+    /// Arms the unsupported-platform outcome on this thread only. Other test
+    /// threads keep using the real platform move.
+    pub(super) struct UnsupportedNoReplace;
+
+    impl UnsupportedNoReplace {
+        pub(super) fn arm() -> Self {
+            UNSUPPORTED_NO_REPLACE.with(|armed| armed.set(true));
+            Self
+        }
+    }
+
+    impl Drop for UnsupportedNoReplace {
+        fn drop(&mut self) {
+            UNSUPPORTED_NO_REPLACE.with(|armed| armed.set(false));
+        }
+    }
+}
+
+#[cfg(test)]
+fn staging_point(role: &str) -> &'static str {
+    match role {
+        "mainnet-marker" => test_hooks::STAGED_MAINNET_MARKER,
+        "mainnet-state" => test_hooks::STAGED_MAINNET_STATE,
+        "regtest-marker" => test_hooks::STAGED_REGTEST_MARKER,
+        "regtest-state" => test_hooks::STAGED_REGTEST_STATE,
+        _ => unreachable!("unknown repair role"),
+    }
+}
+
+#[cfg(test)]
+fn publication_point(role: &str) -> &'static str {
+    match role {
+        "mainnet-marker" => test_hooks::MAINNET_MARKER_PUBLISHED,
+        "mainnet-state" => test_hooks::MAINNET_STATE_PUBLISHED,
+        "regtest-marker" => test_hooks::REGTEST_MARKER_PUBLISHED,
+        "regtest-state" => test_hooks::REGTEST_STATE_PUBLISHED,
+        _ => unreachable!("unknown repair role"),
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Intent {
@@ -260,6 +377,10 @@ fn sync_dir(path: &Path) -> io::Result<()> {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn no_replace(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    if test_hooks::unsupported_no_replace() {
+        return Err(io::ErrorKind::Unsupported.into());
+    }
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
     let from = CString::new(from.as_os_str().as_bytes())?;
     let to = CString::new(to.as_os_str().as_bytes())?;
@@ -286,6 +407,10 @@ fn no_replace(from: &Path, to: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 fn no_replace(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    if test_hooks::unsupported_no_replace() {
+        return Err(io::ErrorKind::Unsupported.into());
+    }
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
     fn wide(path: &Path) -> io::Result<Vec<u16>> {
@@ -570,14 +695,33 @@ impl RepairPaths {
         }
         // A previous process may have exited immediately after publishing intent, before fsync.
         sync_dir(self.dir())?;
+        #[cfg(test)]
+        test_hooks::after(test_hooks::RESUME_SYNCED);
         for (from, to) in pending {
             no_replace(&from, to)?;
+            #[cfg(test)]
+            test_hooks::after(publication_point(
+                ROLES[targets
+                    .iter()
+                    .position(|target| target == to)
+                    .expect("pending repair target has a role")],
+            ));
         }
         sync_dir(self.dir())?;
+        #[cfg(test)]
+        test_hooks::after(test_hooks::MOVES_SYNCED);
         sync_dir(&stage)?;
+        #[cfg(test)]
+        test_hooks::after(test_hooks::STAGE_MOVES_SYNCED);
         fs::remove_file(self.intent())?;
+        #[cfg(test)]
+        test_hooks::after(test_hooks::INTENT_RETIRED);
         sync_dir(self.dir())?;
+        #[cfg(test)]
+        test_hooks::after(test_hooks::RETIREMENT_SYNCED);
         let _ = fs::remove_dir(stage);
+        #[cfg(test)]
+        test_hooks::after(test_hooks::STAGE_REMOVED);
         Ok(())
     }
     fn intent(&self) -> PathBuf {
@@ -593,11 +737,15 @@ impl RepairPaths {
             builder.mode(0o700);
         }
         builder.create(&stage)?;
+        #[cfg(test)]
+        test_hooks::after(test_hooks::STAGE_CREATED);
         let state = UtxoSet::new().serialized()?;
         let mut artifacts = Vec::new();
         for (role, bytes) in ROLES.iter().zip([INITIALIZED, &state, INITIALIZED, &state]) {
             let path = stage.join(role);
             create_file(&path, bytes, Some(&role_tag(&operation, role)))?;
+            #[cfg(test)]
+            test_hooks::after(staging_point(role));
             artifacts.push(inspect_tagged(&path, role, &operation)?);
         }
         let intent = Intent {
@@ -610,10 +758,20 @@ impl RepairPaths {
         };
         let draft = stage.join("intent");
         create_file(&draft, &serde_json::to_vec(&intent)?, None)?;
+        #[cfg(test)]
+        test_hooks::after(test_hooks::DRAFT_INTENT);
         sync_dir(&stage)?;
+        #[cfg(test)]
+        test_hooks::after(test_hooks::STAGE_SYNCED);
         sync_dir(self.dir())?;
+        #[cfg(test)]
+        test_hooks::after(test_hooks::WALLET_DIR_SYNCED);
         no_replace(&draft, &self.intent())?;
+        #[cfg(test)]
+        test_hooks::after(test_hooks::INTENT_PUBLISHED);
         sync_dir(self.dir())?;
+        #[cfg(test)]
+        test_hooks::after(test_hooks::PUBLISH_SYNCED);
         Ok(stage)
     }
 }
@@ -621,6 +779,7 @@ impl RepairPaths {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader};
     const ID: [u8; 32] = [1; 32];
 
     fn inspect(path: &Path, role: &str) -> io::Result<Artifact> {
@@ -644,6 +803,147 @@ mod tests {
         )
         .unwrap();
         (dir, paths)
+    }
+
+    const SEED: [u8; 64] = [7; 64];
+    const CHILD_ENV: &str = "VTR_REPAIR_CHILD";
+    const CHILD_DIR_ENV: &str = "VTR_REPAIR_CHILD_DIR";
+    const RESUME_REFUSAL_ENV: &str = "VTR_REPAIR_ALLOW_REFUSAL";
+
+    fn paths_for(dir: &Path) -> RepairPaths {
+        RepairPaths::new(
+            dir.join("btc_utxos-mainnet-0101010101010101.json"),
+            dir.join("btc_utxos-regtest-0101010101010101.json"),
+        )
+        .unwrap()
+    }
+
+    fn child_paths() -> RepairPaths {
+        let dir = std::env::var_os(CHILD_DIR_ENV).expect("child repair directory");
+        paths_for(&PathBuf::from(dir))
+    }
+
+    fn run_child_mode(mode: &str) {
+        match mode {
+            "interrupt" => {
+                let paths = child_paths();
+                paths.run(&ID).unwrap();
+                panic!("repair completed without reaching the requested interruption point");
+            }
+            "resume" => {
+                let allow_refusal = std::env::var_os(RESUME_REFUSAL_ENV).is_some();
+                match child_paths().run(&ID) {
+                    Ok(()) => println!("REPAIR_RESUME=completed"),
+                    Err(error) if allow_refusal && requires_assisted_recovery(&error) => {
+                        println!("REPAIR_RESUME=refused");
+                    }
+                    Err(error) => panic!("resume failed: {error}"),
+                }
+            }
+            "hold-locks" => {
+                let paths = child_paths();
+                let _mainnet = lock_state_path(&paths.mainnet).unwrap();
+                let _regtest = lock_state_path(&paths.regtest).unwrap();
+                println!("REPAIR_LOCKS=ready");
+                std::io::stdout().flush().unwrap();
+                let mut release = [0u8; 1];
+                let _ = std::io::stdin().read_exact(&mut release);
+            }
+            other => panic!("unknown child mode {other}"),
+        }
+    }
+
+    fn spawn_repair_child(test: &str, mode: &str, dir: &Path) -> std::process::Child {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", test, "--nocapture"])
+            .env(CHILD_ENV, mode)
+            .env(CHILD_DIR_ENV, dir)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit());
+        crate::utxo::fork_gate::GATE.spawn(|| command.spawn().unwrap())
+    }
+
+    fn run_repair_child(
+        test: &str,
+        mode: &str,
+        dir: &Path,
+        interrupt: Option<&str>,
+        allow_refusal: bool,
+    ) -> std::process::Output {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", test, "--nocapture"])
+            .env(CHILD_ENV, mode)
+            .env(CHILD_DIR_ENV, dir)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        match interrupt {
+            Some(point) => command.env(test_hooks::INTERRUPT_ENV, point),
+            None => command.env_remove(test_hooks::INTERRUPT_ENV),
+        };
+        if allow_refusal {
+            command.env(RESUME_REFUSAL_ENV, "1");
+        } else {
+            command.env_remove(RESUME_REFUSAL_ENV);
+        }
+        let child = crate::utxo::fork_gate::GATE.spawn(|| command.spawn().unwrap());
+        child.wait_with_output().unwrap()
+    }
+
+    fn published_files(paths: &RepairPaths) -> Vec<(PathBuf, Vec<u8>)> {
+        paths
+            .targets()
+            .into_iter()
+            .filter_map(|path| fs::read(&path).ok().map(|bytes| (path, bytes)))
+            .collect()
+    }
+
+    fn tree_snapshot(dir: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        fn walk(dir: &Path, out: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>) {
+            for entry in fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    out.insert(path.clone(), Vec::new());
+                    walk(&path, out);
+                } else {
+                    out.insert(path.clone(), fs::read(&path).unwrap());
+                }
+            }
+        }
+        let mut out = std::collections::BTreeMap::new();
+        walk(dir, &mut out);
+        out
+    }
+
+    fn staging_present(dir: &Path) -> bool {
+        fs::read_dir(dir).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".btc-repair-")
+        })
+    }
+
+    fn open_both_after_repair(paths: &RepairPaths) {
+        for (network, path) in [
+            (bitcoin::Network::Bitcoin, &paths.mainnet),
+            (bitcoin::Network::Regtest, &paths.regtest),
+        ] {
+            drop(
+                crate::wallet::BtcWallet::with_persistence_checked(
+                    SEED,
+                    network,
+                    path.clone(),
+                    || paths.ensure_idle(),
+                )
+                .unwrap(),
+            );
+            drop(crate::wallet::BtcWallet::with_persistence(SEED, network, path.clone()).unwrap());
+        }
     }
 
     #[test]
@@ -871,6 +1171,207 @@ mod tests {
             crate::wallet::BtcWallet::with_persistence([0; 64], network, path.clone()).unwrap();
         }
         assert!(paths.run(&ID).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn resumes_after_process_exit() {
+        const TEST: &str = "repair::tests::resumes_after_process_exit";
+        if let Some(mode) = std::env::var_os(CHILD_ENV) {
+            run_child_mode(mode.to_str().unwrap());
+            return;
+        }
+
+        for point in test_hooks::ALL_POINTS {
+            let (dir, paths) = fixture(&format!("exit-{point}"));
+
+            let output = run_repair_child(TEST, "interrupt", &dir, Some(point), false);
+            assert_eq!(
+                output.status.code(),
+                Some(test_hooks::EXIT_CODE),
+                "{point}: interruption was not reached; stdout: {}; stderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+
+            let published = published_files(&paths);
+            if paths.intent().exists() {
+                let error = paths.ensure_idle().unwrap_err();
+                assert!(is_repair_pending(&error), "{point}: {error}");
+            } else {
+                paths.ensure_idle().unwrap();
+            }
+            let before = tree_snapshot(&dir);
+
+            let retired = matches!(
+                point,
+                test_hooks::INTENT_RETIRED
+                    | test_hooks::RETIREMENT_SYNCED
+                    | test_hooks::STAGE_REMOVED
+            );
+            let output = run_repair_child(TEST, "resume", &dir, None, retired);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success(),
+                "{point}: resume child failed; stdout: {stdout}; stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            if retired {
+                assert!(
+                    stdout.contains("REPAIR_RESUME=refused"),
+                    "{point}: a completed repair must refuse a repeat, but resumed: {stdout}"
+                );
+                assert_eq!(
+                    tree_snapshot(&dir),
+                    before,
+                    "{point}: a refused repeat changed wallet files"
+                );
+            } else {
+                assert!(
+                    stdout.contains("REPAIR_RESUME=completed"),
+                    "{point}: resume did not complete: {stdout}"
+                );
+                for (path, bytes) in &published {
+                    assert_eq!(
+                        &fs::read(path).unwrap(),
+                        bytes,
+                        "{point}: {} was rewritten after publication",
+                        path.display()
+                    );
+                }
+            }
+
+            for target in paths.targets() {
+                assert!(target.is_file(), "{point}: {}", target.display());
+            }
+            paths.ensure_idle().unwrap();
+            open_both_after_repair(&paths);
+
+            let before_repeat = tree_snapshot(&dir);
+            let error = paths.run(&ID).unwrap_err();
+            assert!(requires_assisted_recovery(&error), "{point}: {error}");
+            assert_eq!(
+                tree_snapshot(&dir),
+                before_repeat,
+                "{point}: a refused repeat request changed wallet files"
+            );
+
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn os_releases_repair_locks_when_the_holder_dies() {
+        const TEST: &str = "repair::tests::os_releases_repair_locks_when_the_holder_dies";
+        if let Some(mode) = std::env::var_os(CHILD_ENV) {
+            run_child_mode(mode.to_str().unwrap());
+            return;
+        }
+
+        let (dir, paths) = fixture("writer-death");
+        let mut child = spawn_repair_child(TEST, "hold-locks", &dir);
+        let stdout = child.stdout.take().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut line = String::new();
+            let mut reader = BufReader::new(stdout);
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).unwrap() == 0 {
+                    break;
+                }
+                if line.trim() == "REPAIR_LOCKS=ready" {
+                    break;
+                }
+            }
+            let _ = ready_tx.send(line.trim().to_owned());
+        });
+        let line = ready_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the lock holder must report readiness");
+        assert_eq!(line, "REPAIR_LOCKS=ready");
+
+        for path in [&paths.mainnet, &paths.regtest] {
+            let error = lock_state_path(path).unwrap_err();
+            assert!(is_writer_contention(&error), "{error}");
+        }
+        let error = paths.run(&ID).unwrap_err();
+        assert!(is_writer_contention(&error), "{error}");
+        assert!(!paths.intent().exists());
+        assert!(!staging_present(&dir));
+
+        let _ = child.kill();
+        assert!(!child.wait().unwrap().success());
+        reader.join().unwrap();
+        drop(child.stdin.take());
+
+        for path in [&paths.mainnet, &paths.regtest] {
+            drop(lock_state_path(path).unwrap());
+        }
+        paths.run(&ID).unwrap();
+        open_both_after_repair(&paths);
+        assert!(requires_assisted_recovery(&paths.run(&ID).unwrap_err()));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unsupported_no_replace_preserves_existing_files() {
+        let (dir, paths) = fixture("unsupported-partial");
+        let stage = paths.prepare(&ID).unwrap();
+        let targets = paths.targets();
+        no_replace(&stage.join(ROLES[0]), &targets[0]).unwrap();
+        no_replace(&stage.join(ROLES[1]), &targets[1]).unwrap();
+        let published = [
+            fs::read(&targets[0]).unwrap(),
+            fs::read(&targets[1]).unwrap(),
+        ];
+        let staged = [ROLES[2], ROLES[3]].map(|role| fs::read(stage.join(role)).unwrap());
+        let intent = fs::read(paths.intent()).unwrap();
+
+        {
+            let _armed = test_hooks::UnsupportedNoReplace::arm();
+            let error = paths.run(&ID).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Unsupported, "{error}");
+        }
+
+        for (path, bytes) in targets[..2].iter().zip(&published) {
+            assert_eq!(
+                &fs::read(path).unwrap(),
+                bytes,
+                "{} changed",
+                path.display()
+            );
+        }
+        for (role, bytes) in [ROLES[2], ROLES[3]].iter().zip(&staged) {
+            assert_eq!(
+                &fs::read(stage.join(role)).unwrap(),
+                bytes,
+                "{role} changed"
+            );
+        }
+        assert_eq!(fs::read(paths.intent()).unwrap(), intent);
+        assert!(!targets[2].exists());
+        assert!(!targets[3].exists());
+
+        paths.run(&ID).unwrap();
+        open_both_after_repair(&paths);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unsupported_no_replace_creates_no_final_state() {
+        let (dir, paths) = fixture("unsupported-fresh");
+        {
+            let _armed = test_hooks::UnsupportedNoReplace::arm();
+            let error = paths.run(&ID).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Unsupported, "{error}");
+        }
+        assert!(paths.targets().iter().all(|path| !path.exists()));
+        assert!(!paths.intent().exists());
+
+        paths.run(&ID).unwrap();
+        open_both_after_repair(&paths);
         fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -74,7 +74,7 @@ pub struct BtcWallet {
     utxo_path: Option<PathBuf>,
     /// Held for the lifetime of a persistent wallet so two writers cannot
     /// overwrite each other's state.
-    state_lock: Option<std::fs::File>,
+    state_lock: Option<crate::utxo::StateLock>,
     next_index: u32,
     synced: bool,
     /// Next block height to scan (incremental checkpoint).
@@ -193,7 +193,7 @@ impl BtcWallet {
         network: Network,
         utxo_path: PathBuf,
         attested_new_seed: bool,
-        state_lock: std::fs::File,
+        state_lock: crate::utxo::StateLock,
     ) -> std::io::Result<Self> {
         let state_lock = Some(state_lock);
         let mut created = false;
