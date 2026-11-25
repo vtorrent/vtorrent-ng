@@ -32,13 +32,16 @@ window is invalidated by the pass-15 code changes and does not count. The `revie
 were retired and do not count. The shipping image needs its own full 168-hour
 window after this review and its fixes settle.
 
-Read this note and the scope document from the tip of `main`. Confirm that no
-non-doc file changed after the candidate with
-`git diff --name-only be78829..HEAD -- . ':(exclude)docs/**'`, which must
-return only `.github/workflows/build.yml` (the desktop target-install step).
-This includes the Rust workspace, `release/Cargo.lock`, the UI
-lockfiles and config, `docker/Dockerfile`, `.github/workflows/`, and toolchain
-files. Check out the candidate itself when running the verification commands.
+Read this note and the scope document from the tip of `main`. **The release
+target is `be78829`, not the `main` tip.** After the candidate, `main` gained
+one CI-only commit and one documented post-candidate change: merge `896f6e4`,
+the resumable desktop BTC-repair work, which is deferred to a patch release and
+is **not** part of the 2.0.0 image. Confirm the freeze with
+`git diff --name-only be78829..HEAD -- . ':(exclude)docs/**'`. Expect
+`.github/workflows/build.yml` plus the repair-merge files listed by
+`git show --stat 896f6e4`. Any other non-doc change is out of scope for this
+review and should be reported. Do not treat the `main` tip as the release
+commit. Check out the candidate itself when running the verification commands.
 
 That document lists the exact hashes, the verification commands, and what we
 consider in scope. The Rust suite needs only a clone and a Rust toolchain; desktop builds need
@@ -486,15 +489,16 @@ Thank you.
 ## Before sending
 
 - Confirm the code candidate is still
-  `be7882966afc3457ecec71380d6c4b58b0933d5a` and the docs tip is the commit
-  that publishes this note; the scope document and this note must name the same
-  code candidate. Do not substitute a later local commit without updating both
-  documents and the soak provenance. Docs-only commits after the candidate must
-  leave
-  `git diff --name-only be78829..HEAD -- . ':(exclude)docs/**'` empty.
-- The pass-13 exact-image window is recorded in
-  `docs/2026-11-24_ai-supplementary-review-pass13.md`. The `review-e091936`
-  window is invalidated by the pass-13 code changes and does not count; the
+  `be7882966afc3457ecec71380d6c4b58b0933d5a` and that this note names the same
+  code candidate as the scope document. Do not substitute a later local commit
+  without updating both documents and the soak provenance. After the candidate,
+  `main` holds the CI-only `f85cddd` and merge `896f6e4` (the deferred resumable
+  BTC repair). That is the complete expected non-doc delta; anything else is a
+  freeze violation.
+- The pass-15 exact-image window for `be78829` is
+  `2026-11-25T01:19:30Z` to `2026-12-02T01:19:30Z`, recorded in
+  `docs/2026-11-25_ai-supplementary-review-pass15.md`. The `review-a0724dd`
+  window is invalidated by the pass-15 changes; the `review-e091936`,
   `review-d376506`, `review-22056d4`, and `review-ef1d1a1` windows were
   retired. Do not describe the interrupted `6a49727` fleet as covering this
   head. The shipping image needs its own 168-hour window after the review and
