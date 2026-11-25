@@ -594,11 +594,11 @@ fn btc_repair_error(
         match paths.ensure_idle() {
             Err(pending) if vtorrent_btc::repair::is_repair_pending(&pending) => {
                 TauriError::BtcRepairPending(format!(
-                    "A BTC repair is pending but its writer is still active; wait for it to finish, then retry the authenticated repair: {error}"
+                    "Another process holds this wallet's state lock and a BTC repair is pending; close other app instances or quit them, then retry the authenticated repair: {error}"
                 ))
             }
             _ => TauriError::Wallet(format!(
-                "BTC state is in use by a running node or another writer; stop it and retry the repair: {error}"
+                "BTC state is in use by another process; close other app instances or quit them, then retry the repair: {error}"
             )),
         }
     } else {
@@ -1721,17 +1721,36 @@ mod tests {
         ))
     }
 
-    fn arm_selection_probe(state: &AppState) -> std::sync::mpsc::Receiver<()> {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        *state.selection_probe.lock().unwrap() = Some(sender);
-        receiver
+    fn arm_selection_probe(
+        state: &AppState,
+    ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Receiver<()>) {
+        let (attempt_tx, attempt_rx) = std::sync::mpsc::channel();
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        *state.selection_probe.lock().unwrap() = Some(attempt_tx);
+        *state.selection_acquired_probe.lock().unwrap() = Some(acquired_tx);
+        (attempt_rx, acquired_rx)
     }
 
-    fn wait_for_selection_attempt(state: &AppState, receiver: &std::sync::mpsc::Receiver<()>) {
-        receiver
+    fn wait_for_selection_attempt(
+        state: &AppState,
+        attempt: &std::sync::mpsc::Receiver<()>,
+        acquired: &std::sync::mpsc::Receiver<()>,
+    ) {
+        attempt
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("the command must acquire the wallet selection guard");
+        assert!(
+            state.try_lock_wallet_selection().is_err(),
+            "the repair must still hold the selection guard when the command attempts to enter"
+        );
+        assert!(
+            acquired
+                .recv_timeout(std::time::Duration::from_millis(500))
+                .is_err(),
+            "the competing command acquired the selection guard before repair released it"
+        );
         *state.selection_probe.lock().unwrap() = None;
+        *state.selection_acquired_probe.lock().unwrap() = None;
     }
 
     struct RepairRelease<'a> {
@@ -1756,6 +1775,35 @@ mod tests {
         }
     }
 
+    fn spawn_command<'scope, 'env, F, T>(
+        scope: &'scope std::thread::Scope<'scope, 'env>,
+        command: F,
+    ) -> (
+        std::thread::ScopedJoinHandle<'scope, T>,
+        std::sync::mpsc::Receiver<()>,
+    )
+    where
+        F: FnOnce() -> T + Send + 'scope,
+        T: Send + 'scope,
+    {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let handle = scope.spawn(move || {
+            let result = command();
+            let _ = done_tx.send(());
+            result
+        });
+        (handle, done_rx)
+    }
+
+    fn finish_command<T>(
+        handle: std::thread::ScopedJoinHandle<'_, T>,
+        done: std::sync::mpsc::Receiver<()>,
+    ) -> T {
+        done.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the competing command must finish after the repair releases the guard");
+        handle.join().unwrap()
+    }
+
     /// Run a repair paused after authorization and invoke `attempt` while its
     /// selection guard is held. `attempt` must release the barrier when done.
     fn with_paused_repair(
@@ -1764,13 +1812,12 @@ mod tests {
         attempt: impl FnOnce(&mut RepairRelease<'_>),
     ) -> String {
         use std::sync::{Arc, Barrier};
-        let authorized = Arc::new(Barrier::new(2));
+        let (authorized_tx, authorized_rx) = std::sync::mpsc::channel();
         let release = Arc::new(Barrier::new(2));
         {
-            let authorized = Arc::clone(&authorized);
             let release = Arc::clone(&release);
             *state.repair_authorized_hook.lock().unwrap() = Some(Box::new(move || {
-                authorized.wait();
+                let _ = authorized_tx.send(());
                 release.wait();
             }));
         }
@@ -1780,7 +1827,9 @@ mod tests {
                 let passphrase = passphrase.to_owned();
                 move || repair_btc_state(state, passphrase, None, true)
             });
-            authorized.wait();
+            authorized_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("the repair must reach the authorization hook");
             let mut release = RepairRelease {
                 barrier: release.as_ref(),
                 armed: true,
@@ -1929,9 +1978,9 @@ mod tests {
         state.set_app_data_dir(dir.clone());
 
         let message = with_paused_repair(&state, "first-pass", |release| {
-            let receiver = arm_selection_probe(state.inner());
+            let (receiver, acquired) = arm_selection_probe(state.inner());
             std::thread::scope(|scope| {
-                let switch = scope.spawn({
+                let (switch, done) = spawn_command(scope, {
                     let state = state.clone();
                     let second_path = second_path.to_string_lossy().into_owned();
                     move || {
@@ -1942,14 +1991,14 @@ mod tests {
                             .block_on(open_wallet(state, second_path, "second-pass".into(), None))
                     }
                 });
-                wait_for_selection_attempt(state.inner(), &receiver);
+                wait_for_selection_attempt(state.inner(), &receiver, &acquired);
                 assert_eq!(
                     state.wallet_path.lock().unwrap().as_deref(),
                     Some(first_path.as_path()),
                     "open_wallet changed the selection before repair released it"
                 );
                 release.release();
-                switch.join().unwrap().unwrap();
+                finish_command(switch, done).unwrap();
             });
         });
         assert!(message.contains("restart the node"));
@@ -1993,7 +2042,9 @@ mod tests {
         let error = repair_btc_state(state.clone(), "test-pass".into(), None, true).unwrap_err();
         assert!(matches!(error, TauriError::Wallet(_)), "{error:?}");
         assert!(
-            error.to_string().contains("stop it and retry the repair"),
+            error
+                .to_string()
+                .contains("close other app instances or quit"),
             "{error}"
         );
         assert!(
@@ -2118,7 +2169,16 @@ mod tests {
             "{error:?}"
         );
         assert!(
-            error.to_string().contains("wait for it to finish"),
+            error
+                .to_string()
+                .contains("process holds this wallet's state lock"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("pending"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("close other app instances or quit"),
             "{error}"
         );
         drop(main_lock);
@@ -2130,7 +2190,9 @@ mod tests {
         let error = repair_btc_state(state.clone(), "test-pass".into(), None, true).unwrap_err();
         assert!(matches!(error, TauriError::Wallet(_)), "{error:?}");
         assert!(
-            error.to_string().contains("stop it and retry the repair"),
+            error
+                .to_string()
+                .contains("close other app instances or quit"),
             "{error}"
         );
         drop(main_lock);
@@ -2147,24 +2209,46 @@ mod tests {
         let regtest = dir.join("btc_utxos-regtest-0000000000000000.json");
         let paths = vtorrent_btc::repair::RepairPaths::new(mainnet.clone(), regtest).unwrap();
         std::fs::write(mainnet.with_extension("repair-pending"), b"pending").unwrap();
+        let held = vtorrent_btc::utxo::lock_state_path(&mainnet).unwrap();
+        let pending_contention = vtorrent_btc::utxo::lock_state_path(&mainnet).unwrap_err();
+        let writer_contention = vtorrent_btc::utxo::lock_state_path(&mainnet).unwrap_err();
+        drop(held);
 
-        let error = btc_repair_error(std::io::Error::from_raw_os_error(33), &paths);
+        let error = btc_repair_error(pending_contention, &paths);
         assert!(
             matches!(error, TauriError::BtcRepairPending(_)),
             "{error:?}"
         );
         assert!(
-            error.to_string().contains("wait for it to finish"),
+            error
+                .to_string()
+                .contains("process holds this wallet's state lock"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("pending"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("close other app instances or quit"),
             "{error}"
         );
 
         std::fs::remove_file(mainnet.with_extension("repair-pending")).unwrap();
-        let error = btc_repair_error(std::io::Error::from(std::io::ErrorKind::WouldBlock), &paths);
+        let error = btc_repair_error(writer_contention, &paths);
         assert!(matches!(error, TauriError::Wallet(_)), "{error:?}");
         assert!(
-            error.to_string().contains("stop it and retry the repair"),
+            error
+                .to_string()
+                .contains("close other app instances or quit"),
             "{error}"
         );
+
+        // A bare errno/kind is not the lock layer's typed marker; Unix errno
+        // 33 is EDOM and must not be reported as contention.
+        let error = btc_repair_error(std::io::Error::from_raw_os_error(33), &paths);
+        assert!(matches!(error, TauriError::Io(_)), "{error:?}");
+        let error = btc_repair_error(std::io::Error::from(std::io::ErrorKind::WouldBlock), &paths);
+        assert!(matches!(error, TauriError::Io(_)), "{error:?}");
 
         std::fs::write(dir.join("btc_utxos.json"), b"legacy").unwrap();
         let assisted = paths.run(&[0u8; 32]).unwrap_err();
@@ -2196,9 +2280,9 @@ mod tests {
         *state.wallet_path.lock().unwrap() = Some(path.clone());
 
         let message = with_paused_repair(&state, "test-pass", |release| {
-            let receiver = arm_selection_probe(state.inner());
+            let (receiver, acquired) = arm_selection_probe(state.inner());
             std::thread::scope(|scope| {
-                let startup = scope.spawn({
+                let (startup, done) = spawn_command(scope, {
                     let state = state.clone();
                     move || {
                         let mut opened = true;
@@ -2213,10 +2297,10 @@ mod tests {
                         opened
                     }
                 });
-                wait_for_selection_attempt(state.inner(), &receiver);
+                wait_for_selection_attempt(state.inner(), &receiver, &acquired);
                 release.release();
                 assert!(
-                    startup.join().unwrap(),
+                    finish_command(startup, done),
                     "startup must open both networks after the repair completes"
                 );
             });
@@ -2245,21 +2329,21 @@ mod tests {
         state.set_app_data_dir(dir.clone());
 
         let message = with_paused_repair(&state, "first-pass", |release| {
-            let receiver = arm_selection_probe(state.inner());
+            let (receiver, acquired) = arm_selection_probe(state.inner());
             std::thread::scope(|scope| {
-                let command = scope.spawn({
+                let (command, done) = spawn_command(scope, {
                     let state = state.clone();
                     let created_path = created_path.to_string_lossy().into_owned();
                     move || create_wallet(state, "new-pass".into(), created_path)
                 });
-                wait_for_selection_attempt(state.inner(), &receiver);
+                wait_for_selection_attempt(state.inner(), &receiver, &acquired);
                 assert_eq!(
                     state.wallet_path.lock().unwrap().as_deref(),
                     Some(first_path.as_path()),
                     "create_wallet changed the selection before repair released it"
                 );
                 release.release();
-                command.join().unwrap().unwrap();
+                finish_command(command, done).unwrap();
             });
         });
         assert!(message.contains("restart the node"));
@@ -2297,23 +2381,23 @@ mod tests {
         let payload = B64.encode(b"not a berkeley wallet");
 
         let message = with_paused_repair(&state, "first-pass", |release| {
-            let receiver = arm_selection_probe(state.inner());
+            let (receiver, acquired) = arm_selection_probe(state.inner());
             std::thread::scope(|scope| {
-                let command = scope.spawn({
+                let (command, done) = spawn_command(scope, {
                     let state = state.clone();
                     let imported_path = imported_path.to_string_lossy().into_owned();
                     move || {
                         import_legacy_wallet(state, payload, None, "new-pass".into(), imported_path)
                     }
                 });
-                wait_for_selection_attempt(state.inner(), &receiver);
+                wait_for_selection_attempt(state.inner(), &receiver, &acquired);
                 assert_eq!(
                     state.wallet_path.lock().unwrap().as_deref(),
                     Some(first_path.as_path()),
                     "import changed the selection before repair released it"
                 );
                 release.release();
-                let error = command.join().unwrap().unwrap_err();
+                let error = finish_command(command, done).unwrap_err();
                 assert!(matches!(error, TauriError::Migration(_)), "{error:?}");
             });
         });
@@ -2360,9 +2444,9 @@ mod tests {
         state.set_app_data_dir(target.clone());
 
         let message = with_paused_repair(&state, "first-pass", |release| {
-            let receiver = arm_selection_probe(state.inner());
+            let (receiver, acquired) = arm_selection_probe(state.inner());
             std::thread::scope(|scope| {
-                let command = scope.spawn({
+                let (command, done) = spawn_command(scope, {
                     let state = state.clone();
                     move || {
                         crate::commands::backup::restore_backup(
@@ -2374,14 +2458,14 @@ mod tests {
                         )
                     }
                 });
-                wait_for_selection_attempt(state.inner(), &receiver);
+                wait_for_selection_attempt(state.inner(), &receiver, &acquired);
                 assert_eq!(
                     state.wallet_path.lock().unwrap().as_deref(),
                     Some(first_path.as_path()),
                     "restore changed the selection before repair released it"
                 );
                 release.release();
-                command.join().unwrap().unwrap();
+                finish_command(command, done).unwrap();
             });
         });
         assert!(message.contains("restart the node"));

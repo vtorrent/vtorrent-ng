@@ -58,11 +58,11 @@ struct PendingRepair;
 
 /// True when a writer lock is contended.
 ///
-/// Windows returns `ERROR_LOCK_VIOLATION` (33) from `fs2`; do not depend on
-/// std's error-kind mapping for that case. The raw value is checked on every
-/// target, but the wallet lock path never produces it on Unix.
+/// Classification is based on the typed marker [`crate::utxo::lock_state_path`]
+/// attaches, so raw OS errno values (such as Unix `EDOM`, also 33) cannot be
+/// mistaken for lock contention.
 pub fn is_writer_contention(error: &io::Error) -> bool {
-    error.kind() == io::ErrorKind::WouldBlock || error.raw_os_error() == Some(33)
+    crate::utxo::is_writer_contention(error)
 }
 
 /// True for the pending-record refusal returned by [`RepairPaths::ensure_idle`].
@@ -782,12 +782,19 @@ mod tests {
         assert!(!requires_assisted_recovery(&pending), "{pending}");
         assert!(!is_writer_contention(&pending), "{pending}");
 
-        let unix_contention = io::Error::from(io::ErrorKind::WouldBlock);
-        assert!(is_writer_contention(&unix_contention));
-        assert!(!is_repair_pending(&unix_contention));
+        let state = dir.join("state.json");
+        let held = crate::utxo::lock_state_path(&state).unwrap();
+        let contended = crate::utxo::lock_state_path(&state).unwrap_err();
+        assert!(is_writer_contention(&contended), "{contended}");
+        assert!(!is_repair_pending(&contended), "{contended}");
+        drop(held);
 
-        let windows_contention = io::Error::from_raw_os_error(33);
-        assert!(is_writer_contention(&windows_contention));
+        // A bare kind or raw errno is not a lock-layer marker. On Unix raw 33
+        // is EDOM, so kind/errno-only classification would be wrong.
+        let plain_would_block = io::Error::from(io::ErrorKind::WouldBlock);
+        assert!(!is_writer_contention(&plain_would_block));
+        let unix_edom = io::Error::from_raw_os_error(33);
+        assert!(!is_writer_contention(&unix_edom));
 
         let other = io::Error::from(io::ErrorKind::PermissionDenied);
         assert!(!is_writer_contention(&other));

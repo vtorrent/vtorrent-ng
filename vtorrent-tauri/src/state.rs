@@ -48,9 +48,12 @@ pub struct AppState {
     /// Runs after BTC repair authorization but before the repair writes.
     #[cfg(test)]
     pub(crate) repair_authorized_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
-    /// Signals each selection-guard acquisition in tests.
+    /// Signals each selection-guard acquisition attempt in tests.
     #[cfg(test)]
     pub(crate) selection_probe: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    /// Signals each successful selection-guard acquisition in tests.
+    #[cfg(test)]
+    pub(crate) selection_acquired_probe: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     /// The application data directory. Wallet paths supplied over IPC must
     /// resolve inside this directory.
     pub app_data_dir: Mutex<Option<std::path::PathBuf>>,
@@ -74,9 +77,22 @@ impl AppState {
         if let Some(probe) = self.selection_probe.lock().unwrap().as_ref() {
             let _ = probe.send(());
         }
-        self.wallet_selection
+        let guard = self
+            .wallet_selection
             .lock()
-            .map_err(|_| crate::error::TauriError::WalletLocked)
+            .map_err(|_| crate::error::TauriError::WalletLocked)?;
+        #[cfg(test)]
+        if let Some(probe) = self.selection_acquired_probe.lock().unwrap().as_ref() {
+            let _ = probe.send(());
+        }
+        Ok(guard)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn try_lock_wallet_selection(
+        &self,
+    ) -> std::sync::TryLockResult<std::sync::MutexGuard<'_, ()>> {
+        self.wallet_selection.try_lock()
     }
 
     pub async fn sync_swap_wallet(&self, rpc: &RpcAppState) -> crate::error::Result<()> {
@@ -141,6 +157,8 @@ impl AppState {
             repair_authorized_hook: Mutex::new(None),
             #[cfg(test)]
             selection_probe: Mutex::new(None),
+            #[cfg(test)]
+            selection_acquired_probe: Mutex::new(None),
             app_data_dir: Mutex::new(None),
             node: TokioMutex::new(None),
             cold_stake_scripts: Mutex::new(HashSet::new()),

@@ -4,6 +4,74 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 #[derive(Debug)]
+struct WriterContention {
+    path: std::path::PathBuf,
+    source: std::io::Error,
+}
+
+impl std::fmt::Display for WriterContention {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "BTC wallet state {} is in use by another process: {}",
+            self.path.display(),
+            self.source
+        )
+    }
+}
+
+impl std::error::Error for WriterContention {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+/// True when [`lock_state_path`] lost the writer-lock race.
+pub fn is_writer_contention(error: &std::io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|cause| cause.is::<WriterContention>())
+}
+
+#[derive(Debug)]
+struct InvalidStatePath(&'static str);
+
+impl std::fmt::Display for InvalidStatePath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for InvalidStatePath {}
+
+/// True for a state/lock path that is a symlink, hard link, or otherwise unusable.
+pub fn is_invalid_state_path(error: &std::io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|cause| cause.is::<InvalidStatePath>())
+}
+
+#[derive(Debug)]
+struct MissingWalletState;
+
+impl std::fmt::Display for MissingWalletState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "BTC wallet state is missing; seed history is unknown and initialization is disabled",
+        )
+    }
+}
+
+impl std::error::Error for MissingWalletState {}
+
+/// True for the wallet-open refusal caused by a missing state file.
+pub fn is_missing_wallet_state(error: &std::io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|cause| cause.is::<MissingWalletState>())
+}
+
+#[derive(Debug)]
 struct UncertainSave(std::io::Error);
 
 impl std::fmt::Display for UncertainSave {
@@ -68,7 +136,7 @@ pub fn lock_state_path(path: &Path) -> std::io::Result<std::fs::File> {
         Ok(metadata) if !metadata.file_type().is_file() => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "BTC state path must be a regular file, not a symlink",
+                InvalidStatePath("BTC state path must be a regular file, not a symlink"),
             ));
         }
         Ok(metadata) => {
@@ -78,7 +146,7 @@ pub fn lock_state_path(path: &Path) -> std::io::Result<std::fs::File> {
                 if metadata.nlink() != 1 {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
-                        "BTC state file must not have hard-link aliases",
+                        InvalidStatePath("BTC state file must not have hard-link aliases"),
                     ));
                 }
             }
@@ -93,7 +161,7 @@ pub fn lock_state_path(path: &Path) -> std::io::Result<std::fs::File> {
         Ok(metadata) if !metadata.file_type().is_file() => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "BTC lock path must be a regular file, not a symlink",
+                InvalidStatePath("BTC lock path must be a regular file, not a symlink"),
             ));
         }
         Ok(_) => {}
@@ -111,10 +179,10 @@ pub fn lock_state_path(path: &Path) -> std::io::Result<std::fs::File> {
     file.try_lock_exclusive().map_err(|error| {
         std::io::Error::new(
             error.kind(),
-            format!(
-                "BTC wallet state {} is in use by another process: {error}",
-                path.display()
-            ),
+            WriterContention {
+                path: path.to_path_buf(),
+                source: error,
+            },
         )
     })?;
     Ok(file)
@@ -1312,7 +1380,7 @@ impl UtxoSet {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound && reject_legacy => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
-                    "BTC wallet state is missing; seed history is unknown and initialization is disabled",
+                    MissingWalletState,
                 ));
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Self::new()),

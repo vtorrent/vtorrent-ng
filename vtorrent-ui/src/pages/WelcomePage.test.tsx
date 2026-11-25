@@ -46,6 +46,17 @@ function nodeStartFailure(type: string) {
   return error
 }
 
+async function showRepairFor(type: string) {
+  wallet.unlock.mockRejectedValueOnce(nodeStartFailure(type))
+  render(<WelcomePage />)
+  fireEvent.click(screen.getByText('Open Wallet'))
+  fireEvent.change(screen.getByPlaceholderText('Enter your wallet passphrase'), {
+    target: { value: 'unlock-pass' },
+  })
+  fireEvent.click(screen.getByRole('button', { name: 'Unlock' }))
+  await screen.findByRole('heading', { name: 'Repair BTC state' })
+}
+
 describe('welcome onboarding', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -103,8 +114,16 @@ describe('welcome unlock recovery', () => {
     fireEvent.change(screen.getByPlaceholderText('2FA code (if enabled)'), {
       target: { value: '123456' },
     })
+    const repairButton = screen.getByRole('button', { name: 'Repair BTC state' })
+    expect(repairButton).toBeDisabled()
+    fireEvent.click(repairButton)
+    expect(wallet.repairBtcState).not.toHaveBeenCalled()
+    expect(
+      screen.queryByText(/Confirm that this wallet has no prior BTC history first/)
+    ).not.toBeInTheDocument()
+
     fireEvent.click(screen.getByRole('checkbox'))
-    fireEvent.click(screen.getByRole('button', { name: 'Repair BTC state' }))
+    fireEvent.click(repairButton)
 
     await waitFor(() =>
       expect(wallet.repairBtcState).toHaveBeenCalledWith('repair-pass', '123456', true)
@@ -135,5 +154,20 @@ describe('welcome unlock recovery', () => {
     expect(
       screen.queryByRole('heading', { name: 'Repair BTC state' })
     ).not.toBeInTheDocument()
+  })
+
+  it('describes a missing BTC state and offers repair', async () => {
+    await showRepairFor('BtcStateMissing')
+    expect(
+      screen.getByText(/BTC state is missing\. If this wallet has no prior BTC history/)
+    ).toBeInTheDocument()
+  })
+
+  it('describes an assisted-recovery conflict and preserves the files advice', async () => {
+    await showRepairFor('BtcAssistedRecovery')
+    expect(
+      screen.getByText(/conflicts with an existing recovery record/)
+    ).toBeInTheDocument()
+    expect(screen.getByText(/authoritative conflict result/)).toBeInTheDocument()
   })
 })
