@@ -10,11 +10,12 @@ already accepted so it is not re-litigated.
 
 ## Review target
 
-Review the code candidate `a0724dd2386f5b122d0114ab281c0bbaad6aa7ac`. This is
-the pass-14 remediation on top of `80f9eef`; the docs tip is a docs-only child
+Review the code candidate `be7882966afc3457ecec71380d6c4b58b0933d5a`. This is
+the pass-15 remediation on top of `a0724dd`; the docs tip is a docs-only child
 of it. The exact-image window for this candidate is recorded in
-`docs/2026-11-24_ai-supplementary-review-pass13.md`; the `review-e091936`
-window is invalidated by the pass-13 code changes and does not count. The
+`docs/2026-11-25_ai-supplementary-review-pass15.md`; the `review-a0724dd`,
+`review-80f9eef`, and `review-e091936` windows are invalidated by later code
+changes and do not count. The
 `review-d376506`, `review-22056d4`, `review-ef1d1a1`, `review-17db693`, and
 `review-16f9a32` windows were retired and do not count. Under the soak
 provenance policy, the shipping image needs its own full 168-hour window after
@@ -22,7 +23,7 @@ this review and its fixes settle.
 
 Read this document from the tip of `main`. Confirm that no non-doc file changed
 after the candidate with
-`git diff --name-only a0724dd..HEAD -- . ':(exclude)docs/**'`, which must
+`git diff --name-only be78829..HEAD -- . ':(exclude)docs/**'`, which must
 return nothing. This pathspec includes the Rust workspace, `release/Cargo.lock`,
 the UI lockfiles and config, `docker/Dockerfile`, `.github/workflows/`, and
 toolchain files; the earlier glob pattern missed all of those. Check out the
@@ -163,6 +164,7 @@ Deltas after `ba46fd6`:
 | `0960fa7` | Pass 13: run the removal guard outside the session lock and re-check debt |
 | `80f9eef` | Pass 13: keep the cold-stake funding path as an explicit restake exemption from the hot-wallet reserve |
 | `a0724dd` | Pass 14: reserve intersection and quote revalidation, unlocked-WIF torrent payout, desktop staking key binding, multi-master legacy extraction, bounded un-receipted debt, same-wallet lock/unlock, surfaced node-start errors |
+| `be78829` | Pass 15: attested BTC-state repair, force-remove surface, legacy network-only BTC-state guard |
 
 Deltas after the earlier review head:
 
@@ -214,7 +216,7 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout a0724dd2386f5b122d0114ab281c0bbaad6aa7ac
+git checkout be7882966afc3457ecec71380d6c4b58b0933d5a
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cp release/Cargo.lock Cargo.lock
@@ -234,7 +236,7 @@ A daemon-focused review can run
 without them; the full workspace suite requires the desktop libraries.
 
 The `e091936` workspace run passed 56 test groups and 1,528 tests with 0
-failures and 13 ignored. The pass-14 candidate `a0724dd` passed **57 groups and 1,553 tests, 0 failed,
+failures and 13 ignored. The pass-15 candidate `be78829` passed **57 groups and 1,555 tests, 0 failed,
 13 ignored** on the tracked release lock. Canonical CI
 run **45357625083** on the docs-only child `cd0e975` passed every job,
 including the no-cache Docker image build. CI repeats the `--all-features`

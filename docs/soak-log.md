@@ -4262,3 +4262,34 @@ tag-only desktop matrix was skipped on the push.
 
 This is a candidate window, not release evidence. The independent human review
 and the full 168 hours remain open.
+
+## 2026-11-25 — pass-15 candidate (`be78829`)
+
+Pass 15 closes the remaining pass-14 functional items: an attested
+`repair_btc_state` for pre-pass-13 imported wallets (passphrase/TOTP plus an
+explicit no-prior-history attestation; refuses overwrite and legacy
+network-only state), an authenticated `force_remove_torrent` at
+`/torrent/:id/force` (removes the session and cancels serving while retaining
+the ledger debt), and the extended desktop legacy BTC-state guard. The pass-14
+`review-a0724dd` fleet/window is retired and does not count.
+
+- Candidate: **2026-11-25T01:19:30Z** to **2026-12-02T01:19:30Z**,
+  `vtorrent/node:be78829`, image ID
+  `sha256:fa0856a025bba41c5a9d54140c3471fb67d732a9259e603d2fb069a853815f99`,
+  binary `58462cc05ab1877264736734699d974d1c9e7396ea5ae988a626e3b504fede5f`.
+- Two clean `--no-cache` builds produced the identical binary; image IDs
+  `sha256:fa0856a0…` (deployed) and `sha256:4216ec79…` (repro) differ only in
+  Docker metadata.
+- Full workspace suite: **57 groups, 1,555 passed, 0 failed, 13 ignored**.
+- Both E2Es pass on the image binary: seeder **2.12 s**; incentive **26.20 s**.
+- Initial observation at **01:19:30Z**: height 4, tips agree, staking on nodes
+  2/3, restarts 0/0/0, Prometheus 3/3, 3/3 range samples, zero down.
+- Canonical CI for `be78829` is run `45524422138`; the desktop matrix is run
+  `45525095359` from candidate tag `v2.0.0-rc2`. Both were in progress at
+  capture.
+- Fleet `review-be78829`, RPC 23951–23953, Prometheus 23973, evidence
+  `/mnt/temp/vtorrent-ng-evidence/soak-be78829/`.
+- Open: the desktop matrix result and the independent human review plus the
+  full 168 hours.
+
+This is a candidate window, not release evidence.

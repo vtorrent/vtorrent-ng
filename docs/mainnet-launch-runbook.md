@@ -5,10 +5,10 @@ consensus-batch decision, the coordinated upgrade, verification, and rollback.
 Companion to `docs/mainnet-readiness.md` (checklist) and
 `docs/oncall-runbook.md` (ongoing ops).
 
-> **Current candidate (pass 14).** The launch candidate is the pass-14
-> remediation (`a0724dd`), which supersedes the reviewed `80f9eef` baseline. The
+> **Current candidate (pass 15).** The launch candidate is the pass-15
+> remediation (`be78829`), which supersedes the pass-14 `a0724dd` candidate. The
 > exact image, binary digest, window, and evidence are recorded in
-> `docs/2026-11-24_ai-supplementary-review-pass14.md` and the pass-14 evidence
+> `docs/2026-11-25_ai-supplementary-review-pass15.md` and the pass-15 evidence
 > directory. Do not launch from an older image or count an older window.
 
 ## 1. Launch parameters (verify before launch)
@@ -28,7 +28,7 @@ Companion to `docs/mainnet-readiness.md` (checklist) and
 | Min stake | 1 VTR | `consensus.rs:43` |
 | Max supply | 20,000,000 VTR | `consensus.rs:46` |
 | DNS seeds | seed1/2/3.vtorrent.org + `bootstrap/peers.txt` | `docs/dns-seeds.md` |
-| Review candidate source | Pass-14 candidate (`a0724dd` + docs tip); see the current-candidate note | `docs/2026-11-24_ai-supplementary-review-pass14.md` |
+| Review candidate source | Pass-15 candidate (`be78829` + docs tip); see the current-candidate note | `docs/2026-11-25_ai-supplementary-review-pass15.md` |
 | Post-review mainnet fixes | `1901bb9`, `513efde`, `c465d1b` (BTC SPV peer agreement and failover; five-peer headroom and in-cycle retry); `7ec3b2f` (BTC SPV health metrics and stale-scan alert); `2c381fa` (persistent compact-filter peer cache); `aeb103a` (four fresh-review BTC findings); `8639a7f` (restart lineage); `c3b3847` (hide restored outputs); `287a505` (stuck-scan alert); `c3a79fa` (partial-scan/restart lock); `5f4c788` (canonical txid); `8ba6331` (whole-project remediation); `9a22bcd` (release lockfile); `c292fc4` (taker-side external VTR claim RPC); `dd98176` (four-peer target and 256 MiB steady RSS policy) | `docs/btc-spv-soak-plan.md` |
 
 **Genesis is deterministic** and embeds the legacy snapshot (59,375 addresses,

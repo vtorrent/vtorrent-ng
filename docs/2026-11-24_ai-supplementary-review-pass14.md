@@ -17,7 +17,8 @@ desktop matrix; the tag creates a draft release only.
 **Docs tip reviewed:** `05b125d` (plus later docs-only commits)
 **Reviewers:** four independent read-only passes — consensus/wallet/BTC,
 torrent/incentives/seeder, desktop/RPC/UI, and release/evidence.
-**Verdict:** **not release-ready.** The pass-12 criticals are materially
+**Verdict:** **not release-ready for `80f9eef`.** The pass-14 fixes were
+superseded by the pass-15 repair/force work below. The pass-12 criticals are materially
 addressed, but pass 13 introduced one reserve bypass and left several
 important payout, debt, desktop, import, and evidence gaps.
 
@@ -108,15 +109,24 @@ window is running:
   the RPC wallet and stopping staking; switching to a different wallet still
   requires a stopped node.
 - I6: unlock/create now surface `start_node` failures instead of logging them.
+- I6: `repair_btc_state` creates the attested BTC state for a pre-pass-13
+  imported wallet after passphrase/TOTP and an explicit no-prior-history
+  attestation; Settings exposes it and a Tauri test covers create/refuse-overwrite.
+- I3/I4: `force_remove_torrent` is available at
+  `DELETE /api/v1/torrent/:id/force` and as an authenticated Tauri command. It
+  removes the session and cancels serving while leaving the ledger debt recorded
+  for separate settlement; an RPC regression covers a refused normal removal
+  followed by a successful force.
 - Evidence: all CI job logs were fetched; the live proof is relabeled as the
   session guard; the evidence README now uses the 13:33Z window; the 60-cycle
   summary records the host binary digest; production recovery is archived.
 
 Still pending before a new candidate:
 
-- One-time attested BTC-state repair for pre-pass-13 imported wallets (the
-  start failure is surfaced, but there is no in-app repair yet).
-- A force-remove/write-off surface for disputed agreed debt.
+- A new image/window for the pass-15 repair/force code (the `a0724dd` window is
+  invalid for it).
+- The desktop matrix on the pass-15 candidate tag (the `v2.0.0-rc1` run on
+  `a0724dd` is superseded).
 - The desktop matrix on a tag and the workflow dispatch/tag-ancestry fixes.
 - The desktop matrix result (tag run `45510052112`).
 - The pass-14 report is the review record; the new window is not release

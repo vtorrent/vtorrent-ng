@@ -128,10 +128,10 @@ snapshot, two-person review, and an explicit decision for each record.
       See `docs/superpowers/specs/2026-09-21-genesis-bootstrap-and-stakeable-script-design.md`.
 - [ ] **External security review** — **brief finalized, not yet commissioned**:
       `docs/security-review-brief.md` (scope, deliverables, 2-phase engagement).
-      **Current candidate (2026-11-24):** pass 14 (`a0724dd` + docs tip);
+      **Current candidate (2026-11-25):** pass 15 (`be78829` + docs tip);
       package `docs/security-review-request-2026-10-27.md`; exact image and
-      window in `docs/2026-11-24_ai-supplementary-review-pass14.md`. The
-      pass-11 `review-e091936` and pass-13 `review-80f9eef` windows are
+      window in `docs/2026-11-25_ai-supplementary-review-pass15.md`. The
+      `review-e091936`, `review-80f9eef`, and `review-a0724dd` windows are
       invalidated by later code changes and do not count. The pass-11 and pass-13 AI supplements are
       supplementary only. The independent human review is not yet
       commissioned. The review covers wallet encryption (Argon2id +
@@ -277,14 +277,22 @@ window ran on, and that commit must equal the release commit.
       coverage gaps, and an hourly watchdog alerts if the observation is stale.
       See `docs/2026-11-24_ai-supplementary-review-pass13.md` and
       `/mnt/temp/vtorrent-ng-evidence/soak-80f9eef/WINDOW-RESTART.md`.
-- [~] **Pass-14 candidate window** — image `vtorrent/node:a0724dd` (ID
+- [~] **Pass-14 candidate window** — **retired by pass 15; does not count.**
+      Image `vtorrent/node:a0724dd` (ID
       `sha256:569c59327deb126387ebde1decd96bce2689418283862c2162c6eca26803e658`),
       binary `d89ba0886eeab563b253c6a66d7512ca1e2d94688736a61816e95f2c08c26e3c`,
       window `2026-11-24T17:14:00Z` → `2026-12-01T17:14:00Z`. In progress; the
       observation helper checks 5-minute `up` samples, down samples, and
       coverage gaps, and an hourly watchdog alerts if the observation is stale.
-      See `docs/2026-11-24_ai-supplementary-review-pass14.md`. This window
-      replaces `review-80f9eef`; do not count any earlier window.
+      See `docs/2026-11-24_ai-supplementary-review-pass14.md`.
+- [~] **Pass-15 candidate window** — image `vtorrent/node:be78829` (ID
+      `sha256:fa0856a025bba41c5a9d54140c3471fb67d732a9259e603d2fb069a853815f99`),
+      binary `58462cc05ab1877264736734699d974d1c9e7396ea5ae988a626e3b504fede5f`,
+      window `2026-11-25T01:19:30Z` → `2026-12-02T01:19:30Z`. In progress; the
+      observation helper checks 5-minute `up` samples, down samples, and
+      coverage gaps, and an hourly watchdog alerts if the observation is stale.
+      See `docs/2026-11-25_ai-supplementary-review-pass15.md`. This window
+      replaces `review-a0724dd`; do not count any earlier window.
 - [x] **Staking soak**: at least one node staked continuously and produced
       blocks at the expected ~60s average over the full 7-day window
       (`2026-09-29T13:36:22Z` → `2026-10-06T13:36:22Z`): node1 staked 1441
@@ -379,6 +387,12 @@ window ran on, and that commit must equal the release commit.
       lock SHA-256 (`54eee2eb…`), clean worktree status, both build logs, and
       the CI `Docker Image (no-cache)` job are recorded in
       `/mnt/temp/vtorrent-ng-evidence/soak-a0724dd/`.
+- [x] **Pass-15 candidate reproducibility**: two clean `--no-cache` builds from
+      `be78829` produced the identical daemon binary
+      `58462cc05ab1877264736734699d974d1c9e7396ea5ae988a626e3b504fede5f`;
+      image IDs `sha256:fa0856a0…` (deployed) and `sha256:4216ec79…` (repro)
+      differ only in Docker metadata. Evidence:
+      `/mnt/temp/vtorrent-ng-evidence/soak-be78829/`.
 - [x] **Rollback drill on the candidate image**: **complete (2026-11-24)**.
       Beta.3 accepted a P2CS output/P2CS coinstake at height 10, and a fresh
       candidate data dir produced genesis + height 1. A data-carrier OP_RETURN
