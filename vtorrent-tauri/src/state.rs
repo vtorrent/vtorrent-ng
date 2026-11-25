@@ -42,6 +42,12 @@ pub struct AppState {
     pub wallet: Mutex<Option<Wallet>>,
     /// Path to the wallet file on disk.
     pub wallet_path: Mutex<Option<std::path::PathBuf>>,
+    /// Serializes wallet selection changes with operations that must remain
+    /// bound to the wallet snapshot they authenticated (BTC state repair).
+    wallet_selection: Mutex<()>,
+    /// Runs after BTC repair authorization but before the repair writes.
+    #[cfg(test)]
+    pub(crate) repair_authorized_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// The application data directory. Wallet paths supplied over IPC must
     /// resolve inside this directory.
     pub app_data_dir: Mutex<Option<std::path::PathBuf>>,
@@ -58,6 +64,21 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub(crate) fn lock_wallet_selection(
+        &self,
+    ) -> crate::error::Result<std::sync::MutexGuard<'_, ()>> {
+        self.wallet_selection
+            .lock()
+            .map_err(|_| crate::error::TauriError::WalletLocked)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn try_lock_wallet_selection(
+        &self,
+    ) -> std::sync::TryLockResult<std::sync::MutexGuard<'_, ()>> {
+        self.wallet_selection.try_lock()
+    }
+
     pub async fn sync_swap_wallet(&self, rpc: &RpcAppState) -> crate::error::Result<()> {
         let (wif, address) = {
             let guard = self
@@ -115,6 +136,9 @@ impl AppState {
         Self {
             wallet: Mutex::new(None),
             wallet_path: Mutex::new(None),
+            wallet_selection: Mutex::new(()),
+            #[cfg(test)]
+            repair_authorized_hook: Mutex::new(None),
             app_data_dir: Mutex::new(None),
             node: TokioMutex::new(None),
             cold_stake_scripts: Mutex::new(HashSet::new()),

@@ -169,7 +169,33 @@ impl BtcWallet {
         utxo_path: PathBuf,
         attested_new_seed: bool,
     ) -> std::io::Result<Self> {
-        let state_lock = Some(crate::utxo::lock_state_path(&utxo_path)?);
+        let state_lock = crate::utxo::lock_state_path(&utxo_path)?;
+        Self::open_with_state_lock(seed, network, utxo_path, attested_new_seed, state_lock)
+    }
+
+    /// Open an existing wallet state after running `check` under its writer lock.
+    ///
+    /// `check` runs after the network writer lock is held and before any state
+    /// is loaded or created, so a pending repair cannot appear between the two.
+    pub fn with_persistence_checked(
+        seed: [u8; 64],
+        network: Network,
+        utxo_path: PathBuf,
+        check: impl FnOnce() -> std::io::Result<()>,
+    ) -> std::io::Result<Self> {
+        let state_lock = crate::utxo::lock_state_path(&utxo_path)?;
+        check()?;
+        Self::open_with_state_lock(seed, network, utxo_path, false, state_lock)
+    }
+
+    fn open_with_state_lock(
+        seed: [u8; 64],
+        network: Network,
+        utxo_path: PathBuf,
+        attested_new_seed: bool,
+        state_lock: std::fs::File,
+    ) -> std::io::Result<Self> {
+        let state_lock = Some(state_lock);
         let mut created = false;
         if attested_new_seed && !utxo_path.exists() {
             crate::utxo::record_wallet_initialization(&utxo_path, true)?;

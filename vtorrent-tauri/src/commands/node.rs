@@ -101,16 +101,20 @@ pub(crate) fn ensure_no_legacy_btc_wallet(
     Ok(())
 }
 
+pub(crate) fn btc_wallet_id(seed: &[u8; 64]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"vtorrent-btc-wallet-id-v1");
+    hasher.update(seed);
+    hasher.finalize().into()
+}
+
 pub(crate) fn btc_utxo_path(
     wallet_path: Option<&std::path::Path>,
     network: bitcoin::Network,
     seed: &[u8; 64],
 ) -> std::path::PathBuf {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(b"vtorrent-btc-wallet-id-v1");
-    hasher.update(seed);
-    let wallet_id = hex::encode(&hasher.finalize()[..8]);
+    let wallet_id = hex::encode(&btc_wallet_id(seed)[..8]);
     let label = match network {
         bitcoin::Network::Bitcoin => "mainnet",
         bitcoin::Network::Testnet => "testnet",
@@ -141,6 +145,46 @@ pub(crate) fn create_initial_btc_states(
             })?;
     }
     Ok(())
+}
+
+fn btc_startup_error(error: std::io::Error) -> TauriError {
+    if vtorrent_btc::repair::requires_assisted_recovery(&error) {
+        TauriError::Wallet(format!(
+            "BTC state conflicts with recovery records; preserve the wallet files and use assisted recovery: {error}"
+        ))
+    } else if error.kind() == std::io::ErrorKind::WouldBlock {
+        TauriError::Wallet(format!(
+            "BTC state is in use by a running node or another writer; stop it and retry: {error}"
+        ))
+    } else if error.kind() == std::io::ErrorKind::InvalidData
+        && error.to_string().contains("BTC repair is pending")
+    {
+        TauriError::Wallet(format!(
+            "BTC repair is pending for this wallet; resume it with the wallet owner's authorization before starting the node: {error}"
+        ))
+    } else {
+        TauriError::Io(format!("Could not open BTC wallet state: {error}"))
+    }
+}
+
+/// Open the selected network's state after refusing any pending repair while
+/// holding that network's writer lock.
+pub(crate) fn open_btc_wallet_for_startup(
+    wallet_path: &std::path::Path,
+    seed: &[u8; 64],
+    network: bitcoin::Network,
+) -> crate::error::Result<vtorrent_btc::wallet::BtcWallet> {
+    ensure_no_legacy_btc_wallet(Some(wallet_path))?;
+    let paths = vtorrent_btc::repair::RepairPaths::new(
+        btc_utxo_path(Some(wallet_path), bitcoin::Network::Bitcoin, seed),
+        btc_utxo_path(Some(wallet_path), bitcoin::Network::Regtest, seed),
+    )
+    .map_err(btc_startup_error)?;
+    let utxo_path = btc_utxo_path(Some(wallet_path), network, seed);
+    vtorrent_btc::wallet::BtcWallet::with_persistence_checked(*seed, network, utxo_path, || {
+        paths.ensure_idle()
+    })
+    .map_err(btc_startup_error)
 }
 
 #[tauri::command]
@@ -278,40 +322,35 @@ pub async fn start_node(
             .unwrap_or_else(|| std::path::PathBuf::from("swaps"))
     });
 
-    let btc_seed = {
-        let wallet_guard = state.wallet.lock().map_err(|_| TauriError::WalletLocked)?;
-        wallet_guard.as_ref().and_then(wallet_btc_seed)
-    };
-    if let Some(seed) = btc_seed {
-        let seed = zeroize::Zeroizing::new(seed);
-        let utxo_path = {
-            let wp = state
+    let btc_wallet = {
+        let _selection = state.lock_wallet_selection()?;
+        let (btc_seed, wallet_path) = {
+            let wallet_guard = state.wallet.lock().map_err(|_| TauriError::WalletLocked)?;
+            let seed = wallet_guard.as_ref().and_then(wallet_btc_seed);
+            let path = state
                 .wallet_path
                 .lock()
-                .map_err(|_| TauriError::WalletLocked)?;
-            ensure_no_legacy_btc_wallet(wp.as_deref())?;
-            btc_utxo_path(wp.as_deref(), btc_network, &seed)
+                .map_err(|_| TauriError::WalletLocked)?
+                .clone();
+            (seed, path)
         };
-        match vtorrent_btc::wallet::BtcWallet::with_persistence(
-            *seed,
-            btc_network,
-            utxo_path.clone(),
-        ) {
-            Ok(wallet) => {
-                *rpc_state.btc_wallet.write().await = Some(wallet);
-                tracing::info!(
-                    "BTC wallet loaded with UTXO persistence: {}",
-                    utxo_path.display()
-                );
+        match (btc_seed, wallet_path) {
+            (Some(seed), Some(wallet_path)) => {
+                let seed = zeroize::Zeroizing::new(seed);
+                let utxo_path = btc_utxo_path(Some(&wallet_path), btc_network, &seed);
+                let wallet = open_btc_wallet_for_startup(&wallet_path, &seed, btc_network)?;
+                Some((wallet, utxo_path))
             }
-            Err(e) => {
-                return Err(TauriError::Io(format!(
-                    "Could not load BTC wallet state from {}: {}",
-                    utxo_path.display(),
-                    e
-                )));
-            }
+            (Some(_), None) => return Err(TauriError::WalletLocked),
+            (None, _) => None,
         }
+    };
+    if let Some((wallet, utxo_path)) = btc_wallet {
+        *rpc_state.btc_wallet.write().await = Some(wallet);
+        tracing::info!(
+            "BTC wallet loaded with UTXO persistence: {}",
+            utxo_path.display()
+        );
     }
 
     let has_wallet = state
@@ -764,6 +803,61 @@ mod tests {
         std::fs::remove_file(dir.join("btc_utxos.json")).unwrap();
         assert!(ensure_no_legacy_btc_wallet(Some(&wallet)).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn startup_refuses_a_pending_repair_for_both_networks() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-tauri-pending-repair-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wallet_path = dir.join("wallet.vtr");
+        std::fs::write(&wallet_path, b"wallet").unwrap();
+        let seed = [9u8; 64];
+        create_initial_btc_states(&wallet_path, &seed).unwrap();
+        let mainnet = btc_utxo_path(Some(&wallet_path), bitcoin::Network::Bitcoin, &seed);
+        let regtest = btc_utxo_path(Some(&wallet_path), bitcoin::Network::Regtest, &seed);
+        let before = [
+            std::fs::read(&mainnet).unwrap(),
+            std::fs::read(&regtest).unwrap(),
+        ];
+        let pending = mainnet.with_extension("repair-pending");
+        std::fs::write(&pending, b"pending").unwrap();
+
+        for network in [bitcoin::Network::Bitcoin, bitcoin::Network::Regtest] {
+            let error = open_btc_wallet_for_startup(&wallet_path, &seed, network)
+                .err()
+                .expect("startup must refuse a pending repair");
+            let message = error.to_string();
+            assert!(message.contains("repair is pending"), "{message}");
+            assert!(message.contains("authorization"), "{message}");
+        }
+        assert_eq!(
+            [
+                std::fs::read(&mainnet).unwrap(),
+                std::fs::read(&regtest).unwrap()
+            ],
+            before,
+            "refused startup must not change either network's state"
+        );
+
+        let held = vtorrent_btc::utxo::lock_state_path(&mainnet).unwrap();
+        let error = open_btc_wallet_for_startup(&wallet_path, &seed, bitcoin::Network::Bitcoin)
+            .err()
+            .expect("an active writer must refuse startup");
+        assert!(error.to_string().contains("in use"), "{error}");
+        drop(held);
+
+        std::fs::remove_file(&pending).unwrap();
+        for network in [bitcoin::Network::Bitcoin, bitcoin::Network::Regtest] {
+            drop(open_btc_wallet_for_startup(&wallet_path, &seed, network).unwrap());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
