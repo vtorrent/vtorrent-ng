@@ -136,6 +136,8 @@ fn sync_parent(path: &Path) -> std::io::Result<()> {
 pub(crate) mod fork_gate {
     use std::sync::{Condvar, Mutex};
 
+    const GATE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
     struct State {
         holders: usize,
         spawning: bool,
@@ -158,41 +160,66 @@ pub(crate) mod fork_gate {
         }
 
         pub(crate) fn hold(&'static self) -> Guard {
-            let mut state = self.state.lock().unwrap();
+            let deadline = std::time::Instant::now() + GATE_WAIT;
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
             while state.spawning {
-                state = self.wake.wait(state).unwrap();
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    drop(state);
+                    panic!("fork gate: another spawn held the gate for more than {GATE_WAIT:?}");
+                }
+                let (next, wait) = self
+                    .wake
+                    .wait_timeout(state, remaining)
+                    .unwrap_or_else(|poison| poison.into_inner());
+                state = next;
+                if wait.timed_out() && state.spawning {
+                    drop(state);
+                    panic!("fork gate: another spawn held the gate for more than {GATE_WAIT:?}");
+                }
             }
             state.holders += 1;
             Guard { gate: self }
         }
 
         pub(crate) fn spawn<T>(&'static self, spawn: impl FnOnce() -> T) -> T {
-            const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
-
             struct Release(&'static Gate);
 
             impl Drop for Release {
                 fn drop(&mut self) {
-                    let mut state = self.0.state.lock().unwrap();
+                    let mut state = self
+                        .0
+                        .state
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner());
                     state.spawning = false;
                     self.0.wake.notify_all();
                 }
             }
 
-            let deadline = std::time::Instant::now() + LOCK_WAIT;
-            let mut state = self.state.lock().unwrap();
+            let deadline = std::time::Instant::now() + GATE_WAIT;
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
             while state.holders > 0 {
                 let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                assert!(
-                    !remaining.is_zero(),
-                    "fork gate: state locks were held for more than {LOCK_WAIT:?}"
-                );
-                let (next, wait) = self.wake.wait_timeout(state, remaining).unwrap();
+                if remaining.is_zero() {
+                    drop(state);
+                    panic!("fork gate: state locks were held for more than {GATE_WAIT:?}");
+                }
+                let (next, wait) = self
+                    .wake
+                    .wait_timeout(state, remaining)
+                    .unwrap_or_else(|poison| poison.into_inner());
                 state = next;
-                assert!(
-                    !wait.timed_out() || state.holders == 0,
-                    "fork gate: state locks were held for more than {LOCK_WAIT:?}"
-                );
+                if wait.timed_out() && state.holders > 0 {
+                    drop(state);
+                    panic!("fork gate: state locks were held for more than {GATE_WAIT:?}");
+                }
             }
             state.spawning = true;
             drop(state);
@@ -207,7 +234,11 @@ pub(crate) mod fork_gate {
 
     impl Drop for Guard {
         fn drop(&mut self) {
-            let mut state = self.gate.state.lock().unwrap();
+            let mut state = self
+                .gate
+                .state
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
             state.holders -= 1;
             self.gate.wake.notify_all();
         }

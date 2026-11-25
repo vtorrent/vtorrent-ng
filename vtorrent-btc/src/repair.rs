@@ -97,8 +97,47 @@ mod test_hooks {
         let Some(path) = std::env::var_os(OPERATION_ENV) else {
             return;
         };
-        if let Some(operation) = CURRENT_OPERATION.with(Cell::get) {
-            let _ = std::fs::write(path, operation);
+        let Some(operation) = CURRENT_OPERATION.with(Cell::get) else {
+            panic!("repair operation capture requested before an operation was recorded");
+        };
+        if let Err(error) = std::fs::write(&path, operation) {
+            panic!(
+                "could not write repair operation capture {}: {error}",
+                std::path::Path::new(&path).display()
+            );
+        }
+    }
+
+    thread_local! {
+        static FAIL_POST_REMOVAL_SYNC: Cell<bool> = const { Cell::new(false) };
+        static POST_REMOVAL_SYNC_FAILURE_INJECTED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(super) fn take_post_removal_sync_failure() -> bool {
+        let armed = FAIL_POST_REMOVAL_SYNC.with(|flag| flag.replace(false));
+        if armed {
+            POST_REMOVAL_SYNC_FAILURE_INJECTED.with(|flag| flag.set(true));
+        }
+        armed
+    }
+
+    pub(super) fn post_removal_sync_failure_injected() -> bool {
+        POST_REMOVAL_SYNC_FAILURE_INJECTED.with(Cell::get)
+    }
+
+    pub(super) struct FailPostRemovalSync;
+
+    impl FailPostRemovalSync {
+        pub(super) fn arm() -> Self {
+            FAIL_POST_REMOVAL_SYNC.with(|flag| flag.set(true));
+            POST_REMOVAL_SYNC_FAILURE_INJECTED.with(|flag| flag.set(false));
+            Self
+        }
+    }
+
+    impl Drop for FailPostRemovalSync {
+        fn drop(&mut self) {
+            FAIL_POST_REMOVAL_SYNC.with(|flag| flag.set(false));
         }
     }
 
@@ -767,7 +806,23 @@ impl RepairPaths {
             }
         };
         if removed {
-            sync_dir(self.dir())?;
+            #[cfg(test)]
+            let sync = if test_hooks::take_post_removal_sync_failure() {
+                Err(io::Error::other(
+                    "injected post-removal directory sync failure",
+                ))
+            } else {
+                sync_dir(self.dir())
+            };
+            #[cfg(not(test))]
+            let sync = sync_dir(self.dir());
+            if let Err(error) = sync {
+                tracing::warn!(
+                    directory = %self.dir().display(),
+                    %error,
+                    "could not sync the wallet directory after removing the empty BTC repair staging directory"
+                );
+            }
         }
         #[cfg(test)]
         if removed {
@@ -958,33 +1013,61 @@ mod tests {
         wait_with_output_bounded(child)
     }
 
-    fn wait_with_output_bounded(child: std::process::Child) -> std::process::Output {
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let waiter = std::thread::spawn(move || {
-            let output = child.wait_with_output().unwrap();
-            let _ = done_tx.send(output);
+    fn wait_with_output_bounded(mut child: std::process::Child) -> std::process::Output {
+        let mut stdout = child.stdout.take().expect("child stdout must be piped");
+        let mut stderr = child.stderr.take().expect("child stderr must be piped");
+        let stdout_reader = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut stdout, &mut bytes).unwrap();
+            bytes
         });
-        match done_rx.recv_timeout(CHILD_TIMEOUT) {
-            Ok(output) => {
-                waiter.join().unwrap();
-                output
+        let stderr_reader = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut stderr, &mut bytes).unwrap();
+            bytes
+        });
+        let deadline = std::time::Instant::now() + CHILD_TIMEOUT;
+        loop {
+            match child.try_wait().unwrap() {
+                Some(status) => {
+                    return std::process::Output {
+                        status,
+                        stdout: stdout_reader.join().unwrap(),
+                        stderr: stderr_reader.join().unwrap(),
+                    };
+                }
+                None if std::time::Instant::now() >= deadline => {
+                    // Keep the child handle so a timeout kills and reaps it
+                    // instead of leaking a process and its reader threads.
+                    let _ = child.kill();
+                    let status = child.wait().unwrap();
+                    let stdout = stdout_reader.join().unwrap();
+                    let stderr = stderr_reader.join().unwrap();
+                    panic!(
+                        "child process did not finish within {CHILD_TIMEOUT:?}; killed ({status:?}); stdout: {}; stderr: {}",
+                        String::from_utf8_lossy(&stdout),
+                        String::from_utf8_lossy(&stderr)
+                    );
+                }
+                None => std::thread::park_timeout(std::time::Duration::from_millis(1)),
             }
-            Err(_) => panic!("child process did not finish within {CHILD_TIMEOUT:?}"),
         }
     }
 
     fn wait_bounded(mut child: std::process::Child) -> std::process::ExitStatus {
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let waiter = std::thread::spawn(move || {
-            let status = child.wait().unwrap();
-            let _ = done_tx.send(status);
-        });
-        match done_rx.recv_timeout(CHILD_TIMEOUT) {
-            Ok(status) => {
-                waiter.join().unwrap();
-                status
+        let deadline = std::time::Instant::now() + CHILD_TIMEOUT;
+        loop {
+            match child.try_wait().unwrap() {
+                Some(status) => return status,
+                None if std::time::Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let status = child.wait().unwrap();
+                    panic!(
+                        "child process did not exit within {CHILD_TIMEOUT:?}; killed ({status:?})"
+                    );
+                }
+                None => std::thread::park_timeout(std::time::Duration::from_millis(1)),
             }
-            Err(_) => panic!("child process did not exit within {CHILD_TIMEOUT:?}"),
         }
     }
 
@@ -1523,6 +1606,26 @@ mod tests {
     }
 
     #[test]
+    fn post_removal_sync_failure_does_not_fail_a_completed_repair() {
+        let (dir, paths) = fixture("post-removal-sync");
+        let armed = test_hooks::FailPostRemovalSync::arm();
+        let result = paths.run(&ID);
+        drop(armed);
+        assert!(
+            test_hooks::post_removal_sync_failure_injected(),
+            "the post-removal sync failure was not exercised"
+        );
+        assert!(
+            result.is_ok(),
+            "a cleanup sync failure must not fail a completed repair: {result:?}"
+        );
+        assert!(!staging_present(&dir));
+        open_both_after_repair(&paths);
+        assert_completed_repair_refuses(&paths);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn resumes_after_process_exit() {
         const TEST: &str = "repair::tests::resumes_after_process_exit";
         if let Some(mode) = std::env::var_os(CHILD_ENV) {
@@ -1665,9 +1768,15 @@ mod tests {
             }
             let _ = ready_tx.send(line.trim().to_owned());
         });
-        let line = ready_rx
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("the lock holder must report readiness");
+        let line = match ready_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(line) => line,
+            Err(_) => {
+                let _ = child.kill();
+                let status = wait_bounded(child);
+                reader.join().unwrap();
+                panic!("the lock holder did not report readiness; child status: {status:?}");
+            }
+        };
         assert_eq!(line, "REPAIR_LOCKS=ready");
 
         for path in [&paths.mainnet, &paths.regtest] {
