@@ -120,6 +120,8 @@ pub fn lock_state_path(path: &Path) -> std::io::Result<std::fs::File> {
     Ok(file)
 }
 
+pub(crate) const INITIALIZED: &[u8] = b"vtorrent-btc-initialized-v1\n";
+
 pub(crate) fn record_wallet_initialization(path: &Path, must_be_new: bool) -> std::io::Result<()> {
     let marker = path.with_extension("initialized");
     let mut options = std::fs::OpenOptions::new();
@@ -133,7 +135,7 @@ pub(crate) fn record_wallet_initialization(path: &Path, must_be_new: bool) -> st
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && !must_be_new => {
             if !std::fs::symlink_metadata(&marker)?.file_type().is_file()
-                || std::fs::read(&marker)? != b"vtorrent-btc-initialized-v1\n"
+                || std::fs::read(&marker)? != INITIALIZED
             {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
@@ -150,7 +152,7 @@ pub(crate) fn record_wallet_initialization(path: &Path, must_be_new: bool) -> st
         }
         Err(error) => return Err(error),
     };
-    std::io::Write::write_all(&mut file, b"vtorrent-btc-initialized-v1\n")?;
+    std::io::Write::write_all(&mut file, INITIALIZED)?;
     file.sync_all()?;
     #[cfg(unix)]
     sync_parent(&marker)?;
@@ -1161,7 +1163,7 @@ impl UtxoSet {
         None
     }
 
-    fn serialized(&self) -> std::io::Result<Vec<u8>> {
+    pub(crate) fn serialized(&self) -> std::io::Result<Vec<u8>> {
         let mut value = serde_json::to_value(self).map_err(std::io::Error::other)?;
         value["journal_version"] = serde_json::json!(self.journal_version);
         Ok(serde_json::to_string_pretty(&value)

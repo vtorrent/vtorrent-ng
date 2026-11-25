@@ -14,6 +14,7 @@ pub mod htlc;
 pub mod keys;
 pub mod merkle;
 pub mod p2p;
+pub mod repair;
 pub mod sync;
 pub mod tx;
 pub mod utxo;
