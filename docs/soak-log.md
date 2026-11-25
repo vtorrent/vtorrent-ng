@@ -4284,9 +4284,11 @@ the ledger debt), and the extended desktop legacy BTC-state guard. The pass-14
 - Both E2Es pass on the image binary: seeder **2.12 s**; incentive **26.20 s**.
 - Initial observation at **01:19:30Z**: height 4, tips agree, staking on nodes
   2/3, restarts 0/0/0, Prometheus 3/3, 3/3 range samples, zero down.
-- Canonical CI for `be78829` is run `45524422138`; the desktop matrix is run
-  `45525095359` from candidate tag `v2.0.0-rc2`. Both were in progress at
-  capture.
+- Canonical CI for `be78829` is run `45524422138` (**success**). The first
+  desktop matrix run `45525095359` (`v2.0.0-rc2`) failed only the Intel macOS
+  job because the arm64 runner lacked `x86_64-apple-darwin`; CI-only commit
+  `f85cddd` adds an explicit `rustup target add`. The rerun is `v2.0.0-rc3`,
+  run `45540365425`.
 - Fleet `review-be78829`, RPC 23951–23953, Prometheus 23973, evidence
   `/mnt/temp/vtorrent-ng-evidence/soak-be78829/`.
 - Open: the desktop matrix result and the independent human review plus the

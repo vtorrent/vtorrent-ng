@@ -31,8 +31,17 @@ remains the review record; this is the remediation and evidence update.
   only in metadata.
 - New window `review-be78829` started at 01:19:30Z: height 4, tips agree,
   staking 2/3, Prometheus 3/3, 3/3 samples, zero down.
-- Canonical CI for `be78829` is run `45524422138` (in progress); the desktop
-  matrix is run `45525095359` from candidate tag `v2.0.0-rc2`.
+- Canonical CI for `be78829` is run `45524422138` (success); the first desktop
+  matrix run `45525095359` on `v2.0.0-rc2` failed only the Intel macOS job because
+  the arm64 runner lacked `x86_64-apple-darwin`. CI-only commit `f85cddd` adds an
+  explicit `rustup target add`; the rerun is `v2.0.0-rc3`, run `45540365425`.
+
+## Candidate provenance
+
+The exact daemon image and window are `be78829` / `review-be78829`. The later
+`f85cddd` commit only adds the desktop matrix target install in
+`.github/workflows/build.yml`; no daemon or UI source changed. The expected
+`be78829..HEAD` non-doc freeze diff is that single CI file.
 
 ## Remaining
 

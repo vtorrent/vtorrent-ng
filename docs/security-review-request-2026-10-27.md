@@ -11,8 +11,10 @@ already accepted so it is not re-litigated.
 ## Review target
 
 Review the code candidate `be7882966afc3457ecec71380d6c4b58b0933d5a`. This is
-the pass-15 remediation on top of `a0724dd`; the docs tip is a docs-only child
-of it. The exact-image window for this candidate is recorded in
+the pass-15 remediation on top of `a0724dd`; the docs tip is a docs/CI child
+of it. The only non-doc change after the candidate is the explicit desktop
+matrix `rustup target add` step in `.github/workflows/build.yml`; no daemon or
+UI source changed, and the exact image is built from `be78829`. The exact-image window for this candidate is recorded in
 `docs/2026-11-25_ai-supplementary-review-pass15.md`; the `review-a0724dd`,
 `review-80f9eef`, and `review-e091936` windows are invalidated by later code
 changes and do not count. The
@@ -24,7 +26,8 @@ this review and its fixes settle.
 Read this document from the tip of `main`. Confirm that no non-doc file changed
 after the candidate with
 `git diff --name-only be78829..HEAD -- . ':(exclude)docs/**'`, which must
-return nothing. This pathspec includes the Rust workspace, `release/Cargo.lock`,
+return only `.github/workflows/build.yml` (the desktop target-install step).
+This pathspec includes the Rust workspace, `release/Cargo.lock`,
 the UI lockfiles and config, `docker/Dockerfile`, `.github/workflows/`, and
 toolchain files; the earlier glob pattern missed all of those. Check out the
 candidate itself when running the verification commands; read the docs from the

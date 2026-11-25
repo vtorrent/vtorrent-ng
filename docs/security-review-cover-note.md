@@ -18,8 +18,8 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review docs:** the `main` tip that contains this note (a docs-only child of
-the code candidate)
+**Review docs:** the `main` tip that contains this note (a docs/CI child of the
+code candidate; the only non-doc child is the desktop target-install step)
 **Code candidate:** `be7882966afc3457ecec71380d6c4b58b0933d5a`
 **Image:** `vtorrent/node:be78829`, ID
 `sha256:fa0856a025bba41c5a9d54140c3471fb67d732a9259e603d2fb069a853815f99`
@@ -35,7 +35,8 @@ window after this review and its fixes settle.
 Read this note and the scope document from the tip of `main`. Confirm that no
 non-doc file changed after the candidate with
 `git diff --name-only be78829..HEAD -- . ':(exclude)docs/**'`, which must
-return nothing. This includes the Rust workspace, `release/Cargo.lock`, the UI
+return only `.github/workflows/build.yml` (the desktop target-install step).
+This includes the Rust workspace, `release/Cargo.lock`, the UI
 lockfiles and config, `docker/Dockerfile`, `.github/workflows/`, and toolchain
 files. Check out the candidate itself when running the verification commands.
 
