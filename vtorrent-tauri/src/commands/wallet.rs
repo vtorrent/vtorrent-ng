@@ -1734,12 +1734,21 @@ mod tests {
         *state.selection_probe.lock().unwrap() = None;
     }
 
-    struct ReleaseOnPanic<'a> {
+    struct RepairRelease<'a> {
         barrier: &'a std::sync::Barrier,
         armed: bool,
     }
 
-    impl Drop for ReleaseOnPanic<'_> {
+    impl RepairRelease<'_> {
+        fn release(&mut self) {
+            if self.armed {
+                self.armed = false;
+                self.barrier.wait();
+            }
+        }
+    }
+
+    impl Drop for RepairRelease<'_> {
         fn drop(&mut self) {
             if self.armed {
                 self.barrier.wait();
@@ -1752,7 +1761,7 @@ mod tests {
     fn with_paused_repair(
         state: &tauri::State<'_, AppState>,
         passphrase: &str,
-        attempt: impl FnOnce(&std::sync::Barrier),
+        attempt: impl FnOnce(&mut RepairRelease<'_>),
     ) -> String {
         use std::sync::{Arc, Barrier};
         let authorized = Arc::new(Barrier::new(2));
@@ -1772,12 +1781,12 @@ mod tests {
                 move || repair_btc_state(state, passphrase, None, true)
             });
             authorized.wait();
-            let mut fallback = ReleaseOnPanic {
+            let mut release = RepairRelease {
                 barrier: release.as_ref(),
                 armed: true,
             };
-            attempt(&release);
-            fallback.armed = false;
+            attempt(&mut release);
+            release.release();
             repair.join().unwrap().unwrap()
         })
     }
@@ -1939,7 +1948,7 @@ mod tests {
                     Some(first_path.as_path()),
                     "open_wallet changed the selection before repair released it"
                 );
-                release.wait();
+                release.release();
                 switch.join().unwrap().unwrap();
             });
         });
@@ -2205,7 +2214,7 @@ mod tests {
                     }
                 });
                 wait_for_selection_attempt(state.inner(), &receiver);
-                release.wait();
+                release.release();
                 assert!(
                     startup.join().unwrap(),
                     "startup must open both networks after the repair completes"
@@ -2249,7 +2258,7 @@ mod tests {
                     Some(first_path.as_path()),
                     "create_wallet changed the selection before repair released it"
                 );
-                release.wait();
+                release.release();
                 command.join().unwrap().unwrap();
             });
         });
@@ -2303,7 +2312,7 @@ mod tests {
                     Some(first_path.as_path()),
                     "import changed the selection before repair released it"
                 );
-                release.wait();
+                release.release();
                 let error = command.join().unwrap().unwrap_err();
                 assert!(matches!(error, TauriError::Migration(_)), "{error:?}");
             });
@@ -2371,7 +2380,7 @@ mod tests {
                     Some(first_path.as_path()),
                     "restore changed the selection before repair released it"
                 );
-                release.wait();
+                release.release();
                 command.join().unwrap().unwrap();
             });
         });
