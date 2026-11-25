@@ -4286,12 +4286,13 @@ the ledger debt), and the extended desktop legacy BTC-state guard. The pass-14
   2/3, restarts 0/0/0, Prometheus 3/3, 3/3 range samples, zero down.
 - Canonical CI for `be78829` is run `45524422138` (**success**). The first
   desktop matrix run `45525095359` (`v2.0.0-rc2`) failed only the Intel macOS
-  job because the arm64 runner lacked `x86_64-apple-darwin`; CI-only commit
-  `f85cddd` adds an explicit `rustup target add`. The rerun is `v2.0.0-rc3`,
-  run `45540365425`.
+  job because the arm64 runner lacked `x86_64-apple-darwin`; CI-only `f85cddd`
+  adds an explicit `rustup target add`. The rerun `v2.0.0-rc3`, run
+  `45540365425`, passed **all four desktop platforms** and every other job. No
+  release was published.
 - Fleet `review-be78829`, RPC 23951–23953, Prometheus 23973, evidence
   `/mnt/temp/vtorrent-ng-evidence/soak-be78829/`.
-- Open: the desktop matrix result and the independent human review plus the
-  full 168 hours.
+- Open: the independent human review, the production soak clock decision, and
+  the full 168 hours.
 
 This is a candidate window, not release evidence.

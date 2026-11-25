@@ -34,8 +34,11 @@ fails.** Any code change invalidates the exact-image window.
 
 ## In-flight CI
 
-- `45540365425` — tag `v2.0.0-rc3` (on `f85cddd`): desktop matrix + all gates.
-- `45540352575` — main `f85cddd` (CI target fix).
+- `45540365425` — tag `v2.0.0-rc3` (on `f85cddd`): **success**, all four
+  desktop platforms (Linux, Windows, Intel macOS, Apple Silicon macOS) and every
+  other job. No release was published; evidence is in
+  `soak-be78829/ci-desktop/`.
+- `45540352575` — main `f85cddd` (CI target fix): check the final conclusion.
 - `45524422138` — main `be78829`: **success**.
 - `45525095359` — tag `v2.0.0-rc2` on `be78829`: **failure**, only the Intel
   macOS job (arm64 runner lacked `x86_64-apple-darwin`); Windows, Apple Silicon
@@ -43,39 +46,34 @@ fails.** Any code change invalidates the exact-image window.
 - `45510052112` — stale `v2.0.0-rc1`/`a0724dd`: failure; superseded, tag
   deleted, no release created.
 
-Watch with:
+Check the final main status with:
 
 ```bash
-gh run view 45540365425 --json status,conclusion,jobs
 gh run view 45540352575 --json status,conclusion,jobs
 ```
 
 ## Release gates and next actions
 
-1. **Finish the rc3 desktop matrix.** If green, archive its job logs under
-   `soak-be78829/ci-desktop/`, confirm no draft release was published, update
-   `docs/2026-11-25_ai-supplementary-review-pass15.md`/`docs/soak-log.md`, and
-   commit docs with `[skip ci]`. If a platform fails, diagnose; the CI target
-   install is the known Intel macOS fix.
-2. **Commission the independent human review.** The package is
+1. **Send the independent human review request.** The rc3 desktop matrix is
+   green and archived; no release was published. The package is
    `docs/security-review-cover-note.md` + `docs/security-review-request-2026-10-27.md`;
    target is `be78829` / image `fa0856a0…` / window `review-be78829`. The
    package documents the expected freeze diff (`.github/workflows/build.yml`
    only) and the residual risks. Sending it needs the user.
-3. **Keep the 168-hour window running** to `2026-12-02T01:19:30Z`. The cron
+2. **Keep the 168-hour window running** to `2026-12-02T01:19:30Z`. The cron
    observes every 6 hours, the watchdog hourly, and the helper checks
    Prometheus `query_range` for down samples/coverage gaps. Do not touch the
    fleet or change code.
-4. **Production soak decision.** A host Docker snap auto-refresh at
+3. **Production soak decision.** A host Docker snap auto-refresh at
    2026-11-24T13:18:37Z restarted `vtr-node*`; the chain replayed and is
    healthy, but its continuous uptime is broken. The production daily cron was
    restored to the original window start `VTR_SOAK_WINDOW_START=1792550874`
    (`2026-10-21T02:47:54Z`). The user must decide whether to restart the
    production soak clock or record an exception. Do not touch the containers.
-5. **Optional swap rerun on `be78829`.** The four real-bitcoind tests and
+4. **Optional swap rerun on `be78829`.** The four real-bitcoind tests and
    60/60-cycle soak passed on `a0724dd`; the pass-15 changes are Tauri repair +
    RPC force-remove only. A fresh run is nice-to-have, not a known gap.
-6. **Remaining evidence:** real legacy `wallet.dat` differential needs a real
+5. **Remaining evidence:** real legacy `wallet.dat` differential needs a real
    file from the user. Production signing key/certificate is **not** generated
    and needs explicit authorization. Height-10,000 checkpoint is post-launch.
 
@@ -145,7 +143,7 @@ cargo test -p vtorrent-daemon --test torrent_seeder_e2e -- --ignored --nocapture
   cancels serving; settlement/write-off of the ledger debt is separate.
 - **BTC-state repair is attestation-based.** It refuses existing/legacy state;
   the operator must attest no prior BTC history.
-- **Desktop matrix** still needs the rc3 result.
+- Desktop matrix: **closed** (rc3 green).
 - **Independent human review** is not commissioned.
 - **Production soak clock** is a user decision after the Docker restart.
 - **Signing** is not authorized; do not generate a production key.

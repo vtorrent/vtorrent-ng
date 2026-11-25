@@ -31,10 +31,12 @@ remains the review record; this is the remediation and evidence update.
   only in metadata.
 - New window `review-be78829` started at 01:19:30Z: height 4, tips agree,
   staking 2/3, Prometheus 3/3, 3/3 samples, zero down.
-- Canonical CI for `be78829` is run `45524422138` (success); the first desktop
+- Canonical CI for `be78829` is run `45524422138` (success). The first desktop
   matrix run `45525095359` on `v2.0.0-rc2` failed only the Intel macOS job because
-  the arm64 runner lacked `x86_64-apple-darwin`. CI-only commit `f85cddd` adds an
-  explicit `rustup target add`; the rerun is `v2.0.0-rc3`, run `45540365425`.
+  the arm64 runner lacked `x86_64-apple-darwin`; CI-only `f85cddd` adds an
+  explicit `rustup target add`. The rerun `v2.0.0-rc3`, run `45540365425`, is
+  **green on all four desktop platforms** (Linux, Windows, Intel macOS, Apple
+  Silicon macOS) and every other job. No release was published.
 
 ## Candidate provenance
 
@@ -45,5 +47,7 @@ The exact daemon image and window are `be78829` / `review-be78829`. The later
 
 ## Remaining
 
-- Desktop matrix on the `be78829` candidate tag.
 - Independent human security review and the full 168-hour window.
+- Production soak clock decision after the Docker restart.
+- Real legacy `wallet.dat` differential, signing authorization, and the
+  post-launch height-10,000 checkpoint.
