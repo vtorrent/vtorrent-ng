@@ -283,6 +283,25 @@ pub async fn remove_torrent(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> RpcResult<Json<Value>> {
+    remove_torrent_inner(&state, &id, false).await
+}
+
+/// Explicit operator override for a session whose incentive debt is disputed
+/// or cannot settle. The session is removed and the peer connection cancelled;
+/// the ledger debt remains recorded for separate settlement or write-off.
+pub async fn force_remove_torrent(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> RpcResult<Json<Value>> {
+    tracing::warn!(session = %id, "Force-removing torrent with outstanding incentive state");
+    remove_torrent_inner(&state, &id, true).await
+}
+
+async fn remove_torrent_inner(
+    state: &Arc<AppState>,
+    id: &str,
+    force: bool,
+) -> RpcResult<Json<Value>> {
     let removal_guard = state
         .torrent_removal_guard
         .lock()
@@ -294,43 +313,46 @@ pub async fn remove_torrent(
     let snapshot = {
         let sessions = state.torrent_sessions.read().await;
         let session = sessions
-            .get_session(&id)
+            .get_session(id)
             .map_err(|_| RpcError::NotFound(format!("Session {id} not found")))?;
         session.clone()
     };
-    if snapshot.has_outstanding_incentives() {
+    if !force && snapshot.has_outstanding_incentives() {
         return Err(RpcError::BadRequest(
             "Session has unpaid or in-flight incentive payments; retry after settlement".into(),
         ));
     }
     let info_hash = snapshot.metainfo.info_hash;
-    if let Some(guard) = removal_guard {
-        let result = tokio::task::spawn_blocking(move || guard(&snapshot)).await;
-        match result {
-            Ok(Ok(())) => {}
-            Ok(Err(reason)) => return Err(RpcError::BadRequest(reason)),
-            Err(error) => {
-                return Err(RpcError::Internal(format!(
-                    "torrent removal guard failed: {error}"
-                )))
+    if !force {
+        if let Some(guard) = removal_guard {
+            let result = tokio::task::spawn_blocking(move || guard(&snapshot)).await;
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(reason)) => return Err(RpcError::BadRequest(reason)),
+                Err(error) => {
+                    return Err(RpcError::Internal(format!(
+                        "torrent removal guard failed: {error}"
+                    )))
+                }
             }
         }
     }
     // Re-check after the guard: a receipt may have arrived while the guard was
     // reading. The peer task updates the session account before journaling, so
-    // this check sees any receipt that landed during the I/O.
+    // this check sees any receipt that landed during the I/O. A forced removal
+    // deliberately skips this check.
     let mut sessions = state.torrent_sessions.write().await;
-    let Some(session) = sessions.get_session(&id).ok() else {
+    let Some(session) = sessions.get_session(id).ok() else {
         return Err(RpcError::NotFound(format!("Session {id} not found")));
     };
-    if session.has_outstanding_incentives() {
+    if !force && session.has_outstanding_incentives() {
         return Err(RpcError::BadRequest(
             "Session has unpaid or in-flight incentive payments; retry after settlement".into(),
         ));
     }
-    sessions.remove_session(&id);
+    sessions.remove_session(id);
     drop(sessions);
-    if let Some(cancel) = state.torrent_cancels.write().await.remove(&id) {
+    if let Some(cancel) = state.torrent_cancels.write().await.remove(id) {
         cancel.cancel();
     }
     // Stop serving it immediately, even if the engine task is still winding
@@ -338,7 +360,7 @@ pub async fn remove_torrent(
     if let Some(seeder) = state.torrent_seeder.read().await.clone() {
         // Only remove this session's entry; a concurrent re-add may have
         // registered a newer one for the same info-hash.
-        seeder.unregister_session(&info_hash, &id).await;
+        seeder.unregister_session(&info_hash, id).await;
     }
     Ok(Json(
         json!({ "success": true, "message": format!("Session {} removed", id) }),
@@ -467,6 +489,30 @@ mod tests {
             "a locked wallet has no signing key for incentive receipts"
         );
         assert!(state.torrent_sessions.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn force_removal_skips_the_incentive_guard_with_an_audit() {
+        let state = Arc::new(AppState::new());
+        let mut session =
+            TorrentSession::new(test_metainfo(), "VPskT3V4CSyoRAYTCgyxZQ2FByJmCCLUUT".into());
+        session.record_download("VH6w62jDRYpYHjR2eJjFzJxRC4MQvvs93a6", 1);
+        session
+            .incentive_accounts
+            .get_mut("VH6w62jDRYpYHjR2eJjFzJxRC4MQvvs93a6")
+            .unwrap()
+            .unpaid_satoshis = MIN_PAYMENT_SATS;
+        let id = session.id.clone();
+        state.torrent_sessions.write().await.add_session(session);
+
+        let result = force_remove_torrent(State(Arc::clone(&state)), Path(id.clone())).await;
+        assert!(result.is_ok(), "force removal must bypass the debt guard");
+        assert!(state
+            .torrent_sessions
+            .read()
+            .await
+            .get_session(&id)
+            .is_err());
     }
 
     #[tokio::test]

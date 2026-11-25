@@ -149,6 +149,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/wallet/cold-stake", post(create_cold_stake))
         .route("/api/v1/torrent/add", post(add_torrent))
         .route("/api/v1/torrent/:id", delete(remove_torrent))
+        .route("/api/v1/torrent/:id/force", delete(force_remove_torrent))
         .route("/api/v1/dex/order", post(place_dex_order))
         .route("/api/v1/dex/order/:id", delete(cancel_dex_order))
         .route("/api/v1/dex/orders", get(get_dex_orders))

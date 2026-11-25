@@ -33,6 +33,10 @@ const appInfo: AppInfo = {
   walletAddress: 'VTestWalletAddress',
 }
 
+vi.mock('../hooks/useWallet', () => ({
+  useWallet: () => ({ repairBtcState: vi.fn() }),
+}))
+
 vi.mock('../hooks/useNode', () => ({
   useNodeInfo: () => ({ data: node, loading: false, error: null }),
   useAppInfo: () => ({

@@ -97,6 +97,11 @@ interface WalletContextType extends WalletState {
     otpCode: string | undefined,
     confirmOverwrite: boolean
   ) => Promise<BackupPreview>
+  repairBtcState: (
+    passphrase: string,
+    otpCode: string | undefined,
+    attestNoPriorBtcHistory: boolean
+  ) => Promise<string>
   totalBalance: number
   legacyImportCount: number
 }
@@ -513,6 +518,18 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     })
   }, [])
 
+  const repairBtcState = useCallback(async (
+    passphrase: string,
+    otpCode: string | undefined,
+    attestNoPriorBtcHistory: boolean
+  ) => {
+    return invoke<string>('repair_btc_state', {
+      passphrase,
+      otpCode: otpCode ?? null,
+      attestNoPriorBtcHistory,
+    })
+  }, [])
+
   const totalBalance = state.keys.reduce((sum, k) => sum + k.balance, 0)
   const legacyImportCount = state.keys.filter(k => k.isLegacyImport).length
 
@@ -532,6 +549,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       createBackup,
       verifyBackup,
       restoreBackup,
+      repairBtcState,
       totalBalance,
       legacyImportCount,
     }}>

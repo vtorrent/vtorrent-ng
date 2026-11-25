@@ -20,6 +20,7 @@ fn main() {
             commands::get_wallet_info,
             // Legacy wallet import
             commands::import_legacy_wallet,
+            commands::repair_btc_state,
             // Address management
             commands::generate_address,
             commands::get_addresses,
@@ -52,6 +53,7 @@ fn main() {
             commands::set_torrent_settings,
             commands::add_torrent,
             commands::remove_torrent,
+            commands::force_remove_torrent,
             // DEX order book
             commands::get_dex_orders,
             commands::place_dex_order,

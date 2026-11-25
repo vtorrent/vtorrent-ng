@@ -321,6 +321,35 @@ fn ensure_torrent_removable(session: &TorrentSession) -> Result<()> {
 
 #[tauri::command]
 pub async fn remove_torrent(state: tauri::State<'_, AppState>, id: String) -> Result<()> {
+    remove_torrent_inner(state, id, false).await
+}
+
+/// Explicit operator override for a session whose incentive debt is disputed
+/// or cannot settle. Requires the wallet passphrase/TOTP and leaves the
+/// recorded debt in the daemon ledger for separate settlement.
+#[tauri::command]
+pub async fn force_remove_torrent(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    passphrase: String,
+    otp_code: Option<String>,
+) -> Result<()> {
+    let passphrase = zeroize::Zeroizing::new(passphrase);
+    let otp_code = otp_code.map(zeroize::Zeroizing::new);
+    crate::commands::wallet::authorize_wallet(
+        state.inner(),
+        &passphrase,
+        otp_code.as_deref().map(|code| code.as_str()),
+    )?;
+    tracing::warn!(session = %id, "Force-removing desktop torrent with outstanding incentive state");
+    remove_torrent_inner(state, id, true).await
+}
+
+async fn remove_torrent_inner(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    force: bool,
+) -> Result<()> {
     let guard = state.node.lock().await;
     let handle = guard
         .as_ref()
@@ -331,9 +360,11 @@ pub async fn remove_torrent(state: tauri::State<'_, AppState>, id: String) -> Re
             .get_session(&id)
             .map_err(|_| TauriError::Torrent(format!("Session {} not found", id)))?;
         // The desktop node has no settlement/payment loop. Refuse removal
-        // rather than silently discarding a receipt-backed debt; the user
-        // must settle or explicitly write it off first.
-        ensure_torrent_removable(session)?;
+        // rather than silently discarding a receipt-backed debt; a force
+        // removal is the explicit write-off/override path.
+        if !force {
+            ensure_torrent_removable(session)?;
+        }
         let info_hash = session.metainfo.info_hash;
         sessions
             .remove_session(&id)

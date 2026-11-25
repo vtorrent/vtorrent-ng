@@ -61,12 +61,28 @@ pub(crate) fn wallet_btc_seed(wallet: &vtorrent_wallet::wallet::Wallet) -> Optio
         })
 }
 
-fn ensure_no_legacy_btc_wallet(wallet_path: Option<&std::path::Path>) -> crate::error::Result<()> {
+pub(crate) fn ensure_no_legacy_btc_wallet(
+    wallet_path: Option<&std::path::Path>,
+) -> crate::error::Result<()> {
     let mut candidates = Vec::new();
     if let Some(parent) = wallet_path.and_then(|path| path.parent()) {
-        candidates.push(parent.join("btc_utxos.json"));
+        for name in [
+            "btc_utxos.json",
+            "btc_utxos-mainnet.json",
+            "btc_utxos-testnet.json",
+            "btc_utxos-regtest.json",
+        ] {
+            candidates.push(parent.join(name));
+        }
     } else {
-        candidates.push(std::env::temp_dir().join("vtorrent_btc_utxos.json"));
+        for name in [
+            "vtorrent_btc_utxos.json",
+            "vtorrent_btc_utxos-mainnet.json",
+            "vtorrent_btc_utxos-testnet.json",
+            "vtorrent_btc_utxos-regtest.json",
+        ] {
+            candidates.push(std::env::temp_dir().join(name));
+        }
     }
     for path in candidates {
         match std::fs::symlink_metadata(&path) {

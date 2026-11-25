@@ -494,6 +494,59 @@ pub fn import_legacy_wallet(
     })
 }
 
+// ─── BTC state recovery ──────────────────────────────────────────────────────
+
+/// Create the attested BTC state for a wallet imported before pass 13.
+///
+/// The operator must explicitly attest that the wallet has no prior BTC
+/// history; this is a one-time recovery for a missing state file, not a
+/// silent migration.
+#[tauri::command]
+pub fn repair_btc_state(
+    state: State<AppState>,
+    passphrase: String,
+    otp_code: Option<String>,
+    attest_no_prior_btc_history: bool,
+) -> Result<String> {
+    if !attest_no_prior_btc_history {
+        return Err(TauriError::InvalidInput(
+            "BTC state repair requires an explicit no-prior-history attestation".into(),
+        ));
+    }
+    let passphrase = zeroize::Zeroizing::new(passphrase);
+    let otp_code = otp_code.map(zeroize::Zeroizing::new);
+    let _default_wif = authorize_wallet(
+        state.inner(),
+        &passphrase,
+        otp_code.as_deref().map(|c| c.as_str()),
+    )?;
+    let wallet_path = state
+        .wallet_path
+        .lock()
+        .map_err(|_| TauriError::WalletLocked)?
+        .clone()
+        .ok_or(TauriError::WalletLocked)?;
+    let seed = {
+        let guard = state.wallet.lock().map_err(|_| TauriError::WalletLocked)?;
+        let wallet = guard.as_ref().ok_or(TauriError::WalletNotInitialized)?;
+        crate::commands::node::wallet_btc_seed(wallet)
+            .ok_or_else(|| TauriError::Wallet("Wallet has no BTC identity key".into()))?
+    };
+    let seed = zeroize::Zeroizing::new(seed);
+    crate::commands::node::ensure_no_legacy_btc_wallet(Some(&wallet_path))?;
+    for network in [bitcoin::Network::Bitcoin, bitcoin::Network::Regtest] {
+        let path = crate::commands::node::btc_utxo_path(Some(&wallet_path), network, &seed);
+        if path.exists() {
+            return Err(TauriError::Wallet(format!(
+                "BTC state already exists at {}; refusing to overwrite it",
+                path.display()
+            )));
+        }
+    }
+    crate::commands::node::create_initial_btc_states(&wallet_path, &seed)?;
+    Ok("BTC state created for mainnet and regtest; restart the node".into())
+}
+
 // ─── Address management commands ─────────────────────────────────────────────
 
 #[tauri::command]
@@ -1607,6 +1660,39 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn repair_btc_state_creates_missing_state_and_refuses_overwrite() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(AppState::new());
+        let state = app.state::<AppState>();
+        let dir = unique_wallet_dir("repair-btc");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wallet.vtr");
+        let wallet = Wallet::create("test-pass").unwrap();
+        wallet.save(&path).unwrap();
+        let seed = crate::commands::node::wallet_btc_seed(&wallet).unwrap();
+        *state.wallet.lock().unwrap() = Some(wallet);
+        *state.wallet_path.lock().unwrap() = Some(path.clone());
+
+        let message = repair_btc_state(state.clone(), "test-pass".into(), None, true).unwrap();
+        assert!(message.contains("restart the node"));
+        for network in [bitcoin::Network::Bitcoin, bitcoin::Network::Regtest] {
+            let state_path = crate::commands::node::btc_utxo_path(Some(&path), network, &seed);
+            assert!(state_path.exists(), "missing {}", state_path.display());
+        }
+        assert!(
+            repair_btc_state(state.clone(), "test-pass".into(), None, true).is_err(),
+            "an existing state must not be overwritten"
+        );
+        assert!(
+            repair_btc_state(state.clone(), "test-pass".into(), None, false).is_err(),
+            "repair requires an explicit attestation"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
