@@ -10,6 +10,13 @@ Companion to `docs/mainnet-readiness.md` (checklist) and
 > exact image, binary digest, window, and evidence are recorded in
 > `docs/2026-11-25_ai-supplementary-review-pass15.md` and the pass-15 evidence
 > directory. Do not launch from an older image or count an older window.
+>
+> **Post-candidate code on `main`.** The resumable BTC-repair change merged
+> after `be78829` (merge `896f6e4`) is **not** part of the soaked image and is
+> deferred to the first patch release. Do not tag `main` HEAD as 2.0.0: the
+> release commit must be `be78829`, or the merged code needs its own image and
+> a fresh 168-hour window under the provenance policy in
+> `docs/mainnet-readiness.md`.
 
 ## 1. Launch parameters (verify before launch)
 
@@ -40,15 +47,15 @@ at launch.
 ## 2. Pre-launch gate (all must be green)
 
 1. **External security review** complete; findings fixed with regression tests
-   against the pass-13 candidate (`docs/security-review-request-2026-10-27.md`;
-   include the pass-12/13 deltas in that document). The fresh internal review in
-   `docs/2026-10-26_security-vtorrent-report.md` and the AI supplementary passes
-   do not satisfy the independent third-party gate.
+   against the pass-15 candidate (`docs/security-review-request-2026-10-27.md`
+   with the pass-15 cover note; include the pass-12 through pass-15 deltas). The
+   fresh internal review in `docs/2026-10-26_security-vtorrent-report.md` and the
+   AI supplementary passes do not satisfy the independent third-party gate.
 2. **Review candidate selected** (§3): the current build includes the
-   consensus batch; launch on the pass-13 candidate commit and exact image
-   after review, not beta.3.
-3. **Fresh 7-day soak green** on the pass-13 review candidate (the window and
-   image are recorded in `docs/2026-11-24_ai-supplementary-review-pass13.md`;
+   consensus batch; launch on the pass-15 candidate commit `be78829` and image
+   `vtorrent/node:be78829` after review, not beta.3.
+3. **Fresh 7-day soak green** on the pass-15 review candidate (window
+   `2026-11-25T01:19:30Z` to `2026-12-02T01:19:30Z`, `review-be78829`;
    `docs/soak-log.md`).
 4. **`mainnet-readiness.md`** §1–§4 all `[x]` (except items explicitly deferred).
 
@@ -58,15 +65,17 @@ The current build includes the consensus batch's **OP_RETURN UTXO exclusion**
 and **cold staking (P2CS)**, plus the governance and proof-service repairs.
 Governance and state rent are **later deployments** and are not active in this
 launch (`docs/consensus-batch-activation-plan.md` §7). The core soak fleet runs
-`vtorrent/node:batch-e7691fb` with BTC SPV disabled. The launch candidate is the pass-13 build (see the current-candidate note),
-which includes the consensus batch and the pass-12/13 remediation: structural
+`vtorrent/node:batch-e7691fb` with BTC SPV disabled. The launch candidate is the pass-15 build `be78829` (see the current-candidate note),
+which includes the consensus batch and the pass-12 through pass-15 remediation: structural
 stake reserve, live-journal removal guard, canonical torrent block geometry,
 payout binding, legacy-import BTC state/default-key binding, seeder/watchdog
-hardening, and the deterministic two-peer regression. It supersedes
-`70ea7b9` and `e091936`; rebuild the release image from the exact commit in
-`docs/2026-11-24_ai-supplementary-review-pass13.md`. The independent review
-must verify the pass-13 deltas, not only the historical baseline. Do not launch
-on beta.3; it predates the governance and proof-service repairs.
+hardening, the deterministic two-peer regression, attested BTC-state repair,
+and the force-remove recovery surface. It supersedes
+`70ea7b9` and `e091936`; rebuild the release image from `be78829` and compare
+the daemon digest with `docs/2026-11-25_ai-supplementary-review-pass15.md`. The
+independent review must verify the pass-12 through pass-15 deltas, not only the
+historical baseline. Do not launch on beta.3; it predates the governance and
+proof-service repairs.
 
 Swaps are enabled at mainnet launch. The repaired BTC SPV probe has completed
 mainnet-scale header sync and a 100,001-block scan, and
@@ -91,7 +100,28 @@ bound is covered by an 870,000-header test.
    uses `github.ref_name` and would create a draft release named `main`.
    Confirm all four desktop jobs, the frontend jobs, the audit, the image
    build, and the Rust suites are green. Attach only the desktop assets
-   produced by that tag run for the same commit. The checksum job
+   produced by that tag run for the same commit. **Verify the draft before
+   publishing.** A checksum manifest only proves that the files it lists are
+   intact; it does not prove that any installer is present. Compare the draft
+   asset names with all of: the Apple Silicon dmg, the Intel dmg, the Windows
+   NSIS exe, the Linux deb, the Linux AppImage, and `Cargo.lock`. Use
+   `gh release view <tag> --json isDraft,assets --jq '.assets[].name'` and
+   stop if any expected asset is missing. Publishing first and checking
+   afterwards leaves the gap that pass 16 found.
+
+   ```bash
+   tag=v2.0.0
+   version=${tag#v}
+   have=$(gh release view "$tag" --json assets --jq '.assets[].name')
+   for want in "vTorrent_${version}_aarch64.dmg" \
+     "vTorrent_${version}_x64.dmg" "vTorrent_${version}_x64-setup.exe" \
+     "vTorrent_${version}_amd64.deb" "vTorrent_${version}_amd64.AppImage" \
+     Cargo.lock; do
+     grep -qxF "$want" <<<"$have" || { echo "missing release asset: $want" >&2; exit 1; }
+   done
+   ```
+
+   The checksum job
    runs in the protected `release` environment and rejects a tag whose commit
    is not on `main`. Run `python3 scripts/verify-genesis.py` and record the
    output with the release checksums. Do not generate a production signing key
@@ -122,8 +152,9 @@ bound is covered by an 870,000-header test.
 - All seeds report the **same genesis hash** and advance together.
 - The independent genesis verifier passes
   (`python3 scripts/verify-genesis.py`).
-- The deployed image and commit match the exact pass-13 candidate and the
-  reviewed image digest.
+- The deployed image and commit match `be78829`, image
+  `sha256:fa0856a025bba41c5a9d54140c3471fb67d732a9259e603d2fb069a853815f99`,
+  and the reviewed daemon digest.
 - Block cadence ~60 s; no sustained divergence.
 - A legacy claim succeeds end-to-end (rehearsed on regtest).
 - RPC reachable, auth enforced, rate limiting active.
