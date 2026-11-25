@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { camel, formatInvokeError } from './api'
+import { btcRecoveryKind, camel, formatInvokeError } from './api'
 
 describe('camel', () => {
   it('normalizes Tauri snake_case node info to camelCase', () => {
@@ -32,5 +32,38 @@ describe('formatInvokeError', () => {
 
   it('falls back for unknown values', () => {
     expect(formatInvokeError(null, 'fallback')).toBe('fallback')
+  })
+
+  it('renders a classified BTC recovery message', () => {
+    expect(
+      formatInvokeError(
+        { type: 'BtcRepairPending', message: 'A repair is pending' },
+        'fallback'
+      )
+    ).toBe('A repair is pending')
+  })
+})
+
+describe('btcRecoveryKind', () => {
+  it('classifies each typed backend recovery error, including a wrapped cause', () => {
+    expect(btcRecoveryKind({ type: 'BtcRepairPending', message: 'pending' }))
+      .toBe('pending_repair')
+    expect(btcRecoveryKind({ type: 'BtcAssistedRecovery', message: 'conflict' }))
+      .toBe('assisted_recovery')
+    expect(btcRecoveryKind({ type: 'BtcStateMissing', message: 'missing' }))
+      .toBe('missing_state')
+
+    const wrapped = new Error('Wallet unlocked, but the node failed to start')
+    ;(wrapped as Error & { cause?: unknown }).cause = {
+      type: 'BtcRepairPending',
+      message: 'pending',
+    }
+    expect(btcRecoveryKind(wrapped)).toBe('pending_repair')
+  })
+
+  it('does not classify generic wallet or passphrase errors', () => {
+    expect(btcRecoveryKind({ type: 'Wallet', message: 'in use' })).toBeNull()
+    expect(btcRecoveryKind(new Error('Incorrect passphrase'))).toBeNull()
+    expect(btcRecoveryKind(null)).toBeNull()
   })
 })

@@ -1,5 +1,11 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react'
-import { formatInvokeError, isTauri, tauriInvoke as invokeTauri } from '../api'
+import {
+  btcRecoveryKind,
+  formatInvokeError,
+  isTauri,
+  tauriInvoke as invokeTauri,
+  type BtcRecoveryKind,
+} from '../api'
 
 // ─── Tauri IPC bridge ─────────────────────────────────────────────────────────
 // In the Tauri desktop app, `invoke` calls the Rust backend directly.
@@ -11,10 +17,20 @@ const tauriInvoke: InvokeFn | null = isTauri()
   ? (cmd, args) => invokeTauri(cmd, args)
   : null
 
+class NodeStartError extends Error {
+  readonly btcRecovery: BtcRecoveryKind | null
+  readonly cause?: unknown
+
+  constructor(message: string, cause: unknown) {
+    super(message)
+    this.name = 'NodeStartError'
+    this.cause = cause
+    this.btcRecovery = btcRecoveryKind(cause)
+  }
+}
+
 function nodeStartError(message: string, cause: unknown): Error {
-  const error = new Error(message) as Error & { cause?: unknown }
-  error.cause = cause
-  return error
+  return new NodeStartError(message, cause)
 }
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -74,6 +90,7 @@ export interface WalletState {
 
 interface WalletContextType extends WalletState {
   unlock: (passphrase: string, otpCode?: string, net?: { network?: string, seeds?: string[] }) => Promise<void>
+  startNode: (net?: { network?: string, seeds?: string[] }) => Promise<void>
   lock: () => void
   createWallet: (passphrase: string, net?: { network?: string, seeds?: string[] }) => Promise<void>
   importLegacyWallet: (walletDatBase64: string, legacyPassphrase: string | undefined, newPassphrase: string) => Promise<ImportResult>
@@ -318,6 +335,13 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     }
   }, [state.isUnlocked])
 
+  const startNode = useCallback(async (net?: { network?: string, seeds?: string[] }) => {
+    await invoke('start_node', {
+      network: net?.network ?? 'mainnet',
+      seeds: net?.seeds ?? [],
+    })
+  }, [])
+
   const unlock = useCallback(async (passphrase: string, otpCode?: string, net?: { network?: string, seeds?: string[] }) => {
     const info = await invoke<TauriWalletInfo>('open_wallet', {
       walletPath: await getWalletPath(),
@@ -333,20 +357,18 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       walletVersion: info.wallet_version,
       keys,
     }))
-    // Start the P2P node in the background after the wallet is unlocked.
-    // Errors are non-fatal — the UI still works without a running node.
+    // Start the P2P node after the wallet is unlocked. A failure is surfaced
+    // with a typed BTC-recovery classification so the welcome page can offer
+    // the authenticated repair flow instead of reporting a passphrase error.
     try {
-      await invoke('start_node', {
-        network: net?.network ?? 'mainnet',
-        seeds: net?.seeds ?? [],
-      })
+      await startNode(net)
     } catch (e) {
       throw nodeStartError(
         `Wallet unlocked, but the node failed to start: ${formatInvokeError(e, 'start_node failed')}`,
         e
       )
     }
-  }, [])
+  }, [startNode])
 
   const lock = useCallback(async () => {
     await invoke('lock_wallet')
@@ -537,6 +559,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     <WalletContext.Provider value={{
       ...state,
       unlock,
+      startNode,
       lock,
       createWallet,
       importLegacyWallet,

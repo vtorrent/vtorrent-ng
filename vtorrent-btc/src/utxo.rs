@@ -4,6 +4,74 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 #[derive(Debug)]
+struct WriterContention {
+    path: std::path::PathBuf,
+    source: std::io::Error,
+}
+
+impl std::fmt::Display for WriterContention {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "BTC wallet state {} is in use by another process: {}",
+            self.path.display(),
+            self.source
+        )
+    }
+}
+
+impl std::error::Error for WriterContention {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+/// True when [`lock_state_path`] lost the writer-lock race.
+pub fn is_writer_contention(error: &std::io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|cause| cause.is::<WriterContention>())
+}
+
+#[derive(Debug)]
+struct InvalidStatePath(&'static str);
+
+impl std::fmt::Display for InvalidStatePath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for InvalidStatePath {}
+
+/// True for a state/lock path that is a symlink, hard link, or otherwise unusable.
+pub fn is_invalid_state_path(error: &std::io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|cause| cause.is::<InvalidStatePath>())
+}
+
+#[derive(Debug)]
+struct MissingWalletState;
+
+impl std::fmt::Display for MissingWalletState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "BTC wallet state is missing; seed history is unknown and initialization is disabled",
+        )
+    }
+}
+
+impl std::error::Error for MissingWalletState {}
+
+/// True for the wallet-open refusal caused by a missing state file.
+pub fn is_missing_wallet_state(error: &std::io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|cause| cause.is::<MissingWalletState>())
+}
+
+#[derive(Debug)]
 struct UncertainSave(std::io::Error);
 
 impl std::fmt::Display for UncertainSave {
@@ -57,18 +125,166 @@ fn sync_parent(path: &Path) -> std::io::Result<()> {
     std::fs::File::open(parent)?.sync_all()
 }
 
+/// Test-only serialization between state locks and child-process forks.
+///
+/// On Unix a file lock belongs to the open file description, so forking while
+/// another test thread holds a state lock copies that descriptor into the
+/// child. The child then keeps the lock alive after the holder drops it, until
+/// the child execs. A child forked only while no state lock is held cannot
+/// capture one, which keeps unrelated parallel tests deterministic.
+#[cfg(test)]
+pub(crate) mod fork_gate {
+    use std::sync::{Condvar, Mutex};
+
+    const GATE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+    struct State {
+        holders: usize,
+        spawning: bool,
+    }
+
+    pub(crate) struct Gate {
+        state: Mutex<State>,
+        wake: Condvar,
+    }
+
+    impl Gate {
+        pub(crate) const fn new() -> Self {
+            Self {
+                state: Mutex::new(State {
+                    holders: 0,
+                    spawning: false,
+                }),
+                wake: Condvar::new(),
+            }
+        }
+
+        pub(crate) fn hold(&'static self) -> Guard {
+            let deadline = std::time::Instant::now() + GATE_WAIT;
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            while state.spawning {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    drop(state);
+                    panic!("fork gate: another spawn held the gate for more than {GATE_WAIT:?}");
+                }
+                let (next, wait) = self
+                    .wake
+                    .wait_timeout(state, remaining)
+                    .unwrap_or_else(|poison| poison.into_inner());
+                state = next;
+                if wait.timed_out() && state.spawning {
+                    drop(state);
+                    panic!("fork gate: another spawn held the gate for more than {GATE_WAIT:?}");
+                }
+            }
+            state.holders += 1;
+            Guard { gate: self }
+        }
+
+        pub(crate) fn spawn<T>(&'static self, spawn: impl FnOnce() -> T) -> T {
+            struct Release(&'static Gate);
+
+            impl Drop for Release {
+                fn drop(&mut self) {
+                    let mut state = self
+                        .0
+                        .state
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner());
+                    state.spawning = false;
+                    self.0.wake.notify_all();
+                }
+            }
+
+            let deadline = std::time::Instant::now() + GATE_WAIT;
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            while state.holders > 0 {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    drop(state);
+                    panic!("fork gate: state locks were held for more than {GATE_WAIT:?}");
+                }
+                let (next, wait) = self
+                    .wake
+                    .wait_timeout(state, remaining)
+                    .unwrap_or_else(|poison| poison.into_inner());
+                state = next;
+                if wait.timed_out() && state.holders > 0 {
+                    drop(state);
+                    panic!("fork gate: state locks were held for more than {GATE_WAIT:?}");
+                }
+            }
+            state.spawning = true;
+            drop(state);
+            let _release = Release(self);
+            spawn()
+        }
+    }
+
+    pub(crate) struct Guard {
+        gate: &'static Gate,
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let mut state = self
+                .gate
+                .state
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            state.holders -= 1;
+            self.gate.wake.notify_all();
+        }
+    }
+
+    pub(crate) static GATE: Gate = Gate::new();
+}
+
+#[cfg(not(test))]
+pub type StateLock = std::fs::File;
+
+/// In test builds the lock also holds the fork gate, so a child can only be
+/// forked when no writer lock is open. Production builds use `File` directly.
+///
+/// `file` must stay before `_gate`: fields drop in declaration order, so the
+/// lock file closes before the gate allows another fork.
+#[cfg(test)]
+pub struct StateLock {
+    file: std::fs::File,
+    _gate: fork_gate::Guard,
+}
+
+#[cfg(test)]
+impl std::fmt::Debug for StateLock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StateLock")
+            .field("file", &self.file)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Acquire the single-writer lock for a wallet-state path.
 ///
 /// The OS releases the lock when the file is dropped or the process exits, so a
 /// crash cannot leave a stale lock.
-pub fn lock_state_path(path: &Path) -> std::io::Result<std::fs::File> {
+pub fn lock_state_path(path: &Path) -> std::io::Result<StateLock> {
     use fs2::FileExt;
+
+    #[cfg(test)]
+    let gate = fork_gate::GATE.hold();
 
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if !metadata.file_type().is_file() => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "BTC state path must be a regular file, not a symlink",
+                InvalidStatePath("BTC state path must be a regular file, not a symlink"),
             ));
         }
         Ok(metadata) => {
@@ -78,7 +294,7 @@ pub fn lock_state_path(path: &Path) -> std::io::Result<std::fs::File> {
                 if metadata.nlink() != 1 {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
-                        "BTC state file must not have hard-link aliases",
+                        InvalidStatePath("BTC state file must not have hard-link aliases"),
                     ));
                 }
             }
@@ -93,7 +309,7 @@ pub fn lock_state_path(path: &Path) -> std::io::Result<std::fs::File> {
         Ok(metadata) if !metadata.file_type().is_file() => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "BTC lock path must be a regular file, not a symlink",
+                InvalidStatePath("BTC lock path must be a regular file, not a symlink"),
             ));
         }
         Ok(_) => {}
@@ -111,14 +327,18 @@ pub fn lock_state_path(path: &Path) -> std::io::Result<std::fs::File> {
     file.try_lock_exclusive().map_err(|error| {
         std::io::Error::new(
             error.kind(),
-            format!(
-                "BTC wallet state {} is in use by another process: {error}",
-                path.display()
-            ),
+            WriterContention {
+                path: path.to_path_buf(),
+                source: error,
+            },
         )
     })?;
+    #[cfg(test)]
+    let file = StateLock { file, _gate: gate };
     Ok(file)
 }
+
+pub(crate) const INITIALIZED: &[u8] = b"vtorrent-btc-initialized-v1\n";
 
 pub(crate) fn record_wallet_initialization(path: &Path, must_be_new: bool) -> std::io::Result<()> {
     let marker = path.with_extension("initialized");
@@ -133,7 +353,7 @@ pub(crate) fn record_wallet_initialization(path: &Path, must_be_new: bool) -> st
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && !must_be_new => {
             if !std::fs::symlink_metadata(&marker)?.file_type().is_file()
-                || std::fs::read(&marker)? != b"vtorrent-btc-initialized-v1\n"
+                || std::fs::read(&marker)? != INITIALIZED
             {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
@@ -150,7 +370,7 @@ pub(crate) fn record_wallet_initialization(path: &Path, must_be_new: bool) -> st
         }
         Err(error) => return Err(error),
     };
-    std::io::Write::write_all(&mut file, b"vtorrent-btc-initialized-v1\n")?;
+    std::io::Write::write_all(&mut file, INITIALIZED)?;
     file.sync_all()?;
     #[cfg(unix)]
     sync_parent(&marker)?;
@@ -1161,7 +1381,7 @@ impl UtxoSet {
         None
     }
 
-    fn serialized(&self) -> std::io::Result<Vec<u8>> {
+    pub(crate) fn serialized(&self) -> std::io::Result<Vec<u8>> {
         let mut value = serde_json::to_value(self).map_err(std::io::Error::other)?;
         value["journal_version"] = serde_json::json!(self.journal_version);
         Ok(serde_json::to_string_pretty(&value)
@@ -1310,7 +1530,7 @@ impl UtxoSet {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound && reject_legacy => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
-                    "BTC wallet state is missing; seed history is unknown and initialization is disabled",
+                    MissingWalletState,
                 ));
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Self::new()),

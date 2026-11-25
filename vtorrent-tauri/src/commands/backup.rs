@@ -484,6 +484,7 @@ pub fn restore_backup(
     confirm_overwrite: bool,
 ) -> Result<BackupPreview> {
     let _node_guard = crate::commands::wallet::ensure_node_stopped(state.inner())?;
+    let _selection = state.lock_wallet_selection()?;
     let passphrase = zeroize::Zeroizing::new(passphrase);
     let otp_code = otp_code.map(zeroize::Zeroizing::new);
     let (bundle, wallet, files) = decode_and_verify(

@@ -74,7 +74,7 @@ pub struct BtcWallet {
     utxo_path: Option<PathBuf>,
     /// Held for the lifetime of a persistent wallet so two writers cannot
     /// overwrite each other's state.
-    state_lock: Option<std::fs::File>,
+    state_lock: Option<crate::utxo::StateLock>,
     next_index: u32,
     synced: bool,
     /// Next block height to scan (incremental checkpoint).
@@ -169,7 +169,33 @@ impl BtcWallet {
         utxo_path: PathBuf,
         attested_new_seed: bool,
     ) -> std::io::Result<Self> {
-        let state_lock = Some(crate::utxo::lock_state_path(&utxo_path)?);
+        let state_lock = crate::utxo::lock_state_path(&utxo_path)?;
+        Self::open_with_state_lock(seed, network, utxo_path, attested_new_seed, state_lock)
+    }
+
+    /// Open an existing wallet state after running `check` under its writer lock.
+    ///
+    /// `check` runs after the network writer lock is held and before any state
+    /// is loaded or created, so a pending repair cannot appear between the two.
+    pub fn with_persistence_checked(
+        seed: [u8; 64],
+        network: Network,
+        utxo_path: PathBuf,
+        check: impl FnOnce() -> std::io::Result<()>,
+    ) -> std::io::Result<Self> {
+        let state_lock = crate::utxo::lock_state_path(&utxo_path)?;
+        check()?;
+        Self::open_with_state_lock(seed, network, utxo_path, false, state_lock)
+    }
+
+    fn open_with_state_lock(
+        seed: [u8; 64],
+        network: Network,
+        utxo_path: PathBuf,
+        attested_new_seed: bool,
+        state_lock: crate::utxo::StateLock,
+    ) -> std::io::Result<Self> {
+        let state_lock = Some(state_lock);
         let mut created = false;
         if attested_new_seed && !utxo_path.exists() {
             crate::utxo::record_wallet_initialization(&utxo_path, true)?;
@@ -2113,6 +2139,42 @@ mod tests {
             .pending_send_raw(&txid)
             .expect("the signed transaction must survive restart");
         assert_eq!(recovered, raw);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn checked_open_runs_its_check_after_acquiring_and_retains_the_writer_lock() {
+        let dir = std::env::temp_dir().join(format!(
+            "vtr-btc-checked-lock-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        UtxoSet::new().save(&path).unwrap();
+
+        let wallet = BtcWallet::with_persistence_checked(
+            [7; 64],
+            bitcoin::Network::Regtest,
+            path.clone(),
+            || {
+                let error = crate::utxo::lock_state_path(&path)
+                    .expect_err("the check must run while the wallet holds its writer lock");
+                assert!(crate::repair::is_writer_contention(&error), "{error}");
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        let error = crate::utxo::lock_state_path(&path)
+            .expect_err("the opened wallet must retain its writer lock");
+        assert!(crate::repair::is_writer_contention(&error), "{error}");
+
+        drop(wallet);
+        crate::utxo::lock_state_path(&path).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
     }
 

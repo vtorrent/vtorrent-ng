@@ -2,21 +2,23 @@ import { useNavigate } from 'react-router-dom'
 import { useState } from 'react'
 import { Download, PlusCircle, Shield, ArrowRight, Lock } from 'lucide-react'
 import { useWallet } from '../hooks/useWallet'
-import { formatInvokeError } from '../api'
+import { btcRecoveryKind, formatInvokeError, type BtcRecoveryKind } from '../api'
 import { useNodeInfo } from '../hooks/useNode'
 import { useNetwork, parseSeeds } from '../hooks/useNetwork'
 import AppIcon from '../components/AppIcon'
+import BtcRepairCard from '../components/BtcRepairCard'
 import NetworkPicker from '../components/NetworkPicker'
 
 export default function WelcomePage() {
   const navigate = useNavigate()
-  const { unlock } = useWallet()
+  const { unlock, startNode } = useWallet()
   const { network, setNetwork, seeds, setSeeds } = useNetwork()
   const { data: node } = useNodeInfo(8_000)
   const [passphrase, setPassphrase] = useState('')
   const [otpCode, setOtpCode] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [recoveryKind, setRecoveryKind] = useState<BtcRecoveryKind | null>(null)
   const [showUnlock, setShowUnlock] = useState(false)
   const [goal, setGoal] = useState<string | null>(null)
 
@@ -73,15 +75,38 @@ export default function WelcomePage() {
     e.preventDefault()
     setLoading(true)
     setError('')
+    setRecoveryKind(null)
     try {
       await unlock(passphrase, otpCode || undefined, { network, seeds: parseSeeds(seeds) })
       navigate('/dashboard')
     } catch (err) {
+      setRecoveryKind(btcRecoveryKind(err))
       setError(formatInvokeError(err, 'Incorrect passphrase or OTP code'))
     } finally {
       setLoading(false)
     }
   }
+
+  const handleRepaired = () => {
+    setError('')
+    setRecoveryKind(null)
+    void (async () => {
+      try {
+        await startNode({ network, seeds: parseSeeds(seeds) })
+        navigate('/dashboard')
+      } catch (err) {
+        setRecoveryKind(btcRecoveryKind(err))
+        setError(formatInvokeError(err, 'The node still could not start after repair'))
+      }
+    })()
+  }
+
+  const recoveryDescription =
+    recoveryKind === 'assisted_recovery'
+      ? 'The BTC state conflicts with an existing recovery record. Authorize the repair to get the authoritative conflict result; preserve all wallet files.'
+      : recoveryKind === 'missing_state'
+        ? 'The BTC state is missing. If this wallet has no prior BTC history, authorize a fresh repair before starting the node.'
+        : 'A BTC repair is pending or incomplete. Authorize it to resume; if it reports a conflict, preserve the files and use assisted recovery.'
 
   return (
     <div className="min-h-screen gradient-bg flex flex-col items-center justify-center p-6 relative">
@@ -309,6 +334,16 @@ export default function WelcomePage() {
               </div>
             </form>
           </div>
+
+          {recoveryKind && (
+            <div className="mt-4">
+              <BtcRepairCard
+                title="Repair BTC state"
+                description={recoveryDescription}
+                onRepaired={handleRepaired}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>
