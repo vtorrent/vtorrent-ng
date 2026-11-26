@@ -166,3 +166,27 @@ an extra element.
 No blocking finding depends on an unverified test; C1 and C2 follow from the
 code paths above. H1 depends on the maker getting a non-standard selector
 mined, which relay policy discourages but consensus allows.
+
+## Remediation preview
+
+The blocking fixes are implemented in `daf5a81b55ce5ed963b2be67490deaa59fdba480` on
+`fix/rc5-security`, built from RC4.
+
+| Finding | Change |
+|---|---|
+| C1 | Peer strings truncate on character boundaries; a drop guard releases the inbound slot on every peer-task exit, including a panic. |
+| C2 | Production blocks must be dated at or after `LAUNCH_TIME - MAX_PAST_DRIFT`. `LAUNCH_TIME` is `1_795_651_200` (2026-11-26T00:00:00Z), set no later than launch; regtest and test fixtures bypass the floor through `allow_pow`. |
+| H1 | The BTC observer identifies a claim by the hash-lock match alone. The VTR parser searches for the 32-byte preimage push instead of requiring `0x51`. |
+| H2 | `send_to` uses `try_send`; a stalled peer no longer blocks the node event loop. |
+| H3 | The VTR claim retry records the conflict when local admission fails. |
+| H4 | A VTR refund is refused when the observation already shows a claim or when any mempool transaction spends the funding output. |
+
+Evidence: workspace suite **1,558 passed, 0 failed**; `cargo fmt` and workspace
+Clippy with `-D warnings` clean. Preview image
+`sha256:ce23bdabc8d4f5019cd4ee6693e73c76fa2c0b2bba242712be0947b1ddad2608`,
+daemon SHA-256
+`f0c24865b548ac52236f7fff434b3c9c03241134096fa167b40bb4bf629e3d99`.
+
+This preview is not a release candidate. It needs its own tag, four-platform
+draft, image soak, and a scoped re-review of the fix diff. The RC4 window does
+not transfer.
