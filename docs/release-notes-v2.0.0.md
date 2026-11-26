@@ -2,9 +2,7 @@
 
 **Status: release candidate. Not released.** These notes are a draft for the
 build that passed the internal test suite and is running the fresh 7-day soak.
-Do not publish them as final until the external security review and the soak
-sign-off are complete. Update the commit, image, checksums, and review outcome
-at tag time.
+For RC5 the solo maintainer selected frontier AI review. No independent human security audit was performed. GPT-6.2 Astra participated in preparing the candidate and reviewing its release evidence. Before publication, record the final security review scope and outcome, soak sign-off, exact SHA, image, and checksums.
 
 ## Highlights
 

@@ -187,6 +187,7 @@ Clippy with `-D warnings` clean. Preview image
 daemon SHA-256
 `f0c24865b548ac52236f7fff434b3c9c03241134096fa167b40bb4bf629e3d99`.
 
-This preview is not a release candidate. It needs its own tag, four-platform
-draft, image soak, and a scoped re-review of the fix diff. The RC4 window does
-not transfer.
+This fix commit is now tagged `v2.0.0-rc5`; see `docs/release-candidate-rc5.md`
+for the image, window, and desktop evidence. The RC4 window does not transfer.
+Publication still requires the scoped re-review of the fix diff to pass and the
+RC5 window to complete.

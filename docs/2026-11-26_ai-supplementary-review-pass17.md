@@ -1,0 +1,15 @@
+# Pass 17: can the documented release procedure ship the soaked candidate?
+
+**Decision: hold the final tag.** This pass reviewed packaging and release provenance for `be78829` against the runbook at `d2f3e56`. It did not rerun the wallet tests, change the candidate, or assess the full codebase. It does not satisfy independent human review.
+
+## Findings
+
+1. **High: the desktop packages still identify themselves as beta.3.** `git show be78829:vtorrent-tauri/tauri.conf.json` reports `2.0.0-beta.3`. The tag workflow uses the tag for the release name but passes no version override to the Tauri build. This is visible in the archived rc3 upload logs: all five installers (two DMGs, NSIS, deb, AppImage) have `2.0.0-beta.3` in the name. The runbook's `tag=v2.0.0` inventory expects `2.0.0` and would reject those outputs. The fail-closed check is correct. Before tagging, rehearse the chosen packaging change on all four platforms and verify the version **inside** the installers as well as their names. Renaming beta files is not a fix.
+2. **High: no green four-platform rehearsal on the required release commit.** The runbook requires tagging `be78829`. Its rc2 workflow failed on Intel macOS; the green rc3 run used `f85cddd`. `git diff be78829 f85cddd -- .github/workflows/build.yml` confirms the explicit `rustup target add` is absent from the required tag's workflow. An ancestor being on `main` does not give its tag later workflow steps. Agree on the shipping SHA and build procedure before tagging. If selecting a new packaging commit, evaluate it under the exact-commit soak policy; do not carry the existing window forward by assumption.
+3. **Medium: the draft check never verifies draft status.** In `docs/mainnet-launch-runbook.md` §4 the prose query requests `isDraft` but projects only names; the executable block requests only `assets`. A published release with the six expected names could pass. Require `isDraft == true` before checking names, and compare the resolved tag commit to the approved SHA. Rehearse with the same asset list on draft and published fixtures: only the draft should pass. The prior beta.3 rehearsal proved missing-file rejection, not this condition.
+
+## Evidence boundaries
+
+- [Main CI run 45723040162](https://github.com/vtorrent/vtorrent-ng/actions/runs/45723040162) finished successfully at `455fb82`; its desktop matrix was skipped. [rc3 run 45540365425](https://github.com/vtorrent/vtorrent-ng/actions/runs/45540365425) is separate desktop evidence. Installer upload lines are archived under `/mnt/temp/vtorrent-ng-evidence/soak-be78829/ci-desktop/job-138984*.log`.
+- `git diff --exit-code 896f6e4 HEAD -- . ':(exclude)docs/**'` passed at `d2f3e56`: no subsequent non-documentation delta from the disclosed repair merge. That repair remains outside the candidate.
+- Latest recorded observation inspected: `2026-11-25T23:25:01Z`, height 1,300, matching tips, zero reported restarts, 798/798 five-minute evaluation points. This is partial-window evidence, not a fresh raw-scrape continuity audit or a seven-day sign-off.

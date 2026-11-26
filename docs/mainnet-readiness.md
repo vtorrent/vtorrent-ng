@@ -126,11 +126,7 @@ snapshot, two-person review, and an explicit decision for each record.
       tested; `POST /api/v1/blockchain/bootstrap` mines it. Genesis has no
       stakeable UTXO, so this is the only way a fresh chain begins staking.
       See `docs/superpowers/specs/2026-09-21-genesis-bootstrap-and-stakeable-script-design.md`.
-- [ ] **External security review** — **brief finalized, not yet commissioned**:
-      `docs/security-review-brief.md` (scope, deliverables, 2-phase engagement).
-      **Current candidate (2026-11-26):** RC4 (`4ce7d31`); package `docs/security-review-request-2026-10-27.md`. See `docs/release-candidate-rc4.md` for exact-image evidence. The independent review has not been commissioned. The review covers wallet encryption (Argon2id +
-      ChaCha20-Poly1305), consensus and governance, the stake-proof service,
-      RPC auth, and the atomic-swap HTLC flow.
+- [ ] **RC5 frontier AI review**: record the exact-SHA security review and findings disposition under the [RC5 review policy](release-candidate-rc5.md#review-policy-for-200-rc4). The maintainer waived independent human review for this release only. The release-evidence review alone does not close this item.
 
 ## 2. Testnet Soak
 
@@ -287,7 +283,7 @@ window ran on, and that commit must equal the release commit.
       coverage gaps, and an hourly watchdog alerts if the observation is stale.
       See `docs/2026-11-25_ai-supplementary-review-pass15.md`. This window
       replaces `review-a0724dd`; do not count any earlier window.
-- [ ] **RC4 exact-image soak**: `docs/release-candidate-rc4.md`.
+- [ ] **RC5 exact-image soak**: `docs/release-candidate-rc5.md`.
 - [x] **Staking soak**: at least one node staked continuously and produced
       blocks at the expected ~60s average over the full 7-day window
       (`2026-09-29T13:36:22Z` → `2026-10-06T13:36:22Z`): node1 staked 1441
@@ -594,7 +590,7 @@ actions, operator approval.
 
 | Blocker | Owner | Notes |
 |---|---|---|
-| External security review not scheduled | Lead | Required before final v2.0.0 |
+| RC5 frontier AI review disposition | Maintainer | Required before final v2.0.0; see RC5 review policy |
 | `bincode` 1.x unmaintained in the daemon graph | Code | `RUSTSEC-2025-0141`, warning only, no known exploit. **Accepted and frozen for the launch cut (2026-11-07; re-confirmed 2026-11-09). There is no 2.x migration to make.** bincode 2.0.1 was the last real release and bincode 3.0.0 is a tombstone that publishes only a README and a compile error, so upgrading gains no maintenance. The crate is also not just a wire format here: `txid`, block `hash`, `sighash`, and the stored chain bytes are SHA256 over bincode 1.x output, and `scripts/verify-genesis.py` re-implements that encoding independently to check genesis. Any change of serializer or configuration changes those hashes and therefore needs a new genesis and a coordinated fork, not a dependency bump. Compensating controls: pinned `=1.3.3`, every remote decode goes through the capped `decode_v2` helper, the frame codec rejects payloads above `MAX_PAYLOAD_SIZE`, and the amplification case is covered by `test_decode_v2_rejects_oversized_declared_length`. Retained as a documented residual risk; if an exploitable advisory appears, the response is a consensus change with a fresh genesis. See `docs/soak-log.md` 2026-11-02. Current `cargo audit --file release/Cargo.lock` result: **0 vulnerabilities, 5 allowed warnings**; the other four (`chrono`, `rand` 0.7.3, `glib`, `proc-macro-error`) are desktop, migration-tool, or build-time only and are not in the daemon graph. See `docs/security-review-request-2026-10-27.md` §Dependency audit warnings. |
 | Atomic-swap confirmation and full recovery | Code | Timing, reservations, encrypted recovery, per-chain observations, automatic BTC monitoring, and fee-approved VTR refund replacement have local fixes. BTC refund fee replacement is intentionally unsupported (a safety interlock, not a gap). Adversarial multi-node validation remains open in `docs/security-review-2026-09-05.md` |
 
