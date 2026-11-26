@@ -80,11 +80,17 @@ fn claim_preimage_matches(
         return false;
     };
     let script = &input.script_sig;
-    if script.len() < 34 || script[script.len() - 34] != 0x20 || script.last() != Some(&0x51) {
-        return false;
-    }
     use sha2::{Digest, Sha256};
-    Sha256::digest(&script[script.len() - 33..script.len() - 1]).as_slice() == hash_lock
+    // The claim pushes the 32-byte preimage and then any truthy selector.
+    // Match the preimage push by its hash rather than a fixed selector byte.
+    for start in 0..script.len().saturating_sub(32) {
+        if script[start] == 0x20
+            && Sha256::digest(&script[start + 1..start + 33]).as_slice() == hash_lock
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn observes_spend(tx: &vtorrent_node::block::Transaction, funding: &[u8; 32]) -> bool {

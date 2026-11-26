@@ -34,6 +34,25 @@ pub const MAX_FUTURE_BLOCK_DRIFT: u32 = 5;
 /// produce multiple blocks per interval.
 pub const MIN_BLOCK_SPACING: u32 = TARGET_BLOCK_TIME as u32 - MAX_FUTURE_BLOCK_DRIFT;
 
+/// Earliest real-world time a production block may carry.
+///
+/// Set no later than the published mainnet launch time. A later value would
+/// reject honest blocks, so rebuild with a new value if launch slips
+/// materially. Genesis is frozen at a timestamp
+/// years earlier, so without this floor the bootstrap claimer can walk chain
+/// time forward in six-day steps and mint the whole bootstrap reward stream in
+/// seconds. Test and regtest fixtures opt out through `allow_pow`.
+pub const LAUNCH_TIME: u32 = 1795651200; // 2026-11-26T00:00:00Z
+
+/// How far before `LAUNCH_TIME` a production block may be dated.
+pub const MAX_PAST_DRIFT: u32 = 2 * 60 * 60;
+
+/// Whether `timestamp` respects the launch-time floor. Regtest and test
+/// fixtures pass `allow_pow` and skip the floor.
+pub fn timestamp_after_launch_floor(timestamp: u32, allow_pow: bool) -> bool {
+    allow_pow || timestamp >= LAUNCH_TIME.saturating_sub(MAX_PAST_DRIFT)
+}
+
 /// Count a block's signature operations, optionally resolving prevout scripts
 /// for the P2SH redeem-script contribution. Mirrors the legacy `CheckBlock`
 /// (no prevouts) and `ConnectBlock` (P2SH included) checks.
@@ -490,6 +509,17 @@ pub(crate) fn validate_block_inner(
         return Err(NodeError::InvalidBlock(format!(
             "Block timestamp {} is less than {} seconds after parent {}",
             block.header.timestamp, MIN_BLOCK_SPACING, prev_timestamp
+        )));
+    }
+
+    // Anchor production blocks to the published launch time. Genesis is years
+    // older, so a parent-only lower bound would let the bootstrap claimer mint
+    // years of rewards before the honest chain advances.
+    if !timestamp_after_launch_floor(block.header.timestamp, allow_pow) {
+        return Err(NodeError::InvalidBlock(format!(
+            "Block timestamp {} predates the launch floor {}",
+            block.header.timestamp,
+            LAUNCH_TIME.saturating_sub(MAX_PAST_DRIFT)
         )));
     }
 
@@ -1067,6 +1097,21 @@ mod tests {
     }
 
     #[test]
+    fn timestamp_launch_floor_rejects_pre_launch_blocks() {
+        assert!(timestamp_after_launch_floor(LAUNCH_TIME, false));
+        assert!(timestamp_after_launch_floor(
+            LAUNCH_TIME - MAX_PAST_DRIFT,
+            false
+        ));
+        assert!(!timestamp_after_launch_floor(
+            LAUNCH_TIME - MAX_PAST_DRIFT - 1,
+            false
+        ));
+        assert!(!timestamp_after_launch_floor(1_700_000_000, false));
+        assert!(timestamp_after_launch_floor(1_700_000_000, true));
+    }
+
+    #[test]
     fn test_pos_reward_calculation() {
         // 1000 VTR staked for 30 days at 5% annual rate, capped at MAX_STAKE_AGE
         // (6 days). Expected: 1000 * 0.05 * 6/365 = ~0.82 VTR.
@@ -1225,11 +1270,19 @@ mod tests {
         // block: genesis has no stakeable UTXO, so no coinstake can exist (T3).
         let mut block = make_test_block(claim_tx(1, MIN_STAKE_AMOUNT), 0x1e0fffff, 0);
         block.header.prev_block_hash = [9u8; 32];
-        block.header.timestamp = 1_700_000_000 + MIN_BLOCK_SPACING;
+        block.header.timestamp = LAUNCH_TIME;
         block.header.stake_modifier = compute_stake_modifier(0, &[9u8; 32]);
         block.header.merkle_root = block.compute_merkle_root();
 
-        let res = validate_block_inner(&block, 0, 1_700_000_000, 0x1e0fffff, 0, [9u8; 32], false);
+        let res = validate_block_inner(
+            &block,
+            0,
+            LAUNCH_TIME - 120,
+            0x1e0fffff,
+            0,
+            [9u8; 32],
+            false,
+        );
         assert!(
             res.is_ok(),
             "bootstrap claim block must validate: {:?}",
@@ -1242,17 +1295,16 @@ mod tests {
         let mut block = make_test_block(claim_tx(1, MIN_STAKE_AMOUNT), 0x1e0fffff, 0);
         block.header.prev_block_hash = [9u8; 32];
         block.header.stake_modifier = compute_stake_modifier(0, &[9u8; 32]);
-        block.header.timestamp = 1_700_000_000 + MIN_BLOCK_SPACING - 1;
+        block.header.timestamp = LAUNCH_TIME + MIN_BLOCK_SPACING - 1;
         block.header.merkle_root = block.compute_merkle_root();
         assert!(
-            validate_block_inner(&block, 0, 1_700_000_000, 0x1e0fffff, 0, [9u8; 32], false)
-                .is_err()
+            validate_block_inner(&block, 0, LAUNCH_TIME, 0x1e0fffff, 0, [9u8; 32], false).is_err()
         );
 
-        block.header.timestamp = 1_700_000_000 + MIN_BLOCK_SPACING;
+        block.header.timestamp = LAUNCH_TIME + MIN_BLOCK_SPACING;
         block.header.merkle_root = block.compute_merkle_root();
         assert!(
-            validate_block_inner(&block, 0, 1_700_000_000, 0x1e0fffff, 0, [9u8; 32], false).is_ok()
+            validate_block_inner(&block, 0, LAUNCH_TIME, 0x1e0fffff, 0, [9u8; 32], false).is_ok()
         );
     }
 
@@ -1307,14 +1359,22 @@ mod tests {
         };
         let mut block = make_test_block(coinstake, 0x1e0fffff, 0);
         block.header.prev_block_hash = [9u8; 32];
-        block.header.timestamp = 1_700_000_000 + MIN_BLOCK_SPACING;
+        block.header.timestamp = LAUNCH_TIME;
         block.header.stake_modifier = compute_stake_modifier(0, &[9u8; 32]);
         block.header.merkle_root = block.compute_merkle_root();
 
         // Block-level validation accepts the coinstake shape; the journal
         // rejects it for having no stake input. Here we only assert the
         // bootstrap rule did not accidentally accept a non-claim first tx.
-        let res = validate_block_inner(&block, 0, 1_700_000_000, 0x1e0fffff, 0, [9u8; 32], false);
+        let res = validate_block_inner(
+            &block,
+            0,
+            LAUNCH_TIME - 120,
+            0x1e0fffff,
+            0,
+            [9u8; 32],
+            false,
+        );
         assert!(res.is_ok(), "coinstake shape is block-valid: {:?}", res);
     }
 
