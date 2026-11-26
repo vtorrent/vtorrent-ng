@@ -128,13 +128,7 @@ snapshot, two-person review, and an explicit decision for each record.
       See `docs/superpowers/specs/2026-09-21-genesis-bootstrap-and-stakeable-script-design.md`.
 - [ ] **External security review** — **brief finalized, not yet commissioned**:
       `docs/security-review-brief.md` (scope, deliverables, 2-phase engagement).
-      **Current candidate (2026-11-25):** pass 15 (`be78829` + docs tip);
-      package `docs/security-review-request-2026-10-27.md`; exact image and
-      window in `docs/2026-11-25_ai-supplementary-review-pass15.md`. The
-      `review-e091936`, `review-80f9eef`, and `review-a0724dd` windows are
-      invalidated by later code changes and do not count. The pass-11 and pass-13 AI supplements are
-      supplementary only. The independent human review is not yet
-      commissioned. The review covers wallet encryption (Argon2id +
+      **Current candidate (2026-11-26):** RC4 (`4ce7d31`); package `docs/security-review-request-2026-10-27.md`. See `docs/release-candidate-rc4.md` for exact-image evidence. The independent review has not been commissioned. The review covers wallet encryption (Argon2id +
       ChaCha20-Poly1305), consensus and governance, the stake-proof service,
       RPC auth, and the atomic-swap HTLC flow.
 
@@ -285,7 +279,7 @@ window ran on, and that commit must equal the release commit.
       observation helper checks 5-minute `up` samples, down samples, and
       coverage gaps, and an hourly watchdog alerts if the observation is stale.
       See `docs/2026-11-24_ai-supplementary-review-pass14.md`.
-- [~] **Pass-15 candidate window** — image `vtorrent/node:be78829` (ID
+- [~] **Pass-15 predecessor (supporting evidence only)** — image `vtorrent/node:be78829` (ID
       `sha256:fa0856a025bba41c5a9d54140c3471fb67d732a9259e603d2fb069a853815f99`),
       binary `58462cc05ab1877264736734699d974d1c9e7396ea5ae988a626e3b504fede5f`,
       window `2026-11-25T01:19:30Z` → `2026-12-02T01:19:30Z`. In progress; the
@@ -293,6 +287,7 @@ window ran on, and that commit must equal the release commit.
       coverage gaps, and an hourly watchdog alerts if the observation is stale.
       See `docs/2026-11-25_ai-supplementary-review-pass15.md`. This window
       replaces `review-a0724dd`; do not count any earlier window.
+- [ ] **RC4 exact-image soak**: `docs/release-candidate-rc4.md`.
 - [x] **Staking soak**: at least one node staked continuously and produced
       blocks at the expected ~60s average over the full 7-day window
       (`2026-09-29T13:36:22Z` → `2026-10-06T13:36:22Z`): node1 staked 1441

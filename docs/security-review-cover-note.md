@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `be78829`
+Subject: Independent security review — vTorrent-NG mainnet candidate `4ce7d31`
 
 Hello,
 
@@ -18,30 +18,9 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-**Review docs:** the `main` tip that contains this note (a docs/CI child of the
-code candidate; the only non-doc child is the desktop target-install step)
-**Code candidate:** `be7882966afc3457ecec71380d6c4b58b0933d5a`
-**Image:** `vtorrent/node:be78829`, ID
-`sha256:fa0856a025bba41c5a9d54140c3471fb67d732a9259e603d2fb069a853815f99`
-**Scope:** `docs/security-review-request-2026-10-27.md` in that tree
+Review `4ce7d315e3d5cb03c1f2c7c40a555cb87fe2e79e` (`v2.0.0-rc4`), not `main`. See `docs/release-candidate-rc4.md` for the exact image, binary, soak and desktop evidence. Check `git diff --name-only be78829..v2.0.0-rc4`: only `.github/workflows/build.yml` and `vtorrent-tauri/tauri.conf.json` changed. Earlier pass-15 evidence applies only where explicitly identified. The deferred BTC repair on `main` is outside the candidate.
 
-The code under review is `be78829`. The exact-image window for this candidate
-is `2026-11-25T01:19:30Z` to `2026-12-02T01:19:30Z` (`review-be78829`), recorded
-in `docs/2026-11-25_ai-supplementary-review-pass15.md`; the `review-a0724dd`
-window is invalidated by the pass-15 code changes and does not count. The `review-d376506`, `review-22056d4`, and `review-ef1d1a1` windows
-were retired and do not count. The shipping image needs its own full 168-hour
-window after this review and its fixes settle.
-
-Read this note and the scope document from the tip of `main`. **The release
-target is `be78829`, not the `main` tip.** After the candidate, `main` gained
-one CI-only commit and one documented post-candidate change: merge `896f6e4`,
-the resumable desktop BTC-repair work, which is deferred to a patch release and
-is **not** part of the 2.0.0 image. Confirm the freeze with
-`git diff --name-only be78829..HEAD -- . ':(exclude)docs/**'`. Expect
-`.github/workflows/build.yml` plus the repair-merge files listed by
-`git show --stat 896f6e4`. Any other non-doc change is out of scope for this
-review and should be reported. Do not treat the `main` tip as the release
-commit. Check out the candidate itself when running the verification commands.
+**Scope:** `docs/security-review-request-2026-10-27.md` on the documentation branch (`main`).
 
 That document lists the exact hashes, the verification commands, and what we
 consider in scope. The Rust suite needs only a clone and a Rust toolchain; desktop builds need
@@ -488,20 +467,6 @@ Thank you.
 
 ## Before sending
 
-- Confirm the code candidate is still
-  `be7882966afc3457ecec71380d6c4b58b0933d5a` and that this note names the same
-  code candidate as the scope document. Do not substitute a later local commit
-  without updating both documents and the soak provenance. After the candidate,
-  `main` holds the CI-only `f85cddd` and merge `896f6e4` (the deferred resumable
-  BTC repair). That is the complete expected non-doc delta; anything else is a
-  freeze violation.
-- The pass-15 exact-image window for `be78829` is
-  `2026-11-25T01:19:30Z` to `2026-12-02T01:19:30Z`, recorded in
-  `docs/2026-11-25_ai-supplementary-review-pass15.md`. The `review-a0724dd`
-  window is invalidated by the pass-15 changes; the `review-e091936`,
-  `review-d376506`, `review-22056d4`, and `review-ef1d1a1` windows were
-  retired. Do not describe the interrupted `6a49727` fleet as covering this
-  head. The shipping image needs its own 168-hour window after the review and
-  its fixes settle.
+- Confirm that this note and the scope name `4ce7d315e3d5cb03c1f2c7c40a555cb87fe2e79e` and include the image and window from `docs/release-candidate-rc4.md`.
 - Decide who receives it. Sending it is the step that actually opens the gate —
   drafting it does not.

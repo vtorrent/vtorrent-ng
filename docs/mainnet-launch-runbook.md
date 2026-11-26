@@ -5,18 +5,7 @@ consensus-batch decision, the coordinated upgrade, verification, and rollback.
 Companion to `docs/mainnet-readiness.md` (checklist) and
 `docs/oncall-runbook.md` (ongoing ops).
 
-> **Current candidate (pass 15).** The launch candidate is the pass-15
-> remediation (`be78829`), which supersedes the pass-14 `a0724dd` candidate. The
-> exact image, binary digest, window, and evidence are recorded in
-> `docs/2026-11-25_ai-supplementary-review-pass15.md` and the pass-15 evidence
-> directory. Do not launch from an older image or count an older window.
->
-> **Post-candidate code on `main`.** The resumable BTC-repair change merged
-> after `be78829` (merge `896f6e4`) is **not** part of the soaked image and is
-> deferred to the first patch release. Do not tag `main` HEAD as 2.0.0: the
-> release commit must be `be78829`, or the merged code needs its own image and
-> a fresh 168-hour window under the provenance policy in
-> `docs/mainnet-readiness.md`.
+> **Release candidate:** `4ce7d315e3d5cb03c1f2c7c40a555cb87fe2e79e` (`v2.0.0-rc4`). Use `docs/release-candidate-rc4.md` for image identity, window and outstanding gates. The deferred repair on `main` is excluded.
 
 ## 1. Launch parameters (verify before launch)
 
@@ -35,7 +24,7 @@ Companion to `docs/mainnet-readiness.md` (checklist) and
 | Min stake | 1 VTR | `consensus.rs:43` |
 | Max supply | 20,000,000 VTR | `consensus.rs:46` |
 | DNS seeds | seed1/2/3.vtorrent.org + `bootstrap/peers.txt` | `docs/dns-seeds.md` |
-| Review candidate source | Pass-15 candidate (`be78829` + docs tip); see the current-candidate note | `docs/2026-11-25_ai-supplementary-review-pass15.md` |
+| Review candidate source | RC4 (`4ce7d31`) | `docs/release-candidate-rc4.md` |
 | Post-review mainnet fixes | `1901bb9`, `513efde`, `c465d1b` (BTC SPV peer agreement and failover; five-peer headroom and in-cycle retry); `7ec3b2f` (BTC SPV health metrics and stale-scan alert); `2c381fa` (persistent compact-filter peer cache); `aeb103a` (four fresh-review BTC findings); `8639a7f` (restart lineage); `c3b3847` (hide restored outputs); `287a505` (stuck-scan alert); `c3a79fa` (partial-scan/restart lock); `5f4c788` (canonical txid); `8ba6331` (whole-project remediation); `9a22bcd` (release lockfile); `c292fc4` (taker-side external VTR claim RPC); `dd98176` (four-peer target and 256 MiB steady RSS policy) | `docs/btc-spv-soak-plan.md` |
 
 **Genesis is deterministic** and embeds the legacy snapshot (59,375 addresses,
@@ -47,16 +36,13 @@ at launch.
 ## 2. Pre-launch gate (all must be green)
 
 1. **External security review** complete; findings fixed with regression tests
-   against the pass-15 candidate (`docs/security-review-request-2026-10-27.md`
-   with the pass-15 cover note; include the pass-12 through pass-15 deltas). The
+   against RC4 (`docs/security-review-request-2026-10-27.md`
+   with the RC4 cover note; include the pass-12 through pass-15 deltas). The
    fresh internal review in `docs/2026-10-26_security-vtorrent-report.md` and the
    AI supplementary passes do not satisfy the independent third-party gate.
 2. **Review candidate selected** (§3): the current build includes the
-   consensus batch; launch on the pass-15 candidate commit `be78829` and image
-   `vtorrent/node:be78829` after review, not beta.3.
-3. **Fresh 7-day soak green** on the pass-15 review candidate (window
-   `2026-11-25T01:19:30Z` to `2026-12-02T01:19:30Z`, `review-be78829`;
-   `docs/soak-log.md`).
+   consensus batch; launch only the reviewed RC4 commit and exact image.
+3. **Fresh 7-day soak green** on `review-4ce7d31`; see `docs/release-candidate-rc4.md`.
 4. **`mainnet-readiness.md`** §1–§4 all `[x]` (except items explicitly deferred).
 
 ## 3. Consensus-batch decision
@@ -65,14 +51,14 @@ The current build includes the consensus batch's **OP_RETURN UTXO exclusion**
 and **cold staking (P2CS)**, plus the governance and proof-service repairs.
 Governance and state rent are **later deployments** and are not active in this
 launch (`docs/consensus-batch-activation-plan.md` §7). The core soak fleet runs
-`vtorrent/node:batch-e7691fb` with BTC SPV disabled. The launch candidate is the pass-15 build `be78829` (see the current-candidate note),
+`vtorrent/node:batch-e7691fb` with BTC SPV disabled. The launch candidate is the RC4 build `4ce7d31` (see the current-candidate note),
 which includes the consensus batch and the pass-12 through pass-15 remediation: structural
 stake reserve, live-journal removal guard, canonical torrent block geometry,
 payout binding, legacy-import BTC state/default-key binding, seeder/watchdog
 hardening, the deterministic two-peer regression, attested BTC-state repair,
 and the force-remove recovery surface. It supersedes
-`70ea7b9` and `e091936`; rebuild the release image from `be78829` and compare
-the daemon digest with `docs/2026-11-25_ai-supplementary-review-pass15.md`. The
+`70ea7b9` and `e091936`; rebuild the release image from `4ce7d31` and compare
+the daemon digest with `docs/release-candidate-rc4.md`. The
 independent review must verify the pass-12 through pass-15 deltas, not only the
 historical baseline. Do not launch on beta.3; it predates the governance and
 proof-service repairs.
@@ -152,9 +138,7 @@ bound is covered by an 870,000-header test.
 - All seeds report the **same genesis hash** and advance together.
 - The independent genesis verifier passes
   (`python3 scripts/verify-genesis.py`).
-- The deployed image and commit match `be78829`, image
-  `sha256:fa0856a025bba41c5a9d54140c3471fb67d732a9259e603d2fb069a853815f99`,
-  and the reviewed daemon digest.
+- The deployed commit, image ID and binary digest match `docs/release-candidate-rc4.md`.
 - Block cadence ~60 s; no sustained divergence.
 - A legacy claim succeeds end-to-end (rehearsed on regtest).
 - RPC reachable, auth enforced, rate limiting active.
