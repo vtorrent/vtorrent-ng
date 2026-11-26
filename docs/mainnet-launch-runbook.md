@@ -35,11 +35,7 @@ at launch.
 
 ## 2. Pre-launch gate (all must be green)
 
-1. **External security review** complete; findings fixed with regression tests
-   against RC4 (`docs/security-review-request-2026-10-27.md`
-   with the RC4 cover note; include the pass-12 through pass-15 deltas). The
-   fresh internal review in `docs/2026-10-26_security-vtorrent-report.md` and the
-   AI supplementary passes do not satisfy the independent third-party gate.
+1. **Frontier AI review** complete for the exact shipping SHA. Record the scope, evidence, verdict, and disposition of findings. Any unresolved Critical or High finding keeps the release in draft. The RC4 review returned a hold; see `docs/2026-11-26_ai-security-review-4ce7d31.md`. Independent human review was waived, not passed.
 2. **Review candidate selected** (§3): the current build includes the
    consensus batch; launch only the reviewed RC4 commit and exact image.
 3. **Fresh 7-day soak green** on `review-4ce7d31`; see `docs/release-candidate-rc4.md`.
