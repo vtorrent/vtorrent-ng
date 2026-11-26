@@ -143,6 +143,14 @@ pub enum DialSource {
     Trusted,
 }
 
+struct InboundSlot(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for InboundSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 impl PeerManager {
     /// Number of detached dials still in flight.
     pub fn pending_dial_count(&self) -> usize {
@@ -277,6 +285,7 @@ impl PeerManager {
                         // Register the inbound peer so broadcasts reach it.
                         let _ = inbound_tx.send((peer_addr, cmd_tx.clone())).await;
                         tokio::spawn(async move {
+                            let _count = InboundSlot(count);
                             run_peer(
                                 stream,
                                 peer_addr,
@@ -290,7 +299,6 @@ impl PeerManager {
                                 },
                             )
                             .await;
-                            count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                             tracing::debug!("Inbound peer task finished: {}", peer_addr);
                         });
                     }
@@ -863,16 +871,14 @@ impl PeerManager {
     /// Bounded wait: if the peer's queue is full for longer than a second the
     /// message is dropped rather than blocking the caller indefinitely.
     pub async fn send_to(&self, addr: SocketAddr, msg: NetMessage) {
-        if let Some(peer) = self.peers.get(&addr) {
-            if peer.state == PeerState::Connected {
-                let send = peer.cmd_tx.send(PeerCommand::Send(msg));
-                if tokio::time::timeout(std::time::Duration::from_secs(1), send)
-                    .await
-                    .is_err()
-                {
-                    tracing::debug!("Send queue full for {}, dropping message", addr);
-                }
-            }
+        let Some(peer) = self.peers.get(&addr) else {
+            return;
+        };
+        if peer.state != PeerState::Connected {
+            return;
+        }
+        if peer.cmd_tx.try_send(PeerCommand::Send(msg)).is_err() {
+            tracing::debug!("Send queue full for {}, dropping message", addr);
         }
     }
 

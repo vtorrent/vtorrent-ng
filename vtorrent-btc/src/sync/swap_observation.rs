@@ -75,23 +75,16 @@ impl SwapScanTracker {
         if let Some(input) = htlc_input {
             self.spend = Some(anchor);
             // A hash-lock claim reveals the preimage in the witness as a
-            // 32-byte element whose SHA-256 equals the HTLC hash lock. Accept
-            // any valid true-branch witness shape rather than only the exact
-            // five-element form a different client may not use. A refund
-            // selects the false branch and carries no true selector.
-            let true_branch = input
-                .witness
-                .iter()
-                .any(|element| element == [1u8].as_slice());
-            if true_branch {
-                for element in input.witness.iter() {
-                    if let Ok(candidate) = <[u8; 32]>::try_from(element) {
-                        if bitcoin::hashes::sha256::Hash::hash(&candidate).to_byte_array()
-                            == self.hash_lock
-                        {
-                            self.preimage = Some(candidate);
-                            break;
-                        }
+            // 32-byte element whose SHA-256 equals the hash lock. Identify the
+            // claim by the hash match alone: the true-branch selector may be
+            // any truthy value, and minimal-IF is only a relay policy rule.
+            for element in input.witness.iter() {
+                if let Ok(candidate) = <[u8; 32]>::try_from(element) {
+                    if bitcoin::hashes::sha256::Hash::hash(&candidate).to_byte_array()
+                        == self.hash_lock
+                    {
+                        self.preimage = Some(candidate);
+                        break;
                     }
                 }
             }
@@ -216,6 +209,23 @@ mod tests {
             preimage.to_vec(),
             vec![1],
             vec![0x63],
+        ]);
+        tracker.record(&tx, 100, [3u8; 32]);
+        assert_eq!(tracker.preimage, Some(preimage));
+    }
+
+    #[test]
+    fn records_preimage_from_a_non_minimal_true_selector() {
+        use bitcoin::hashes::Hash;
+        let preimage = [9u8; 32];
+        let hash_lock = bitcoin::hashes::sha256::Hash::hash(&preimage).to_byte_array();
+        let mut tracker = tracker_with_hash_lock(hash_lock);
+        // 0x02 is truthy for P2WSH; minimal-IF is only a relay policy rule.
+        let tx = spend_tx(vec![
+            vec![0x30; 71],
+            vec![0x02; 33],
+            preimage.to_vec(),
+            vec![0x02],
         ]);
         tracker.record(&tx, 100, [3u8; 32]);
         assert_eq!(tracker.preimage, Some(preimage));

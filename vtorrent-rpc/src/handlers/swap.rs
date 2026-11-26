@@ -770,9 +770,14 @@ pub async fn vtr_claim_with_state(
         let transaction = swap
             .vtr_claim_tx
             .as_ref()
-            .ok_or_else(|| RpcError::BadRequest("Signed VTR claim recovery data missing".into()))?;
+            .ok_or_else(|| RpcError::BadRequest("Signed VTR claim recovery data missing".into()))?
+            .clone();
         crate::swap_recovery::persist(state, &order, Some(swap)).await?;
-        crate::swap_recovery::submit_vtr(state, transaction).await?;
+        let admitted = crate::swap_recovery::submit_vtr(state, &transaction).await?;
+        if !admitted {
+            swap.vtr_claim_conflicted = true;
+            crate::swap_recovery::persist(state, &order, Some(swap)).await?;
+        }
         return Ok(SwapActionResponse {
             order_id: req.order_id,
             txid: hex::encode(txid),
@@ -1232,6 +1237,29 @@ async fn refund_with_broadcast(
                 return Err(RpcError::BadRequest(
                     "VTR order and swap funding disagree".into(),
                 ));
+            }
+            // A taker claim can be pending in the mempool or already confirmed.
+            // Refunding over it burns the HTLC and can strand the taker's BTC.
+            if swap.vtr_observation.as_ref().is_some_and(|observation| {
+                observation.state == vtorrent_node::atomic_swap::VtrSettlementState::Claimed
+            }) {
+                return Err(RpcError::BadRequest(
+                    "VTR HTLC was already claimed; refusing to refund".into(),
+                ));
+            }
+            {
+                let mempool = state.mempool.lock().await;
+                let claimed = mempool.get_transactions().iter().any(|tx| {
+                    tx.inputs
+                        .iter()
+                        .any(|input| input.prev_txid == funding_txid && input.prev_vout == 0)
+                });
+                drop(mempool);
+                if claimed {
+                    return Err(RpcError::BadRequest(
+                        "A VTR claim is pending; refusing to refund".into(),
+                    ));
+                }
             }
             let taker = order
                 .taker_address

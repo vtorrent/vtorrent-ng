@@ -83,6 +83,12 @@ pub struct PeerTaskConfig {
     pub network_magic: [u8; 4],
 }
 
+fn truncate_chars(value: &mut String, max_chars: usize) {
+    if value.chars().count() > max_chars {
+        *value = value.chars().take(max_chars).collect();
+    }
+}
+
 pub async fn run_peer(stream: TcpStream, addr: SocketAddr, config: PeerTaskConfig) {
     use futures::{SinkExt, StreamExt};
 
@@ -161,9 +167,9 @@ pub async fn run_peer(stream: TcpStream, addr: SocketAddr, config: PeerTaskConfi
                                     .or_else(|_| serde_json::from_slice(&msg.payload));
                                 if let Ok(mut v) = parsed {
                                     const MAX_VERSION_STRING: usize = 256;
-                                    v.user_agent.truncate(MAX_VERSION_STRING);
-                                    v.addr_from.truncate(MAX_VERSION_STRING);
-                                    v.addr_recv.truncate(MAX_VERSION_STRING);
+                                    truncate_chars(&mut v.user_agent, MAX_VERSION_STRING);
+                                    truncate_chars(&mut v.addr_from, MAX_VERSION_STRING);
+                                    truncate_chars(&mut v.addr_recv, MAX_VERSION_STRING);
                                     if v.version != PROTOCOL_VERSION {
                                         tracing::warn!(
                                             "Rejecting peer {} with incompatible protocol version {} (required {})",
@@ -420,5 +426,18 @@ mod tests {
             .unwrap();
         assert!(matches!(event, PeerEvent::Disconnected { .. }));
         task.await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod truncate_tests {
+    use super::truncate_chars;
+
+    #[test]
+    fn truncation_never_splits_a_utf8_character() {
+        let mut value = format!("{}é{}", "a".repeat(127), "b".repeat(10));
+        truncate_chars(&mut value, 128);
+        assert_eq!(value.chars().count(), 128);
+        assert!(value.ends_with('é'));
     }
 }

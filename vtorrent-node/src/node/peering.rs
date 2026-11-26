@@ -48,8 +48,7 @@ impl Node {
                 }
                 // Cap the user agent: it is an unbounded peer-supplied string
                 // that gets stored and logged per peer.
-                let mut user_agent = version.user_agent;
-                user_agent.truncate(128);
+                let user_agent: String = version.user_agent.chars().take(128).collect();
                 tracing::info!(
                     "Peer {} handshake complete: {} (height {}) v{}",
                     peer_addr,
