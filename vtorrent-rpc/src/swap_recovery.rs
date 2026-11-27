@@ -161,7 +161,7 @@ pub(crate) async fn persist_for_wallet(
     swap: Option<&SwapState>,
     expected_wif: Option<&str>,
 ) -> RpcResult<()> {
-    persist_for_wallet_inner(state, order, swap, expected_wif, false).await
+    persist_for_wallet_inner(state, order, swap, expected_wif, false, false).await
 }
 
 /// Persist a new signed VTR claim that replaces the previous claim with a
@@ -172,7 +172,18 @@ pub(crate) async fn persist_vtr_claim_replacement(
     order: &SwapOrder,
     swap: &SwapState,
 ) -> RpcResult<()> {
-    persist_for_wallet_inner(state, order, Some(swap), None, true).await
+    persist_for_wallet_inner(state, order, Some(swap), None, true, false).await
+}
+
+/// Persist the removal of a refund that was never admitted. The recovery guard
+/// normally refuses to drop a prepared transaction; this transition is safe
+/// only because the caller proved local admission failed before any relay.
+pub(crate) async fn persist_failed_refund_clear(
+    state: &AppState,
+    order: &SwapOrder,
+    swap: &SwapState,
+) -> RpcResult<()> {
+    persist_for_wallet_inner(state, order, Some(swap), None, false, true).await
 }
 
 async fn persist_for_wallet_inner(
@@ -181,6 +192,7 @@ async fn persist_for_wallet_inner(
     swap: Option<&SwapState>,
     expected_wif: Option<&str>,
     allow_vtr_claim_replacement: bool,
+    allow_failed_refund_clear: bool,
 ) -> RpcResult<()> {
     if let Some(swap) = swap {
         crate::refund_lineage::validate(order, swap)?;
@@ -273,7 +285,10 @@ async fn persist_for_wallet_inner(
                                 .as_ref()
                                 .zip(new.vtr_claim_tx.as_ref())
                                 .is_some_and(|(old_tx, new_tx)| vtr_claim_replaces(old_tx, new_tx));
-                        if !replaces_claim {
+                        let clears_unadmitted_refund = allow_failed_refund_clear
+                            && old_id == old.vtr_refund_txid
+                            && new.vtr_refund_txid.is_none();
+                        if !replaces_claim && !clears_unadmitted_refund {
                             return Err(failure("refusing to replace a prepared transaction"));
                         }
                     }

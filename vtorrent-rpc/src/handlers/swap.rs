@@ -1290,7 +1290,8 @@ async fn refund_with_broadcast(
                 swap.vtr_refund_txid = None;
                 swap.vtr_refund_tx = None;
                 swap.refresh_status();
-                let _ = crate::swap_recovery::persist(state, &order, Some(swap)).await;
+                let _ =
+                    crate::swap_recovery::persist_failed_refund_clear(state, &order, swap).await;
                 return Err(error);
             }
             hex::encode(txid)
