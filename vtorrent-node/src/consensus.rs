@@ -42,15 +42,31 @@ pub const MIN_BLOCK_SPACING: u32 = TARGET_BLOCK_TIME as u32 - MAX_FUTURE_BLOCK_D
 /// years earlier, so without this floor the bootstrap claimer can walk chain
 /// time forward in six-day steps and mint the whole bootstrap reward stream in
 /// seconds. Test and regtest fixtures opt out through `allow_pow`.
-pub const LAUNCH_TIME: u32 = 1795651200; // 2026-11-26T00:00:00Z
+///
+/// Unit tests in this crate use a past value so fixed-timestamp fixtures can
+/// exercise the other production rules; the shipped library uses the real one.
+#[cfg(not(test))]
+pub const LAUNCH_TIME: u32 = 1_796_428_800; // 2026-12-05T00:00:00Z
+#[cfg(test)]
+pub const LAUNCH_TIME: u32 = 1_700_000_000;
 
 /// How far before `LAUNCH_TIME` a production block may be dated.
 pub const MAX_PAST_DRIFT: u32 = 2 * 60 * 60;
 
 /// Whether `timestamp` respects the launch-time floor. Regtest and test
 /// fixtures pass `allow_pow` and skip the floor.
-pub fn timestamp_after_launch_floor(timestamp: u32, allow_pow: bool) -> bool {
-    allow_pow || timestamp >= LAUNCH_TIME.saturating_sub(MAX_PAST_DRIFT)
+pub fn timestamp_after_launch_floor(timestamp: u32, height: u32, allow_pow: bool) -> bool {
+    if allow_pow {
+        return true;
+    }
+    // The bootstrap block must not predate launch at all; later blocks get a
+    // small clock-skew allowance.
+    let floor = if height <= 1 {
+        LAUNCH_TIME
+    } else {
+        LAUNCH_TIME.saturating_sub(MAX_PAST_DRIFT)
+    };
+    timestamp >= floor
 }
 
 /// Count a block's signature operations, optionally resolving prevout scripts
@@ -515,7 +531,7 @@ pub(crate) fn validate_block_inner(
     // Anchor production blocks to the published launch time. Genesis is years
     // older, so a parent-only lower bound would let the bootstrap claimer mint
     // years of rewards before the honest chain advances.
-    if !timestamp_after_launch_floor(block.header.timestamp, allow_pow) {
+    if !timestamp_after_launch_floor(block.header.timestamp, block.height(), allow_pow) {
         return Err(NodeError::InvalidBlock(format!(
             "Block timestamp {} predates the launch floor {}",
             block.header.timestamp,
@@ -1098,17 +1114,21 @@ mod tests {
 
     #[test]
     fn timestamp_launch_floor_rejects_pre_launch_blocks() {
-        assert!(timestamp_after_launch_floor(LAUNCH_TIME, false));
+        assert!(timestamp_after_launch_floor(LAUNCH_TIME, 1, false));
+        assert!(!timestamp_after_launch_floor(LAUNCH_TIME - 1, 1, false));
+        assert!(timestamp_after_launch_floor(LAUNCH_TIME, 2, false));
         assert!(timestamp_after_launch_floor(
             LAUNCH_TIME - MAX_PAST_DRIFT,
+            2,
             false
         ));
         assert!(!timestamp_after_launch_floor(
             LAUNCH_TIME - MAX_PAST_DRIFT - 1,
+            2,
             false
         ));
-        assert!(!timestamp_after_launch_floor(1_700_000_000, false));
-        assert!(timestamp_after_launch_floor(1_700_000_000, true));
+        assert!(!timestamp_after_launch_floor(1_600_000_000, 2, false));
+        assert!(timestamp_after_launch_floor(1_700_000_000, 2, true));
     }
 
     #[test]

@@ -989,15 +989,29 @@ async fn claim_btc_with_verification(
     let mut swaps = state.swaps.write().await;
     let (preimage, btc_funding_txid, maker_btc_address, btc_amount, btc_expiry, refund_address) = {
         let swap = swaps
-            .get(&req.order_id)
+            .get_mut(&req.order_id)
             .ok_or_else(|| RpcError::NotFound(format!("Swap {} not found", req.order_id)))?;
         if swap.btc_refund_txid.is_some() {
             return Err(RpcError::BadRequest("BTC refund already submitted".into()));
         }
-        if swap.vtr_refund_txid.is_some() {
-            return Err(RpcError::BadRequest(
-                "VTR refund already submitted; refusing to reveal the swap secret".into(),
-            ));
+        if let Some(refund_txid) = swap.vtr_refund_txid {
+            let chain = state.chain.lock().await;
+            let refund_confirmed = chain.get_transaction_owned(&refund_txid).is_some();
+            let mempool = state.mempool.lock().await;
+            let refund_pending = mempool.get_transaction(&refund_txid).is_some();
+            drop(mempool);
+            drop(chain);
+            if refund_confirmed || refund_pending {
+                return Err(RpcError::BadRequest(
+                    "VTR refund already submitted; refusing to reveal the swap secret".into(),
+                ));
+            }
+            // The recorded refund never reached the chain or the mempool, so it
+            // cannot confirm. Clear the latch instead of blocking the BTC claim.
+            swap.vtr_refund_txid = None;
+            swap.vtr_refund_tx = None;
+            swap.refresh_status();
+            crate::swap_recovery::persist_failed_refund_clear(state, &order, swap).await?;
         }
         if now_secs_mock(state).await.saturating_add(u64::from(
             vtorrent_wallet_service::swap_policy::MIN_BTC_SWAP_WINDOW,
@@ -1201,6 +1215,13 @@ async fn refund_with_broadcast(
 
     let txid = match leg {
         SwapLeg::Vtr => {
+            // Once the maker has taken the BTC leg the preimage is public and
+            // the VTR leg belongs to the taker. Refunding it would keep both.
+            if swap.preimage.is_some() || swap.btc_claim_txid.is_some() {
+                return Err(RpcError::BadRequest(
+                    "BTC leg already claimed; refusing to refund the VTR leg".into(),
+                ));
+            }
             // A taker claim can be pending in the mempool or already confirmed.
             // Refunding over it can strand the taker's BTC.
             if swap.vtr_observation.as_ref().is_some_and(|observation| {

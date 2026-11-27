@@ -89,6 +89,19 @@ fn truncate_chars(value: &mut String, max_chars: usize) {
     }
 }
 
+async fn send_bounded(
+    framed: &mut Framed<TcpStream, VtrCodec>,
+    msg: NetMessage,
+    timeout: std::time::Duration,
+) -> bool {
+    use futures::SinkExt as _;
+
+    matches!(
+        tokio::time::timeout(timeout, framed.send(msg)).await,
+        Ok(Ok(()))
+    )
+}
+
 pub async fn run_peer(stream: TcpStream, addr: SocketAddr, config: PeerTaskConfig) {
     use futures::{SinkExt, StreamExt};
 
@@ -195,7 +208,12 @@ pub async fn run_peer(stream: TcpStream, addr: SocketAddr, config: PeerTaskConfi
                                         break;
                                     }
                                     peer_version = Some(v);
-                                    let _ = framed.send(NetMessage::new("verack", vec![])).await;
+                                    let _ = send_bounded(
+                                        &mut framed,
+                                        NetMessage::new("verack", vec![]),
+                                        std::time::Duration::from_secs(10),
+                                    )
+                                    .await;
                                 } else {
                                     tracing::warn!("Rejecting peer {} with malformed version", addr);
                                     break;
@@ -228,7 +246,12 @@ pub async fn run_peer(stream: TcpStream, addr: SocketAddr, config: PeerTaskConfi
                                     } else {
                                         serde_json::to_vec(&pong).unwrap_or_default()
                                     };
-                                    let _ = framed.send(NetMessage::new("pong", payload)).await;
+                                    let _ = send_bounded(
+                                        &mut framed,
+                                        NetMessage::new("pong", payload),
+                                        std::time::Duration::from_secs(10),
+                                    )
+                                    .await;
                                 }
                             }
                             _ => {
