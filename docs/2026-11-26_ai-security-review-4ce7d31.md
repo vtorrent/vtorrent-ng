@@ -202,3 +202,23 @@ rollback could not persist because the recovery guard refuses to drop a prepared
 transaction; RC8 adds a dedicated path for exactly that `Some -> None` refund
 transition. A scoped re-review of RC8 is pending; its Low findings are accepted
 for this release.
+
+## RC8 verdict
+
+The scoped re-reviews closed C1, C2, H1, H2, H3, and H4. RC8 passes the security
+scope for 2.0.0, subject to the completed 168-hour window and the final draft
+checks. Accepted residuals:
+
+- `LAUNCH_TIME` must be kept no later than the actual launch; a materially later
+  launch needs a rebuild, not a moved constant.
+- The crash window between persisting a refund and clearing it after failed
+  admission can leave the record until a retry clears it; it fails closed and
+  does not move funds.
+- A refund deliberately carrying the preimage would be classified as a claim in
+  status output. It cannot move funds.
+- Relay failure after local admission is not reported to the RPC caller; the
+  admitted transaction remains retryable.
+- Platform sync and power-loss durability of the repair path are not tested;
+  Linux is the only runtime exercised.
+- The review is AI-authored and not independent. That waiver is recorded in the
+  release policy and must be disclosed in the release notes.
