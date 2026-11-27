@@ -67,7 +67,7 @@ fn confirmation(chain: &Chain, txid: &[u8; 32]) -> Option<SwapConfirmation> {
     })
 }
 
-fn claim_preimage_matches(
+pub(crate) fn claim_preimage_matches(
     tx: &vtorrent_node::block::Transaction,
     funding_txid: &[u8; 32],
     hash_lock: &[u8; 32],
@@ -91,6 +91,20 @@ fn claim_preimage_matches(
         }
     }
     false
+}
+
+/// Whether any transaction in `transactions` is a VTR claim on the HTLC.
+pub(crate) fn any_pending_claim<'a, I>(
+    transactions: I,
+    funding_txid: &[u8; 32],
+    hash_lock: &[u8; 32],
+) -> bool
+where
+    I: IntoIterator<Item = &'a vtorrent_node::block::Transaction>,
+{
+    transactions
+        .into_iter()
+        .any(|tx| claim_preimage_matches(tx, funding_txid, hash_lock))
 }
 
 fn observes_spend(tx: &vtorrent_node::block::Transaction, funding: &[u8; 32]) -> bool {
@@ -481,5 +495,51 @@ mod deadline_tests {
         assert!(swap_at_risk(&swap));
         swap.btc_observation = Some(btc(BtcSettlementState::Claimed));
         assert!(!swap_at_risk(&swap));
+    }
+}
+
+#[cfg(test)]
+mod claim_tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    use vtorrent_node::block::{Transaction, TxInput, TxOutput, TxType};
+
+    fn spend(script_sig: Vec<u8>) -> Transaction {
+        Transaction {
+            version: 1,
+            tx_type: TxType::AtomicSwap,
+            inputs: vec![TxInput {
+                prev_txid: [4u8; 32],
+                prev_vout: 0,
+                script_sig,
+                sequence: u32::MAX - 2,
+            }],
+            outputs: vec![TxOutput {
+                value: 1_000,
+                script_pubkey: vec![0x51],
+            }],
+            lock_time: 0,
+            claim_address: None,
+            claim_signature: None,
+        }
+    }
+
+    #[test]
+    fn pending_claim_detection_accepts_a_hash_match_and_rejects_a_refund() {
+        let preimage = [7u8; 32];
+        let hash_lock: [u8; 32] = Sha256::digest(preimage).into();
+        let mut claim_script = vec![0x20];
+        claim_script.extend_from_slice(&preimage);
+        claim_script.extend_from_slice(&[0x02]);
+        let claim = spend(claim_script);
+        assert!(any_pending_claim([&claim], &[4u8; 32], &hash_lock));
+
+        let refund = spend(vec![0x00, 0x63]);
+        assert!(!any_pending_claim([&refund], &[4u8; 32], &hash_lock));
+
+        let mut wrong = vec![0x20];
+        wrong.extend_from_slice(&[9u8; 32]);
+        wrong.extend_from_slice(&[0x51]);
+        assert!(!any_pending_claim([&spend(wrong)], &[4u8; 32], &hash_lock));
     }
 }
