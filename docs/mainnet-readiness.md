@@ -126,7 +126,7 @@ snapshot, two-person review, and an explicit decision for each record.
       tested; `POST /api/v1/blockchain/bootstrap` mines it. Genesis has no
       stakeable UTXO, so this is the only way a fresh chain begins staking.
       See `docs/superpowers/specs/2026-09-21-genesis-bootstrap-and-stakeable-script-design.md`.
-- [ ] **RC6 frontier AI review**: record the exact-SHA security review and findings disposition under the [RC6 review policy](release-candidate-rc6.md#review-policy-for-200-rc4). The maintainer waived independent human review for this release only. The release-evidence review alone does not close this item.
+- [ ] **RC6 frontier AI review**: record the exact-SHA security review and findings disposition under the [RC6 review policy](release-candidate-rc6.md#review-policy-for-200). The maintainer waived independent human review for this release only. The release-evidence review alone does not close this item.
 
 ## 2. Testnet Soak
 

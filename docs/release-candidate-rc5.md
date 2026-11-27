@@ -17,6 +17,6 @@ Relative to `v2.0.0-rc4`, `git diff --stat` shows seven files and no dependency 
 - Fleet: three nodes on the recorded image, matching tip at height 2, two staking, Prometheus three targets, zero restarts.
 - Evidence directory: `/mnt/temp/vtorrent-ng-evidence/soak-rc5/`.
 
-RC4 is retired by the security review and its window does not count. No predecessor window counts for RC5. Independent human review remains waived for 2.0.0, per the [RC4 policy](release-candidate-rc4.md#review-policy-for-200-rc4); the frontier AI review must pass on this SHA before tagging `v2.0.0`.
+RC4 is retired by the security review and its window does not count. No predecessor window counts for RC5. Independent human review remains waived for 2.0.0, per the [RC4 policy](release-candidate-rc4.md#review-policy-for-200); the frontier AI review must pass on this SHA before tagging `v2.0.0`.
 
 Before publication, verify the final tag resolves to `daf5a81`, the draft contains all five installers plus `Cargo.lock`, each installer reports `2.0.0`, and the checksum workflow's ancestry check passes.

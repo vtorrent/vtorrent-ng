@@ -1,7 +1,7 @@
 # RC4 security review: hold publication
 
 **Candidate:** `4ce7d315e3d5cb03c1f2c7c40a555cb87fe2e79e` (`v2.0.0-rc4`)
-**Reviewer:** GPT-6.2 Astra, frontier AI review under the [RC4 review policy](release-candidate-rc4.md#review-policy-for-200-rc4)
+**Reviewer:** GPT-6.2 Astra, frontier AI review under the [RC4 review policy](release-candidate-rc4.md#review-policy-for-200)
 **Date:** 2026-11-26
 
 **Verdict: do not publish.** Two Critical defects allow a remote peer to stop any
@@ -187,7 +187,8 @@ Clippy with `-D warnings` clean. Preview image
 daemon SHA-256
 `f0c24865b548ac52236f7fff434b3c9c03241134096fa167b40bb4bf629e3d99`.
 
-This fix commit is now tagged `v2.0.0-rc6`; see `docs/release-candidate-rc6.md`
-for the image, window, and desktop evidence. The RC4 window does not transfer.
+The C1, C2, H1, H2, and H3 fixes landed in `v2.0.0-rc5`; the strict refund fix
+for H4 landed in `v2.0.0-rc6`. See `docs/release-candidate-rc6.md` for the image,
+window, and desktop evidence. The RC4 window does not transfer.
 Publication still requires the scoped re-review of the fix diff to pass and the
 RC6 window to complete.
