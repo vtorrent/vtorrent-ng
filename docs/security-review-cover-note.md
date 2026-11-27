@@ -8,7 +8,7 @@ and the specific questions.
 
 ## Message
 
-Subject: Independent security review — vTorrent-NG mainnet candidate `a335a38`
+Subject: Independent security review — vTorrent-NG mainnet candidate `2efd07c`
 
 Hello,
 
@@ -18,7 +18,7 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-Review `a335a385c6be1ed10f11f171ae563b8ce4e95825` (`v2.0.0-rc6`), not `main`. See `docs/release-candidate-rc6.md` for the exact image, binary, soak and desktop evidence. Check `git diff --name-only be78829..v2.0.0-rc6`: only `.github/workflows/build.yml` and `vtorrent-tauri/tauri.conf.json` changed. Earlier pass-15 evidence applies only where explicitly identified. The deferred BTC repair on `main` is outside the candidate.
+Review `2efd07c4727fb46be2aeb18f675c995c49cd38b2` (`v2.0.0-rc7`), not `main`. See `docs/release-candidate-rc7.md` for the exact image, binary, soak and desktop evidence. Check `git diff --name-only be78829..v2.0.0-rc7`: only `.github/workflows/build.yml` and `vtorrent-tauri/tauri.conf.json` changed. Earlier pass-15 evidence applies only where explicitly identified. The deferred BTC repair on `main` is outside the candidate.
 
 **Scope:** `docs/security-review-request-2026-10-27.md` on the documentation branch (`main`).
 
@@ -467,6 +467,6 @@ Thank you.
 
 ## Before sending
 
-- Confirm that this note and the scope name `a335a385c6be1ed10f11f171ae563b8ce4e95825` and include the image and window from `docs/release-candidate-rc6.md`.
+- Confirm that this note and the scope name `2efd07c4727fb46be2aeb18f675c995c49cd38b2` and include the image and window from `docs/release-candidate-rc7.md`.
 - Decide who receives it. Sending it is the step that actually opens the gate —
   drafting it does not.

@@ -169,7 +169,7 @@ mined, which relay policy discourages but consensus allows.
 
 ## Remediation preview
 
-The blocking fixes are implemented in `a335a385c6be1ed10f11f171ae563b8ce4e95825` on
+The blocking fixes are implemented in `2efd07c4727fb46be2aeb18f675c995c49cd38b2` on
 `fix/rc5-security`, built from RC4.
 
 | Finding | Change |
@@ -188,7 +188,16 @@ daemon SHA-256
 `f0c24865b548ac52236f7fff434b3c9c03241134096fa167b40bb4bf629e3d99`.
 
 The C1, C2, H1, H2, and H3 fixes landed in `v2.0.0-rc5`; the strict refund fix
-for H4 landed in `v2.0.0-rc6`. See `docs/release-candidate-rc6.md` for the image,
+for H4 landed in `v2.0.0-rc7`. See `docs/release-candidate-rc7.md` for the image,
 window, and desktop evidence. The RC4 window does not transfer.
 Publication still requires the scoped re-review of the fix diff to pass and the
-RC6 window to complete.
+RC7 window to complete.
+
+## H4 closure
+
+The RC6 re-review found one remaining Medium: a refund that failed local
+admission stayed recorded and blocked the maker's `btc_claim`. RC7 clears the
+recorded refund and persists before returning the admission error. The scoped
+re-review verified the rollback path and found no new Critical or High issue.
+Remaining Low findings are recorded in the re-review and are accepted for this
+release.
