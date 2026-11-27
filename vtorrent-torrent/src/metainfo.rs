@@ -154,6 +154,8 @@ impl Metainfo {
             (vec![file], length)
         };
 
+        validate_file_paths(&files)?;
+
         let piece_count_u64 = total_size.div_ceil(piece_length);
         if piece_count_u64 > MAX_PIECE_COUNT {
             return Err(TorrentError::InvalidMetainfo(format!(
@@ -401,6 +403,53 @@ fn get_u64(dict: &BencodeDict, key: &[u8]) -> Result<u64> {
         )));
     }
     Ok(i as u64)
+}
+
+/// Reject paths that could escape or collide in the download directory.
+fn validate_file_paths(files: &[TorrentFile]) -> Result<()> {
+    use std::collections::HashSet;
+
+    let mut seen = HashSet::with_capacity(files.len());
+    for file in files {
+        if file.path.is_empty() {
+            return Err(TorrentError::InvalidMetainfo("Empty file path".into()));
+        }
+        for component in &file.path {
+            if component.is_empty()
+                || component == "."
+                || component == ".."
+                || component.contains('/')
+                || component.contains('\\')
+                || component.contains('\0')
+            {
+                return Err(TorrentError::InvalidMetainfo(format!(
+                    "Unsafe path component {component:?}"
+                )));
+            }
+        }
+        let key = file.path.join("/");
+        if !seen.insert(key.clone()) {
+            return Err(TorrentError::InvalidMetainfo(format!(
+                "Duplicate file path {key}"
+            )));
+        }
+    }
+    // A file cannot also be a directory of another file.
+    for key in &seen {
+        let mut prefix = String::new();
+        for component in key.split('/') {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(component);
+            if prefix != *key && seen.contains(&prefix) {
+                return Err(TorrentError::InvalidMetainfo(format!(
+                    "File path {prefix} is a parent of another file"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn get_string_list(dict: &BencodeDict, key: &[u8]) -> Result<Vec<String>> {
@@ -758,5 +807,28 @@ mod tests {
 
         let result = Metainfo::from_bytes(&bencode);
         assert!(result.is_err(), "negative length must be rejected");
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    fn file(path: &[&str]) -> TorrentFile {
+        TorrentFile {
+            path: path.iter().map(|p| p.to_string()).collect(),
+            length: 1,
+            md5sum: None,
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_and_unsafe_paths() {
+        assert!(validate_file_paths(&[file(&["a"]), file(&["a"])]).is_err());
+        assert!(validate_file_paths(&[file(&["..", "a"])]).is_err());
+        assert!(validate_file_paths(&[file(&["dir/a"])]).is_err());
+        assert!(validate_file_paths(&[file(&[""])]).is_err());
+        assert!(validate_file_paths(&[file(&["a"]), file(&["a", "b"])]).is_err());
+        assert!(validate_file_paths(&[file(&["a"]), file(&["b"])]).is_ok());
     }
 }

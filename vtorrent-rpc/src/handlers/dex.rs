@@ -508,7 +508,15 @@ mod bootstrap_tests {
     async fn bootstrap_endpoint_mines_height1_and_is_one_shot() {
         let (wif, _) = legacy_wif_with_balance(500 * 100_000_000);
         let recipient = recipient_address(94);
-        let state = std::sync::Arc::new(AppState::new());
+        // Regtest skips the production launch-time floor; the floor itself is
+        // covered by consensus unit tests.
+        let chain = std::sync::Arc::new(tokio::sync::Mutex::new(
+            vtorrent_node::chain::Chain::new_regtest().unwrap(),
+        ));
+        let mempool = std::sync::Arc::new(tokio::sync::Mutex::new(
+            vtorrent_node::mempool::Mempool::new(10_000),
+        ));
+        let state = std::sync::Arc::new(AppState::new_with_shared(chain, mempool));
 
         let res = bootstrap_chain(
             State(state.clone()),

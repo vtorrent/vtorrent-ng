@@ -84,10 +84,26 @@ pub(crate) fn claim_preimage_matches(
     // The claim pushes the 32-byte preimage and then any truthy selector.
     // Match the preimage push by its hash rather than a fixed selector byte.
     for start in 0..script.len().saturating_sub(32) {
-        if script[start] == 0x20
-            && Sha256::digest(&script[start + 1..start + 33]).as_slice() == hash_lock
+        let pushed = if script[start] == 0x20 {
+            Some((start + 1, start + 33))
+        } else if script[start] == 0x4c
+            && script.get(start + 1) == Some(&0x20)
+            && start + 34 <= script.len()
         {
-            return true;
+            Some((start + 2, start + 34))
+        } else if script[start] == 0x4d
+            && script.get(start + 1) == Some(&0x20)
+            && script.get(start + 2) == Some(&0x00)
+            && start + 35 <= script.len()
+        {
+            Some((start + 3, start + 35))
+        } else {
+            None
+        };
+        if let Some((from, to)) = pushed {
+            if Sha256::digest(&script[from..to]).as_slice() == hash_lock {
+                return true;
+            }
         }
     }
     false

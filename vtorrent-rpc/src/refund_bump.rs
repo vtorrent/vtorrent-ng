@@ -228,6 +228,8 @@ pub async fn bump_with_wif(
         .ok_or_else(|| RpcError::NotFound("Swap state not found".into()))?;
     if now < u64::from(order.expiry)
         || swap.vtr_claim_txid.is_some()
+        || swap.preimage.is_some()
+        || swap.btc_claim_txid.is_some()
         || order.order_id != swap.order_id
         || order.hash_lock != Some(swap.hash_lock)
         || order.funding_txid != swap.vtr_funding_txid
