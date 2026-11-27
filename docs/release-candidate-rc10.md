@@ -31,6 +31,6 @@ RC10 closes the second review pass blockers:
 - Workspace suite: **1,555 passed, 0 failed**; formatting and workspace Clippy with `-D warnings` clean.
 - Fleet: three nodes on the recorded image, matching tip at height 2, two staking, three Prometheus targets, zero restarts.
 - Evidence directory: `/mnt/temp/vtorrent-ng-evidence/soak-rc10/`.
-- Desktop: the RC10 tag CI run builds all four platforms; verify the draft inventory before publication.
+- Desktop: [RC10 run 46035465769](https://github.com/vtorrent/vtorrent-ng/actions/runs/46035465769) passed on all four platforms. Draft release 460968226 contains both DMGs, the NSIS installer, the deb, the AppImage, and `Cargo.lock`; all six files matched their recorded SHA-256 digests, the lockfile matched the tagged source, both DMGs and the NSIS fields report 2.0.0, the deb reports 2.0.0, and the AppImage executable shares the deb executable's ELF build ID.
 
 RC9 and earlier candidates are retired. Independent human review remains waived for 2.0.0, per the [policy](release-candidate-rc4.md#review-policy-for-200). Publication requires the completed RC10 window, the final draft checks, and the same SHA for `v2.0.0`.
