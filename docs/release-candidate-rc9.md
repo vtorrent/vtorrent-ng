@@ -23,6 +23,6 @@ Relative to `v2.0.0-rc8`, the diff is `vtorrent-torrent/src/incentive.rs` plus o
 - Workspace suite: **1,559 passed, 0 failed**; formatting and workspace Clippy with `-D warnings` clean.
 - Fleet: three nodes on the recorded image, matching tip at height 2, two staking, three Prometheus targets, zero restarts.
 - Evidence directory: `/mnt/temp/vtorrent-ng-evidence/soak-rc9/`.
-- Desktop: the RC9 tag CI run builds all four platforms; verify the draft inventory before publication.
+- Desktop: [RC9 run 45999682956](https://github.com/vtorrent/vtorrent-ng/actions/runs/45999682956) passed on all four platforms. Draft release 460736329 contains both DMGs, the NSIS installer, the deb, the AppImage, and `Cargo.lock`; all six files matched their recorded SHA-256 digests, the lockfile matched the tagged source, both DMGs and the NSIS fields report 2.0.0, the deb reports 2.0.0, and the AppImage executable shares the deb executable's ELF build ID.
 
 RC8 and earlier candidates are retired and do not count. Independent human review remains waived for 2.0.0, per the [policy](release-candidate-rc4.md#review-policy-for-200). No further Medium or Low findings will be fixed before launch unless release-blocking. Before publication, verify the final tag resolves to `aa2cf21d044f74135b86ac09d33c934b7c1c4ae5`, the draft has all five installers plus `Cargo.lock`, each installer reports `2.0.0`, and the checksum workflow's ancestry check passes.
