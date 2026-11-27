@@ -197,7 +197,6 @@ RC7 window to complete.
 
 The RC6 re-review found one remaining Medium: a refund that failed local
 admission stayed recorded and blocked the maker's `btc_claim`. RC7 clears the
-recorded refund and persists before returning the admission error. The scoped
-re-review verified the rollback path and found no new Critical or High issue.
-Remaining Low findings are recorded in the re-review and are accepted for this
+recorded refund and persists before returning the admission error. A scoped
+re-review of that rollback is pending; its Low findings are accepted for this
 release.
