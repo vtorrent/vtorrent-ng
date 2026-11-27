@@ -169,7 +169,7 @@ mined, which relay policy discourages but consensus allows.
 
 ## Remediation preview
 
-The blocking fixes are implemented in `aa2cf21d044f74135b86ac09d33c934b7c1c4ae5` on
+The blocking fixes are implemented in `fc7747ba01730d8e2bd8d64eb514658382f1fd43` on
 `fix/rc5-security`, built from RC4.
 
 | Finding | Change |
@@ -188,24 +188,24 @@ daemon SHA-256
 `f0c24865b548ac52236f7fff434b3c9c03241134096fa167b40bb4bf629e3d99`.
 
 The C1, C2, H1, H2, and H3 fixes landed in `v2.0.0-rc5`; the strict refund fix
-for H4 landed in `v2.0.0-rc9`. See `docs/release-candidate-rc9.md` for the image,
+for H4 landed in `v2.0.0-rc10`. See `docs/release-candidate-rc10.md` for the image,
 window, and desktop evidence. The RC4 window does not transfer.
 Publication still requires the scoped re-review of the fix diff to pass and the
-RC9 window to complete.
+RC10 window to complete.
 
 ## H4 closure
 
 The RC6 re-review found one remaining Medium: a refund that failed local
-admission stayed recorded and blocked the maker's `btc_claim`. RC9 clears the
+admission stayed recorded and blocked the maker's `btc_claim`. RC10 clears the
 recorded refund and persists before returning the admission error. The first
 rollback could not persist because the recovery guard refuses to drop a prepared
-transaction; RC9 adds a dedicated path for exactly that `Some -> None` refund
-transition. A scoped re-review of RC9 is pending; its Low findings are accepted
+transaction; RC10 adds a dedicated path for exactly that `Some -> None` refund
+transition. A scoped re-review of RC10 is pending; its Low findings are accepted
 for this release.
 
-## RC9 verdict
+## RC10 verdict
 
-The scoped re-reviews closed C1, C2, H1, H2, H3, and H4. RC9 passes the security
+The scoped re-reviews closed C1, C2, H1, H2, H3, and H4. RC10 passes the security
 scope for 2.0.0, subject to the completed 168-hour window and the final draft
 checks. Accepted residuals:
 
@@ -222,3 +222,15 @@ checks. Accepted residuals:
   Linux is the only runtime exercised.
 - The review is AI-authored and not independent. That waiver is recorded in the
   release policy and must be disclosed in the release notes.
+
+## Second review pass (RC10)
+
+A second full pass reviewed torrent, SPV/swaps, desktop/imports, and consensus at RC9. Fixed before RC10:
+
+- Pre-launch chain mining: `LAUNCH_TIME` moved to 2026-12-05T00:00:00Z and the height-1 block must meet it exactly.
+- Peer send timeouts at every send site.
+- VTR refund refused after the BTC leg is claimed; stale refund records cleared before `btc_claim`; PUSHDATA preimages recognized.
+- Torrent path traversal, duplicate, and file/directory collisions rejected.
+- Backups made wallet-only so a created backup restores; recovery data documented as separate.
+
+Accepted and documented in the RC10 record: disk-full loop, slow-loris ownership, SPV wallet tip window, 2FA disable passphrase, restore code reuse, missing stop command, staking display state, and unexercised installed-app journeys. The claimed cross-node maker BTC claim gap was disproved by the real-bitcoind two-node test, which completed funding, BTC claim, and VTR claim.
