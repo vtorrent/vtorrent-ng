@@ -169,7 +169,7 @@ mined, which relay policy discourages but consensus allows.
 
 ## Remediation preview
 
-The blocking fixes are implemented in `2efd07c4727fb46be2aeb18f675c995c49cd38b2` on
+The blocking fixes are implemented in `1667ab8df9c31289979098f64edea37738ff5495` on
 `fix/rc5-security`, built from RC4.
 
 | Finding | Change |
@@ -188,15 +188,17 @@ daemon SHA-256
 `f0c24865b548ac52236f7fff434b3c9c03241134096fa167b40bb4bf629e3d99`.
 
 The C1, C2, H1, H2, and H3 fixes landed in `v2.0.0-rc5`; the strict refund fix
-for H4 landed in `v2.0.0-rc7`. See `docs/release-candidate-rc7.md` for the image,
+for H4 landed in `v2.0.0-rc8`. See `docs/release-candidate-rc8.md` for the image,
 window, and desktop evidence. The RC4 window does not transfer.
 Publication still requires the scoped re-review of the fix diff to pass and the
-RC7 window to complete.
+RC8 window to complete.
 
 ## H4 closure
 
 The RC6 re-review found one remaining Medium: a refund that failed local
-admission stayed recorded and blocked the maker's `btc_claim`. RC7 clears the
-recorded refund and persists before returning the admission error. A scoped
-re-review of that rollback is pending; its Low findings are accepted for this
-release.
+admission stayed recorded and blocked the maker's `btc_claim`. RC8 clears the
+recorded refund and persists before returning the admission error. The first
+rollback could not persist because the recovery guard refuses to drop a prepared
+transaction; RC8 adds a dedicated path for exactly that `Some -> None` refund
+transition. A scoped re-review of RC8 is pending; its Low findings are accepted
+for this release.
