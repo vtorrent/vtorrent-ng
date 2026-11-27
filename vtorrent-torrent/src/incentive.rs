@@ -32,7 +32,7 @@ pub trait IncentiveJournal: Send + Sync {
 /// - Seeders earn VTR for sharing bandwidth
 /// - Leechers pay VTR for faster downloads from incentivized peers
 /// - The network self-regulates: more VTR reward = more seeders = faster downloads
-pub const VTR_PER_GB_SEEDED: f64 = 1.0; // 1 VTR per GB uploaded to peers
+pub const VTR_PER_GB_SEEDED: f64 = 0.5; // 0.5 VTR per GB, matching settlement
 pub const VTR_PER_GB_DOWNLOADED: f64 = 0.5; // 0.5 VTR per GB downloaded from incentivized peers
 #[allow(dead_code)]
 pub const MIN_PAYMENT_BYTES: u64 = 10 * 1024 * 1024; // Minimum 10 MB before payment is triggered
@@ -192,9 +192,9 @@ impl PeerBandwidthAccount {
         if !self.incentive_enabled {
             return 0;
         }
-        const GB: u128 = 1024 * 1024 * 1024;
-        // 1 VTR per GB = COIN satoshis per GB.
-        ((self.bytes_uploaded as u128 * COIN as u128) / GB) as u64
+        // Displayed earnings use the settlement rate so the UI never promises
+        // more than a peer can actually be paid.
+        calculate_earned_for_bytes(self.bytes_uploaded)
     }
 
     /// Calculate how much VTR we owe this peer for their uploads to us.
@@ -555,10 +555,9 @@ pub fn calculate_owed_for_bytes(bytes: u64) -> u64 {
     ((bytes as u128 * (COIN as u128 / 2)) / GB) as u64
 }
 
-/// Satoshis earned for uploading `bytes` to a peer (1 VTR/GB).
+/// Satoshis earned for uploading `bytes` to a peer (0.5 VTR/GB).
 pub fn calculate_earned_for_bytes(bytes: u64) -> u64 {
-    const GB: u128 = 1024 * 1024 * 1024;
-    ((bytes as u128 * COIN as u128) / GB) as u64
+    calculate_owed_for_bytes(bytes)
 }
 
 fn agree_on_satoshis(mine_satoshis: u64, theirs: u64) -> ReceiptAgreement {
@@ -580,7 +579,7 @@ fn agree_on_satoshis(mine_satoshis: u64, theirs: u64) -> ReceiptAgreement {
 ///
 /// `mine_satoshis` is what our own accounting says we are owed for uploads to
 /// the peer; `their_receipt_uploaded` is the bytes the peer's signed receipt says
-/// it downloaded from us. Both are converted at the same 1 VTR/GB rate.
+/// it downloaded from us. Both directions use the same settlement rate.
 pub fn agree_on_upload(mine_satoshis: u64, their_receipt_uploaded: u64) -> ReceiptAgreement {
     agree_on_satoshis(
         mine_satoshis,
@@ -658,8 +657,8 @@ mod tests {
         // Simulate uploading 1 GB
         account.record_upload(1024 * 1024 * 1024);
         let earned = account.calculate_earned();
-        // Should earn 1 VTR = 100,000,000 satoshis
-        assert_eq!(earned, COIN);
+        // Settlement pays 0.5 VTR/GB, so a 1 GB upload earns 0.5 VTR.
+        assert_eq!(earned, COIN / 2);
     }
 
     #[test]
@@ -789,7 +788,7 @@ mod tests {
     #[test]
     fn earned_credit_is_time_bounded() {
         let mut account = PeerBandwidthAccount::new("VQ2BZDB3MzX5CEKVCoFJpzqw4eisdEMJHh".into());
-        account.record_upload(200 * 1024);
+        account.record_upload(400 * 1024);
         let now = account.last_active;
         assert!(account.blocks_removal_at(now));
         assert!(!account.blocks_removal_at(now + UNRECEIPTED_DEBT_GRACE_SECS + 1));
@@ -798,8 +797,8 @@ mod tests {
     #[test]
     fn test_receipt_agreement_within_tolerance_pays_minimum() {
         const GB: u64 = 1024 * 1024 * 1024;
-        // We claim 1 VTR (COIN sat); peer's receipt says 0.97 VTR (3% less).
-        let mine = COIN;
+        // We claim 0.5 VTR for 1 GB; the receipt says 0.97 GB (3% less).
+        let mine = COIN / 2;
         let their_bytes = GB * 97 / 100;
         match agree_on_upload(mine, their_bytes) {
             ReceiptAgreement::Agreed { satoshis } => {
@@ -813,8 +812,8 @@ mod tests {
     #[test]
     fn test_receipt_agreement_beyond_tolerance_disputes() {
         const GB: u64 = 1024 * 1024 * 1024;
-        // We claim 1 VTR; peer's receipt claims 2 VTR (100% more) -> dispute.
-        let mine = COIN;
+        // We claim 0.5 VTR; the receipt claims 1 VTR (100% more) -> dispute.
+        let mine = COIN / 2;
         let their_bytes = GB * 2;
         assert!(matches!(
             agree_on_upload(mine, their_bytes),
