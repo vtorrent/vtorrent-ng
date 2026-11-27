@@ -13,6 +13,11 @@ Motivation: the headline feature — **pay peers for bandwidth** — is currentl
 payer cannot prove it paid for real data. This design makes the incentive
 accounting **reciprocal and receipt-based**.
 
+**Pricing update (2026-11-27).** Both directions now use 0.5 VTR/GB.
+The earlier 1 VTR/GB credit was never payable: settlement and receipt
+agreement used 0.5, so the UI promised double. This aligns displayed credit
+with what a peer can actually receive; it does not change payouts.
+
 ## 1. Problem (grounded)
 
 `PeerBandwidthAccount` (`incentive.rs:19`) records `bytes_uploaded` /
