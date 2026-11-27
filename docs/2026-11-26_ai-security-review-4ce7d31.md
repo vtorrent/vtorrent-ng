@@ -169,7 +169,7 @@ mined, which relay policy discourages but consensus allows.
 
 ## Remediation preview
 
-The blocking fixes are implemented in `daf5a81b55ce5ed963b2be67490deaa59fdba480` on
+The blocking fixes are implemented in `a335a385c6be1ed10f11f171ae563b8ce4e95825` on
 `fix/rc5-security`, built from RC4.
 
 | Finding | Change |
@@ -187,7 +187,7 @@ Clippy with `-D warnings` clean. Preview image
 daemon SHA-256
 `f0c24865b548ac52236f7fff434b3c9c03241134096fa167b40bb4bf629e3d99`.
 
-This fix commit is now tagged `v2.0.0-rc5`; see `docs/release-candidate-rc5.md`
+This fix commit is now tagged `v2.0.0-rc6`; see `docs/release-candidate-rc6.md`
 for the image, window, and desktop evidence. The RC4 window does not transfer.
 Publication still requires the scoped re-review of the fix diff to pass and the
-RC5 window to complete.
+RC6 window to complete.
