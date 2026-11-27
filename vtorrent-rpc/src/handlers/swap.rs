@@ -1201,6 +1201,30 @@ async fn refund_with_broadcast(
 
     let txid = match leg {
         SwapLeg::Vtr => {
+            // A taker claim can be pending in the mempool or already confirmed.
+            // Refunding over it can strand the taker's BTC.
+            if swap.vtr_observation.as_ref().is_some_and(|observation| {
+                observation.state == vtorrent_node::atomic_swap::VtrSettlementState::Claimed
+            }) {
+                return Err(RpcError::BadRequest(
+                    "VTR HTLC was already claimed; refusing to refund".into(),
+                ));
+            }
+            if let Some(funding) = swap.vtr_funding_txid {
+                let mempool = state.mempool.lock().await;
+                let transactions = mempool.get_transactions();
+                let claimed = crate::swap_reconciliation::any_pending_claim(
+                    transactions.iter(),
+                    &funding,
+                    &swap.hash_lock,
+                );
+                drop(mempool);
+                if claimed {
+                    return Err(RpcError::BadRequest(
+                        "A VTR claim is pending; refusing to refund".into(),
+                    ));
+                }
+            }
             if swap.vtr_claim_txid.is_some() {
                 return Err(RpcError::BadRequest("VTR claim already submitted".into()));
             }
@@ -1238,29 +1262,6 @@ async fn refund_with_broadcast(
                     "VTR order and swap funding disagree".into(),
                 ));
             }
-            // A taker claim can be pending in the mempool or already confirmed.
-            // Refunding over it burns the HTLC and can strand the taker's BTC.
-            if swap.vtr_observation.as_ref().is_some_and(|observation| {
-                observation.state == vtorrent_node::atomic_swap::VtrSettlementState::Claimed
-            }) {
-                return Err(RpcError::BadRequest(
-                    "VTR HTLC was already claimed; refusing to refund".into(),
-                ));
-            }
-            {
-                let mempool = state.mempool.lock().await;
-                let claimed = mempool.get_transactions().iter().any(|tx| {
-                    tx.inputs
-                        .iter()
-                        .any(|input| input.prev_txid == funding_txid && input.prev_vout == 0)
-                });
-                drop(mempool);
-                if claimed {
-                    return Err(RpcError::BadRequest(
-                        "A VTR claim is pending; refusing to refund".into(),
-                    ));
-                }
-            }
             let taker = order
                 .taker_address
                 .as_deref()
@@ -1283,7 +1284,7 @@ async fn refund_with_broadcast(
             swap.vtr_refund_tx = Some(refund.clone());
             swap.refresh_status();
             crate::swap_recovery::persist(state, &order, Some(swap)).await?;
-            crate::swap_recovery::submit_vtr(state, &refund).await?;
+            crate::swap_recovery::submit_vtr_required(state, &refund).await?;
             hex::encode(txid)
         }
         SwapLeg::Btc => {

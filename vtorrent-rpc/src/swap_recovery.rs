@@ -528,6 +528,36 @@ pub async fn submit_vtr(
     Ok(admitted)
 }
 
+/// Submit a refund-like VTR transaction that must be admissible locally
+/// before it is relayed. A conflict is returned to the caller instead of
+/// broadcasting a transaction that can strand the other leg.
+pub async fn submit_vtr_required(
+    state: &AppState,
+    transaction: &vtorrent_node::block::Transaction,
+) -> RpcResult<()> {
+    let chain = state.chain.lock().await;
+    let txid = transaction.txid();
+    if chain.get_transaction_owned(&txid).is_some() {
+        return Ok(());
+    }
+    let mut mempool = state.mempool.lock().await;
+    if mempool.get_transaction(&txid).is_none() {
+        mempool
+            .admit_with_chain_fee(&chain, transaction.clone())
+            .map_err(|error| {
+                RpcError::BadRequest(format!("VTR refund is not admissible: {error}"))
+            })?;
+    }
+    drop(mempool);
+    drop(chain);
+    if let Some(sender) = &state.tx_submit {
+        // The transaction is admitted locally, so a failed relay is
+        // recoverable by retrying the identical request.
+        let _ = sender.try_send(transaction.clone());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
