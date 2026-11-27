@@ -1284,7 +1284,15 @@ async fn refund_with_broadcast(
             swap.vtr_refund_tx = Some(refund.clone());
             swap.refresh_status();
             crate::swap_recovery::persist(state, &order, Some(swap)).await?;
-            crate::swap_recovery::submit_vtr_required(state, &refund).await?;
+            if let Err(error) = crate::swap_recovery::submit_vtr_required(state, &refund).await {
+                // A refund that could not be admitted must not stay recorded:
+                // it would block the BTC claim on this swap.
+                swap.vtr_refund_txid = None;
+                swap.vtr_refund_tx = None;
+                swap.refresh_status();
+                let _ = crate::swap_recovery::persist(state, &order, Some(swap)).await;
+                return Err(error);
+            }
             hex::encode(txid)
         }
         SwapLeg::Btc => {
