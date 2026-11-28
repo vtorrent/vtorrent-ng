@@ -557,7 +557,7 @@ function ColdStakePanel() {
                 <div data-testid="cold-stake-spending-file" className="font-mono text-red-300 break-all">{keys.spendingKeyFile}</div>
               </div>
               <p className="text-red-400">
-                The spending key is encrypted in this file and is not stored by the node. Copy it offline now.
+                The spending key is encrypted in this file and is not stored by the node. Use your file manager to copy the file itself to offline storage; the button copies only its path.
               </p>
               <label className="flex items-start gap-2 text-gray-400">
                 <input

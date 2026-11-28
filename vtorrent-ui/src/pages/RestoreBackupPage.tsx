@@ -1,22 +1,17 @@
 import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, ShieldCheck } from 'lucide-react'
-import { useWallet } from '../hooks/useWallet'
-import { useNetwork, parseSeeds } from '../hooks/useNetwork'
+import { useNetwork } from '../hooks/useNetwork'
 import NetworkPicker from '../components/NetworkPicker'
-import RestoreBackupForm, { type RestoreResult } from '../components/RestoreBackupForm'
+import RestoreBackupForm from '../components/RestoreBackupForm'
 
 export default function RestoreBackupPage() {
   const navigate = useNavigate()
-  const { unlock } = useWallet()
   const { network, setNetwork, seeds, setSeeds } = useNetwork()
 
-  const handleRestored = async ({ passphrase, otpCode }: RestoreResult) => {
-    try {
-      await unlock(passphrase, otpCode, { network, seeds: parseSeeds(seeds) })
-      navigate('/dashboard')
-    } catch {
-      navigate('/')
-    }
+  // The restore consumed the TOTP step. Do not reuse that code to unlock;
+  // return to the welcome screen and let the user enter a fresh one.
+  const handleRestored = () => {
+    navigate('/')
   }
 
   return (
