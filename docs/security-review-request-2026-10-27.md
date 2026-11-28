@@ -10,7 +10,7 @@ already accepted so it is not re-litigated.
 
 ## Review target
 
-Review `fc7747ba01730d8e2bd8d64eb514658382f1fd43` (`v2.0.0-rc10`), not `main`. See `docs/release-candidate-rc10.md` for the exact image, binary, soak and desktop evidence. Check `git diff --name-only be78829..v2.0.0-rc10`: only `.github/workflows/build.yml` and `vtorrent-tauri/tauri.conf.json` changed. Earlier pass-15 evidence applies only where explicitly identified. The deferred BTC repair on `main` is outside the candidate.
+Review `704d8ca20d8a742606d7a5898ae04e23e2cb2cb5` (`v2.0.0-rc11`), not `main`. See `docs/release-candidate-rc11.md` for the exact image, binary, soak and desktop evidence. Check `git diff --name-only be78829..v2.0.0-rc11`: only `.github/workflows/build.yml` and `vtorrent-tauri/tauri.conf.json` changed. Earlier pass-15 evidence applies only where explicitly identified. The deferred BTC repair on `main` is outside the candidate.
 
 The deltas added after `dd98176` are the reason this request was refreshed; the
 original 2026-10-27 scope predates them.
@@ -196,7 +196,7 @@ Docs-only commits in the delta are evidence, not implementation changes. The
 ```bash
 git clone https://github.com/vtorrent/vtorrent-ng
 cd vtorrent-ng
-git checkout --detach fc7747ba01730d8e2bd8d64eb514658382f1fd43
+git checkout --detach 704d8ca20d8a742606d7a5898ae04e23e2cb2cb5
 git rev-parse HEAD
 bash docs/security-review-2026-10-26/verify-fixes.sh
 cp release/Cargo.lock Cargo.lock

@@ -5,7 +5,7 @@ consensus-batch decision, the coordinated upgrade, verification, and rollback.
 Companion to `docs/mainnet-readiness.md` (checklist) and
 `docs/oncall-runbook.md` (ongoing ops).
 
-> **Release candidate:** `fc7747ba01730d8e2bd8d64eb514658382f1fd43` (`v2.0.0-rc10`). Use `docs/release-candidate-rc10.md` for image identity, window and outstanding gates. The deferred repair on `main` is excluded.
+> **Release candidate:** `704d8ca20d8a742606d7a5898ae04e23e2cb2cb5` (`v2.0.0-rc11`). Use `docs/release-candidate-rc11.md` for image identity, window and outstanding gates. The deferred repair on `main` is excluded.
 
 ## 1. Launch parameters (verify before launch)
 
@@ -24,7 +24,7 @@ Companion to `docs/mainnet-readiness.md` (checklist) and
 | Min stake | 1 VTR | `consensus.rs:43` |
 | Max supply | 20,000,000 VTR | `consensus.rs:46` |
 | DNS seeds | seed1/2/3.vtorrent.org + `bootstrap/peers.txt` | `docs/dns-seeds.md` |
-| Review candidate source | RC10 (`fc7747b`) | `docs/release-candidate-rc10.md` |
+| Review candidate source | RC11 (`704d8ca`) | `docs/release-candidate-rc11.md` |
 | Post-review mainnet fixes | `1901bb9`, `513efde`, `c465d1b` (BTC SPV peer agreement and failover; five-peer headroom and in-cycle retry); `7ec3b2f` (BTC SPV health metrics and stale-scan alert); `2c381fa` (persistent compact-filter peer cache); `aeb103a` (four fresh-review BTC findings); `8639a7f` (restart lineage); `c3b3847` (hide restored outputs); `287a505` (stuck-scan alert); `c3a79fa` (partial-scan/restart lock); `5f4c788` (canonical txid); `8ba6331` (whole-project remediation); `9a22bcd` (release lockfile); `c292fc4` (taker-side external VTR claim RPC); `dd98176` (four-peer target and 256 MiB steady RSS policy) | `docs/btc-spv-soak-plan.md` |
 
 **Genesis is deterministic** and embeds the legacy snapshot (59,375 addresses,
@@ -35,10 +35,10 @@ at launch.
 
 ## 2. Pre-launch gate (all must be green)
 
-1. **Frontier AI review** complete for the exact shipping SHA. Record the scope, evidence, verdict, and disposition of findings. Any unresolved Critical or High finding keeps the release in draft. The RC10 review returned a hold; see `docs/2026-11-26_ai-security-review-rc10.md`. Independent human review was waived, not passed.
+1. **Frontier AI review** complete for the exact shipping SHA. Record the scope, evidence, verdict, and disposition of findings. Any unresolved Critical or High finding keeps the release in draft. The security review returned a hold on RC4; the fixes through RC10 addressed it. See `docs/2026-11-26_ai-security-review-4ce7d31.md`. Independent human review was waived, not passed.
 2. **Review candidate selected** (§3): the current build includes the
-   consensus batch; launch only the reviewed RC10 commit and exact image.
-3. **Fresh 7-day soak green** on `review-rc10`; see `docs/release-candidate-rc10.md`.
+   consensus batch; launch only the reviewed RC11 commit and exact image.
+3. **Fresh 7-day soak green** on `review-rc11`; see `docs/release-candidate-rc11.md`.
 4. **`mainnet-readiness.md`** §1–§4 all `[x]` (except items explicitly deferred).
 
 ## 3. Consensus-batch decision
@@ -47,14 +47,14 @@ The current build includes the consensus batch's **OP_RETURN UTXO exclusion**
 and **cold staking (P2CS)**, plus the governance and proof-service repairs.
 Governance and state rent are **later deployments** and are not active in this
 launch (`docs/consensus-batch-activation-plan.md` §7). The core soak fleet runs
-`vtorrent/node:batch-e7691fb` with BTC SPV disabled. The launch candidate is the RC10 build `fc7747b` (see the current-candidate note),
+`vtorrent/node:batch-e7691fb` with BTC SPV disabled. The launch candidate is the RC11 build `704d8ca` (see the current-candidate note),
 which includes the consensus batch and the pass-12 through pass-15 remediation: structural
 stake reserve, live-journal removal guard, canonical torrent block geometry,
 payout binding, legacy-import BTC state/default-key binding, seeder/watchdog
 hardening, the deterministic two-peer regression, attested BTC-state repair,
 and the force-remove recovery surface. It supersedes
-`70ea7b9` and `e091936`; rebuild the release image from `fc7747b` and compare
-the daemon digest with `docs/release-candidate-rc10.md`. The
+`70ea7b9` and `e091936`; rebuild the release image from `704d8ca` and compare
+the daemon digest with `docs/release-candidate-rc11.md`. The
 independent review must verify the pass-12 through pass-15 deltas, not only the
 historical baseline. Do not launch on beta.3; it predates the governance and
 proof-service repairs.
@@ -134,7 +134,7 @@ bound is covered by an 870,000-header test.
 - All seeds report the **same genesis hash** and advance together.
 - The independent genesis verifier passes
   (`python3 scripts/verify-genesis.py`).
-- The deployed commit, image ID and binary digest match `docs/release-candidate-rc10.md`.
+- The deployed commit, image ID and binary digest match `docs/release-candidate-rc11.md`.
 - Block cadence ~60 s; no sustained divergence.
 - A legacy claim succeeds end-to-end (rehearsed on regtest).
 - RPC reachable, auth enforced, rate limiting active.
