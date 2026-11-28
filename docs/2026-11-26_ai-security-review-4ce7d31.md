@@ -175,7 +175,7 @@ The blocking fixes are implemented in `b4c5c60218db5992098b9306bfa62be49c60a410`
 | Finding | Change |
 |---|---|
 | C1 | Peer strings truncate on character boundaries; a drop guard releases the inbound slot on every peer-task exit, including a panic. |
-| C2 | Production blocks must be dated at or after `LAUNCH_TIME - MAX_PAST_DRIFT`. `LAUNCH_TIME` is `1_795_651_200` (2026-11-26T00:00:00Z), set no later than launch; regtest and test fixtures bypass the floor through `allow_pow`. |
+| C2 | Production blocks must be dated at or after `LAUNCH_TIME - MAX_PAST_DRIFT`. `LAUNCH_TIME` is `1_796_515_200` (2026-12-06T00:00:00Z), set no later than launch; regtest and test fixtures bypass the floor through `allow_pow`. |
 | H1 | The BTC observer identifies a claim by the hash-lock match alone. The VTR parser searches for the 32-byte preimage push instead of requiring `0x51`. |
 | H2 | `send_to` uses `try_send`; a stalled peer no longer blocks the node event loop. |
 | H3 | The VTR claim retry records the conflict when local admission fails. |
@@ -227,7 +227,7 @@ checks. Accepted residuals:
 
 A second full pass reviewed torrent, SPV/swaps, desktop/imports, and consensus at RC9. Fixed before RC14:
 
-- Pre-launch chain mining: `LAUNCH_TIME` moved to 2026-12-05T00:00:00Z and the height-1 block must meet it exactly.
+- Pre-launch chain mining: `LAUNCH_TIME` moved to 2026-12-06T00:00:00Z and the height-1 block must meet it exactly.
 - Peer send timeouts at every send site.
 - VTR refund refused after the BTC leg is claimed; stale refund records cleared before `btc_claim`; PUSHDATA preimages recognized.
 - Torrent path traversal, duplicate, and file/directory collisions rejected.
