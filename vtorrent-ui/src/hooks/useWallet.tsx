@@ -79,7 +79,7 @@ interface WalletContextType extends WalletState {
   importLegacyWallet: (walletDatBase64: string, legacyPassphrase: string | undefined, newPassphrase: string) => Promise<ImportResult>
   enable2FA: (passphrase: string) => Promise<{ uri: string; secret: string }>
   verify2FA: (code: string, passphrase: string) => Promise<boolean>
-  disable2FA: (otpCode: string) => Promise<void>
+  disable2FA: (otpCode: string, passphrase: string) => Promise<void>
   generateAddress: (label?: string) => Promise<string>
   quoteVtr: (toAddress: string, amountSatoshis: number) => Promise<VtrQuote>
   sendVtr: (
@@ -442,8 +442,8 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     return valid
   }, [])
 
-  const disable2FA = useCallback(async (otpCode: string) => {
-    await invoke('disable_2fa', { code: otpCode })
+  const disable2FA = useCallback(async (otpCode: string, passphrase: string) => {
+    await invoke('disable_2fa', { code: otpCode, passphrase })
     setState(prev => ({ ...prev, has2FA: false }))
   }, [])
 

@@ -14,6 +14,7 @@ export default function SecurityCenterPage() {
   const [totpSecret, setTotpSecret] = useState('')
   const [verifyCode, setVerifyCode] = useState('')
   const [disableCode, setDisableCode] = useState('')
+  const [disablePassphrase, setDisablePassphrase] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
@@ -78,9 +79,10 @@ export default function SecurityCenterPage() {
     setLoading(true)
     setError('')
     try {
-      await disable2FA(disableCode)
+      await disable2FA(disableCode, disablePassphrase)
       setShowDisable(false)
       setDisableCode('')
+      setDisablePassphrase('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to disable 2FA')
     } finally {
@@ -268,7 +270,15 @@ export default function SecurityCenterPage() {
             ) : (
               <form onSubmit={handleDisable2FA} className="space-y-3 border border-red-800/30 rounded-lg p-4 bg-red-900/10">
                 <p className="text-red-300 text-sm font-medium">Confirm disable 2FA</p>
-                <p className="text-gray-500 text-xs">Enter your current authenticator code to confirm.</p>
+                <p className="text-gray-500 text-xs">Enter your wallet passphrase and current authenticator code to confirm.</p>
+                <input
+                  type="password"
+                  className="input-field"
+                  placeholder="Wallet passphrase"
+                  value={disablePassphrase}
+                  onChange={e => setDisablePassphrase(e.target.value)}
+                  autoFocus
+                />
                 <input
                   type="text"
                   className="input-field font-mono tracking-widest text-center"
@@ -276,14 +286,13 @@ export default function SecurityCenterPage() {
                   maxLength={6}
                   value={disableCode}
                   onChange={e => setDisableCode(e.target.value.replace(/\D/g, ''))}
-                  autoFocus
                 />
                 {error && <p className="text-red-400 text-sm">{error}</p>}
                 <div className="flex gap-3">
                   <button type="button" onClick={() => setShowDisable(false)} className="btn-secondary flex-1">
                     Cancel
                   </button>
-                  <button type="submit" disabled={loading || disableCode.length !== 6} className="btn-danger flex-1">
+                  <button type="submit" disabled={loading || disableCode.length !== 6 || !disablePassphrase} className="btn-danger flex-1">
                     {loading ? 'Disabling...' : 'Disable 2FA'}
                   </button>
                 </div>

@@ -689,9 +689,15 @@ pub fn verify_2fa(state: State<AppState>, code: String, passphrase: String) -> R
 }
 
 #[tauri::command]
-pub fn disable_2fa(state: State<AppState>, code: String) -> Result<()> {
+pub fn disable_2fa(state: State<AppState>, code: String, passphrase: String) -> Result<()> {
+    let passphrase = zeroize::Zeroizing::new(passphrase);
     let mut guard = state.wallet.lock().unwrap();
     let wallet = guard.as_mut().ok_or(TauriError::WalletNotInitialized)?;
+    if !wallet.verify_passphrase(&passphrase) {
+        return Err(TauriError::Unauthorized(
+            "Incorrect wallet passphrase".into(),
+        ));
+    }
 
     let path = state
         .wallet_path
@@ -2385,7 +2391,12 @@ mod tests {
             "enrollment code must not be accepted twice"
         );
         assert!(
-            disable_2fa(state.clone(), code.clone()).is_err(),
+            disable_2fa(state.clone(), code.clone(), "wrong".into()).is_err(),
+            "a wrong passphrase must not disable 2FA"
+        );
+        assert!(state.wallet.lock().unwrap().as_ref().unwrap().has_2fa());
+        assert!(
+            disable_2fa(state.clone(), code.clone(), "password".into()).is_err(),
             "enrollment code must not disable 2FA"
         );
         assert!(
