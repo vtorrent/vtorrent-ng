@@ -18,7 +18,7 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-Review `b4c5c60218db5992098b9306bfa62be49c60a410` (`v2.0.0-rc14`), not `main`. See `docs/release-candidate-rc14.md` for the exact image, binary, soak and desktop evidence. Since `be78829` the candidate gained the RC5-RC14 fixes; the non-doc delta is 23 files covering consensus (launch-time floor), P2P (bounded sends, inbound slot guard, safe truncation), swap refund gates and stale-refund clear, PUSHDATA preimage parsing, torrent path validation, wallet-only backups, and desktop 2FA/restore/version fixes. Review `git diff be78829..v2.0.0-rc14 -- . ':(exclude)docs/**'` and the RC14 record. The exact daemon image is byte-identical to the soaked RC10 daemon.
+Review `b4c5c60218db5992098b9306bfa62be49c60a410` (`v2.0.0-rc14`), not `main`. See `docs/release-candidate-rc14.md` for the exact image, binary, soak and desktop evidence. Since `be78829` the candidate gained the RC5-RC14 fixes; the non-doc delta is 30 files covering consensus (launch-time floor), P2P (bounded sends, inbound slot guard, safe truncation), swap refund gates and stale-refund clear, PUSHDATA preimage parsing, torrent path validation, wallet-only backups, and desktop 2FA/restore/version fixes. Review `git diff be78829..v2.0.0-rc14 -- . ':(exclude)docs/**'` and the RC14 record. The exact daemon image is byte-identical to the soaked RC10 daemon.
 
 **Scope:** `docs/security-review-request-2026-10-27.md` on the documentation branch (`main`).
 
