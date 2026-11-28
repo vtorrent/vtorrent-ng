@@ -91,8 +91,9 @@ export default function RestoreBackupForm({ onRestored }: RestoreBackupFormProps
           Restore from backup
         </h2>
         <p className="text-gray-400 text-sm mt-1">
-          Restore the encrypted wallet and its recovery state. The backup is verified
-          before anything is replaced.
+          Restore the encrypted wallet. BTC, swap, and cold-stake recovery data are
+          not in the backup and are left untouched. The backup is verified before
+          anything is replaced.
         </p>
       </div>
 
@@ -185,7 +186,8 @@ export default function RestoreBackupForm({ onRestored }: RestoreBackupFormProps
           onChange={event => setConfirmOverwrite(event.target.checked)}
           disabled={!preview || busy}
         />
-        I understand this replaces the current wallet and recovery state. A rollback copy
+        I understand this replaces the current wallet file. BTC, swap, and cold-stake
+        files are left untouched. A rollback copy
         of the current wallet is kept in the backups folder.
       </label>
 

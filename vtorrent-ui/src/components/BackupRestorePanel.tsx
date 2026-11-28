@@ -47,8 +47,9 @@ export default function BackupRestorePanel() {
             Create encrypted backup
           </h2>
           <p className="text-gray-400 text-sm mt-1">
-            Includes the encrypted wallet, cold-stake registry, swap recovery records,
-            and wallet-scoped BTC state. Keep the backup off this device.
+            Includes the encrypted wallet only. BTC state, swap recovery records,
+            cold-stake registries and keys, and activity history are not included;
+            preserve those files separately. Keep the backup off this device.
           </p>
           <p className="text-xs text-amber-300/90 mt-2">
             2FA protects app unlock, not the backup. The backup is encrypted with the
