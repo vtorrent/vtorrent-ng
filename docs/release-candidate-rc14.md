@@ -29,6 +29,6 @@ RC14 closes the third review pass blockers:
 - Workspace suite: **1,555 passed, 0 failed**; Clippy with `-D warnings` clean after the unused-import fix.
 - Fleet: three nodes on the recorded image, matching tip at height 2, two staking, three Prometheus targets, zero restarts.
 - Evidence directory: `/mnt/temp/vtorrent-ng-evidence/soak-rc14/`.
-- Desktop: the RC14 tag CI run builds all four platforms; verify the draft before publication.
+- Desktop: [RC14 run 46092519345](https://github.com/vtorrent/vtorrent-ng/actions/runs/46092519345) passed on all four platforms. Draft release 461263039 contains both DMGs, the NSIS installer, the deb, the AppImage, and `Cargo.lock`; all six files matched their recorded SHA-256 digests, the lockfile matched the tagged source, both DMGs and the NSIS fields report 2.0.0, the deb reports 2.0.0, and the AppImage executable shares the deb executable's ELF build ID.
 
 RC12 and earlier candidates are retired. Independent human review remains waived for 2.0.0, per the [policy](release-candidate-rc4.md#review-policy-for-200). The final `v2.0.0` tag must resolve to `b4c5c60218db5992098b9306bfa62be49c60a410`, contain all five installers plus `Cargo.lock`, report 2.0.0 in every installer, and pass the checksum ancestry check.
