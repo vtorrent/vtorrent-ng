@@ -907,7 +907,10 @@ impl BtcSync {
         // BIP-158 basic filter type is 0x00.
         const FILTER_TYPE_BASIC: u8 = 0x00;
 
-        let mut queued_filters = std::collections::VecDeque::new();
+        let mut queued_filters: std::collections::VecDeque<bitcoin::p2p::message_filter::CFilter> =
+            std::collections::VecDeque::new();
+        let mut queued_filter_bytes = 0usize;
+        const MAX_QUEUED_FILTER_BYTES: usize = 64 * 1024 * 1024;
         for (chunk_index, chunk) in hashes.chunks(CFILTERS_RANGE_LIMIT).enumerate() {
             let chunk_start = start_height + (chunk_index * CFILTERS_RANGE_LIMIT) as u32;
             let stop_hash = bitcoin::BlockHash::from_byte_array(*chunk.last().unwrap());
@@ -926,6 +929,8 @@ impl BtcSync {
                 let deadline = Instant::now() + RESPONSE_TIMEOUT;
                 let filter = loop {
                     if let Some(filter) = queued_filters.pop_front() {
+                        queued_filter_bytes =
+                            queued_filter_bytes.saturating_sub(filter.filter.len());
                         break filter;
                     }
                     match timeout_at(deadline, peer.recv()).await {
@@ -986,6 +991,13 @@ impl BtcSync {
                         {
                             NetworkMessage::Block(b) => break b,
                             NetworkMessage::CFilter(filter) => {
+                                queued_filter_bytes =
+                                    queued_filter_bytes.saturating_add(filter.filter.len());
+                                if queued_filter_bytes > MAX_QUEUED_FILTER_BYTES {
+                                    return Err(BtcError::Sync(
+                                        "Queued compact filters exceed the memory cap".into(),
+                                    ));
+                                }
                                 if queued_filters.len() >= CFILTERS_RANGE_LIMIT {
                                     return Err(BtcError::Sync(
                                         "Too many queued compact filters".into(),
