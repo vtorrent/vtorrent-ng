@@ -12,7 +12,7 @@ const backend = vi.hoisted(() => ({
 }))
 
 const node: NodeInfo = {
-  version: '2.0.0-beta.3',
+  version: '2.0.0',
   network: 'vtorrent-regtest',
   blockHeight: 42,
   bestBlockHash: '00',
@@ -24,7 +24,7 @@ const node: NodeInfo = {
 }
 
 const appInfo: AppInfo = {
-  version: '2.0.0-beta.3',
+  version: '2.0.0',
   network: 'vtorrent-regtest',
   appDataDir: '/home/user/.local/share/io.vtorrent.client',
   nodeDataDir: '/home/user/.vtorrent/testnet',

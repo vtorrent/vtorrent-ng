@@ -6,7 +6,7 @@ import ReadinessCard from './ReadinessCard'
 import type { NodeInfo, StakingStatus } from '../../hooks/useNode'
 
 const node: NodeInfo = {
-  version: '2.0.0-beta.3',
+  version: '2.0.0',
   network: 'vtorrent-regtest',
   blockHeight: 100,
   bestBlockHash: '00',
