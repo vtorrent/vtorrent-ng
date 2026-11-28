@@ -46,7 +46,7 @@ pub const MIN_BLOCK_SPACING: u32 = TARGET_BLOCK_TIME as u32 - MAX_FUTURE_BLOCK_D
 /// Unit tests in this crate use a past value so fixed-timestamp fixtures can
 /// exercise the other production rules; the shipped library uses the real one.
 #[cfg(not(test))]
-pub const LAUNCH_TIME: u32 = 1_796_428_800; // 2026-12-05T00:00:00Z
+pub const LAUNCH_TIME: u32 = 1_796_515_200; // 2026-12-06T00:00:00Z
 #[cfg(test)]
 pub const LAUNCH_TIME: u32 = 1_700_000_000;
 

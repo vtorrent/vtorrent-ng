@@ -597,6 +597,11 @@ pub struct SwapState {
     pub vtr_claim_txid: Option<[u8; 32]>,
     pub btc_claim_txid: Option<[u8; 32]>,
     pub vtr_refund_txid: Option<[u8; 32]>,
+    /// A refund or replacement was admitted and relayed at least once. Such a
+    /// refund may still confirm from a peer's mempool, so it must never be
+    /// cleared automatically.
+    #[serde(default)]
+    pub vtr_refund_broadcast: bool,
     pub btc_refund_txid: Option<[u8; 32]>,
     pub btc_refund_raw: Option<Vec<u8>>,
     pub btc_funding_raw: Option<Vec<u8>>,
@@ -645,6 +650,7 @@ impl SwapState {
             vtr_claim_txid: None,
             btc_claim_txid: None,
             vtr_refund_txid: None,
+            vtr_refund_broadcast: false,
             btc_refund_txid: None,
             btc_refund_raw: None,
             btc_funding_raw: None,

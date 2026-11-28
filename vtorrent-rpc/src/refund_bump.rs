@@ -291,6 +291,7 @@ pub async fn bump_with_wif(
         .map_err(RpcError::BadRequest)?;
         preflight(state, swap, &tx, req.total_fee_satoshis).await?;
         let mut updated = swap.clone();
+        updated.vtr_refund_broadcast = true;
         updated.vtr_refund_replacements.push(VtrRefundReplacement {
             replaces_txid: parent,
             total_fee_satoshis: req.total_fee_satoshis,

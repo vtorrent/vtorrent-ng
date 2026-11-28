@@ -1006,8 +1006,13 @@ async fn claim_btc_with_verification(
                     "VTR refund already submitted; refusing to reveal the swap secret".into(),
                 ));
             }
-            // The recorded refund never reached the chain or the mempool, so it
-            // cannot confirm. Clear the latch instead of blocking the BTC claim.
+            if swap.vtr_refund_broadcast || !swap.vtr_refund_replacements.is_empty() {
+                return Err(RpcError::BadRequest(
+                    "VTR refund may still confirm; refusing to reveal the swap secret".into(),
+                ));
+            }
+            // The recorded refund was never relayed and has no replacements, so
+            // it cannot confirm. Clear the latch instead of blocking the claim.
             swap.vtr_refund_txid = None;
             swap.vtr_refund_tx = None;
             swap.refresh_status();
@@ -1303,6 +1308,9 @@ async fn refund_with_broadcast(
             crate::swap_recovery::validate_vtr(state, &refund).await?;
             swap.vtr_refund_txid = Some(txid);
             swap.vtr_refund_tx = Some(refund.clone());
+            // Treat the refund as relayed before submission: a crash between
+            // the two must leave the safe latch rather than a clearable record.
+            swap.vtr_refund_broadcast = true;
             swap.refresh_status();
             crate::swap_recovery::persist(state, &order, Some(swap)).await?;
             if let Err(error) = crate::swap_recovery::submit_vtr_required(state, &refund).await {
@@ -1310,6 +1318,7 @@ async fn refund_with_broadcast(
                 // it would block the BTC claim on this swap.
                 swap.vtr_refund_txid = None;
                 swap.vtr_refund_tx = None;
+                swap.vtr_refund_broadcast = false;
                 swap.refresh_status();
                 let _ =
                     crate::swap_recovery::persist_failed_refund_clear(state, &order, swap).await;

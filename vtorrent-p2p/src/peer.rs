@@ -103,7 +103,7 @@ async fn send_bounded(
 }
 
 pub async fn run_peer(stream: TcpStream, addr: SocketAddr, config: PeerTaskConfig) {
-    use futures::{SinkExt, StreamExt};
+    use futures::StreamExt;
 
     let mut framed = Framed::new(stream, VtrCodec::new(config.network_magic));
     let mut cmd_rx = config.cmd_rx;
@@ -127,8 +127,14 @@ pub async fn run_peer(stream: TcpStream, addr: SocketAddr, config: PeerTaskConfi
         }
     };
 
-    if let Err(e) = framed.send(NetMessage::new("version", payload)).await {
-        tracing::warn!("Failed to send version to {}: {}", addr, e);
+    if !send_bounded(
+        &mut framed,
+        NetMessage::new("version", payload),
+        std::time::Duration::from_secs(10),
+    )
+    .await
+    {
+        tracing::warn!("Timed out or failed sending version to {}", addr);
         return;
     }
 
@@ -275,8 +281,14 @@ pub async fn run_peer(stream: TcpStream, addr: SocketAddr, config: PeerTaskConfi
                 let Some(cmd) = cmd else { break };
                 match cmd {
                     PeerCommand::Send(msg) => {
-                        if let Err(e) = framed.send(msg).await {
-                            tracing::warn!("Failed to send to {}: {}", addr, e);
+                        if !send_bounded(
+                            &mut framed,
+                            msg,
+                            std::time::Duration::from_secs(10),
+                        )
+                        .await
+                        {
+                            tracing::warn!("Timed out or failed sending to {}", addr);
                             break;
                         }
                     }
