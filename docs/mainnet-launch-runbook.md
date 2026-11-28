@@ -38,7 +38,7 @@ at launch.
 1. **Frontier AI review** complete for the exact shipping SHA. Record the scope, evidence, verdict, and disposition of findings. Any unresolved Critical or High finding keeps the release in draft. The security review returned a hold on RC4; the fixes through RC10 addressed it. See `docs/2026-11-26_ai-security-review-4ce7d31.md`. Independent human review was waived, not passed.
 2. **Review candidate selected** (§3): the current build includes the
    consensus batch; launch only the reviewed RC11 commit and exact image.
-3. **Fresh 7-day soak green** on `review-rc11`; see `docs/release-candidate-rc11.md`.
+3. **Fresh 7-day soak green** on `review-rc10` (RC11 daemon is byte-identical); see `docs/release-candidate-rc11.md`.
 4. **`mainnet-readiness.md`** §1–§4 all `[x]` (except items explicitly deferred).
 
 ## 3. Consensus-batch decision
