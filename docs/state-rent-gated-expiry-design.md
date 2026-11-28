@@ -15,14 +15,15 @@ height.
 
 Expiry, not demurrage.
 
-- Each UTXO gains an `expiry_height: Option<u32>`. `None` means "never expires";
-  this is the value for every output created before activation.
+- Expiry is **computed**, not stored: `expiry = creation_height + lifetime` when
+  the governance parameter is non-zero. No UTXO field and no commitment change,
+  so existing roots are untouched and nothing is lost before activation.
 - A governance parameter `StateRentExpiryBlocks` sets the lifetime, bounded to
   525,600 to 21,024,000 blocks (roughly one to forty years at 60 s blocks).
-- At activation, outputs created after the activation height receive
-  `expiry_height = creation_height + lifetime`. Existing outputs stay `None`
-  forever, so no pre-existing balance can expire. This is the reversible part of
-  the design and the reason it can ship gated.
+- Because expiry is derived from a live parameter, setting the parameter to zero
+  disables every expiry at once, including one created by a later proposal.
+  That is the off switch; a proposal cannot shorten a lifetime, only lengthen it
+  or disable expiry.
 - A UTXO is unspendable once `height >= expiry_height`. A spend of an expired
   output is rejected by the same path that rejects spent outputs, so no new
   validation branch is needed for correctness.
