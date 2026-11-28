@@ -257,7 +257,7 @@ export default function WelcomePage() {
 
           {/* Feature highlights */}
           <div className="absolute bottom-5 left-6 text-xs text-gray-600 font-mono select-none">
-            v2.0.0-beta.3
+            v2.0.0
           </div>
           <div className="absolute bottom-5 left-1/2 -translate-x-1/2 grid grid-cols-3 gap-2 text-center">
             {[

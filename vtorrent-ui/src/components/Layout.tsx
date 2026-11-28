@@ -76,7 +76,7 @@ export default function Layout() {
             <AppIcon size={32} />
             <div className="hidden lg:block">
               <p className="text-white font-semibold text-sm leading-none">vTorrent</p>
-              <p className="text-vtorrent-500 text-xs mt-0.5">v2.0.0-beta.3</p>
+              <p className="text-vtorrent-500 text-xs mt-0.5">v2.0.0</p>
             </div>
           </div>
         </div>
