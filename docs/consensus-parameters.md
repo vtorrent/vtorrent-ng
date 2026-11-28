@@ -93,7 +93,7 @@ receive directly.
 
 Production blocks must be dated at or after `LAUNCH_TIME - MAX_PAST_DRIFT`:
 
-- `LAUNCH_TIME = 1_796_428_800` (2026-12-05T00:00:00Z)
+- `LAUNCH_TIME = 1_796_515_200` (2026-12-06T00:00:00Z)
 - `MAX_PAST_DRIFT = 7_200` seconds
 
 `LAUNCH_TIME` must never be later than the actual launch. Rebuilding with a later value after blocks exist is a consensus change. Test and regtest fixtures bypass the floor through `allow_pow`. This rule exists because genesis is years older than launch; without it, the bootstrap claimer can walk chain time forward in six-day steps and mint the early reward stream in seconds. See `docs/2026-11-26_ai-security-review-4ce7d31.md`.

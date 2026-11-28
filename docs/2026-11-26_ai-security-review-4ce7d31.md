@@ -169,7 +169,7 @@ mined, which relay policy discourages but consensus allows.
 
 ## Remediation preview
 
-The blocking fixes are implemented in `1df8e5d44102ee008591afa1fd5dd5e02a3e70d3` on
+The blocking fixes are implemented in `b4c5c60218db5992098b9306bfa62be49c60a410` on
 `fix/rc5-security`, built from RC4.
 
 | Finding | Change |
@@ -188,24 +188,24 @@ daemon SHA-256
 `f0c24865b548ac52236f7fff434b3c9c03241134096fa167b40bb4bf629e3d99`.
 
 The C1, C2, H1, H2, and H3 fixes landed in `v2.0.0-rc5`; the strict refund fix
-for H4 landed in `v2.0.0-rc12`. See `docs/release-candidate-rc12.md` for the image,
+for H4 landed in `v2.0.0-rc14`. See `docs/release-candidate-rc14.md` for the image,
 window, and desktop evidence. The RC4 window does not transfer.
 Publication still requires the scoped re-review of the fix diff to pass and the
-RC12 window to complete.
+RC14 window to complete.
 
 ## H4 closure
 
 The RC6 re-review found one remaining Medium: a refund that failed local
-admission stayed recorded and blocked the maker's `btc_claim`. RC12 clears the
+admission stayed recorded and blocked the maker's `btc_claim`. RC14 clears the
 recorded refund and persists before returning the admission error. The first
 rollback could not persist because the recovery guard refuses to drop a prepared
-transaction; RC12 adds a dedicated path for exactly that `Some -> None` refund
-transition. A scoped re-review of RC12 is pending; its Low findings are accepted
+transaction; RC14 adds a dedicated path for exactly that `Some -> None` refund
+transition. A scoped re-review of RC14 is pending; its Low findings are accepted
 for this release.
 
-## RC12 verdict
+## RC14 verdict
 
-The scoped re-reviews closed C1, C2, H1, H2, H3, and H4. RC12 passes the security
+The scoped re-reviews closed C1, C2, H1, H2, H3, and H4. RC14 passes the security
 scope for 2.0.0, subject to the completed 168-hour window and the final draft
 checks. Accepted residuals:
 
@@ -223,9 +223,9 @@ checks. Accepted residuals:
 - The review is AI-authored and not independent. That waiver is recorded in the
   release policy and must be disclosed in the release notes.
 
-## Second review pass (RC12)
+## Second review pass (RC14)
 
-A second full pass reviewed torrent, SPV/swaps, desktop/imports, and consensus at RC9. Fixed before RC12:
+A second full pass reviewed torrent, SPV/swaps, desktop/imports, and consensus at RC9. Fixed before RC14:
 
 - Pre-launch chain mining: `LAUNCH_TIME` moved to 2026-12-05T00:00:00Z and the height-1 block must meet it exactly.
 - Peer send timeouts at every send site.
@@ -233,4 +233,4 @@ A second full pass reviewed torrent, SPV/swaps, desktop/imports, and consensus a
 - Torrent path traversal, duplicate, and file/directory collisions rejected.
 - Backups made wallet-only so a created backup restores; recovery data documented as separate.
 
-Accepted and documented in the RC12 record: disk-full loop, slow-loris ownership, SPV wallet tip window, 2FA disable passphrase, restore code reuse, missing stop command, staking display state, and unexercised installed-app journeys. The claimed cross-node maker BTC claim gap was disproved by the real-bitcoind two-node test, which completed funding, BTC claim, and VTR claim.
+Accepted and documented in the RC14 record: disk-full loop, slow-loris ownership, SPV wallet tip window, 2FA disable passphrase, restore code reuse, missing stop command, staking display state, and unexercised installed-app journeys. The claimed cross-node maker BTC claim gap was disproved by the real-bitcoind two-node test, which completed funding, BTC claim, and VTR claim.
