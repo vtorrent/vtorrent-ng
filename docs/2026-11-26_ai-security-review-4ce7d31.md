@@ -234,3 +234,15 @@ A second full pass reviewed torrent, SPV/swaps, desktop/imports, and consensus a
 - Backups made wallet-only so a created backup restores; recovery data documented as separate.
 
 Accepted and documented in the RC14 record: disk-full loop, slow-loris ownership, SPV wallet tip window, 2FA disable passphrase, restore code reuse, missing stop command, staking display state, and unexercised installed-app journeys. The claimed cross-node maker BTC claim gap was disproved by the real-bitcoind two-node test, which completed funding, BTC claim, and VTR claim.
+
+## Third review pass (RC14)
+
+Three independent AI reviews ran against RC12: the RC10 fix diff, untouched subsystems (SPV sync, DEX, governance, overlay), and desktop flows. Fixed before RC14:
+
+- Remaining unbounded peer sends on the version and command paths.
+- Refund relay tracking: the latch clears only for a refund that was never relayed and has no replacements.
+- Queued compact filters capped at 64 MiB by bytes.
+- Review package corrected from a 2-file claim to the real 30-file delta.
+- Desktop version and backup documentation corrected.
+
+Accepted with documentation in the RC14 record: BTC filter-header trust without an independent anchor (top SPV risk), 30-minute scan progress loss, peer eclipse stalling, proof-service event-loop blocking, unauthenticated DEX gossip and missing order broadcast, PEX amplification, disk-full re-download loop, slow-loris piece ownership, restore refusing with existing recovery directories, and 2FA downgrade via a pre-2FA backup. No normal-path fund loss was found. The real-bitcoind two-node swap test remains the cross-node claim evidence.
