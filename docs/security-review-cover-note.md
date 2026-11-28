@@ -18,7 +18,7 @@ been done and does **not** count for this gate — we need someone who did not
 write or previously review this code to look at it with fresh eyes.
 
 **Repository:** https://github.com/vtorrent/vtorrent-ng
-Review `1df8e5d44102ee008591afa1fd5dd5e02a3e70d3` (`v2.0.0-rc12`), not `main`. See `docs/release-candidate-rc12.md` for the exact image, binary, soak and desktop evidence. Check `git diff --name-only be78829..v2.0.0-rc12`: only `.github/workflows/build.yml` and `vtorrent-tauri/tauri.conf.json` changed. Earlier pass-15 evidence applies only where explicitly identified. The deferred BTC repair on `main` is outside the candidate.
+Review `1df8e5d44102ee008591afa1fd5dd5e02a3e70d3` (`v2.0.0-rc12`), not `main`. See `docs/release-candidate-rc12.md` for the exact image, binary, soak and desktop evidence. Since `be78829` the candidate gained the RC5-RC12 fixes; the non-doc delta is 23 files covering consensus (launch-time floor), P2P (bounded sends, inbound slot guard, safe truncation), swap refund gates and stale-refund clear, PUSHDATA preimage parsing, torrent path validation, wallet-only backups, and desktop 2FA/restore/version fixes. Review `git diff be78829..v2.0.0-rc12 -- . ':(exclude)docs/**'` and the RC12 record. The exact daemon image is byte-identical to the soaked RC10 daemon.
 
 **Scope:** `docs/security-review-request-2026-10-27.md` on the documentation branch (`main`).
 

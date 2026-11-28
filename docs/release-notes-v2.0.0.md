@@ -169,11 +169,11 @@ paths.
 - Desktop BTC SPV on testnet/regtest uses `VTORRENT_BTC_PEER` (for example
   `127.0.0.1:18448`); mainnet uses DNS seeds.
 - Desktop wallet paths are confined to the app data directory; legacy import
-  refuses to overwrite an existing wallet. The desktop version is beta.3.
-- Desktop backups include the encrypted wallet, cold-stake registry, swap
-  recovery records, and wallet-scoped BTC state. They do not include `chain.db`,
-  `mempool.json`, or `staking.json`; the chain and mempool rebuild, and staking
-  must be restarted after restore.
+  refuses to overwrite an existing wallet. The desktop version is 2.0.0.
+- Desktop backups contain the encrypted wallet only. BTC state, swap recovery
+  records, cold-stake registries and keys, and activity history are not included;
+  preserve those files separately. `chain.db`, `mempool.json`, and `staking.json`
+  rebuild or must be restarted.
 - Desktop staking returns the RPC ownership warning and the Staking page
   displays it when the selected address is not owned by the hot wallet.
 - Frontier-model review follow-ups are fixed: the SPV P2CS verifier enforces

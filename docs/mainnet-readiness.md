@@ -71,12 +71,10 @@ wallet once it is unlocked. Without an unlocked wallet it uploads bytes that no
 peer running this software can verify or pay for, so unlock before serving. Do
 not enable it for content you are not entitled to distribute.
 
-**Desktop backup restriction:** Backup collection takes the BTC state lock and
-includes the initialization record when present. If that record exists but its
-state file is missing, backup fails instead of omitting the state. Automatic
-restore refuses a bundle containing BTC state, swap recovery records, or a
-cold-stake registry even into an empty destination: the bundle cannot prove
-that its recovery data is current. Restore also refuses a destination with an
+**Desktop backup restriction:** A backup contains the encrypted wallet only.
+BTC state, swap recovery records, cold-stake registries and keys, and activity
+history are excluded; the user must preserve those files separately. Restore
+writes only `wallet.vtr` and leaves recovery files untouched. Restore also refuses a destination with an
 existing swap directory or cold-stake registry, to avoid pairing it with a
 different wallet. Preserve such data for reviewed recovery. Wallet-only bundles
 remain restorable to a destination without those records. These locks are
